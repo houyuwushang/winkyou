@@ -1,5 +1,8 @@
 # TASK-07: 中继服务
 
+> 当前任务以 `docs/EXECUTION-BASELINE.md` 为准。
+> MVP 只交付 `UDP TURN + 长期凭证`，不要求协调服务器签发 TURN 临时凭证。
+
 ## 任务概述
 
 | 属性 | 值 |
@@ -401,20 +404,21 @@ func NewClient(server *TURNServerConfig) (TURNClient, error)
 // TURNClient 见上文定义
 ```
 
-### TURN凭证获取（集成协调服务器）
+### TURN凭证获取（post-MVP）
 
 ```go
-// 从协调服务器获取临时TURN凭证
+// 后续如需由协调服务器签发短期凭证，再引入该结构
 type TURNCredentials struct {
     Username string
     Password string
     TTL      time.Duration
     Servers  []string
 }
-
-// 协调服务器新增API
-rpc GetTURNCredentials(GetTURNCredentialsRequest) returns (TURNCredentials);
 ```
+
+MVP 冻结决策:
+- 客户端直接从 `nat.turn_servers` 读取静态凭证
+- 协调服务器不新增 `GetTURNCredentials` RPC
 
 ---
 

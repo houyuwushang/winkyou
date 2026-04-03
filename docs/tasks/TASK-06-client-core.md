@@ -1,5 +1,8 @@
 # TASK-06: 客户端核心
 
+> 当前任务以 `docs/EXECUTION-BASELINE.md` 为准。
+> `TASK-07` 不是本任务的开发启动前置依赖，但属于 MVP 发布门禁依赖。
+
 ## 任务概述
 
 | 属性 | 值 |
@@ -8,7 +11,7 @@
 | 任务名称 | 客户端核心 |
 | 难度 | **高** |
 | 预估工作量 | 7-10天 |
-| 前置依赖 | TASK-02, TASK-03, TASK-04, TASK-05, TASK-07 |
+| 前置依赖 | TASK-02, TASK-03, TASK-04, TASK-05 |
 | 后续依赖 | 无（顶层集成模块） |
 
 ## 任务说明
@@ -311,7 +314,10 @@ func (e *engineImpl) Start(ctx context.Context) error {
     e.ctx, e.cancel = context.WithCancel(ctx)
     
     // 1. 选择并创建网络接口
-    netif, err := netif.Select(e.cfg.NetIf)
+    netif, err := netif.New(netif.Config{
+        Backend: e.cfg.NetIf.Backend,
+        MTU:     e.cfg.NetIf.MTU,
+    })
     if err != nil {
         return fmt.Errorf("create netif: %w", err)
     }
@@ -332,14 +338,19 @@ func (e *engineImpl) Start(ctx context.Context) error {
     }
     
     // 4. 配置网络接口
-    if err := e.netif.SetIP(resp.VirtualIP, resp.NetworkMask); err != nil {
+    _, networkCIDR, err := net.ParseCIDR(resp.NetworkCIDR)
+    if err != nil {
+        return fmt.Errorf("parse network cidr: %w", err)
+    }
+    if err := e.netif.SetIP(net.ParseIP(resp.VirtualIP), networkCIDR.Mask); err != nil {
         return fmt.Errorf("set ip: %w", err)
     }
     
     // 5. 创建WireGuard隧道
-    e.tunnel, err = tunnel.NewTunnel(&tunnel.Config{
+    e.tunnel, err = tunnel.New(tunnel.Config{
         Interface:  e.netif,
         PrivateKey: e.cfg.WireGuard.PrivateKey,
+        ListenPort: e.cfg.WireGuard.ListenPort,
     })
     if err != nil {
         return fmt.Errorf("create tunnel: %w", err)
@@ -383,31 +394,33 @@ func (e *engineImpl) connectToPeer(peer *coordinator.PeerInfo) error {
     
     // 3. 通过协调服务器交换候选
     for _, c := range localCandidates {
-        e.coordinator.SendSignal(e.ctx, peer.NodeID, nat.SIGNAL_ICE_CANDIDATE, c)
+        payload, err := nat.MarshalCandidate(c)
+        if err != nil {
+            return err
+        }
+        if err := e.coordinator.SendSignal(
+            e.ctx,
+            peer.NodeID,
+            coordinator.SIGNAL_ICE_CANDIDATE,
+            payload,
+        ); err != nil {
+            return err
+        }
     }
     
     // 4. 接收对端候选（异步，通过signalHandler设置）
     
-    // 5. 开始ICE协商
-    if err := iceAgent.Start(e.ctx); err != nil {
+    // 5. 建立ICE连接
+    conn, pair, err := iceAgent.Connect(e.ctx)
+    if err != nil {
         return err
     }
-    
-    // 6. 等待连接建立
-    select {
-    case <-iceAgent.Connected():
-        // 成功
-    case <-time.After(30 * time.Second):
-        return errors.New("ice negotiation timeout")
-    case <-e.ctx.Done():
-        return e.ctx.Err()
-    }
-    
-    // 7. 获取选定的Endpoint
-    pair, _ := iceAgent.GetSelectedPair()
+    _ = conn
+
+    // 6. 获取选定的Endpoint
     endpoint := pair.Remote.Address
     
-    // 8. 添加WireGuard Peer
+    // 7. 添加WireGuard Peer
     err = e.tunnel.AddPeer(&tunnel.PeerConfig{
         PublicKey:  peer.PublicKey,
         AllowedIPs: []net.IPNet{{IP: peer.VirtualIP, Mask: net.CIDRMask(32, 32)}},
@@ -418,7 +431,7 @@ func (e *engineImpl) connectToPeer(peer *coordinator.PeerInfo) error {
         return err
     }
     
-    // 9. 更新状态
+    // 8. 更新状态
     e.updatePeerState(peer.NodeID, PeerStateConnected, endpoint)
     
     return nil

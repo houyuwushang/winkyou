@@ -1,5 +1,8 @@
 # TASK-05: 协调服务器
 
+> 当前任务以 `docs/EXECUTION-BASELINE.md` 为准。
+> MVP 只冻结 `Register / Heartbeat / ListPeers / GetPeer / Signal` 五个 RPC。
+
 ## 任务概述
 
 | 属性 | 值 |
@@ -207,6 +210,7 @@ pkg/coordinator/
 │   ├── client.go           # 客户端SDK
 │   ├── connection.go       # 连接管理
 │   └── signal.go           # 信令处理
+api/
 └── proto/
     └── coordinator.proto   # 协议定义
 
@@ -238,6 +242,11 @@ service Coordinator {
     rpc Signal(stream SignalRequest) returns (stream SignalNotification);
 }
 ```
+
+**MVP 明确不包含**:
+- `GetTURNCredentials`
+- 多协调服务器同步
+- PostgreSQL 高可用部署
 
 ### 数据库Schema
 

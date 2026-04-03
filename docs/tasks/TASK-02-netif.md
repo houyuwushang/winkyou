@@ -1,5 +1,8 @@
 # TASK-02: 网络接口抽象层
 
+> 当前任务以 `docs/EXECUTION-BASELINE.md` 为准。
+> MVP 范围包含 `TUN`、`userspace`、`proxy`，`TAP` 为 post-MVP 能力。
+
 ## 任务概述
 
 | 属性 | 值 |
@@ -22,7 +25,7 @@
 ### 目标
 
 - 定义统一的 `NetworkInterface` 抽象接口
-- 实现多个后端：TUN、TAP、用户态网络栈、SOCKS5代理
+- 实现多个后端：TUN、用户态网络栈、SOCKS5代理
 - 实现自动后端选择逻辑
 - 确保跨平台支持（Windows/Linux/macOS）
 
@@ -59,7 +62,6 @@ type InterfaceType string
 
 const (
     TypeTUN       InterfaceType = "tun"
-    TypeTAP       InterfaceType = "tap"
     TypeUserspace InterfaceType = "userspace"
     TypeProxy     InterfaceType = "proxy"
 )
@@ -95,7 +97,7 @@ fd, err := unix.Open("/dev/net/tun", unix.O_RDWR|unix.O_CLOEXEC, 0)
 import "golang.zx2c4.com/wireguard/tun"
 ```
 
-### FR-03: TAP后端实现（可选）
+### FR-03: TAP后端实现（post-MVP）
 
 **描述**: 二层网络接口，用于需要广播/组播的场景
 
@@ -157,7 +159,7 @@ import "golang.zx2c4.com/wireguard/tun"
 
 ```go
 // 选择策略
-func SelectBackend(cfg *config.NetIfConfig) (NetworkInterface, error) {
+func New(cfg Config) (NetworkInterface, error) {
     // 1. 用户显式指定
     if cfg.Backend != "auto" {
         return createBackend(cfg.Backend)
@@ -187,9 +189,8 @@ func SelectBackend(cfg *config.NetIfConfig) (NetworkInterface, error) {
 | 优先级 | 后端 | 条件 |
 |--------|------|------|
 | 1 | TUN | 有管理员权限 |
-| 2 | TAP | 有管理员权限 + 用户配置 |
-| 3 | Userspace | 无管理员权限 |
-| 4 | SOCKS5 | 兜底 |
+| 2 | Userspace | 无管理员权限 |
+| 3 | SOCKS5 | 兜底 |
 
 ---
 
@@ -222,13 +223,11 @@ pkg/netif/
 ├── tun_darwin_native.go   # macOS TUN: 自研（Phase 1）
 ├── tun_windows_wg.go      # Windows TUN: 基于wireguard/tun（MVP）
 ├── tun_windows_native.go  # Windows TUN: 自研WinTUN调用（Phase 1）
-├── tap.go                 # TAP通用逻辑
-├── tap_linux.go           # Linux TAP实现
 ├── userspace.go           # 用户态网络栈
 ├── userspace_gvisor.go    # 基于gVisor（当前）
-├── userspace_stack.go # netstack集成
-├── proxy.go           # SOCKS5代理后端
-└── route.go           # 路由管理工具
+├── userspace_stack.go     # netstack集成
+├── proxy.go               # SOCKS5代理后端
+└── route.go               # 路由管理工具
 ```
 
 ### 跨平台编译
@@ -379,7 +378,7 @@ gVisor netstack初始化时会分配内存，需要注意：
 |------|------|------|
 | gVisor netstack是否支持Windows? | 待验证 | 需要原型测试 |
 | WinTUN是否需要签名? | 待确认 | 官方DLL已签名 |
-| TAP功能是否MVP必需? | 待确认 | 建议MVP不含TAP |
+| TAP功能是否MVP必需? | 已确定 | 不进入MVP，后续版本再评估 |
 | SOCKS5代理是否MVP必需? | 待确认 | 建议作为降级保留 |
 
 ---

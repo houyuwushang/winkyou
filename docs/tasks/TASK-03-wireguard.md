@@ -1,5 +1,8 @@
 # TASK-03: WireGuard隧道层
 
+> 当前任务以 `docs/EXECUTION-BASELINE.md` 为准。
+> MVP 固定交付 `wireguard-go` 封装，不将 `Wink Protocol v1` 纳入本任务交付范围。
+
 ## 任务概述
 
 | 属性 | 值 |
@@ -111,8 +114,8 @@ func ParsePublicKey(s string) (PublicKey, error)
 **描述**: 将WireGuard与TASK-02的NetworkInterface集成
 
 ```go
-// TunnelConfig 隧道配置
-type TunnelConfig struct {
+// Config 隧道配置
+type Config struct {
     // 网络接口
     Interface   netif.NetworkInterface
     
@@ -125,8 +128,8 @@ type TunnelConfig struct {
     Netmask     net.IPMask
 }
 
-// NewTunnel 创建隧道
-func NewTunnel(cfg *TunnelConfig) (Tunnel, error)
+// New 创建隧道
+func New(cfg Config) (Tunnel, error)
 ```
 
 ### FR-04: 事件通知
@@ -151,7 +154,7 @@ const (
 )
 
 // 订阅事件
-func (t *Tunnel) Events() <-chan TunnelEvent
+func (t *wireguardTunnel) Events() <-chan TunnelEvent
 ```
 
 | 需求ID | 需求描述 | 优先级 |
@@ -172,7 +175,8 @@ func (t *Tunnel) Events() <-chan TunnelEvent
 | 密钥库 | golang.org/x/crypto/curve25519 | 保持 | 标准库，无需替换 |
 
 > **抽象层设计要求**: Tunnel接口定义不能包含任何wireguard-go的类型。
-> 第三方封装代码必须隔离在独立文件中（`tunnel_wggo.go`），未来自研实现放入`tunnel_native.go`（即Wink Protocol），两者共用同一套接口测试。
+> 第三方封装代码必须隔离在独立文件中（`tunnel_wggo.go`）。
+> `tunnel_native.go` / `tunnel_wink.go` 属于 post-MVP 轨道，不是当前任务交付物。
 > 详见 [selfhost.md](../../selfhost.md) 和 [wink-protocol-v1.md](../../wink-protocol-v1.md)（字节级协议设计）
 
 ### 目录结构
@@ -181,7 +185,6 @@ func (t *Tunnel) Events() <-chan TunnelEvent
 pkg/tunnel/
 ├── tunnel.go               # Tunnel接口定义（永远不改）
 ├── tunnel_wggo.go          # wireguard-go封装（当前MVP实现）
-├── tunnel_native.go        # 自研Noise隧道（Phase 2 实现）
 ├── tunnel_interface_test.go # 接口级测试（两个实现共用）
 ├── peer.go                 # Peer管理
 ├── key.go                  # 密钥类型和操作
@@ -323,7 +326,7 @@ $ wink genkey
 | 交付物 | 路径 | 说明 |
 |--------|------|------|
 | Tunnel接口 | `pkg/tunnel/tunnel.go` | 隧道抽象 |
-| WireGuard实现 | `pkg/tunnel/wireguard.go` | wireguard-go封装 |
+| WireGuard实现 | `pkg/tunnel/tunnel_wggo.go` | wireguard-go封装 |
 | 密钥模块 | `pkg/tunnel/key.go` | 密钥操作 |
 | CLI命令 | `cmd/wink/cmd/genkey.go` | wink genkey命令 |
 | 单元测试 | `pkg/tunnel/*_test.go` | 测试代码 |
@@ -338,7 +341,7 @@ $ wink genkey
 package tunnel
 
 // 创建隧道
-func NewTunnel(cfg *TunnelConfig) (Tunnel, error)
+func New(cfg Config) (Tunnel, error)
 
 // Tunnel接口（完整定义见上文）
 type Tunnel interface {
