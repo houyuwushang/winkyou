@@ -2,6 +2,9 @@
 
 > 欢迎来到 WinkYou 项目！本文档将帮助你快速了解项目文档结构，并指导你如何开始。
 
+> 当前 MVP 执行以 `docs/EXECUTION-BASELINE.md` 为准。
+> 当其他规划文档与其冲突时，优先采用执行基线。
+
 ---
 
 ## 项目概述
@@ -32,6 +35,7 @@ winkyou/
 ├── wink-protocol-v1.md      # Wink Protocol v1 详细设计 (字节级)
 └── docs/
     ├── README.md            # 本文档 - 文档索引
+    ├── EXECUTION-BASELINE.md # MVP 执行基线（当前最高优先级）
     ├── ARCHITECTURE.md      # 系统架构文档
     └── tasks/               # 任务规格文档
         ├── TASK-01-infrastructure.md
@@ -52,28 +56,30 @@ winkyou/
 建议按以下顺序阅读:
 
 ```
-1. winkplan.md          (30分钟) - 了解项目背景、目标和技术选型
+1. EXECUTION-BASELINE.md (15分钟) - 了解当前 MVP 的冻结决策
       ↓
-2. ARCHITECTURE.md      (20分钟) - 理解系统架构和模块关系
+2. winkplan.md          (30分钟) - 了解项目背景、长期目标和技术选型
       ↓
-3. selfhost.md          (20分钟) - 理解自研战略和抽象层设计原则
+3. ARCHITECTURE.md      (20分钟) - 理解当前架构和模块关系
       ↓
 4. manage.md            (20分钟) - 了解开发计划和关键问题
       ↓
-5. question.md          (15分钟) - 了解当前待解决的问题
+5. selfhost.md          (20分钟) - 理解自研战略和抽象层设计原则
       ↓
-6. guess.md             (15分钟) - 了解问题的解决方案
+6. question.md          (15分钟) - 了解当前待解决的问题
       ↓
-7. 你负责的 TASK-XX.md  (30分钟) - 深入了解具体任务
+7. guess.md             (15分钟) - 了解问题的解决方案
+      ↓
+8. 你负责的 TASK-XX.md  (30分钟) - 深入了解具体任务
 ```
 
 ### 对于项目管理者
 
 ```
-1. winkplan.md          - 项目整体规划
-2. manage.md            - 开发管理和风险
-3. ARCHITECTURE.md      - 任务分解和依赖关系
-4. selfhost.md          - 自研路线和长期战略
+1. EXECUTION-BASELINE.md - 当前 MVP 执行基线
+2. ARCHITECTURE.md      - 任务分解和依赖关系
+3. manage.md            - 开发管理和风险
+4. winkplan.md          - 长期规划
 5. question.md          - 待决策事项
 ```
 
@@ -81,13 +87,26 @@ winkyou/
 
 只需阅读:
 ```
-1. winkplan.md 第一、二章  (10分钟)
-2. ARCHITECTURE.md 第一、二章 (10分钟)
+1. EXECUTION-BASELINE.md 第一至四章 (10分钟)
+2. ARCHITECTURE.md 第一至三章 (10分钟)
 ```
 
 ---
 
 ## 各文档详细说明
+
+### EXECUTION-BASELINE.md - MVP 执行基线
+
+**内容概要**:
+- MVP 范围冻结
+- 模块依赖和执行顺序
+- 目录结构和配置模型
+- 模块接口契约冻结
+- 发布门禁
+
+**适合人群**: 所有直接参与 MVP 开发的成员（**必读**）
+
+---
 
 ### winkplan.md - 项目规划文档
 
@@ -221,7 +240,7 @@ winkyou/
 | TASK-01 | infrastructure.md | 低 | 无 | 配置、日志、CLI 框架 |
 | TASK-02 | netif.md | 中 | 01 | 网络接口抽象层 |
 | TASK-03 | wireguard.md | 中 | 02 | WireGuard 隧道封装 |
-| TASK-04 | nat-traversal.md | **高** | 01 | NAT 穿透 (STUN/ICE) |
+| TASK-04 | nat-traversal.md | **高** | 01,05 | NAT 穿透 (STUN/ICE) |
 | TASK-05 | coordinator.md | 中 | 01 | 协调服务器 |
 | TASK-06 | client-core.md | **高** | 02,03,04,05 | 客户端核心集成 |
 | TASK-07 | relay.md | 中 | 04 | 中继服务 (TURN) |
@@ -306,17 +325,23 @@ winkyou/
 
 ```
 TASK-01 (基础设施)
-    ├── TASK-02 (网络接口) ─────┐
-    │       └── TASK-03 (WG) ──┤
-    ├── TASK-04 (NAT穿透) ─────┼──► TASK-06 (客户端核心)
-    │       └── TASK-07 (中继) ┤
-    └── TASK-05 (协调服务器) ──┘
+    ├── TASK-02 (网络接口) ─► TASK-03 (WG) ────┐
+    └── TASK-05 (协调服务器) ─► TASK-04 (NAT穿透) ─┼──► TASK-06 (客户端核心)
+                                              └──► TASK-07 (中继)
 ```
+
+当前执行基线补充:
+- TASK-04 的 MVP 完成依赖 TASK-05 的信令能力
+- TASK-07 不是 TASK-06 的开发启动前置依赖，但属于 MVP 发布门禁依赖
 
 ### Q: 哪些任务可以并行开发？
 
-在 TASK-01 完成后，以下任务可以并行:
-- TASK-02, TASK-04, TASK-05, TASK-07
+建议按执行基线推进:
+- TASK-01 完成后，优先并行推进 TASK-02 和 TASK-05
+- TASK-03 在 TASK-02 之后推进
+- TASK-04 可先做 STUN/NAT 原型，但完整 MVP 交付依赖 TASK-05 信令
+- TASK-07 在 TASK-04 之后推进
+- TASK-06 在 TASK-02,03,04,05 可用后启动，TASK-07 作为 MVP 发布门禁补齐
 
 ### Q: MVP 需要完成哪些任务？
 
@@ -324,6 +349,10 @@ TASK-01 (基础设施)
 - TASK-02: 仅 TUN + netstack (不含 TAP)
 - TASK-05: 单点协调服务器
 - TASK-07: 基本 TURN 中继
+
+补充说明:
+- TASK-06 可先完成“直连版集成”
+- 但没有 TASK-07 时，不能宣称 MVP 完整完成，因为中继保底能力未闭合
 
 ### Q: 有问题应该问谁？
 

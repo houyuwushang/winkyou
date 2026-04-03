@@ -1,5 +1,8 @@
 # TASK-04: NAT穿透模块
 
+> 当前任务以 `docs/EXECUTION-BASELINE.md` 为准。
+> MVP 的 NAT/ICE 完成交付依赖 `TASK-05` 提供的信令能力。
+
 ## 任务概述
 
 | 属性 | 值 |
@@ -8,7 +11,7 @@
 | 任务名称 | NAT穿透模块 |
 | 难度 | **高** |
 | 预估工作量 | 7-10天 |
-| 前置依赖 | TASK-01 |
+| 前置依赖 | TASK-01, TASK-05 |
 | 后续依赖 | TASK-06, TASK-07 |
 
 ## 任务说明
@@ -181,20 +184,11 @@ priority = (2^24 * type_preference) +
 
 ```go
 type ICEAgent interface {
-    // GatherCandidates 收集本地候选
     GatherCandidates(ctx context.Context) ([]Candidate, error)
-    
-    // SetRemoteCandidates 设置对端候选
     SetRemoteCandidates(candidates []Candidate) error
-    
-    // Start 开始连通性检查
-    Start(ctx context.Context) error
-    
-    // GetSelectedPair 获取选中的候选对
+    Connect(ctx context.Context) (net.Conn, *CandidatePair, error)
     GetSelectedPair() (*CandidatePair, error)
-    
-    // OnConnectionStateChange 连接状态变化回调
-    OnConnectionStateChange(func(state ConnectionState))
+    Close() error
 }
 
 type ConnectionState int
@@ -368,12 +362,13 @@ type NATTraversal interface {
 type ICEAgent interface {
     GatherCandidates(ctx context.Context) ([]Candidate, error)
     SetRemoteCandidates(candidates []Candidate) error
-    Start(ctx context.Context) error
+    Connect(ctx context.Context) (net.Conn, *CandidatePair, error)
     GetSelectedPair() (*CandidatePair, error)
-    GetConnection() (net.Conn, error)  // 返回最终的连接
     Close() error
-    OnConnectionStateChange(func(state ConnectionState))
 }
+
+func MarshalCandidate(c Candidate) ([]byte, error)
+func UnmarshalCandidate(data []byte) (Candidate, error)
 ```
 
 ### 依赖TASK-05的接口

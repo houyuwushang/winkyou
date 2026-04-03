@@ -1,5 +1,8 @@
 # TASK-01: 基础设施模块
 
+> 当前任务以 `docs/EXECUTION-BASELINE.md` 为准。
+> 本文档描述的是 MVP 所需基础设施，不覆盖 GUI、移动端和自研协议路线。
+
 ## 任务概述
 
 | 属性 | 值 |
@@ -61,15 +64,24 @@ log:
 coordinator:
   url: "https://coord.wink.dev:443"
   timeout: 10s
+  auth_key: ""
   
 netif:
-  backend: "auto"             # auto|tun|tap|userspace|proxy
+  backend: "auto"             # auto|tun|userspace|proxy
   mtu: 1280
+
+wireguard:
+  private_key: ""
+  listen_port: 51820
 
 nat:
   stun_servers:
     - "stun:stun.l.google.com:19302"
     - "stun:stun.cloudflare.com:3478"
+  turn_servers:
+    - url: "turn:relay.example.com:3478"
+      username: "wink"
+      password: "secret"
 ```
 
 ### FR-02: 日志系统
@@ -217,6 +229,7 @@ type Config struct {
     Log         LogConfig         `yaml:"log"`
     Coordinator CoordinatorConfig `yaml:"coordinator"`
     NetIf       NetIfConfig       `yaml:"netif"`
+    WireGuard   WireGuardConfig   `yaml:"wireguard"`
     NAT         NATConfig         `yaml:"nat"`
 }
 
@@ -229,6 +242,39 @@ type LogConfig struct {
     Format string `yaml:"format"` // text|json
     Output string `yaml:"output"` // stderr|stdout|file
     File   string `yaml:"file"`
+}
+
+type CoordinatorConfig struct {
+    URL     string        `yaml:"url"`
+    Timeout time.Duration `yaml:"timeout"`
+    AuthKey string        `yaml:"auth_key"`
+    TLS     TLSConfig     `yaml:"tls"`
+}
+
+type TLSConfig struct {
+    InsecureSkipVerify bool   `yaml:"insecure_skip_verify"`
+    CAFile             string `yaml:"ca_file"`
+}
+
+type NetIfConfig struct {
+    Backend string `yaml:"backend"`
+    MTU     int    `yaml:"mtu"`
+}
+
+type WireGuardConfig struct {
+    PrivateKey string `yaml:"private_key"`
+    ListenPort int    `yaml:"listen_port"`
+}
+
+type NATConfig struct {
+    STUNServers []string           `yaml:"stun_servers"`
+    TURNServers []TURNServerConfig `yaml:"turn_servers"`
+}
+
+type TURNServerConfig struct {
+    URL      string `yaml:"url"`
+    Username string `yaml:"username"`
+    Password string `yaml:"password"`
 }
 
 // Load 加载配置
