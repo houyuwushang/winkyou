@@ -1,0 +1,75 @@
+syntax = "proto3";
+
+package wink.coordinator.v1;
+
+option go_package = "winkyou/api/proto/coordinatorv1;coordinatorv1";
+
+service Coordinator {
+  rpc Register(RegisterRequest) returns (RegisterResponse);
+  rpc Heartbeat(HeartbeatRequest) returns (HeartbeatResponse);
+  rpc ListPeers(ListPeersRequest) returns (ListPeersResponse);
+  rpc GetPeer(GetPeerRequest) returns (PeerInfo);
+  rpc Signal(stream SignalEnvelope) returns (stream SignalEnvelope);
+}
+
+message RegisterRequest {
+  string public_key = 1;
+  string name = 2;
+  string auth_key = 3;
+  map<string, string> metadata = 4;
+}
+
+message RegisterResponse {
+  string node_id = 1;
+  string virtual_ip = 2;
+  int64 expires_at = 3;
+  string network_cidr = 4;
+}
+
+message HeartbeatRequest {
+  string node_id = 1;
+  int64 timestamp = 2;
+}
+
+message HeartbeatResponse {
+  int64 server_time = 1;
+  repeated string updated_peers = 2;
+}
+
+message ListPeersRequest {
+  bool online_only = 1;
+}
+
+message ListPeersResponse {
+  repeated PeerInfo peers = 1;
+}
+
+message GetPeerRequest {
+  string node_id = 1;
+}
+
+message PeerInfo {
+  string node_id = 1;
+  string name = 2;
+  string public_key = 3;
+  string virtual_ip = 4;
+  bool online = 5;
+  int64 last_seen = 6;
+  repeated string endpoints = 7;
+}
+
+enum SignalType {
+  SIGNAL_TYPE_UNSPECIFIED = 0;
+  SIGNAL_ICE_CANDIDATE = 1;
+  SIGNAL_ICE_OFFER = 2;
+  SIGNAL_ICE_ANSWER = 3;
+}
+
+message SignalEnvelope {
+  string from_node = 1;
+  string to_node = 2;
+  SignalType type = 3;
+  bytes payload = 4;
+  int64 timestamp = 5;
+}
+
