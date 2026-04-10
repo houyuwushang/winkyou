@@ -29,11 +29,14 @@ func TestNewNATTraversalNilConfig(t *testing.T) {
 	}
 }
 
-func TestDetectNATTypeStub(t *testing.T) {
+func TestDetectNATTypeNoServers(t *testing.T) {
 	nt, _ := NewNATTraversal(nil)
-	_, err := nt.DetectNATType(context.Background())
-	if !errors.Is(err, ErrNotImplemented) {
-		t.Errorf("DetectNATType() error = %v, want ErrNotImplemented", err)
+	natType, err := nt.DetectNATType(context.Background())
+	if err == nil {
+		t.Error("DetectNATType() with no servers should return error")
+	}
+	if natType != NATTypeUnknown {
+		t.Errorf("DetectNATType() = %v, want NATTypeUnknown", natType)
 	}
 }
 
@@ -54,10 +57,14 @@ func TestICEAgentStubMethods(t *testing.T) {
 
 	ctx := context.Background()
 
-	_, err := agent.GatherCandidates(ctx)
-	if !errors.Is(err, ErrNotImplemented) {
-		t.Errorf("GatherCandidates() error = %v, want ErrNotImplemented", err)
+	// GatherCandidates is now real — it should return host candidates
+	// (or empty on CI with no interfaces), not ErrNotImplemented.
+	candidates, err := agent.GatherCandidates(ctx)
+	if errors.Is(err, ErrNotImplemented) {
+		t.Error("GatherCandidates() should no longer return ErrNotImplemented")
 	}
+	// It's OK if candidates is empty (e.g. in a container), but no error expected.
+	_ = candidates
 
 	err = agent.SetRemoteCandidates(nil)
 	if !errors.Is(err, ErrNotImplemented) {

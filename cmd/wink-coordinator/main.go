@@ -4,14 +4,19 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"net"
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
+	coordinatorv1 "winkyou/api/proto/coordinatorv1"
 	"winkyou/pkg/config"
 	"winkyou/pkg/coordinator/server"
 	"winkyou/pkg/logger"
 	"winkyou/pkg/version"
+
+	"google.golang.org/grpc"
 )
 
 func main() {
@@ -70,16 +75,60 @@ func run() int {
 	}
 
 	log.Info(
-		"wink coordinator placeholder started",
+		"starting wink coordinator",
 		logger.String("listen", srv.ListenAddress()),
+		logger.String("network_cidr", srv.NetworkCIDR()),
+	)
+
+	listener, err := net.Listen("tcp", srv.ListenAddress())
+	if err != nil {
+		log.Error("failed to listen", logger.Error(err), logger.String("listen", srv.ListenAddress()))
+		return 1
+	}
+	defer func() {
+		_ = listener.Close()
+	}()
+
+	grpcServer := grpc.NewServer()
+	coordinatorv1.RegisterCoordinatorServer(grpcServer, server.NewGRPCService(srv))
+
+	serveErr := make(chan error, 1)
+	go func() {
+		serveErr <- grpcServer.Serve(listener)
+	}()
+
+	log.Info(
+		"wink coordinator started",
+		logger.String("listen", listener.Addr().String()),
 		logger.String("network_cidr", srv.NetworkCIDR()),
 	)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	<-ctx.Done()
+	select {
+	case <-ctx.Done():
+	case err := <-serveErr:
+		if err != nil {
+			log.Error("coordinator serve loop exited", logger.Error(err))
+			return 1
+		}
+		return 0
+	}
 
 	log.Info("wink coordinator shutting down")
+
+	shutdownDone := make(chan struct{})
+	go func() {
+		grpcServer.GracefulStop()
+		close(shutdownDone)
+	}()
+
+	select {
+	case <-shutdownDone:
+	case <-time.After(5 * time.Second):
+		grpcServer.Stop()
+	}
+
 	return 0
 }

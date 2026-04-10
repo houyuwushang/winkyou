@@ -40,9 +40,9 @@ type ICEConfig struct {
 type NATType int
 
 const (
-	NATTypeUnknown        NATType = iota
-	NATTypeNone                   // public IP, no NAT
-	NATTypeFullCone               // easiest to traverse
+	NATTypeUnknown  NATType = iota
+	NATTypeNone             // public IP, no NAT
+	NATTypeFullCone         // easiest to traverse
 	NATTypeRestrictedCone
 	NATTypePortRestricted
 	NATTypeSymmetric // hardest to traverse
@@ -70,9 +70,9 @@ type CandidateType int
 
 const (
 	CandidateTypeHost  CandidateType = iota // local address
-	CandidateTypeSrflx                       // STUN server-reflexive
-	CandidateTypePrflx                       // peer-reflexive
-	CandidateTypeRelay                       // TURN relay
+	CandidateTypeSrflx                      // STUN server-reflexive
+	CandidateTypePrflx                      // peer-reflexive
+	CandidateTypeRelay                      // TURN relay
 )
 
 func (ct CandidateType) String() string {
@@ -136,5 +136,5 @@ func NewNATTraversal(cfg *Config) (NATTraversal, error) {
 	if cfg == nil {
 		cfg = &Config{}
 	}
-	return &stubNATTraversal{cfg: *cfg}, nil
+	return &natTraversalImpl{cfg: *cfg}, nil
 }
