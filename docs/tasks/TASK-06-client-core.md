@@ -119,6 +119,12 @@ const (
 )
 ```
 
+说明：
+
+- 当前 MVP 中 `ConnectionTypeRelay` 默认指 `TURN relay`
+- 若后续支持“节点 A 作为 B 到 C 的受信中继”，建议拆分为 `TURNRelay` 与 `PeerRelay`
+- 该扩展设计见 `../PEER-RELAY-DESIGN.md`
+
 | 需求ID | 需求描述 | 优先级 |
 |--------|----------|--------|
 | FR-02-1 | 自动发现并连接peer | P0 |
@@ -477,6 +483,21 @@ func (e *engineImpl) connectToPeer(peer *coordinator.PeerInfo) error {
 | AC-04-2 | 跨NAT连接 | 不同网络 |
 | AC-04-3 | 中继回退 | 对称NAT场景 |
 | AC-04-4 | 三节点组网 | 三台机器互ping |
+
+---
+
+## post-MVP 扩展说明
+
+### Trusted Peer Relay
+
+若后续支持 `peer relay`，客户端核心需要额外承担：
+
+- 维护 `via_node_id` 路由状态
+- 将 `B -> C via A` 与 `C -> B via A` 成对安装和回收
+- 在 `direct / peer-relay / turn-relay` 之间切换
+- 在 `wink status` / `wink peers` 中展示 `via` 节点信息
+
+这部分不属于当前 MVP 客户端交付，单独见 `../PEER-RELAY-DESIGN.md`。
 
 ---
 

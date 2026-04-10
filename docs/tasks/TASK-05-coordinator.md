@@ -26,6 +26,12 @@
 
 协调服务器**不处理数据流量**，数据通过P2P或中继直接传输。
 
+边界说明：
+
+- 当前 MVP 里的“中继”默认指 `TURN server relay`
+- 如果后续支持“节点 A 作为 B 到 C 的受信中继”，协调服务器仍只负责控制面，不进入数据面
+- 该扩展设计见 `../PEER-RELAY-DESIGN.md`
+
 ### 目标
 
 - 实现协调服务器（支持自托管）
@@ -383,6 +389,25 @@ func (s *SignalingAdapter) OnCandidate(handler func(from string, candidate nat.C
     })
 }
 ```
+
+---
+
+## post-MVP 扩展说明
+
+### Trusted Peer Relay 控制面
+
+如果后续支持 `peer relay`，建议优先复用现有五个 RPC，而不是新增一套新的服务接口。
+
+控制面建议承担：
+
+- 暴露节点是否允许充当 transit node
+- 分发 `via_node_id` 路由信息
+- 复用 `Signal` 通道完成建立、确认和撤销
+
+控制面明确不承担：
+
+- 转发业务数据
+- 替代 `TASK-07` 的专用 `TURN` 服务
 
 ---
 

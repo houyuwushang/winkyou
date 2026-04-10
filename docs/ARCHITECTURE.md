@@ -4,6 +4,8 @@
 >
 > 当前 MVP 执行以 [EXECUTION-BASELINE.md](EXECUTION-BASELINE.md) 为准。
 > 当本文档与执行基线冲突时，以执行基线为准。
+>
+> 术语说明：当前文档中的“中继”在 MVP 语境下默认指 `TASK-07` 的 `TURN server relay`；“节点 A 作为 B 到 C 的受信中继”属于 `post-MVP` 扩展，单独见 [PEER-RELAY-DESIGN.md](PEER-RELAY-DESIGN.md)。
 
 ## 一、项目目标
 
@@ -173,6 +175,11 @@ TASK-07 (中继服务) ────► 提供TURN中继
 TASK-04 (NAT穿透) ─────► ICE协商失败时回退
 TASK-06 (客户端) ──────► 自动切换逻辑
 ```
+
+补充说明：
+
+- 这里的 G3 在当前 MVP 内只统计 `TURN relay`
+- “节点 A 作为 B 到 C 的受信中继”是可行增强项，但它会跨越 `TASK-05 + TASK-06 + TASK-02/03`，不属于当前 MVP 冻结交付
 
 #### G4: 虚拟局域网 → TASK-02 网络接口层
 
