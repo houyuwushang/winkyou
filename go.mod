@@ -6,6 +6,7 @@ require (
 	github.com/spf13/cobra v1.8.1
 	github.com/spf13/viper v1.20.1
 	go.uber.org/zap v1.27.0
+	golang.org/x/crypto v0.32.0
 )
 
 require (

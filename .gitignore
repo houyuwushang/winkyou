@@ -15,8 +15,8 @@ coverage.out
 Thumbs.db
 .idea/
 .vscode/
+.claude/
 
 # Local config overrides
 *.local.yaml
 *.local.yml
-
