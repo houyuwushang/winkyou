@@ -2,6 +2,7 @@
 
 > 当前任务以 `docs/EXECUTION-BASELINE.md` 为准。
 > MVP 只交付 `UDP TURN + 长期凭证`，不要求协调服务器签发 TURN 临时凭证。
+> 本任务中的“中继”专指专用 `TURN server relay`；“节点 A 作为 B 到 C 的受信中继”属于 `post-MVP` 扩展，见 `../PEER-RELAY-DESIGN.md`。
 
 ## 任务概述
 
@@ -30,6 +31,12 @@
 - 实现标准TURN协议服务器
 - 支持多中继服务器部署
 - 中继流量监控和限制
+
+边界说明：
+
+- `TASK-07` 解决的是“专用中继服务”问题
+- 它不负责把普通客户端节点变成 transit node
+- 若后续支持 `peer relay`，那是额外扩展，不替代本任务的 `TURN` 保底职责
 
 ---
 

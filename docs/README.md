@@ -36,6 +36,7 @@ winkyou/
 └── docs/
     ├── README.md            # 本文档 - 文档索引
     ├── EXECUTION-BASELINE.md # MVP 执行基线（当前最高优先级）
+    ├── PEER-RELAY-DESIGN.md # 受信节点中继扩展设计（post-MVP）
     ├── ARCHITECTURE.md      # 系统架构文档
     └── tasks/               # 任务规格文档
         ├── TASK-01-infrastructure.md
@@ -91,6 +92,12 @@ winkyou/
 2. ARCHITECTURE.md 第一至三章 (10分钟)
 ```
 
+如果你关心“节点 A 作为 B 到 C 的受信中继”这种扩展场景，再补读:
+
+```
+3. PEER-RELAY-DESIGN.md (10分钟)
+```
+
 ---
 
 ## 各文档详细说明
@@ -105,6 +112,18 @@ winkyou/
 - 发布门禁
 
 **适合人群**: 所有直接参与 MVP 开发的成员（**必读**）
+
+---
+
+### PEER-RELAY-DESIGN.md - 受信节点中继扩展设计
+
+**内容概要**:
+- 节点 `A` 作为 `B <-> C` 单跳中继的可行性结论
+- `TURN relay` 与 `peer relay` 的边界
+- 控制面、数据面和路由编排建议
+- 安全、性能和验证场景
+
+**适合人群**: 关心自有节点中继、拓扑增强和 post-MVP 扩展的开发者
 
 ---
 

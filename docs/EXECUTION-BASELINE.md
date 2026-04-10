@@ -53,6 +53,7 @@
 - OIDC / 用户账户体系
 - 网络组 / 多租户 / ACL
 - TCP TURN
+- 受信节点中继（`peer relay / transit node`）
 
 ---
 
@@ -372,6 +373,12 @@ MVP 的 TURN 认证策略冻结为：
 
 - `TASK-07` 可独立于协调服务器的 TURN 凭证 API 完成 MVP
 - `GetTURNCredentials` 保留为后续增强项，不进入当前执行线
+
+术语补充：
+
+- 当前 MVP 文档中的“中继”默认指 `TURN server relay`
+- “节点 A 作为 B 到 C 的受信转发节点”定义为 `peer relay / transit node`
+- `peer relay` 设计可行，但不纳入当前 MVP 冻结范围，见 [PEER-RELAY-DESIGN.md](PEER-RELAY-DESIGN.md)
 
 ---
 
