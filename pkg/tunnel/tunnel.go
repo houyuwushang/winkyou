@@ -25,10 +25,10 @@ type Config struct {
 // PeerConfig defines the configuration for adding a peer.
 type PeerConfig struct {
 	PublicKey    PublicKey
-	PresharedKey *PresharedKey   // optional
+	PresharedKey *PresharedKey // optional
 	AllowedIPs   []net.IPNet
-	Endpoint     *net.UDPAddr    // optional; set if already known
-	Keepalive    time.Duration   // 0 = disabled
+	Endpoint     *net.UDPAddr  // optional; set if already known
+	Keepalive    time.Duration // 0 = disabled
 }
 
 // PeerStatus represents the current state of a peer.
@@ -62,7 +62,7 @@ type TunnelEvent struct {
 type EventType int
 
 const (
-	EventPeerAdded          EventType = iota
+	EventPeerAdded EventType = iota
 	EventPeerRemoved
 	EventPeerHandshake
 	EventPeerEndpointChanged
@@ -88,7 +88,8 @@ type Tunnel interface {
 }
 
 // New creates a Tunnel backed by the given config.
-// The real wireguard-go implementation will be wired here.
+// Currently returns a stateful in-memory implementation.
+// The real wireguard-go backend will be wired in tunnel_wggo.go.
 func New(cfg Config) (Tunnel, error) {
-	return newStubTunnel(cfg), nil
+	return newMemTunnel(cfg), nil
 }
