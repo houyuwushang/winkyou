@@ -5,20 +5,9 @@ import (
 	"net"
 )
 
-// stubNATTraversal is a skeleton NATTraversal implementation.
-type stubNATTraversal struct {
-	cfg Config
-}
-
-func (s *stubNATTraversal) DetectNATType(ctx context.Context) (NATType, error) {
-	return NATTypeUnknown, ErrNotImplemented
-}
-
-func (s *stubNATTraversal) NewICEAgent(cfg ICEConfig) (ICEAgent, error) {
-	return &stubICEAgent{cfg: cfg}, nil
-}
-
-// stubICEAgent is a skeleton ICEAgent implementation.
+// stubICEAgent is a skeleton ICEAgent implementation that returns
+// ErrNotImplemented for all methods. Used by tests that need a
+// minimal agent without real network I/O.
 type stubICEAgent struct {
 	cfg    ICEConfig
 	closed bool

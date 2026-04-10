@@ -14,7 +14,7 @@ type stubClient struct {
 	closeMux       sync.Once
 }
 
-func NewClient(cfg *Config) (CoordinatorClient, error) {
+func newStubClient(cfg *Config) (CoordinatorClient, error) {
 	merged := DefaultConfig()
 	if cfg != nil {
 		merged = *cfg
