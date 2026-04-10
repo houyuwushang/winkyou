@@ -51,21 +51,30 @@ type NetworkInterface interface {
 }
 
 // New creates a NetworkInterface based on cfg.
-// When cfg.Backend is "auto", the function will try TUN, then userspace,
-// then proxy, picking the first backend that succeeds.
+// When cfg.Backend is "auto" or empty, the in-memory userspace backend is
+// selected so callers can exercise orchestration logic without touching the
+// host networking stack.
 func New(cfg Config) (NetworkInterface, error) {
 	if cfg.MTU <= 0 {
 		cfg.MTU = 1280
 	}
 
-	switch cfg.Backend {
+	backend, err := selectBackend(cfg.Backend)
+	if err != nil {
+		return nil, err
+	}
+
+	cfg.Backend = backend
+	return newMemoryInterface(cfg), nil
+}
+
+func selectBackend(backend string) (string, error) {
+	switch backend {
 	case "", "auto":
-		// MVP stub: return the noop backend.
-		return newNoopInterface(cfg), nil
+		return "userspace", nil
 	case "tun", "userspace", "proxy":
-		// Real backends will be wired here in later milestones.
-		return newNoopInterface(cfg), nil
+		return backend, nil
 	default:
-		return nil, errors.New("netif: unknown backend: " + cfg.Backend)
+		return "", errors.New("netif: unknown backend: " + backend)
 	}
 }
