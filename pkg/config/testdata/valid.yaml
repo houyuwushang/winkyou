@@ -1,0 +1,29 @@
+node:
+  name: "my-node"
+
+log:
+  level: "warn"
+  format: "json"
+  output: "stderr"
+
+coordinator:
+  url: "https://coord.example.com:443"
+  timeout: 15s
+  auth_key: "secret"
+
+netif:
+  backend: "userspace"
+  mtu: 1400
+
+wireguard:
+  private_key: "private-key"
+  listen_port: 51821
+
+nat:
+  stun_servers:
+    - "stun:stun.example.com:3478"
+  turn_servers:
+    - url: "turn:relay.example.com:3478"
+      username: "wink"
+      password: "secret"
+

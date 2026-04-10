@@ -1,0 +1,22 @@
+# Binaries
+/bin/
+/dist/
+*.exe
+*.dll
+*.so
+*.dylib
+
+# Go
+coverage.out
+*.test
+
+# Editors / OS
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# Local config overrides
+*.local.yaml
+*.local.yml
+
