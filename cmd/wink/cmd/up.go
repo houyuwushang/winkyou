@@ -1,7 +1,16 @@
 package cmd
 
 import (
+	"context"
+	"errors"
+	"fmt"
+	"os"
+	"os/signal"
+	"syscall"
+	"time"
+
 	"github.com/spf13/cobra"
+	winkclient "winkyou/pkg/client"
 
 	"winkyou/pkg/logger"
 )
@@ -17,10 +26,50 @@ func newUpCmd(opts *Options) *cobra.Command {
 			}
 			defer log.Sync()
 
-			log.Info("starting wink", logger.String("node", cfg.Node.Name), logger.String("backend", cfg.NetIf.Backend))
-			cmd.Printf("wink up placeholder: node=%s backend=%s coordinator=%s\n", cfg.Node.Name, cfg.NetIf.Backend, cfg.Coordinator.URL)
-			return nil
+			if state, stateErr := winkclient.LoadRuntimeState(opts.ConfigPath); stateErr == nil {
+				if state.IsFresh(20 * time.Second) {
+					return fmt.Errorf("wink is already running (pid %d)", state.PID)
+				}
+				if err := winkclient.RemoveRuntimeState(opts.ConfigPath); err != nil {
+					return err
+				}
+			} else if !errors.Is(stateErr, winkclient.ErrRuntimeStateNotFound) {
+				return stateErr
+			}
+
+			engine, err := winkclient.NewEngine(cfg, log, opts.ConfigPath)
+			if err != nil {
+				return err
+			}
+
+			ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+			defer stop()
+
+			if err := engine.Start(ctx); err != nil {
+				return err
+			}
+
+			status := engine.Status()
+			log.Info(
+				"wink engine started",
+				logger.String("node", status.NodeName),
+				logger.String("node_id", status.NodeID),
+				logger.String("virtual_ip", status.VirtualIP.String()),
+				logger.String("backend", status.Backend),
+				logger.String("nat_type", status.NATType),
+			)
+			cmd.Printf(
+				"wink up: node=%s id=%s ip=%s backend=%s nat=%s state=%s\n",
+				status.NodeName,
+				status.NodeID,
+				status.VirtualIP.String(),
+				status.Backend,
+				status.NATType,
+				runtimeStatePath(opts),
+			)
+
+			<-ctx.Done()
+			return engine.Stop()
 		},
 	}
 }
-
