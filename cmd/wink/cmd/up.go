@@ -59,7 +59,7 @@ func newUpCmd(opts *Options) *cobra.Command {
 				logger.String("nat_type", status.NATType),
 			)
 			cmd.Printf(
-				"wink up: node=%s id=%s ip=%s backend=%s nat=%s state=%s\n",
+				"wink up: node=%s id=%s ip=%s backend=%s nat=%s state_file=%s\n",
 				status.NodeName,
 				status.NodeID,
 				status.VirtualIP.String(),

@@ -34,6 +34,8 @@ func newRootCmd() *cobra.Command {
 		newUpCmd(opts),
 		newDownCmd(opts),
 		newStatusCmd(opts),
+		newPeersCmd(opts),
+		newGenkeyCmd(),
 		newVersionCmd(),
 	)
 
