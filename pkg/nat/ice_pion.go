@@ -10,8 +10,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-
-	relayclient "winkyou/pkg/relay/client"
 )
 
 const iceProbePayload = "winkyou-ice-probe-v1"
@@ -68,7 +66,7 @@ func (a *icePionAgent) GatherCandidates(ctx context.Context) ([]Candidate, error
 		candidates = append(candidates, gatherSrflxCandidates(ctx, a.cfg.STUNServers)...)
 	}
 	if len(a.cfg.TURNServers) > 0 {
-		candidates = append(candidates, gatherRelayCandidates(ctx, a.cfg.TURNServers)...)
+		candidates = append(candidates, gatherRelayCandidates(a.cfg.TURNServers)...)
 	}
 
 	a.localCandidates = cloneCandidates(candidates)
@@ -185,12 +183,6 @@ func (a *icePionAgent) Connect(ctx context.Context) (net.Conn, *CandidatePair, e
 
 		select {
 		case <-connCtx.Done():
-			if conn, pair, ok := a.tryRelayFallback(remoteCandidates); ok {
-				a.mu.Lock()
-				a.selectedPair = &CandidatePair{Local: cloneCandidate(*pair.Local), Remote: cloneCandidate(*pair.Remote)}
-				a.mu.Unlock()
-				return conn, pair, nil
-			}
 			return nil, nil, fmt.Errorf("nat: ice connect timeout: %w", connCtx.Err())
 		case win := <-successCh:
 			localCandidate := Candidate{Type: CandidateTypeHost, Address: &net.UDPAddr{IP: append(net.IP(nil), win.localAddr.IP...), Port: win.localAddr.Port}}
@@ -225,38 +217,6 @@ func (a *icePionAgent) GetSelectedPair() (*CandidatePair, error) {
 		return nil, errors.New("nat: no selected pair")
 	}
 	return &CandidatePair{Local: cloneCandidate(*a.selectedPair.Local), Remote: cloneCandidate(*a.selectedPair.Remote)}, nil
-}
-
-func (a *icePionAgent) tryRelayFallback(remoteCandidates []Candidate) (net.Conn, *CandidatePair, bool) {
-	a.mu.RLock()
-	localCandidates := cloneCandidates(a.localCandidates)
-	a.mu.RUnlock()
-
-	var localRelay *Candidate
-	for i := range localCandidates {
-		if localCandidates[i].Type == CandidateTypeRelay && localCandidates[i].Address != nil {
-			localRelay = cloneCandidate(localCandidates[i])
-			break
-		}
-	}
-	if localRelay == nil {
-		return nil, nil, false
-	}
-
-	for i := range remoteCandidates {
-		rc := remoteCandidates[i]
-		if rc.Type != CandidateTypeRelay || rc.Address == nil {
-			continue
-		}
-		conn, err := net.DialTimeout("udp", rc.Address.String(), 1200*time.Millisecond)
-		if err != nil {
-			continue
-		}
-		pair := &CandidatePair{Local: localRelay, Remote: cloneCandidate(rc)}
-		return conn, pair, true
-	}
-
-	return nil, nil, false
 }
 
 func gatherSrflxCandidates(ctx context.Context, servers []string) []Candidate {
@@ -297,30 +257,9 @@ func gatherSrflxCandidates(ctx context.Context, servers []string) []Candidate {
 	return candidates
 }
 
-func gatherRelayCandidates(ctx context.Context, turns []TURNServer) []Candidate {
+func gatherRelayCandidates(turns []TURNServer) []Candidate {
 	candidates := make([]Candidate, 0, len(turns))
 	for _, ts := range turns {
-		rc, err := relayclient.New(relayclient.Config{
-			ServerURL: ts.URL,
-			Username:  ts.Username,
-			Password:  ts.Password,
-			Realm:     "winkyou",
-			Timeout:   1500 * time.Millisecond,
-		})
-		if err == nil {
-			allocCtx, cancel := context.WithTimeout(ctx, 1500*time.Millisecond)
-			relayAddr, allocErr := rc.Allocate(allocCtx)
-			cancel()
-			if allocErr == nil && relayAddr != nil {
-				candidates = append(candidates, Candidate{
-					Type:       CandidateTypeRelay,
-					Address:    relayAddr,
-					Priority:   1,
-					Foundation: "relay:" + relayAddr.IP.String(),
-				})
-				continue
-			}
-		}
 		host, port, ok := parseTURNHostPort(ts.URL)
 		if !ok {
 			continue

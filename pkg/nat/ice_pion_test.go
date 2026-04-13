@@ -2,12 +2,9 @@ package nat
 
 import (
 	"context"
-	"fmt"
 	"net"
 	"testing"
 	"time"
-
-	relayserver "winkyou/pkg/relay/server"
 )
 
 func TestICEAgentsConnectAndSelectedPair(t *testing.T) {
@@ -112,92 +109,8 @@ func TestICEPayloadRoundTripAndRelayCandidates(t *testing.T) {
 		t.Fatalf("candidate type = %v, want host", candDecoded.Candidate.Type)
 	}
 
-	relays := gatherRelayCandidates(context.Background(), []TURNServer{{URL: "turn:127.0.0.1:3478", Username: "u", Password: "p"}})
+	relays := gatherRelayCandidates([]TURNServer{{URL: "turn:127.0.0.1:3478", Username: "u", Password: "p"}})
 	if len(relays) != 1 || relays[0].Type != CandidateTypeRelay {
 		t.Fatalf("relay candidates = %+v", relays)
-	}
-}
-
-func TestICERelayFallbackWhenDirectFails(t *testing.T) {
-	ln, err := net.ListenPacket("udp4", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("ListenPacket() error: %v", err)
-	}
-	defer ln.Close()
-	turnPort := ln.LocalAddr().(*net.UDPAddr).Port
-	turnURL := fmt.Sprintf("turn:127.0.0.1:%d", turnPort)
-
-	nt, _ := NewNATTraversal(&Config{TURNServers: []TURNServer{{URL: turnURL, Username: "u", Password: "p"}}})
-	agent, err := nt.NewICEAgent(ICEConfig{ConnectTimeout: 300 * time.Millisecond})
-	if err != nil {
-		t.Fatalf("NewICEAgent() error: %v", err)
-	}
-	defer agent.Close()
-
-	ctx := context.Background()
-	locals, err := agent.GatherCandidates(ctx)
-	if err != nil {
-		t.Fatalf("GatherCandidates() error: %v", err)
-	}
-	var hasRelay bool
-	for _, c := range locals {
-		if c.Type == CandidateTypeRelay {
-			hasRelay = true
-			break
-		}
-	}
-	if !hasRelay {
-		t.Fatal("expected local relay candidate")
-	}
-
-	remote := Candidate{Type: CandidateTypeRelay, Address: &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: turnPort}, Priority: 1, Foundation: "relay-remote"}
-	if err := agent.SetRemoteCandidates([]Candidate{remote}); err != nil {
-		t.Fatalf("SetRemoteCandidates() error: %v", err)
-	}
-
-	conn, pair, err := agent.Connect(ctx)
-	if err != nil {
-		t.Fatalf("Connect() error: %v", err)
-	}
-	defer conn.Close()
-	if pair == nil || pair.Local == nil || pair.Remote == nil {
-		t.Fatal("pair should not be nil")
-	}
-	if pair.Local.Type != CandidateTypeRelay || pair.Remote.Type != CandidateTypeRelay {
-		t.Fatalf("pair types = %v/%v, want relay/relay", pair.Local.Type, pair.Remote.Type)
-	}
-}
-
-func TestGatherRelayCandidatesUsesTURNAllocation(t *testing.T) {
-	srv, err := relayserver.New(relayserver.Config{
-		ListenAddress: "127.0.0.1:0",
-		Realm:         "winkyou",
-		Users:         map[string]string{"u": "p"},
-	})
-	if err != nil {
-		t.Fatalf("relay server new error: %v", err)
-	}
-	defer srv.Close()
-	if err := srv.Start(); err != nil {
-		t.Fatalf("relay server start error: %v", err)
-	}
-
-	turnURL := "turn:" + srv.Addr().String()
-	cands := gatherRelayCandidates(context.Background(), []TURNServer{{URL: turnURL, Username: "u", Password: "p"}})
-	if len(cands) == 0 {
-		t.Fatal("expected at least one relay candidate")
-	}
-	if cands[0].Type != CandidateTypeRelay {
-		t.Fatalf("candidate type = %v, want relay", cands[0].Type)
-	}
-	if cands[0].Address == nil {
-		t.Fatal("relay candidate address is nil")
-	}
-
-	_, portStr, _ := net.SplitHostPort(srv.Addr().String())
-	var serverPort int
-	_, _ = fmt.Sscanf(portStr, "%d", &serverPort)
-	if cands[0].Address.Port == serverPort {
-		t.Fatalf("expected allocated relayed port (not server listen port), got %d", cands[0].Address.Port)
 	}
 }
