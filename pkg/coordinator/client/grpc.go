@@ -2,10 +2,13 @@ package client
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"errors"
 	"fmt"
 	"io"
 	"net/url"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -14,6 +17,7 @@ import (
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/status"
 )
@@ -76,7 +80,7 @@ func (c *grpcClient) Connect(ctx context.Context) error {
 	}
 	c.mu.RUnlock()
 
-	target := normalizeTarget(c.cfg.URL)
+	target, useTLS := normalizeTarget(c.cfg.URL)
 	if target == "" {
 		return fmt.Errorf("coordinator client: url is required")
 	}
@@ -84,12 +88,12 @@ func (c *grpcClient) Connect(ctx context.Context) error {
 	dialCtx, cancel := c.callContext(ctx)
 	defer cancel()
 
-	conn, err := dialGRPC(
-		dialCtx,
-		target,
-		grpc.WithBlock(),
-		grpc.WithTransportCredentials(insecure.NewCredentials()),
-	)
+	creds, err := dialTransportCredentials(c.cfg.TLS, useTLS)
+	if err != nil {
+		return err
+	}
+
+	conn, err := dialGRPC(dialCtx, target, grpc.WithBlock(), grpc.WithTransportCredentials(creds))
 	if err != nil {
 		return err
 	}
@@ -479,26 +483,46 @@ func (c *grpcClient) dispatchPeer(peer *PeerInfo, event PeerEvent) {
 	}
 }
 
-func normalizeTarget(raw string) string {
+func normalizeTarget(raw string) (string, bool) {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
-		return ""
+		return "", false
 	}
 	if !strings.Contains(raw, "://") {
-		return raw
+		return raw, false
 	}
 
 	parsed, err := url.Parse(raw)
 	if err != nil {
-		return raw
+		return raw, false
 	}
+	useTLS := parsed.Scheme == "https" || parsed.Scheme == "grpcs"
 	if parsed.Host != "" {
-		return parsed.Host
+		return parsed.Host, useTLS
 	}
 	if parsed.Opaque != "" {
-		return parsed.Opaque
+		return parsed.Opaque, useTLS
 	}
-	return strings.TrimPrefix(parsed.Path, "//")
+	return strings.TrimPrefix(parsed.Path, "//"), useTLS
+}
+
+func dialTransportCredentials(cfg TLSConfig, useTLS bool) (credentials.TransportCredentials, error) {
+	if !useTLS {
+		return insecure.NewCredentials(), nil
+	}
+	tlsCfg := &tls.Config{MinVersion: tls.VersionTLS12, InsecureSkipVerify: cfg.InsecureSkipVerify}
+	if strings.TrimSpace(cfg.CAFile) != "" {
+		caPEM, err := os.ReadFile(cfg.CAFile)
+		if err != nil {
+			return nil, fmt.Errorf("coordinator client: read tls ca_file: %w", err)
+		}
+		pool := x509.NewCertPool()
+		if !pool.AppendCertsFromPEM(caPEM) {
+			return nil, fmt.Errorf("coordinator client: append tls ca_file failed")
+		}
+		tlsCfg.RootCAs = pool
+	}
+	return credentials.NewTLS(tlsCfg), nil
 }
 
 func peerFromProto(peer *coordinatorv1.PeerInfo) *PeerInfo {

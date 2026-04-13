@@ -3,6 +3,7 @@ package server_test
 import (
 	"context"
 	"errors"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -129,6 +130,38 @@ func TestGetPeerMissingNode(t *testing.T) {
 	_, err := srv.GetPeer(context.Background(), &client.GetPeerRequest{NodeID: "missing"})
 	if !errors.Is(err, server.ErrNodeNotFound) {
 		t.Fatalf("GetPeer() error = %v, want ErrNodeNotFound", err)
+	}
+}
+
+func TestSQLiteStorePersistsAcrossServerRestart(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "coordinator.db")
+	cfg := &server.Config{
+		ListenAddress: "127.0.0.1:9443",
+		NetworkCIDR:   "10.99.0.0/24",
+		LeaseTTL:      30 * time.Second,
+		StoreBackend:  "sqlite",
+		SQLitePath:    dbPath,
+	}
+
+	srv1, err := server.New(cfg)
+	if err != nil {
+		t.Fatalf("server.New(sqlite) error = %v", err)
+	}
+	alpha := registerNode(t, srv1, "sqlite-alpha-pub", "alpha")
+	_ = srv1.Close()
+
+	srv2, err := server.New(cfg)
+	if err != nil {
+		t.Fatalf("server.New(sqlite restart) error = %v", err)
+	}
+	defer func() { _ = srv2.Close() }()
+
+	alpha2 := registerNode(t, srv2, "sqlite-alpha-pub", "alpha-recovered")
+	if alpha2.NodeID != alpha.NodeID {
+		t.Fatalf("node id changed after restart: got %s want %s", alpha2.NodeID, alpha.NodeID)
+	}
+	if alpha2.VirtualIP != alpha.VirtualIP {
+		t.Fatalf("virtual ip changed after restart: got %s want %s", alpha2.VirtualIP, alpha.VirtualIP)
 	}
 }
 

@@ -3,6 +3,7 @@ package client_test
 import (
 	"context"
 	"net"
+	"path/filepath"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -127,6 +128,61 @@ func TestStartHeartbeatAndStopHeartbeat(t *testing.T) {
 	}
 }
 
+func TestGRPCClientRecoverAfterCoordinatorRestartWithSQLite(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "coordinator.db")
+
+	listener1, stop1 := startSQLiteCoordinator(t, dbPath)
+	addr1 := listener1.Addr().String()
+
+	alpha := newTestClient(t, addr1)
+	alphaReg, err := alpha.Register(context.Background(), &client.RegisterRequest{
+		PublicKey: "alpha-restart-pub",
+		Name:      "alpha",
+	})
+	if err != nil {
+		t.Fatalf("alpha Register() error = %v", err)
+	}
+	_ = alpha.Close()
+	stop1()
+
+	listener2, stop2 := startSQLiteCoordinator(t, dbPath)
+	defer stop2()
+	addr2 := listener2.Addr().String()
+
+	alphaRecovered := newTestClient(t, addr2)
+	defer func() { _ = alphaRecovered.Close() }()
+	alphaReg2, err := alphaRecovered.Register(context.Background(), &client.RegisterRequest{
+		PublicKey: "alpha-restart-pub",
+		Name:      "alpha-recovered",
+	})
+	if err != nil {
+		t.Fatalf("alpha re-register after restart error = %v", err)
+	}
+	if alphaReg2.NodeID != alphaReg.NodeID {
+		t.Fatalf("node id changed after restart: got %s want %s", alphaReg2.NodeID, alphaReg.NodeID)
+	}
+	if alphaReg2.VirtualIP != alphaReg.VirtualIP {
+		t.Fatalf("virtual ip changed after restart: got %s want %s", alphaReg2.VirtualIP, alphaReg.VirtualIP)
+	}
+
+	beta := newTestClient(t, addr2)
+	defer func() { _ = beta.Close() }()
+	if _, err := beta.Register(context.Background(), &client.RegisterRequest{
+		PublicKey: "beta-restart-pub",
+		Name:      "beta",
+	}); err != nil {
+		t.Fatalf("beta Register() error = %v", err)
+	}
+
+	peers, err := beta.ListPeers(context.Background(), client.WithOnlineOnly(false))
+	if err != nil {
+		t.Fatalf("ListPeers() error = %v", err)
+	}
+	if len(peers) < 2 {
+		t.Fatalf("expected at least 2 peers after restart recovery, got %d", len(peers))
+	}
+}
+
 type countingCoordinatorServer struct {
 	coordinatorv1.UnimplementedCoordinatorServer
 
@@ -167,6 +223,37 @@ func newCoordinatorService(t *testing.T) *server.GRPCService {
 		t.Fatalf("server.New() error = %v", err)
 	}
 	return server.NewGRPCService(domain)
+}
+
+func startSQLiteCoordinator(t *testing.T, dbPath string) (net.Listener, func()) {
+	t.Helper()
+
+	domain, err := server.New(&server.Config{
+		ListenAddress: "127.0.0.1:0",
+		NetworkCIDR:   "10.99.0.0/24",
+		LeaseTTL:      30 * time.Second,
+		StoreBackend:  "sqlite",
+		SQLitePath:    dbPath,
+	})
+	if err != nil {
+		t.Fatalf("server.New(sqlite) error = %v", err)
+	}
+
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("net.Listen() error = %v", err)
+	}
+	grpcServer := grpc.NewServer()
+	coordinatorv1.RegisterCoordinatorServer(grpcServer, server.NewGRPCService(domain))
+	go func() {
+		_ = grpcServer.Serve(listener)
+	}()
+
+	return listener, func() {
+		grpcServer.Stop()
+		_ = listener.Close()
+		_ = domain.Close()
+	}
 }
 
 func startCoordinator(t *testing.T, coordinator coordinatorv1.CoordinatorServer) (net.Listener, func()) {
