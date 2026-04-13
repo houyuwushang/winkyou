@@ -27,12 +27,14 @@ func run() int {
 	defaults := server.DefaultConfig()
 
 	var (
-		configPath  string
-		listen      string
-		networkCIDR string
-		leaseTTL    = defaults.LeaseTTL
-		authKey     string
-		showVersion bool
+		configPath   string
+		listen       string
+		networkCIDR  string
+		leaseTTL     = defaults.LeaseTTL
+		authKey      string
+		storeBackend string
+		sqlitePath   string
+		showVersion  bool
 	)
 
 	flag.StringVar(&configPath, "config", "", "path to config file")
@@ -40,6 +42,8 @@ func run() int {
 	flag.StringVar(&networkCIDR, "network-cidr", defaults.NetworkCIDR, "overlay network CIDR")
 	flag.DurationVar(&leaseTTL, "lease-ttl", defaults.LeaseTTL, "node lease TTL")
 	flag.StringVar(&authKey, "auth-key", "", "optional shared registration auth key")
+	flag.StringVar(&storeBackend, "store-backend", defaults.StoreBackend, "coordinator store backend: memory|sqlite")
+	flag.StringVar(&sqlitePath, "sqlite-path", "", "sqlite db path when store-backend=sqlite")
 	flag.BoolVar(&showVersion, "version", false, "print version and exit")
 	flag.Parse()
 
@@ -68,11 +72,16 @@ func run() int {
 		NetworkCIDR:   networkCIDR,
 		LeaseTTL:      leaseTTL,
 		AuthKey:       authKey,
+		StoreBackend:  storeBackend,
+		SQLitePath:    sqlitePath,
 	})
 	if err != nil {
 		log.Error("failed to create coordinator server", logger.Error(err))
 		return 1
 	}
+	defer func() {
+		_ = srv.Close()
+	}()
 
 	log.Info(
 		"starting wink coordinator",

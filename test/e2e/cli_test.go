@@ -160,7 +160,7 @@ coordinator:
   url: "grpc://%s"
   timeout: 5s
 netif:
-  backend: "userspace"
+  backend: "auto"
   mtu: 1280
 wireguard:
   listen_port: 0
@@ -178,11 +178,17 @@ nat:
 // runWinkBin runs the compiled wink binary synchronously with a timeout.
 func runWinkBin(t *testing.T, timeout time.Duration, args ...string) (string, error) {
 	t.Helper()
+	return runWinkBinWithEnv(t, timeout, []string{"WINKYOU_NETIF_ALLOW_MEMORY=1", "WINKYOU_TUNNEL_ALLOW_MEMORY=1"}, args...)
+}
+
+func runWinkBinWithEnv(t *testing.T, timeout time.Duration, extraEnv []string, args ...string) (string, error) {
+	t.Helper()
 	bin := buildWink(t)
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, bin, args...)
 	cmd.Dir = moduleRoot(t)
+	cmd.Env = append(os.Environ(), extraEnv...)
 	out, err := cmd.CombinedOutput()
 	return string(out), err
 }
@@ -191,9 +197,15 @@ func runWinkBin(t *testing.T, timeout time.Duration, args ...string) (string, er
 // Returns the exec.Cmd; cleanup kills the process.
 func startWinkUp(t *testing.T, configPath string) *exec.Cmd {
 	t.Helper()
+	return startWinkUpWithEnv(t, configPath, []string{"WINKYOU_NETIF_ALLOW_MEMORY=1", "WINKYOU_TUNNEL_ALLOW_MEMORY=1"})
+}
+
+func startWinkUpWithEnv(t *testing.T, configPath string, extraEnv []string) *exec.Cmd {
+	t.Helper()
 	bin := buildWink(t)
 	cmd := exec.Command(bin, "up", "--config", configPath)
 	cmd.Dir = moduleRoot(t)
+	cmd.Env = append(os.Environ(), extraEnv...)
 	// Pipe output to devnull to avoid the "Test I/O incomplete" issue
 	// on Windows where killing the process doesn't close inherited pipes.
 	cmd.Stdout = nil

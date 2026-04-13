@@ -88,8 +88,10 @@ type Tunnel interface {
 }
 
 // New creates a Tunnel backed by the given config.
-// Currently returns a stateful in-memory implementation.
-// The real wireguard-go backend will be wired in tunnel_wggo.go.
+// Memory backend is retained for unit tests and unprivileged test runs.
 func New(cfg Config) (Tunnel, error) {
-	return newMemTunnel(cfg), nil
+	if allowMemoryTunnelForTest() {
+		return newMemTunnel(cfg), nil
+	}
+	return newWGGoTunnel(cfg), nil
 }

@@ -67,13 +67,13 @@ func TestICEAgentStubMethods(t *testing.T) {
 	_ = candidates
 
 	err = agent.SetRemoteCandidates(nil)
-	if !errors.Is(err, ErrNotImplemented) {
-		t.Errorf("SetRemoteCandidates() error = %v, want ErrNotImplemented", err)
+	if err == nil {
+		t.Error("SetRemoteCandidates(nil) should return validation error")
 	}
 
 	_, _, err = agent.Connect(ctx)
-	if !errors.Is(err, ErrNotImplemented) {
-		t.Errorf("Connect() error = %v, want ErrNotImplemented", err)
+	if err == nil {
+		t.Error("Connect() without valid remote candidates should return error")
 	}
 
 	if err := agent.Close(); err != nil {

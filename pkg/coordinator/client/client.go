@@ -16,6 +16,12 @@ type Config struct {
 	AuthKey string
 	Timeout time.Duration
 	Retry   RetryPolicy
+	TLS     TLSConfig
+}
+
+type TLSConfig struct {
+	InsecureSkipVerify bool
+	CAFile             string
 }
 
 // RetryPolicy describes how a real transport should retry transient
@@ -90,7 +96,7 @@ const (
 )
 
 const (
-	SignalTypeUnspecified = SIGNAL_UNSPECIFIED
+	SignalTypeUnspecified  = SIGNAL_UNSPECIFIED
 	SignalTypeICECandidate = SIGNAL_ICE_CANDIDATE
 	SignalTypeICEOffer     = SIGNAL_ICE_OFFER
 	SignalTypeICEAnswer    = SIGNAL_ICE_ANSWER

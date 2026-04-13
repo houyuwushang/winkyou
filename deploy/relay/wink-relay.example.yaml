@@ -1,0 +1,5 @@
+# wink-relay sample runtime args (long-term static credential model)
+listen: ":3478"
+realm: "winkyou"
+users: "wink:secret"
+relay_ip: ""
