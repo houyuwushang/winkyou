@@ -136,6 +136,10 @@ func (e *engine) Start(ctx context.Context) (err error) {
 		AuthKey: e.cfg.Coordinator.AuthKey,
 		Timeout: e.cfg.Coordinator.Timeout,
 		Retry:   coordclient.DefaultConfig().Retry,
+		TLS: coordclient.TLSConfig{
+			InsecureSkipVerify: e.cfg.Coordinator.TLS.InsecureSkipVerify,
+			CAFile:             e.cfg.Coordinator.TLS.CAFile,
+		},
 	})
 	if err != nil {
 		return err

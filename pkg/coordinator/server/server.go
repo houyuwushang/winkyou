@@ -5,9 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/netip"
-	"sort"
 	"strings"
-	"sync"
 	"time"
 
 	"winkyou/pkg/coordinator/client"
@@ -25,6 +23,8 @@ type Config struct {
 	LeaseTTL      time.Duration
 	AuthKey       string
 	Now           func() time.Time
+	StoreBackend  string
+	SQLitePath    string
 }
 
 func DefaultConfig() Config {
@@ -32,10 +32,11 @@ func DefaultConfig() Config {
 		ListenAddress: ":9443",
 		NetworkCIDR:   "10.42.0.0/24",
 		LeaseTTL:      30 * time.Second,
+		StoreBackend:  "memory",
 	}
 }
 
-// Node is the in-memory registry record tracked by the coordinator.
+// Node is the coordinator registry record.
 type Node struct {
 	NodeID    string
 	Name      string
@@ -50,22 +51,20 @@ type Node struct {
 	Endpoints []string
 }
 
-// Store is the in-memory node registry backing the server skeleton.
-type Store struct {
-	mu         sync.RWMutex
-	network    netip.Prefix
-	leaseTTL   time.Duration
-	now        func() time.Time
-	nextNodeID uint64
-	nextIP     netip.Addr
-	nodes      map[string]*Node
-	byKey      map[string]string
-	signals    map[string][]client.SignalNotification
+// Store defines coordinator persistence behavior.
+type Store interface {
+	Register(req *client.RegisterRequest, expectedAuthKey string) (*Node, error)
+	Heartbeat(nodeID string, timestamp time.Time) (*Node, []string, error)
+	List(onlineOnly bool) []client.PeerInfo
+	Get(nodeID string) (*client.PeerInfo, error)
+	ForwardSignal(notification *client.SignalNotification) (bool, error)
+	DrainSignals(nodeID string) ([]client.SignalNotification, error)
+	Close() error
 }
 
 type Server struct {
 	cfg   Config
-	store *Store
+	store Store
 }
 
 func New(cfg *Config) (*Server, error) {
@@ -74,7 +73,7 @@ func New(cfg *Config) (*Server, error) {
 		return nil, err
 	}
 
-	store, err := NewStore(merged.NetworkCIDR, merged.LeaseTTL, merged.Now)
+	store, err := newStoreForConfig(merged)
 	if err != nil {
 		return nil, err
 	}
@@ -82,48 +81,17 @@ func New(cfg *Config) (*Server, error) {
 	return &Server{cfg: merged, store: store}, nil
 }
 
-func NewStore(networkCIDR string, leaseTTL time.Duration, now func() time.Time) (*Store, error) {
-	if strings.TrimSpace(networkCIDR) == "" {
-		networkCIDR = DefaultConfig().NetworkCIDR
+func (s *Server) Close() error {
+	if s == nil || s.store == nil {
+		return nil
 	}
-	if leaseTTL <= 0 {
-		leaseTTL = DefaultConfig().LeaseTTL
-	}
-	if now == nil {
-		now = time.Now
-	}
-
-	prefix, err := netip.ParsePrefix(networkCIDR)
-	if err != nil {
-		return nil, fmt.Errorf("coordinator server: invalid network cidr: %w", err)
-	}
-
-	return &Store{
-		network:  prefix.Masked(),
-		leaseTTL: leaseTTL,
-		now:      now,
-		nextIP:   prefix.Masked().Addr().Next(),
-		nodes:    make(map[string]*Node),
-		byKey:    make(map[string]string),
-		signals:  make(map[string][]client.SignalNotification),
-	}, nil
+	return s.store.Close()
 }
 
-func (s *Server) Config() Config {
-	return s.cfg
-}
-
-func (s *Server) Store() *Store {
-	return s.store
-}
-
-func (s *Server) ListenAddress() string {
-	return s.cfg.ListenAddress
-}
-
-func (s *Server) NetworkCIDR() string {
-	return s.cfg.NetworkCIDR
-}
+func (s *Server) Config() Config        { return s.cfg }
+func (s *Server) Store() Store          { return s.store }
+func (s *Server) ListenAddress() string { return s.cfg.ListenAddress }
+func (s *Server) NetworkCIDR() string   { return s.cfg.NetworkCIDR }
 
 func (s *Server) Register(ctx context.Context, req *client.RegisterRequest) (*client.RegisterResponse, error) {
 	if err := ctxErr(ctx); err != nil {
@@ -133,12 +101,7 @@ func (s *Server) Register(ctx context.Context, req *client.RegisterRequest) (*cl
 	if err != nil {
 		return nil, err
 	}
-	return &client.RegisterResponse{
-		NodeID:      node.NodeID,
-		VirtualIP:   node.VirtualIP,
-		ExpiresAt:   node.ExpiresAt.Unix(),
-		NetworkCIDR: s.cfg.NetworkCIDR,
-	}, nil
+	return &client.RegisterResponse{NodeID: node.NodeID, VirtualIP: node.VirtualIP, ExpiresAt: node.ExpiresAt.Unix(), NetworkCIDR: s.cfg.NetworkCIDR}, nil
 }
 
 func (s *Server) Heartbeat(ctx context.Context, req *client.HeartbeatRequest) (*client.HeartbeatResponse, error) {
@@ -148,21 +111,15 @@ func (s *Server) Heartbeat(ctx context.Context, req *client.HeartbeatRequest) (*
 	if req == nil {
 		return nil, fmt.Errorf("coordinator server: heartbeat request is nil")
 	}
-
 	timestamp := s.cfg.Now()
 	if req.Timestamp > 0 {
 		timestamp = time.Unix(req.Timestamp, 0)
 	}
-
 	_, updatedPeers, err := s.store.Heartbeat(req.NodeID, timestamp)
 	if err != nil {
 		return nil, err
 	}
-
-	return &client.HeartbeatResponse{
-		ServerTime:   s.cfg.Now().Unix(),
-		UpdatedPeers: updatedPeers,
-	}, nil
+	return &client.HeartbeatResponse{ServerTime: s.cfg.Now().Unix(), UpdatedPeers: updatedPeers}, nil
 }
 
 func (s *Server) ListPeers(ctx context.Context, req *client.ListPeersRequest) (*client.ListPeersResponse, error) {
@@ -172,7 +129,6 @@ func (s *Server) ListPeers(ctx context.Context, req *client.ListPeersRequest) (*
 	if req == nil {
 		req = &client.ListPeersRequest{}
 	}
-
 	return &client.ListPeersResponse{Peers: s.store.List(req.OnlineOnly)}, nil
 }
 
@@ -193,218 +149,18 @@ func (s *Server) ForwardSignal(ctx context.Context, notification *client.SignalN
 	return s.store.ForwardSignal(notification)
 }
 
-func (s *Store) Register(req *client.RegisterRequest, expectedAuthKey string) (*Node, error) {
-	if req == nil {
-		return nil, fmt.Errorf("coordinator server: register request is nil")
-	}
-	if strings.TrimSpace(req.PublicKey) == "" {
-		return nil, fmt.Errorf("coordinator server: public_key is required")
-	}
-	if strings.TrimSpace(expectedAuthKey) != "" && req.AuthKey != expectedAuthKey {
-		return nil, ErrUnauthorized
-	}
-
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	now := s.now()
-	if nodeID, ok := s.byKey[req.PublicKey]; ok {
-		node := s.nodes[nodeID]
-		node.Name = req.Name
-		node.Metadata = cloneMap(req.Metadata)
-		node.LastSeen = now
-		node.ExpiresAt = now.Add(s.leaseTTL)
-		node.ChangedAt = now
-		node.Online = true
-		return cloneNode(node), nil
-	}
-
-	s.nextNodeID++
-	virtualIP, err := s.allocateIPLocked()
-	if err != nil {
-		return nil, err
-	}
-
-	node := &Node{
-		NodeID:    fmt.Sprintf("node-%06d", s.nextNodeID),
-		Name:      req.Name,
-		PublicKey: req.PublicKey,
-		Metadata:  cloneMap(req.Metadata),
-		VirtualIP: virtualIP.String(),
-		Online:    true,
-		LastSeen:  now,
-		ExpiresAt: now.Add(s.leaseTTL),
-		ChangedAt: now,
-	}
-	s.nodes[node.NodeID] = node
-	s.byKey[node.PublicKey] = node.NodeID
-
-	return cloneNode(node), nil
-}
-
-func (s *Store) Heartbeat(nodeID string, timestamp time.Time) (*Node, []string, error) {
-	if strings.TrimSpace(nodeID) == "" {
-		return nil, nil, fmt.Errorf("coordinator server: node_id is required")
-	}
-
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	now := s.now()
-	s.refreshExpiredLocked(now)
-
-	node, ok := s.nodes[nodeID]
-	if !ok {
-		return nil, nil, ErrNodeNotFound
-	}
-
-	cutoff := node.LastSync
-	if timestamp.IsZero() {
-		timestamp = now
-	}
-	node.LastSeen = timestamp
-	node.ExpiresAt = now.Add(s.leaseTTL)
-	node.ChangedAt = now
-	node.Online = true
-
-	updated := make([]string, 0, len(s.nodes))
-	for id, peer := range s.nodes {
-		if id == nodeID {
-			continue
+func newStoreForConfig(cfg Config) (Store, error) {
+	switch strings.ToLower(strings.TrimSpace(cfg.StoreBackend)) {
+	case "", "memory":
+		return NewMemoryStore(cfg.NetworkCIDR, cfg.LeaseTTL, cfg.Now)
+	case "sqlite":
+		if strings.TrimSpace(cfg.SQLitePath) == "" {
+			return nil, fmt.Errorf("coordinator server: sqlite_path is required when store_backend=sqlite")
 		}
-		if peer.ChangedAt.After(cutoff) {
-			updated = append(updated, id)
-		}
+		return NewSQLiteStore(cfg.NetworkCIDR, cfg.LeaseTTL, cfg.Now, cfg.SQLitePath)
+	default:
+		return nil, fmt.Errorf("coordinator server: unknown store backend %q", cfg.StoreBackend)
 	}
-	sort.Strings(updated)
-	node.LastSync = now
-
-	return cloneNode(node), updated, nil
-}
-
-func (s *Store) List(onlineOnly bool) []client.PeerInfo {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	now := s.now()
-	s.refreshExpiredLocked(now)
-
-	peers := make([]client.PeerInfo, 0, len(s.nodes))
-	for _, node := range s.nodes {
-		if onlineOnly && !node.Online {
-			continue
-		}
-		peers = append(peers, toPeerInfo(node))
-	}
-	sort.Slice(peers, func(i, j int) bool {
-		return peers[i].NodeID < peers[j].NodeID
-	})
-	return peers
-}
-
-func (s *Store) Get(nodeID string) (*client.PeerInfo, error) {
-	if strings.TrimSpace(nodeID) == "" {
-		return nil, fmt.Errorf("coordinator server: node_id is required")
-	}
-
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	now := s.now()
-	s.refreshExpiredLocked(now)
-
-	node, ok := s.nodes[nodeID]
-	if !ok {
-		return nil, ErrNodeNotFound
-	}
-
-	info := toPeerInfo(node)
-	return &info, nil
-}
-
-func (s *Store) ForwardSignal(notification *client.SignalNotification) (bool, error) {
-	if notification == nil {
-		return false, fmt.Errorf("coordinator server: signal notification is nil")
-	}
-	if strings.TrimSpace(notification.FromNode) == "" || strings.TrimSpace(notification.ToNode) == "" {
-		return false, fmt.Errorf("coordinator server: signal requires from_node and to_node")
-	}
-
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	now := s.now()
-	s.refreshExpiredLocked(now)
-
-	if _, ok := s.nodes[notification.FromNode]; !ok {
-		return false, ErrNodeNotFound
-	}
-
-	target, ok := s.nodes[notification.ToNode]
-	if !ok {
-		return false, ErrNodeNotFound
-	}
-	if !target.Online {
-		return false, nil
-	}
-
-	cloned := cloneSignal(notification)
-	if cloned.Timestamp == 0 {
-		cloned.Timestamp = now.Unix()
-	}
-	s.signals[target.NodeID] = append(s.signals[target.NodeID], cloned)
-	return true, nil
-}
-
-func (s *Store) DrainSignals(nodeID string) ([]client.SignalNotification, error) {
-	if strings.TrimSpace(nodeID) == "" {
-		return nil, fmt.Errorf("coordinator server: node_id is required")
-	}
-
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	if _, ok := s.nodes[nodeID]; !ok {
-		return nil, ErrNodeNotFound
-	}
-
-	queue := s.signals[nodeID]
-	out := make([]client.SignalNotification, len(queue))
-	copy(out, queue)
-	s.signals[nodeID] = nil
-	return out, nil
-}
-
-func (s *Store) refreshExpiredLocked(now time.Time) {
-	for _, node := range s.nodes {
-		if node.Online && !node.ExpiresAt.IsZero() && now.After(node.ExpiresAt) {
-			node.Online = false
-			node.ChangedAt = now
-		}
-	}
-}
-
-func (s *Store) allocateIPLocked() (netip.Addr, error) {
-	addr := s.nextIP
-	for {
-		if !addr.IsValid() || !s.network.Contains(addr) {
-			return netip.Addr{}, fmt.Errorf("coordinator server: network %s is exhausted", s.network)
-		}
-		if s.ipAvailableLocked(addr) {
-			s.nextIP = addr.Next()
-			return addr, nil
-		}
-		addr = addr.Next()
-	}
-}
-
-func (s *Store) ipAvailableLocked(addr netip.Addr) bool {
-	for _, node := range s.nodes {
-		if node.VirtualIP == addr.String() {
-			return false
-		}
-	}
-	return true
 }
 
 func newConfig(cfg *Config) (Config, error) {
@@ -423,6 +179,12 @@ func newConfig(cfg *Config) (Config, error) {
 		if cfg.Now != nil {
 			merged.Now = cfg.Now
 		}
+		if strings.TrimSpace(cfg.StoreBackend) != "" {
+			merged.StoreBackend = cfg.StoreBackend
+		}
+		if strings.TrimSpace(cfg.SQLitePath) != "" {
+			merged.SQLitePath = cfg.SQLitePath
+		}
 	}
 	if merged.Now == nil {
 		merged.Now = time.Now
@@ -437,57 +199,6 @@ func newConfig(cfg *Config) (Config, error) {
 		return Config{}, fmt.Errorf("coordinator server: invalid network cidr: %w", err)
 	}
 	return merged, nil
-}
-
-func toPeerInfo(node *Node) client.PeerInfo {
-	return client.PeerInfo{
-		NodeID:    node.NodeID,
-		Name:      node.Name,
-		PublicKey: node.PublicKey,
-		VirtualIP: node.VirtualIP,
-		Online:    node.Online,
-		LastSeen:  node.LastSeen.Unix(),
-		Endpoints: cloneSlice(node.Endpoints),
-	}
-}
-
-func cloneNode(node *Node) *Node {
-	if node == nil {
-		return nil
-	}
-	out := *node
-	out.Metadata = cloneMap(node.Metadata)
-	out.Endpoints = cloneSlice(node.Endpoints)
-	return &out
-}
-
-func cloneMap(in map[string]string) map[string]string {
-	if len(in) == 0 {
-		return nil
-	}
-	out := make(map[string]string, len(in))
-	for key, value := range in {
-		out[key] = value
-	}
-	return out
-}
-
-func cloneSlice(in []string) []string {
-	if len(in) == 0 {
-		return nil
-	}
-	out := make([]string, len(in))
-	copy(out, in)
-	return out
-}
-
-func cloneSignal(notification *client.SignalNotification) client.SignalNotification {
-	out := *notification
-	if len(notification.Payload) > 0 {
-		out.Payload = make([]byte, len(notification.Payload))
-		copy(out.Payload, notification.Payload)
-	}
-	return out
 }
 
 func ctxErr(ctx context.Context) error {
