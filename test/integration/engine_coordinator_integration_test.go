@@ -92,6 +92,11 @@ func TestTwoEnginesDiscoverEachOtherViaCoordinator(t *testing.T) {
 		return hasPeer(beta.GetPeers(), "alpha")
 	})
 
+	waitForCondition(t, 5*time.Second, "state flow to connecting/connected", func() bool {
+		return hasPeerState(alpha.GetPeers(), "beta", client.PeerStateConnecting, client.PeerStateConnected) &&
+			hasPeerState(beta.GetPeers(), "alpha", client.PeerStateConnecting, client.PeerStateConnected)
+	})
+
 	if len(alpha.GetPeers()) != 1 {
 		t.Fatalf("len(alpha peers) = %d, want 1", len(alpha.GetPeers()))
 	}
@@ -187,7 +192,7 @@ func newTestEngine(t *testing.T, coordinatorAddr, nodeName, statePath string, co
 	cfg.Node.Name = nodeName
 	cfg.Coordinator.URL = "grpc://" + coordinatorAddr
 	cfg.Coordinator.Timeout = 100 * time.Millisecond
-	cfg.NetIf.Backend = "userspace"
+	cfg.NetIf.Backend = "auto"
 	cfg.WireGuard.ListenPort = 0
 
 	if configure != nil {
@@ -227,6 +232,20 @@ func waitForCondition(t *testing.T, timeout time.Duration, description string, p
 		time.Sleep(20 * time.Millisecond)
 	}
 	t.Fatalf("timed out waiting for %s", description)
+}
+
+func hasPeerState(peers []*client.PeerStatus, name string, states ...client.PeerState) bool {
+	for _, peer := range peers {
+		if peer == nil || peer.Name != name {
+			continue
+		}
+		for _, st := range states {
+			if peer.State == st {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func hasPeer(peers []*client.PeerStatus, name string) bool {
