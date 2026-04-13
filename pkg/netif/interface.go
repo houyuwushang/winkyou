@@ -1,6 +1,5 @@
 // Package netif defines the abstract NetworkInterface used by the tunnel
-// and client packages. Concrete backends (TUN, userspace, proxy) will be
-// added in later milestones; this file freezes the public contract.
+// and client packages.
 package netif
 
 import (
@@ -51,30 +50,10 @@ type NetworkInterface interface {
 }
 
 // New creates a NetworkInterface based on cfg.
-// When cfg.Backend is "auto" or empty, the in-memory userspace backend is
-// selected so callers can exercise orchestration logic without touching the
-// host networking stack.
 func New(cfg Config) (NetworkInterface, error) {
 	if cfg.MTU <= 0 {
 		cfg.MTU = 1280
 	}
 
-	backend, err := selectBackend(cfg.Backend)
-	if err != nil {
-		return nil, err
-	}
-
-	cfg.Backend = backend
-	return newMemoryInterface(cfg), nil
-}
-
-func selectBackend(backend string) (string, error) {
-	switch backend {
-	case "", "auto":
-		return "userspace", nil
-	case "tun", "userspace", "proxy":
-		return backend, nil
-	default:
-		return "", errors.New("netif: unknown backend: " + backend)
-	}
+	return newByBackend(cfg)
 }

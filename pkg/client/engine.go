@@ -41,6 +41,7 @@ type engine struct {
 	peers          map[string]*PeerStatus
 	statusHandlers []func(status *EngineStatus)
 	peerHandlers   []func(peer *PeerStatus, event PeerEvent)
+	peerMgr        *peerManager
 
 	privateKey tunnel.PrivateKey
 	netif      netif.NetworkInterface
@@ -185,6 +186,7 @@ func (e *engine) Start(ctx context.Context) (err error) {
 		return err
 	}
 	e.nat = natTraversal
+	e.initPeerManager()
 
 	natType := nat.NATTypeUnknown
 	detectCtx, cancelDetect := context.WithTimeout(ctx, 3*time.Second)
@@ -278,7 +280,8 @@ func (e *engine) ConnectToPeer(nodeID string) error {
 	if !ok {
 		return ErrPeerNotFound
 	}
-	return errors.New("client engine: peer connection orchestration is not implemented yet")
+	e.startPeerConnect(nodeID)
+	return nil
 }
 
 func (e *engine) DisconnectFromPeer(nodeID string) error {
@@ -288,7 +291,8 @@ func (e *engine) DisconnectFromPeer(nodeID string) error {
 	if !ok {
 		return ErrPeerNotFound
 	}
-	return errors.New("client engine: peer disconnection orchestration is not implemented yet")
+	e.cleanupPeer(nodeID)
+	return nil
 }
 
 func (e *engine) OnStatusChange(handler func(status *EngineStatus)) {
@@ -324,45 +328,6 @@ func (e *engine) refreshPeers(ctx context.Context) error {
 		e.upsertPeer(peer, PeerEventUpsert)
 	}
 	return nil
-}
-
-func (e *engine) handlePeerUpdate(peer *coordclient.PeerInfo, event coordclient.PeerEvent) {
-	if peer == nil || peer.NodeID == e.currentNodeID() {
-		return
-	}
-	e.upsertPeer(peer, peerEventFromCoordinator(event))
-}
-
-func (e *engine) handleSignal(signal *coordclient.SignalNotification) {
-	if signal == nil || strings.TrimSpace(signal.FromNode) == "" {
-		return
-	}
-
-	e.mu.Lock()
-	peer, ok := e.peers[signal.FromNode]
-	if !ok {
-		peer = &PeerStatus{
-			NodeID:         signal.FromNode,
-			State:          PeerStateDisconnected,
-			ConnectionType: ConnectionTypeDirect,
-		}
-		e.peers[signal.FromNode] = peer
-	}
-	if peer.State == PeerStateDisconnected {
-		peer.State = PeerStateConnecting
-	}
-	if signal.Timestamp > 0 {
-		peer.LastSeen = time.Unix(signal.Timestamp, 0)
-	}
-	snapshot := clonePeerStatus(peer)
-	handlers := append([]func(peer *PeerStatus, event PeerEvent){}, e.peerHandlers...)
-	e.updateStatusCountersLocked()
-	e.mu.Unlock()
-
-	for _, handler := range handlers {
-		handler(snapshot, PeerEventUpsert)
-	}
-	e.persistState()
 }
 
 func (e *engine) upsertPeer(peer *coordclient.PeerInfo, event PeerEvent) {
@@ -484,6 +449,14 @@ func (e *engine) cleanupResources() {
 	if e.netif != nil {
 		_ = e.netif.Close()
 		e.netif = nil
+	}
+	if e.peerMgr != nil {
+		for _, s := range e.peerMgr.sessions {
+			if s != nil && s.agent != nil {
+				_ = s.agent.Close()
+			}
+		}
+		e.peerMgr.sessions = map[string]*peerSession{}
 	}
 	e.nat = nil
 	e.runCtx = nil

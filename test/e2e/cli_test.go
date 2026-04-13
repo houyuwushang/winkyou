@@ -160,7 +160,7 @@ coordinator:
   url: "grpc://%s"
   timeout: 5s
 netif:
-  backend: "userspace"
+  backend: "auto"
   mtu: 1280
 wireguard:
   listen_port: 0
@@ -183,6 +183,7 @@ func runWinkBin(t *testing.T, timeout time.Duration, args ...string) (string, er
 	defer cancel()
 	cmd := exec.CommandContext(ctx, bin, args...)
 	cmd.Dir = moduleRoot(t)
+	cmd.Env = append(os.Environ(), "WINKYOU_NETIF_ALLOW_MEMORY=1", "WINKYOU_TUNNEL_ALLOW_MEMORY=1")
 	out, err := cmd.CombinedOutput()
 	return string(out), err
 }
@@ -194,6 +195,7 @@ func startWinkUp(t *testing.T, configPath string) *exec.Cmd {
 	bin := buildWink(t)
 	cmd := exec.Command(bin, "up", "--config", configPath)
 	cmd.Dir = moduleRoot(t)
+	cmd.Env = append(os.Environ(), "WINKYOU_NETIF_ALLOW_MEMORY=1", "WINKYOU_TUNNEL_ALLOW_MEMORY=1")
 	// Pipe output to devnull to avoid the "Test I/O incomplete" issue
 	// on Windows where killing the process doesn't close inherited pipes.
 	cmd.Stdout = nil
