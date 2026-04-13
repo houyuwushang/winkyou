@@ -115,7 +115,7 @@ func (n *natTraversalImpl) NewICEAgent(cfg ICEConfig) (ICEAgent, error) {
 	if len(cfg.TURNServers) == 0 {
 		cfg.TURNServers = n.cfg.TURNServers
 	}
-	return &iceAgentImpl{cfg: cfg}, nil
+	return newICEPionAgent(cfg), nil
 }
 
 // isLocalAddress checks whether ip matches any local interface address.
@@ -140,86 +140,4 @@ func isLocalAddress(ip net.IP) bool {
 		}
 	}
 	return false
-}
-
-// iceAgentImpl has real GatherCandidates but stub Connect/SetRemoteCandidates.
-type iceAgentImpl struct {
-	cfg    ICEConfig
-	closed bool
-}
-
-func (a *iceAgentImpl) GatherCandidates(ctx context.Context) ([]Candidate, error) {
-	if a.closed {
-		return nil, fmt.Errorf("nat: agent closed")
-	}
-
-	// 1. Gather host candidates.
-	hosts, err := gatherHostCandidates()
-	if err != nil {
-		return nil, err
-	}
-
-	candidates := make([]Candidate, len(hosts))
-	copy(candidates, hosts)
-
-	// 2. Gather srflx candidates via STUN.
-	if len(a.cfg.STUNServers) > 0 {
-		srflx := gatherSrflxCandidates(ctx, a.cfg.STUNServers)
-		candidates = append(candidates, srflx...)
-	}
-
-	return candidates, nil
-}
-
-func (a *iceAgentImpl) SetRemoteCandidates(candidates []Candidate) error {
-	return ErrNotImplemented
-}
-
-func (a *iceAgentImpl) Connect(ctx context.Context) (net.Conn, *CandidatePair, error) {
-	return nil, nil, ErrNotImplemented
-}
-
-func (a *iceAgentImpl) Close() error {
-	a.closed = true
-	return nil
-}
-
-// gatherSrflxCandidates probes each STUN server and returns srflx candidates.
-// Failures are silently skipped — partial results are fine.
-func gatherSrflxCandidates(ctx context.Context, servers []string) []Candidate {
-	seen := make(map[string]bool)
-	var candidates []Candidate
-
-	for _, server := range servers {
-		probeCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
-		res, err := stunBind(probeCtx, server)
-		cancel()
-		if err != nil {
-			continue
-		}
-
-		key := res.MappedAddr.String()
-		if seen[key] {
-			continue
-		}
-		seen[key] = true
-
-		baseIP := net.IPv4zero
-		if res.LocalAddr != nil {
-			baseIP = res.LocalAddr.IP
-		}
-
-		c := Candidate{
-			Type:       CandidateTypeSrflx,
-			Address:    res.MappedAddr,
-			Priority:   srflxPriority(res.MappedAddr.IP),
-			Foundation: srflxFoundation(baseIP, server),
-		}
-		if res.LocalAddr != nil {
-			c.RelatedAddr = res.LocalAddr
-		}
-		candidates = append(candidates, c)
-	}
-
-	return candidates
 }
