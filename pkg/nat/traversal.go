@@ -1,4 +1,4 @@
-package nat
+﻿package nat
 
 import (
 	"context"
@@ -16,10 +16,10 @@ type natTraversalImpl struct {
 // DetectNATType probes STUN servers to determine the NAT type.
 //
 // Conservative detection rules:
-//   - No STUN servers or all probes fail → NATTypeUnknown + error
-//   - Mapped address matches a local routable address → NATTypeNone
-//   - Two STUN servers return different mapped IP or port → NATTypeSymmetric
-//   - Otherwise → NATTypeUnknown (we don't guess cone subtypes yet)
+//   - No STUN servers or all probes fail -> NATTypeUnknown + error
+//   - Mapped address matches a local routable address -> NATTypeNone
+//   - Two STUN servers return different mapped IP or port -> NATTypeSymmetric
+//   - Otherwise -> NATTypeUnknown (we don't guess cone subtypes yet)
 func (n *natTraversalImpl) DetectNATType(ctx context.Context) (NATType, error) {
 	if len(n.cfg.STUNServers) == 0 {
 		return NATTypeUnknown, fmt.Errorf("nat: no STUN servers configured")
@@ -64,7 +64,6 @@ func (n *natTraversalImpl) DetectNATType(ctx context.Context) (NATType, error) {
 		results = append(results, probeResult{mapped: res.MappedAddr, server: server})
 	}
 
-	// Count successes.
 	var successes []probeResult
 	for _, r := range results {
 		if r.err == nil {
@@ -77,13 +76,10 @@ func (n *natTraversalImpl) DetectNATType(ctx context.Context) (NATType, error) {
 	}
 
 	firstMapped := successes[0].mapped
-
-	// Check if mapped address matches a local routable address → no NAT.
 	if isLocalAddress(firstMapped.IP) {
 		return NATTypeNone, nil
 	}
 
-	// If we have results from 2+ servers, compare mapped addresses.
 	if len(successes) >= 2 {
 		for _, s := range successes[1:] {
 			if !s.mapped.IP.Equal(firstMapped.IP) || s.mapped.Port != firstMapped.Port {
@@ -92,12 +88,10 @@ func (n *natTraversalImpl) DetectNATType(ctx context.Context) (NATType, error) {
 		}
 	}
 
-	// Can't distinguish cone subtypes with this simple approach.
 	return NATTypeUnknown, nil
 }
 
-// NewICEAgent creates an ICE agent. The agent's GatherCandidates performs
-// real host + srflx gathering; Connect/SetRemoteCandidates remain stubs.
+// NewICEAgent creates a real pion/ice-backed ICE agent.
 func (n *natTraversalImpl) NewICEAgent(cfg ICEConfig) (ICEAgent, error) {
 	if cfg.GatherTimeout == 0 {
 		cfg.GatherTimeout = 5 * time.Second
@@ -108,14 +102,13 @@ func (n *natTraversalImpl) NewICEAgent(cfg ICEConfig) (ICEAgent, error) {
 	if cfg.ConnectTimeout == 0 {
 		cfg.ConnectTimeout = 30 * time.Second
 	}
-	// Inherit STUN/TURN servers from parent config if not set on ICEConfig.
 	if len(cfg.STUNServers) == 0 {
 		cfg.STUNServers = n.cfg.STUNServers
 	}
 	if len(cfg.TURNServers) == 0 {
 		cfg.TURNServers = n.cfg.TURNServers
 	}
-	return newICEPionAgent(cfg), nil
+	return newICEPionAgent(cfg)
 }
 
 // isLocalAddress checks whether ip matches any local interface address.

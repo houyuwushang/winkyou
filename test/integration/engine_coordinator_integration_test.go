@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -255,4 +256,11 @@ func hasPeer(peers []*client.PeerStatus, name string) bool {
 		}
 	}
 	return false
+}
+
+func TestMain(m *testing.M) {
+	_ = os.Setenv("WINKYOU_NETIF_ALLOW_MEMORY", "1")
+	_ = os.Setenv("WINKYOU_TUNNEL_ALLOW_MEMORY", "1")
+	code := m.Run()
+	os.Exit(code)
 }

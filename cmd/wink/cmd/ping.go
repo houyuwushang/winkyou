@@ -1,8 +1,11 @@
 package cmd
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"net"
+	"strconv"
 	"strings"
 	"time"
 
@@ -28,19 +31,46 @@ func newPingCmd(opts *Options) *cobra.Command {
 			if peer.VirtualIP == "" {
 				return fmt.Errorf("peer %s has no virtual ip", peer.Name)
 			}
+
+			requestID, err := newPingRequestID()
+			if err != nil {
+				return err
+			}
+
 			start := time.Now()
-			conn, err := net.DialTimeout("udp", net.JoinHostPort(peer.VirtualIP, "33434"), 1200*time.Millisecond)
+			conn, err := net.DialTimeout("udp4", net.JoinHostPort(peer.VirtualIP, strconv.Itoa(winkclient.PingPort)), 1200*time.Millisecond)
 			if err != nil {
 				return fmt.Errorf("ping %s (%s) failed: %w", peer.Name, peer.VirtualIP, err)
 			}
 			defer conn.Close()
-			if _, err := conn.Write([]byte("wink-ping")); err != nil {
+
+			payload, err := winkclient.MarshalPingRequest(winkclient.PingRequest{ID: requestID})
+			if err != nil {
+				return err
+			}
+			if err := conn.SetDeadline(time.Now().Add(2 * time.Second)); err != nil {
 				return fmt.Errorf("ping %s (%s) failed: %w", peer.Name, peer.VirtualIP, err)
 			}
+			if _, err := conn.Write(payload); err != nil {
+				return fmt.Errorf("ping %s (%s) failed: %w", peer.Name, peer.VirtualIP, err)
+			}
+
+			responseBuf := make([]byte, 2048)
+			n, err := conn.Read(responseBuf)
+			if err != nil {
+				return fmt.Errorf("ping %s (%s) timed out waiting for reply: %w", peer.Name, peer.VirtualIP, err)
+			}
+			response, err := winkclient.UnmarshalPingResponse(responseBuf[:n])
+			if err != nil {
+				return fmt.Errorf("ping %s (%s) failed to parse reply: %w", peer.Name, peer.VirtualIP, err)
+			}
+			if response.ID != requestID {
+				return fmt.Errorf("ping %s (%s) received mismatched reply id", peer.Name, peer.VirtualIP)
+			}
+
 			latency := time.Since(start)
 			cmd.Printf("PING %s (%s) via %s\n", peer.VirtualIP, peer.Name, dashIfEmpty(peer.ConnectionType))
-			cmd.Printf("probe sent: time=%s context=%s endpoint=%s\n", latency.Round(time.Millisecond), dashIfEmpty(peer.ConnectionType), dashIfEmpty(peer.Endpoint))
-			cmd.Println("note: current ping is UDP send-only probe; it does not wait for remote echo")
+			cmd.Printf("reply: time=%s context=%s endpoint=%s\n", latency.Round(time.Millisecond), dashIfEmpty(peer.ConnectionType), dashIfEmpty(peer.Endpoint))
 			return nil
 		},
 	}
@@ -54,4 +84,12 @@ func findRuntimePeer(peers []winkclient.RuntimePeerStatus, target string) (*wink
 		}
 	}
 	return nil, fmt.Errorf("peer %q not found", target)
+}
+
+func newPingRequestID() (string, error) {
+	buf := make([]byte, 16)
+	if _, err := rand.Read(buf); err != nil {
+		return "", fmt.Errorf("generate ping id: %w", err)
+	}
+	return hex.EncodeToString(buf), nil
 }

@@ -1,20 +1,23 @@
 package nat
 
 import (
+	"bytes"
 	"context"
 	"net"
 	"testing"
 	"time"
+
+	pionice "github.com/pion/ice/v2"
 )
 
 func TestICEAgentsConnectAndSelectedPair(t *testing.T) {
 	nt, _ := NewNATTraversal(nil)
 
-	a1, err := nt.NewICEAgent(ICEConfig{ConnectTimeout: 3 * time.Second})
+	a1, err := nt.NewICEAgent(ICEConfig{ConnectTimeout: 3 * time.Second, Controlling: true})
 	if err != nil {
 		t.Fatalf("NewICEAgent(a1) error: %v", err)
 	}
-	a2, err := nt.NewICEAgent(ICEConfig{ConnectTimeout: 3 * time.Second})
+	a2, err := nt.NewICEAgent(ICEConfig{ConnectTimeout: 3 * time.Second, Controlling: false})
 	if err != nil {
 		t.Fatalf("NewICEAgent(a2) error: %v", err)
 	}
@@ -38,6 +41,20 @@ func TestICEAgentsConnectAndSelectedPair(t *testing.T) {
 	}
 	if err := a2.SetRemoteCandidates(c1); err != nil {
 		t.Fatalf("a2 SetRemoteCandidates() error: %v", err)
+	}
+	a1Ufrag, a1Pwd, err := a1.GetLocalCredentials()
+	if err != nil {
+		t.Fatalf("a1 GetLocalCredentials() error: %v", err)
+	}
+	a2Ufrag, a2Pwd, err := a2.GetLocalCredentials()
+	if err != nil {
+		t.Fatalf("a2 GetLocalCredentials() error: %v", err)
+	}
+	if err := a1.SetRemoteCredentials(a2Ufrag, a2Pwd); err != nil {
+		t.Fatalf("a1 SetRemoteCredentials() error: %v", err)
+	}
+	if err := a2.SetRemoteCredentials(a1Ufrag, a1Pwd); err != nil {
+		t.Fatalf("a2 SetRemoteCredentials() error: %v", err)
 	}
 
 	type result struct {
@@ -71,6 +88,46 @@ func TestICEAgentsConnectAndSelectedPair(t *testing.T) {
 		t.Fatal("selected pair remote should not be nil")
 	}
 
+	if err := r1.conn.SetDeadline(time.Now().Add(2 * time.Second)); err != nil {
+		t.Fatalf("a1 SetDeadline() error: %v", err)
+	}
+	if err := r2.conn.SetDeadline(time.Now().Add(2 * time.Second)); err != nil {
+		t.Fatalf("a2 SetDeadline() error: %v", err)
+	}
+	wantAB := []byte("wink-a-to-b")
+	if _, err := r1.conn.Write(wantAB); err != nil {
+		t.Fatalf("a1 Write() error: %v", err)
+	}
+	gotAB := make([]byte, len(wantAB))
+	if _, err := r2.conn.Read(gotAB); err != nil {
+		t.Fatalf("a2 Read() error: %v", err)
+	}
+	if !bytes.Equal(gotAB, wantAB) {
+		t.Fatalf("a2 payload = %q, want %q", gotAB, wantAB)
+	}
+
+	wantBA := []byte("wink-b-to-a")
+	if _, err := r2.conn.Write(wantBA); err != nil {
+		t.Fatalf("a2 Write() error: %v", err)
+	}
+	gotBA := make([]byte, len(wantBA))
+	if _, err := r1.conn.Read(gotBA); err != nil {
+		t.Fatalf("a1 Read() error: %v", err)
+	}
+	if !bytes.Equal(gotBA, wantBA) {
+		t.Fatalf("a1 payload = %q, want %q", gotBA, wantBA)
+	}
+
+	connAgain, pairAgain, err := a1.Connect(ctx)
+	if err != nil {
+		t.Fatalf("a1 Connect() second call error: %v", err)
+	}
+	if connAgain != r1.conn {
+		t.Fatal("a1 Connect() should reuse selected transport")
+	}
+	if pairAgain == nil || pairAgain.Local == nil || pairAgain.Remote == nil {
+		t.Fatal("a1 second selected pair should be preserved")
+	}
 }
 
 func TestICEPayloadRoundTripAndRelayCandidates(t *testing.T) {
@@ -109,8 +166,8 @@ func TestICEPayloadRoundTripAndRelayCandidates(t *testing.T) {
 		t.Fatalf("candidate type = %v, want host", candDecoded.Candidate.Type)
 	}
 
-	relays := gatherRelayCandidates([]TURNServer{{URL: "turn:127.0.0.1:3478", Username: "u", Password: "p"}})
-	if len(relays) != 1 || relays[0].Type != CandidateTypeRelay {
-		t.Fatalf("relay candidates = %+v", relays)
+	relayTypes := candidateTypesForConfig(ICEConfig{relayOnly: true})
+	if len(relayTypes) != 1 || relayTypes[0] != pionice.CandidateTypeRelay {
+		t.Fatalf("relay candidate types = %+v", relayTypes)
 	}
 }

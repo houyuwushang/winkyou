@@ -13,12 +13,16 @@ import (
 )
 
 type peerSession struct {
-	nodeID    string
-	sessionID string
-	initiator bool
-	agent     nat.ICEAgent
-	connected bool
-	connectMu sync.Mutex
+	nodeID         string
+	sessionID      string
+	initiator      bool
+	agent          nat.ICEAgent
+	transport      nat.SelectedTransport
+	selectedPair   *nat.CandidatePair
+	tunnelAttached bool
+	connected      bool
+	connecting     bool
+	connectMu      sync.Mutex
 }
 
 func (e *engine) ensurePeerSession(nodeID string) (*peerSession, error) {
@@ -30,12 +34,18 @@ func (e *engine) ensurePeerSession(nodeID string) (*peerSession, error) {
 	if s, ok := e.peerMgr.sessions[nodeID]; ok {
 		return s, nil
 	}
-	agent, err := e.newICEAgent(context.Background())
+	localID := e.status.NodeID
+	initiator := localID < nodeID
+	agent, err := e.newICEAgent(context.Background(), initiator)
 	if err != nil {
 		return nil, err
 	}
-	localID := e.status.NodeID
-	s := &peerSession{nodeID: nodeID, sessionID: localID + "->" + nodeID, initiator: localID < nodeID, agent: agent}
+	s := &peerSession{
+		nodeID:    nodeID,
+		sessionID: localID + "->" + nodeID,
+		initiator: initiator,
+		agent:     agent,
+	}
 	e.peerMgr.sessions[nodeID] = s
 	return s, nil
 }
@@ -59,9 +69,13 @@ func (e *engine) sendOffer(nodeID string, s *peerSession) {
 	if err != nil {
 		return
 	}
+	ufrag, pwd, err := s.agent.GetLocalCredentials()
+	if err != nil {
+		return
+	}
 	payload, err := marshalOfferPayload(peerOfferPayload{
 		SessionID: s.sessionID,
-		ICE:       nat.ICESessionDescriptionPayload{Ufrag: s.sessionID, Pwd: s.sessionID + "-pwd", Role: "controlling", Candidates: cands},
+		ICE:       nat.ICESessionDescriptionPayload{Ufrag: ufrag, Pwd: pwd, Role: iceRole(s.initiator), Candidates: cands},
 		SentAt:    time.Now(),
 	})
 	if err != nil {
@@ -81,7 +95,12 @@ func (e *engine) handleOffer(signal *coordclient.SignalNotification) {
 	if err != nil {
 		return
 	}
-	_ = s.agent.SetRemoteCandidates(offer.ICE.Candidates)
+	if err := s.agent.SetRemoteCredentials(offer.ICE.Ufrag, offer.ICE.Pwd); err != nil {
+		return
+	}
+	if err := s.agent.SetRemoteCandidates(offer.ICE.Candidates); err != nil {
+		return
+	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
@@ -89,7 +108,15 @@ func (e *engine) handleOffer(signal *coordclient.SignalNotification) {
 	if err != nil {
 		return
 	}
-	answerPayload, err := marshalAnswerPayload(peerAnswerPayload{SessionID: s.sessionID, ICE: nat.ICESessionDescriptionPayload{Ufrag: s.sessionID, Pwd: s.sessionID + "-pwd", Role: "controlled", Candidates: locals}, SentAt: time.Now()})
+	ufrag, pwd, err := s.agent.GetLocalCredentials()
+	if err != nil {
+		return
+	}
+	answerPayload, err := marshalAnswerPayload(peerAnswerPayload{
+		SessionID: s.sessionID,
+		ICE:       nat.ICESessionDescriptionPayload{Ufrag: ufrag, Pwd: pwd, Role: iceRole(s.initiator), Candidates: locals},
+		SentAt:    time.Now(),
+	})
 	if err != nil {
 		return
 	}
@@ -112,7 +139,12 @@ func (e *engine) handleAnswer(signal *coordclient.SignalNotification) {
 	if ans.SessionID == "" {
 		return
 	}
-	_ = s.agent.SetRemoteCandidates(ans.ICE.Candidates)
+	if err := s.agent.SetRemoteCredentials(ans.ICE.Ufrag, ans.ICE.Pwd); err != nil {
+		return
+	}
+	if err := s.agent.SetRemoteCandidates(ans.ICE.Candidates); err != nil {
+		return
+	}
 	e.tryConnectPeer(signal.FromNode, s)
 }
 
@@ -125,37 +157,53 @@ func (e *engine) handleCandidate(signal *coordclient.SignalNotification) {
 	if err != nil {
 		return
 	}
-	_ = s.agent.SetRemoteCandidates([]nat.Candidate{cand.ICE.Candidate})
+	if err := s.agent.SetRemoteCandidates([]nat.Candidate{cand.ICE.Candidate}); err != nil {
+		return
+	}
 	e.tryConnectPeer(signal.FromNode, s)
 }
 
 func (e *engine) tryConnectPeer(nodeID string, s *peerSession) {
 	s.connectMu.Lock()
-	if s.connected {
+	if s.connected || s.tunnelAttached || s.connecting {
 		s.connectMu.Unlock()
 		return
 	}
+	s.connecting = true
 	s.connectMu.Unlock()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	conn, pair, err := s.agent.Connect(ctx)
+	transport, pair, err := s.agent.Connect(ctx)
 	if err != nil {
-		return
-	}
-	_ = conn.Close()
-	if e.tun == nil {
-		return
-	}
-	if err := e.attachTunnelPeer(nodeID, pair); err != nil {
+		s.connectMu.Lock()
+		s.connecting = false
+		s.connectMu.Unlock()
 		return
 	}
 	s.connectMu.Lock()
-	s.connected = true
+	s.transport = transport
+	s.selectedPair = pair
+	s.connectMu.Unlock()
+	if e.tun == nil {
+		s.connectMu.Lock()
+		s.connecting = false
+		s.connectMu.Unlock()
+		return
+	}
+	if err := e.attachTunnelPeer(nodeID, transport, pair); err != nil {
+		s.connectMu.Lock()
+		s.connecting = false
+		s.connectMu.Unlock()
+		return
+	}
+	s.connectMu.Lock()
+	s.tunnelAttached = true
+	s.connecting = false
 	s.connectMu.Unlock()
 }
 
-func (e *engine) attachTunnelPeer(nodeID string, pair *nat.CandidatePair) error {
+func (e *engine) attachTunnelPeer(nodeID string, transport nat.SelectedTransport, pair *nat.CandidatePair) error {
 	e.mu.RLock()
 	peer, ok := e.peers[nodeID]
 	e.mu.RUnlock()
@@ -170,7 +218,12 @@ func (e *engine) attachTunnelPeer(nodeID string, pair *nat.CandidatePair) error 
 	if err != nil {
 		return err
 	}
-	pcfg := &tunnel.PeerConfig{PublicKey: pub, AllowedIPs: []net.IPNet{*ipnet}}
+	pcfg := &tunnel.PeerConfig{
+		PublicKey:  pub,
+		AllowedIPs: []net.IPNet{*ipnet},
+		Transport:  transport,
+		Keepalive:  10 * time.Second,
+	}
 	if pair != nil && pair.Remote != nil {
 		pcfg.Endpoint = pair.Remote.Address
 	}
@@ -180,14 +233,10 @@ func (e *engine) attachTunnelPeer(nodeID string, pair *nat.CandidatePair) error 
 
 	e.mu.Lock()
 	if p := e.peers[nodeID]; p != nil {
-		p.State = PeerStateConnected
+		p.State = PeerStateConnecting
 		if pair != nil && pair.Remote != nil {
 			p.Endpoint = cloneUDPAddr(pair.Remote.Address)
-			if pair.Local != nil && (pair.Local.Type == nat.CandidateTypeRelay || pair.Remote.Type == nat.CandidateTypeRelay) {
-				p.ConnectionType = ConnectionTypeRelay
-			} else {
-				p.ConnectionType = ConnectionTypeDirect
-			}
+			p.ConnectionType = connectionTypeFromCandidatePair(pair)
 		}
 		p.LastSeen = time.Now()
 	}
@@ -195,4 +244,19 @@ func (e *engine) attachTunnelPeer(nodeID string, pair *nat.CandidatePair) error 
 	e.mu.Unlock()
 	e.persistState()
 	return nil
+}
+
+func iceRole(controlling bool) string {
+	if controlling {
+		return "controlling"
+	}
+	return "controlled"
+}
+
+func connectionTypeFromCandidatePair(pair *nat.CandidatePair) ConnectionType {
+	if pair != nil && pair.Local != nil && pair.Remote != nil &&
+		(pair.Local.Type == nat.CandidateTypeRelay || pair.Remote.Type == nat.CandidateTypeRelay) {
+		return ConnectionTypeRelay
+	}
+	return ConnectionTypeDirect
 }

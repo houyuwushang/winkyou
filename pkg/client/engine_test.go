@@ -3,6 +3,7 @@ package client
 import (
 	"context"
 	"net"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -136,4 +137,11 @@ func startTestCoordinator(t *testing.T) (*grpc.Server, net.Listener) {
 	}()
 
 	return grpcServer, listener
+}
+
+func TestMain(m *testing.M) {
+	_ = os.Setenv("WINKYOU_NETIF_ALLOW_MEMORY", "1")
+	_ = os.Setenv("WINKYOU_TUNNEL_ALLOW_MEMORY", "1")
+	code := m.Run()
+	os.Exit(code)
 }

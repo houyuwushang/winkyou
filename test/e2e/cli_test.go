@@ -188,7 +188,7 @@ func runWinkBinWithEnv(t *testing.T, timeout time.Duration, extraEnv []string, a
 	defer cancel()
 	cmd := exec.CommandContext(ctx, bin, args...)
 	cmd.Dir = moduleRoot(t)
-	cmd.Env = append(os.Environ(), "WINKYOU_NETIF_ALLOW_MEMORY=1", "WINKYOU_TUNNEL_ALLOW_MEMORY=1")
+	cmd.Env = append(os.Environ(), extraEnv...)
 	out, err := cmd.CombinedOutput()
 	return string(out), err
 }
@@ -205,7 +205,7 @@ func startWinkUpWithEnv(t *testing.T, configPath string, extraEnv []string) *exe
 	bin := buildWink(t)
 	cmd := exec.Command(bin, "up", "--config", configPath)
 	cmd.Dir = moduleRoot(t)
-	cmd.Env = append(os.Environ(), "WINKYOU_NETIF_ALLOW_MEMORY=1", "WINKYOU_TUNNEL_ALLOW_MEMORY=1")
+	cmd.Env = append(os.Environ(), extraEnv...)
 	// Pipe output to devnull to avoid the "Test I/O incomplete" issue
 	// on Windows where killing the process doesn't close inherited pipes.
 	cmd.Stdout = nil

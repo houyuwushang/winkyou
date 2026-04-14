@@ -1,12 +1,14 @@
 package tunnel
 
 import (
-	"context"
+	"encoding/hex"
 	"net"
 	"os"
 	"strings"
-	"sync"
 	"testing"
+	"time"
+
+	wgconn "golang.zx2c4.com/wireguard/conn"
 )
 
 type fakeNetif struct {
@@ -38,97 +40,130 @@ func TestNewForceWGGo(t *testing.T) {
 	}
 }
 
-func TestWGGoStartAndPeerLifecycle(t *testing.T) {
-	w := newWGGoTunnel(Config{Interface: &fakeNetif{name: "wink0", mtu: 1280}, PrivateKey: mustPrivateKey(t), ListenPort: 0})
+func TestPeerTransportBindSendAndReceive(t *testing.T) {
+	bind := newPeerTransportBind()
+	defer bind.Close()
 
-	var calls []string
-	w.runCmd = func(ctx context.Context, name string, args ...string) ([]byte, error) {
-		calls = append(calls, name+" "+strings.Join(args, " "))
-		if len(args) >= 3 && args[0] == "show" && args[2] == "dump" {
-			return []byte("priv\tpub\t0\toff\n"), nil
+	publicKey := makeTestKey(42)
+	left, right := net.Pipe()
+	defer left.Close()
+	defer right.Close()
+
+	endpointID, err := bind.AttachTransport(publicKey, left)
+	if err != nil {
+		t.Fatalf("AttachTransport() error: %v", err)
+	}
+	defer bind.DetachTransport(publicKey)
+
+	bind.UpdateTransportEndpoint(publicKey, &net.UDPAddr{IP: net.IPv4(5, 6, 7, 8), Port: 51820})
+	if got := bind.TransportRemoteAddr(publicKey); got == nil || !got.IP.Equal(net.IPv4(5, 6, 7, 8)) || got.Port != 51820 {
+		t.Fatalf("TransportRemoteAddr() = %+v, want 5.6.7.8:51820", got)
+	}
+	if got := bind.ResolveEndpoint(endpointID); got == nil || !got.IP.Equal(net.IPv4(5, 6, 7, 8)) || got.Port != 51820 {
+		t.Fatalf("ResolveEndpoint(%q) = %+v, want 5.6.7.8:51820", endpointID, got)
+	}
+
+	endpoint, err := bind.ParseEndpoint(endpointID)
+	if err != nil {
+		t.Fatalf("ParseEndpoint() error: %v", err)
+	}
+
+	wantSend := []byte("wink-send")
+	sendDone := make(chan []byte, 1)
+	go func() {
+		buf := make([]byte, 64)
+		n, _ := right.Read(buf)
+		sendDone <- append([]byte(nil), buf[:n]...)
+	}()
+	if err := bind.Send([][]byte{wantSend}, endpoint); err != nil {
+		t.Fatalf("Send() error: %v", err)
+	}
+	select {
+	case got := <-sendDone:
+		if string(got) != string(wantSend) {
+			t.Fatalf("transport payload = %q, want %q", got, wantSend)
 		}
-		return nil, nil
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for transport send")
 	}
 
-	if err := w.Start(); err != nil {
-		t.Fatalf("Start() error: %v", err)
-	}
-	if w.listenPort == 0 {
-		t.Fatal("listenPort should be auto-assigned when config listen_port is 0")
-	}
+	wantRecv := []byte("wink-recv")
+	recvDone := make(chan error, 1)
+	go func() {
+		_, err := right.Write(wantRecv)
+		recvDone <- err
+	}()
+	wireBufs := [][]byte{make([]byte, 64)}
+	wireSizes := make([]int, 1)
+	wireEndpointsBuf := make([]wgconn.Endpoint, 1)
 
-	pk := makeTestKey(42)
-	_, ipn, _ := net.ParseCIDR("10.10.0.0/24")
-	peer := &PeerConfig{PublicKey: pk, AllowedIPs: []net.IPNet{*ipn}, Endpoint: &net.UDPAddr{IP: net.IPv4(1, 2, 3, 4), Port: 51820}}
-	if err := w.AddPeer(peer); err != nil {
-		t.Fatalf("AddPeer() error: %v", err)
+	n, err := bind.receiveFromTransports(wireBufs, wireSizes, wireEndpointsBuf)
+	if err != nil {
+		t.Fatalf("receiveFromTransports() error: %v", err)
 	}
-	if err := w.UpdatePeerEndpoint(pk, &net.UDPAddr{IP: net.IPv4(5, 6, 7, 8), Port: 51821}); err != nil {
-		t.Fatalf("UpdatePeerEndpoint() error: %v", err)
+	if n != 1 {
+		t.Fatalf("receiveFromTransports() = %d packets, want 1", n)
 	}
-	if err := w.RemovePeer(pk); err != nil {
-		t.Fatalf("RemovePeer() error: %v", err)
+	if got := string(wireBufs[0][:wireSizes[0]]); got != string(wantRecv) {
+		t.Fatalf("received payload = %q, want %q", got, wantRecv)
 	}
-
-	if len(calls) < 4 {
-		t.Fatalf("wg commands = %d, want at least 4", len(calls))
+	if wireEndpointsBuf[0] == nil || wireEndpointsBuf[0].DstToString() != endpointID {
+		t.Fatalf("received endpoint = %#v, want %q", wireEndpointsBuf[0], endpointID)
 	}
-
-	e1 := <-w.Events()
-	e2 := <-w.Events()
-	e3 := <-w.Events()
-	if e1.Type != EventPeerAdded || e2.Type != EventPeerEndpointChanged || e3.Type != EventPeerRemoved {
-		t.Fatalf("unexpected events: %v, %v, %v", e1.Type, e2.Type, e3.Type)
+	if err := <-recvDone; err != nil {
+		t.Fatalf("transport write error: %v", err)
 	}
 }
 
-func TestWGGoGetPeersDeepCopyAndStats(t *testing.T) {
-	w := newWGGoTunnel(Config{Interface: &fakeNetif{name: "wink0", mtu: 1280}, PrivateKey: mustPrivateKey(t), ListenPort: 51820})
+func TestParseDeviceSnapshotTransportEndpointAndStats(t *testing.T) {
+	bind := newPeerTransportBind()
+	defer bind.Close()
 
-	pk := makeTestKey(11)
-	w.peers[pk] = &PeerStatus{PublicKey: pk, Endpoint: &net.UDPAddr{IP: net.IPv4(9, 9, 9, 9), Port: 1000}}
-
-	dump := "priv\tpub\t51820\toff\n" + pk.String() + "\t(none)\t9.9.9.9:1000\t10.20.0.0/16\t1710000000\t123\t456\t25\n"
-	w.runCmd = func(ctx context.Context, name string, args ...string) ([]byte, error) {
-		if len(args) >= 3 && args[0] == "show" && args[2] == "dump" {
-			return []byte(dump), nil
-		}
-		return nil, nil
+	publicKey := makeTestKey(11)
+	bind.transports[publicKey] = &boundTransport{
+		stopCh: make(chan struct{}),
+		endpoint: &transportEndpoint{
+			key:        publicKey,
+			id:         transportEndpointID(publicKey),
+			remoteAddr: &net.UDPAddr{IP: net.IPv4(9, 9, 9, 9), Port: 1000},
+		},
 	}
 
-	peers := w.GetPeers()
-	if len(peers) != 1 {
-		t.Fatalf("GetPeers len = %d, want 1", len(peers))
-	}
-	peers[0].Endpoint.IP[0] = 1
-	again := w.GetPeers()
-	if again[0].Endpoint.IP[0] == 1 {
-		t.Fatal("GetPeers returned internal reference, want snapshot")
-	}
+	dump := strings.Join([]string{
+		"listen_port=51820",
+		"public_key=" + hex.EncodeToString(publicKey[:]),
+		"endpoint=" + transportEndpointID(publicKey),
+		"allowed_ip=10.20.0.0/16",
+		"last_handshake_time_sec=1710000000",
+		"last_handshake_time_nsec=25",
+		"tx_bytes=456",
+		"rx_bytes=123",
+		"",
+	}, "\n")
 
-	stats := w.GetStats()
-	if stats.RxBytes != 123 || stats.TxBytes != 456 || stats.Peers != 1 {
-		t.Fatalf("stats = %+v, want rx=123 tx=456 peers=1", stats)
+	snapshot, err := parseDeviceSnapshot(dump, bind)
+	if err != nil {
+		t.Fatalf("parseDeviceSnapshot() error: %v", err)
 	}
-}
-
-func TestWGGoPeerOpsThreadSafe(t *testing.T) {
-	w := newWGGoTunnel(Config{Interface: &fakeNetif{name: "wink0", mtu: 1280}, PrivateKey: mustPrivateKey(t), ListenPort: 51820})
-	w.runCmd = func(ctx context.Context, name string, args ...string) ([]byte, error) { return nil, nil }
-	_ = w.Start()
-
-	var wg sync.WaitGroup
-	for i := 0; i < 16; i++ {
-		wg.Add(1)
-		go func(i int) {
-			defer wg.Done()
-			pk := makeTestKey(byte(i + 1))
-			_ = w.AddPeer(&PeerConfig{PublicKey: pk})
-			_ = w.UpdatePeerEndpoint(pk, &net.UDPAddr{IP: net.IPv4(127, 0, 0, byte(i+1)), Port: 5000 + i})
-			_ = w.RemovePeer(pk)
-		}(i)
+	if snapshot.ListenPort != 51820 {
+		t.Fatalf("ListenPort = %d, want 51820", snapshot.ListenPort)
 	}
-	wg.Wait()
+	peer := snapshot.Peers[publicKey]
+	if peer == nil {
+		t.Fatal("snapshot peer missing")
+	}
+	if peer.Endpoint == nil || !peer.Endpoint.IP.Equal(net.IPv4(9, 9, 9, 9)) || peer.Endpoint.Port != 1000 {
+		t.Fatalf("Endpoint = %+v, want 9.9.9.9:1000", peer.Endpoint)
+	}
+	if len(peer.AllowedIPs) != 1 || peer.AllowedIPs[0].String() != "10.20.0.0/16" {
+		t.Fatalf("AllowedIPs = %+v, want 10.20.0.0/16", peer.AllowedIPs)
+	}
+	if peer.TxBytes != 456 || peer.RxBytes != 123 {
+		t.Fatalf("stats = rx=%d tx=%d, want rx=123 tx=456", peer.RxBytes, peer.TxBytes)
+	}
+	if peer.LastHandshake.Unix() != 1710000000 || peer.LastHandshake.Nanosecond() != 25 {
+		t.Fatalf("LastHandshake = %v, want unix=1710000000 nsec=25", peer.LastHandshake)
+	}
 }
 
 func TestAllowMemoryTunnelForTestOverride(t *testing.T) {
@@ -153,7 +188,6 @@ func mustPrivateKey(t *testing.T) PrivateKey {
 }
 
 func TestMain(m *testing.M) {
-	// Keep default unit tests on memory backend.
 	_ = os.Setenv("WINKYOU_TUNNEL_ALLOW_MEMORY", "1")
 	code := m.Run()
 	os.Exit(code)

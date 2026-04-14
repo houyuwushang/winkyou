@@ -1,6 +1,4 @@
-// Package nat defines the NAT traversal and ICE abstractions for the MVP.
-// Concrete implementations (backed by pion/stun and pion/ice) will be
-// added in later milestones; this file freezes the public contract.
+﻿// Package nat defines the NAT traversal and ICE abstractions for the MVP.
 package nat
 
 import (
@@ -34,6 +32,10 @@ type ICEConfig struct {
 	ConnectTimeout time.Duration // default: 30s
 	STUNServers    []string
 	TURNServers    []TURNServer
+	Controlling    bool
+
+	// relayOnly is test-only; it forces relay-only candidate gathering.
+	relayOnly bool
 }
 
 // NATType represents the detected NAT type.
@@ -69,10 +71,10 @@ func (t NATType) String() string {
 type CandidateType int
 
 const (
-	CandidateTypeHost  CandidateType = iota // local address
-	CandidateTypeSrflx                      // STUN server-reflexive
-	CandidateTypePrflx                      // peer-reflexive
-	CandidateTypeRelay                      // TURN relay
+	CandidateTypeHost CandidateType = iota // local address
+	CandidateTypeSrflx                     // STUN server-reflexive
+	CandidateTypePrflx                     // peer-reflexive
+	CandidateTypeRelay                     // TURN relay
 )
 
 func (ct CandidateType) String() string {
@@ -117,11 +119,18 @@ const (
 	ConnectionStateClosed
 )
 
+// SelectedTransport is the long-lived transport chosen by ICE.
+type SelectedTransport interface {
+	net.Conn
+}
+
 // ICEAgent negotiates a P2P connection via ICE.
 type ICEAgent interface {
 	GatherCandidates(ctx context.Context) ([]Candidate, error)
+	GetLocalCredentials() (ufrag string, pwd string, err error)
+	SetRemoteCredentials(ufrag, pwd string) error
 	SetRemoteCandidates(candidates []Candidate) error
-	Connect(ctx context.Context) (net.Conn, *CandidatePair, error)
+	Connect(ctx context.Context) (SelectedTransport, *CandidatePair, error)
 	Close() error
 }
 

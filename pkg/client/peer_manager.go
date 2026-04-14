@@ -90,12 +90,17 @@ func (e *engine) cleanupPeer(nodeID string) {
 	e.persistState()
 }
 
-func (e *engine) newICEAgent(ctx context.Context) (nat.ICEAgent, error) {
+func (e *engine) newICEAgent(ctx context.Context, controlling bool) (nat.ICEAgent, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	if e.nat == nil {
 		return nil, ErrEngineNotStarted
 	}
-	return e.nat.NewICEAgent(nat.ICEConfig{ConnectTimeout: 5 * time.Second, STUNServers: e.cfg.NAT.STUNServers, TURNServers: toNATTURNServers(e.cfg.NAT.TURNServers)})
+	return e.nat.NewICEAgent(nat.ICEConfig{
+		ConnectTimeout: 5 * time.Second,
+		STUNServers:    e.cfg.NAT.STUNServers,
+		TURNServers:    toNATTURNServers(e.cfg.NAT.TURNServers),
+		Controlling:    controlling,
+	})
 }

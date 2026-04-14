@@ -48,6 +48,7 @@ type engine struct {
 	tun        tunnel.Tunnel
 	nat        nat.NATTraversal
 	coord      coordclient.CoordinatorClient
+	pingConn   *net.UDPConn
 
 	runCtx    context.Context
 	runCancel context.CancelFunc
@@ -212,13 +213,19 @@ func (e *engine) Start(ctx context.Context) (err error) {
 	e.status.StartedAt = time.Now()
 	e.mu.Unlock()
 
-	if err := e.refreshPeers(ctx); err != nil {
-		e.log.Warn("initial peer refresh failed", logger.Error(err))
-	}
-
 	runCtx, runCancel := context.WithCancel(context.Background())
 	e.runCtx = runCtx
 	e.runCancel = runCancel
+	e.startTunnelEventLoop()
+	if strings.EqualFold(e.netif.Type(), "tun") {
+		if err := e.startPingResponder(virtualIP); err != nil {
+			return err
+		}
+	}
+
+	if err := e.refreshPeers(ctx); err != nil {
+		e.log.Warn("initial peer refresh failed", logger.Error(err))
+	}
 
 	if err := e.coord.StartHeartbeat(runCtx, heartbeatInterval(e.cfg)); err != nil {
 		return err
@@ -245,6 +252,9 @@ func (e *engine) Stop() error {
 	}
 	if e.coord != nil {
 		e.coord.StopHeartbeat()
+	}
+	if e.pingConn != nil {
+		_ = e.pingConn.Close()
 	}
 
 	e.wg.Wait()
@@ -330,6 +340,9 @@ func (e *engine) refreshPeers(ctx context.Context) error {
 			continue
 		}
 		e.upsertPeer(peer, PeerEventUpsert)
+		if peer.Online {
+			e.startPeerConnect(peer.NodeID)
+		}
 	}
 	return nil
 }
@@ -340,6 +353,7 @@ func (e *engine) upsertPeer(peer *coordclient.PeerInfo, event PeerEvent) {
 	current, ok := e.peers[updated.NodeID]
 	if ok {
 		updated.State = current.State
+		updated.ConnectionType = current.ConnectionType
 		if !peer.Online {
 			updated.State = PeerStateDisconnected
 		}
@@ -442,6 +456,9 @@ func (e *engine) startStateLoop() {
 }
 
 func (e *engine) cleanupResources() {
+	if e.runCancel != nil {
+		e.runCancel()
+	}
 	if e.tun != nil {
 		_ = e.tun.Stop()
 		e.tun = nil
@@ -449,6 +466,10 @@ func (e *engine) cleanupResources() {
 	if e.coord != nil {
 		_ = e.coord.Close()
 		e.coord = nil
+	}
+	if e.pingConn != nil {
+		_ = e.pingConn.Close()
+		e.pingConn = nil
 	}
 	if e.netif != nil {
 		_ = e.netif.Close()

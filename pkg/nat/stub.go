@@ -1,9 +1,6 @@
 package nat
 
-import (
-	"context"
-	"net"
-)
+import "context"
 
 // stubICEAgent is a skeleton ICEAgent implementation that returns
 // ErrNotImplemented for all methods. Used by tests that need a
@@ -17,11 +14,19 @@ func (s *stubICEAgent) GatherCandidates(ctx context.Context) ([]Candidate, error
 	return nil, ErrNotImplemented
 }
 
+func (s *stubICEAgent) GetLocalCredentials() (string, string, error) {
+	return "", "", ErrNotImplemented
+}
+
+func (s *stubICEAgent) SetRemoteCredentials(ufrag, pwd string) error {
+	return ErrNotImplemented
+}
+
 func (s *stubICEAgent) SetRemoteCandidates(candidates []Candidate) error {
 	return ErrNotImplemented
 }
 
-func (s *stubICEAgent) Connect(ctx context.Context) (net.Conn, *CandidatePair, error) {
+func (s *stubICEAgent) Connect(ctx context.Context) (SelectedTransport, *CandidatePair, error) {
 	return nil, nil, ErrNotImplemented
 }
 

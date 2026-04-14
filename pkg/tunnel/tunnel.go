@@ -28,6 +28,7 @@ type PeerConfig struct {
 	PresharedKey *PresharedKey // optional
 	AllowedIPs   []net.IPNet
 	Endpoint     *net.UDPAddr  // optional; set if already known
+	Transport    net.Conn      // optional; long-lived transport selected by ICE/TURN
 	Keepalive    time.Duration // 0 = disabled
 }
 

@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"bytes"
+	"net"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -11,6 +12,31 @@ import (
 )
 
 func TestPingCommandWithRuntimePeer(t *testing.T) {
+	server, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: winkclient.PingPort})
+	if err != nil {
+		t.Fatalf("ListenUDP() error: %v", err)
+	}
+	defer server.Close()
+
+	go func() {
+		buffer := make([]byte, 2048)
+		for {
+			n, addr, err := server.ReadFromUDP(buffer)
+			if err != nil {
+				return
+			}
+			request, err := winkclient.UnmarshalPingRequest(buffer[:n])
+			if err != nil {
+				continue
+			}
+			response, err := winkclient.MarshalPingResponse(winkclient.PingResponse{ID: request.ID})
+			if err != nil {
+				continue
+			}
+			_, _ = server.WriteToUDP(response, addr)
+		}
+	}()
+
 	tmpDir := t.TempDir()
 	configPath := filepath.Join(tmpDir, "config.yaml")
 	state := &winkclient.RuntimeState{
@@ -43,6 +69,9 @@ func TestPingCommandWithRuntimePeer(t *testing.T) {
 	out := buf.String()
 	if !strings.Contains(out, "PING 127.0.0.1") {
 		t.Fatalf("unexpected output: %s", out)
+	}
+	if !strings.Contains(out, "reply: time=") {
+		t.Fatalf("missing reply line: %s", out)
 	}
 	if !strings.Contains(out, "context=direct") {
 		t.Fatalf("missing connection context: %s", out)
