@@ -40,6 +40,11 @@ func New(cfg Config) (*Client, error) {
 }
 
 func (c *Client) Allocate(ctx context.Context) (*net.UDPAddr, error) {
+	// This helper only probes TURN allocation reachability and returns the
+	// relayed address observed during that short-lived probe. The allocation is
+	// closed before Allocate returns, so callers must not treat the returned
+	// address as a reusable data-plane transport. The runtime data plane uses
+	// TURN indirectly through pion/ice, not through this helper.
 	host, port, ok := parseTURNHostPort(c.cfg.ServerURL)
 	if !ok {
 		return nil, fmt.Errorf("relay client: invalid turn url %q", c.cfg.ServerURL)

@@ -57,6 +57,24 @@ func (c *Config) Validate() error {
 			return fmt.Errorf("nat.stun_servers[%d] must not be empty", i)
 		}
 	}
+	if c.NAT.GatherTimeout <= 0 {
+		return errors.New("nat.gather_timeout must be greater than zero")
+	}
+	if c.NAT.ConnectTimeout <= 0 {
+		return errors.New("nat.connect_timeout must be greater than zero")
+	}
+	if c.NAT.CheckTimeout <= 0 {
+		return errors.New("nat.check_timeout must be greater than zero")
+	}
+	if c.NAT.RetryInterval <= 0 {
+		return errors.New("nat.retry_interval must be greater than zero")
+	}
+	if c.NAT.RetryMaxInterval <= 0 {
+		return errors.New("nat.retry_max_interval must be greater than zero")
+	}
+	if c.NAT.RetryMaxInterval < c.NAT.RetryInterval {
+		return errors.New("nat.retry_max_interval must be greater than or equal to nat.retry_interval")
+	}
 	for i, server := range c.NAT.TURNServers {
 		if strings.TrimSpace(server.URL) == "" {
 			return fmt.Errorf("nat.turn_servers[%d].url must not be empty", i)
@@ -72,4 +90,3 @@ func requireOneOf(field, value string, allowed map[string]struct{}) error {
 	}
 	return nil
 }
-

@@ -1,0 +1,33 @@
+node:
+  name: linux-peer
+
+log:
+  level: info
+  format: text
+  output: stderr
+
+coordinator:
+  url: grpc://<HOST>:50051
+  timeout: 10s
+  auth_key: wink-demo-key
+
+netif:
+  backend: tun
+  mtu: 1280
+
+wireguard:
+  private_key: KPUHnSJdnFC/lh+BrKieuLOAIRXUQ2tDDgirnGB7Wns=
+  listen_port: 0
+
+nat:
+  gather_timeout: 10s
+  connect_timeout: 25s
+  check_timeout: 12s
+  retry_interval: 2s
+  retry_max_interval: 10s
+  stun_servers:
+    - stun:stun.cloudflare.com:3478
+  turn_servers:
+    - url: turn:<HOST>:3478?transport=udp
+      username: winkdemo
+      password: winkdemo-pass

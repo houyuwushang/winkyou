@@ -76,7 +76,7 @@ func (e *engine) cleanupPeer(nodeID string) {
 	e.updateStatusCountersLocked()
 	e.mu.Unlock()
 	if s != nil {
-		_ = s.agent.Close()
+		closePeerSession(s)
 	}
 
 	e.mu.RLock()
@@ -98,7 +98,9 @@ func (e *engine) newICEAgent(ctx context.Context, controlling bool) (nat.ICEAgen
 		return nil, ErrEngineNotStarted
 	}
 	return e.nat.NewICEAgent(nat.ICEConfig{
-		ConnectTimeout: 5 * time.Second,
+		GatherTimeout:  e.iceGatherTimeout(),
+		CheckTimeout:   e.iceCheckTimeout(),
+		ConnectTimeout: e.iceConnectTimeout(),
 		STUNServers:    e.cfg.NAT.STUNServers,
 		TURNServers:    toNATTURNServers(e.cfg.NAT.TURNServers),
 		Controlling:    controlling,

@@ -477,9 +477,7 @@ func (e *engine) cleanupResources() {
 	}
 	if e.peerMgr != nil {
 		for _, s := range e.peerMgr.sessions {
-			if s != nil && s.agent != nil {
-				_ = s.agent.Close()
-			}
+			closePeerSession(s)
 		}
 		e.peerMgr.sessions = map[string]*peerSession{}
 	}

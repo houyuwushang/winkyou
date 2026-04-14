@@ -52,10 +52,7 @@ func newAuto(cfg Config) (NetworkInterface, error) {
 		return newMemoryInterface(Config{Backend: "userspace", MTU: cfg.MTU}), nil
 	}
 
-	candidates := []string{"userspace", "proxy"}
-	if supportsTUN(runtime.GOOS) {
-		candidates = append([]string{"tun"}, candidates...)
-	}
+	candidates := autoCandidates(runtime.GOOS)
 
 	var errs []string
 	for _, backend := range candidates {
@@ -68,7 +65,23 @@ func newAuto(cfg Config) (NetworkInterface, error) {
 		errs = append(errs, fmt.Sprintf("%s: %v", backend, err))
 	}
 
+	if runtime.GOOS == "windows" {
+		return nil, fmt.Errorf("netif: auto backend selection failed: %s; Windows currently supports only backend=tun with Wintun. userspace/proxy/no-admin mode is TODO", strings.Join(errs, "; "))
+	}
+
 	return nil, fmt.Errorf("netif: auto backend selection failed: %s", strings.Join(errs, "; "))
+}
+
+func autoCandidates(goos string) []string {
+	if goos == "windows" {
+		return []string{"tun"}
+	}
+
+	candidates := []string{"userspace", "proxy"}
+	if supportsTUN(goos) {
+		candidates = append([]string{"tun"}, candidates...)
+	}
+	return candidates
 }
 
 func supportsTUN(goos string) bool {

@@ -436,9 +436,10 @@ type peerTransportBind struct {
 }
 
 type boundTransport struct {
-	conn     net.Conn
-	endpoint *transportEndpoint
-	stopCh   chan struct{}
+	conn      net.Conn
+	endpoint  *transportEndpoint
+	stopCh    chan struct{}
+	closeOnce sync.Once
 }
 
 type transportEndpoint struct {
@@ -476,7 +477,7 @@ func (b *peerTransportBind) Close() error {
 		close(b.closeCh)
 		b.mu.Lock()
 		for _, transport := range b.transports {
-			close(transport.stopCh)
+			_ = transport.Close()
 		}
 		b.transports = map[PublicKey]*boundTransport{}
 		b.mu.Unlock()
@@ -559,7 +560,7 @@ func (b *peerTransportBind) AttachTransport(publicKey PublicKey, transport net.C
 
 	b.mu.Lock()
 	if existing := b.transports[publicKey]; existing != nil {
-		close(existing.stopCh)
+		_ = existing.Close()
 	}
 	b.transports[publicKey] = bound
 	b.mu.Unlock()
@@ -574,7 +575,7 @@ func (b *peerTransportBind) DetachTransport(publicKey PublicKey) {
 	delete(b.transports, publicKey)
 	b.mu.Unlock()
 	if transport != nil {
-		close(transport.stopCh)
+		_ = transport.Close()
 	}
 }
 
@@ -743,6 +744,23 @@ func (e *transportEndpoint) SetRemoteAddr(addr *net.UDPAddr) {
 type deviceSnapshot struct {
 	ListenPort int
 	Peers      map[PublicKey]*PeerStatus
+}
+
+func (t *boundTransport) Close() error {
+	if t == nil {
+		return nil
+	}
+
+	var err error
+	t.closeOnce.Do(func() {
+		if t.stopCh != nil {
+			close(t.stopCh)
+		}
+		if t.conn != nil {
+			err = t.conn.Close()
+		}
+	})
+	return err
 }
 
 func readDeviceSnapshot(device *wgdevice.Device, bind *peerTransportBind) (*deviceSnapshot, error) {

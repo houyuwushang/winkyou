@@ -45,8 +45,13 @@ type WireGuardConfig struct {
 }
 
 type NATConfig struct {
-	STUNServers []string           `mapstructure:"stun_servers" yaml:"stun_servers"`
-	TURNServers []TURNServerConfig `mapstructure:"turn_servers" yaml:"turn_servers"`
+	GatherTimeout    time.Duration      `mapstructure:"gather_timeout" yaml:"gather_timeout"`
+	ConnectTimeout   time.Duration      `mapstructure:"connect_timeout" yaml:"connect_timeout"`
+	CheckTimeout     time.Duration      `mapstructure:"check_timeout" yaml:"check_timeout"`
+	RetryInterval    time.Duration      `mapstructure:"retry_interval" yaml:"retry_interval"`
+	RetryMaxInterval time.Duration      `mapstructure:"retry_max_interval" yaml:"retry_max_interval"`
+	STUNServers      []string           `mapstructure:"stun_servers" yaml:"stun_servers"`
+	TURNServers      []TURNServerConfig `mapstructure:"turn_servers" yaml:"turn_servers"`
 }
 
 type TURNServerConfig struct {
@@ -54,4 +59,3 @@ type TURNServerConfig struct {
 	Username string `mapstructure:"username" yaml:"username"`
 	Password string `mapstructure:"password" yaml:"password"`
 }
-

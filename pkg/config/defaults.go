@@ -8,15 +8,20 @@ import (
 )
 
 const (
-	defaultLogLevel         = "info"
-	defaultLogFormat        = "text"
-	defaultLogOutput        = "stderr"
-	defaultCoordinatorURL   = ""
-	defaultCoordinatorAuth  = ""
-	defaultNetIfBackend     = "auto"
-	defaultNetIfMTU         = 1280
-	defaultWireGuardPort    = 51820
-	defaultCoordinatorDelay = 10 * time.Second
+	defaultLogLevel            = "info"
+	defaultLogFormat           = "text"
+	defaultLogOutput           = "stderr"
+	defaultCoordinatorURL      = ""
+	defaultCoordinatorAuth     = ""
+	defaultNetIfBackend        = "auto"
+	defaultNetIfMTU            = 1280
+	defaultWireGuardPort       = 51820
+	defaultCoordinatorDelay    = 10 * time.Second
+	defaultNATGatherTimeout    = 10 * time.Second
+	defaultNATConnectTimeout   = 25 * time.Second
+	defaultNATCheckTimeout     = 12 * time.Second
+	defaultNATRetryInterval    = 2 * time.Second
+	defaultNATRetryMaxInterval = 10 * time.Second
 )
 
 func Default() Config {
@@ -42,6 +47,11 @@ func Default() Config {
 			ListenPort: defaultWireGuardPort,
 		},
 		NAT: NATConfig{
+			GatherTimeout:    defaultNATGatherTimeout,
+			ConnectTimeout:   defaultNATConnectTimeout,
+			CheckTimeout:     defaultNATCheckTimeout,
+			RetryInterval:    defaultNATRetryInterval,
+			RetryMaxInterval: defaultNATRetryMaxInterval,
 			STUNServers: []string{
 				"stun:stun.l.google.com:19302",
 				"stun:stun.cloudflare.com:3478",
@@ -72,4 +82,3 @@ func hostnameOr(fallback string) string {
 	}
 	return name
 }
-

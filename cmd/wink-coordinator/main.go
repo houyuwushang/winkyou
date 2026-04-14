@@ -37,7 +37,7 @@ func run() int {
 		showVersion  bool
 	)
 
-	flag.StringVar(&configPath, "config", "", "path to config file")
+	flag.StringVar(&configPath, "config", "", "optional config file for log settings only")
 	flag.StringVar(&listen, "listen", defaults.ListenAddress, "coordinator listen address")
 	flag.StringVar(&networkCIDR, "network-cidr", defaults.NetworkCIDR, "overlay network CIDR")
 	flag.DurationVar(&leaseTTL, "lease-ttl", defaults.LeaseTTL, "node lease TTL")
@@ -52,13 +52,18 @@ func run() int {
 		return 0
 	}
 
-	cfg, err := config.Load(configPath)
-	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		return 1
+	logCfg := config.Default().Log
+	if configPath != "" {
+		cfg, err := config.Load(configPath)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return 1
+		}
+		logCfg = cfg.Log
+		fmt.Fprintln(os.Stderr, "wink-coordinator: --config only applies log settings; server listen/network/store parameters still come from flags")
 	}
 
-	log, err := logger.New(&cfg.Log)
+	log, err := logger.New(&logCfg)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return 1

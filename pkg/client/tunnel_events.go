@@ -60,6 +60,9 @@ func (e *engine) markPeerConnected(publicKey tunnel.PublicKey, at time.Time) {
 			if session := e.peerMgr.sessions[nodeID]; session != nil {
 				session.connectMu.Lock()
 				session.connected = true
+				session.connecting = false
+				session.retryDelay = 0
+				session.retryPending = false
 				pair := session.selectedPair
 				session.connectMu.Unlock()
 				if pair != nil && pair.Remote != nil {

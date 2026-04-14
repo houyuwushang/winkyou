@@ -66,6 +66,11 @@ func setDefaults(v *viper.Viper, cfg Config) {
 	v.SetDefault("wireguard.private_key", cfg.WireGuard.PrivateKey)
 	v.SetDefault("wireguard.listen_port", cfg.WireGuard.ListenPort)
 
+	v.SetDefault("nat.gather_timeout", cfg.NAT.GatherTimeout)
+	v.SetDefault("nat.connect_timeout", cfg.NAT.ConnectTimeout)
+	v.SetDefault("nat.check_timeout", cfg.NAT.CheckTimeout)
+	v.SetDefault("nat.retry_interval", cfg.NAT.RetryInterval)
+	v.SetDefault("nat.retry_max_interval", cfg.NAT.RetryMaxInterval)
 	v.SetDefault("nat.stun_servers", cfg.NAT.STUNServers)
 	v.SetDefault("nat.turn_servers", cfg.NAT.TURNServers)
 }

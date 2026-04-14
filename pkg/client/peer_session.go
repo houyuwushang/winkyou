@@ -22,6 +22,8 @@ type peerSession struct {
 	tunnelAttached bool
 	connected      bool
 	connecting     bool
+	retryDelay     time.Duration
+	retryPending   bool
 	connectMu      sync.Mutex
 }
 
@@ -58,19 +60,27 @@ func (e *engine) startPeerConnect(nodeID string) {
 	if !s.initiator {
 		return
 	}
+	s.connectMu.Lock()
+	if s.connected || s.tunnelAttached || s.connecting {
+		s.connectMu.Unlock()
+		return
+	}
+	s.connectMu.Unlock()
 	go e.sendOffer(nodeID, s)
 }
 
 func (e *engine) sendOffer(nodeID string, s *peerSession) {
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), e.iceGatherTimeout())
 	defer cancel()
 
 	cands, err := s.agent.GatherCandidates(ctx)
 	if err != nil {
+		e.schedulePeerRetry(nodeID, s)
 		return
 	}
 	ufrag, pwd, err := s.agent.GetLocalCredentials()
 	if err != nil {
+		e.schedulePeerRetry(nodeID, s)
 		return
 	}
 	payload, err := marshalOfferPayload(peerOfferPayload{
@@ -79,11 +89,16 @@ func (e *engine) sendOffer(nodeID string, s *peerSession) {
 		SentAt:    time.Now(),
 	})
 	if err != nil {
+		e.schedulePeerRetry(nodeID, s)
 		return
 	}
 	if e.coord != nil {
-		_ = e.coord.SendSignal(ctx, nodeID, coordclient.SIGNAL_ICE_OFFER, payload)
+		if err := e.coord.SendSignal(ctx, nodeID, coordclient.SIGNAL_ICE_OFFER, payload); err != nil {
+			e.schedulePeerRetry(nodeID, s)
+			return
+		}
 	}
+	e.schedulePeerRetry(nodeID, s)
 }
 
 func (e *engine) handleOffer(signal *coordclient.SignalNotification) {
@@ -102,7 +117,7 @@ func (e *engine) handleOffer(signal *coordclient.SignalNotification) {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), e.iceGatherTimeout())
 	defer cancel()
 	locals, err := s.agent.GatherCandidates(ctx)
 	if err != nil {
@@ -121,7 +136,9 @@ func (e *engine) handleOffer(signal *coordclient.SignalNotification) {
 		return
 	}
 	if e.coord != nil {
-		_ = e.coord.SendSignal(ctx, signal.FromNode, coordclient.SIGNAL_ICE_ANSWER, answerPayload)
+		if err := e.coord.SendSignal(ctx, signal.FromNode, coordclient.SIGNAL_ICE_ANSWER, answerPayload); err != nil {
+			return
+		}
 	}
 
 	e.tryConnectPeer(signal.FromNode, s)
@@ -172,13 +189,14 @@ func (e *engine) tryConnectPeer(nodeID string, s *peerSession) {
 	s.connecting = true
 	s.connectMu.Unlock()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), e.iceConnectTimeout())
 	defer cancel()
 	transport, pair, err := s.agent.Connect(ctx)
 	if err != nil {
 		s.connectMu.Lock()
 		s.connecting = false
 		s.connectMu.Unlock()
+		e.schedulePeerRetry(nodeID, s)
 		return
 	}
 	s.connectMu.Lock()
@@ -189,16 +207,20 @@ func (e *engine) tryConnectPeer(nodeID string, s *peerSession) {
 		s.connectMu.Lock()
 		s.connecting = false
 		s.connectMu.Unlock()
+		e.schedulePeerRetry(nodeID, s)
 		return
 	}
 	if err := e.attachTunnelPeer(nodeID, transport, pair); err != nil {
 		s.connectMu.Lock()
 		s.connecting = false
 		s.connectMu.Unlock()
+		e.schedulePeerRetry(nodeID, s)
 		return
 	}
 	s.connectMu.Lock()
 	s.tunnelAttached = true
+	s.retryDelay = 0
+	s.retryPending = false
 	s.connecting = false
 	s.connectMu.Unlock()
 }
@@ -259,4 +281,28 @@ func connectionTypeFromCandidatePair(pair *nat.CandidatePair) ConnectionType {
 		return ConnectionTypeRelay
 	}
 	return ConnectionTypeDirect
+}
+
+func closePeerSession(session *peerSession) {
+	if session == nil {
+		return
+	}
+
+	session.connectMu.Lock()
+	transport := session.transport
+	session.transport = nil
+	session.selectedPair = nil
+	session.tunnelAttached = false
+	session.connected = false
+	session.connecting = false
+	session.retryPending = false
+	session.retryDelay = 0
+	session.connectMu.Unlock()
+
+	if transport != nil {
+		_ = transport.Close()
+	}
+	if session.agent != nil {
+		_ = session.agent.Close()
+	}
 }

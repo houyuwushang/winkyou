@@ -5,11 +5,29 @@ import (
 	"net"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	wgconn "golang.zx2c4.com/wireguard/conn"
 )
+
+type trackedConn struct {
+	net.Conn
+	closed chan struct{}
+	once   sync.Once
+}
+
+func newTrackedPipe() (*trackedConn, net.Conn) {
+	left, right := net.Pipe()
+	return &trackedConn{Conn: left, closed: make(chan struct{})}, right
+}
+
+func (c *trackedConn) Close() error {
+	err := c.Conn.Close()
+	c.once.Do(func() { close(c.closed) })
+	return err
+}
 
 type fakeNetif struct {
 	name string
@@ -112,6 +130,50 @@ func TestPeerTransportBindSendAndReceive(t *testing.T) {
 	}
 	if err := <-recvDone; err != nil {
 		t.Fatalf("transport write error: %v", err)
+	}
+}
+
+func TestPeerTransportBindReplaceClosesOldTransport(t *testing.T) {
+	bind := newPeerTransportBind()
+	defer bind.Close()
+
+	publicKey := makeTestKey(7)
+	first, firstPeer := newTrackedPipe()
+	defer firstPeer.Close()
+	second, secondPeer := newTrackedPipe()
+	defer secondPeer.Close()
+
+	if _, err := bind.AttachTransport(publicKey, first); err != nil {
+		t.Fatalf("AttachTransport(first) error: %v", err)
+	}
+	if _, err := bind.AttachTransport(publicKey, second); err != nil {
+		t.Fatalf("AttachTransport(second) error: %v", err)
+	}
+
+	select {
+	case <-first.closed:
+	case <-time.After(time.Second):
+		t.Fatal("replaced transport was not closed")
+	}
+}
+
+func TestPeerTransportBindDetachClosesTransport(t *testing.T) {
+	bind := newPeerTransportBind()
+	defer bind.Close()
+
+	publicKey := makeTestKey(8)
+	conn, peer := newTrackedPipe()
+	defer peer.Close()
+
+	if _, err := bind.AttachTransport(publicKey, conn); err != nil {
+		t.Fatalf("AttachTransport() error: %v", err)
+	}
+	bind.DetachTransport(publicKey)
+
+	select {
+	case <-conn.closed:
+	case <-time.After(time.Second):
+		t.Fatal("detached transport was not closed")
 	}
 }
 

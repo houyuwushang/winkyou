@@ -3,7 +3,6 @@
 package netif
 
 import (
-	"encoding/binary"
 	"fmt"
 	"net"
 	"os"
@@ -76,13 +75,15 @@ func (w *wgTunInterface) Read(buf []byte) (int, error) {
 }
 
 func (w *wgTunInterface) Write(buf []byte) (int, error) {
-	hdr := make([]byte, 4)
-	if ip4 := net.IP(buf).To4(); ip4 != nil {
-		binary.BigEndian.PutUint32(hdr, unix.AF_INET)
-	} else {
-		binary.BigEndian.PutUint32(hdr, unix.AF_INET6)
+	if len(buf) == 0 {
+		return 0, nil
 	}
-	pkt := append(hdr, buf...)
+
+	hdr, err := darwinPacketHeader(buf)
+	if err != nil {
+		return 0, err
+	}
+	pkt := append(hdr[:], buf...)
 	n, err := w.file.Write(pkt)
 	if err != nil {
 		return 0, err
