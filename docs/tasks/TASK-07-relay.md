@@ -1,6 +1,6 @@
 # TASK-07: 中继服务
 
-> 当前任务以 `docs/EXECUTION-BASELINE.md` 为准。
+> 历史任务说明：本任务文档按 legacy MVP baseline 编写。当前 active architecture baseline 为 `docs/CONNECTIVITY-SOLVER-BASELINE.md`。
 > MVP 只交付 `UDP TURN + 长期凭证`，不要求协调服务器签发 TURN 临时凭证。
 > 本任务中的“中继”专指专用 `TURN server relay`；“节点 A 作为 B 到 C 的受信中继”属于 `post-MVP` 扩展，见 `../PEER-RELAY-DESIGN.md`。
 

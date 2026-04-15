@@ -1,11 +1,10 @@
 package client
 
 import (
-	"context"
 	"time"
 
 	coordclient "winkyou/pkg/coordinator/client"
-	"winkyou/pkg/nat"
+	"winkyou/pkg/logger"
 	"winkyou/pkg/tunnel"
 )
 
@@ -52,7 +51,12 @@ func (e *engine) handleSignal(signal *coordclient.SignalNotification) {
 	e.mu.Unlock()
 	e.persistState()
 
-	if msg, ok := solverMessageFromSignal(signal); ok {
+	msg, ok, err := inboundSolverMessageFromSignal(signal)
+	if err != nil {
+		e.log.Warn("failed to decode peer signal", logger.String("node_id", signal.FromNode), logger.Error(err))
+		return
+	}
+	if ok {
 		go e.handlePeerSolverMessage(signal.FromNode, msg)
 	}
 }
@@ -83,22 +87,4 @@ func (e *engine) cleanupPeer(nodeID string) {
 		}
 	}
 	e.persistState()
-}
-
-func (e *engine) newICEAgent(ctx context.Context, controlling bool) (nat.ICEAgent, error) {
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	if e.nat == nil {
-		return nil, ErrEngineNotStarted
-	}
-	return e.nat.NewICEAgent(nat.ICEConfig{
-		GatherTimeout:  e.iceGatherTimeout(),
-		CheckTimeout:   e.iceCheckTimeout(),
-		ConnectTimeout: e.iceConnectTimeout(),
-		STUNServers:    e.cfg.NAT.STUNServers,
-		TURNServers:    toNATTURNServers(e.cfg.NAT.TURNServers),
-		Controlling:    controlling,
-		ForceRelay:     e.cfg.NAT.ForceRelay,
-	})
 }

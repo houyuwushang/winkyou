@@ -2,7 +2,6 @@ package legacyice
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"net"
 	"sync"
@@ -13,15 +12,9 @@ import (
 	"winkyou/pkg/transport/iceadapter"
 )
 
-type dependencyIO interface {
-	solver.SessionIO
-	NewLegacyICEAgent(ctx context.Context, controlling bool) (nat.ICEAgent, error)
-	GatherTimeout() time.Duration
-	ConnectTimeout() time.Duration
-	CheckTimeout() time.Duration
-}
-
 type Strategy struct {
+	cfg Config
+
 	mu         sync.Mutex
 	input      solver.SolveInput
 	agent      nat.ICEAgent
@@ -30,26 +23,11 @@ type Strategy struct {
 	resultCh   chan solver.Result
 }
 
-type offerPayload struct {
-	SessionID string                           `json:"session_id"`
-	ICE       nat.ICESessionDescriptionPayload `json:"ice"`
-	SentAt    time.Time                        `json:"sent_at"`
-}
-
-type answerPayload struct {
-	SessionID string                           `json:"session_id"`
-	ICE       nat.ICESessionDescriptionPayload `json:"ice"`
-	SentAt    time.Time                        `json:"sent_at"`
-}
-
-type candidatePayload struct {
-	SessionID string                  `json:"session_id"`
-	ICE       nat.ICECandidatePayload `json:"ice"`
-	SentAt    time.Time               `json:"sent_at"`
-}
-
-func New() *Strategy {
-	return &Strategy{resultCh: make(chan solver.Result, 1)}
+func New(cfg Config) *Strategy {
+	return &Strategy{
+		cfg:      cfg.withDefaults(),
+		resultCh: make(chan solver.Result, 1),
+	}
 }
 
 func (s *Strategy) Name() string {
@@ -68,17 +46,12 @@ func (s *Strategy) Plan(ctx context.Context, in solver.SolveInput) ([]solver.Pla
 }
 
 func (s *Strategy) Execute(ctx context.Context, sess solver.SessionIO, plan solver.Plan) (solver.Result, error) {
-	deps, ok := sess.(dependencyIO)
-	if !ok {
-		return solver.Result{}, fmt.Errorf("legacyice: session io does not provide legacy ICE dependencies")
-	}
-
-	if _, err := s.ensureAgent(ctx, deps); err != nil {
+	if _, err := s.ensureAgent(ctx); err != nil {
 		return solver.Result{}, err
 	}
 
 	if s.isInitiator() {
-		if err := s.sendOffer(ctx, deps); err != nil {
+		if err := s.sendOffer(ctx, sess); err != nil {
 			return solver.Result{}, err
 		}
 	}
@@ -92,17 +65,17 @@ func (s *Strategy) Execute(ctx context.Context, sess solver.SessionIO, plan solv
 }
 
 func (s *Strategy) HandleMessage(ctx context.Context, sess solver.SessionIO, msg solver.Message) error {
-	deps, ok := sess.(dependencyIO)
-	if !ok {
-		return fmt.Errorf("legacyice: session io does not provide legacy ICE dependencies")
+	if !IsMessage(msg) {
+		return nil
 	}
-	agent, err := s.ensureAgent(ctx, deps)
+
+	agent, err := s.ensureAgent(ctx)
 	if err != nil {
 		return err
 	}
 
-	switch msg.Kind {
-	case solver.MessageKindLegacyICEOffer:
+	switch msg.Type {
+	case MessageTypeOffer:
 		offer, err := unmarshalOfferPayload(msg.Payload)
 		if err != nil {
 			return err
@@ -113,11 +86,11 @@ func (s *Strategy) HandleMessage(ctx context.Context, sess solver.SessionIO, msg
 		if err := agent.SetRemoteCandidates(offer.ICE.Candidates); err != nil {
 			return err
 		}
-		if err := s.sendAnswer(ctx, deps); err != nil {
+		if err := s.sendAnswer(ctx, sess); err != nil {
 			return err
 		}
-		return s.tryConnect(ctx, deps, agent)
-	case solver.MessageKindLegacyICEAnswer:
+		return s.tryConnect(agent)
+	case MessageTypeAnswer:
 		answer, err := unmarshalAnswerPayload(msg.Payload)
 		if err != nil {
 			return err
@@ -128,8 +101,8 @@ func (s *Strategy) HandleMessage(ctx context.Context, sess solver.SessionIO, msg
 		if err := agent.SetRemoteCandidates(answer.ICE.Candidates); err != nil {
 			return err
 		}
-		return s.tryConnect(ctx, deps, agent)
-	case solver.MessageKindLegacyICECandidate:
+		return s.tryConnect(agent)
+	case MessageTypeCandidate:
 		candidate, err := unmarshalCandidatePayload(msg.Payload)
 		if err != nil {
 			return err
@@ -137,7 +110,7 @@ func (s *Strategy) HandleMessage(ctx context.Context, sess solver.SessionIO, msg
 		if err := agent.SetRemoteCandidates([]nat.Candidate{candidate.ICE.Candidate}); err != nil {
 			return err
 		}
-		return s.tryConnect(ctx, deps, agent)
+		return s.tryConnect(agent)
 	default:
 		return nil
 	}
@@ -156,7 +129,7 @@ func (s *Strategy) Close() error {
 	return nil
 }
 
-func (s *Strategy) ensureAgent(ctx context.Context, deps dependencyIO) (nat.ICEAgent, error) {
+func (s *Strategy) ensureAgent(ctx context.Context) (nat.ICEAgent, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.closed {
@@ -165,7 +138,10 @@ func (s *Strategy) ensureAgent(ctx context.Context, deps dependencyIO) (nat.ICEA
 	if s.agent != nil {
 		return s.agent, nil
 	}
-	agent, err := deps.NewLegacyICEAgent(ctx, s.input.Initiator)
+	if s.cfg.NewICEAgent == nil {
+		return nil, fmt.Errorf("legacyice: ice agent factory is nil")
+	}
+	agent, err := s.cfg.NewICEAgent(ctx, s.input.Initiator)
 	if err != nil {
 		return nil, err
 	}
@@ -173,13 +149,13 @@ func (s *Strategy) ensureAgent(ctx context.Context, deps dependencyIO) (nat.ICEA
 	return agent, nil
 }
 
-func (s *Strategy) sendOffer(ctx context.Context, deps dependencyIO) error {
-	agent, err := s.ensureAgent(ctx, deps)
+func (s *Strategy) sendOffer(ctx context.Context, sess solver.SessionIO) error {
+	agent, err := s.ensureAgent(ctx)
 	if err != nil {
 		return err
 	}
 
-	gatherCtx, cancel := context.WithTimeout(ctx, deps.GatherTimeout())
+	gatherCtx, cancel := context.WithTimeout(ctx, s.cfg.GatherTimeout)
 	defer cancel()
 
 	candidates, err := agent.GatherCandidates(gatherCtx)
@@ -198,16 +174,16 @@ func (s *Strategy) sendOffer(ctx context.Context, deps dependencyIO) error {
 	if err != nil {
 		return err
 	}
-	return deps.Send(ctx, solver.Message{Kind: solver.MessageKindLegacyICEOffer, Payload: payload, ReceivedAt: time.Now()})
+	return sess.Send(ctx, NewMessage(MessageTypeOffer, payload, time.Now()))
 }
 
-func (s *Strategy) sendAnswer(ctx context.Context, deps dependencyIO) error {
-	agent, err := s.ensureAgent(ctx, deps)
+func (s *Strategy) sendAnswer(ctx context.Context, sess solver.SessionIO) error {
+	agent, err := s.ensureAgent(ctx)
 	if err != nil {
 		return err
 	}
 
-	gatherCtx, cancel := context.WithTimeout(ctx, deps.GatherTimeout())
+	gatherCtx, cancel := context.WithTimeout(ctx, s.cfg.GatherTimeout)
 	defer cancel()
 
 	candidates, err := agent.GatherCandidates(gatherCtx)
@@ -226,10 +202,10 @@ func (s *Strategy) sendAnswer(ctx context.Context, deps dependencyIO) error {
 	if err != nil {
 		return err
 	}
-	return deps.Send(ctx, solver.Message{Kind: solver.MessageKindLegacyICEAnswer, Payload: payload, ReceivedAt: time.Now()})
+	return sess.Send(ctx, NewMessage(MessageTypeAnswer, payload, time.Now()))
 }
 
-func (s *Strategy) tryConnect(ctx context.Context, deps dependencyIO, agent nat.ICEAgent) error {
+func (s *Strategy) tryConnect(agent nat.ICEAgent) error {
 	s.mu.Lock()
 	if s.connecting {
 		s.mu.Unlock()
@@ -245,7 +221,7 @@ func (s *Strategy) tryConnect(ctx context.Context, deps dependencyIO, agent nat.
 			s.mu.Unlock()
 		}()
 
-		connectCtx, cancel := context.WithTimeout(context.Background(), deps.ConnectTimeout())
+		connectCtx, cancel := context.WithTimeout(context.Background(), s.cfg.ConnectTimeout)
 		defer cancel()
 
 		conn, pair, err := agent.Connect(connectCtx)
@@ -334,88 +310,4 @@ func connectionStateString(agent nat.ICEAgent) string {
 		}
 	}
 	return "connected"
-}
-
-func marshalOfferPayload(payload offerPayload) ([]byte, error) {
-	icePayload, err := nat.MarshalICESessionDescriptionPayload(payload.ICE)
-	if err != nil {
-		return nil, err
-	}
-	return json.Marshal(struct {
-		SessionID string    `json:"session_id"`
-		ICE       []byte    `json:"ice"`
-		SentAt    time.Time `json:"sent_at"`
-	}{SessionID: payload.SessionID, ICE: icePayload, SentAt: payload.SentAt})
-}
-
-func unmarshalOfferPayload(data []byte) (offerPayload, error) {
-	var wrap struct {
-		SessionID string    `json:"session_id"`
-		ICE       []byte    `json:"ice"`
-		SentAt    time.Time `json:"sent_at"`
-	}
-	if err := json.Unmarshal(data, &wrap); err != nil {
-		return offerPayload{}, fmt.Errorf("legacyice: unmarshal offer payload: %w", err)
-	}
-	icePayload, err := nat.UnmarshalICESessionDescriptionPayload(wrap.ICE)
-	if err != nil {
-		return offerPayload{}, err
-	}
-	return offerPayload{SessionID: wrap.SessionID, ICE: icePayload, SentAt: wrap.SentAt}, nil
-}
-
-func marshalAnswerPayload(payload answerPayload) ([]byte, error) {
-	icePayload, err := nat.MarshalICESessionDescriptionPayload(payload.ICE)
-	if err != nil {
-		return nil, err
-	}
-	return json.Marshal(struct {
-		SessionID string    `json:"session_id"`
-		ICE       []byte    `json:"ice"`
-		SentAt    time.Time `json:"sent_at"`
-	}{SessionID: payload.SessionID, ICE: icePayload, SentAt: payload.SentAt})
-}
-
-func unmarshalAnswerPayload(data []byte) (answerPayload, error) {
-	var wrap struct {
-		SessionID string    `json:"session_id"`
-		ICE       []byte    `json:"ice"`
-		SentAt    time.Time `json:"sent_at"`
-	}
-	if err := json.Unmarshal(data, &wrap); err != nil {
-		return answerPayload{}, fmt.Errorf("legacyice: unmarshal answer payload: %w", err)
-	}
-	icePayload, err := nat.UnmarshalICESessionDescriptionPayload(wrap.ICE)
-	if err != nil {
-		return answerPayload{}, err
-	}
-	return answerPayload{SessionID: wrap.SessionID, ICE: icePayload, SentAt: wrap.SentAt}, nil
-}
-
-func marshalCandidatePayload(payload candidatePayload) ([]byte, error) {
-	icePayload, err := nat.MarshalICECandidatePayload(payload.ICE)
-	if err != nil {
-		return nil, err
-	}
-	return json.Marshal(struct {
-		SessionID string    `json:"session_id"`
-		ICE       []byte    `json:"ice"`
-		SentAt    time.Time `json:"sent_at"`
-	}{SessionID: payload.SessionID, ICE: icePayload, SentAt: payload.SentAt})
-}
-
-func unmarshalCandidatePayload(data []byte) (candidatePayload, error) {
-	var wrap struct {
-		SessionID string    `json:"session_id"`
-		ICE       []byte    `json:"ice"`
-		SentAt    time.Time `json:"sent_at"`
-	}
-	if err := json.Unmarshal(data, &wrap); err != nil {
-		return candidatePayload{}, fmt.Errorf("legacyice: unmarshal candidate payload: %w", err)
-	}
-	icePayload, err := nat.UnmarshalICECandidatePayload(wrap.ICE)
-	if err != nil {
-		return candidatePayload{}, err
-	}
-	return candidatePayload{SessionID: wrap.SessionID, ICE: icePayload, SentAt: wrap.SentAt}, nil
 }

@@ -1,6 +1,6 @@
 # TASK-01: 基础设施模块
 
-> 当前任务以 `docs/EXECUTION-BASELINE.md` 为准。
+> 历史任务说明：本任务文档按 legacy MVP baseline 编写。当前 active architecture baseline 为 `docs/CONNECTIVITY-SOLVER-BASELINE.md`。
 > 本文档描述的是 MVP 所需基础设施，不覆盖 GUI、移动端和自研协议路线。
 
 ## 任务概述

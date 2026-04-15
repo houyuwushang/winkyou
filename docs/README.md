@@ -1,24 +1,20 @@
-# WinkYou 文档索引
+# Documentation Index
 
-当前仓库首页的 [`README.md`](../README.md) 已经改为真实可部署入口，优先阅读那里提供的 quickstart。  
-本目录只保留文档索引和执行基线引用。
+## Primary Entry Points
 
-## 优先级顺序
+1. Active architecture baseline: [`CONNECTIVITY-SOLVER-BASELINE.md`](./CONNECTIVITY-SOLVER-BASELINE.md)
+2. Repository homepage and status summary: [`../README.md`](../README.md)
+3. Supplemental architecture notes: [`ARCHITECTURE.md`](./ARCHITECTURE.md)
 
-1. [`EXECUTION-BASELINE.md`](./EXECUTION-BASELINE.md)
-2. [`../README.md`](../README.md)
-3. 其他设计和任务文档
+## Legacy Material
 
-## 推荐阅读
+- Legacy baseline notice: [`EXECUTION-BASELINE.md`](./EXECUTION-BASELINE.md)
+- Historical legacy snapshot pointer: [`legacy/EXECUTION-BASELINE-legacy.md`](./legacy/EXECUTION-BASELINE-legacy.md)
 
-- [`EXECUTION-BASELINE.md`](./EXECUTION-BASELINE.md)
-- [`ARCHITECTURE.md`](./ARCHITECTURE.md)
-- [`PEER-RELAY-DESIGN.md`](./PEER-RELAY-DESIGN.md)
-- [`tasks/`](./tasks)
+## Additional References
 
-## 当前事实
+- Peer relay notes: [`PEER-RELAY-DESIGN.md`](./PEER-RELAY-DESIGN.md)
+- Deployment questions log: [`DEPLOYMENT-QUESTIONS-2026-04-15.md`](./DEPLOYMENT-QUESTIONS-2026-04-15.md)
+- Historical task breakdowns: [`tasks/`](./tasks)
 
-- 已支持的快速部署路径：Windows client（Wintun/TUN） + Linux coordinator + Linux relay + Linux peer。
-- 当前数据面已经使用进程内 `wireguard-go`，不再依赖系统 `wg`。
-- `userspace` / `proxy` / no-admin 模式未完成，当前文档不再声称这条路径可用。
-- `memory backend` 保留给测试，不作为部署路径。
+The task documents are historical planning artifacts written against the legacy MVP baseline. They are not the current architecture authority.

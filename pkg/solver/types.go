@@ -11,14 +11,14 @@ import (
 type MessageKind string
 
 const (
-	MessageKindEnvelope           MessageKind = "session_envelope"
-	MessageKindLegacyICEOffer     MessageKind = "legacyice.offer"
-	MessageKindLegacyICEAnswer    MessageKind = "legacyice.answer"
-	MessageKindLegacyICECandidate MessageKind = "legacyice.candidate"
+	MessageKindEnvelope MessageKind = "session_envelope"
+	MessageKindStrategy MessageKind = "strategy_message"
 )
 
 type Message struct {
 	Kind       MessageKind
+	Namespace  string
+	Type       string
 	Payload    []byte
 	ReceivedAt time.Time
 }

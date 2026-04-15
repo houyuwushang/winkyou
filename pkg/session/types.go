@@ -4,7 +4,7 @@ import (
 	"context"
 	"time"
 
-	"winkyou/pkg/nat"
+	rproto "winkyou/pkg/rendezvous/proto"
 	"winkyou/pkg/solver"
 )
 
@@ -20,6 +20,8 @@ const (
 	StateClosed    State = "closed"
 )
 
+const envelopeNamespace = "rendezvous.v2"
+
 type MessageSender interface {
 	Send(ctx context.Context, peerID string, msg solver.Message) error
 }
@@ -31,16 +33,23 @@ type Hooks struct {
 }
 
 type Config struct {
-	SessionID         string
-	LocalNodeID       string
-	PeerID            string
-	Initiator         bool
-	Strategy          solver.Strategy
-	Binder            Binder
-	Sender            MessageSender
-	Hooks             Hooks
-	NewLegacyICEAgent func(ctx context.Context, controlling bool) (nat.ICEAgent, error)
-	GatherTimeout     time.Duration
-	ConnectTimeout    time.Duration
-	CheckTimeout      time.Duration
+	SessionID   string
+	LocalNodeID string
+	PeerID      string
+	Initiator   bool
+	Strategy    solver.Strategy
+	Binder      Binder
+	Sender      MessageSender
+	Hooks       Hooks
+	RunTimeout  time.Duration
+}
+
+type Snapshot struct {
+	SessionID        string
+	PeerID           string
+	State            State
+	LocalCapability  rproto.Capability
+	RemoteCapability rproto.Capability
+	LastEnvelopeType string
+	LastEnvelopeAt   time.Time
 }

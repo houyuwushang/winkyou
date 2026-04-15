@@ -2,24 +2,32 @@ package session
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"slices"
 	"sync"
 	"time"
 
-	"winkyou/pkg/nat"
+	rproto "winkyou/pkg/rendezvous/proto"
 	"winkyou/pkg/solver"
 )
 
 type Session struct {
 	cfg Config
 
-	sm       *StateMachine
-	io       *solverIO
-	runCtx   context.Context
-	startMu  sync.Mutex
-	started  bool
-	closeMu  sync.Mutex
-	closed   bool
+	sm     *StateMachine
+	io     *solverIO
+	runCtx context.Context
+
+	startMu sync.Mutex
+	started bool
+	closeMu sync.Mutex
+	closed  bool
+
+	metaMu sync.RWMutex
+	meta   Snapshot
+	seq    uint64
+
 	lastPlan solver.Plan
 	lastRes  solver.Result
 }
@@ -41,10 +49,18 @@ func New(cfg Config) (*Session, error) {
 	if cfg.Sender == nil {
 		return nil, fmt.Errorf("session: sender is required")
 	}
+
+	localCapability := rproto.Capability{Strategies: []string{cfg.Strategy.Name()}}
 	return &Session{
 		cfg: cfg,
 		sm:  NewStateMachine(StateNew),
 		io:  &solverIO{cfg: cfg},
+		meta: Snapshot{
+			SessionID:       cfg.SessionID,
+			PeerID:          cfg.PeerID,
+			State:           StateNew,
+			LocalCapability: normalizeCapability(localCapability),
+		},
 	}, nil
 }
 
@@ -56,14 +72,38 @@ func (s *Session) State() State {
 	return s.sm.State()
 }
 
+func (s *Session) Snapshot() Snapshot {
+	s.metaMu.RLock()
+	defer s.metaMu.RUnlock()
+	return Snapshot{
+		SessionID:        s.meta.SessionID,
+		PeerID:           s.meta.PeerID,
+		State:            s.meta.State,
+		LocalCapability:  cloneCapability(s.meta.LocalCapability),
+		RemoteCapability: cloneCapability(s.meta.RemoteCapability),
+		LastEnvelopeType: s.meta.LastEnvelopeType,
+		LastEnvelopeAt:   s.meta.LastEnvelopeAt,
+	}
+}
+
 func (s *Session) Start(ctx context.Context) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
 	s.startMu.Lock()
 	if s.started {
 		s.startMu.Unlock()
 		return nil
 	}
 	s.started = true
+	s.runCtx = ctx
 	s.startMu.Unlock()
+
+	if err := s.sendCapability(ctx); err != nil {
+		s.fail(err)
+		return err
+	}
 
 	s.transition(StatePlanning)
 	plans, err := s.cfg.Strategy.Plan(ctx, solver.SolveInput{
@@ -82,7 +122,6 @@ func (s *Session) Start(ctx context.Context) error {
 		return err
 	}
 	s.lastPlan = plans[0]
-	s.runCtx = ctx
 
 	go s.execute(plans[0])
 	return nil
@@ -125,11 +164,21 @@ func (s *Session) execute(plan solver.Plan) {
 }
 
 func (s *Session) HandleMessage(ctx context.Context, msg solver.Message) error {
-	handler, ok := s.cfg.Strategy.(solver.MessageHandler)
-	if !ok {
+	switch msg.Kind {
+	case solver.MessageKindEnvelope:
+		if msg.Namespace != "" && msg.Namespace != envelopeNamespace {
+			return nil
+		}
+		return s.handleEnvelopeMessage(msg)
+	case solver.MessageKindStrategy:
+		handler, ok := s.cfg.Strategy.(solver.MessageHandler)
+		if !ok {
+			return nil
+		}
+		return handler.HandleMessage(ctx, s.io, msg)
+	default:
 		return nil
 	}
-	return handler.HandleMessage(ctx, s.io, msg)
 }
 
 func (s *Session) Close() error {
@@ -157,6 +206,9 @@ func (s *Session) Close() error {
 
 func (s *Session) transition(next State) {
 	s.sm.Transition(next)
+	s.metaMu.Lock()
+	s.meta.State = next
+	s.metaMu.Unlock()
 	if s.cfg.Hooks.OnStateChange != nil {
 		s.cfg.Hooks.OnStateChange(next)
 	}
@@ -169,33 +221,110 @@ func (s *Session) fail(err error) {
 	}
 }
 
+func (s *Session) sendCapability(ctx context.Context) error {
+	envelope, err := s.newEnvelope(rproto.MsgTypeCapability, s.localCapability())
+	if err != nil {
+		return err
+	}
+	payload, err := rproto.MarshalEnvelope(envelope)
+	if err != nil {
+		return err
+	}
+	return s.io.Send(ctx, solver.Message{
+		Kind:       solver.MessageKindEnvelope,
+		Namespace:  envelopeNamespace,
+		Type:       rproto.MsgTypeCapability,
+		Payload:    payload,
+		ReceivedAt: time.Now(),
+	})
+}
+
+func (s *Session) handleEnvelopeMessage(msg solver.Message) error {
+	envelope, err := rproto.UnmarshalEnvelope(msg.Payload)
+	if err != nil {
+		return err
+	}
+	if envelope.SessionID != s.cfg.SessionID {
+		return nil
+	}
+
+	s.metaMu.Lock()
+	s.meta.LastEnvelopeType = envelope.MsgType
+	if msg.ReceivedAt.IsZero() {
+		s.meta.LastEnvelopeAt = time.Now()
+	} else {
+		s.meta.LastEnvelopeAt = msg.ReceivedAt
+	}
+	s.metaMu.Unlock()
+
+	switch envelope.MsgType {
+	case rproto.MsgTypeCapability:
+		var capability rproto.Capability
+		if len(envelope.Payload) > 0 {
+			if err := json.Unmarshal(envelope.Payload, &capability); err != nil {
+				return fmt.Errorf("session: decode capability: %w", err)
+			}
+		}
+		s.setRemoteCapability(capability)
+	}
+	return nil
+}
+
+func (s *Session) executionTimeout() time.Duration {
+	return s.cfg.RunTimeout
+}
+
+func (s *Session) localCapability() rproto.Capability {
+	s.metaMu.RLock()
+	defer s.metaMu.RUnlock()
+	return cloneCapability(s.meta.LocalCapability)
+}
+
+func (s *Session) setRemoteCapability(capability rproto.Capability) {
+	normalized := normalizeCapability(capability)
+	s.metaMu.Lock()
+	s.meta.RemoteCapability = normalized
+	s.metaMu.Unlock()
+}
+
+func (s *Session) newEnvelope(msgType string, payload any) (rproto.SessionEnvelope, error) {
+	s.metaMu.Lock()
+	defer s.metaMu.Unlock()
+	s.seq++
+	return rproto.SessionEnvelope{
+		SessionID: s.cfg.SessionID,
+		FromNode:  s.cfg.LocalNodeID,
+		ToNode:    s.cfg.PeerID,
+		MsgType:   msgType,
+		Seq:       s.seq,
+		Payload:   rproto.MustPayload(payload),
+	}, nil
+}
+
 func (io *solverIO) Send(ctx context.Context, msg solver.Message) error {
 	return io.cfg.Sender.Send(ctx, io.cfg.PeerID, msg)
 }
 
-func (io *solverIO) NewLegacyICEAgent(ctx context.Context, controlling bool) (nat.ICEAgent, error) {
-	if io.cfg.NewLegacyICEAgent == nil {
-		return nil, fmt.Errorf("session: legacy ICE agent factory is nil")
+func cloneCapability(capability rproto.Capability) rproto.Capability {
+	return rproto.Capability{Strategies: append([]string(nil), capability.Strategies...)}
+}
+
+func normalizeCapability(capability rproto.Capability) rproto.Capability {
+	if len(capability.Strategies) == 0 {
+		return rproto.Capability{}
 	}
-	return io.cfg.NewLegacyICEAgent(ctx, controlling)
-}
-
-func (io *solverIO) GatherTimeout() time.Duration {
-	return io.cfg.GatherTimeout
-}
-
-func (io *solverIO) ConnectTimeout() time.Duration {
-	return io.cfg.ConnectTimeout
-}
-
-func (io *solverIO) CheckTimeout() time.Duration {
-	return io.cfg.CheckTimeout
-}
-
-func (s *Session) executionTimeout() time.Duration {
-	total := s.cfg.GatherTimeout + s.cfg.ConnectTimeout + s.cfg.CheckTimeout
-	if total <= 0 {
-		return 0
+	seen := make(map[string]struct{}, len(capability.Strategies))
+	strategies := make([]string, 0, len(capability.Strategies))
+	for _, strategy := range capability.Strategies {
+		if strategy == "" {
+			continue
+		}
+		if _, ok := seen[strategy]; ok {
+			continue
+		}
+		seen[strategy] = struct{}{}
+		strategies = append(strategies, strategy)
 	}
-	return total
+	slices.Sort(strategies)
+	return rproto.Capability{Strategies: strategies}
 }

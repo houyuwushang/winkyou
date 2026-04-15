@@ -1,6 +1,6 @@
 # TASK-03: WireGuard隧道层
 
-> 当前任务以 `docs/EXECUTION-BASELINE.md` 为准。
+> 历史任务说明：本任务文档按 legacy MVP baseline 编写。当前 active architecture baseline 为 `docs/CONNECTIVITY-SOLVER-BASELINE.md`。
 > MVP 固定交付 `wireguard-go` 封装，不将 `Wink Protocol v1` 纳入本任务交付范围。
 
 ## 任务概述

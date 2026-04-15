@@ -8,11 +8,9 @@ import (
 	"sync"
 	"time"
 
-	coordclient "winkyou/pkg/coordinator/client"
 	"winkyou/pkg/logger"
 	sesspkg "winkyou/pkg/session"
 	"winkyou/pkg/solver"
-	"winkyou/pkg/solver/strategy/legacyice"
 	"winkyou/pkg/tunnel"
 )
 
@@ -115,18 +113,16 @@ func (e *engine) startPeerSession(s *peerSession) {
 }
 
 func (e *engine) newPeerRunner(s *peerSession) (*sesspkg.Session, error) {
+	strategy := e.newLegacyICEStrategy()
 	return sesspkg.New(sesspkg.Config{
-		SessionID:         s.sessionID,
-		LocalNodeID:       e.currentNodeID(),
-		PeerID:            s.nodeID,
-		Initiator:         s.initiator,
-		Strategy:          legacyice.New(),
-		Binder:            sesspkg.NewTunnelBinder(e.tun, e),
-		Sender:            peerMessageSender{engine: e},
-		NewLegacyICEAgent: e.newICEAgent,
-		GatherTimeout:     e.iceGatherTimeout(),
-		ConnectTimeout:    e.iceConnectTimeout(),
-		CheckTimeout:      e.iceCheckTimeout(),
+		SessionID:   s.sessionID,
+		LocalNodeID: e.currentNodeID(),
+		PeerID:      s.nodeID,
+		Initiator:   s.initiator,
+		Strategy:    strategy,
+		Binder:      sesspkg.NewTunnelBinder(e.tun, e),
+		Sender:      peerMessageSender{engine: e},
+		RunTimeout:  e.legacyICERunTimeout(),
 		Hooks: sesspkg.Hooks{
 			OnStateChange: func(state sesspkg.State) {
 				e.handlePeerSessionState(s.nodeID, s, state)
@@ -280,50 +276,11 @@ func (s peerMessageSender) Send(ctx context.Context, peerID string, msg solver.M
 	if s.engine == nil || s.engine.coord == nil {
 		return ErrEngineNotStarted
 	}
-	signalType, err := signalTypeFromSolverMessage(msg.Kind)
+	signalType, payload, err := outboundSignalForSolverMessage(msg)
 	if err != nil {
 		return err
 	}
-	return s.engine.coord.SendSignal(ctx, peerID, signalType, msg.Payload)
-}
-
-func signalTypeFromSolverMessage(kind solver.MessageKind) (coordclient.SignalType, error) {
-	switch kind {
-	case solver.MessageKindLegacyICEOffer:
-		return coordclient.SIGNAL_ICE_OFFER, nil
-	case solver.MessageKindLegacyICEAnswer:
-		return coordclient.SIGNAL_ICE_ANSWER, nil
-	case solver.MessageKindLegacyICECandidate:
-		return coordclient.SIGNAL_ICE_CANDIDATE, nil
-	case solver.MessageKindEnvelope:
-		return coordclient.SIGNAL_UNSPECIFIED, nil
-	default:
-		return coordclient.SIGNAL_UNSPECIFIED, fmt.Errorf("client: unsupported solver message kind %q", kind)
-	}
-}
-
-func solverMessageFromSignal(signal *coordclient.SignalNotification) (solver.Message, bool) {
-	if signal == nil {
-		return solver.Message{}, false
-	}
-
-	msg := solver.Message{
-		Payload:    append([]byte(nil), signal.Payload...),
-		ReceivedAt: unixOrZero(signal.Timestamp),
-	}
-	switch signal.Type {
-	case coordclient.SIGNAL_ICE_OFFER:
-		msg.Kind = solver.MessageKindLegacyICEOffer
-	case coordclient.SIGNAL_ICE_ANSWER:
-		msg.Kind = solver.MessageKindLegacyICEAnswer
-	case coordclient.SIGNAL_ICE_CANDIDATE:
-		msg.Kind = solver.MessageKindLegacyICECandidate
-	case coordclient.SIGNAL_UNSPECIFIED:
-		msg.Kind = solver.MessageKindEnvelope
-	default:
-		return solver.Message{}, false
-	}
-	return msg, true
+	return s.engine.coord.SendSignal(ctx, peerID, signalType, payload)
 }
 
 func peerSessionState(s *peerSession) sesspkg.State {

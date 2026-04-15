@@ -1,6 +1,6 @@
 # TASK-02: 网络接口抽象层
 
-> 当前任务以 `docs/EXECUTION-BASELINE.md` 为准。
+> 历史任务说明：本任务文档按 legacy MVP baseline 编写。当前 active architecture baseline 为 `docs/CONNECTIVITY-SOLVER-BASELINE.md`。
 > MVP 范围包含 `TUN`、`userspace`、`proxy`，`TAP` 为 post-MVP 能力。
 
 ## 任务概述

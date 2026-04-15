@@ -1,6 +1,6 @@
 # TASK-05: 协调服务器
 
-> 当前任务以 `docs/EXECUTION-BASELINE.md` 为准。
+> 历史任务说明：本任务文档按 legacy MVP baseline 编写。当前 active architecture baseline 为 `docs/CONNECTIVITY-SOLVER-BASELINE.md`。
 > MVP 只冻结 `Register / Heartbeat / ListPeers / GetPeer / Signal` 五个 RPC。
 
 ## 任务概述
