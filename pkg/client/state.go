@@ -76,6 +76,9 @@ type PeerStatus struct {
 	TxBytes        uint64
 	RxBytes        uint64
 	ConnectionType ConnectionType
+	ICEState       string
+	LocalCandidate string
+	RemoteCandidate string
 }
 
 type PeerEvent int

@@ -1,6 +1,6 @@
 # WinkYou
 
-当前可部署的快速路径是：`Windows client + Linux coordinator + Linux relay + Linux peer`。  
+当前可部署的快速路径是：`Windows client + Linux coordinator + coturn relay + Linux peer`。  
 `docs/EXECUTION-BASELINE.md` 仍然是最高优先级执行基线；本 README 只描述这条已经可以真实部署、真实复现的路径。
 
 ## 当前支持矩阵
@@ -10,7 +10,8 @@
 | Windows client | 支持 | `netif.backend: tun`，使用 Wintun，要求管理员权限 |
 | Linux client | 支持 | TUN + 进程内 `wireguard-go` |
 | Linux coordinator | 支持 | gRPC 控制面 |
-| Linux relay | 支持 | TURN relay |
+| coturn relay | 支持 | 生产级 TURN relay（推荐） |
+| embedded wink-relay | 实验性 | 开发/测试用，不推荐公网部署 |
 | macOS client | 实验性 | 已修复 TUN 包头写入 bug，但部署验证仍应谨慎 |
 | `userspace` / `proxy` / no-admin 模式 | 未完成 | 当前会明确报错，不再伪装成已完成 |
 
@@ -26,7 +27,7 @@ Windows 侧需要 Wintun，推荐两种准备方式：
 
 - Windows 本地客户端
 - Linux coordinator
-- Linux relay
+- coturn relay (生产推荐)
 - Linux peer
 
 文中统一把 Linux 主机对外可访问的 IPv4 地址写成 `<HOST>`。  
@@ -42,8 +43,8 @@ Windows 侧需要 Wintun，推荐两种准备方式：
 - Linux peer：需要 root 权限创建 TUN。
 - 网络端口：
   - coordinator：TCP `50051`
-  - relay：UDP `3478`
-  - TURN relay 数据端口：还需要放行一段高位 UDP 端口范围；如果只开放 `3478/udp`，可能会出现 `Conn Type: relay` 但数据面握手仍然失败
+  - coturn relay：UDP `3478` (TURN signaling)
+  - coturn relay：UDP `49152-65535` (relay data ports，**必须开放**，否则 relay 模式下 WireGuard 握手会失败)
 - 本轮不包含 `userspace` / `proxy` / no-admin 模式。
 
 ### 2. 构建命令
@@ -94,9 +95,43 @@ bash deploy/quickstart/start-coordinator.sh
   --store-backend memory
 ```
 
-### 4. 启动 Linux relay
+### 4. 启动 coturn relay (推荐)
 
-把 `WINK_RELAY_IP` 设成客户端真正会访问到的公网 IP 或内网可达 IP，然后启动 TURN relay：
+**推荐使用 coturn** 作为生产 TURN relay。coturn 是经过实战验证的 TURN 服务器，被广泛部署。
+
+#### 使用 Docker 部署 coturn
+
+```bash
+cd deploy/coturn
+export EXTERNAL_IP=<HOST>
+bash start-coturn.sh
+```
+
+或手动部署：
+
+```bash
+cd deploy/coturn
+sed -i 's/<EXTERNAL_IP>/<HOST>/g' turnserver.conf
+docker-compose up -d
+```
+
+**关键防火墙规则**：
+
+```bash
+# TURN signaling
+sudo ufw allow 3478/udp
+
+# Relay data ports (必须开放)
+sudo ufw allow 49152:65535/udp
+```
+
+详细配置和故障排查见 `deploy/coturn/README.md`。
+
+#### 或使用 embedded wink-relay (实验性)
+
+embedded `wink-relay` 仍保留在仓库中用于开发和测试，但**不推荐用于公网生产部署**。
+
+如果你仍想使用它：
 
 ```bash
 export WINK_RELAY_IP=<HOST>
@@ -104,17 +139,22 @@ export WINK_TURN_USERS=winkdemo:winkdemo-pass
 bash deploy/quickstart/start-relay.sh
 ```
 
-`deploy/quickstart/start-relay.sh` 默认会把 TURN listener 绑定到 `${WINK_RELAY_IP}:3478`，避免公网部署时继续落到 `0.0.0.0:3478` 这种难排查状态。
-
-等价的显式命令是：
+等价的显式命令：
 
 ```bash
 ./bin/wink-relay \
+  --external-ip <HOST> \
   --listen <HOST>:3478 \
   --realm winkyou \
   --users winkdemo:winkdemo-pass \
-  --relay-ip <HOST>
+  --min-port 49152 \
+  --max-port 65535
 ```
+
+**注意**：
+- 如果 `--listen` 是 wildcard (如 `:3478` 或 `0.0.0.0:3478`) 且设置了 `--external-ip`，必须显式传 `--allow-wildcard-listen`，否则会 fail-fast
+- 必须设置 `--min-port` 和 `--max-port` 以分配 relay 端口范围
+- 确保防火墙开放了 relay 端口范围
 
 ### 5. 准备 Windows client 配置
 
@@ -210,18 +250,64 @@ Windows：
 
 ### 9. 常见故障排查
 
+#### Windows 客户端问题
+
 - 提示 `Wintun is unavailable`：
   - 先安装官方 WireGuard for Windows。
   - 或把 `wintun.dll` 放到 `wink.exe` 同目录。
 - 提示需要 `Administrator privileges`：
   - 用管理员 PowerShell 或管理员 CMD 重新运行 `wink.exe up`。
+
+#### 连接问题
+
 - `peers` 长时间停在 `connecting`：
   - 确认 Linux coordinator 的 TCP `50051` 可达。
-  - 确认 Linux relay 的 UDP `3478` 可达。
-  - 确认 relay 主机额外放行了一段高位 UDP 端口范围，而不是只开放 `3478/udp`。
+  - 确认 relay 的 UDP `3478` 可达。
+  - 确认 relay 主机额外放行了 UDP `49152-65535` 端口范围。
   - 确认 `coordinator.auth_key` 与 coordinator 启动参数一致。
   - 确认 Windows 防火墙 / Linux 防火墙没有拦截 `wink.exe` 或 UDP。
-  - 如果内置 `wink-relay` 日志里持续出现 `CreatePermission-request ... no allocation found`，先检查 `--listen` 是否绑定到了真实接口 IP；若问题仍在，可先切到 `coturn` 做部署验证。
+
+#### Relay 特定问题
+
+**症状**: `Conn Type: relay` 但 `Last Handshake: never`
+
+这说明 ICE 已经选中了 relay candidate，但 WireGuard 握手失败。
+
+**诊断步骤**：
+
+1. **检查 relay 端口范围是否开放**：
+   ```bash
+   sudo ufw status | grep 49152:65535
+   ```
+   如果没有，添加规则：
+   ```bash
+   sudo ufw allow 49152:65535/udp
+   ```
+
+2. **查看 ICE 状态** (需要 verbose 模式或 runtime state)：
+   ```bash
+   ./bin/wink --config /tmp/wink-linux-peer.yaml peers --json | jq '.[] | {node_id, ice_state, local_candidate, remote_candidate}'
+   ```
+   
+   如果 `ice_state: "connected"` 且 candidate 包含 `relay:`，说明 ICE 层成功，问题在 WireGuard 层。
+
+3. **coturn 日志检查**：
+   ```bash
+   docker-compose -f deploy/coturn/docker-compose.yml logs coturn | grep -i allocation
+   ```
+   应该看到成功的 allocation 记录。
+
+4. **embedded wink-relay 日志检查**：
+   如果使用 `wink-relay`，检查是否有 `CreatePermission-request ... no allocation found` 错误。
+   这通常意味着 relay 绑定地址配置错误。
+
+**常见原因**：
+- 防火墙只开放了 3478/udp，没有开放 relay 端口范围
+- coturn `external-ip` 配置错误
+- wink-relay 使用了 wildcard listen 但没有正确的 external-ip
+
+#### 其他问题
+
 - 想用 `userspace` / `proxy` / no-admin：
   - 当前未完成，这一轮没有承诺该路径。
 - 想安装系统 `wg`：
@@ -248,10 +334,27 @@ Linux coordinator / relay：
 
 ## 当前范围说明
 
-- 这条 README quickstart 只承诺 `Windows client + Linux coordinator + Linux relay + Linux peer`。
+- 这条 README quickstart 只承诺 `Windows client + Linux coordinator + coturn relay + Linux peer`。
+- **推荐使用 coturn** 作为生产 relay。embedded `wink-relay` 保留用于开发/测试，但不推荐公网部署。
 - `memory backend` 仍然保留，但只用于测试。
 - `userspace` / `proxy` / no-admin 模式当前没有完成，不应作为生产路径使用。
 - macOS 目前只标记为实验性，不在本 quickstart 承诺范围内。
+
+## 为什么默认 relay 改用 coturn
+
+embedded `wink-relay` 仍在仓库中，但有以下限制：
+
+1. **生产验证不足**：未经过大规模公网部署验证
+2. **配置复杂**：wildcard listen + external-ip 的组合容易出错
+3. **调试困难**：allocation 失败时诊断信息不如 coturn 清晰
+
+coturn 是成熟的 TURN 服务器，被 WebRTC、Jitsi 等项目广泛使用。切换到 coturn 作为默认路径可以：
+
+- 降低部署失败率
+- 提供更好的故障排查体验
+- 让 `wink-relay` 专注于开发/测试场景
+
+如果你在开发环境中需要快速启动 relay，`wink-relay` 仍然可用。但对于面向用户的部署，强烈建议使用 coturn。
 
 ## 其他文档
 

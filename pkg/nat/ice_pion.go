@@ -28,6 +28,7 @@ type icePionAgent struct {
 	selectedPair     *CandidatePair
 	transport        SelectedTransport
 	state            ConnectionState
+	onPairChange     func(*CandidatePair)
 }
 
 func newICEPionAgent(cfg ICEConfig) (ICEAgent, error) {
@@ -79,6 +80,33 @@ func newICEPionAgent(cfg ICEConfig) (ICEAgent, error) {
 	}); err != nil {
 		_ = agent.Close()
 		return nil, fmt.Errorf("nat: register connection state handler: %w", err)
+	}
+
+	if err := agent.OnSelectedCandidatePairChange(func(local, remote pionice.Candidate) {
+		a.mu.Lock()
+		defer a.mu.Unlock()
+		if local == nil || remote == nil {
+			return
+		}
+		localCand, err := candidateFromPion(local)
+		if err != nil {
+			return
+		}
+		remoteCand, err := candidateFromPion(remote)
+		if err != nil {
+			return
+		}
+		pair := &CandidatePair{
+			Local:  localCand,
+			Remote: remoteCand,
+		}
+		a.selectedPair = pair
+		if a.onPairChange != nil {
+			a.onPairChange(pair)
+		}
+	}); err != nil {
+		_ = agent.Close()
+		return nil, fmt.Errorf("nat: register selected pair handler: %w", err)
 	}
 
 	return a, nil
@@ -289,6 +317,18 @@ func (a *icePionAgent) GetSelectedPair() (*CandidatePair, error) {
 	return converted, nil
 }
 
+func (a *icePionAgent) GetConnectionState() ConnectionState {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return a.state
+}
+
+func (a *icePionAgent) OnSelectedCandidatePairChange(handler func(*CandidatePair)) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.onPairChange = handler
+}
+
 func buildPionURLs(cfg ICEConfig) ([]*stun.URI, error) {
 	urls := make([]*stun.URI, 0, len(cfg.STUNServers)+len(cfg.TURNServers))
 	for _, raw := range cfg.STUNServers {
@@ -329,7 +369,7 @@ func buildPionURLs(cfg ICEConfig) ([]*stun.URI, error) {
 }
 
 func candidateTypesForConfig(cfg ICEConfig) []pionice.CandidateType {
-	if cfg.relayOnly {
+	if cfg.relayOnly || cfg.ForceRelay {
 		return []pionice.CandidateType{pionice.CandidateTypeRelay}
 	}
 	return []pionice.CandidateType{

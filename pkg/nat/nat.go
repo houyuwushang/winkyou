@@ -34,6 +34,9 @@ type ICEConfig struct {
 	TURNServers    []TURNServer
 	Controlling    bool
 
+	// ForceRelay forces relay-only candidate gathering (test/debug only).
+	ForceRelay bool
+
 	// relayOnly is test-only; it forces relay-only candidate gathering.
 	relayOnly bool
 }

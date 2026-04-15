@@ -19,6 +19,7 @@ type peerSession struct {
 	agent          nat.ICEAgent
 	transport      nat.SelectedTransport
 	selectedPair   *nat.CandidatePair
+	iceState       nat.ConnectionState
 	tunnelAttached bool
 	connected      bool
 	connecting     bool
@@ -202,7 +203,18 @@ func (e *engine) tryConnectPeer(nodeID string, s *peerSession) {
 	s.connectMu.Lock()
 	s.transport = transport
 	s.selectedPair = pair
+	if iceAgent, ok := s.agent.(interface{ GetConnectionState() nat.ConnectionState }); ok {
+		s.iceState = iceAgent.GetConnectionState()
+	}
 	s.connectMu.Unlock()
+
+	e.log.Info("ice connected",
+		"node_id", nodeID,
+		"local_type", candidateTypeString(pair.Local),
+		"remote_type", candidateTypeString(pair.Remote),
+		"local_addr", candidateAddrString(pair.Local),
+		"remote_addr", candidateAddrString(pair.Remote))
+
 	if e.tun == nil {
 		s.connectMu.Lock()
 		s.connecting = false
@@ -211,6 +223,11 @@ func (e *engine) tryConnectPeer(nodeID string, s *peerSession) {
 		return
 	}
 	if err := e.attachTunnelPeer(nodeID, transport, pair); err != nil {
+		e.log.Warn("ice selected but tunnel attach failed",
+			"node_id", nodeID,
+			"error", err,
+			"local_type", candidateTypeString(pair.Local),
+			"remote_type", candidateTypeString(pair.Remote))
 		s.connectMu.Lock()
 		s.connecting = false
 		s.connectMu.Unlock()
@@ -260,6 +277,11 @@ func (e *engine) attachTunnelPeer(nodeID string, transport nat.SelectedTransport
 			p.Endpoint = cloneUDPAddr(pair.Remote.Address)
 			p.ConnectionType = connectionTypeFromCandidatePair(pair)
 		}
+		if pair != nil {
+			p.ICEState = "connected"
+			p.LocalCandidate = formatCandidateInfo(pair.Local)
+			p.RemoteCandidate = formatCandidateInfo(pair.Remote)
+		}
 		p.LastSeen = time.Now()
 	}
 	e.updateStatusCountersLocked()
@@ -292,6 +314,7 @@ func closePeerSession(session *peerSession) {
 	transport := session.transport
 	session.transport = nil
 	session.selectedPair = nil
+	session.iceState = nat.ConnectionStateNew
 	session.tunnelAttached = false
 	session.connected = false
 	session.connecting = false
@@ -305,4 +328,29 @@ func closePeerSession(session *peerSession) {
 	if session.agent != nil {
 		_ = session.agent.Close()
 	}
+}
+
+func candidateTypeString(c *nat.Candidate) string {
+	if c == nil {
+		return ""
+	}
+	return c.Type.String()
+}
+
+func candidateAddrString(c *nat.Candidate) string {
+	if c == nil || c.Address == nil {
+		return ""
+	}
+	return c.Address.String()
+}
+
+func formatCandidateInfo(c *nat.Candidate) string {
+	if c == nil {
+		return ""
+	}
+	addr := ""
+	if c.Address != nil {
+		addr = c.Address.String()
+	}
+	return fmt.Sprintf("%s:%s", c.Type.String(), addr)
 }

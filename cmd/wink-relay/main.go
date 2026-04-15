@@ -17,16 +17,24 @@ func main() { os.Exit(run()) }
 
 func run() int {
 	var (
-		listen      string
-		realm       string
-		users       string
-		relayIP     string
-		showVersion bool
+		listen             string
+		realm              string
+		users              string
+		relayIP            string
+		externalIP         string
+		minPort            int
+		maxPort            int
+		allowWildcardListen bool
+		showVersion        bool
 	)
 	flag.StringVar(&listen, "listen", ":3478", "udp listen address")
 	flag.StringVar(&realm, "realm", "winkyou", "turn realm")
 	flag.StringVar(&users, "users", "", "static users: user1:pass1,user2:pass2")
-	flag.StringVar(&relayIP, "relay-ip", "", "relay public ip (optional)")
+	flag.StringVar(&relayIP, "relay-ip", "", "relay public ip (optional, deprecated: use --external-ip)")
+	flag.StringVar(&externalIP, "external-ip", "", "external/public ip for relay candidates")
+	flag.IntVar(&minPort, "min-port", 0, "minimum relay port (requires --max-port)")
+	flag.IntVar(&maxPort, "max-port", 0, "maximum relay port (requires --min-port)")
+	flag.BoolVar(&allowWildcardListen, "allow-wildcard-listen", false, "allow wildcard listen with explicit external-ip")
 	flag.BoolVar(&showVersion, "version", false, "print version")
 	flag.Parse()
 
@@ -35,12 +43,30 @@ func run() int {
 		return 0
 	}
 
+	if externalIP == "" && relayIP != "" {
+		externalIP = relayIP
+	}
+
 	userMap, err := parseUsers(users)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return 1
 	}
-	srv, err := relayserver.New(relayserver.Config{ListenAddress: listen, Realm: realm, Users: userMap, RelayAddress: relayIP})
+
+	if minPort > 0 && maxPort > 0 && maxPort < minPort {
+		fmt.Fprintf(os.Stderr, "invalid port range: min-port (%d) > max-port (%d)\n", minPort, maxPort)
+		return 1
+	}
+
+	srv, err := relayserver.New(relayserver.Config{
+		ListenAddress:       listen,
+		Realm:               realm,
+		Users:               userMap,
+		RelayAddress:        externalIP,
+		MinPort:             minPort,
+		MaxPort:             maxPort,
+		AllowWildcardListen: allowWildcardListen,
+	})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return 1
@@ -50,7 +76,6 @@ func run() int {
 		return 1
 	}
 	defer srv.Close()
-	fmt.Fprintf(os.Stdout, "wink relay started on %s realm=%s\n", srv.Addr(), realm)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()

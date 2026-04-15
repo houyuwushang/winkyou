@@ -52,6 +52,7 @@ type NATConfig struct {
 	RetryMaxInterval time.Duration      `mapstructure:"retry_max_interval" yaml:"retry_max_interval"`
 	STUNServers      []string           `mapstructure:"stun_servers" yaml:"stun_servers"`
 	TURNServers      []TURNServerConfig `mapstructure:"turn_servers" yaml:"turn_servers"`
+	ForceRelay       bool               `mapstructure:"force_relay" yaml:"force_relay"`
 }
 
 type TURNServerConfig struct {

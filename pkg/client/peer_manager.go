@@ -104,5 +104,6 @@ func (e *engine) newICEAgent(ctx context.Context, controlling bool) (nat.ICEAgen
 		STUNServers:    e.cfg.NAT.STUNServers,
 		TURNServers:    toNATTURNServers(e.cfg.NAT.TURNServers),
 		Controlling:    controlling,
+		ForceRelay:     e.cfg.NAT.ForceRelay,
 	})
 }

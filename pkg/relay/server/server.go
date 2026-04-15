@@ -11,10 +11,13 @@ import (
 )
 
 type Config struct {
-	ListenAddress string
-	Realm         string
-	Users         map[string]string
-	RelayAddress  string
+	ListenAddress        string
+	Realm                string
+	Users                map[string]string
+	RelayAddress         string
+	MinPort              int
+	MaxPort              int
+	AllowWildcardListen  bool
 }
 
 type Server struct {
@@ -43,7 +46,10 @@ func (s *Server) Start() error {
 		return nil
 	}
 	relayIP := net.ParseIP(strings.TrimSpace(s.cfg.RelayAddress))
-	listenAddress, relayBindAddress := resolveListenAndRelayBindAddress(s.cfg.ListenAddress, relayIP, localInterfaceHasIP)
+	listenAddress, relayBindAddress, err := resolveListenAndRelayBindAddress(s.cfg.ListenAddress, relayIP, s.cfg.AllowWildcardListen, localInterfaceHasIP)
+	if err != nil {
+		return err
+	}
 
 	pc, err := net.ListenPacket("udp4", listenAddress)
 	if err != nil {
@@ -58,6 +64,22 @@ func (s *Server) Start() error {
 		}
 	}
 
+	var relayAddrGen turn.RelayAddressGenerator
+	if s.cfg.MinPort > 0 && s.cfg.MaxPort > 0 && s.cfg.MaxPort >= s.cfg.MinPort {
+		relayAddrGen = &turn.RelayAddressGeneratorPortRange{
+			RelayAddress: relayIP,
+			Address:      relayBindAddress,
+			MinPort:      uint16(s.cfg.MinPort),
+			MaxPort:      uint16(s.cfg.MaxPort),
+		}
+		fmt.Printf("relay server: using port range %d-%d for relay allocations\n", s.cfg.MinPort, s.cfg.MaxPort)
+	} else {
+		relayAddrGen = &turn.RelayAddressGeneratorStatic{
+			RelayAddress: relayIP,
+			Address:      relayBindAddress,
+		}
+	}
+
 	ts, err := turn.NewServer(turn.ServerConfig{
 		Realm:         s.cfg.Realm,
 		LoggerFactory: logging.NewDefaultLoggerFactory(),
@@ -69,17 +91,18 @@ func (s *Server) Start() error {
 			return turn.GenerateAuthKey(username, realm, pass), true
 		},
 		PacketConnConfigs: []turn.PacketConnConfig{{
-			PacketConn: pc,
-			RelayAddressGenerator: &turn.RelayAddressGeneratorStatic{
-				RelayAddress: relayIP,
-				Address:      relayBindAddress,
-			},
+			PacketConn:            pc,
+			RelayAddressGenerator: relayAddrGen,
 		}},
 	})
 	if err != nil {
 		_ = pc.Close()
 		return fmt.Errorf("relay server: new turn server: %w", err)
 	}
+
+	fmt.Printf("relay server: started on %s (realm=%s, relay_ip=%s, bind=%s)\n",
+		pc.LocalAddr(), s.cfg.Realm, relayIP, relayBindAddress)
+
 	s.pc = pc
 	s.turn = ts
 	return nil
@@ -106,7 +129,7 @@ func (s *Server) Addr() net.Addr {
 	return s.pc.LocalAddr()
 }
 
-func resolveListenAndRelayBindAddress(listenAddress string, relayIP net.IP, hasLocalIP func(net.IP) bool) (string, string) {
+func resolveListenAndRelayBindAddress(listenAddress string, relayIP net.IP, allowWildcard bool, hasLocalIP func(net.IP) bool) (string, string, error) {
 	listenAddress = strings.TrimSpace(listenAddress)
 	if listenAddress == "" {
 		listenAddress = ":3478"
@@ -114,25 +137,31 @@ func resolveListenAndRelayBindAddress(listenAddress string, relayIP net.IP, hasL
 
 	host, port, err := net.SplitHostPort(listenAddress)
 	if err != nil {
-		return listenAddress, "0.0.0.0"
+		return listenAddress, "0.0.0.0", nil
 	}
 
 	host = strings.TrimSpace(host)
+	isWildcard := host == "" || host == "0.0.0.0" || host == "::" || host == "[::]"
+
+	if isWildcard && relayIP != nil && !allowWildcard {
+		return "", "", fmt.Errorf("relay server: wildcard listen (%s) with explicit relay-ip (%s) requires --allow-wildcard-listen", listenAddress, relayIP)
+	}
+
 	switch host {
 	case "":
 		if relayIP != nil && hasLocalIP != nil && hasLocalIP(relayIP) {
 			concrete := net.JoinHostPort(relayIP.String(), port)
-			return concrete, relayIP.String()
+			return concrete, relayIP.String(), nil
 		}
-		return listenAddress, "0.0.0.0"
+		return listenAddress, "0.0.0.0", nil
 	case "0.0.0.0", "::", "[::]":
 		if relayIP != nil && hasLocalIP != nil && hasLocalIP(relayIP) {
 			concrete := net.JoinHostPort(relayIP.String(), port)
-			return concrete, relayIP.String()
+			return concrete, relayIP.String(), nil
 		}
-		return listenAddress, "0.0.0.0"
+		return listenAddress, "0.0.0.0", nil
 	default:
-		return listenAddress, host
+		return listenAddress, host, nil
 	}
 }
 
