@@ -42,12 +42,14 @@ func (s *Server) Start() error {
 	if s.turn != nil {
 		return nil
 	}
-	pc, err := net.ListenPacket("udp4", s.cfg.ListenAddress)
+	relayIP := net.ParseIP(strings.TrimSpace(s.cfg.RelayAddress))
+	listenAddress, relayBindAddress := resolveListenAndRelayBindAddress(s.cfg.ListenAddress, relayIP, localInterfaceHasIP)
+
+	pc, err := net.ListenPacket("udp4", listenAddress)
 	if err != nil {
-		return fmt.Errorf("relay server: listen udp: %w", err)
+		return fmt.Errorf("relay server: listen udp on %s: %w", listenAddress, err)
 	}
 
-	relayIP := net.ParseIP(strings.TrimSpace(s.cfg.RelayAddress))
 	if relayIP == nil {
 		host, _, _ := net.SplitHostPort(pc.LocalAddr().String())
 		relayIP = net.ParseIP(host)
@@ -70,7 +72,7 @@ func (s *Server) Start() error {
 			PacketConn: pc,
 			RelayAddressGenerator: &turn.RelayAddressGeneratorStatic{
 				RelayAddress: relayIP,
-				Address:      "0.0.0.0",
+				Address:      relayBindAddress,
 			},
 		}},
 	})
@@ -102,4 +104,64 @@ func (s *Server) Addr() net.Addr {
 		return nil
 	}
 	return s.pc.LocalAddr()
+}
+
+func resolveListenAndRelayBindAddress(listenAddress string, relayIP net.IP, hasLocalIP func(net.IP) bool) (string, string) {
+	listenAddress = strings.TrimSpace(listenAddress)
+	if listenAddress == "" {
+		listenAddress = ":3478"
+	}
+
+	host, port, err := net.SplitHostPort(listenAddress)
+	if err != nil {
+		return listenAddress, "0.0.0.0"
+	}
+
+	host = strings.TrimSpace(host)
+	switch host {
+	case "":
+		if relayIP != nil && hasLocalIP != nil && hasLocalIP(relayIP) {
+			concrete := net.JoinHostPort(relayIP.String(), port)
+			return concrete, relayIP.String()
+		}
+		return listenAddress, "0.0.0.0"
+	case "0.0.0.0", "::", "[::]":
+		if relayIP != nil && hasLocalIP != nil && hasLocalIP(relayIP) {
+			concrete := net.JoinHostPort(relayIP.String(), port)
+			return concrete, relayIP.String()
+		}
+		return listenAddress, "0.0.0.0"
+	default:
+		return listenAddress, host
+	}
+}
+
+func localInterfaceHasIP(ip net.IP) bool {
+	if ip == nil {
+		return false
+	}
+
+	interfaces, err := net.Interfaces()
+	if err != nil {
+		return false
+	}
+	for _, iface := range interfaces {
+		addrs, err := iface.Addrs()
+		if err != nil {
+			continue
+		}
+		for _, addr := range addrs {
+			var candidate net.IP
+			switch v := addr.(type) {
+			case *net.IPNet:
+				candidate = v.IP
+			case *net.IPAddr:
+				candidate = v.IP
+			}
+			if candidate != nil && candidate.Equal(ip) {
+				return true
+			}
+		}
+	}
+	return false
 }

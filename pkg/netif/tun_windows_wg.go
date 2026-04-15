@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"os"
 	"os/exec"
 	"strings"
 	"sync"
@@ -15,6 +16,7 @@ import (
 )
 
 const defaultWindowsTUNName = "wink0"
+const windowsTUNNameEnv = "WINKYOU_TUN_NAME"
 
 type batchTunDevice interface {
 	Read(bufs [][]byte, sizes []int, offset int) (int, error)
@@ -35,7 +37,7 @@ type wgTunInterface struct {
 }
 
 func createTUNInterface(cfg Config) (NetworkInterface, error) {
-	device, err := wgtun.CreateTUN(defaultWindowsTUNName, cfg.MTU)
+	device, err := wgtun.CreateTUN(windowsTUNName(), cfg.MTU)
 	if err != nil {
 		return nil, explainWindowsTUNCreateError(err)
 	}
@@ -61,6 +63,14 @@ func createTUNInterface(cfg Config) (NetworkInterface, error) {
 		mtu:       mtu,
 		runScript: runWindowsPowerShell,
 	}, nil
+}
+
+func windowsTUNName() string {
+	name := strings.TrimSpace(os.Getenv(windowsTUNNameEnv))
+	if name == "" {
+		return defaultWindowsTUNName
+	}
+	return name
 }
 
 func (w *wgTunInterface) Name() string { return w.name }

@@ -119,3 +119,15 @@ func TestExplainWindowsTUNCreateError(t *testing.T) {
 		t.Fatalf("missing DLL error = %v, want Wintun guidance", err)
 	}
 }
+
+func TestWindowsTUNName(t *testing.T) {
+	t.Setenv(windowsTUNNameEnv, "")
+	if got := windowsTUNName(); got != defaultWindowsTUNName {
+		t.Fatalf("windowsTUNName() = %q, want %q", got, defaultWindowsTUNName)
+	}
+
+	t.Setenv(windowsTUNNameEnv, "wink-deploy")
+	if got := windowsTUNName(); got != "wink-deploy" {
+		t.Fatalf("windowsTUNName() override = %q, want wink-deploy", got)
+	}
+}

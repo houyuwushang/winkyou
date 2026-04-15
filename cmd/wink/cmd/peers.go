@@ -54,6 +54,11 @@ func newPeersCmd(opts *Options) *cobra.Command {
 				cmd.Printf("  Conn Type:  %s\n", dashIfEmpty(p.ConnectionType))
 				cmd.Printf("  Tx:         %s\n", formatBytes(p.TxBytes))
 				cmd.Printf("  Rx:         %s\n", formatBytes(p.RxBytes))
+				if !p.LastHandshake.IsZero() {
+					cmd.Printf("  Handshake:  %s\n", p.LastHandshake.Format(time.RFC3339))
+				} else {
+					cmd.Printf("  Handshake:  -\n")
+				}
 				if !p.LastSeen.IsZero() {
 					cmd.Printf("  Last Seen:  %s\n", p.LastSeen.Format(time.RFC3339))
 				} else {

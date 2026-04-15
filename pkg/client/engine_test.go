@@ -12,6 +12,7 @@ import (
 	"winkyou/pkg/config"
 	"winkyou/pkg/coordinator/server"
 	"winkyou/pkg/logger"
+	"winkyou/pkg/tunnel"
 
 	"google.golang.org/grpc"
 )
@@ -81,7 +82,12 @@ func TestRuntimeStateRoundTrip(t *testing.T) {
 			NetworkCIDR: "10.0.0.0/24",
 			Uptime:      "5s",
 		},
-		Peers: []RuntimePeerStatus{{NodeID: "node-2", Name: "beta", State: PeerStateConnecting.String()}},
+		Peers: []RuntimePeerStatus{{
+			NodeID:        "node-2",
+			Name:          "beta",
+			State:         PeerStateConnecting.String(),
+			LastHandshake: now.Add(3 * time.Second),
+		}},
 	}
 
 	if err := WriteRuntimeState(path, state); err != nil {
@@ -98,6 +104,64 @@ func TestRuntimeStateRoundTrip(t *testing.T) {
 	if len(loaded.Peers) != 1 || loaded.Peers[0].NodeID != "node-2" {
 		t.Fatalf("loaded peers = %#v", loaded.Peers)
 	}
+	if loaded.Peers[0].LastHandshake != now.Add(3*time.Second) {
+		t.Fatalf("loaded last handshake = %v, want %v", loaded.Peers[0].LastHandshake, now.Add(3*time.Second))
+	}
+}
+
+func TestUpdateStatusCountersSyncsTunnelPeerState(t *testing.T) {
+	pub := mustTestPublicKey(t)
+	eng := &engine{
+		peers: map[string]*PeerStatus{
+			"node-2": {
+				NodeID:    "node-2",
+				PublicKey: pub.String(),
+				State:     PeerStateConnecting,
+			},
+		},
+		tun: fakeTunnelForEngineTest{peers: []*tunnel.PeerStatus{{
+			PublicKey:     pub,
+			Endpoint:      &net.UDPAddr{IP: net.ParseIP("203.0.113.10"), Port: 51820},
+			LastHandshake: time.Unix(1_700_000_005, 0),
+			TxBytes:       64,
+			RxBytes:       128,
+		}}},
+	}
+
+	eng.updateStatusCountersLocked()
+
+	peer := eng.peers["node-2"]
+	if peer.TxBytes != 64 || peer.RxBytes != 128 {
+		t.Fatalf("peer stats = tx=%d rx=%d, want 64/128", peer.TxBytes, peer.RxBytes)
+	}
+	if peer.Endpoint == nil || peer.Endpoint.String() != "203.0.113.10:51820" {
+		t.Fatalf("peer endpoint = %+v, want 203.0.113.10:51820", peer.Endpoint)
+	}
+	if peer.LastHandshake.Unix() != 1_700_000_005 {
+		t.Fatalf("peer last handshake = %v, want unix 1700000005", peer.LastHandshake)
+	}
+}
+
+type fakeTunnelForEngineTest struct {
+	peers  []*tunnel.PeerStatus
+	stats  *tunnel.TunnelStats
+	events chan tunnel.TunnelEvent
+}
+
+func (f fakeTunnelForEngineTest) Start() error                      { return nil }
+func (f fakeTunnelForEngineTest) Stop() error                       { return nil }
+func (f fakeTunnelForEngineTest) AddPeer(*tunnel.PeerConfig) error  { return nil }
+func (f fakeTunnelForEngineTest) RemovePeer(tunnel.PublicKey) error { return nil }
+func (f fakeTunnelForEngineTest) UpdatePeerEndpoint(tunnel.PublicKey, *net.UDPAddr) error {
+	return nil
+}
+func (f fakeTunnelForEngineTest) GetPeers() []*tunnel.PeerStatus { return f.peers }
+func (f fakeTunnelForEngineTest) GetStats() *tunnel.TunnelStats  { return f.stats }
+func (f fakeTunnelForEngineTest) Events() <-chan tunnel.TunnelEvent {
+	if f.events == nil {
+		return make(chan tunnel.TunnelEvent)
+	}
+	return f.events
 }
 
 func waitForRuntimeState(path string, predicate func(state *RuntimeState) bool) (*RuntimeState, error) {
@@ -137,6 +201,15 @@ func startTestCoordinator(t *testing.T) (*grpc.Server, net.Listener) {
 	}()
 
 	return grpcServer, listener
+}
+
+func mustTestPublicKey(t *testing.T) tunnel.PublicKey {
+	t.Helper()
+	privateKey, err := tunnel.GeneratePrivateKey()
+	if err != nil {
+		t.Fatalf("GeneratePrivateKey() error = %v", err)
+	}
+	return privateKey.PublicKey()
 }
 
 func TestMain(m *testing.M) {

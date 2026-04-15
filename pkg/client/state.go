@@ -72,6 +72,7 @@ type PeerStatus struct {
 	Endpoint       *net.UDPAddr
 	Latency        time.Duration
 	LastSeen       time.Time
+	LastHandshake  time.Time
 	TxBytes        uint64
 	RxBytes        uint64
 	ConnectionType ConnectionType

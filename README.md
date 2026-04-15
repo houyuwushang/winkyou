@@ -43,6 +43,7 @@ Windows 侧需要 Wintun，推荐两种准备方式：
 - 网络端口：
   - coordinator：TCP `50051`
   - relay：UDP `3478`
+  - TURN relay 数据端口：还需要放行一段高位 UDP 端口范围；如果只开放 `3478/udp`，可能会出现 `Conn Type: relay` 但数据面握手仍然失败
 - 本轮不包含 `userspace` / `proxy` / no-admin 模式。
 
 ### 2. 构建命令
@@ -103,11 +104,13 @@ export WINK_TURN_USERS=winkdemo:winkdemo-pass
 bash deploy/quickstart/start-relay.sh
 ```
 
+`deploy/quickstart/start-relay.sh` 默认会把 TURN listener 绑定到 `${WINK_RELAY_IP}:3478`，避免公网部署时继续落到 `0.0.0.0:3478` 这种难排查状态。
+
 等价的显式命令是：
 
 ```bash
 ./bin/wink-relay \
-  --listen :3478 \
+  --listen <HOST>:3478 \
   --realm winkyou \
   --users winkdemo:winkdemo-pass \
   --relay-ip <HOST>
@@ -215,8 +218,10 @@ Windows：
 - `peers` 长时间停在 `connecting`：
   - 确认 Linux coordinator 的 TCP `50051` 可达。
   - 确认 Linux relay 的 UDP `3478` 可达。
+  - 确认 relay 主机额外放行了一段高位 UDP 端口范围，而不是只开放 `3478/udp`。
   - 确认 `coordinator.auth_key` 与 coordinator 启动参数一致。
   - 确认 Windows 防火墙 / Linux 防火墙没有拦截 `wink.exe` 或 UDP。
+  - 如果内置 `wink-relay` 日志里持续出现 `CreatePermission-request ... no allocation found`，先检查 `--listen` 是否绑定到了真实接口 IP；若问题仍在，可先切到 `coturn` 做部署验证。
 - 想用 `userspace` / `proxy` / no-admin：
   - 当前未完成，这一轮没有承诺该路径。
 - 想安装系统 `wg`：
@@ -253,3 +258,4 @@ Linux coordinator / relay：
 - 部署入口：[`README.md`](./README.md)
 - 文档索引：[`docs/README.md`](./docs/README.md)
 - 执行基线：[`docs/EXECUTION-BASELINE.md`](./docs/EXECUTION-BASELINE.md)
+- 今日部署疑点与专家问题：[`docs/DEPLOYMENT-QUESTIONS-2026-04-15.md`](./docs/DEPLOYMENT-QUESTIONS-2026-04-15.md)

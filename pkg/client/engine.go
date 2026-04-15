@@ -389,6 +389,8 @@ func (e *engine) setState(state EngineState, errText string) {
 }
 
 func (e *engine) updateStatusCountersLocked() {
+	e.syncTunnelPeerStateLocked()
+
 	connected := 0
 	for _, peer := range e.peers {
 		if peer.State == PeerStateConnected {
@@ -402,6 +404,43 @@ func (e *engine) updateStatusCountersLocked() {
 		if stats != nil {
 			e.status.BytesSent = stats.TxBytes
 			e.status.BytesRecv = stats.RxBytes
+		}
+	}
+}
+
+func (e *engine) syncTunnelPeerStateLocked() {
+	if e.tun == nil || len(e.peers) == 0 {
+		return
+	}
+
+	tunnelPeers := e.tun.GetPeers()
+	if len(tunnelPeers) == 0 {
+		return
+	}
+
+	byPublicKey := make(map[string]*tunnel.PeerStatus, len(tunnelPeers))
+	for _, tunnelPeer := range tunnelPeers {
+		if tunnelPeer == nil {
+			continue
+		}
+		byPublicKey[tunnelPeer.PublicKey.String()] = tunnelPeer
+	}
+
+	for _, peer := range e.peers {
+		if peer == nil {
+			continue
+		}
+		tunnelPeer := byPublicKey[peer.PublicKey]
+		if tunnelPeer == nil {
+			continue
+		}
+		peer.TxBytes = tunnelPeer.TxBytes
+		peer.RxBytes = tunnelPeer.RxBytes
+		if tunnelPeer.Endpoint != nil {
+			peer.Endpoint = cloneUDPAddr(tunnelPeer.Endpoint)
+		}
+		if !tunnelPeer.LastHandshake.IsZero() {
+			peer.LastHandshake = tunnelPeer.LastHandshake
 		}
 	}
 }
