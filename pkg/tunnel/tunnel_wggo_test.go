@@ -10,6 +10,7 @@ import (
 	"time"
 
 	wgconn "golang.zx2c4.com/wireguard/conn"
+	"winkyou/pkg/transport/iceadapter"
 )
 
 type trackedConn struct {
@@ -67,7 +68,7 @@ func TestPeerTransportBindSendAndReceive(t *testing.T) {
 	defer left.Close()
 	defer right.Close()
 
-	endpointID, err := bind.AttachTransport(publicKey, left)
+	endpointID, err := bind.AttachTransport(publicKey, iceadapter.New(left, "test/sendrecv"))
 	if err != nil {
 		t.Fatalf("AttachTransport() error: %v", err)
 	}
@@ -143,10 +144,10 @@ func TestPeerTransportBindReplaceClosesOldTransport(t *testing.T) {
 	second, secondPeer := newTrackedPipe()
 	defer secondPeer.Close()
 
-	if _, err := bind.AttachTransport(publicKey, first); err != nil {
+	if _, err := bind.AttachTransport(publicKey, iceadapter.New(first, "test/replace/first")); err != nil {
 		t.Fatalf("AttachTransport(first) error: %v", err)
 	}
-	if _, err := bind.AttachTransport(publicKey, second); err != nil {
+	if _, err := bind.AttachTransport(publicKey, iceadapter.New(second, "test/replace/second")); err != nil {
 		t.Fatalf("AttachTransport(second) error: %v", err)
 	}
 
@@ -165,7 +166,7 @@ func TestPeerTransportBindDetachClosesTransport(t *testing.T) {
 	conn, peer := newTrackedPipe()
 	defer peer.Close()
 
-	if _, err := bind.AttachTransport(publicKey, conn); err != nil {
+	if _, err := bind.AttachTransport(publicKey, iceadapter.New(conn, "test/detach")); err != nil {
 		t.Fatalf("AttachTransport() error: %v", err)
 	}
 	bind.DetachTransport(publicKey)

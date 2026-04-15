@@ -1,170 +1,131 @@
-# WinkYou MVP 执行基线
+﻿> Legacy baseline notice: as of 2026-04-15, `docs/CONNECTIVITY-SOLVER-BASELINE.md` is the active architecture baseline for the connectivity-solver reboot. This document remains as the frozen legacy MVP execution baseline.
 
-> 目的：把当前仓库中分散且互相冲突的规划，收敛为一份可以直接执行的 MVP 基线。
->
-> 适用范围：MVP 到首个可用命令行版本发布前。
->
-> 优先级：当本文件与 `winkplan.md`、`manage.md`、`docs/ARCHITECTURE.md`、各 TASK 文档冲突时，以本文件为准；旧文档后续应回改到与本文件一致。
+# WinkYou MVP 鎵ц鍩虹嚎
 
+> 鐩殑锛氭妸褰撳墠浠撳簱涓垎鏁ｄ笖浜掔浉鍐茬獊鐨勮鍒掞紝鏀舵暃涓轰竴浠藉彲浠ョ洿鎺ユ墽琛岀殑 MVP 鍩虹嚎銆?>
+> 閫傜敤鑼冨洿锛歁VP 鍒伴涓彲鐢ㄥ懡浠よ鐗堟湰鍙戝竷鍓嶃€?>
+> 浼樺厛绾э細褰撴湰鏂囦欢涓?`winkplan.md`銆乣manage.md`銆乣docs/ARCHITECTURE.md`銆佸悇 TASK 鏂囨。鍐茬獊鏃讹紝浠ユ湰鏂囦欢涓哄噯锛涙棫鏂囨。鍚庣画搴斿洖鏀瑰埌涓庢湰鏂囦欢涓€鑷淬€?
 ---
 
-## 一、基线结论
+## 涓€銆佸熀绾跨粨璁?
+鏈墽琛屽熀绾垮喕缁撲互涓嬪喅绛栵細
 
-本执行基线冻结以下决策：
-
-1. MVP 只覆盖 `Windows/Linux/macOS`，不包含 `Android/iOS`。
-2. MVP 只交付 `CLI`，不包含 `GUI`。
-3. MVP 只支持 `IPv4`，不包含 `IPv6`。
-4. MVP 的加密隧道实现固定为 `wireguard-go`，不把 `Wink Protocol v1` 纳入 MVP 交付范围。
-5. MVP 的网络接口能力包含 `TUN`、`userspace netstack`、`SOCKS5 fallback`，不包含 `TAP`。
-6. MVP 的中继能力只做 `UDP TURN`，不做 `TCP TURN`。
-7. MVP 的控制平面采用 `单协调服务器 + SQLite`，不做多实例同步。
-8. MVP 的网络模型采用 `单网络`，不做网络组、多租户、OIDC、ACL。
-9. Go 版本基线统一为 `Go 1.22+`。
-10. 代码目录和接口命名从本文件开始冻结，后续不再出现第二套版本。
-
+1. MVP 鍙鐩?`Windows/Linux/macOS`锛屼笉鍖呭惈 `Android/iOS`銆?2. MVP 鍙氦浠?`CLI`锛屼笉鍖呭惈 `GUI`銆?3. MVP 鍙敮鎸?`IPv4`锛屼笉鍖呭惈 `IPv6`銆?4. MVP 鐨勫姞瀵嗛毀閬撳疄鐜板浐瀹氫负 `wireguard-go`锛屼笉鎶?`Wink Protocol v1` 绾冲叆 MVP 浜や粯鑼冨洿銆?5. MVP 鐨勭綉缁滄帴鍙ｈ兘鍔涘寘鍚?`TUN`銆乣userspace netstack`銆乣SOCKS5 fallback`锛屼笉鍖呭惈 `TAP`銆?6. MVP 鐨勪腑缁ц兘鍔涘彧鍋?`UDP TURN`锛屼笉鍋?`TCP TURN`銆?7. MVP 鐨勬帶鍒跺钩闈㈤噰鐢?`鍗曞崗璋冩湇鍔″櫒 + SQLite`锛屼笉鍋氬瀹炰緥鍚屾銆?8. MVP 鐨勭綉缁滄ā鍨嬮噰鐢?`鍗曠綉缁渀锛屼笉鍋氱綉缁滅粍銆佸绉熸埛銆丱IDC銆丄CL銆?9. Go 鐗堟湰鍩虹嚎缁熶竴涓?`Go 1.22+`銆?10. 浠ｇ爜鐩綍鍜屾帴鍙ｅ懡鍚嶄粠鏈枃浠跺紑濮嬪喕缁擄紝鍚庣画涓嶅啀鍑虹幇绗簩濂楃増鏈€?
 ---
 
-## 二、MVP 范围
+## 浜屻€丮VP 鑼冨洿
 
-### 2.1 包含项
-
-- 节点注册与节点发现
-- TUN 虚拟网卡
-- userspace netstack 无权限模式
-- SOCKS5 降级模式
-- 两节点及多节点虚拟网组网
-- STUN 获取公网映射
-- ICE 候选交换与连通性检查
-- TURN 中继回退
+### 2.1 鍖呭惈椤?
+- 鑺傜偣娉ㄥ唽涓庤妭鐐瑰彂鐜?- TUN 铏氭嫙缃戝崱
+- userspace netstack 鏃犳潈闄愭ā寮?- SOCKS5 闄嶇骇妯″紡
+- 涓よ妭鐐瑰強澶氳妭鐐硅櫄鎷熺綉缁勭綉
+- STUN 鑾峰彇鍏綉鏄犲皠
+- ICE 鍊欓€変氦鎹笌杩為€氭€ф鏌?- TURN 涓户鍥為€€
 - `wink up / down / status / peers / genkey / debug`
-- 单协调服务器自托管
-- 单中继服务器自托管
-
-### 2.2 明确不在 MVP 内
-
-- GUI 客户端
-- Android/iOS
+- 鍗曞崗璋冩湇鍔″櫒鑷墭绠?- 鍗曚腑缁ф湇鍔″櫒鑷墭绠?
+### 2.2 鏄庣‘涓嶅湪 MVP 鍐?
+- GUI 瀹㈡埛绔?- Android/iOS
 - Wink Protocol v1
-- AES-GCM/`cipher_suite` 协商
-- TAP 二层模式
+- AES-GCM/`cipher_suite` 鍗忓晢
+- TAP 浜屽眰妯″紡
 - IPv6
-- 多协调服务器
-- OIDC / 用户账户体系
-- 网络组 / 多租户 / ACL
+- 澶氬崗璋冩湇鍔″櫒
+- OIDC / 鐢ㄦ埛璐︽埛浣撶郴
+- 缃戠粶缁?/ 澶氱鎴?/ ACL
 - TCP TURN
-- 受信节点中继（`peer relay / transit node`）
-
+- 鍙椾俊鑺傜偣涓户锛坄peer relay / transit node`锛?
 ---
 
-## 三、依赖图收敛
+## 涓夈€佷緷璧栧浘鏀舵暃
 
-### 3.1 模块依赖
+### 3.1 妯″潡渚濊禆
 
-| 模块 | 硬依赖 | 说明 |
+| 妯″潡 | 纭緷璧?| 璇存槑 |
 |------|--------|------|
-| TASK-01 基础设施 | 无 | 初始化仓库、配置、日志、CLI、版本信息 |
-| TASK-02 网络接口 | TASK-01 | 提供 TUN / userspace / proxy |
-| TASK-03 隧道层 | TASK-02 | 对接 `NetworkInterface` |
-| TASK-05 协调服务器 | TASK-01 | 注册、发现、信令 |
-| TASK-04 NAT 穿透 | TASK-01, TASK-05 | STUN 本地原型可先行，但 MVP 完成必须依赖 TASK-05 信令 |
-| TASK-07 中继服务 | TASK-04 | TURN 候选与回退逻辑建立在 NAT 模块之上 |
-| TASK-06 客户端核心 | TASK-02, TASK-03, TASK-04, TASK-05 | 可先完成直连版集成 |
+| TASK-01 鍩虹璁炬柦 | 鏃?| 鍒濆鍖栦粨搴撱€侀厤缃€佹棩蹇椼€丆LI銆佺増鏈俊鎭?|
+| TASK-02 缃戠粶鎺ュ彛 | TASK-01 | 鎻愪緵 TUN / userspace / proxy |
+| TASK-03 闅ч亾灞?| TASK-02 | 瀵规帴 `NetworkInterface` |
+| TASK-05 鍗忚皟鏈嶅姟鍣?| TASK-01 | 娉ㄥ唽銆佸彂鐜般€佷俊浠?|
+| TASK-04 NAT 绌块€?| TASK-01, TASK-05 | STUN 鏈湴鍘熷瀷鍙厛琛岋紝浣?MVP 瀹屾垚蹇呴』渚濊禆 TASK-05 淇′护 |
+| TASK-07 涓户鏈嶅姟 | TASK-04 | TURN 鍊欓€変笌鍥為€€閫昏緫寤虹珛鍦?NAT 妯″潡涔嬩笂 |
+| TASK-06 瀹㈡埛绔牳蹇?| TASK-02, TASK-03, TASK-04, TASK-05 | 鍙厛瀹屾垚鐩磋繛鐗堥泦鎴?|
 
-### 3.2 TASK-06 与 TASK-07 的关系
+### 3.2 TASK-06 涓?TASK-07 鐨勫叧绯?
+鍐荤粨鍐崇瓥锛?
+- `TASK-07` 涓嶆槸 `TASK-06` 鐨勨€滃紑鍙戝惎鍔ㄥ墠缃緷璧栤€濄€?- `TASK-07` 鏄?`TASK-06` 鐨勨€淢VP 鍙戝竷闂ㄧ渚濊禆鈥濄€?
+涔熷氨鏄細
 
-冻结决策：
-
-- `TASK-07` 不是 `TASK-06` 的“开发启动前置依赖”。
-- `TASK-07` 是 `TASK-06` 的“MVP 发布门禁依赖”。
-
-也就是：
-
-- 没有 `TASK-07`，可以做出“直连版客户端集成”。
-- 没有 `TASK-07`，不能宣称完成 MVP，因为 G3“穿透失败自动回退中继”仍未实现。
-
+- 娌℃湁 `TASK-07`锛屽彲浠ュ仛鍑衡€滅洿杩炵増瀹㈡埛绔泦鎴愨€濄€?- 娌℃湁 `TASK-07`锛屼笉鑳藉绉板畬鎴?MVP锛屽洜涓?G3鈥滅┛閫忓け璐ヨ嚜鍔ㄥ洖閫€涓户鈥濅粛鏈疄鐜般€?
 ---
 
-## 四、执行顺序
+## 鍥涖€佹墽琛岄『搴?
+MVP 涓绘墽琛岀嚎鎸変互涓嬮『搴忔帹杩涳細
 
-MVP 主执行线按以下顺序推进：
-
-| 里程碑 | 模块 | 目标 | 完成标志 |
+| 閲岀▼纰?| 妯″潡 | 鐩爣 | 瀹屾垚鏍囧織 |
 |--------|------|------|----------|
-| M0 | 仓库初始化 | 建立代码骨架与工具链 | 存在 `go.mod`、`cmd/`、`pkg/`、`api/`、`test/`、`deploy/`、CI |
-| M1 | TASK-01 | 基础设施可用 | `wink version`、配置加载、日志输出可运行 |
-| M2 | TASK-02 + TASK-03 | 手动直连 | 两节点手工配置可通过隧道互通 |
-| M3 | TASK-05 | 控制平面可用 | 注册、发现、信令可用 |
-| M4 | TASK-04 | 自动直连 | 通过协调服务器交换候选并建立 P2P 连接 |
-| M5 | TASK-07 | 中继保底 | 对称 NAT 场景能回退 TURN |
-| M6 | TASK-06 | 客户端整合 | `wink up/down/status/peers` 完整打通 |
+| M0 | 浠撳簱鍒濆鍖?| 寤虹珛浠ｇ爜楠ㄦ灦涓庡伐鍏烽摼 | 瀛樺湪 `go.mod`銆乣cmd/`銆乣pkg/`銆乣api/`銆乣test/`銆乣deploy/`銆丆I |
+| M1 | TASK-01 | 鍩虹璁炬柦鍙敤 | `wink version`銆侀厤缃姞杞姐€佹棩蹇楄緭鍑哄彲杩愯 |
+| M2 | TASK-02 + TASK-03 | 鎵嬪姩鐩磋繛 | 涓よ妭鐐规墜宸ラ厤缃彲閫氳繃闅ч亾浜掗€?|
+| M3 | TASK-05 | 鎺у埗骞抽潰鍙敤 | 娉ㄥ唽銆佸彂鐜般€佷俊浠ゅ彲鐢?|
+| M4 | TASK-04 | 鑷姩鐩磋繛 | 閫氳繃鍗忚皟鏈嶅姟鍣ㄤ氦鎹㈠€欓€夊苟寤虹珛 P2P 杩炴帴 |
+| M5 | TASK-07 | 涓户淇濆簳 | 瀵圭О NAT 鍦烘櫙鑳藉洖閫€ TURN |
+| M6 | TASK-06 | 瀹㈡埛绔暣鍚?| `wink up/down/status/peers` 瀹屾暣鎵撻€?|
 
-冻结说明：
-
-- 不再采用“先做完整 NAT/ICE，再做协调信令”的顺序。
-- 信令属于 NAT/ICE 的硬依赖，协调服务器必须先于 TASK-04 MVP 交付。
-
+鍐荤粨璇存槑锛?
+- 涓嶅啀閲囩敤鈥滃厛鍋氬畬鏁?NAT/ICE锛屽啀鍋氬崗璋冧俊浠も€濈殑椤哄簭銆?- 淇′护灞炰簬 NAT/ICE 鐨勭‖渚濊禆锛屽崗璋冩湇鍔″櫒蹇呴』鍏堜簬 TASK-04 MVP 浜や粯銆?
 ---
 
-## 五、目录结构冻结
-
-MVP 统一采用以下目录结构：
-
+## 浜斻€佺洰褰曠粨鏋勫喕缁?
+MVP 缁熶竴閲囩敤浠ヤ笅鐩綍缁撴瀯锛?
 ```text
 winkyou/
-├── cmd/
-│   ├── wink/
-│   ├── wink-coordinator/
-│   └── wink-relay/
-├── pkg/
-│   ├── config/
-│   ├── logger/
-│   ├── version/
-│   ├── netif/
-│   ├── tunnel/
-│   ├── nat/
-│   ├── coordinator/
-│   │   ├── client/
-│   │   └── server/
-│   ├── relay/
-│   │   ├── client/
-│   │   └── server/
-│   └── client/
-├── api/
-│   └── proto/
-│       └── coordinator.proto
-├── deploy/
-│   ├── coordinator/
-│   └── relay/
-├── test/
-│   ├── integration/
-│   └── e2e/
-├── docs/
-└── Makefile
+鈹溾攢鈹€ cmd/
+鈹?  鈹溾攢鈹€ wink/
+鈹?  鈹溾攢鈹€ wink-coordinator/
+鈹?  鈹斺攢鈹€ wink-relay/
+鈹溾攢鈹€ pkg/
+鈹?  鈹溾攢鈹€ config/
+鈹?  鈹溾攢鈹€ logger/
+鈹?  鈹溾攢鈹€ version/
+鈹?  鈹溾攢鈹€ netif/
+鈹?  鈹溾攢鈹€ tunnel/
+鈹?  鈹溾攢鈹€ nat/
+鈹?  鈹溾攢鈹€ coordinator/
+鈹?  鈹?  鈹溾攢鈹€ client/
+鈹?  鈹?  鈹斺攢鈹€ server/
+鈹?  鈹溾攢鈹€ relay/
+鈹?  鈹?  鈹溾攢鈹€ client/
+鈹?  鈹?  鈹斺攢鈹€ server/
+鈹?  鈹斺攢鈹€ client/
+鈹溾攢鈹€ api/
+鈹?  鈹斺攢鈹€ proto/
+鈹?      鈹斺攢鈹€ coordinator.proto
+鈹溾攢鈹€ deploy/
+鈹?  鈹溾攢鈹€ coordinator/
+鈹?  鈹斺攢鈹€ relay/
+鈹溾攢鈹€ test/
+鈹?  鈹溾攢鈹€ integration/
+鈹?  鈹斺攢鈹€ e2e/
+鈹溾攢鈹€ docs/
+鈹斺攢鈹€ Makefile
 ```
 
-### 5.1 明确排除的目录版本
-
-以下布局不进入 MVP 基线：
-
+### 5.1 鏄庣‘鎺掗櫎鐨勭洰褰曠増鏈?
+浠ヤ笅甯冨眬涓嶈繘鍏?MVP 鍩虹嚎锛?
 - `cmd/winkd`
 - `cmd/wink-ui`
 - `pkg/node`
 - `pkg/network`
 - `pkg/protocol`
-- 顶层 `platform/`
+- 椤跺眰 `platform/`
 
-平台差异代码统一放在对应包内，使用 build tags 组织，而不是另起一套顶层结构。
-
+骞冲彴宸紓浠ｇ爜缁熶竴鏀惧湪瀵瑰簲鍖呭唴锛屼娇鐢?build tags 缁勭粐锛岃€屼笉鏄彟璧蜂竴濂楅《灞傜粨鏋勩€?
 ---
 
-## 六、配置模型冻结
-
-### 6.1 配置根结构
-
-MVP 配置文件不使用 `wink:` 根节点，统一采用扁平顶层结构。
-
-### 6.2 配置字段
+## 鍏€侀厤缃ā鍨嬪喕缁?
+### 6.1 閰嶇疆鏍圭粨鏋?
+MVP 閰嶇疆鏂囦欢涓嶄娇鐢?`wink:` 鏍硅妭鐐癸紝缁熶竴閲囩敤鎵佸钩椤跺眰缁撴瀯銆?
+### 6.2 閰嶇疆瀛楁
 
 ```yaml
 node:
@@ -201,33 +162,23 @@ nat:
       password: "secret"
 ```
 
-### 6.3 配置冻结说明
+### 6.3 閰嶇疆鍐荤粨璇存槑
 
-- `relay:` 顶层配置不进入客户端配置模型。
-- TURN 服务器列表统一放在 `nat.turn_servers`。
-- `cipher_suite` 不进入 MVP 配置。
-- `tap` 不进入 `netif.backend` 的 MVP 可选值。
+- `relay:` 椤跺眰閰嶇疆涓嶈繘鍏ュ鎴风閰嶇疆妯″瀷銆?- TURN 鏈嶅姟鍣ㄥ垪琛ㄧ粺涓€鏀惧湪 `nat.turn_servers`銆?- `cipher_suite` 涓嶈繘鍏?MVP 閰嶇疆銆?- `tap` 涓嶈繘鍏?`netif.backend` 鐨?MVP 鍙€夊€笺€?
+### 6.4 MVP 璁よ瘉鍐荤粨
 
-### 6.4 MVP 认证冻结
-
-MVP 不做用户体系，采用最小化接入模型：
-
-- 协调服务器可配置一个可选的 `auth_key`
-- 客户端通过 `coordinator.auth_key` 传入
-- 若服务器未启用 `auth_key`，则允许开放注册
-
-MVP 不包含：
+MVP 涓嶅仛鐢ㄦ埛浣撶郴锛岄噰鐢ㄦ渶灏忓寲鎺ュ叆妯″瀷锛?
+- 鍗忚皟鏈嶅姟鍣ㄥ彲閰嶇疆涓€涓彲閫夌殑 `auth_key`
+- 瀹㈡埛绔€氳繃 `coordinator.auth_key` 浼犲叆
+- 鑻ユ湇鍔″櫒鏈惎鐢?`auth_key`锛屽垯鍏佽寮€鏀炬敞鍐?
+MVP 涓嶅寘鍚細
 
 - OIDC
-- 用户名密码
-- 多角色权限模型
-
+- 鐢ㄦ埛鍚嶅瘑鐮?- 澶氳鑹叉潈闄愭ā鍨?
 ---
 
-## 七、接口契约冻结
-
-本节只定义 MVP 的收敛接口，不追求长期最优，只追求能稳定集成。
-
+## 涓冦€佹帴鍙ｅ绾﹀喕缁?
+鏈妭鍙畾涔?MVP 鐨勬敹鏁涙帴鍙ｏ紝涓嶈拷姹傞暱鏈熸渶浼橈紝鍙拷姹傝兘绋冲畾闆嗘垚銆?
 ### 7.1 netif
 
 ```go
@@ -253,11 +204,8 @@ type NetworkInterface interface {
 func New(cfg Config) (NetworkInterface, error)
 ```
 
-冻结说明：
-
-- MVP 统一使用 `netif.New(...)`，不再出现 `Select(...)` 与 `SelectBackend(...)` 两套构造器。
-- 自动后端选择逻辑内聚在 `netif.New(...)` 内部。
-
+鍐荤粨璇存槑锛?
+- MVP 缁熶竴浣跨敤 `netif.New(...)`锛屼笉鍐嶅嚭鐜?`Select(...)` 涓?`SelectBackend(...)` 涓ゅ鏋勯€犲櫒銆?- 鑷姩鍚庣閫夋嫨閫昏緫鍐呰仛鍦?`netif.New(...)` 鍐呴儴銆?
 ### 7.2 tunnel
 
 ```go
@@ -283,14 +231,11 @@ type Tunnel interface {
 func New(cfg Config) (Tunnel, error)
 ```
 
-冻结说明：
-
-- MVP 交付文件名统一使用 `tunnel_wggo.go`。
-- `tunnel_native.go` / `tunnel_wink.go` 属于后续轨道，不进入 MVP。
-
+鍐荤粨璇存槑锛?
+- MVP 浜や粯鏂囦欢鍚嶇粺涓€浣跨敤 `tunnel_wggo.go`銆?- `tunnel_native.go` / `tunnel_wink.go` 灞炰簬鍚庣画杞ㄩ亾锛屼笉杩涘叆 MVP銆?
 ### 7.3 coordinator
 
-`coordinator.proto` 的 MVP RPC 只冻结以下接口：
+`coordinator.proto` 鐨?MVP RPC 鍙喕缁撲互涓嬫帴鍙ｏ細
 
 - `Register`
 - `Heartbeat`
@@ -298,12 +243,11 @@ func New(cfg Config) (Tunnel, error)
 - `GetPeer`
 - `Signal`
 
-明确不进入 MVP proto 的接口：
+鏄庣‘涓嶈繘鍏?MVP proto 鐨勬帴鍙ｏ細
 
 - `GetTURNCredentials`
 
-`RegisterResponse` 在 wire format 中冻结为：
-
+`RegisterResponse` 鍦?wire format 涓喕缁撲负锛?
 ```protobuf
 message RegisterResponse {
   string node_id = 1;
@@ -313,11 +257,8 @@ message RegisterResponse {
 }
 ```
 
-冻结说明：
-
-- 客户端必须从 `network_cidr` 推导出掩码。
-- 客户端不得期待 `network_mask` 字段。
-
+鍐荤粨璇存槑锛?
+- 瀹㈡埛绔繀椤讳粠 `network_cidr` 鎺ㄥ鍑烘帺鐮併€?- 瀹㈡埛绔笉寰楁湡寰?`network_mask` 瀛楁銆?
 ### 7.4 nat
 
 ```go
@@ -339,103 +280,78 @@ func MarshalCandidate(c Candidate) ([]byte, error)
 func UnmarshalCandidate(data []byte) (Candidate, error)
 ```
 
-冻结说明：
-
-- MVP 不再让客户端直接等待 `Connected()` channel。
-- `ICEAgent.Connect(ctx)` 阻塞直到连接建立、超时或失败。
-- 候选序列化由 `nat` 包负责，`coordinator` 只转发 `[]byte payload`。
-
+鍐荤粨璇存槑锛?
+- MVP 涓嶅啀璁╁鎴风鐩存帴绛夊緟 `Connected()` channel銆?- `ICEAgent.Connect(ctx)` 闃诲鐩村埌杩炴帴寤虹珛銆佽秴鏃舵垨澶辫触銆?- 鍊欓€夊簭鍒楀寲鐢?`nat` 鍖呰礋璐ｏ紝`coordinator` 鍙浆鍙?`[]byte payload`銆?
 ### 7.5 client
 
-客户端核心按以下顺序集成：
-
+瀹㈡埛绔牳蹇冩寜浠ヤ笅椤哄簭闆嗘垚锛?
 1. `netif.New`
 2. `coordinator.NewClient`
 3. `Register`
-4. 从 `network_cidr` 解析掩码并调用 `SetIP`
+4. 浠?`network_cidr` 瑙ｆ瀽鎺╃爜骞惰皟鐢?`SetIP`
 5. `tunnel.New`
 6. `nat.NewICEAgent`
-7. 候选序列化后通过 `SendSignal` 发送
-8. `ICEAgent.Connect`
+7. 鍊欓€夊簭鍒楀寲鍚庨€氳繃 `SendSignal` 鍙戦€?8. `ICEAgent.Connect`
 9. `tunnel.AddPeer`
 
 ---
 
-## 八、中继策略冻结
+## 鍏€佷腑缁х瓥鐣ュ喕缁?
+MVP 鐨?TURN 璁よ瘉绛栫暐鍐荤粨涓猴細
 
-MVP 的 TURN 认证策略冻结为：
+- 涓户鏈嶅姟鍣ㄤ娇鐢ㄩ暱鏈熷嚟璇?- 瀹㈡埛绔粠 `nat.turn_servers` 璇诲彇闈欐€佺敤鎴峰悕瀵嗙爜
+- 鍗忚皟鏈嶅姟鍣ㄤ笉璐熻矗涓嬪彂 TURN 涓存椂鍑瘉
 
-- 中继服务器使用长期凭证
-- 客户端从 `nat.turn_servers` 读取静态用户名密码
-- 协调服务器不负责下发 TURN 临时凭证
-
-因此：
-
-- `TASK-07` 可独立于协调服务器的 TURN 凭证 API 完成 MVP
-- `GetTURNCredentials` 保留为后续增强项，不进入当前执行线
-
-术语补充：
-
-- 当前 MVP 文档中的“中继”默认指 `TURN server relay`
-- “节点 A 作为 B 到 C 的受信转发节点”定义为 `peer relay / transit node`
-- `peer relay` 设计可行，但不纳入当前 MVP 冻结范围，见 [PEER-RELAY-DESIGN.md](PEER-RELAY-DESIGN.md)
+鍥犳锛?
+- `TASK-07` 鍙嫭绔嬩簬鍗忚皟鏈嶅姟鍣ㄧ殑 TURN 鍑瘉 API 瀹屾垚 MVP
+- `GetTURNCredentials` 淇濈暀涓哄悗缁寮洪」锛屼笉杩涘叆褰撳墠鎵ц绾?
+鏈琛ュ厖锛?
+- 褰撳墠 MVP 鏂囨。涓殑鈥滀腑缁р€濋粯璁ゆ寚 `TURN server relay`
+- 鈥滆妭鐐?A 浣滀负 B 鍒?C 鐨勫彈淇¤浆鍙戣妭鐐光€濆畾涔変负 `peer relay / transit node`
+- `peer relay` 璁捐鍙锛屼絾涓嶇撼鍏ュ綋鍓?MVP 鍐荤粨鑼冨洿锛岃 [PEER-RELAY-DESIGN.md](PEER-RELAY-DESIGN.md)
 
 ---
 
-## 九、发布门禁
-
-以下门禁不通过，则对应能力不得写进 MVP 宣传口径。
-
-| 门禁 | 阻塞项 | 失败时的冻结动作 |
+## 涔濄€佸彂甯冮棬绂?
+浠ヤ笅闂ㄧ涓嶉€氳繃锛屽垯瀵瑰簲鑳藉姏涓嶅緱鍐欒繘 MVP 瀹ｄ紶鍙ｅ緞銆?
+| 闂ㄧ | 闃诲椤?| 澶辫触鏃剁殑鍐荤粨鍔ㄤ綔 |
 |------|--------|------------------|
-| G1 | Windows `netstack` 原型验证 | Windows 无管理员模式降级为 `proxy`，不宣称 `userspace` |
-| G2 | WinTUN 打包与安装验证 | Windows TUN 延后，MVP 仅宣称 Windows userspace/proxy |
-| G3 | NAT 类型与穿透率采样 | 不对外声明穿透成功率指标 |
-| G4 | TURN 中继稳定性与并发验证 | 不宣称“100% 连通”，仅保留实验性回退 |
-| G5 | 72 小时稳定性测试 | 不发布 MVP 版本，只保留开发预览版 |
+| G1 | Windows `netstack` 鍘熷瀷楠岃瘉 | Windows 鏃犵鐞嗗憳妯″紡闄嶇骇涓?`proxy`锛屼笉瀹ｇО `userspace` |
+| G2 | WinTUN 鎵撳寘涓庡畨瑁呴獙璇?| Windows TUN 寤跺悗锛孧VP 浠呭绉?Windows userspace/proxy |
+| G3 | NAT 绫诲瀷涓庣┛閫忕巼閲囨牱 | 涓嶅澶栧０鏄庣┛閫忔垚鍔熺巼鎸囨爣 |
+| G4 | TURN 涓户绋冲畾鎬т笌骞跺彂楠岃瘉 | 涓嶅绉扳€?00% 杩為€氣€濓紝浠呬繚鐣欏疄楠屾€у洖閫€ |
+| G5 | 72 灏忔椂绋冲畾鎬ф祴璇?| 涓嶅彂甯?MVP 鐗堟湰锛屽彧淇濈暀寮€鍙戦瑙堢増 |
 
-### 9.1 能开工但不能越级宣传的内容
+### 9.1 鑳藉紑宸ヤ絾涓嶈兘瓒婄骇瀹ｄ紶鐨勫唴瀹?
+浠ヤ笅宸ヤ綔鍙互鍏堝仛锛屼絾鍦ㄩ棬绂侀€氳繃鍓嶄笉鑳界畻鈥滃畬鎴愪氦浠樷€濓細
 
-以下工作可以先做，但在门禁通过前不能算“完成交付”：
-
-- Windows 无权限模式
-- Windows TUN 支持
-- NAT 成功率指标
-- “100% 连通”表述
-- 稳定版发布
-
+- Windows 鏃犳潈闄愭ā寮?- Windows TUN 鏀寔
+- NAT 鎴愬姛鐜囨寚鏍?- 鈥?00% 杩為€氣€濊〃杩?- 绋冲畾鐗堝彂甯?
 ---
 
-## 十、现有文档如何回改
-
-本执行基线被接受后，旧文档按以下顺序回改：
-
+## 鍗併€佺幇鏈夋枃妗ｅ浣曞洖鏀?
+鏈墽琛屽熀绾胯鎺ュ彈鍚庯紝鏃ф枃妗ｆ寜浠ヤ笅椤哄簭鍥炴敼锛?
 1. `docs/README.md`
 2. `docs/ARCHITECTURE.md`
 3. `docs/tasks/TASK-01..07.md`
 4. `manage.md`
 5. `winkplan.md`
 
-回改原则：
-
-- 只保留一套依赖图
-- 只保留一套目录结构
-- 只保留一套配置模型
-- 只保留一套构造器命名
-- 自研协议路线继续保留，但明确标注为 `post-MVP`
+鍥炴敼鍘熷垯锛?
+- 鍙繚鐣欎竴濂椾緷璧栧浘
+- 鍙繚鐣欎竴濂楃洰褰曠粨鏋?- 鍙繚鐣欎竴濂楅厤缃ā鍨?- 鍙繚鐣欎竴濂楁瀯閫犲櫒鍛藉悕
+- 鑷爺鍗忚璺嚎缁х画淇濈暀锛屼絾鏄庣‘鏍囨敞涓?`post-MVP`
 
 ---
 
-## 十一、执行起点
+## 鍗佷竴銆佹墽琛岃捣鐐?
+浠庝粖澶╁紑濮嬶紝榛樿鎵ц璧风偣鏄細
 
-从今天开始，默认执行起点是：
-
-1. 建立 M0 仓库骨架
-2. 完成 TASK-01
-3. 直推 TASK-02 + TASK-03
-4. 完成 TASK-05
-5. 再推进 TASK-04
-6. 补上 TASK-07
-7. 最后做 TASK-06 总集成
-
-这条线是当前仓库内最短、最自洽、可落地的 MVP 执行路径。
+1. 寤虹珛 M0 浠撳簱楠ㄦ灦
+2. 瀹屾垚 TASK-01
+3. 鐩存帹 TASK-02 + TASK-03
+4. 瀹屾垚 TASK-05
+5. 鍐嶆帹杩?TASK-04
+6. 琛ヤ笂 TASK-07
+7. 鏈€鍚庡仛 TASK-06 鎬婚泦鎴?
+杩欐潯绾挎槸褰撳墠浠撳簱鍐呮渶鐭€佹渶鑷唇銆佸彲钀藉湴鐨?MVP 鎵ц璺緞銆?

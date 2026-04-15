@@ -1,6 +1,7 @@
 package tunnel
 
 import (
+	"context"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -16,6 +17,7 @@ import (
 	wgconn "golang.zx2c4.com/wireguard/conn"
 	wgdevice "golang.zx2c4.com/wireguard/device"
 	wgtun "golang.zx2c4.com/wireguard/tun"
+	"winkyou/pkg/transport"
 )
 
 const (
@@ -436,7 +438,7 @@ type peerTransportBind struct {
 }
 
 type boundTransport struct {
-	conn      net.Conn
+	conn      transport.PacketTransport
 	endpoint  *transportEndpoint
 	stopCh    chan struct{}
 	closeOnce sync.Once
@@ -507,7 +509,7 @@ func (b *peerTransportBind) Send(bufs [][]byte, ep wgconn.Endpoint) error {
 		if len(buf) == 0 {
 			continue
 		}
-		if _, err := transport.conn.Write(buf); err != nil {
+		if err := transport.conn.WritePacket(context.Background(), buf); err != nil {
 			return err
 		}
 	}
@@ -539,7 +541,7 @@ func (b *peerTransportBind) BatchSize() int {
 	return baseSize
 }
 
-func (b *peerTransportBind) AttachTransport(publicKey PublicKey, transport net.Conn) (string, error) {
+func (b *peerTransportBind) AttachTransport(publicKey PublicKey, transport transport.PacketTransport) (string, error) {
 	if transport == nil {
 		return "", fmt.Errorf("tunnel: peer transport is nil")
 	}
@@ -622,10 +624,11 @@ func (b *peerTransportBind) ResolveEndpoint(endpoint string) *net.UDPAddr {
 func (b *peerTransportBind) readTransportLoop(transport *boundTransport) {
 	buffer := make([]byte, 65535)
 	for {
-		_ = transport.conn.SetReadDeadline(time.Now().Add(readPollInterval))
-		n, err := transport.conn.Read(buffer)
+		readCtx, cancel := context.WithTimeout(context.Background(), readPollInterval)
+		n, _, err := transport.conn.ReadPacket(readCtx, buffer)
+		cancel()
 		if err != nil {
-			if ne, ok := err.(net.Error); ok && ne.Timeout() {
+			if errors.Is(err, context.DeadlineExceeded) {
 				select {
 				case <-transport.stopCh:
 					return

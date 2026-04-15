@@ -97,8 +97,8 @@ func newICEPionAgent(cfg ICEConfig) (ICEAgent, error) {
 			return
 		}
 		pair := &CandidatePair{
-			Local:  localCand,
-			Remote: remoteCand,
+			Local:  &localCand,
+			Remote: &remoteCand,
 		}
 		a.selectedPair = pair
 		if a.onPairChange != nil {

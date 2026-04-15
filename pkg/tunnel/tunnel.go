@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"winkyou/pkg/netif"
+	"winkyou/pkg/transport"
 )
 
 // ErrNotImplemented is returned by stub methods that have no real
@@ -27,9 +28,9 @@ type PeerConfig struct {
 	PublicKey    PublicKey
 	PresharedKey *PresharedKey // optional
 	AllowedIPs   []net.IPNet
-	Endpoint     *net.UDPAddr  // optional; set if already known
-	Transport    net.Conn      // optional; long-lived transport selected by ICE/TURN
-	Keepalive    time.Duration // 0 = disabled
+	Endpoint     *net.UDPAddr              // optional; set if already known
+	Transport    transport.PacketTransport // optional; long-lived packet transport selected by solver
+	Keepalive    time.Duration             // 0 = disabled
 }
 
 // PeerStatus represents the current state of a peer.

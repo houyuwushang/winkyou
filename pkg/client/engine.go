@@ -498,6 +498,12 @@ func (e *engine) cleanupResources() {
 	if e.runCancel != nil {
 		e.runCancel()
 	}
+	if e.peerMgr != nil {
+		for _, s := range e.peerMgr.sessions {
+			closePeerSession(s)
+		}
+		e.peerMgr.sessions = map[string]*peerSession{}
+	}
 	if e.tun != nil {
 		_ = e.tun.Stop()
 		e.tun = nil
@@ -513,12 +519,6 @@ func (e *engine) cleanupResources() {
 	if e.netif != nil {
 		_ = e.netif.Close()
 		e.netif = nil
-	}
-	if e.peerMgr != nil {
-		for _, s := range e.peerMgr.sessions {
-			closePeerSession(s)
-		}
-		e.peerMgr.sessions = map[string]*peerSession{}
 	}
 	e.nat = nil
 	e.runCtx = nil

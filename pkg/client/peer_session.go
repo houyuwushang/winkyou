@@ -4,305 +4,383 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"sort"
 	"sync"
 	"time"
 
 	coordclient "winkyou/pkg/coordinator/client"
-	"winkyou/pkg/nat"
+	"winkyou/pkg/logger"
+	sesspkg "winkyou/pkg/session"
+	"winkyou/pkg/solver"
+	"winkyou/pkg/solver/strategy/legacyice"
 	"winkyou/pkg/tunnel"
 )
 
 type peerSession struct {
-	nodeID         string
-	sessionID      string
-	initiator      bool
-	agent          nat.ICEAgent
-	transport      nat.SelectedTransport
-	selectedPair   *nat.CandidatePair
-	iceState       nat.ConnectionState
-	tunnelAttached bool
-	connected      bool
-	connecting     bool
-	retryDelay     time.Duration
-	retryPending   bool
-	connectMu      sync.Mutex
+	nodeID       string
+	sessionID    string
+	initiator    bool
+	runner       *sesspkg.Session
+	connected    bool
+	bound        bool
+	connecting   bool
+	retryDelay   time.Duration
+	retryPending bool
+	lastPath     solver.PathSummary
+	connectMu    sync.Mutex
+}
+
+type peerMessageSender struct {
+	engine *engine
 }
 
 func (e *engine) ensurePeerSession(nodeID string) (*peerSession, error) {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	if e.peerMgr == nil {
-		return nil, fmt.Errorf("client: peer manager not ready")
-	}
-	if s, ok := e.peerMgr.sessions[nodeID]; ok {
+	for {
+		e.mu.RLock()
+		if e.peerMgr == nil {
+			e.mu.RUnlock()
+			return nil, fmt.Errorf("client: peer manager not ready")
+		}
+		if existing, ok := e.peerMgr.sessions[nodeID]; ok {
+			state := peerSessionState(existing)
+			e.mu.RUnlock()
+			if state != sesspkg.StateFailed && state != sesspkg.StateClosed {
+				return existing, nil
+			}
+			e.mu.Lock()
+			if e.peerMgr != nil && e.peerMgr.sessions[nodeID] == existing {
+				delete(e.peerMgr.sessions, nodeID)
+			}
+			e.mu.Unlock()
+			closePeerSession(existing)
+			continue
+		}
+
+		localID := e.status.NodeID
+		e.mu.RUnlock()
+
+		s := &peerSession{
+			nodeID:    nodeID,
+			sessionID: sessionIDForNodes(localID, nodeID),
+			initiator: localID < nodeID,
+		}
+
+		runner, err := e.newPeerRunner(s)
+		if err != nil {
+			return nil, err
+		}
+		s.runner = runner
+
+		e.mu.Lock()
+		if e.peerMgr == nil {
+			e.mu.Unlock()
+			_ = runner.Close()
+			return nil, fmt.Errorf("client: peer manager not ready")
+		}
+		if existing, ok := e.peerMgr.sessions[nodeID]; ok {
+			e.mu.Unlock()
+			_ = runner.Close()
+			return existing, nil
+		}
+		e.peerMgr.sessions[nodeID] = s
+		e.mu.Unlock()
 		return s, nil
 	}
-	localID := e.status.NodeID
-	initiator := localID < nodeID
-	agent, err := e.newICEAgent(context.Background(), initiator)
-	if err != nil {
-		return nil, err
-	}
-	s := &peerSession{
-		nodeID:    nodeID,
-		sessionID: localID + "->" + nodeID,
-		initiator: initiator,
-		agent:     agent,
-	}
-	e.peerMgr.sessions[nodeID] = s
-	return s, nil
 }
 
 func (e *engine) startPeerConnect(nodeID string) {
 	s, err := e.ensurePeerSession(nodeID)
-	if err != nil {
+	if err != nil || !s.initiator {
 		return
 	}
-	if !s.initiator {
+	e.startPeerSession(s)
+}
+
+func (e *engine) startPeerSession(s *peerSession) {
+	if s == nil || s.runner == nil {
 		return
 	}
+
 	s.connectMu.Lock()
-	if s.connected || s.tunnelAttached || s.connecting {
-		s.connectMu.Unlock()
-		return
-	}
-	s.connectMu.Unlock()
-	go e.sendOffer(nodeID, s)
-}
-
-func (e *engine) sendOffer(nodeID string, s *peerSession) {
-	ctx, cancel := context.WithTimeout(context.Background(), e.iceGatherTimeout())
-	defer cancel()
-
-	cands, err := s.agent.GatherCandidates(ctx)
-	if err != nil {
-		e.schedulePeerRetry(nodeID, s)
-		return
-	}
-	ufrag, pwd, err := s.agent.GetLocalCredentials()
-	if err != nil {
-		e.schedulePeerRetry(nodeID, s)
-		return
-	}
-	payload, err := marshalOfferPayload(peerOfferPayload{
-		SessionID: s.sessionID,
-		ICE:       nat.ICESessionDescriptionPayload{Ufrag: ufrag, Pwd: pwd, Role: iceRole(s.initiator), Candidates: cands},
-		SentAt:    time.Now(),
-	})
-	if err != nil {
-		e.schedulePeerRetry(nodeID, s)
-		return
-	}
-	if e.coord != nil {
-		if err := e.coord.SendSignal(ctx, nodeID, coordclient.SIGNAL_ICE_OFFER, payload); err != nil {
-			e.schedulePeerRetry(nodeID, s)
-			return
-		}
-	}
-	e.schedulePeerRetry(nodeID, s)
-}
-
-func (e *engine) handleOffer(signal *coordclient.SignalNotification) {
-	offer, err := unmarshalOfferPayload(signal.Payload)
-	if err != nil {
-		return
-	}
-	s, err := e.ensurePeerSession(signal.FromNode)
-	if err != nil {
-		return
-	}
-	if err := s.agent.SetRemoteCredentials(offer.ICE.Ufrag, offer.ICE.Pwd); err != nil {
-		return
-	}
-	if err := s.agent.SetRemoteCandidates(offer.ICE.Candidates); err != nil {
-		return
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), e.iceGatherTimeout())
-	defer cancel()
-	locals, err := s.agent.GatherCandidates(ctx)
-	if err != nil {
-		return
-	}
-	ufrag, pwd, err := s.agent.GetLocalCredentials()
-	if err != nil {
-		return
-	}
-	answerPayload, err := marshalAnswerPayload(peerAnswerPayload{
-		SessionID: s.sessionID,
-		ICE:       nat.ICESessionDescriptionPayload{Ufrag: ufrag, Pwd: pwd, Role: iceRole(s.initiator), Candidates: locals},
-		SentAt:    time.Now(),
-	})
-	if err != nil {
-		return
-	}
-	if e.coord != nil {
-		if err := e.coord.SendSignal(ctx, signal.FromNode, coordclient.SIGNAL_ICE_ANSWER, answerPayload); err != nil {
-			return
-		}
-	}
-
-	e.tryConnectPeer(signal.FromNode, s)
-}
-
-func (e *engine) handleAnswer(signal *coordclient.SignalNotification) {
-	ans, err := unmarshalAnswerPayload(signal.Payload)
-	if err != nil {
-		return
-	}
-	s, err := e.ensurePeerSession(signal.FromNode)
-	if err != nil {
-		return
-	}
-	if ans.SessionID == "" {
-		return
-	}
-	if err := s.agent.SetRemoteCredentials(ans.ICE.Ufrag, ans.ICE.Pwd); err != nil {
-		return
-	}
-	if err := s.agent.SetRemoteCandidates(ans.ICE.Candidates); err != nil {
-		return
-	}
-	e.tryConnectPeer(signal.FromNode, s)
-}
-
-func (e *engine) handleCandidate(signal *coordclient.SignalNotification) {
-	cand, err := unmarshalCandidatePayload(signal.Payload)
-	if err != nil {
-		return
-	}
-	s, err := e.ensurePeerSession(signal.FromNode)
-	if err != nil {
-		return
-	}
-	if err := s.agent.SetRemoteCandidates([]nat.Candidate{cand.ICE.Candidate}); err != nil {
-		return
-	}
-	e.tryConnectPeer(signal.FromNode, s)
-}
-
-func (e *engine) tryConnectPeer(nodeID string, s *peerSession) {
-	s.connectMu.Lock()
-	if s.connected || s.tunnelAttached || s.connecting {
+	if s.connected || s.bound || s.connecting {
 		s.connectMu.Unlock()
 		return
 	}
 	s.connecting = true
 	s.connectMu.Unlock()
 
-	ctx, cancel := context.WithTimeout(context.Background(), e.iceConnectTimeout())
-	defer cancel()
-	transport, pair, err := s.agent.Connect(ctx)
+	if err := s.runner.Start(e.sessionContext()); err != nil {
+		e.handlePeerSessionError(s.nodeID, s, err)
+	}
+}
+
+func (e *engine) newPeerRunner(s *peerSession) (*sesspkg.Session, error) {
+	return sesspkg.New(sesspkg.Config{
+		SessionID:         s.sessionID,
+		LocalNodeID:       e.currentNodeID(),
+		PeerID:            s.nodeID,
+		Initiator:         s.initiator,
+		Strategy:          legacyice.New(),
+		Binder:            sesspkg.NewTunnelBinder(e.tun, e),
+		Sender:            peerMessageSender{engine: e},
+		NewLegacyICEAgent: e.newICEAgent,
+		GatherTimeout:     e.iceGatherTimeout(),
+		ConnectTimeout:    e.iceConnectTimeout(),
+		CheckTimeout:      e.iceCheckTimeout(),
+		Hooks: sesspkg.Hooks{
+			OnStateChange: func(state sesspkg.State) {
+				e.handlePeerSessionState(s.nodeID, s, state)
+			},
+			OnBound: func(result solver.Result) {
+				e.handlePeerSessionBound(s.nodeID, s, result)
+			},
+			OnError: func(err error) {
+				e.handlePeerSessionError(s.nodeID, s, err)
+			},
+		},
+	})
+}
+
+func (e *engine) handlePeerSolverMessage(nodeID string, msg solver.Message) {
+	s, err := e.ensurePeerSession(nodeID)
 	if err != nil {
-		s.connectMu.Lock()
-		s.connecting = false
-		s.connectMu.Unlock()
-		e.schedulePeerRetry(nodeID, s)
 		return
 	}
+	e.startPeerSession(s)
+	if err := s.runner.HandleMessage(e.sessionContext(), msg); err != nil {
+		e.handlePeerSessionError(nodeID, s, err)
+	}
+}
+
+func (e *engine) handlePeerSessionState(nodeID string, s *peerSession, state sesspkg.State) {
+	if s == nil {
+		return
+	}
+
 	s.connectMu.Lock()
-	s.transport = transport
-	s.selectedPair = pair
-	if iceAgent, ok := s.agent.(interface{ GetConnectionState() nat.ConnectionState }); ok {
-		s.iceState = iceAgent.GetConnectionState()
+	switch state {
+	case sesspkg.StateNew:
+		s.connecting = false
+	case sesspkg.StatePlanning, sesspkg.StateExecuting, sesspkg.StateBinding:
+		s.connecting = true
+	case sesspkg.StateBound:
+		s.bound = true
+		s.connecting = false
+	case sesspkg.StateFailed, sesspkg.StateClosed:
+		s.bound = false
+		s.connecting = false
 	}
 	s.connectMu.Unlock()
 
-	e.log.Info("ice connected",
-		"node_id", nodeID,
-		"local_type", candidateTypeString(pair.Local),
-		"remote_type", candidateTypeString(pair.Remote),
-		"local_addr", candidateAddrString(pair.Local),
-		"remote_addr", candidateAddrString(pair.Remote))
+	if state == sesspkg.StatePlanning || state == sesspkg.StateExecuting || state == sesspkg.StateBinding || state == sesspkg.StateBound {
+		e.mu.Lock()
+		if peer := e.peers[nodeID]; peer != nil && peer.State != PeerStateConnected {
+			peer.State = PeerStateConnecting
+			peer.LastSeen = time.Now()
+			e.updateStatusCountersLocked()
+		}
+		e.mu.Unlock()
+		e.persistState()
+	}
+}
 
-	if e.tun == nil {
-		s.connectMu.Lock()
-		s.connecting = false
-		s.connectMu.Unlock()
-		e.schedulePeerRetry(nodeID, s)
+func (e *engine) handlePeerSessionBound(nodeID string, s *peerSession, result solver.Result) {
+	if s == nil {
 		return
 	}
-	if err := e.attachTunnelPeer(nodeID, transport, pair); err != nil {
-		e.log.Warn("ice selected but tunnel attach failed",
-			"node_id", nodeID,
-			"error", err,
-			"local_type", candidateTypeString(pair.Local),
-			"remote_type", candidateTypeString(pair.Remote))
-		s.connectMu.Lock()
-		s.connecting = false
-		s.connectMu.Unlock()
-		e.schedulePeerRetry(nodeID, s)
-		return
-	}
+
 	s.connectMu.Lock()
-	s.tunnelAttached = true
+	s.bound = true
+	s.connecting = false
 	s.retryDelay = 0
 	s.retryPending = false
-	s.connecting = false
+	s.lastPath = result.Summary
 	s.connectMu.Unlock()
-}
 
-func (e *engine) attachTunnelPeer(nodeID string, transport nat.SelectedTransport, pair *nat.CandidatePair) error {
-	e.mu.RLock()
-	peer, ok := e.peers[nodeID]
-	e.mu.RUnlock()
-	if !ok || peer == nil {
-		return ErrPeerNotFound
-	}
-	pub, err := tunnel.ParsePublicKey(peer.PublicKey)
-	if err != nil {
-		return err
-	}
-	_, ipnet, err := net.ParseCIDR(peer.VirtualIP.String() + "/32")
-	if err != nil {
-		return err
-	}
-	pcfg := &tunnel.PeerConfig{
-		PublicKey:  pub,
-		AllowedIPs: []net.IPNet{*ipnet},
-		Transport:  transport,
-		Keepalive:  10 * time.Second,
-	}
-	if pair != nil && pair.Remote != nil {
-		pcfg.Endpoint = pair.Remote.Address
-	}
-	if err := e.tun.AddPeer(pcfg); err != nil {
-		return err
-	}
+	var (
+		snapshot *PeerStatus
+		handlers []func(peer *PeerStatus, event PeerEvent)
+	)
 
 	e.mu.Lock()
-	if p := e.peers[nodeID]; p != nil {
-		p.State = PeerStateConnecting
-		if pair != nil && pair.Remote != nil {
-			p.Endpoint = cloneUDPAddr(pair.Remote.Address)
-			p.ConnectionType = connectionTypeFromCandidatePair(pair)
-		}
-		if pair != nil {
-			p.ICEState = "connected"
-			p.LocalCandidate = formatCandidateInfo(pair.Local)
-			p.RemoteCandidate = formatCandidateInfo(pair.Remote)
-		}
-		p.LastSeen = time.Now()
+	if peer := e.peers[nodeID]; peer != nil {
+		peer.State = PeerStateConnecting
+		peer.ConnectionType = connectionTypeFromSummary(result.Summary.ConnectionType)
+		peer.Endpoint = udpAddrFromAddr(result.Summary.RemoteAddr)
+		peer.ICEState = result.Summary.Details["ice_state"]
+		peer.LocalCandidate = result.Summary.Details["local_candidate"]
+		peer.RemoteCandidate = result.Summary.Details["remote_candidate"]
+		peer.LastSeen = time.Now()
+		e.updateStatusCountersLocked()
+		snapshot = clonePeerStatus(peer)
+		handlers = append([]func(peer *PeerStatus, event PeerEvent){}, e.peerHandlers...)
 	}
-	e.updateStatusCountersLocked()
+	e.mu.Unlock()
+
+	for _, handler := range handlers {
+		handler(snapshot, PeerEventUpsert)
+	}
+	e.persistState()
+}
+
+func (e *engine) handlePeerSessionError(nodeID string, s *peerSession, err error) {
+	if s == nil {
+		return
+	}
+
+	s.connectMu.Lock()
+	s.bound = false
+	s.connecting = false
+	s.connected = false
+	s.lastPath = solver.PathSummary{}
+	s.connectMu.Unlock()
+
+	e.mu.Lock()
+	if peer := e.peers[nodeID]; peer != nil {
+		if peer.State != PeerStateDisconnected {
+			peer.State = PeerStateConnecting
+		}
+		peer.LastSeen = time.Now()
+		e.updateStatusCountersLocked()
+	}
 	e.mu.Unlock()
 	e.persistState()
-	return nil
-}
 
-func iceRole(controlling bool) string {
-	if controlling {
-		return "controlling"
+	if err != nil {
+		e.log.Warn("peer session failed", logger.String("node_id", nodeID), logger.Error(err))
 	}
-	return "controlled"
+	e.schedulePeerRetry(nodeID, s)
 }
 
-func connectionTypeFromCandidatePair(pair *nat.CandidatePair) ConnectionType {
-	if pair != nil && pair.Local != nil && pair.Remote != nil &&
-		(pair.Local.Type == nat.CandidateTypeRelay || pair.Remote.Type == nat.CandidateTypeRelay) {
+func (e *engine) BindingPeer(ctx context.Context, peerID string) (*sesspkg.BindingPeer, error) {
+	e.mu.RLock()
+	peer, ok := e.peers[peerID]
+	e.mu.RUnlock()
+	if !ok || peer == nil {
+		return nil, ErrPeerNotFound
+	}
+
+	publicKey, err := tunnel.ParsePublicKey(peer.PublicKey)
+	if err != nil {
+		return nil, err
+	}
+	_, allowedIP, err := parsePeerAllowedIP(peer.VirtualIP)
+	if err != nil {
+		return nil, err
+	}
+	return &sesspkg.BindingPeer{
+		PublicKey:  publicKey,
+		AllowedIPs: []net.IPNet{*allowedIP},
+		Endpoint:   cloneUDPAddr(peer.Endpoint),
+		Keepalive:  10 * time.Second,
+	}, nil
+}
+
+func (s peerMessageSender) Send(ctx context.Context, peerID string, msg solver.Message) error {
+	if s.engine == nil || s.engine.coord == nil {
+		return ErrEngineNotStarted
+	}
+	signalType, err := signalTypeFromSolverMessage(msg.Kind)
+	if err != nil {
+		return err
+	}
+	return s.engine.coord.SendSignal(ctx, peerID, signalType, msg.Payload)
+}
+
+func signalTypeFromSolverMessage(kind solver.MessageKind) (coordclient.SignalType, error) {
+	switch kind {
+	case solver.MessageKindLegacyICEOffer:
+		return coordclient.SIGNAL_ICE_OFFER, nil
+	case solver.MessageKindLegacyICEAnswer:
+		return coordclient.SIGNAL_ICE_ANSWER, nil
+	case solver.MessageKindLegacyICECandidate:
+		return coordclient.SIGNAL_ICE_CANDIDATE, nil
+	case solver.MessageKindEnvelope:
+		return coordclient.SIGNAL_UNSPECIFIED, nil
+	default:
+		return coordclient.SIGNAL_UNSPECIFIED, fmt.Errorf("client: unsupported solver message kind %q", kind)
+	}
+}
+
+func solverMessageFromSignal(signal *coordclient.SignalNotification) (solver.Message, bool) {
+	if signal == nil {
+		return solver.Message{}, false
+	}
+
+	msg := solver.Message{
+		Payload:    append([]byte(nil), signal.Payload...),
+		ReceivedAt: unixOrZero(signal.Timestamp),
+	}
+	switch signal.Type {
+	case coordclient.SIGNAL_ICE_OFFER:
+		msg.Kind = solver.MessageKindLegacyICEOffer
+	case coordclient.SIGNAL_ICE_ANSWER:
+		msg.Kind = solver.MessageKindLegacyICEAnswer
+	case coordclient.SIGNAL_ICE_CANDIDATE:
+		msg.Kind = solver.MessageKindLegacyICECandidate
+	case coordclient.SIGNAL_UNSPECIFIED:
+		msg.Kind = solver.MessageKindEnvelope
+	default:
+		return solver.Message{}, false
+	}
+	return msg, true
+}
+
+func peerSessionState(s *peerSession) sesspkg.State {
+	if s == nil || s.runner == nil {
+		return sesspkg.StateClosed
+	}
+	return s.runner.State()
+}
+
+func connectionTypeFromSummary(value string) ConnectionType {
+	if value == "relay" {
 		return ConnectionTypeRelay
 	}
 	return ConnectionTypeDirect
+}
+
+func sessionIDForNodes(localNodeID, peerNodeID string) string {
+	parts := []string{localNodeID, peerNodeID}
+	sort.Strings(parts)
+	return fmt.Sprintf("session/%s/%s", parts[0], parts[1])
+}
+
+func parsePeerAllowedIP(ip net.IP) (net.IP, *net.IPNet, error) {
+	maskBits := 32
+	if ip.To4() == nil {
+		maskBits = 128
+	}
+	return net.ParseCIDR(ip.String() + fmt.Sprintf("/%d", maskBits))
+}
+
+func udpAddrFromAddr(addr net.Addr) *net.UDPAddr {
+	if addr == nil {
+		return nil
+	}
+	if udpAddr, ok := addr.(*net.UDPAddr); ok {
+		return cloneUDPAddr(udpAddr)
+	}
+	host, portText, err := net.SplitHostPort(addr.String())
+	if err != nil {
+		return nil
+	}
+	port, err := net.LookupPort("udp", portText)
+	if err != nil {
+		return nil
+	}
+	ip := net.ParseIP(host)
+	if ip == nil {
+		return nil
+	}
+	return &net.UDPAddr{IP: append(net.IP(nil), ip...), Port: port}
+}
+
+func (e *engine) sessionContext() context.Context {
+	if e.runCtx != nil {
+		return e.runCtx
+	}
+	return context.Background()
 }
 
 func closePeerSession(session *peerSession) {
@@ -311,46 +389,17 @@ func closePeerSession(session *peerSession) {
 	}
 
 	session.connectMu.Lock()
-	transport := session.transport
-	session.transport = nil
-	session.selectedPair = nil
-	session.iceState = nat.ConnectionStateNew
-	session.tunnelAttached = false
+	runner := session.runner
+	session.runner = nil
+	session.bound = false
 	session.connected = false
 	session.connecting = false
 	session.retryPending = false
 	session.retryDelay = 0
+	session.lastPath = solver.PathSummary{}
 	session.connectMu.Unlock()
 
-	if transport != nil {
-		_ = transport.Close()
+	if runner != nil {
+		_ = runner.Close()
 	}
-	if session.agent != nil {
-		_ = session.agent.Close()
-	}
-}
-
-func candidateTypeString(c *nat.Candidate) string {
-	if c == nil {
-		return ""
-	}
-	return c.Type.String()
-}
-
-func candidateAddrString(c *nat.Candidate) string {
-	if c == nil || c.Address == nil {
-		return ""
-	}
-	return c.Address.String()
-}
-
-func formatCandidateInfo(c *nat.Candidate) string {
-	if c == nil {
-		return ""
-	}
-	addr := ""
-	if c.Address != nil {
-		addr = c.Address.String()
-	}
-	return fmt.Sprintf("%s:%s", c.Type.String(), addr)
 }

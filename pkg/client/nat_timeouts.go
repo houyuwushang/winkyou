@@ -43,7 +43,7 @@ func (e *engine) schedulePeerRetry(nodeID string, session *peerSession) {
 	}
 
 	session.connectMu.Lock()
-	if session.connected || session.tunnelAttached || session.retryPending {
+	if session.connected || session.bound || session.retryPending {
 		session.connectMu.Unlock()
 		return
 	}

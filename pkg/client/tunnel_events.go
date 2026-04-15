@@ -63,12 +63,12 @@ func (e *engine) markPeerConnected(publicKey tunnel.PublicKey, at time.Time) {
 				session.connecting = false
 				session.retryDelay = 0
 				session.retryPending = false
-				pair := session.selectedPair
+				path := session.lastPath
 				session.connectMu.Unlock()
-				if pair != nil && pair.Remote != nil {
-					peer.Endpoint = cloneUDPAddr(pair.Remote.Address)
-					peer.ConnectionType = connectionTypeFromCandidatePair(pair)
+				if endpoint := udpAddrFromAddr(path.RemoteAddr); endpoint != nil {
+					peer.Endpoint = endpoint
 				}
+				peer.ConnectionType = connectionTypeFromSummary(path.ConnectionType)
 			}
 		}
 

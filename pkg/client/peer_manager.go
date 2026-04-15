@@ -52,13 +52,8 @@ func (e *engine) handleSignal(signal *coordclient.SignalNotification) {
 	e.mu.Unlock()
 	e.persistState()
 
-	switch signal.Type {
-	case coordclient.SIGNAL_ICE_OFFER:
-		go e.handleOffer(signal)
-	case coordclient.SIGNAL_ICE_ANSWER:
-		go e.handleAnswer(signal)
-	case coordclient.SIGNAL_ICE_CANDIDATE:
-		go e.handleCandidate(signal)
+	if msg, ok := solverMessageFromSignal(signal); ok {
+		go e.handlePeerSolverMessage(signal.FromNode, msg)
 	}
 }
 
