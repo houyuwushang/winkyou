@@ -233,8 +233,10 @@ func (w *wggoTunnel) UpdatePeerEndpoint(publicKey PublicKey, endpoint *net.UDPAd
 	w.mu.Lock()
 	if endpoint != nil {
 		ps.Endpoint = cloneUDPAddr(endpoint)
+		ps.EndpointMeta = AddrMetaFromAddr(endpoint)
 	} else {
 		ps.Endpoint = nil
+		ps.EndpointMeta = AddrMeta{}
 	}
 	w.emitLocked(TunnelEvent{Type: EventPeerEndpointChanged, PeerKey: publicKey, Timestamp: w.now()})
 	w.mu.Unlock()
@@ -449,8 +451,8 @@ type transportEndpoint struct {
 
 	mu         sync.RWMutex
 	id         string
-	remoteAddr *net.UDPAddr
-	localAddr  *net.UDPAddr
+	remoteAddr net.Addr
+	localAddr  net.Addr
 }
 
 func newPeerTransportBind() *peerTransportBind {
@@ -546,13 +548,11 @@ func (b *peerTransportBind) AttachTransport(publicKey PublicKey, transport trans
 		return "", fmt.Errorf("tunnel: peer transport is nil")
 	}
 
-	remoteAddr := udpAddrFromNetAddr(transport.RemoteAddr())
-	localAddr := udpAddrFromNetAddr(transport.LocalAddr())
 	endpoint := &transportEndpoint{
 		key:        publicKey,
 		id:         transportEndpointID(publicKey),
-		remoteAddr: remoteAddr,
-		localAddr:  localAddr,
+		remoteAddr: transport.RemoteAddr(),
+		localAddr:  transport.LocalAddr(),
 	}
 	bound := &boundTransport{
 		conn:     transport,
@@ -702,10 +702,11 @@ func (e *transportEndpoint) DstToString() string { return e.id }
 func (e *transportEndpoint) DstToBytes() []byte {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
-	if e.remoteAddr == nil {
+	udp := udpAddrFromNetAddr(e.remoteAddr)
+	if udp == nil {
 		return []byte(e.id)
 	}
-	if addrPort, ok := udpAddrToAddrPort(e.remoteAddr); ok {
+	if addrPort, ok := udpAddrToAddrPort(udp); ok {
 		b, _ := addrPort.MarshalBinary()
 		return b
 	}
@@ -715,33 +716,47 @@ func (e *transportEndpoint) DstToBytes() []byte {
 func (e *transportEndpoint) DstIP() netip.Addr {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
-	if e.remoteAddr == nil {
+	udp := udpAddrFromNetAddr(e.remoteAddr)
+	if udp == nil {
 		return netip.Addr{}
 	}
-	addr, _ := netip.AddrFromSlice(e.remoteAddr.IP)
+	addr, _ := netip.AddrFromSlice(udp.IP)
 	return addr
 }
 
 func (e *transportEndpoint) SrcIP() netip.Addr {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
-	if e.localAddr == nil {
+	udp := udpAddrFromNetAddr(e.localAddr)
+	if udp == nil {
 		return netip.Addr{}
 	}
-	addr, _ := netip.AddrFromSlice(e.localAddr.IP)
+	addr, _ := netip.AddrFromSlice(udp.IP)
 	return addr
 }
 
 func (e *transportEndpoint) RemoteAddr() *net.UDPAddr {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
-	return cloneUDPAddr(e.remoteAddr)
+	return udpAddrFromNetAddr(e.remoteAddr)
+}
+
+func (e *transportEndpoint) LocalAddr() *net.UDPAddr {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	return udpAddrFromNetAddr(e.localAddr)
 }
 
 func (e *transportEndpoint) SetRemoteAddr(addr *net.UDPAddr) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.remoteAddr = cloneUDPAddr(addr)
+}
+
+func (e *transportEndpoint) SetLocalAddr(addr *net.UDPAddr) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.localAddr = cloneUDPAddr(addr)
 }
 
 type deviceSnapshot struct {

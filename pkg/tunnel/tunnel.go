@@ -33,14 +33,30 @@ type PeerConfig struct {
 	Keepalive    time.Duration             // 0 = disabled
 }
 
+// AddrMeta holds generic transport address information.
+// This keeps the transport/binder layer generic even when the concrete
+// tunnel implementation still needs to synthesize UDP endpoints for WG IPC.
+type AddrMeta struct {
+	Network string
+	Address string
+}
+
+func AddrMetaFromAddr(addr net.Addr) AddrMeta {
+	if addr == nil {
+		return AddrMeta{}
+	}
+	return AddrMeta{Network: addr.Network(), Address: addr.String()}
+}
+
 // PeerStatus represents the current state of a peer.
 type PeerStatus struct {
-	PublicKey     PublicKey
-	Endpoint      *net.UDPAddr
-	LastHandshake time.Time
-	TxBytes       uint64
-	RxBytes       uint64
-	AllowedIPs    []net.IPNet
+	PublicKey      PublicKey
+	Endpoint       *net.UDPAddr
+	EndpointMeta   AddrMeta
+	LastHandshake  time.Time
+	TxBytes        uint64
+	RxBytes        uint64
+	AllowedIPs     []net.IPNet
 }
 
 // TunnelStats holds aggregate tunnel statistics.
