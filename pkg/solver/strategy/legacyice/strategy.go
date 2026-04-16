@@ -23,6 +23,8 @@ type Strategy struct {
 	resultCh   chan solver.Result
 }
 
+const StrategyName = "legacy_ice_udp"
+
 func New(cfg Config) *Strategy {
 	return &Strategy{
 		cfg:      cfg.withDefaults(),
@@ -31,7 +33,7 @@ func New(cfg Config) *Strategy {
 }
 
 func (s *Strategy) Name() string {
-	return "legacy_ice_udp"
+	return StrategyName
 }
 
 func (s *Strategy) Plan(ctx context.Context, in solver.SolveInput) ([]solver.Plan, error) {

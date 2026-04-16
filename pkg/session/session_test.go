@@ -2,7 +2,9 @@ package session
 
 import (
 	"context"
+	"encoding/json"
 	"net"
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -34,18 +36,19 @@ func (f *fakeTransport) Close() error {
 }
 
 type fakeStrategy struct {
+	name      string
 	transport transport.PacketTransport
 	mu        sync.Mutex
 	planCalls int
 	execCalls int
 }
 
-func (f *fakeStrategy) Name() string { return "fake_strategy" }
+func (f *fakeStrategy) Name() string { return f.name }
 func (f *fakeStrategy) Plan(context.Context, solver.SolveInput) ([]solver.Plan, error) {
 	f.mu.Lock()
 	f.planCalls++
 	f.mu.Unlock()
-	return []solver.Plan{{ID: "plan-1", Strategy: "fake_strategy"}}, nil
+	return []solver.Plan{{ID: "plan-1", Strategy: f.name}}, nil
 }
 func (f *fakeStrategy) Execute(context.Context, solver.SessionIO, solver.Plan) (solver.Result, error) {
 	f.mu.Lock()
@@ -66,6 +69,38 @@ func (f *fakeStrategy) Counts() (planCalls, execCalls int) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.planCalls, f.execCalls
+}
+
+type fakeResolver struct {
+	local      rproto.Capability
+	strategy   solver.Strategy
+	selection  Selection
+	err        error
+	mu         sync.Mutex
+	resolveCnt int
+	lastRemote rproto.Capability
+}
+
+func (r *fakeResolver) LocalCapability() rproto.Capability {
+	return cloneCapability(r.local)
+}
+
+func (r *fakeResolver) Resolve(remote rproto.Capability, initiator bool) (solver.Strategy, Selection, error) {
+	_ = initiator
+	r.mu.Lock()
+	r.resolveCnt++
+	r.lastRemote = cloneCapability(remote)
+	r.mu.Unlock()
+	if r.err != nil {
+		return nil, Selection{}, r.err
+	}
+	return r.strategy, r.selection, nil
+}
+
+func (r *fakeResolver) Snapshot() (int, rproto.Capability) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.resolveCnt, cloneCapability(r.lastRemote)
 }
 
 type fakeBinder struct {
@@ -119,22 +154,33 @@ func (s *fakeSender) Failing(times int) {
 	s.failures = times
 }
 
-func TestSessionVerticalSliceBindsClosesTransportAndSendsCapability(t *testing.T) {
+func TestSessionStartCapabilitySelectionAndPathCommit(t *testing.T) {
 	transport := &fakeTransport{}
+	strategy := &fakeStrategy{name: "legacy_ice_udp", transport: transport}
+	resolver := &fakeResolver{
+		local:     rproto.Capability{Strategies: []string{"future_quic", "legacy_ice_udp"}},
+		strategy:  strategy,
+		selection: Selection{StrategyName: "legacy_ice_udp", Negotiated: true},
+	}
 	binder := &fakeBinder{}
 	sender := &fakeSender{}
 	bound := make(chan solver.Result, 1)
+	stateCh := make(chan State, 8)
 
 	s, err := New(Config{
-		SessionID:   "session/node-a/node-b",
-		LocalNodeID: "node-a",
-		PeerID:      "node-b",
-		Initiator:   true,
-		Strategy:    &fakeStrategy{transport: transport},
-		Binder:      binder,
-		Sender:      sender,
-		RunTimeout:  3 * time.Second,
+		SessionID:             "session/node-a/node-b",
+		LocalNodeID:           "node-a",
+		PeerID:                "node-b",
+		Initiator:             true,
+		Resolver:              resolver,
+		Binder:                binder,
+		Sender:                sender,
+		RunTimeout:            3 * time.Second,
+		CapabilityWaitTimeout: time.Second,
 		Hooks: Hooks{
+			OnStateChange: func(state State) {
+				stateCh <- state
+			},
 			OnBound: func(result solver.Result) {
 				bound <- result
 			},
@@ -148,6 +194,36 @@ func TestSessionVerticalSliceBindsClosesTransportAndSendsCapability(t *testing.T
 		t.Fatalf("Start() error = %v", err)
 	}
 
+	messages := sender.Messages()
+	if len(messages) == 0 {
+		t.Fatal("expected Start() to send at least one message")
+	}
+	if messages[0].Kind != solver.MessageKindEnvelope || messages[0].Type != rproto.MsgTypeCapability {
+		t.Fatalf("first message = %+v, want capability envelope", messages[0])
+	}
+
+	remoteCapability := rproto.SessionEnvelope{
+		SessionID: "session/node-a/node-b",
+		FromNode:  "node-b",
+		ToNode:    "node-a",
+		MsgType:   rproto.MsgTypeCapability,
+		Seq:       1,
+		Payload:   rproto.MustPayload(rproto.Capability{Strategies: []string{"legacy_ice_udp"}}),
+	}
+	payload, err := rproto.MarshalEnvelope(remoteCapability)
+	if err != nil {
+		t.Fatalf("MarshalEnvelope() error = %v", err)
+	}
+	if err := s.HandleMessage(context.Background(), solver.Message{
+		Kind:       solver.MessageKindEnvelope,
+		Namespace:  envelopeNamespace,
+		Type:       rproto.MsgTypeCapability,
+		Payload:    payload,
+		ReceivedAt: time.Now(),
+	}); err != nil {
+		t.Fatalf("HandleMessage(capability) error = %v", err)
+	}
+
 	select {
 	case result := <-bound:
 		if result.Summary.PathID != "fake/path" {
@@ -157,16 +233,54 @@ func TestSessionVerticalSliceBindsClosesTransportAndSendsCapability(t *testing.T
 		t.Fatal("timed out waiting for OnBound()")
 	}
 
-	if state := s.State(); state != StateBound {
-		t.Fatalf("State() = %q, want %q", state, StateBound)
+	snapshot := s.Snapshot()
+	if got := snapshot.LocalCapability.Strategies; len(got) != 2 || !slices.Equal(got, []string{"future_quic", "legacy_ice_udp"}) {
+		t.Fatalf("LocalCapability = %#v, want future_quic+legacy_ice_udp", snapshot.LocalCapability)
+	}
+	if got := snapshot.RemoteCapability.Strategies; len(got) != 1 || got[0] != "legacy_ice_udp" {
+		t.Fatalf("RemoteCapability = %#v, want legacy_ice_udp", snapshot.RemoteCapability)
+	}
+	if snapshot.SelectedStrategy != "legacy_ice_udp" {
+		t.Fatalf("SelectedStrategy = %q, want legacy_ice_udp", snapshot.SelectedStrategy)
+	}
+	if !snapshot.SelectionNegotiated {
+		t.Fatal("SelectionNegotiated = false, want true")
+	}
+	if snapshot.CapabilityExchangeAt.IsZero() {
+		t.Fatal("CapabilityExchangeAt should be set")
 	}
 
-	messages := sender.Messages()
-	if len(messages) == 0 {
-		t.Fatal("expected Start() to send at least one message")
+	resolveCalls, lastRemote := resolver.Snapshot()
+	if resolveCalls != 1 {
+		t.Fatalf("Resolve() calls = %d, want 1", resolveCalls)
 	}
-	if messages[0].Kind != solver.MessageKindEnvelope || messages[0].Type != rproto.MsgTypeCapability {
-		t.Fatalf("first message = %+v, want capability envelope", messages[0])
+	if got := lastRemote.Strategies; len(got) != 1 || got[0] != "legacy_ice_udp" {
+		t.Fatalf("resolver remote capability = %#v, want legacy_ice_udp", lastRemote)
+	}
+
+	messages = sender.Messages()
+	if len(messages) < 2 {
+		t.Fatalf("outbound messages = %d, want capability + path_commit", len(messages))
+	}
+	last := messages[len(messages)-1]
+	if last.Kind != solver.MessageKindEnvelope || last.Type != rproto.MsgTypePathCommit {
+		t.Fatalf("last message = %+v, want path_commit envelope", last)
+	}
+	envelope, err := rproto.UnmarshalEnvelope(last.Payload)
+	if err != nil {
+		t.Fatalf("UnmarshalEnvelope(path_commit) error = %v", err)
+	}
+	var pathCommit rproto.PathCommit
+	if err := json.Unmarshal(envelope.Payload, &pathCommit); err != nil {
+		t.Fatalf("decode path_commit: %v", err)
+	}
+	if pathCommit.Strategy != "legacy_ice_udp" || pathCommit.PathID != "fake/path" || pathCommit.ConnectionType != "direct" {
+		t.Fatalf("path_commit = %#v, want legacy_ice_udp/fake/path/direct", pathCommit)
+	}
+
+	states := collectStates(stateCh)
+	if !slices.Contains(states, StateCapabilityExchange) || !slices.Contains(states, StateSelecting) || !slices.Contains(states, StateBound) {
+		t.Fatalf("state transitions = %v, want capability_exchange/selecting/bound", states)
 	}
 
 	if err := s.Close(); err != nil {
@@ -180,83 +294,64 @@ func TestSessionVerticalSliceBindsClosesTransportAndSendsCapability(t *testing.T
 	}
 }
 
-func TestSessionCapabilityExchangeUpdatesSnapshotIdempotently(t *testing.T) {
+func TestSessionCapabilityAndPathCommitUpdatesSnapshotIdempotently(t *testing.T) {
 	transport := &fakeTransport{}
 	sender := &fakeSender{}
-
 	s, err := New(Config{
-		SessionID:   "session/node-a/node-b",
-		LocalNodeID: "node-a",
-		PeerID:      "node-b",
-		Initiator:   true,
-		Strategy:    &fakeStrategy{transport: transport},
-		Sender:      sender,
-		RunTimeout:  3 * time.Second,
+		SessionID:             "session/node-a/node-b",
+		LocalNodeID:           "node-a",
+		PeerID:                "node-b",
+		Initiator:             true,
+		Resolver:              &fakeResolver{local: rproto.Capability{Strategies: []string{"legacy_ice_udp"}}, strategy: &fakeStrategy{name: "legacy_ice_udp", transport: transport}, selection: Selection{StrategyName: "legacy_ice_udp"}},
+		Sender:                sender,
+		RunTimeout:            3 * time.Second,
+		CapabilityWaitTimeout: time.Millisecond,
 	})
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
 
-	if err := s.Start(context.Background()); err != nil {
-		t.Fatalf("Start() error = %v", err)
+	now := time.Now()
+	if err := s.HandleMessage(context.Background(), envelopeMessage(t, "session/node-a/node-b", "node-b", "node-a", rproto.MsgTypeCapability, 1, rproto.Capability{Strategies: []string{"legacy_ice_udp", "legacy_ice_udp"}}, now)); err != nil {
+		t.Fatalf("HandleMessage(capability) error = %v", err)
 	}
-
-	envelope := rproto.SessionEnvelope{
-		SessionID: "session/node-a/node-b",
-		FromNode:  "node-b",
-		ToNode:    "node-a",
-		MsgType:   rproto.MsgTypeCapability,
-		Seq:       1,
-		Payload:   rproto.MustPayload(rproto.Capability{Strategies: []string{"legacy_ice_udp", "legacy_ice_udp"}}),
+	if err := s.HandleMessage(context.Background(), envelopeMessage(t, "session/node-a/node-b", "node-b", "node-a", rproto.MsgTypeCapability, 1, rproto.Capability{Strategies: []string{"legacy_ice_udp", "legacy_ice_udp"}}, now)); err != nil {
+		t.Fatalf("HandleMessage(duplicate capability) error = %v", err)
 	}
-	payload, err := rproto.MarshalEnvelope(envelope)
-	if err != nil {
-		t.Fatalf("MarshalEnvelope() error = %v", err)
-	}
-
-	msg := solver.Message{
-		Kind:       solver.MessageKindEnvelope,
-		Namespace:  envelopeNamespace,
-		Type:       rproto.MsgTypeCapability,
-		Payload:    payload,
-		ReceivedAt: time.Now(),
-	}
-	if err := s.HandleMessage(context.Background(), msg); err != nil {
-		t.Fatalf("HandleMessage() error = %v", err)
-	}
-	if err := s.HandleMessage(context.Background(), msg); err != nil {
-		t.Fatalf("HandleMessage() duplicate error = %v", err)
+	if err := s.HandleMessage(context.Background(), envelopeMessage(t, "session/node-a/node-b", "node-b", "node-a", rproto.MsgTypePathCommit, 2, rproto.PathCommit{Strategy: "legacy_ice_udp", PathID: "remote/path", ConnectionType: "relay"}, now.Add(time.Second))); err != nil {
+		t.Fatalf("HandleMessage(path_commit) error = %v", err)
 	}
 
 	snapshot := s.Snapshot()
-	if got := snapshot.LocalCapability.Strategies; len(got) != 1 || got[0] != "fake_strategy" {
-		t.Fatalf("LocalCapability = %#v, want fake_strategy", snapshot.LocalCapability)
-	}
 	if got := snapshot.RemoteCapability.Strategies; len(got) != 1 || got[0] != "legacy_ice_udp" {
 		t.Fatalf("RemoteCapability = %#v, want legacy_ice_udp", snapshot.RemoteCapability)
 	}
-	if snapshot.LastEnvelopeType != rproto.MsgTypeCapability {
-		t.Fatalf("LastEnvelopeType = %q, want %q", snapshot.LastEnvelopeType, rproto.MsgTypeCapability)
+	if snapshot.LastEnvelopeType != rproto.MsgTypePathCommit {
+		t.Fatalf("LastEnvelopeType = %q, want %q", snapshot.LastEnvelopeType, rproto.MsgTypePathCommit)
 	}
-	if snapshot.LastEnvelopeAt.IsZero() {
-		t.Fatal("LastEnvelopeAt should be set")
+	if snapshot.LastPathCommit.PathID != "remote/path" || snapshot.LastPathCommit.Strategy != "legacy_ice_udp" || snapshot.LastPathCommit.ConnectionType != "relay" {
+		t.Fatalf("LastPathCommit = %#v, want remote/path legacy_ice_udp relay", snapshot.LastPathCommit)
+	}
+	if snapshot.LastPathCommitAt.IsZero() {
+		t.Fatal("LastPathCommitAt should be set")
 	}
 }
 
 func TestSessionStartFailureCanRetry(t *testing.T) {
 	transport := &fakeTransport{}
-	strategy := &fakeStrategy{transport: transport}
+	strategy := &fakeStrategy{name: "legacy_ice_udp", transport: transport}
 	sender := &fakeSender{}
 	sender.Failing(1)
 
 	s, err := New(Config{
-		SessionID:   "session/node-a/node-b",
-		LocalNodeID: "node-a",
-		PeerID:      "node-b",
-		Initiator:   true,
-		Strategy:    strategy,
-		Sender:      sender,
-		RunTimeout:  3 * time.Second,
+		SessionID:             "session/node-a/node-b",
+		LocalNodeID:           "node-a",
+		PeerID:                "node-b",
+		Initiator:             true,
+		Resolver:              &fakeResolver{local: rproto.Capability{Strategies: []string{"legacy_ice_udp"}}, strategy: strategy, selection: Selection{StrategyName: "legacy_ice_udp"}},
+		Sender:                sender,
+		RunTimeout:            3 * time.Second,
+		CapabilityWaitTimeout: time.Millisecond,
 	})
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
@@ -273,16 +368,7 @@ func TestSessionStartFailureCanRetry(t *testing.T) {
 		t.Fatalf("second Start() error = %v, want nil", err)
 	}
 
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		if state := s.State(); state == StateBound {
-			break
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	if state := s.State(); state != StateBound {
-		t.Fatalf("State() after retry = %q, want %q", state, StateBound)
-	}
+	waitForState(t, s, StateBound)
 
 	planCalls, execCalls := strategy.Counts()
 	if planCalls != 1 {
@@ -292,24 +378,25 @@ func TestSessionStartFailureCanRetry(t *testing.T) {
 		t.Fatalf("Execute() calls = %d, want 1", execCalls)
 	}
 	messages := sender.Messages()
-	if len(messages) != 1 {
-		t.Fatalf("successful outbound messages = %d, want 1 capability", len(messages))
+	if len(messages) != 2 {
+		t.Fatalf("successful outbound messages = %d, want capability + path_commit", len(messages))
 	}
 }
 
 func TestSessionStartIsNoOpAfterSuccess(t *testing.T) {
 	transport := &fakeTransport{}
-	strategy := &fakeStrategy{transport: transport}
+	strategy := &fakeStrategy{name: "legacy_ice_udp", transport: transport}
 	sender := &fakeSender{}
 
 	s, err := New(Config{
-		SessionID:   "session/node-a/node-b",
-		LocalNodeID: "node-a",
-		PeerID:      "node-b",
-		Initiator:   true,
-		Strategy:    strategy,
-		Sender:      sender,
-		RunTimeout:  3 * time.Second,
+		SessionID:             "session/node-a/node-b",
+		LocalNodeID:           "node-a",
+		PeerID:                "node-b",
+		Initiator:             true,
+		Resolver:              &fakeResolver{local: rproto.Capability{Strategies: []string{"legacy_ice_udp"}}, strategy: strategy, selection: Selection{StrategyName: "legacy_ice_udp"}},
+		Sender:                sender,
+		RunTimeout:            3 * time.Second,
+		CapabilityWaitTimeout: time.Millisecond,
 	})
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
@@ -318,17 +405,7 @@ func TestSessionStartIsNoOpAfterSuccess(t *testing.T) {
 	if err := s.Start(context.Background()); err != nil {
 		t.Fatalf("first Start() error = %v", err)
 	}
-
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		if state := s.State(); state == StateBound {
-			break
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	if state := s.State(); state != StateBound {
-		t.Fatalf("State() after first start = %q, want %q", state, StateBound)
-	}
+	waitForState(t, s, StateBound)
 
 	if err := s.Start(context.Background()); err != nil {
 		t.Fatalf("second Start() error = %v", err)
@@ -341,7 +418,53 @@ func TestSessionStartIsNoOpAfterSuccess(t *testing.T) {
 	if execCalls != 1 {
 		t.Fatalf("Execute() calls = %d, want 1", execCalls)
 	}
-	if got := len(sender.Messages()); got != 1 {
-		t.Fatalf("capability sends = %d, want 1", got)
+	if got := len(sender.Messages()); got != 2 {
+		t.Fatalf("outbound messages = %d, want capability + path_commit once", got)
+	}
+}
+
+func envelopeMessage(t *testing.T, sessionID, from, to, msgType string, seq uint64, payload any, receivedAt time.Time) solver.Message {
+	t.Helper()
+	raw, err := rproto.MarshalEnvelope(rproto.SessionEnvelope{
+		SessionID: sessionID,
+		FromNode:  from,
+		ToNode:    to,
+		MsgType:   msgType,
+		Seq:       seq,
+		Payload:   rproto.MustPayload(payload),
+	})
+	if err != nil {
+		t.Fatalf("MarshalEnvelope(%s) error = %v", msgType, err)
+	}
+	return solver.Message{
+		Kind:       solver.MessageKindEnvelope,
+		Namespace:  envelopeNamespace,
+		Type:       msgType,
+		Payload:    raw,
+		ReceivedAt: receivedAt,
+	}
+}
+
+func waitForState(t *testing.T, s *Session, want State) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if state := s.State(); state == want {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("State() = %q, want %q", s.State(), want)
+}
+
+func collectStates(ch <-chan State) []State {
+	var states []State
+	for {
+		select {
+		case state := <-ch:
+			states = append(states, state)
+		default:
+			return states
+		}
 	}
 }

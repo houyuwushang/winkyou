@@ -113,16 +113,16 @@ func (e *engine) startPeerSession(s *peerSession) {
 }
 
 func (e *engine) newPeerRunner(s *peerSession) (*sesspkg.Session, error) {
-	strategy := e.newLegacyICEStrategy()
 	return sesspkg.New(sesspkg.Config{
-		SessionID:   s.sessionID,
-		LocalNodeID: e.currentNodeID(),
-		PeerID:      s.nodeID,
-		Initiator:   s.initiator,
-		Strategy:    strategy,
-		Binder:      sesspkg.NewTunnelBinder(e.tun, e),
-		Sender:      peerMessageSender{engine: e},
-		RunTimeout:  e.legacyICERunTimeout(),
+		SessionID:             s.sessionID,
+		LocalNodeID:           e.currentNodeID(),
+		PeerID:                s.nodeID,
+		Initiator:             s.initiator,
+		Resolver:              e.newStrategyResolver(),
+		Binder:                sesspkg.NewTunnelBinder(e.tun, e),
+		Sender:                peerMessageSender{engine: e},
+		RunTimeout:            e.legacyICERunTimeout(),
+		CapabilityWaitTimeout: e.capabilityWaitTimeout(),
 		Hooks: sesspkg.Hooks{
 			OnStateChange: func(state sesspkg.State) {
 				e.handlePeerSessionState(s.nodeID, s, state)
@@ -157,7 +157,7 @@ func (e *engine) handlePeerSessionState(nodeID string, s *peerSession, state ses
 	switch state {
 	case sesspkg.StateNew:
 		s.connecting = false
-	case sesspkg.StatePlanning, sesspkg.StateExecuting, sesspkg.StateBinding:
+	case sesspkg.StateCapabilityExchange, sesspkg.StateSelecting, sesspkg.StatePlanning, sesspkg.StateExecuting, sesspkg.StateBinding:
 		s.connecting = true
 	case sesspkg.StateBound:
 		s.bound = true
@@ -168,7 +168,7 @@ func (e *engine) handlePeerSessionState(nodeID string, s *peerSession, state ses
 	}
 	s.connectMu.Unlock()
 
-	if state == sesspkg.StatePlanning || state == sesspkg.StateExecuting || state == sesspkg.StateBinding || state == sesspkg.StateBound {
+	if state == sesspkg.StateCapabilityExchange || state == sesspkg.StateSelecting || state == sesspkg.StatePlanning || state == sesspkg.StateExecuting || state == sesspkg.StateBinding || state == sesspkg.StateBound {
 		e.mu.Lock()
 		if peer := e.peers[nodeID]; peer != nil && peer.State != PeerStateConnected {
 			peer.State = PeerStateConnecting

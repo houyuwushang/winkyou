@@ -56,43 +56,64 @@ func TestLegacySignalAdaptersRoundTrip(t *testing.T) {
 }
 
 func TestEnvelopeSignalAdaptersRoundTrip(t *testing.T) {
-	payload, err := rproto.MarshalEnvelope(rproto.SessionEnvelope{
-		SessionID: "session/node-a/node-b",
-		FromNode:  "node-a",
-		ToNode:    "node-b",
-		MsgType:   rproto.MsgTypeCapability,
-		Seq:       1,
-		Payload:   rproto.MustPayload(rproto.Capability{Strategies: []string{"legacy_ice_udp"}}),
-	})
-	if err != nil {
-		t.Fatalf("MarshalEnvelope() error = %v", err)
+	tests := []struct {
+		name    string
+		msgType string
+		payload any
+	}{
+		{
+			name:    "capability",
+			msgType: rproto.MsgTypeCapability,
+			payload: rproto.Capability{Strategies: []string{"legacy_ice_udp"}},
+		},
+		{
+			name:    "path_commit",
+			msgType: rproto.MsgTypePathCommit,
+			payload: rproto.PathCommit{Strategy: "legacy_ice_udp", PathID: "legacyice:direct:session/node-a/node-b", ConnectionType: "direct"},
+		},
 	}
 
-	msg, ok, err := inboundSolverMessageFromSignal(&coordclient.SignalNotification{
-		FromNode:  "node-a",
-		ToNode:    "node-b",
-		Type:      coordclient.SIGNAL_UNSPECIFIED,
-		Payload:   payload,
-		Timestamp: time.Now().Unix(),
-	})
-	if err != nil {
-		t.Fatalf("inboundSolverMessageFromSignal() error = %v", err)
-	}
-	if !ok {
-		t.Fatal("inboundSolverMessageFromSignal() ok = false, want true")
-	}
-	if msg.Kind != solver.MessageKindEnvelope || msg.Namespace != sessionEnvelopeNamespace || msg.Type != rproto.MsgTypeCapability {
-		t.Fatalf("message = %+v, want envelope/%s/%s", msg, sessionEnvelopeNamespace, rproto.MsgTypeCapability)
-	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			payload, err := rproto.MarshalEnvelope(rproto.SessionEnvelope{
+				SessionID: "session/node-a/node-b",
+				FromNode:  "node-a",
+				ToNode:    "node-b",
+				MsgType:   tt.msgType,
+				Seq:       1,
+				Payload:   rproto.MustPayload(tt.payload),
+			})
+			if err != nil {
+				t.Fatalf("MarshalEnvelope() error = %v", err)
+			}
 
-	signalType, outPayload, err := outboundSignalForSolverMessage(msg)
-	if err != nil {
-		t.Fatalf("outboundSignalForSolverMessage() error = %v", err)
-	}
-	if signalType != coordclient.SIGNAL_UNSPECIFIED {
-		t.Fatalf("signalType = %v, want SIGNAL_UNSPECIFIED", signalType)
-	}
-	if string(outPayload) != string(payload) {
-		t.Fatalf("payload round trip mismatch")
+			msg, ok, err := inboundSolverMessageFromSignal(&coordclient.SignalNotification{
+				FromNode:  "node-a",
+				ToNode:    "node-b",
+				Type:      coordclient.SIGNAL_UNSPECIFIED,
+				Payload:   payload,
+				Timestamp: time.Now().Unix(),
+			})
+			if err != nil {
+				t.Fatalf("inboundSolverMessageFromSignal() error = %v", err)
+			}
+			if !ok {
+				t.Fatal("inboundSolverMessageFromSignal() ok = false, want true")
+			}
+			if msg.Kind != solver.MessageKindEnvelope || msg.Namespace != sessionEnvelopeNamespace || msg.Type != tt.msgType {
+				t.Fatalf("message = %+v, want envelope/%s/%s", msg, sessionEnvelopeNamespace, tt.msgType)
+			}
+
+			signalType, outPayload, err := outboundSignalForSolverMessage(msg)
+			if err != nil {
+				t.Fatalf("outboundSignalForSolverMessage() error = %v", err)
+			}
+			if signalType != coordclient.SIGNAL_UNSPECIFIED {
+				t.Fatalf("signalType = %v, want SIGNAL_UNSPECIFIED", signalType)
+			}
+			if string(outPayload) != string(payload) {
+				t.Fatalf("payload round trip mismatch")
+			}
+		})
 	}
 }

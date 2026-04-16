@@ -11,13 +11,15 @@ import (
 type State string
 
 const (
-	StateNew       State = "new"
-	StatePlanning  State = "planning"
-	StateExecuting State = "executing"
-	StateBinding   State = "binding"
-	StateBound     State = "bound"
-	StateFailed    State = "failed"
-	StateClosed    State = "closed"
+	StateNew                State = "new"
+	StateCapabilityExchange State = "capability_exchange"
+	StateSelecting          State = "selecting"
+	StatePlanning           State = "planning"
+	StateExecuting          State = "executing"
+	StateBinding            State = "binding"
+	StateBound              State = "bound"
+	StateFailed             State = "failed"
+	StateClosed             State = "closed"
 )
 
 const envelopeNamespace = "rendezvous.v2"
@@ -32,24 +34,46 @@ type Hooks struct {
 	OnError       func(error)
 }
 
+type Selection struct {
+	StrategyName string
+	Negotiated   bool
+}
+
+type StrategyResolver interface {
+	LocalCapability() rproto.Capability
+	Resolve(remote rproto.Capability, initiator bool) (solver.Strategy, Selection, error)
+}
+
 type Config struct {
-	SessionID   string
-	LocalNodeID string
-	PeerID      string
-	Initiator   bool
-	Strategy    solver.Strategy
-	Binder      Binder
-	Sender      MessageSender
-	Hooks       Hooks
-	RunTimeout  time.Duration
+	SessionID             string
+	LocalNodeID           string
+	PeerID                string
+	Initiator             bool
+	Resolver              StrategyResolver
+	Binder                Binder
+	Sender                MessageSender
+	Hooks                 Hooks
+	RunTimeout            time.Duration
+	CapabilityWaitTimeout time.Duration
+}
+
+type PathCommitSnapshot struct {
+	Strategy       string
+	PathID         string
+	ConnectionType string
 }
 
 type Snapshot struct {
-	SessionID        string
-	PeerID           string
-	State            State
-	LocalCapability  rproto.Capability
-	RemoteCapability rproto.Capability
-	LastEnvelopeType string
-	LastEnvelopeAt   time.Time
+	SessionID            string
+	PeerID               string
+	State                State
+	LocalCapability      rproto.Capability
+	RemoteCapability     rproto.Capability
+	SelectedStrategy     string
+	SelectionNegotiated  bool
+	CapabilityExchangeAt time.Time
+	LastPathCommit       PathCommitSnapshot
+	LastPathCommitAt     time.Time
+	LastEnvelopeType     string
+	LastEnvelopeAt       time.Time
 }

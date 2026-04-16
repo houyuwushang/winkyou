@@ -41,7 +41,9 @@ type ProbeResult struct {
 }
 
 type PathCommit struct {
-	PathID string `json:"path_id,omitempty"`
+	Strategy       string `json:"strategy,omitempty"`
+	PathID         string `json:"path_id,omitempty"`
+	ConnectionType string `json:"connection_type,omitempty"`
 }
 
 func MarshalEnvelope(envelope SessionEnvelope) ([]byte, error) {
