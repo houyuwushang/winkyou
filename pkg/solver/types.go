@@ -48,6 +48,24 @@ type Result struct {
 	Summary   PathSummary
 }
 
+// ExecutionBudget defines resource limits for candidate execution
+type ExecutionBudget struct {
+	MaxCandidates int
+	TimeBudget    time.Duration
+}
+
+// CandidateOutcome represents the result of executing a single candidate plan
+type CandidateOutcome struct {
+	Plan         Plan
+	Result       *Result
+	ErrorClass   string
+	Err          error
+	Score        int
+	Selected     bool
+	FinishedAt   time.Time
+	ExecutionDur time.Duration
+}
+
 type SessionIO interface {
 	Send(ctx context.Context, msg Message) error
 }
@@ -61,4 +79,67 @@ type Strategy interface {
 
 type MessageHandler interface {
 	HandleMessage(ctx context.Context, sess SessionIO, msg Message) error
+}
+
+// DefaultBudget returns a conservative execution budget
+func DefaultBudget() ExecutionBudget {
+	return ExecutionBudget{
+		MaxCandidates: 3,
+		TimeBudget:    60 * time.Second,
+	}
+}
+
+// ScoreOutcome assigns a score to a candidate outcome
+// Higher score is better. Generic scoring rules:
+// - Success > Failure
+// - Direct > Relay (when both succeed)
+// - First success wins ties
+func ScoreOutcome(outcome CandidateOutcome) int {
+	if outcome.Err != nil {
+		return 0
+	}
+	if outcome.Result == nil || outcome.Result.Transport == nil {
+		return 0
+	}
+
+	score := 100 // base success score
+
+	// Prefer direct over relay
+	if outcome.Result.Summary.ConnectionType == "direct" {
+		score += 50
+	} else if outcome.Result.Summary.ConnectionType == "relay" {
+		score += 20
+	}
+
+	// Prefer paths with explicit PathID
+	if outcome.Result.Summary.PathID != "" {
+		score += 10
+	}
+
+	return score
+}
+
+// SelectBestOutcome picks the highest-scoring outcome from a list
+// Returns nil if no successful outcomes exist
+func SelectBestOutcome(outcomes []CandidateOutcome) *CandidateOutcome {
+	if len(outcomes) == 0 {
+		return nil
+	}
+
+	var best *CandidateOutcome
+	bestScore := -1
+
+	for i := range outcomes {
+		outcome := &outcomes[i]
+		score := ScoreOutcome(*outcome)
+		if score > bestScore {
+			bestScore = score
+			best = outcome
+		}
+	}
+
+	if best != nil && bestScore > 0 {
+		return best
+	}
+	return nil
 }

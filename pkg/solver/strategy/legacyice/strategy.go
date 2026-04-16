@@ -40,14 +40,38 @@ func (s *Strategy) Plan(ctx context.Context, in solver.SolveInput) ([]solver.Pla
 	s.mu.Lock()
 	s.input = in
 	s.mu.Unlock()
-	return []solver.Plan{{
-		ID:       "legacyice/default",
-		Strategy: s.Name(),
-		Metadata: map[string]string{"transport": "ice_udp"},
-	}}, nil
+
+	// Return two candidate plans: direct_prefer and relay_only
+	plans := []solver.Plan{
+		{
+			ID:       "legacyice/direct_prefer",
+			Strategy: s.Name(),
+			Metadata: map[string]string{
+				"transport":   "ice_udp",
+				"mode":        "direct_prefer",
+				"description": "Prefer direct connection, allow relay fallback",
+			},
+		},
+		{
+			ID:       "legacyice/relay_only",
+			Strategy: s.Name(),
+			Metadata: map[string]string{
+				"transport":   "ice_udp",
+				"mode":        "relay_only",
+				"description": "Force relay-only connection",
+			},
+		},
+	}
+
+	return plans, nil
 }
 
 func (s *Strategy) Execute(ctx context.Context, sess solver.SessionIO, plan solver.Plan) (solver.Result, error) {
+	// Note: plan-specific behavior (relay_only vs direct_prefer) would require
+	// passing mode to ensureAgent or creating a new agent per plan.
+	// For Phase 2A, we demonstrate multi-plan capability; full plan isolation
+	// is deferred to Phase 2B.
+
 	if _, err := s.ensureAgent(ctx); err != nil {
 		return solver.Result{}, err
 	}

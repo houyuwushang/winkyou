@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strings"
 	"sync"
 	"time"
 
@@ -186,14 +187,148 @@ func (s *Session) selectAndExecute(ctx context.Context) error {
 	if len(plans) == 0 {
 		return fmt.Errorf("session: strategy %s returned no plans", strategy.Name())
 	}
-	s.lastPlan = plans[0]
 
 	if err := s.flushPendingStrategyMessages(ctx, strategy); err != nil {
 		return err
 	}
 
-	s.execute(strategy, plans[0])
+	// Execute candidate loop with budget
+	budget := solver.DefaultBudget()
+	outcomes := s.executeCandidateLoop(strategy, plans, budget)
+
+	// Select best outcome
+	best := solver.SelectBestOutcome(outcomes)
+	if best == nil {
+		// Collect error info from all outcomes
+		var lastErr error
+		for _, o := range outcomes {
+			if o.Err != nil {
+				lastErr = o.Err
+			}
+		}
+		if lastErr != nil {
+			s.fail(lastErr)
+		} else {
+			s.fail(fmt.Errorf("session: no successful candidate from %d plans", len(plans)))
+		}
+		return nil
+	}
+
+	// Mark selected
+	best.Selected = true
+	s.lastPlan = best.Plan
+	s.lastRes = *best.Result
+
+	// Clean up non-selected transports
+	for i := range outcomes {
+		if !outcomes[i].Selected && outcomes[i].Result != nil && outcomes[i].Result.Transport != nil {
+			_ = outcomes[i].Result.Transport.Close()
+		}
+	}
+
+	// Bind the winner
+	if s.cfg.Binder != nil {
+		s.transition(StateBinding)
+		if err := s.cfg.Binder.Bind(context.Background(), s.cfg.PeerID, best.Result.Transport); err != nil {
+			_ = best.Result.Transport.Close()
+			s.fail(err)
+			return nil
+		}
+	}
+
+	// Send path commit
+	if err := s.sendPathCommit(context.Background(), *best.Result); err != nil {
+		if s.cfg.Binder != nil {
+			_ = s.cfg.Binder.Unbind(context.Background(), s.cfg.PeerID)
+		}
+		_ = best.Result.Transport.Close()
+		s.lastRes.Transport = nil
+		s.fail(err)
+		return nil
+	}
+
+	s.transition(StateBound)
+	if s.cfg.Hooks.OnBound != nil {
+		s.cfg.Hooks.OnBound(*best.Result)
+	}
 	return nil
+}
+
+func (s *Session) executeCandidateLoop(strategy solver.Strategy, plans []solver.Plan, budget solver.ExecutionBudget) []solver.CandidateOutcome {
+	outcomes := make([]solver.CandidateOutcome, 0, len(plans))
+	budgetStart := time.Now()
+
+	maxCandidates := budget.MaxCandidates
+	if maxCandidates <= 0 || maxCandidates > len(plans) {
+		maxCandidates = len(plans)
+	}
+
+	for i := 0; i < maxCandidates; i++ {
+		plan := plans[i]
+
+		// Check time budget
+		if budget.TimeBudget > 0 && time.Since(budgetStart) >= budget.TimeBudget {
+			break
+		}
+
+		outcome := s.executeCandidate(strategy, plan)
+		outcomes = append(outcomes, outcome)
+	}
+
+	// Score all outcomes
+	for i := range outcomes {
+		outcomes[i].Score = solver.ScoreOutcome(outcomes[i])
+	}
+
+	return outcomes
+}
+
+func (s *Session) executeCandidate(strategy solver.Strategy, plan solver.Plan) solver.CandidateOutcome {
+	startTime := time.Now()
+	outcome := solver.CandidateOutcome{
+		Plan: plan,
+	}
+
+	s.transition(StateExecuting)
+	execCtx := s.runContext()
+	if execCtx == nil {
+		execCtx = context.Background()
+	}
+	if timeout := s.executionTimeout(); timeout > 0 {
+		var cancel context.CancelFunc
+		execCtx, cancel = context.WithTimeout(execCtx, timeout)
+		defer cancel()
+	}
+
+	result, err := strategy.Execute(execCtx, s.io, plan)
+	outcome.FinishedAt = time.Now()
+	outcome.ExecutionDur = time.Since(startTime)
+
+	if err != nil {
+		outcome.Err = err
+		outcome.ErrorClass = classifyError(err)
+		return outcome
+	}
+
+	outcome.Result = &result
+	return outcome
+}
+
+func classifyError(err error) string {
+	if err == nil {
+		return ""
+	}
+	errStr := err.Error()
+	switch {
+	case strings.Contains(errStr, "timeout") || strings.Contains(errStr, "deadline"):
+		return "timeout"
+	case strings.Contains(errStr, "connection refused") || strings.Contains(errStr, "no route"):
+		return "unreachable"
+	case strings.Contains(errStr, "context canceled"):
+		return "canceled"
+	default:
+		return "unknown"
+	}
 }
 
 func (s *Session) selectStrategy(ctx context.Context) (solver.Strategy, error) {
@@ -213,54 +348,6 @@ func (s *Session) selectStrategy(ctx context.Context) (solver.Strategy, error) {
 	}
 	s.setSelectedStrategy(strategy, selection)
 	return strategy, nil
-}
-
-func (s *Session) execute(strategy solver.Strategy, plan solver.Plan) {
-	s.transition(StateExecuting)
-	execCtx := s.runContext()
-	if execCtx == nil {
-		execCtx = context.Background()
-	}
-	if timeout := s.executionTimeout(); timeout > 0 {
-		var cancel context.CancelFunc
-		execCtx, cancel = context.WithTimeout(execCtx, timeout)
-		defer cancel()
-	}
-
-	result, err := strategy.Execute(execCtx, s.io, plan)
-	if err != nil {
-		s.fail(err)
-		return
-	}
-	s.lastRes = result
-
-	if s.cfg.Binder != nil {
-		s.transition(StateBinding)
-		if err := s.cfg.Binder.Bind(context.Background(), s.cfg.PeerID, result.Transport); err != nil {
-			if result.Transport != nil {
-				_ = result.Transport.Close()
-			}
-			s.fail(err)
-			return
-		}
-	}
-
-	if err := s.sendPathCommit(context.Background(), result); err != nil {
-		if s.cfg.Binder != nil {
-			_ = s.cfg.Binder.Unbind(context.Background(), s.cfg.PeerID)
-		}
-		if result.Transport != nil {
-			_ = result.Transport.Close()
-			s.lastRes.Transport = nil
-		}
-		s.fail(err)
-		return
-	}
-
-	s.transition(StateBound)
-	if s.cfg.Hooks.OnBound != nil {
-		s.cfg.Hooks.OnBound(result)
-	}
 }
 
 func (s *Session) HandleMessage(ctx context.Context, msg solver.Message) error {

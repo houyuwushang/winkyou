@@ -165,10 +165,34 @@ Required outcome:
 - legacy message language is pushed back to strategy or client edge adapters
 - capability exchange actually runs on session start
 
+**Status**: Frozen at tag `phase1.5-freeze-2026-04-16`
+
+### Phase 2A (Current)
+
+**Scope**: Upgrade solver core from single-plan execution to candidate loop with minimal observation vertical slice.
+
+Required outcome:
+
+- solver core executes multiple candidate plans, not just `plans[0]`
+- session collects outcomes, scores candidates, selects best path
+- execution budget model (max candidates, time budget)
+- `legacy_ice_udp` returns at least two plans (e.g., direct_prefer, relay_only)
+- observation events flow: report -> persist -> exchange
+- netprobe evolves to probe lab with script execution capability
+- transport plane gains framed-stream adapter (net.Conn -> PacketTransport)
+- tunnel/binder removes UDP-specific address assumptions
+
+**Not in Phase 2A**:
+
+- second real strategy (TCP/443, QUIC, etc.)
+- full observation->scoring->learning closed loop
+- concurrent candidate execution
+- coordinator proto redesign
+
 ### Not In Scope Yet
 
-- second fully implemented strategy
-- full observation collection and scoring
+- second fully implemented strategy beyond legacy_ice_udp multi-plan
+- full observation collection and scoring with learning feedback
 - new coordinator transport or protobuf redesign
 - GUI, daemon, no-admin, proxy, or userspace completion work
 

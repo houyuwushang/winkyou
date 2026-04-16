@@ -14,6 +14,7 @@ type Config struct {
 	GatherTimeout  time.Duration
 	ConnectTimeout time.Duration
 	CheckTimeout   time.Duration
+	ForceRelay     bool // If true, only relay candidates will be gathered
 }
 
 func (c Config) withDefaults() Config {
