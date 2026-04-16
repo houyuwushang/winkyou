@@ -35,13 +35,22 @@ func (f *fakeTransport) Close() error {
 
 type fakeStrategy struct {
 	transport transport.PacketTransport
+	mu        sync.Mutex
+	planCalls int
+	execCalls int
 }
 
 func (f *fakeStrategy) Name() string { return "fake_strategy" }
 func (f *fakeStrategy) Plan(context.Context, solver.SolveInput) ([]solver.Plan, error) {
+	f.mu.Lock()
+	f.planCalls++
+	f.mu.Unlock()
 	return []solver.Plan{{ID: "plan-1", Strategy: "fake_strategy"}}, nil
 }
 func (f *fakeStrategy) Execute(context.Context, solver.SessionIO, solver.Plan) (solver.Result, error) {
+	f.mu.Lock()
+	f.execCalls++
+	f.mu.Unlock()
 	return solver.Result{
 		Transport: f.transport,
 		Summary: solver.PathSummary{
@@ -52,6 +61,12 @@ func (f *fakeStrategy) Execute(context.Context, solver.SessionIO, solver.Plan) (
 	}, nil
 }
 func (f *fakeStrategy) Close() error { return nil }
+
+func (f *fakeStrategy) Counts() (planCalls, execCalls int) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.planCalls, f.execCalls
+}
 
 type fakeBinder struct {
 	mu          sync.Mutex
@@ -76,11 +91,16 @@ func (b *fakeBinder) Unbind(context.Context, string) error {
 type fakeSender struct {
 	mu       sync.Mutex
 	messages []solver.Message
+	failures int
 }
 
 func (s *fakeSender) Send(_ context.Context, _ string, msg solver.Message) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.failures > 0 {
+		s.failures--
+		return context.DeadlineExceeded
+	}
 	s.messages = append(s.messages, msg)
 	return nil
 }
@@ -91,6 +111,12 @@ func (s *fakeSender) Messages() []solver.Message {
 	out := make([]solver.Message, len(s.messages))
 	copy(out, s.messages)
 	return out
+}
+
+func (s *fakeSender) Failing(times int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.failures = times
 }
 
 func TestSessionVerticalSliceBindsClosesTransportAndSendsCapability(t *testing.T) {
@@ -214,5 +240,108 @@ func TestSessionCapabilityExchangeUpdatesSnapshotIdempotently(t *testing.T) {
 	}
 	if snapshot.LastEnvelopeAt.IsZero() {
 		t.Fatal("LastEnvelopeAt should be set")
+	}
+}
+
+func TestSessionStartFailureCanRetry(t *testing.T) {
+	transport := &fakeTransport{}
+	strategy := &fakeStrategy{transport: transport}
+	sender := &fakeSender{}
+	sender.Failing(1)
+
+	s, err := New(Config{
+		SessionID:   "session/node-a/node-b",
+		LocalNodeID: "node-a",
+		PeerID:      "node-b",
+		Initiator:   true,
+		Strategy:    strategy,
+		Sender:      sender,
+		RunTimeout:  3 * time.Second,
+	})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	if err := s.Start(context.Background()); err == nil {
+		t.Fatal("first Start() error = nil, want failure")
+	}
+	if state := s.State(); state != StateFailed {
+		t.Fatalf("State() after failed start = %q, want %q", state, StateFailed)
+	}
+
+	if err := s.Start(context.Background()); err != nil {
+		t.Fatalf("second Start() error = %v, want nil", err)
+	}
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if state := s.State(); state == StateBound {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if state := s.State(); state != StateBound {
+		t.Fatalf("State() after retry = %q, want %q", state, StateBound)
+	}
+
+	planCalls, execCalls := strategy.Counts()
+	if planCalls != 1 {
+		t.Fatalf("Plan() calls = %d, want 1", planCalls)
+	}
+	if execCalls != 1 {
+		t.Fatalf("Execute() calls = %d, want 1", execCalls)
+	}
+	messages := sender.Messages()
+	if len(messages) != 1 {
+		t.Fatalf("successful outbound messages = %d, want 1 capability", len(messages))
+	}
+}
+
+func TestSessionStartIsNoOpAfterSuccess(t *testing.T) {
+	transport := &fakeTransport{}
+	strategy := &fakeStrategy{transport: transport}
+	sender := &fakeSender{}
+
+	s, err := New(Config{
+		SessionID:   "session/node-a/node-b",
+		LocalNodeID: "node-a",
+		PeerID:      "node-b",
+		Initiator:   true,
+		Strategy:    strategy,
+		Sender:      sender,
+		RunTimeout:  3 * time.Second,
+	})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	if err := s.Start(context.Background()); err != nil {
+		t.Fatalf("first Start() error = %v", err)
+	}
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if state := s.State(); state == StateBound {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if state := s.State(); state != StateBound {
+		t.Fatalf("State() after first start = %q, want %q", state, StateBound)
+	}
+
+	if err := s.Start(context.Background()); err != nil {
+		t.Fatalf("second Start() error = %v", err)
+	}
+
+	planCalls, execCalls := strategy.Counts()
+	if planCalls != 1 {
+		t.Fatalf("Plan() calls = %d, want 1", planCalls)
+	}
+	if execCalls != 1 {
+		t.Fatalf("Execute() calls = %d, want 1", execCalls)
+	}
+	if got := len(sender.Messages()); got != 1 {
+		t.Fatalf("capability sends = %d, want 1", got)
 	}
 }

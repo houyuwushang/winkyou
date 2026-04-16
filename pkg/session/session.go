@@ -19,10 +19,12 @@ type Session struct {
 	io     *solverIO
 	runCtx context.Context
 
-	startMu sync.Mutex
-	started bool
-	closeMu sync.Mutex
-	closed  bool
+	startMu   sync.Mutex
+	startCond *sync.Cond
+	started   bool
+	starting  bool
+	closeMu   sync.Mutex
+	closed    bool
 
 	metaMu sync.RWMutex
 	meta   Snapshot
@@ -92,13 +94,32 @@ func (s *Session) Start(ctx context.Context) error {
 	}
 
 	s.startMu.Lock()
+	if s.startCond == nil {
+		s.startCond = sync.NewCond(&s.startMu)
+	}
+	for s.starting {
+		s.startCond.Wait()
+	}
 	if s.started {
 		s.startMu.Unlock()
 		return nil
 	}
-	s.started = true
+	s.starting = true
 	s.runCtx = ctx
 	s.startMu.Unlock()
+
+	startSucceeded := false
+	defer func() {
+		s.startMu.Lock()
+		if startSucceeded {
+			s.started = true
+		} else {
+			s.runCtx = nil
+		}
+		s.starting = false
+		s.startCond.Broadcast()
+		s.startMu.Unlock()
+	}()
 
 	if err := s.sendCapability(ctx); err != nil {
 		s.fail(err)
@@ -122,6 +143,7 @@ func (s *Session) Start(ctx context.Context) error {
 		return err
 	}
 	s.lastPlan = plans[0]
+	startSucceeded = true
 
 	go s.execute(plans[0])
 	return nil
