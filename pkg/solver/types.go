@@ -68,6 +68,25 @@ type CandidateOutcome struct {
 
 type SessionIO interface {
 	Send(ctx context.Context, msg Message) error
+	ReportObservation(ctx context.Context, obs Observation) error
+}
+
+// Observation represents a connectivity observation event
+type Observation struct {
+	Strategy       string
+	PlanID         string
+	Event          string
+	PathID         string
+	ConnectionType string
+	LocalAddr      string
+	RemoteAddr     string
+	LocalKind      string
+	RemoteKind     string
+	ErrorClass     string
+	Reason         string
+	TimeoutMS      int64
+	Details        map[string]string
+	Timestamp      time.Time
 }
 
 type Strategy interface {

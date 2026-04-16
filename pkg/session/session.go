@@ -43,10 +43,14 @@ type Session struct {
 
 	lastPlan solver.Plan
 	lastRes  solver.Result
+
+	obsMu        sync.Mutex
+	observations []solver.Observation
 }
 
 type solverIO struct {
-	cfg Config
+	cfg     Config
+	session *Session
 }
 
 func New(cfg Config) (*Session, error) {
@@ -68,7 +72,7 @@ func New(cfg Config) (*Session, error) {
 		return nil, fmt.Errorf("session: resolver returned no local strategies")
 	}
 
-	return &Session{
+	s := &Session{
 		cfg:          cfg,
 		sm:           NewStateMachine(StateNew),
 		io:           &solverIO{cfg: cfg},
@@ -79,7 +83,9 @@ func New(cfg Config) (*Session, error) {
 			State:           StateNew,
 			LocalCapability: localCapability,
 		},
-	}, nil
+	}
+	s.io.session = s
+	return s, nil
 }
 
 func (s *Session) ID() string {
@@ -107,6 +113,14 @@ func (s *Session) Snapshot() Snapshot {
 		LastEnvelopeType:     s.meta.LastEnvelopeType,
 		LastEnvelopeAt:       s.meta.LastEnvelopeAt,
 	}
+}
+
+func (s *Session) Observations() []solver.Observation {
+	s.obsMu.Lock()
+	defer s.obsMu.Unlock()
+	out := make([]solver.Observation, len(s.observations))
+	copy(out, s.observations)
+	return out
 }
 
 func (s *Session) Start(ctx context.Context) error {
@@ -494,6 +508,14 @@ func (s *Session) handleEnvelopeMessage(msg solver.Message) error {
 			}
 		}
 		s.setRemotePathCommit(pathCommit, receivedAt)
+	case rproto.MsgTypeObservation:
+		var obs rproto.Observation
+		if len(envelope.Payload) > 0 {
+			if err := json.Unmarshal(envelope.Payload, &obs); err != nil {
+				return fmt.Errorf("session: decode observation: %w", err)
+			}
+		}
+		s.recordRemoteObservation(obs, receivedAt)
 	}
 	return nil
 }
@@ -586,6 +608,35 @@ func (s *Session) setRemotePathCommit(pathCommit rproto.PathCommit, receivedAt t
 	s.metaMu.Unlock()
 }
 
+func (s *Session) recordRemoteObservation(obs rproto.Observation, receivedAt time.Time) {
+	solverObs := solver.Observation{
+		Strategy:       obs.Strategy,
+		PlanID:         obs.PlanID,
+		Event:          obs.Event,
+		PathID:         obs.PathID,
+		ConnectionType: obs.ConnectionType,
+		LocalAddr:      obs.LocalAddr,
+		RemoteAddr:     obs.RemoteAddr,
+		LocalKind:      obs.LocalKind,
+		RemoteKind:     obs.RemoteKind,
+		ErrorClass:     obs.ErrorClass,
+		Reason:         obs.Reason,
+		TimeoutMS:      obs.TimeoutMS,
+		Details:        obs.Details,
+		Timestamp:      obs.Timestamp,
+	}
+	if solverObs.Timestamp.IsZero() {
+		solverObs.Timestamp = receivedAt
+	}
+
+	s.obsMu.Lock()
+	s.observations = append(s.observations, solverObs)
+	if len(s.observations) > 100 {
+		s.observations = s.observations[len(s.observations)-100:]
+	}
+	s.obsMu.Unlock()
+}
+
 func (s *Session) setSelectedStrategy(strategy solver.Strategy, selection Selection) {
 	s.strategyMu.Lock()
 	s.strategy = strategy
@@ -670,6 +721,57 @@ func (s *Session) newEnvelope(msgType string, payload any) (rproto.SessionEnvelo
 
 func (io *solverIO) Send(ctx context.Context, msg solver.Message) error {
 	return io.cfg.Sender.Send(ctx, io.cfg.PeerID, msg)
+}
+
+func (io *solverIO) ReportObservation(ctx context.Context, obs solver.Observation) error {
+	if io.session == nil {
+		return nil
+	}
+	return io.session.reportObservation(ctx, obs)
+}
+
+func (s *Session) reportObservation(ctx context.Context, obs solver.Observation) error {
+	// Store locally
+	s.obsMu.Lock()
+	s.observations = append(s.observations, obs)
+	// Keep last 100 observations
+	if len(s.observations) > 100 {
+		s.observations = s.observations[len(s.observations)-100:]
+	}
+	s.obsMu.Unlock()
+
+	// Send to remote peer
+	envelope, err := s.newEnvelope(rproto.MsgTypeObservation, rproto.Observation{
+		Strategy:       obs.Strategy,
+		PlanID:         obs.PlanID,
+		Event:          obs.Event,
+		PathID:         obs.PathID,
+		ConnectionType: obs.ConnectionType,
+		LocalAddr:      obs.LocalAddr,
+		RemoteAddr:     obs.RemoteAddr,
+		LocalKind:      obs.LocalKind,
+		RemoteKind:     obs.RemoteKind,
+		ErrorClass:     obs.ErrorClass,
+		Reason:         obs.Reason,
+		TimeoutMS:      obs.TimeoutMS,
+		Details:        obs.Details,
+		Timestamp:      obs.Timestamp,
+	})
+	if err != nil {
+		return err
+	}
+
+	payload, err := rproto.MarshalEnvelope(envelope)
+	if err != nil {
+		return err
+	}
+
+	return s.io.Send(ctx, solver.Message{
+		Kind:      solver.MessageKindEnvelope,
+		Namespace: envelopeNamespace,
+		Type:      rproto.MsgTypeObservation,
+		Payload:   payload,
+	})
 }
 
 func cloneCapability(capability rproto.Capability) rproto.Capability {

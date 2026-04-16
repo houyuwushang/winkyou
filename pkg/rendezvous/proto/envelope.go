@@ -3,6 +3,7 @@ package proto
 import (
 	"encoding/json"
 	"fmt"
+	"time"
 )
 
 const (
@@ -28,16 +29,33 @@ type Capability struct {
 }
 
 type Observation struct {
-	Notes []string `json:"notes,omitempty"`
+	Strategy       string            `json:"strategy,omitempty"`
+	PlanID         string            `json:"plan_id,omitempty"`
+	Event          string            `json:"event,omitempty"`
+	PathID         string            `json:"path_id,omitempty"`
+	ConnectionType string            `json:"connection_type,omitempty"`
+	LocalAddr      string            `json:"local_addr,omitempty"`
+	RemoteAddr     string            `json:"remote_addr,omitempty"`
+	LocalKind      string            `json:"local_kind,omitempty"`
+	RemoteKind     string            `json:"remote_kind,omitempty"`
+	ErrorClass     string            `json:"error_class,omitempty"`
+	Reason         string            `json:"reason,omitempty"`
+	TimeoutMS      int64             `json:"timeout_ms,omitempty"`
+	Details        map[string]string `json:"details,omitempty"`
+	Timestamp      time.Time         `json:"timestamp,omitempty"`
 }
 
 type ProbeScript struct {
-	Strategy string `json:"strategy,omitempty"`
+	Strategy string   `json:"strategy,omitempty"`
+	Steps    []string `json:"steps,omitempty"`
 }
 
 type ProbeResult struct {
-	PathID  string `json:"path_id,omitempty"`
-	Success bool   `json:"success"`
+	PlanID         string `json:"plan_id,omitempty"`
+	PathID         string `json:"path_id,omitempty"`
+	Success        bool   `json:"success"`
+	SelectedPathID string `json:"selected_path_id,omitempty"`
+	ErrorClass     string `json:"error_class,omitempty"`
 }
 
 type PathCommit struct {
