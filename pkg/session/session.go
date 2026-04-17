@@ -134,6 +134,9 @@ func (s *Session) Snapshot() Snapshot {
 		LastProbeResultAt:       s.meta.LastProbeResultAt,
 		LastPlanOrder:           append([]string(nil), s.meta.LastPlanOrder...),
 		LastPlanOrderReason:     s.meta.LastPlanOrderReason,
+		LastPlanSetBeforeRefine: append([]string(nil), s.meta.LastPlanSetBeforeRefine...),
+		LastPlanSetAfterRefine:  append([]string(nil), s.meta.LastPlanSetAfterRefine...),
+		LastPlanRefineReason:    s.meta.LastPlanRefineReason,
 		PreflightProbeAttempted: s.meta.PreflightProbeAttempted,
 		PreflightProbeSucceeded: s.meta.PreflightProbeSucceeded,
 	}
@@ -219,32 +222,49 @@ func (s *Session) selectAndExecute(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	if err := s.runPreflightProbe(ctx); err != nil {
+
+	if err := s.runStrategyPreflightProbe(ctx, strategy); err != nil {
 		s.emitObservation(context.Background(), solver.Observation{
 			Strategy:   strategy.Name(),
-			Event:      "probe_script_failed",
+			Event:      "probe_failed",
 			ErrorClass: classifyError(err),
 			Reason:     err.Error(),
 			Details: map[string]string{
 				"script_type": pmodel.ScriptTypePreflight,
-				"source":      "preflight_wait",
+				"source":      "preflight_orchestration",
 			},
 		})
 	}
 
 	s.transition(StatePlanning)
-	plans, err := strategy.Plan(ctx, solver.SolveInput{
-		SessionID:    s.cfg.SessionID,
-		LocalNodeID:  s.cfg.LocalNodeID,
-		RemoteNodeID: s.cfg.PeerID,
-		Initiator:    s.cfg.Initiator,
-	})
+	solveInput := s.buildSolveInput()
+	plans, err := strategy.Plan(ctx, solveInput)
 	if err != nil {
 		return err
 	}
 	if len(plans) == 0 {
 		return fmt.Errorf("session: strategy %s returned no plans", strategy.Name())
 	}
+
+	plansBefore := planIDs(plans)
+	plans, refineReason := s.refinePlans(ctx, strategy, solveInput, plans)
+	s.recordPlanRefine(plansBefore, planIDs(plans), refineReason)
+	if refineReason != "no_refinement" {
+		s.emitObservation(context.Background(), solver.Observation{
+			Strategy: strategy.Name(),
+			Event:    "plans_refined",
+			Reason:   refineReason,
+			Details: map[string]string{
+				"before": strings.Join(plansBefore, ","),
+				"after":  strings.Join(planIDs(plans), ","),
+			},
+		})
+	}
+
+	if len(plans) == 0 {
+		return fmt.Errorf("session: all plans pruned after refinement")
+	}
+
 	plans, orderReason := s.rankPlans(ctx, strategy, plans)
 	s.recordPlanOrder(plans, orderReason)
 	s.emitObservation(context.Background(), solver.Observation{
@@ -1001,36 +1021,77 @@ func (s *Session) preflightProbeTimeout() time.Duration {
 	return defaultPreflightProbeTimeout
 }
 
-func (s *Session) runPreflightProbe(ctx context.Context) error {
-	if !s.cfg.Initiator || !s.probeFeaturesNegotiated() {
+func (s *Session) buildSolveInput() solver.SolveInput {
+	return solver.SolveInput{
+		SessionID:          s.cfg.SessionID,
+		LocalNodeID:        s.cfg.LocalNodeID,
+		RemoteNodeID:       s.cfg.PeerID,
+		Initiator:          s.cfg.Initiator,
+		LocalCapability:    s.localCapability(),
+		RemoteCapability:   s.remoteCapability(),
+		LocalObservations:  s.localObservationHistory(),
+		RemoteObservations: s.RemoteObservations(),
+		LastProbeResult:    s.lastProbeResultSummary(),
+	}
+}
+
+func (s *Session) buildProbeInput() solver.ProbeInput {
+	solve := s.buildSolveInput()
+	return solver.ProbeInput{
+		SessionID:          solve.SessionID,
+		LocalNodeID:        solve.LocalNodeID,
+		RemoteNodeID:       solve.RemoteNodeID,
+		Initiator:          solve.Initiator,
+		LocalCapability:    solve.LocalCapability,
+		RemoteCapability:   solve.RemoteCapability,
+		LocalObservations:  solve.LocalObservations,
+		RemoteObservations: solve.RemoteObservations,
+		LastProbeResult:    solve.LastProbeResult,
+	}
+}
+
+func (s *Session) runStrategyPreflightProbe(ctx context.Context, strategy solver.Strategy) error {
+	planner, ok := strategy.(solver.ProbePlanner)
+	if !ok || !s.cfg.Initiator || !s.probeFeaturesNegotiated() {
 		s.setPreflightAttempt(false, false)
 		return nil
 	}
 
-	s.setPreflightAttempt(true, false)
-	script := pmodel.Script{
-		ScriptType: pmodel.ScriptTypePreflight,
-		PlanID:     "probe/preflight",
-		Steps: []pmodel.Step{
-			{Type: pmodel.StepSleep, DurationMS: 25},
-			{Type: pmodel.StepReport, Event: "probe_ready", Details: map[string]string{"script_type": pmodel.ScriptTypePreflight}},
-		},
+	script, policy, err := planner.BuildPreflightProbe(ctx, s.buildProbeInput())
+	if err != nil {
+		s.setPreflightAttempt(true, false)
+		return err
 	}
+	if script == nil {
+		s.setPreflightAttempt(false, false)
+		return nil
+	}
+
+	s.transition(StateProbing)
+	s.setPreflightAttempt(true, false)
+	localScript := solverProbeScriptToModel(*script)
 	sentAt := time.Now()
-	if err := s.sendProbeScript(ctx, script); err != nil {
+	if err := s.sendProbeScript(ctx, localScript); err != nil {
 		return err
 	}
 
-	waitCtx, cancel := context.WithTimeout(ctx, s.preflightProbeTimeout())
+	timeout := policy.Timeout
+	if timeout <= 0 {
+		timeout = s.preflightProbeTimeout()
+	}
+	waitCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
 	for {
 		select {
 		case <-waitCtx.Done():
 			s.setPreflightAttempt(true, false)
+			if policy.Optional {
+				return waitCtx.Err()
+			}
 			return waitCtx.Err()
 		case signal := <-s.probeResultCh:
-			if signal.result.ScriptType != pmodel.ScriptTypePreflight {
+			if signal.result.ScriptType != localScript.ScriptType {
 				continue
 			}
 			if signal.at.Before(sentAt) && signal.result.FinishedAt.Before(sentAt) {
@@ -1043,6 +1104,29 @@ func (s *Session) runPreflightProbe(ctx context.Context) error {
 			return nil
 		}
 	}
+}
+
+func (s *Session) refinePlans(ctx context.Context, strategy solver.Strategy, input solver.SolveInput, plans []solver.Plan) ([]solver.Plan, string) {
+	refined := append([]solver.Plan(nil), plans...)
+	refiner, ok := strategy.(solver.PlanRefiner)
+	if !ok {
+		return refined, "no_refinement"
+	}
+	result, err := refiner.RefinePlans(ctx, input, refined)
+	if err != nil {
+		return refined, fmt.Sprintf("refiner_error:%s", err.Error())
+	}
+	if len(result.Plans) == 0 {
+		return result.Plans, strings.TrimSpace(result.Reason)
+	}
+	if !isPlanSubset(plans, result.Plans) {
+		return refined, "refiner_invalid_set"
+	}
+	reason := strings.TrimSpace(result.Reason)
+	if reason == "" {
+		reason = "strategy_refined"
+	}
+	return append([]solver.Plan(nil), result.Plans...), reason
 }
 
 func (s *Session) setPreflightAttempt(attempted, succeeded bool) {
@@ -1268,11 +1352,6 @@ func (s *Session) rankPlans(ctx context.Context, strategy solver.Strategy, plans
 		return ordered, "strategy_default"
 	}
 
-	var lastProbe *solver.ProbeResultSummary
-	if summary := s.lastProbeResultSummary(); summary != nil {
-		lastProbe = summary
-	}
-
 	ranked, err := ranker.RankPlans(ctx, solver.RankInput{
 		SessionID:          s.cfg.SessionID,
 		LocalNodeID:        s.cfg.LocalNodeID,
@@ -1281,7 +1360,7 @@ func (s *Session) rankPlans(ctx context.Context, strategy solver.Strategy, plans
 		RemoteCapability:   s.remoteCapability(),
 		LocalObservations:  s.localObservationHistory(),
 		RemoteObservations: s.RemoteObservations(),
-		LastProbeResult:    lastProbe,
+		LastProbeResult:    s.lastProbeResultSummary(),
 	}, ordered)
 	if err != nil {
 		return ordered, fmt.Sprintf("ranker_error:%s", err.Error())
@@ -1315,13 +1394,15 @@ func (s *Session) lastProbeResultSummary() *solver.ProbeResultSummary {
 		return nil
 	}
 	summary := solver.ProbeResultSummary{
-		ScriptType:     s.meta.LastProbeResult.ScriptType,
-		PlanID:         s.meta.LastProbeResult.PlanID,
-		SelectedPathID: s.meta.LastProbeResult.SelectedPathID,
-		ErrorClass:     s.meta.LastProbeResult.ErrorClass,
-		Success:        s.meta.LastProbeResult.Success,
-		EventCount:     len(s.meta.LastProbeResult.Events),
-		FinishedAt:     s.meta.LastProbeResult.FinishedAt,
+		ScriptType: s.meta.LastProbeResult.ScriptType,
+		Success:    s.meta.LastProbeResult.Success,
+		ErrorClass: s.meta.LastProbeResult.ErrorClass,
+		PathID:     firstNonEmpty(s.meta.LastProbeResult.PathID, s.meta.LastProbeResult.SelectedPathID),
+		Details: map[string]string{
+			"plan_id":     s.meta.LastProbeResult.PlanID,
+			"event_count": fmt.Sprintf("%d", len(s.meta.LastProbeResult.Events)),
+		},
+		FinishedAt: s.meta.LastProbeResult.FinishedAt,
 	}
 	return &summary
 }
@@ -1330,6 +1411,14 @@ func (s *Session) recordPlanOrder(plans []solver.Plan, reason string) {
 	s.metaMu.Lock()
 	s.meta.LastPlanOrder = planIDs(plans)
 	s.meta.LastPlanOrderReason = reason
+	s.metaMu.Unlock()
+}
+
+func (s *Session) recordPlanRefine(before, after []string, reason string) {
+	s.metaMu.Lock()
+	s.meta.LastPlanSetBeforeRefine = append([]string(nil), before...)
+	s.meta.LastPlanSetAfterRefine = append([]string(nil), after...)
+	s.meta.LastPlanRefineReason = reason
 	s.metaMu.Unlock()
 }
 
@@ -1358,6 +1447,29 @@ func samePlanSet(left, right []solver.Plan) bool {
 		}
 	}
 	return true
+}
+
+func isPlanSubset(original, refined []solver.Plan) bool {
+	counts := make(map[string]int, len(original))
+	for _, plan := range original {
+		counts[plan.ID]++
+	}
+	for _, plan := range refined {
+		counts[plan.ID]--
+		if counts[plan.ID] < 0 {
+			return false
+		}
+	}
+	return true
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 func annotateObservationDetails(details map[string]string, sessionID, peerID string, initiator bool) map[string]string {
@@ -1491,6 +1603,58 @@ func localResultPathType(result pmodel.Result) string {
 		}
 	}
 	return ""
+}
+
+func solverProbeScriptToModel(script solver.ProbeScript) pmodel.Script {
+	steps := make([]pmodel.Step, len(script.Steps))
+	for i, step := range script.Steps {
+		steps[i] = pmodel.Step{
+			Type:       step.Action,
+			Addr:       step.Params["addr"],
+			Payload:    step.Params["payload"],
+			Expect:     step.Params["expect"],
+			Message:    step.Params["message"],
+			Reply:      step.Params["reply"],
+			Event:      step.Params["event"],
+			DurationMS: parseIntParam(step.Params["duration_ms"]),
+			TimeoutMS:  int(step.Timeout.Milliseconds()),
+			Details:    cloneStringMapExcept(step.Params, "addr", "payload", "expect", "message", "reply", "event", "duration_ms"),
+		}
+	}
+	return pmodel.Script{
+		ScriptType: script.ScriptType,
+		PlanID:     script.PlanID,
+		Steps:      steps,
+	}
+}
+
+func parseIntParam(s string) int {
+	if s == "" {
+		return 0
+	}
+	var val int
+	fmt.Sscanf(s, "%d", &val)
+	return val
+}
+
+func cloneStringMapExcept(m map[string]string, except ...string) map[string]string {
+	if len(m) == 0 {
+		return nil
+	}
+	excludeSet := make(map[string]struct{}, len(except))
+	for _, key := range except {
+		excludeSet[key] = struct{}{}
+	}
+	result := make(map[string]string, len(m))
+	for k, v := range m {
+		if _, excluded := excludeSet[k]; !excluded {
+			result[k] = v
+		}
+	}
+	if len(result) == 0 {
+		return nil
+	}
+	return result
 }
 
 func cloneCapability(capability rproto.Capability) rproto.Capability {

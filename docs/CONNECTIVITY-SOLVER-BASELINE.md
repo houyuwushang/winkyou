@@ -206,11 +206,11 @@ Delivered:
 
 **Status**: Frozen at tag `phase2b-freeze-2026-04-17`
 
-### Phase 2C (Current)
+### Phase 2C (Completed)
 
 **Scope**: Activate the probe business lane and let observation begin to shape plan ordering.
 
-Required outcome:
+Delivered:
 
 - capability explicitly negotiates probe features
 - `probe_script` / `probe_result` are real session messages with send/receive/handle paths
@@ -219,7 +219,24 @@ Required outcome:
 - strategy-side ranking can reorder existing plans using observation history and latest probe result
 - the solver still runs only the existing `legacy_ice_udp` strategy
 
-**Not in Phase 2C**:
+**Status**: Frozen at tag `phase2c-freeze-2026-04-17`
+
+### Phase 2D (Current)
+
+**Scope**: Evolve probe/observation from "ordering basis" to "planning basis" — let evidence shape plan generation and pruning, not just ranking.
+
+Required outcome:
+
+- preflight probe is strategy-authored, not session-hardcoded
+- `solver.SolveInput` becomes evidence-aware (capabilities, observations, probe results)
+- strategy `Plan(...)` receives evidence context and can adapt plan generation
+- new `PlanRefiner` interface allows strategies to prune plans based on evidence
+- `legacy_ice_udp` demonstrates real plan pruning (e.g., dropping `direct_prefer` under strong relay evidence)
+- probe result and observations flow through generic solver inputs, not strategy side-channels
+- probing becomes an explicit state machine phase
+- the solver still runs only the existing `legacy_ice_udp` strategy
+
+**Not in Phase 2D**:
 
 - second real strategy (TCP/443, QUIC, etc.)
 - full observation -> scoring -> learning closed loop
@@ -254,3 +271,4 @@ If an old document conflicts with this file, this file wins.
 - `phase1.5-freeze-2026-04-16`
 - `phase2a-freeze-2026-04-16`
 - `phase2b-freeze-2026-04-17`
+- `phase2c-freeze-2026-04-17`

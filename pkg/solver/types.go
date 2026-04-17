@@ -25,10 +25,15 @@ type Message struct {
 }
 
 type SolveInput struct {
-	SessionID    string
-	LocalNodeID  string
-	RemoteNodeID string
-	Initiator    bool
+	SessionID          string
+	LocalNodeID        string
+	RemoteNodeID       string
+	Initiator          bool
+	LocalCapability    rproto.Capability
+	RemoteCapability   rproto.Capability
+	LocalObservations  []Observation
+	RemoteObservations []Observation
+	LastProbeResult    *ProbeResultSummary
 }
 
 type Plan struct {
@@ -103,13 +108,12 @@ type Observation struct {
 }
 
 type ProbeResultSummary struct {
-	ScriptType     string
-	PlanID         string
-	SelectedPathID string
-	ErrorClass     string
-	Success        bool
-	EventCount     int
-	FinishedAt     time.Time
+	ScriptType string
+	Success    bool
+	ErrorClass string
+	PathID     string
+	Details    map[string]string
+	FinishedAt time.Time
 }
 
 type RankInput struct {
@@ -151,6 +155,49 @@ type ExecutorFactory interface {
 
 type PlanRanker interface {
 	RankPlans(ctx context.Context, input RankInput, plans []Plan) (RankedPlans, error)
+}
+
+type ProbeInput struct {
+	SessionID          string
+	LocalNodeID        string
+	RemoteNodeID       string
+	Initiator          bool
+	LocalCapability    rproto.Capability
+	RemoteCapability   rproto.Capability
+	LocalObservations  []Observation
+	RemoteObservations []Observation
+	LastProbeResult    *ProbeResultSummary
+}
+
+type ProbePolicy struct {
+	Optional bool
+	Timeout  time.Duration
+	Reason   string
+}
+
+type ProbePlanner interface {
+	BuildPreflightProbe(ctx context.Context, input ProbeInput) (*ProbeScript, ProbePolicy, error)
+}
+
+type ProbeScript struct {
+	ScriptType string
+	PlanID     string
+	Steps      []ProbeStep
+}
+
+type ProbeStep struct {
+	Action  string
+	Params  map[string]string
+	Timeout time.Duration
+}
+
+type RefinedPlans struct {
+	Plans  []Plan
+	Reason string
+}
+
+type PlanRefiner interface {
+	RefinePlans(ctx context.Context, input SolveInput, plans []Plan) (RefinedPlans, error)
 }
 
 // DefaultBudget returns a conservative execution budget

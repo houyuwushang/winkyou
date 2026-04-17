@@ -78,7 +78,12 @@ func TestStrategyNewExecutorUsesPlanSpecificAgentRequests(t *testing.T) {
 			return &recordingICEAgent{connectErr: context.Canceled, connectCalled: make(chan struct{})}, nil
 		},
 	})
-	if _, err := strategy.Plan(context.Background(), solver.SolveInput{SessionID: "session/node-a/node-b", Initiator: true}); err != nil {
+	if _, err := strategy.Plan(context.Background(), solver.SolveInput{
+		SessionID:    "session/node-a/node-b",
+		LocalNodeID:  "node-a",
+		RemoteNodeID: "node-b",
+		Initiator:    true,
+	}); err != nil {
 		t.Fatalf("Plan() error = %v", err)
 	}
 
@@ -128,7 +133,12 @@ func TestRelayOnlyExecutorFiltersRemoteCandidates(t *testing.T) {
 			},
 			GatherTimeout:  100 * time.Millisecond,
 			ConnectTimeout: 100 * time.Millisecond,
-		}, solver.SolveInput{SessionID: "session/node-a/node-b", Initiator: true}, solver.Plan{
+		}, solver.SolveInput{
+			SessionID:    "session/node-a/node-b",
+			LocalNodeID:  "node-a",
+			RemoteNodeID: "node-b",
+			Initiator:    true,
+		}, solver.Plan{
 			ID:       planID,
 			Strategy: StrategyName,
 			Metadata: map[string]string{"mode": string(mode)},

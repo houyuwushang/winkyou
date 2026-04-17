@@ -21,7 +21,7 @@ The current runnable path is still:
 - session-managed peer lifecycle
 - rendezvous v2 capability / observation / probe / path-commit envelope exchange on the existing coordinator channel
 
-This is now a Phase 2B runtime slice moving into Phase 2C. The current work keeps the existing UDP/ICE/WireGuard vertical slice runnable while activating probe business messages and observation-informed plan ordering on top of it.
+This is now a Phase 2D runtime slice. The current work keeps the existing UDP/ICE/WireGuard vertical slice runnable while evolving probe/observation from "ordering basis" to "planning basis" — evidence now shapes plan generation and pruning, not just ranking.
 
 ## Current Deployable Path
 

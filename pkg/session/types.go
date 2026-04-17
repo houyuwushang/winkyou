@@ -14,6 +14,7 @@ type State string
 const (
 	StateNew                State = "new"
 	StateCapabilityExchange State = "capability_exchange"
+	StateProbing            State = "probing"
 	StateSelecting          State = "selecting"
 	StatePlanning           State = "planning"
 	StateExecuting          State = "executing"
@@ -91,6 +92,9 @@ type Snapshot struct {
 	LastProbeResultAt       time.Time
 	LastPlanOrder           []string
 	LastPlanOrderReason     string
+	LastPlanSetBeforeRefine []string
+	LastPlanSetAfterRefine  []string
+	LastPlanRefineReason    string
 	PreflightProbeAttempted bool
 	PreflightProbeSucceeded bool
 }

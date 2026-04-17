@@ -32,7 +32,7 @@ func (s *Strategy) Plan(ctx context.Context, in solver.SolveInput) ([]solver.Pla
 	s.input = in
 	s.mu.Unlock()
 
-	return []solver.Plan{
+	plans := []solver.Plan{
 		{
 			ID:       "legacyice/direct_prefer",
 			Strategy: s.Name(),
@@ -51,7 +51,9 @@ func (s *Strategy) Plan(ctx context.Context, in solver.SolveInput) ([]solver.Pla
 				"description": "Force relay-only connection",
 			},
 		},
-	}, nil
+	}
+
+	return plans, nil
 }
 
 func (s *Strategy) NewExecutor(plan solver.Plan) (solver.PlanExecutor, error) {

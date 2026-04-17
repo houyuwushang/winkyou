@@ -10,8 +10,14 @@ import (
 func (s *Strategy) RankPlans(_ context.Context, input solver.RankInput, plans []solver.Plan) (solver.RankedPlans, error) {
 	ordered := append([]solver.Plan(nil), plans...)
 	observations := make([]solver.Observation, 0, len(input.LocalObservations)+len(input.RemoteObservations))
+
+	solveInput := solver.SolveInput{
+		SessionID:    input.SessionID,
+		RemoteNodeID: input.RemoteNodeID,
+	}
+
 	for _, obs := range input.LocalObservations {
-		if relevantObservation(input, obs) {
+		if relevantObservationForSession(solveInput, obs) {
 			observations = append(observations, obs)
 		}
 	}
@@ -33,8 +39,11 @@ func (s *Strategy) RankPlans(_ context.Context, input solver.RankInput, plans []
 		}
 	}
 
+	hasDirect := hasPlan(plans, "legacyice/direct_prefer")
+	hasRelay := hasPlan(plans, "legacyice/relay_only")
+
 	switch {
-	case directFailures > 0 && relaySuccesses > 0:
+	case hasDirect && hasRelay && directFailures > 0 && relaySuccesses > 0:
 		return solver.RankedPlans{
 			Plans:  reorderPlans(plans, "legacyice/relay_only", "legacyice/direct_prefer"),
 			Reason: "recent_direct_failure_with_relay_success",
@@ -46,19 +55,6 @@ func (s *Strategy) RankPlans(_ context.Context, input solver.RankInput, plans []
 	default:
 		return solver.RankedPlans{Plans: ordered, Reason: "no_relevant_history"}, nil
 	}
-}
-
-func relevantObservation(input solver.RankInput, obs solver.Observation) bool {
-	if obs.Strategy != "" && obs.Strategy != StrategyName {
-		return false
-	}
-	if sessionID := obs.Details["session_id"]; sessionID != "" && sessionID != input.SessionID {
-		return false
-	}
-	if peerID := obs.Details["peer_id"]; peerID != "" && peerID != input.RemoteNodeID {
-		return false
-	}
-	return true
 }
 
 func isDirectSuccess(obs solver.Observation) bool {
@@ -104,4 +100,13 @@ func reorderPlans(plans []solver.Plan, firstID, secondID string) []solver.Plan {
 		ordered = append(ordered, plan)
 	}
 	return ordered
+}
+
+func hasPlan(plans []solver.Plan, planID string) bool {
+	for _, plan := range plans {
+		if plan.ID == planID {
+			return true
+		}
+	}
+	return false
 }
