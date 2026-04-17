@@ -315,10 +315,10 @@ func TestSessionCapabilityAndPathCommitUpdatesSnapshotIdempotently(t *testing.T)
 	}
 
 	now := time.Now()
-	if err := s.HandleMessage(context.Background(), envelopeMessage(t, "session/node-a/node-b", "node-b", "node-a", rproto.MsgTypeCapability, 1, rproto.Capability{Strategies: []string{"legacy_ice_udp", "legacy_ice_udp"}}, now)); err != nil {
+	if err := s.HandleMessage(context.Background(), envelopeMessage(t, "session/node-a/node-b", "node-b", "node-a", rproto.MsgTypeCapability, 1, rproto.Capability{Strategies: []string{"legacy_ice_udp", "legacy_ice_udp"}, Features: []string{rproto.FeatureProbeScriptV1, rproto.FeatureProbeScriptV1, rproto.FeatureProbeLabV1}}, now)); err != nil {
 		t.Fatalf("HandleMessage(capability) error = %v", err)
 	}
-	if err := s.HandleMessage(context.Background(), envelopeMessage(t, "session/node-a/node-b", "node-b", "node-a", rproto.MsgTypeCapability, 1, rproto.Capability{Strategies: []string{"legacy_ice_udp", "legacy_ice_udp"}}, now)); err != nil {
+	if err := s.HandleMessage(context.Background(), envelopeMessage(t, "session/node-a/node-b", "node-b", "node-a", rproto.MsgTypeCapability, 1, rproto.Capability{Strategies: []string{"legacy_ice_udp", "legacy_ice_udp"}, Features: []string{rproto.FeatureProbeScriptV1, rproto.FeatureProbeLabV1}}, now)); err != nil {
 		t.Fatalf("HandleMessage(duplicate capability) error = %v", err)
 	}
 	if err := s.HandleMessage(context.Background(), envelopeMessage(t, "session/node-a/node-b", "node-b", "node-a", rproto.MsgTypePathCommit, 2, rproto.PathCommit{Strategy: "legacy_ice_udp", PathID: "remote/path", ConnectionType: "relay"}, now.Add(time.Second))); err != nil {
@@ -328,6 +328,9 @@ func TestSessionCapabilityAndPathCommitUpdatesSnapshotIdempotently(t *testing.T)
 	snapshot := s.Snapshot()
 	if got := snapshot.RemoteCapability.Strategies; len(got) != 1 || got[0] != "legacy_ice_udp" {
 		t.Fatalf("RemoteCapability = %#v, want legacy_ice_udp", snapshot.RemoteCapability)
+	}
+	if got := snapshot.RemoteCapability.Features; len(got) != 2 || got[0] != rproto.FeatureProbeLabV1 || got[1] != rproto.FeatureProbeScriptV1 {
+		t.Fatalf("RemoteCapability.Features = %#v, want probe feature set", got)
 	}
 	if snapshot.LastEnvelopeType != rproto.MsgTypePathCommit {
 		t.Fatalf("LastEnvelopeType = %q, want %q", snapshot.LastEnvelopeType, rproto.MsgTypePathCommit)

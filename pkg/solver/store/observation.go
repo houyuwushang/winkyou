@@ -56,6 +56,21 @@ func (s *ObservationStore) List() []solver.Observation {
 	return out
 }
 
+// Recent returns up to the last limit observations in chronological order.
+func (s *ObservationStore) Recent(limit int) []solver.Observation {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if limit <= 0 || limit >= len(s.observations) {
+		out := make([]solver.Observation, len(s.observations))
+		copy(out, s.observations)
+		return out
+	}
+	start := len(s.observations) - limit
+	out := make([]solver.Observation, len(s.observations[start:]))
+	copy(out, s.observations[start:])
+	return out
+}
+
 // appendToFile appends an observation to the JSONL file
 func (s *ObservationStore) appendToFile(obs solver.Observation) error {
 	if err := os.MkdirAll(filepath.Dir(s.filePath), 0755); err != nil {

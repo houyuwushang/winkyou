@@ -4,6 +4,7 @@ import (
 	"context"
 	"time"
 
+	pmodel "winkyou/pkg/probe/model"
 	rproto "winkyou/pkg/rendezvous/proto"
 	"winkyou/pkg/solver"
 )
@@ -44,6 +45,10 @@ type StrategyResolver interface {
 	Resolve(remote rproto.Capability, initiator bool) (solver.Strategy, Selection, error)
 }
 
+type ProbeRunner interface {
+	Run(ctx context.Context, script pmodel.Script) (pmodel.Result, error)
+}
+
 type Config struct {
 	SessionID             string
 	LocalNodeID           string
@@ -52,10 +57,13 @@ type Config struct {
 	Resolver              StrategyResolver
 	Binder                Binder
 	Sender                MessageSender
+	ProbeRunner           ProbeRunner
 	ObservationSink       solver.ObservationSink
+	ObservationHistory    solver.ObservationHistory
 	Hooks                 Hooks
 	RunTimeout            time.Duration
 	CapabilityWaitTimeout time.Duration
+	PreflightProbeTimeout time.Duration
 }
 
 type PathCommitSnapshot struct {
@@ -65,16 +73,24 @@ type PathCommitSnapshot struct {
 }
 
 type Snapshot struct {
-	SessionID            string
-	PeerID               string
-	State                State
-	LocalCapability      rproto.Capability
-	RemoteCapability     rproto.Capability
-	SelectedStrategy     string
-	SelectionNegotiated  bool
-	CapabilityExchangeAt time.Time
-	LastPathCommit       PathCommitSnapshot
-	LastPathCommitAt     time.Time
-	LastEnvelopeType     string
-	LastEnvelopeAt       time.Time
+	SessionID               string
+	PeerID                  string
+	State                   State
+	LocalCapability         rproto.Capability
+	RemoteCapability        rproto.Capability
+	SelectedStrategy        string
+	SelectionNegotiated     bool
+	CapabilityExchangeAt    time.Time
+	LastPathCommit          PathCommitSnapshot
+	LastPathCommitAt        time.Time
+	LastEnvelopeType        string
+	LastEnvelopeAt          time.Time
+	LastProbeScriptType     string
+	LastProbeScriptAt       time.Time
+	LastProbeResult         pmodel.Result
+	LastProbeResultAt       time.Time
+	LastPlanOrder           []string
+	LastPlanOrderReason     string
+	PreflightProbeAttempted bool
+	PreflightProbeSucceeded bool
 }

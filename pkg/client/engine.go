@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"os"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -16,6 +17,7 @@ import (
 	"winkyou/pkg/logger"
 	"winkyou/pkg/nat"
 	"winkyou/pkg/netif"
+	probelab "winkyou/pkg/probe/lab"
 	solverstore "winkyou/pkg/solver/store"
 	"winkyou/pkg/tunnel"
 )
@@ -112,6 +114,7 @@ func (e *engine) Start(ctx context.Context) (err error) {
 		e.mu.Unlock()
 		e.setState(EngineStateStopped, errorString(err))
 		_ = RemoveRuntimeState(e.statePath)
+		_ = e.removeObservationState()
 	}()
 
 	if strings.TrimSpace(e.cfg.Coordinator.URL) == "" {
@@ -263,6 +266,10 @@ func (e *engine) observationStorePath() string {
 	return filepath.Join(dir, base+".observations.jsonl")
 }
 
+func (e *engine) probeRunner() *probelab.Runner {
+	return &probelab.Runner{}
+}
+
 func (e *engine) Stop() error {
 	e.mu.RLock()
 	if !e.started {
@@ -290,7 +297,10 @@ func (e *engine) Stop() error {
 	e.mu.Unlock()
 
 	e.setState(EngineStateStopped, "")
-	return RemoveRuntimeState(e.statePath)
+	if err := RemoveRuntimeState(e.statePath); err != nil {
+		return err
+	}
+	return e.removeObservationState()
 }
 
 func (e *engine) Status() *EngineStatus {
@@ -547,8 +557,21 @@ func (e *engine) cleanupResources() {
 		e.netif = nil
 	}
 	e.nat = nil
+	e.observationStore = nil
 	e.runCtx = nil
 	e.runCancel = nil
+}
+
+func (e *engine) removeObservationState() error {
+	path := e.observationStorePath()
+	if strings.TrimSpace(path) == "" {
+		return nil
+	}
+	err := os.Remove(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	return err
 }
 
 func (e *engine) currentNodeID() string {

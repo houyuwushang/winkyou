@@ -10,11 +10,13 @@ import (
 	"sync"
 	"time"
 
+	pmodel "winkyou/pkg/probe/model"
 	rproto "winkyou/pkg/rendezvous/proto"
 	"winkyou/pkg/solver"
 )
 
 const defaultCapabilityWaitTimeout = 2 * time.Second
+const defaultPreflightProbeTimeout = 500 * time.Millisecond
 
 type Session struct {
 	cfg Config
@@ -41,7 +43,8 @@ type Session struct {
 	activePlan string
 	executor   solver.PlanExecutor
 
-	capabilityCh chan struct{}
+	capabilityCh  chan struct{}
+	probeResultCh chan probeResultSignal
 
 	lastPlan solver.Plan
 	lastRes  solver.Result
@@ -49,6 +52,11 @@ type Session struct {
 	obsMu        sync.Mutex
 	observations []solver.Observation
 	remoteObs    []solver.Observation
+}
+
+type probeResultSignal struct {
+	result pmodel.Result
+	at     time.Time
 }
 
 type solverIO struct {
@@ -80,10 +88,11 @@ func New(cfg Config) (*Session, error) {
 	}
 
 	s := &Session{
-		cfg:          cfg,
-		sm:           NewStateMachine(StateNew),
-		io:           &solverIO{cfg: cfg},
-		capabilityCh: make(chan struct{}, 1),
+		cfg:           cfg,
+		sm:            NewStateMachine(StateNew),
+		io:            &solverIO{cfg: cfg},
+		capabilityCh:  make(chan struct{}, 1),
+		probeResultCh: make(chan probeResultSignal, 8),
 		meta: Snapshot{
 			SessionID:       cfg.SessionID,
 			PeerID:          cfg.PeerID,
@@ -107,18 +116,26 @@ func (s *Session) Snapshot() Snapshot {
 	s.metaMu.RLock()
 	defer s.metaMu.RUnlock()
 	return Snapshot{
-		SessionID:            s.meta.SessionID,
-		PeerID:               s.meta.PeerID,
-		State:                s.meta.State,
-		LocalCapability:      cloneCapability(s.meta.LocalCapability),
-		RemoteCapability:     cloneCapability(s.meta.RemoteCapability),
-		SelectedStrategy:     s.meta.SelectedStrategy,
-		SelectionNegotiated:  s.meta.SelectionNegotiated,
-		CapabilityExchangeAt: s.meta.CapabilityExchangeAt,
-		LastPathCommit:       clonePathCommit(s.meta.LastPathCommit),
-		LastPathCommitAt:     s.meta.LastPathCommitAt,
-		LastEnvelopeType:     s.meta.LastEnvelopeType,
-		LastEnvelopeAt:       s.meta.LastEnvelopeAt,
+		SessionID:               s.meta.SessionID,
+		PeerID:                  s.meta.PeerID,
+		State:                   s.meta.State,
+		LocalCapability:         cloneCapability(s.meta.LocalCapability),
+		RemoteCapability:        cloneCapability(s.meta.RemoteCapability),
+		SelectedStrategy:        s.meta.SelectedStrategy,
+		SelectionNegotiated:     s.meta.SelectionNegotiated,
+		CapabilityExchangeAt:    s.meta.CapabilityExchangeAt,
+		LastPathCommit:          clonePathCommit(s.meta.LastPathCommit),
+		LastPathCommitAt:        s.meta.LastPathCommitAt,
+		LastEnvelopeType:        s.meta.LastEnvelopeType,
+		LastEnvelopeAt:          s.meta.LastEnvelopeAt,
+		LastProbeScriptType:     s.meta.LastProbeScriptType,
+		LastProbeScriptAt:       s.meta.LastProbeScriptAt,
+		LastProbeResult:         cloneProbeResult(s.meta.LastProbeResult),
+		LastProbeResultAt:       s.meta.LastProbeResultAt,
+		LastPlanOrder:           append([]string(nil), s.meta.LastPlanOrder...),
+		LastPlanOrderReason:     s.meta.LastPlanOrderReason,
+		PreflightProbeAttempted: s.meta.PreflightProbeAttempted,
+		PreflightProbeSucceeded: s.meta.PreflightProbeSucceeded,
 	}
 }
 
@@ -202,6 +219,18 @@ func (s *Session) selectAndExecute(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	if err := s.runPreflightProbe(ctx); err != nil {
+		s.emitObservation(context.Background(), solver.Observation{
+			Strategy:   strategy.Name(),
+			Event:      "probe_script_failed",
+			ErrorClass: classifyError(err),
+			Reason:     err.Error(),
+			Details: map[string]string{
+				"script_type": pmodel.ScriptTypePreflight,
+				"source":      "preflight_wait",
+			},
+		})
+	}
 
 	s.transition(StatePlanning)
 	plans, err := strategy.Plan(ctx, solver.SolveInput{
@@ -216,6 +245,16 @@ func (s *Session) selectAndExecute(ctx context.Context) error {
 	if len(plans) == 0 {
 		return fmt.Errorf("session: strategy %s returned no plans", strategy.Name())
 	}
+	plans, orderReason := s.rankPlans(ctx, strategy, plans)
+	s.recordPlanOrder(plans, orderReason)
+	s.emitObservation(context.Background(), solver.Observation{
+		Strategy: strategy.Name(),
+		Event:    "plan_ordered",
+		Reason:   orderReason,
+		Details: map[string]string{
+			"order": strings.Join(planIDs(plans), ","),
+		},
+	})
 
 	if _, usesExecutors := strategy.(solver.ExecutorFactory); !usesExecutors {
 		handler, _ := strategy.(solver.MessageHandler)
@@ -628,6 +667,22 @@ func (s *Session) handleEnvelopeMessage(msg solver.Message) error {
 			}
 		}
 		s.recordRemoteObservation(obs, receivedAt)
+	case rproto.MsgTypeProbeScript:
+		var script rproto.ProbeScript
+		if len(envelope.Payload) > 0 {
+			if err := json.Unmarshal(envelope.Payload, &script); err != nil {
+				return fmt.Errorf("session: decode probe_script: %w", err)
+			}
+		}
+		s.handleProbeScript(receivedAt, script)
+	case rproto.MsgTypeProbeResult:
+		var result rproto.ProbeResult
+		if len(envelope.Payload) > 0 {
+			if err := json.Unmarshal(envelope.Payload, &result); err != nil {
+				return fmt.Errorf("session: decode probe_result: %w", err)
+			}
+		}
+		s.handleProbeResult(receivedAt, result)
 	}
 	return nil
 }
@@ -661,8 +716,14 @@ func (s *Session) remoteCapability() rproto.Capability {
 	return cloneCapability(s.meta.RemoteCapability)
 }
 
+func (s *Session) remoteCapabilitySnapshot() (rproto.Capability, bool) {
+	s.metaMu.RLock()
+	defer s.metaMu.RUnlock()
+	return cloneCapability(s.meta.RemoteCapability), !s.meta.CapabilityExchangeAt.IsZero()
+}
+
 func (s *Session) waitForRemoteCapability(ctx context.Context) (rproto.Capability, error) {
-	if capability := s.remoteCapability(); len(capability.Strategies) > 0 {
+	if capability, received := s.remoteCapabilitySnapshot(); received {
 		return capability, nil
 	}
 
@@ -681,7 +742,7 @@ func (s *Session) waitForRemoteCapability(ctx context.Context) (rproto.Capabilit
 		case <-timer.C:
 			return s.remoteCapability(), nil
 		case <-s.capabilityCh:
-			if capability := s.remoteCapability(); len(capability.Strategies) > 0 {
+			if capability, received := s.remoteCapabilitySnapshot(); received {
 				return capability, nil
 			}
 		}
@@ -698,11 +759,9 @@ func (s *Session) setRemoteCapability(capability rproto.Capability, receivedAt t
 	}
 	s.metaMu.Unlock()
 
-	if len(normalized.Strategies) > 0 {
-		select {
-		case s.capabilityCh <- struct{}{}:
-		default:
-		}
+	select {
+	case s.capabilityCh <- struct{}{}:
+	default:
 	}
 }
 
@@ -856,6 +915,7 @@ func (s *Session) reportObservation(ctx context.Context, obs solver.Observation)
 	if obs.Timestamp.IsZero() {
 		obs.Timestamp = time.Now()
 	}
+	obs.Details = annotateObservationDetails(obs.Details, s.cfg.SessionID, s.cfg.PeerID, s.cfg.Initiator)
 
 	s.obsMu.Lock()
 	s.observations = appendObservation(s.observations, obs, 100)
@@ -934,14 +994,514 @@ func addrString(addr any) string {
 	}
 }
 
+func (s *Session) preflightProbeTimeout() time.Duration {
+	if s.cfg.PreflightProbeTimeout > 0 {
+		return s.cfg.PreflightProbeTimeout
+	}
+	return defaultPreflightProbeTimeout
+}
+
+func (s *Session) runPreflightProbe(ctx context.Context) error {
+	if !s.cfg.Initiator || !s.probeFeaturesNegotiated() {
+		s.setPreflightAttempt(false, false)
+		return nil
+	}
+
+	s.setPreflightAttempt(true, false)
+	script := pmodel.Script{
+		ScriptType: pmodel.ScriptTypePreflight,
+		PlanID:     "probe/preflight",
+		Steps: []pmodel.Step{
+			{Type: pmodel.StepSleep, DurationMS: 25},
+			{Type: pmodel.StepReport, Event: "probe_ready", Details: map[string]string{"script_type": pmodel.ScriptTypePreflight}},
+		},
+	}
+	sentAt := time.Now()
+	if err := s.sendProbeScript(ctx, script); err != nil {
+		return err
+	}
+
+	waitCtx, cancel := context.WithTimeout(ctx, s.preflightProbeTimeout())
+	defer cancel()
+
+	for {
+		select {
+		case <-waitCtx.Done():
+			s.setPreflightAttempt(true, false)
+			return waitCtx.Err()
+		case signal := <-s.probeResultCh:
+			if signal.result.ScriptType != pmodel.ScriptTypePreflight {
+				continue
+			}
+			if signal.at.Before(sentAt) && signal.result.FinishedAt.Before(sentAt) {
+				continue
+			}
+			s.setPreflightAttempt(true, signal.result.Success)
+			if !signal.result.Success {
+				return fmt.Errorf("session: preflight probe failed: %s", signal.result.ErrorClass)
+			}
+			return nil
+		}
+	}
+}
+
+func (s *Session) setPreflightAttempt(attempted, succeeded bool) {
+	s.metaMu.Lock()
+	s.meta.PreflightProbeAttempted = attempted
+	s.meta.PreflightProbeSucceeded = succeeded
+	s.metaMu.Unlock()
+}
+
+func (s *Session) probeFeaturesNegotiated() bool {
+	local := s.localCapability()
+	remote := s.remoteCapability()
+	return capabilityHasFeature(local, rproto.FeatureProbeLabV1) &&
+		capabilityHasFeature(local, rproto.FeatureProbeScriptV1) &&
+		capabilityHasFeature(remote, rproto.FeatureProbeLabV1) &&
+		capabilityHasFeature(remote, rproto.FeatureProbeScriptV1)
+}
+
+func (s *Session) sendProbeScript(ctx context.Context, script pmodel.Script) error {
+	envelope, err := s.newEnvelope(rproto.MsgTypeProbeScript, probeScriptToProto(script))
+	if err != nil {
+		return err
+	}
+	payload, err := rproto.MarshalEnvelope(envelope)
+	if err != nil {
+		return err
+	}
+	s.recordProbeScript(script, time.Now())
+	s.emitObservation(context.Background(), solver.Observation{
+		Strategy: pmodel.StrategyName,
+		PlanID:   script.PlanID,
+		Event:    "probe_script_sent",
+		Reason:   script.ScriptType,
+		Details: map[string]string{
+			"script_type": script.ScriptType,
+			"step_count":  fmt.Sprintf("%d", len(script.Steps)),
+		},
+	})
+	return s.io.Send(ctx, solver.Message{
+		Kind:      solver.MessageKindEnvelope,
+		Namespace: envelopeNamespace,
+		Type:      rproto.MsgTypeProbeScript,
+		Payload:   payload,
+	})
+}
+
+func (s *Session) sendProbeResult(ctx context.Context, result pmodel.Result) error {
+	envelope, err := s.newEnvelope(rproto.MsgTypeProbeResult, probeResultToProto(result))
+	if err != nil {
+		return err
+	}
+	payload, err := rproto.MarshalEnvelope(envelope)
+	if err != nil {
+		return err
+	}
+	return s.io.Send(ctx, solver.Message{
+		Kind:      solver.MessageKindEnvelope,
+		Namespace: envelopeNamespace,
+		Type:      rproto.MsgTypeProbeResult,
+		Payload:   payload,
+	})
+}
+
+func (s *Session) handleProbeScript(receivedAt time.Time, script rproto.ProbeScript) {
+	localScript := probeScriptFromProto(script)
+	s.recordProbeScript(localScript, receivedAt)
+	s.emitObservation(context.Background(), solver.Observation{
+		Strategy: pmodel.StrategyName,
+		PlanID:   localScript.PlanID,
+		Event:    "probe_script_received",
+		Reason:   localScript.ScriptType,
+		Details: map[string]string{
+			"script_type": localScript.ScriptType,
+			"step_count":  fmt.Sprintf("%d", len(localScript.Steps)),
+		},
+	})
+
+	go s.runProbeScript(localScript)
+}
+
+func (s *Session) runProbeScript(script pmodel.Script) {
+	s.emitObservation(context.Background(), solver.Observation{
+		Strategy: pmodel.StrategyName,
+		PlanID:   script.PlanID,
+		Event:    "probe_script_started",
+		Reason:   script.ScriptType,
+		Details: map[string]string{
+			"script_type": script.ScriptType,
+		},
+	})
+
+	if s.cfg.ProbeRunner == nil {
+		result := pmodel.Result{
+			ScriptType: script.ScriptType,
+			PlanID:     script.PlanID,
+			Success:    false,
+			ErrorClass: "runner_missing",
+			FinishedAt: time.Now(),
+		}
+		s.metaMu.Lock()
+		s.meta.LastProbeResult = cloneProbeResult(result)
+		s.meta.LastProbeResultAt = result.FinishedAt
+		s.metaMu.Unlock()
+		s.emitObservation(context.Background(), solver.Observation{
+			Strategy:   pmodel.StrategyName,
+			PlanID:     script.PlanID,
+			Event:      "probe_script_failed",
+			ErrorClass: result.ErrorClass,
+			Reason:     script.ScriptType,
+			Details: map[string]string{
+				"script_type": script.ScriptType,
+			},
+		})
+		_ = s.sendProbeResult(context.Background(), result)
+		return
+	}
+
+	runCtx := s.runContext()
+	if runCtx == nil {
+		runCtx = context.Background()
+	}
+	result, err := s.cfg.ProbeRunner.Run(runCtx, script)
+	if result.ScriptType == "" {
+		result.ScriptType = script.ScriptType
+	}
+	if result.PlanID == "" {
+		result.PlanID = script.PlanID
+	}
+	if result.FinishedAt.IsZero() {
+		result.FinishedAt = time.Now()
+	}
+	if err != nil && result.ErrorClass == "" {
+		result.ErrorClass = classifyError(err)
+	}
+	s.metaMu.Lock()
+	s.meta.LastProbeResult = cloneProbeResult(result)
+	s.meta.LastProbeResultAt = result.FinishedAt
+	s.metaMu.Unlock()
+	for _, obs := range result.Events {
+		s.emitObservation(context.Background(), obs)
+	}
+	if err != nil || !result.Success {
+		reason := script.ScriptType
+		if err != nil {
+			reason = err.Error()
+		}
+		s.emitObservation(context.Background(), solver.Observation{
+			Strategy:   pmodel.StrategyName,
+			PlanID:     script.PlanID,
+			Event:      "probe_script_failed",
+			ErrorClass: result.ErrorClass,
+			Reason:     reason,
+			Details: map[string]string{
+				"script_type": script.ScriptType,
+			},
+		})
+	} else {
+		s.emitObservation(context.Background(), solver.Observation{
+			Strategy: pmodel.StrategyName,
+			PlanID:   script.PlanID,
+			Event:    "probe_script_succeeded",
+			Reason:   script.ScriptType,
+			Details: map[string]string{
+				"script_type": script.ScriptType,
+			},
+		})
+	}
+	_ = s.sendProbeResult(context.Background(), result)
+}
+
+func (s *Session) handleProbeResult(receivedAt time.Time, result rproto.ProbeResult) {
+	localResult := probeResultFromProto(result)
+	if localResult.FinishedAt.IsZero() {
+		localResult.FinishedAt = receivedAt
+	}
+
+	s.metaMu.Lock()
+	s.meta.LastProbeResult = cloneProbeResult(localResult)
+	if !receivedAt.IsZero() {
+		s.meta.LastProbeResultAt = receivedAt
+	} else {
+		s.meta.LastProbeResultAt = localResult.FinishedAt
+	}
+	s.metaMu.Unlock()
+
+	s.emitObservation(context.Background(), solver.Observation{
+		Strategy:       pmodel.StrategyName,
+		PlanID:         localResult.PlanID,
+		Event:          "probe_result_received",
+		PathID:         localResult.SelectedPathID,
+		ErrorClass:     localResult.ErrorClass,
+		ConnectionType: localResultPathType(localResult),
+		Reason:         localResult.ScriptType,
+		Details: map[string]string{
+			"script_type":      localResult.ScriptType,
+			"success":          fmt.Sprintf("%t", localResult.Success),
+			"event_count":      fmt.Sprintf("%d", len(localResult.Events)),
+			"selected_path_id": localResult.SelectedPathID,
+		},
+	})
+
+	select {
+	case s.probeResultCh <- probeResultSignal{result: localResult, at: receivedAt}:
+	default:
+	}
+}
+
+func (s *Session) recordProbeScript(script pmodel.Script, at time.Time) {
+	s.metaMu.Lock()
+	s.meta.LastProbeScriptType = script.ScriptType
+	if !at.IsZero() {
+		s.meta.LastProbeScriptAt = at
+	} else {
+		s.meta.LastProbeScriptAt = time.Now()
+	}
+	s.metaMu.Unlock()
+}
+
+func (s *Session) rankPlans(ctx context.Context, strategy solver.Strategy, plans []solver.Plan) ([]solver.Plan, string) {
+	ordered := append([]solver.Plan(nil), plans...)
+	ranker, ok := strategy.(solver.PlanRanker)
+	if !ok {
+		return ordered, "strategy_default"
+	}
+
+	var lastProbe *solver.ProbeResultSummary
+	if summary := s.lastProbeResultSummary(); summary != nil {
+		lastProbe = summary
+	}
+
+	ranked, err := ranker.RankPlans(ctx, solver.RankInput{
+		SessionID:          s.cfg.SessionID,
+		LocalNodeID:        s.cfg.LocalNodeID,
+		RemoteNodeID:       s.cfg.PeerID,
+		Initiator:          s.cfg.Initiator,
+		RemoteCapability:   s.remoteCapability(),
+		LocalObservations:  s.localObservationHistory(),
+		RemoteObservations: s.RemoteObservations(),
+		LastProbeResult:    lastProbe,
+	}, ordered)
+	if err != nil {
+		return ordered, fmt.Sprintf("ranker_error:%s", err.Error())
+	}
+	if len(ranked.Plans) != len(plans) {
+		return ordered, "ranker_invalid_length"
+	}
+	if !samePlanSet(plans, ranked.Plans) {
+		return ordered, "ranker_invalid_set"
+	}
+	reason := strings.TrimSpace(ranked.Reason)
+	if reason == "" {
+		reason = "strategy_ranked"
+	}
+	return append([]solver.Plan(nil), ranked.Plans...), reason
+}
+
+func (s *Session) localObservationHistory() []solver.Observation {
+	observations := make([]solver.Observation, 0, 128)
+	if s.cfg.ObservationHistory != nil {
+		observations = append(observations, s.cfg.ObservationHistory.Recent(64)...)
+	}
+	observations = append(observations, s.Observations()...)
+	return observations
+}
+
+func (s *Session) lastProbeResultSummary() *solver.ProbeResultSummary {
+	s.metaMu.RLock()
+	defer s.metaMu.RUnlock()
+	if s.meta.LastProbeResultAt.IsZero() && s.meta.LastProbeResult.ScriptType == "" {
+		return nil
+	}
+	summary := solver.ProbeResultSummary{
+		ScriptType:     s.meta.LastProbeResult.ScriptType,
+		PlanID:         s.meta.LastProbeResult.PlanID,
+		SelectedPathID: s.meta.LastProbeResult.SelectedPathID,
+		ErrorClass:     s.meta.LastProbeResult.ErrorClass,
+		Success:        s.meta.LastProbeResult.Success,
+		EventCount:     len(s.meta.LastProbeResult.Events),
+		FinishedAt:     s.meta.LastProbeResult.FinishedAt,
+	}
+	return &summary
+}
+
+func (s *Session) recordPlanOrder(plans []solver.Plan, reason string) {
+	s.metaMu.Lock()
+	s.meta.LastPlanOrder = planIDs(plans)
+	s.meta.LastPlanOrderReason = reason
+	s.metaMu.Unlock()
+}
+
+func planIDs(plans []solver.Plan) []string {
+	out := make([]string, 0, len(plans))
+	for _, plan := range plans {
+		out = append(out, plan.ID)
+	}
+	return out
+}
+
+func samePlanSet(left, right []solver.Plan) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	counts := make(map[string]int, len(left))
+	for _, plan := range left {
+		counts[plan.ID]++
+	}
+	for _, plan := range right {
+		counts[plan.ID]--
+	}
+	for _, count := range counts {
+		if count != 0 {
+			return false
+		}
+	}
+	return true
+}
+
+func annotateObservationDetails(details map[string]string, sessionID, peerID string, initiator bool) map[string]string {
+	if details == nil {
+		details = make(map[string]string, 3)
+	} else {
+		details = cloneStringMap(details)
+	}
+	if sessionID != "" {
+		details["session_id"] = sessionID
+	}
+	if peerID != "" {
+		details["peer_id"] = peerID
+	}
+	details["initiator"] = fmt.Sprintf("%t", initiator)
+	return details
+}
+
+func probeScriptToProto(script pmodel.Script) rproto.ProbeScript {
+	steps := make([]rproto.ProbeStep, 0, len(script.Steps))
+	for _, step := range script.Steps {
+		steps = append(steps, rproto.ProbeStep{
+			Type:       step.Type,
+			Addr:       step.Addr,
+			Payload:    step.Payload,
+			Expect:     step.Expect,
+			Message:    step.Message,
+			Reply:      step.Reply,
+			DurationMS: step.DurationMS,
+			TimeoutMS:  step.TimeoutMS,
+			Event:      step.Event,
+			Details:    cloneStringMap(step.Details),
+		})
+	}
+	return rproto.ProbeScript{
+		ScriptType: script.ScriptType,
+		PlanID:     script.PlanID,
+		Steps:      steps,
+	}
+}
+
+func probeScriptFromProto(script rproto.ProbeScript) pmodel.Script {
+	steps := make([]pmodel.Step, 0, len(script.Steps))
+	for _, step := range script.Steps {
+		steps = append(steps, pmodel.Step{
+			Type:       step.Type,
+			Addr:       step.Addr,
+			Payload:    step.Payload,
+			Expect:     step.Expect,
+			Message:    step.Message,
+			Reply:      step.Reply,
+			DurationMS: step.DurationMS,
+			TimeoutMS:  step.TimeoutMS,
+			Event:      step.Event,
+			Details:    cloneStringMap(step.Details),
+		})
+	}
+	return pmodel.Script{
+		ScriptType: script.ScriptType,
+		PlanID:     script.PlanID,
+		Steps:      steps,
+	}
+}
+
+func probeResultToProto(result pmodel.Result) rproto.ProbeResult {
+	events := make([]rproto.Observation, 0, len(result.Events))
+	for _, obs := range result.Events {
+		events = append(events, rproto.Observation{
+			Strategy:       obs.Strategy,
+			PlanID:         obs.PlanID,
+			Event:          obs.Event,
+			PathID:         obs.PathID,
+			ConnectionType: obs.ConnectionType,
+			LocalAddr:      obs.LocalAddr,
+			RemoteAddr:     obs.RemoteAddr,
+			LocalKind:      obs.LocalKind,
+			RemoteKind:     obs.RemoteKind,
+			ErrorClass:     obs.ErrorClass,
+			Reason:         obs.Reason,
+			TimeoutMS:      obs.TimeoutMS,
+			Details:        cloneStringMap(obs.Details),
+			Timestamp:      obs.Timestamp,
+		})
+	}
+	return rproto.ProbeResult{
+		ScriptType:     result.ScriptType,
+		PlanID:         result.PlanID,
+		Success:        result.Success,
+		Events:         events,
+		SelectedPathID: result.SelectedPathID,
+		ErrorClass:     result.ErrorClass,
+		FinishedAt:     result.FinishedAt,
+	}
+}
+
+func probeResultFromProto(result rproto.ProbeResult) pmodel.Result {
+	events := make([]solver.Observation, 0, len(result.Events))
+	for _, obs := range result.Events {
+		events = append(events, solver.Observation{
+			Strategy:       obs.Strategy,
+			PlanID:         obs.PlanID,
+			Event:          obs.Event,
+			PathID:         obs.PathID,
+			ConnectionType: obs.ConnectionType,
+			LocalAddr:      obs.LocalAddr,
+			RemoteAddr:     obs.RemoteAddr,
+			LocalKind:      obs.LocalKind,
+			RemoteKind:     obs.RemoteKind,
+			ErrorClass:     obs.ErrorClass,
+			Reason:         obs.Reason,
+			TimeoutMS:      obs.TimeoutMS,
+			Details:        cloneStringMap(obs.Details),
+			Timestamp:      obs.Timestamp,
+		})
+	}
+	return pmodel.Result{
+		ScriptType:     result.ScriptType,
+		PlanID:         result.PlanID,
+		Success:        result.Success,
+		Events:         events,
+		SelectedPathID: result.SelectedPathID,
+		ErrorClass:     result.ErrorClass,
+		FinishedAt:     result.FinishedAt,
+	}
+}
+
+func localResultPathType(result pmodel.Result) string {
+	for i := len(result.Events) - 1; i >= 0; i-- {
+		if result.Events[i].ConnectionType != "" {
+			return result.Events[i].ConnectionType
+		}
+	}
+	return ""
+}
+
 func cloneCapability(capability rproto.Capability) rproto.Capability {
-	return rproto.Capability{Strategies: append([]string(nil), capability.Strategies...)}
+	return rproto.Capability{
+		Strategies: append([]string(nil), capability.Strategies...),
+		Features:   append([]string(nil), capability.Features...),
+	}
 }
 
 func normalizeCapability(capability rproto.Capability) rproto.Capability {
-	if len(capability.Strategies) == 0 {
-		return rproto.Capability{}
-	}
+	normalized := rproto.Capability{}
 	seen := make(map[string]struct{}, len(capability.Strategies))
 	strategies := make([]string, 0, len(capability.Strategies))
 	for _, strategy := range capability.Strategies {
@@ -955,7 +1515,23 @@ func normalizeCapability(capability rproto.Capability) rproto.Capability {
 		strategies = append(strategies, strategy)
 	}
 	slices.Sort(strategies)
-	return rproto.Capability{Strategies: strategies}
+	normalized.Strategies = strategies
+
+	seen = make(map[string]struct{}, len(capability.Features))
+	features := make([]string, 0, len(capability.Features))
+	for _, feature := range capability.Features {
+		if feature == "" {
+			continue
+		}
+		if _, ok := seen[feature]; ok {
+			continue
+		}
+		seen[feature] = struct{}{}
+		features = append(features, feature)
+	}
+	slices.Sort(features)
+	normalized.Features = features
+	return normalized
 }
 
 func clonePathCommit(pathCommit PathCommitSnapshot) PathCommitSnapshot {
@@ -974,4 +1550,34 @@ func cloneMessage(msg solver.Message) solver.Message {
 		Payload:    append([]byte(nil), msg.Payload...),
 		ReceivedAt: msg.ReceivedAt,
 	}
+}
+
+func capabilityHasFeature(capability rproto.Capability, feature string) bool {
+	for _, candidate := range capability.Features {
+		if candidate == feature {
+			return true
+		}
+	}
+	return false
+}
+
+func cloneProbeResult(result pmodel.Result) pmodel.Result {
+	cloned := result
+	cloned.Events = make([]solver.Observation, 0, len(result.Events))
+	for _, obs := range result.Events {
+		obs.Details = cloneStringMap(obs.Details)
+		cloned.Events = append(cloned.Events, obs)
+	}
+	return cloned
+}
+
+func cloneStringMap(in map[string]string) map[string]string {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(in))
+	for key, value := range in {
+		out[key] = value
+	}
+	return out
 }

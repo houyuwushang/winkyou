@@ -5,6 +5,7 @@ import (
 	"net"
 	"time"
 
+	rproto "winkyou/pkg/rendezvous/proto"
 	"winkyou/pkg/transport"
 )
 
@@ -79,6 +80,10 @@ type ObservationSink interface {
 	Record(obs Observation) error
 }
 
+type ObservationHistory interface {
+	Recent(limit int) []Observation
+}
+
 // Observation represents a connectivity observation event
 type Observation struct {
 	Strategy       string
@@ -95,6 +100,32 @@ type Observation struct {
 	TimeoutMS      int64
 	Details        map[string]string
 	Timestamp      time.Time
+}
+
+type ProbeResultSummary struct {
+	ScriptType     string
+	PlanID         string
+	SelectedPathID string
+	ErrorClass     string
+	Success        bool
+	EventCount     int
+	FinishedAt     time.Time
+}
+
+type RankInput struct {
+	SessionID          string
+	LocalNodeID        string
+	RemoteNodeID       string
+	Initiator          bool
+	RemoteCapability   rproto.Capability
+	LocalObservations  []Observation
+	RemoteObservations []Observation
+	LastProbeResult    *ProbeResultSummary
+}
+
+type RankedPlans struct {
+	Plans  []Plan
+	Reason string
 }
 
 type Strategy interface {
@@ -116,6 +147,10 @@ type PlanExecutor interface {
 
 type ExecutorFactory interface {
 	NewExecutor(plan Plan) (PlanExecutor, error)
+}
+
+type PlanRanker interface {
+	RankPlans(ctx context.Context, input RankInput, plans []Plan) (RankedPlans, error)
 }
 
 // DefaultBudget returns a conservative execution budget

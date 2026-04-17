@@ -19,9 +19,9 @@ The current runnable path is still:
 - userspace `wireguard-go` secure data plane
 - `PacketTransport`-based tunnel binding
 - session-managed peer lifecycle
-- rendezvous v2 capability envelope exchange on the existing coordinator channel
+- rendezvous v2 capability / observation / probe / path-commit envelope exchange on the existing coordinator channel
 
-This is a Phase 1 / Phase 1.5 compatibility slice. It keeps the current UDP/ICE/WireGuard path working while the architecture boundaries are being tightened.
+This is now a Phase 2B runtime slice moving into Phase 2C. The current work keeps the existing UDP/ICE/WireGuard vertical slice runnable while activating probe business messages and observation-informed plan ordering on top of it.
 
 ## Current Deployable Path
 
@@ -37,7 +37,7 @@ Not completed:
 - `userspace`
 - `proxy`
 - no-admin mode
-- second solver strategy and Phase 2 observation/scoring pipeline
+- second solver strategy and full observation/scoring/learning pipeline
 
 ## Repository Map
 

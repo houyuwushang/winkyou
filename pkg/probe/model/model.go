@@ -7,17 +7,19 @@ import (
 )
 
 const (
-	StrategyName  = "probe_lab"
-	StepUDPSend   = "udp_send"
-	StepUDPListen = "udp_listen"
-	StepTCPCheck  = "tcp_check"
-	StepSleep     = "sleep"
-	StepReport    = "report"
+	StrategyName        = "probe_lab"
+	ScriptTypePreflight = "preflight_v1"
+	StepUDPSend         = "udp_send"
+	StepUDPListen       = "udp_listen"
+	StepTCPCheck        = "tcp_check"
+	StepSleep           = "sleep"
+	StepReport          = "report"
 )
 
 type Script struct {
-	PlanID string `json:"plan_id,omitempty"`
-	Steps  []Step `json:"steps,omitempty"`
+	ScriptType string `json:"script_type,omitempty"`
+	PlanID     string `json:"plan_id,omitempty"`
+	Steps      []Step `json:"steps,omitempty"`
 }
 
 type Step struct {
@@ -34,6 +36,7 @@ type Step struct {
 }
 
 type Result struct {
+	ScriptType     string               `json:"script_type,omitempty"`
 	PlanID         string               `json:"plan_id,omitempty"`
 	Success        bool                 `json:"success"`
 	Events         []solver.Observation `json:"events,omitempty"`

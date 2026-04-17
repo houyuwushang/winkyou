@@ -7,11 +7,13 @@ import (
 )
 
 const (
-	MsgTypeCapability  = "capability"
-	MsgTypeObservation = "observation"
-	MsgTypeProbeScript = "probe_script"
-	MsgTypeProbeResult = "probe_result"
-	MsgTypePathCommit  = "path_commit"
+	MsgTypeCapability    = "capability"
+	MsgTypeObservation   = "observation"
+	MsgTypeProbeScript   = "probe_script"
+	MsgTypeProbeResult   = "probe_result"
+	MsgTypePathCommit    = "path_commit"
+	FeatureProbeLabV1    = "probe_lab_v1"
+	FeatureProbeScriptV1 = "probe_script_v1"
 )
 
 type SessionEnvelope struct {
@@ -26,6 +28,7 @@ type SessionEnvelope struct {
 
 type Capability struct {
 	Strategies []string `json:"strategies,omitempty"`
+	Features   []string `json:"features,omitempty"`
 }
 
 type Observation struct {
@@ -46,16 +49,33 @@ type Observation struct {
 }
 
 type ProbeScript struct {
-	Strategy string   `json:"strategy,omitempty"`
-	Steps    []string `json:"steps,omitempty"`
+	ScriptType string      `json:"script_type,omitempty"`
+	PlanID     string      `json:"plan_id,omitempty"`
+	Steps      []ProbeStep `json:"steps,omitempty"`
+}
+
+type ProbeStep struct {
+	Type       string            `json:"type,omitempty"`
+	Addr       string            `json:"addr,omitempty"`
+	Payload    string            `json:"payload,omitempty"`
+	Expect     string            `json:"expect,omitempty"`
+	Message    string            `json:"message,omitempty"`
+	Reply      string            `json:"reply,omitempty"`
+	DurationMS int               `json:"duration_ms,omitempty"`
+	TimeoutMS  int               `json:"timeout_ms,omitempty"`
+	Event      string            `json:"event,omitempty"`
+	Details    map[string]string `json:"details,omitempty"`
 }
 
 type ProbeResult struct {
-	PlanID         string `json:"plan_id,omitempty"`
-	PathID         string `json:"path_id,omitempty"`
-	Success        bool   `json:"success"`
-	SelectedPathID string `json:"selected_path_id,omitempty"`
-	ErrorClass     string `json:"error_class,omitempty"`
+	ScriptType     string        `json:"script_type,omitempty"`
+	PlanID         string        `json:"plan_id,omitempty"`
+	PathID         string        `json:"path_id,omitempty"`
+	Success        bool          `json:"success"`
+	Events         []Observation `json:"events,omitempty"`
+	SelectedPathID string        `json:"selected_path_id,omitempty"`
+	ErrorClass     string        `json:"error_class,omitempty"`
+	FinishedAt     time.Time     `json:"finished_at,omitempty"`
 }
 
 type PathCommit struct {

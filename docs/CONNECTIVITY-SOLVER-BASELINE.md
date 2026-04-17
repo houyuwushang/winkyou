@@ -21,7 +21,7 @@ The active definition is:
 The system is responsible for:
 
 - creating and managing rendezvous sessions
-- exchanging capabilities and later observations
+- exchanging capabilities, observations, probe messages, and path commits
 - selecting a usable connectivity path
 - binding the selected packet path to the secure data plane
 - re-solving when the current path degrades
@@ -49,6 +49,7 @@ Responsibilities:
 
 - collecting path behavior samples
 - recording success, failure, timeout, reachability, and filtering signals
+- carrying probe and plan-ordering evidence forward into the solver
 
 Constraints:
 
@@ -62,6 +63,7 @@ Responsibilities:
 - planning candidate path attempts
 - executing strategies
 - comparing path outcomes
+- ordering candidate plans using generic context
 - deciding what to bind next
 
 Constraints:
@@ -79,7 +81,7 @@ Responsibilities:
 Constraints:
 
 - the tunnel consumes packets, not raw streams
-- raw `net.Conn` must not be treated as the tunnel’s generic transport abstraction
+- raw `net.Conn` must not be treated as the tunnel's generic transport abstraction
 
 ### Tunnel Plane
 
@@ -105,7 +107,7 @@ This is the stable packet boundary for all future path types.
 
 The solver core admits multiple strategies.
 
-Current Phase 1 compatibility strategy:
+Current real strategy:
 
 - `legacy_ice_udp`
 
@@ -120,6 +122,7 @@ Future strategies may include relay-first, TCP-assisted, QUIC, or other transpor
 - rendezvous v2 envelope handling
 - binder coordination
 - strategy invocation
+- probe business-message handling
 
 `pkg/session` does not own NAT or ICE dependencies directly.
 
@@ -133,7 +136,7 @@ The session calls the binder. The strategy does not write tunnel details directl
 
 Session v2 messages use a generic envelope carried over the rendezvous plane.
 
-The minimum envelope types are:
+The active envelope types are:
 
 - `capability`
 - `observation`
@@ -141,11 +144,15 @@ The minimum envelope types are:
 - `probe_result`
 - `path_commit`
 
-Phase 1.5 requires at least one real business message to flow through this path:
+Phase 2C requires all of the following to be real business traffic, not only schema:
 
-- capability exchange
+- `capability`
+- `observation`
+- `probe_script`
+- `probe_result`
+- `path_commit`
 
-## Current Phase Scope
+## Phase Scope
 
 ### Phase 1
 
@@ -167,31 +174,62 @@ Required outcome:
 
 **Status**: Frozen at tag `phase1.5-freeze-2026-04-16`
 
-### Phase 2A (Current)
+### Phase 2A (Frozen)
 
 **Scope**: Upgrade solver core from single-plan execution to candidate loop with minimal observation vertical slice.
 
+Delivered:
+
+- solver core candidate loop, execution budget, and generic scoring
+- multi-plan output from `legacy_ice_udp`
+- observation persistence and exchange through session v2 envelopes
+- framed-stream adapter and generic address cleanup across transport/tunnel glue
+
+**Status**: Frozen at tag `phase2a-freeze-2026-04-16`
+
+### Phase 2B (Completed)
+
+**Scope**: Move Phase 2A from "structure exists" to "runtime is real".
+
+Delivered:
+
+- plan-scoped executor / candidate isolation
+- `legacyice/direct_prefer` and `legacyice/relay_only` as real execution variants
+- observation emission integrated into real strategy execution
+- observation sink/store injection through session and client glue
+- remote observation visibility retained in session state
+- minimal probe lab:
+  - `pkg/probe/model`
+  - `pkg/probe/lab`
+  - `test/e2e/netprobe script-run`
+- framed-stream bind/attach regression coverage
+
+**Status**: Frozen at tag `phase2b-freeze-2026-04-17`
+
+### Phase 2C (Current)
+
+**Scope**: Activate the probe business lane and let observation begin to shape plan ordering.
+
 Required outcome:
 
-- solver core executes multiple candidate plans, not just `plans[0]`
-- session collects outcomes, scores candidates, selects best path
-- execution budget model (max candidates, time budget)
-- `legacy_ice_udp` returns at least two plans (e.g., direct_prefer, relay_only)
-- observation events flow: report -> persist -> exchange
-- netprobe evolves to probe lab with script execution capability
-- transport plane gains framed-stream adapter (net.Conn -> PacketTransport)
-- tunnel/binder removes UDP-specific address assumptions
+- capability explicitly negotiates probe features
+- `probe_script` / `probe_result` are real session messages with send/receive/handle paths
+- initiator can run a minimal preflight probe after capability exchange and before candidate execution
+- preflight probe failure or timeout is observable and non-fatal
+- strategy-side ranking can reorder existing plans using observation history and latest probe result
+- the solver still runs only the existing `legacy_ice_udp` strategy
 
-**Not in Phase 2A**:
+**Not in Phase 2C**:
 
 - second real strategy (TCP/443, QUIC, etc.)
-- full observation->scoring->learning closed loop
+- full observation -> scoring -> learning closed loop
 - concurrent candidate execution
+- complex public probe infrastructure
 - coordinator proto redesign
 
-### Not In Scope Yet
+## Not In Scope Yet
 
-- second fully implemented strategy beyond legacy_ice_udp multi-plan
+- second fully implemented strategy beyond `legacy_ice_udp`
 - full observation collection and scoring with learning feedback
 - new coordinator transport or protobuf redesign
 - GUI, daemon, no-admin, proxy, or userspace completion work
@@ -210,45 +248,9 @@ If an old document conflicts with this file, this file wins.
 
 ---
 
-## Phase 2A: Multi-Plan Candidate Loop (COMPLETED 2026-04-16)
+## Historical Freeze Tags
 
-**Goal**: Upgrade solver core from single-plan execution to candidate loop with scoring.
-
-**Completed**:
-- ✅ Solver core: candidate loop, budget, scoring
-  - Added CandidateOutcome, ExecutionBudget to solver types
-  - Added ScoreOutcome (generic: success>failure, direct>relay)
-  - Added SelectBestOutcome for picking winning candidate
-  - Rewrote session.selectAndExecute to execute candidate loop
-  - Strategy returns multiple plans, session executes each within budget
-  - Scores outcomes, selects best, cleans up non-winners
-  - Added solver scoring unit tests
-- ✅ legacy_ice_udp: two candidate plans
-  - Returns legacyice/direct_prefer and legacyice/relay_only
-  - Added ForceRelay to legacyice Config
-  - Plan-scoped execution (shared state limitation noted for Phase 2B)
-- ✅ Observation vertical slice
-  - Enriched rproto.Observation with full event fields
-  - Added solver.Observation type (generic, no ICE-specific fields)
-  - Extended solver.SessionIO with ReportObservation method
-  - Session records observations locally (capped at 100)
-  - Session sends/receives observations via v2 envelope
-  - Added pkg/solver/store with memory + JSONL file persistence
-- ✅ Framed-stream adapter + remove UDP assumptions
-  - Added pkg/transport/framedstream adapter (4-byte length prefix)
-  - Changed transportEndpoint to store net.Addr (not *net.UDPAddr)
-  - Keep UDP adapters for WireGuard IPC compatibility
-  - Added tunnel.AddrMeta for generic address representation
-  - Added PeerStatus.EndpointMeta field
-
-**Known Limitations**:
-- legacy_ice_udp plans share agent state (first execution wins)
-- Full plan isolation deferred to Phase 2B
-- Observation reporting not yet integrated into strategy execution
-- No probe lab implementation (netprobe remains as-is)
-
-**Commits**:
-- a5660af: Solver core: candidate loop, multi-plan, budget, scoring
-- 228f3d1: Observation vertical slice: report, persist, exchange
-- dcb8f76: Framed-stream adapter + remove UDP assumptions
-
+- `legacy-ice-turn-baseline-2026-04-15`
+- `phase1.5-freeze-2026-04-16`
+- `phase2a-freeze-2026-04-16`
+- `phase2b-freeze-2026-04-17`

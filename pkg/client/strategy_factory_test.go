@@ -25,14 +25,17 @@ func (s resolverStrategy) Execute(context.Context, solver.SessionIO, solver.Plan
 func (s resolverStrategy) Close() error { return nil }
 
 func TestStrategyResolverLocalCapabilityComesFromRegistry(t *testing.T) {
-	resolver := newStrategyResolver([]strategyFactory{
+	resolver := newStrategyResolverWithFeatures([]strategyFactory{
 		{name: "legacy_ice_udp", build: func() solver.Strategy { return resolverStrategy{name: "legacy_ice_udp"} }},
 		{name: "future_quic", build: func() solver.Strategy { return resolverStrategy{name: "future_quic"} }},
-	}, ResolverPolicy{})
+	}, ResolverPolicy{}, []string{rproto.FeatureProbeLabV1, rproto.FeatureProbeScriptV1})
 
 	got := resolver.LocalCapability()
 	if len(got.Strategies) != 2 || got.Strategies[0] != "legacy_ice_udp" || got.Strategies[1] != "future_quic" {
 		t.Fatalf("LocalCapability = %#v, want legacy_ice_udp+future_quic", got)
+	}
+	if len(got.Features) != 2 || got.Features[0] != rproto.FeatureProbeLabV1 || got.Features[1] != rproto.FeatureProbeScriptV1 {
+		t.Fatalf("LocalCapability.Features = %#v, want probe features", got.Features)
 	}
 }
 

@@ -71,6 +71,16 @@ func TestEnvelopeSignalAdaptersRoundTrip(t *testing.T) {
 			msgType: rproto.MsgTypePathCommit,
 			payload: rproto.PathCommit{Strategy: "legacy_ice_udp", PathID: "legacyice:direct:session/node-a/node-b", ConnectionType: "direct"},
 		},
+		{
+			name:    "probe_script",
+			msgType: rproto.MsgTypeProbeScript,
+			payload: rproto.ProbeScript{ScriptType: "preflight_v1", PlanID: "probe/preflight", Steps: []rproto.ProbeStep{{Type: "report", Event: "probe_ready"}}},
+		},
+		{
+			name:    "probe_result",
+			msgType: rproto.MsgTypeProbeResult,
+			payload: rproto.ProbeResult{ScriptType: "preflight_v1", PlanID: "probe/preflight", Success: true},
+		},
 	}
 
 	for _, tt := range tests {

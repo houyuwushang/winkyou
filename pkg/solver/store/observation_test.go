@@ -100,3 +100,28 @@ func TestObservationStore_MemoryLimit(t *testing.T) {
 		t.Errorf("List() len = %d, want 1000 (memory limit)", len(list))
 	}
 }
+
+func TestObservationStore_Recent(t *testing.T) {
+	store := NewObservationStore("")
+	for i := 0; i < 5; i++ {
+		if err := store.Record(solver.Observation{
+			Strategy: "test",
+			Event:    "event",
+			PlanID:   "plan",
+			Details:  map[string]string{"index": string(rune('0' + i))},
+		}); err != nil {
+			t.Fatalf("Record() error = %v", err)
+		}
+	}
+
+	recent := store.Recent(2)
+	if len(recent) != 2 {
+		t.Fatalf("Recent(2) len = %d, want 2", len(recent))
+	}
+	if got := recent[0].Details["index"]; got != "3" {
+		t.Fatalf("Recent(2)[0] index = %q, want 3", got)
+	}
+	if got := recent[1].Details["index"]; got != "4" {
+		t.Fatalf("Recent(2)[1] index = %q, want 4", got)
+	}
+}

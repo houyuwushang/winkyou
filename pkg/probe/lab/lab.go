@@ -28,8 +28,9 @@ func LoadScript(path string) (model.Script, error) {
 
 func (Runner) Run(ctx context.Context, script model.Script) (model.Result, error) {
 	result := model.Result{
-		PlanID: script.PlanID,
-		Events: make([]solver.Observation, 0, len(script.Steps)+1),
+		ScriptType: script.ScriptType,
+		PlanID:     script.PlanID,
+		Events:     make([]solver.Observation, 0, len(script.Steps)+1),
 	}
 	for i, step := range script.Steps {
 		obs, err := runStep(ctx, script.PlanID, step)

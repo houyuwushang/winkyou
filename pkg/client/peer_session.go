@@ -95,7 +95,8 @@ func (e *engine) startPeerConnect(nodeID string) {
 }
 
 func (e *engine) startPeerSession(s *peerSession) {
-	if s == nil || s.runner == nil {
+	runner := peerSessionRunner(s)
+	if s == nil || runner == nil {
 		return
 	}
 
@@ -107,12 +108,18 @@ func (e *engine) startPeerSession(s *peerSession) {
 	s.connecting = true
 	s.connectMu.Unlock()
 
-	if err := s.runner.Start(e.sessionContext()); err != nil {
+	if err := runner.Start(e.sessionContext()); err != nil {
 		e.handlePeerSessionError(s.nodeID, s, err)
 	}
 }
 
 func (e *engine) newPeerRunner(s *peerSession) (*sesspkg.Session, error) {
+	var observationSink solver.ObservationSink
+	var observationHistory solver.ObservationHistory
+	if e.observationStore != nil {
+		observationSink = e.observationStore
+		observationHistory = e.observationStore
+	}
 	return sesspkg.New(sesspkg.Config{
 		SessionID:             s.sessionID,
 		LocalNodeID:           e.currentNodeID(),
@@ -121,9 +128,12 @@ func (e *engine) newPeerRunner(s *peerSession) (*sesspkg.Session, error) {
 		Resolver:              e.newStrategyResolver(),
 		Binder:                sesspkg.NewTunnelBinder(e.tun, e),
 		Sender:                peerMessageSender{engine: e},
-		ObservationSink:       e.observationStore,
+		ProbeRunner:           e.probeRunner(),
+		ObservationSink:       observationSink,
+		ObservationHistory:    observationHistory,
 		RunTimeout:            e.legacyICERunTimeout(),
 		CapabilityWaitTimeout: e.capabilityWaitTimeout(),
+		PreflightProbeTimeout: 500 * time.Millisecond,
 		Hooks: sesspkg.Hooks{
 			OnStateChange: func(state sesspkg.State) {
 				e.handlePeerSessionState(s.nodeID, s, state)
@@ -144,7 +154,11 @@ func (e *engine) handlePeerSolverMessage(nodeID string, msg solver.Message) {
 		return
 	}
 	e.startPeerSession(s)
-	if err := s.runner.HandleMessage(e.sessionContext(), msg); err != nil {
+	runner := peerSessionRunner(s)
+	if runner == nil {
+		return
+	}
+	if err := runner.HandleMessage(e.sessionContext(), msg); err != nil {
 		e.handlePeerSessionError(nodeID, s, err)
 	}
 }
@@ -285,10 +299,11 @@ func (s peerMessageSender) Send(ctx context.Context, peerID string, msg solver.M
 }
 
 func peerSessionState(s *peerSession) sesspkg.State {
-	if s == nil || s.runner == nil {
+	runner := peerSessionRunner(s)
+	if s == nil || runner == nil {
 		return sesspkg.StateClosed
 	}
-	return s.runner.State()
+	return runner.State()
 }
 
 func connectionTypeFromSummary(value string) ConnectionType {
@@ -360,4 +375,13 @@ func closePeerSession(session *peerSession) {
 	if runner != nil {
 		_ = runner.Close()
 	}
+}
+
+func peerSessionRunner(session *peerSession) *sesspkg.Session {
+	if session == nil {
+		return nil
+	}
+	session.connectMu.Lock()
+	defer session.connectMu.Unlock()
+	return session.runner
 }

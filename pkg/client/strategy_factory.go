@@ -30,6 +30,10 @@ type strategyResolver struct {
 }
 
 func newStrategyResolver(factories []strategyFactory, policy ResolverPolicy) *strategyResolver {
+	return newStrategyResolverWithFeatures(factories, policy, nil)
+}
+
+func newStrategyResolverWithFeatures(factories []strategyFactory, policy ResolverPolicy, features []string) *strategyResolver {
 	order := make([]string, 0, len(factories))
 	builders := make(map[string]func() solver.Strategy, len(factories))
 	strategies := make([]string, 0, len(factories))
@@ -45,7 +49,7 @@ func newStrategyResolver(factories []strategyFactory, policy ResolverPolicy) *st
 		strategies = append(strategies, factory.name)
 	}
 	return &strategyResolver{
-		capability: rproto.Capability{Strategies: strategies},
+		capability: rproto.Capability{Strategies: strategies, Features: append([]string(nil), features...)},
 		order:      order,
 		factories:  builders,
 		policy:     policy,
@@ -56,7 +60,10 @@ func (r *strategyResolver) LocalCapability() rproto.Capability {
 	if r == nil {
 		return rproto.Capability{}
 	}
-	return rproto.Capability{Strategies: append([]string(nil), r.capability.Strategies...)}
+	return rproto.Capability{
+		Strategies: append([]string(nil), r.capability.Strategies...),
+		Features:   append([]string(nil), r.capability.Features...),
+	}
 }
 
 func (r *strategyResolver) Resolve(remote rproto.Capability, initiator bool) (solver.Strategy, sesspkg.Selection, error) {
@@ -120,7 +127,7 @@ func (r *strategyResolver) build(name string) (solver.Strategy, error) {
 
 func (e *engine) newStrategyResolver() sesspkg.StrategyResolver {
 	legacyCfg := e.legacyICEStrategyConfig()
-	return newStrategyResolver([]strategyFactory{
+	return newStrategyResolverWithFeatures([]strategyFactory{
 		{
 			name: legacyice.StrategyName,
 			build: func() solver.Strategy {
@@ -130,7 +137,7 @@ func (e *engine) newStrategyResolver() sesspkg.StrategyResolver {
 	}, ResolverPolicy{
 		CompatibilityDefault: legacyice.StrategyName,
 		AllowImplicitLegacy:  true,
-	})
+	}, probeFeatures(e.probeRunner() != nil))
 }
 
 func (e *engine) legacyICEStrategyConfig() legacyice.Config {
@@ -165,4 +172,14 @@ func (e *engine) legacyICERunTimeout() time.Duration {
 
 func (e *engine) capabilityWaitTimeout() time.Duration {
 	return 2 * time.Second
+}
+
+func probeFeatures(enabled bool) []string {
+	if !enabled {
+		return nil
+	}
+	return []string{
+		rproto.FeatureProbeLabV1,
+		rproto.FeatureProbeScriptV1,
+	}
 }
