@@ -18,18 +18,21 @@ const (
 
 type offerPayload struct {
 	SessionID string                           `json:"session_id"`
+	PlanID    string                           `json:"plan_id,omitempty"`
 	ICE       nat.ICESessionDescriptionPayload `json:"ice"`
 	SentAt    time.Time                        `json:"sent_at"`
 }
 
 type answerPayload struct {
 	SessionID string                           `json:"session_id"`
+	PlanID    string                           `json:"plan_id,omitempty"`
 	ICE       nat.ICESessionDescriptionPayload `json:"ice"`
 	SentAt    time.Time                        `json:"sent_at"`
 }
 
 type candidatePayload struct {
 	SessionID string                  `json:"session_id"`
+	PlanID    string                  `json:"plan_id,omitempty"`
 	ICE       nat.ICECandidatePayload `json:"ice"`
 	SentAt    time.Time               `json:"sent_at"`
 }
@@ -55,14 +58,16 @@ func marshalOfferPayload(payload offerPayload) ([]byte, error) {
 	}
 	return json.Marshal(struct {
 		SessionID string    `json:"session_id"`
+		PlanID    string    `json:"plan_id,omitempty"`
 		ICE       []byte    `json:"ice"`
 		SentAt    time.Time `json:"sent_at"`
-	}{SessionID: payload.SessionID, ICE: icePayload, SentAt: payload.SentAt})
+	}{SessionID: payload.SessionID, PlanID: payload.PlanID, ICE: icePayload, SentAt: payload.SentAt})
 }
 
 func unmarshalOfferPayload(data []byte) (offerPayload, error) {
 	var wrap struct {
 		SessionID string    `json:"session_id"`
+		PlanID    string    `json:"plan_id,omitempty"`
 		ICE       []byte    `json:"ice"`
 		SentAt    time.Time `json:"sent_at"`
 	}
@@ -73,7 +78,7 @@ func unmarshalOfferPayload(data []byte) (offerPayload, error) {
 	if err != nil {
 		return offerPayload{}, err
 	}
-	return offerPayload{SessionID: wrap.SessionID, ICE: icePayload, SentAt: wrap.SentAt}, nil
+	return offerPayload{SessionID: wrap.SessionID, PlanID: wrap.PlanID, ICE: icePayload, SentAt: wrap.SentAt}, nil
 }
 
 func marshalAnswerPayload(payload answerPayload) ([]byte, error) {
@@ -83,14 +88,16 @@ func marshalAnswerPayload(payload answerPayload) ([]byte, error) {
 	}
 	return json.Marshal(struct {
 		SessionID string    `json:"session_id"`
+		PlanID    string    `json:"plan_id,omitempty"`
 		ICE       []byte    `json:"ice"`
 		SentAt    time.Time `json:"sent_at"`
-	}{SessionID: payload.SessionID, ICE: icePayload, SentAt: payload.SentAt})
+	}{SessionID: payload.SessionID, PlanID: payload.PlanID, ICE: icePayload, SentAt: payload.SentAt})
 }
 
 func unmarshalAnswerPayload(data []byte) (answerPayload, error) {
 	var wrap struct {
 		SessionID string    `json:"session_id"`
+		PlanID    string    `json:"plan_id,omitempty"`
 		ICE       []byte    `json:"ice"`
 		SentAt    time.Time `json:"sent_at"`
 	}
@@ -101,7 +108,7 @@ func unmarshalAnswerPayload(data []byte) (answerPayload, error) {
 	if err != nil {
 		return answerPayload{}, err
 	}
-	return answerPayload{SessionID: wrap.SessionID, ICE: icePayload, SentAt: wrap.SentAt}, nil
+	return answerPayload{SessionID: wrap.SessionID, PlanID: wrap.PlanID, ICE: icePayload, SentAt: wrap.SentAt}, nil
 }
 
 func marshalCandidatePayload(payload candidatePayload) ([]byte, error) {
@@ -111,14 +118,16 @@ func marshalCandidatePayload(payload candidatePayload) ([]byte, error) {
 	}
 	return json.Marshal(struct {
 		SessionID string    `json:"session_id"`
+		PlanID    string    `json:"plan_id,omitempty"`
 		ICE       []byte    `json:"ice"`
 		SentAt    time.Time `json:"sent_at"`
-	}{SessionID: payload.SessionID, ICE: icePayload, SentAt: payload.SentAt})
+	}{SessionID: payload.SessionID, PlanID: payload.PlanID, ICE: icePayload, SentAt: payload.SentAt})
 }
 
 func unmarshalCandidatePayload(data []byte) (candidatePayload, error) {
 	var wrap struct {
 		SessionID string    `json:"session_id"`
+		PlanID    string    `json:"plan_id,omitempty"`
 		ICE       []byte    `json:"ice"`
 		SentAt    time.Time `json:"sent_at"`
 	}
@@ -129,5 +138,5 @@ func unmarshalCandidatePayload(data []byte) (candidatePayload, error) {
 	if err != nil {
 		return candidatePayload{}, err
 	}
-	return candidatePayload{SessionID: wrap.SessionID, ICE: icePayload, SentAt: wrap.SentAt}, nil
+	return candidatePayload{SessionID: wrap.SessionID, PlanID: wrap.PlanID, ICE: icePayload, SentAt: wrap.SentAt}, nil
 }

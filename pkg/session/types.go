@@ -52,6 +52,7 @@ type Config struct {
 	Resolver              StrategyResolver
 	Binder                Binder
 	Sender                MessageSender
+	ObservationSink       solver.ObservationSink
 	Hooks                 Hooks
 	RunTimeout            time.Duration
 	CapabilityWaitTimeout time.Duration

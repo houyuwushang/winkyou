@@ -260,13 +260,16 @@ func TestSessionStartCapabilitySelectionAndPathCommit(t *testing.T) {
 
 	messages = sender.Messages()
 	if len(messages) < 2 {
-		t.Fatalf("outbound messages = %d, want capability + path_commit", len(messages))
+		t.Fatalf("outbound messages = %d, want at least capability + path_commit", len(messages))
 	}
-	last := messages[len(messages)-1]
-	if last.Kind != solver.MessageKindEnvelope || last.Type != rproto.MsgTypePathCommit {
-		t.Fatalf("last message = %+v, want path_commit envelope", last)
+	pathCommitMsg, ok := findEnvelopeMessage(messages, rproto.MsgTypePathCommit)
+	if !ok {
+		t.Fatalf("messages = %+v, want path_commit envelope", messages)
 	}
-	envelope, err := rproto.UnmarshalEnvelope(last.Payload)
+	if _, ok := findEnvelopeMessage(messages, rproto.MsgTypeObservation); !ok {
+		t.Fatalf("messages = %+v, want at least one observation envelope", messages)
+	}
+	envelope, err := rproto.UnmarshalEnvelope(pathCommitMsg.Payload)
 	if err != nil {
 		t.Fatalf("UnmarshalEnvelope(path_commit) error = %v", err)
 	}
@@ -378,8 +381,14 @@ func TestSessionStartFailureCanRetry(t *testing.T) {
 		t.Fatalf("Execute() calls = %d, want 1", execCalls)
 	}
 	messages := sender.Messages()
-	if len(messages) != 2 {
-		t.Fatalf("successful outbound messages = %d, want capability + path_commit", len(messages))
+	if _, ok := findEnvelopeMessage(messages, rproto.MsgTypeCapability); !ok {
+		t.Fatalf("messages = %+v, want capability envelope", messages)
+	}
+	if _, ok := findEnvelopeMessage(messages, rproto.MsgTypePathCommit); !ok {
+		t.Fatalf("messages = %+v, want path_commit envelope", messages)
+	}
+	if _, ok := findEnvelopeMessage(messages, rproto.MsgTypeObservation); !ok {
+		t.Fatalf("messages = %+v, want observation envelope", messages)
 	}
 }
 
@@ -418,8 +427,15 @@ func TestSessionStartIsNoOpAfterSuccess(t *testing.T) {
 	if execCalls != 1 {
 		t.Fatalf("Execute() calls = %d, want 1", execCalls)
 	}
-	if got := len(sender.Messages()); got != 2 {
-		t.Fatalf("outbound messages = %d, want capability + path_commit once", got)
+	messages := sender.Messages()
+	if _, ok := findEnvelopeMessage(messages, rproto.MsgTypeCapability); !ok {
+		t.Fatalf("messages = %+v, want capability envelope", messages)
+	}
+	if _, ok := findEnvelopeMessage(messages, rproto.MsgTypePathCommit); !ok {
+		t.Fatalf("messages = %+v, want path_commit envelope", messages)
+	}
+	if _, ok := findEnvelopeMessage(messages, rproto.MsgTypeObservation); !ok {
+		t.Fatalf("messages = %+v, want observation envelope", messages)
 	}
 }
 
@@ -467,4 +483,13 @@ func collectStates(ch <-chan State) []State {
 			return states
 		}
 	}
+}
+
+func findEnvelopeMessage(messages []solver.Message, msgType string) (solver.Message, bool) {
+	for _, msg := range messages {
+		if msg.Kind == solver.MessageKindEnvelope && msg.Type == msgType {
+			return msg, true
+		}
+	}
+	return solver.Message{}, false
 }

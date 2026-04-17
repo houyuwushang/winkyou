@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"net"
 	"testing"
+
+	"winkyou/pkg/transport"
 )
 
 func TestMessageKindsAreGeneric(t *testing.T) {
@@ -29,9 +31,9 @@ func (m *mockTransport) ReadPacket(_ context.Context, _ []byte) (int, PacketMeta
 	return 0, PacketMeta{}, nil
 }
 func (m *mockTransport) WritePacket(_ context.Context, _ []byte) error { return nil }
-func (m *mockTransport) LocalAddr() net.Addr                          { return nil }
-func (m *mockTransport) RemoteAddr() net.Addr                         { return nil }
-func (m *mockTransport) Close() error                                 { return nil }
+func (m *mockTransport) LocalAddr() net.Addr                           { return nil }
+func (m *mockTransport) RemoteAddr() net.Addr                          { return nil }
+func (m *mockTransport) Close() error                                  { return nil }
 
 type PacketMeta = transport.PacketMeta
 

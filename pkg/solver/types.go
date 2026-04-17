@@ -56,19 +56,27 @@ type ExecutionBudget struct {
 
 // CandidateOutcome represents the result of executing a single candidate plan
 type CandidateOutcome struct {
-	Plan         Plan
-	Result       *Result
-	ErrorClass   string
-	Err          error
-	Score        int
-	Selected     bool
-	FinishedAt   time.Time
-	ExecutionDur time.Duration
+	Plan             Plan
+	PlanID           string
+	Result           *Result
+	PathID           string
+	ErrorClass       string
+	Err              error
+	Score            int
+	Selected         bool
+	SelectionReason  string
+	FinishedAt       time.Time
+	ExecutionDur     time.Duration
+	ObservationCount int
 }
 
 type SessionIO interface {
 	Send(ctx context.Context, msg Message) error
 	ReportObservation(ctx context.Context, obs Observation) error
+}
+
+type ObservationSink interface {
+	Record(obs Observation) error
 }
 
 // Observation represents a connectivity observation event
@@ -98,6 +106,16 @@ type Strategy interface {
 
 type MessageHandler interface {
 	HandleMessage(ctx context.Context, sess SessionIO, msg Message) error
+}
+
+type PlanExecutor interface {
+	Execute(ctx context.Context, sess SessionIO) (Result, error)
+	HandleMessage(ctx context.Context, sess SessionIO, msg Message) error
+	Close() error
+}
+
+type ExecutorFactory interface {
+	NewExecutor(plan Plan) (PlanExecutor, error)
 }
 
 // DefaultBudget returns a conservative execution budget

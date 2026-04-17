@@ -1,6 +1,7 @@
 package tunnel
 
 import (
+	"context"
 	"encoding/hex"
 	"net"
 	"os"
@@ -10,6 +11,7 @@ import (
 	"time"
 
 	wgconn "golang.zx2c4.com/wireguard/conn"
+	"winkyou/pkg/transport/framedstream"
 	"winkyou/pkg/transport/iceadapter"
 )
 
@@ -131,6 +133,73 @@ func TestPeerTransportBindSendAndReceive(t *testing.T) {
 	}
 	if err := <-recvDone; err != nil {
 		t.Fatalf("transport write error: %v", err)
+	}
+}
+
+func TestPeerTransportBindAcceptsFramedStreamAdapter(t *testing.T) {
+	bind := newPeerTransportBind()
+	defer bind.Close()
+
+	publicKey := makeTestKey(52)
+	left, right := net.Pipe()
+	defer left.Close()
+	defer right.Close()
+	peerTransport := framedstream.New(right, "peer/framedstream")
+	defer peerTransport.Close()
+
+	endpointID, err := bind.AttachTransport(publicKey, framedstream.New(left, "test/framedstream"))
+	if err != nil {
+		t.Fatalf("AttachTransport() error = %v", err)
+	}
+	defer bind.DetachTransport(publicKey)
+
+	endpoint, err := bind.ParseEndpoint(endpointID)
+	if err != nil {
+		t.Fatalf("ParseEndpoint() error = %v", err)
+	}
+
+	wantSend := []byte("framed-send")
+	sendDone := make(chan []byte, 1)
+	go func() {
+		buf := make([]byte, 64)
+		n, _, err := peerTransport.ReadPacket(context.Background(), buf)
+		if err != nil {
+			sendDone <- nil
+			return
+		}
+		sendDone <- append([]byte(nil), buf[:n]...)
+	}()
+	if err := bind.Send([][]byte{wantSend}, endpoint); err != nil {
+		t.Fatalf("Send() error = %v", err)
+	}
+	select {
+	case got := <-sendDone:
+		if string(got) != string(wantSend) {
+			t.Fatalf("framed send payload = %q, want %q", got, wantSend)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for framedstream send")
+	}
+
+	wantRecv := []byte("framed-recv")
+	go func() {
+		_ = peerTransport.WritePacket(context.Background(), wantRecv)
+	}()
+	wireBufs := [][]byte{make([]byte, 64)}
+	wireSizes := make([]int, 1)
+	wireEndpointsBuf := make([]wgconn.Endpoint, 1)
+	n, err := bind.receiveFromTransports(wireBufs, wireSizes, wireEndpointsBuf)
+	if err != nil {
+		t.Fatalf("receiveFromTransports() error = %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("receiveFromTransports() packets = %d, want 1", n)
+	}
+	if got := string(wireBufs[0][:wireSizes[0]]); got != string(wantRecv) {
+		t.Fatalf("framed recv payload = %q, want %q", got, wantRecv)
+	}
+	if wireEndpointsBuf[0] == nil || wireEndpointsBuf[0].DstToString() != endpointID {
+		t.Fatalf("received endpoint = %#v, want %q", wireEndpointsBuf[0], endpointID)
 	}
 }
 

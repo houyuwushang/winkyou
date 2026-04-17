@@ -38,6 +38,8 @@ type Session struct {
 	strategyMu sync.RWMutex
 	strategy   solver.Strategy
 	pending    []solver.Message
+	activePlan string
+	executor   solver.PlanExecutor
 
 	capabilityCh chan struct{}
 
@@ -46,11 +48,16 @@ type Session struct {
 
 	obsMu        sync.Mutex
 	observations []solver.Observation
+	remoteObs    []solver.Observation
 }
 
 type solverIO struct {
 	cfg     Config
 	session *Session
+}
+
+type strategyMessageTarget interface {
+	HandleMessage(ctx context.Context, sess solver.SessionIO, msg solver.Message) error
 }
 
 func New(cfg Config) (*Session, error) {
@@ -120,6 +127,14 @@ func (s *Session) Observations() []solver.Observation {
 	defer s.obsMu.Unlock()
 	out := make([]solver.Observation, len(s.observations))
 	copy(out, s.observations)
+	return out
+}
+
+func (s *Session) RemoteObservations() []solver.Observation {
+	s.obsMu.Lock()
+	defer s.obsMu.Unlock()
+	out := make([]solver.Observation, len(s.remoteObs))
+	copy(out, s.remoteObs)
 	return out
 }
 
@@ -202,8 +217,11 @@ func (s *Session) selectAndExecute(ctx context.Context) error {
 		return fmt.Errorf("session: strategy %s returned no plans", strategy.Name())
 	}
 
-	if err := s.flushPendingStrategyMessages(ctx, strategy); err != nil {
-		return err
+	if _, usesExecutors := strategy.(solver.ExecutorFactory); !usesExecutors {
+		handler, _ := strategy.(solver.MessageHandler)
+		if err := s.flushPendingStrategyMessages(ctx, handler); err != nil {
+			return err
+		}
 	}
 
 	// Execute candidate loop with budget
@@ -230,8 +248,22 @@ func (s *Session) selectAndExecute(ctx context.Context) error {
 
 	// Mark selected
 	best.Selected = true
+	best.SelectionReason = "highest_score"
 	s.lastPlan = best.Plan
 	s.lastRes = *best.Result
+	s.emitObservation(context.Background(), solver.Observation{
+		Strategy:       best.Plan.Strategy,
+		PlanID:         best.Plan.ID,
+		Event:          "path_selected",
+		PathID:         best.Result.Summary.PathID,
+		ConnectionType: best.Result.Summary.ConnectionType,
+		LocalAddr:      addrString(best.Result.Transport.LocalAddr()),
+		RemoteAddr:     addrString(best.Result.Summary.RemoteAddr),
+		Reason:         best.SelectionReason,
+		Details: map[string]string{
+			"score": fmt.Sprintf("%d", best.Score),
+		},
+	})
 
 	// Clean up non-selected transports
 	for i := range outcomes {
@@ -248,6 +280,16 @@ func (s *Session) selectAndExecute(ctx context.Context) error {
 			s.fail(err)
 			return nil
 		}
+		s.emitObservation(context.Background(), solver.Observation{
+			Strategy:       best.Plan.Strategy,
+			PlanID:         best.Plan.ID,
+			Event:          "bind_succeeded",
+			PathID:         best.Result.Summary.PathID,
+			ConnectionType: best.Result.Summary.ConnectionType,
+			LocalAddr:      addrString(best.Result.Transport.LocalAddr()),
+			RemoteAddr:     addrString(best.Result.Summary.RemoteAddr),
+			Reason:         s.cfg.PeerID,
+		})
 	}
 
 	// Send path commit
@@ -260,6 +302,15 @@ func (s *Session) selectAndExecute(ctx context.Context) error {
 		s.fail(err)
 		return nil
 	}
+	s.emitObservation(context.Background(), solver.Observation{
+		Strategy:       best.Plan.Strategy,
+		PlanID:         best.Plan.ID,
+		Event:          "path_committed",
+		PathID:         best.Result.Summary.PathID,
+		ConnectionType: best.Result.Summary.ConnectionType,
+		LocalAddr:      addrString(best.Result.Transport.LocalAddr()),
+		RemoteAddr:     addrString(best.Result.Summary.RemoteAddr),
+	})
 
 	s.transition(StateBound)
 	if s.cfg.Hooks.OnBound != nil {
@@ -285,6 +336,16 @@ func (s *Session) executeCandidateLoop(strategy solver.Strategy, plans []solver.
 			break
 		}
 
+		s.emitObservation(context.Background(), solver.Observation{
+			Strategy:  plan.Strategy,
+			PlanID:    plan.ID,
+			Event:     "candidate_planned",
+			TimeoutMS: durationMS(s.executionTimeout()),
+			Details: map[string]string{
+				"candidate_index": fmt.Sprintf("%d", i),
+				"candidate_total": fmt.Sprintf("%d", maxCandidates),
+			},
+		})
 		outcome := s.executeCandidate(strategy, plan)
 		outcomes = append(outcomes, outcome)
 	}
@@ -299,8 +360,10 @@ func (s *Session) executeCandidateLoop(strategy solver.Strategy, plans []solver.
 
 func (s *Session) executeCandidate(strategy solver.Strategy, plan solver.Plan) solver.CandidateOutcome {
 	startTime := time.Now()
+	initialObsCount := s.localObservationCount()
 	outcome := solver.CandidateOutcome{
-		Plan: plan,
+		Plan:   plan,
+		PlanID: plan.ID,
 	}
 
 	s.transition(StateExecuting)
@@ -314,9 +377,10 @@ func (s *Session) executeCandidate(strategy solver.Strategy, plan solver.Plan) s
 		defer cancel()
 	}
 
-	result, err := strategy.Execute(execCtx, s.io, plan)
+	result, err := s.executePlan(execCtx, strategy, plan)
 	outcome.FinishedAt = time.Now()
 	outcome.ExecutionDur = time.Since(startTime)
+	outcome.ObservationCount = s.localObservationCount() - initialObsCount
 
 	if err != nil {
 		outcome.Err = err
@@ -325,7 +389,52 @@ func (s *Session) executeCandidate(strategy solver.Strategy, plan solver.Plan) s
 	}
 
 	outcome.Result = &result
+	outcome.PathID = result.Summary.PathID
 	return outcome
+}
+
+func (s *Session) executePlan(ctx context.Context, strategy solver.Strategy, plan solver.Plan) (solver.Result, error) {
+	factory, ok := strategy.(solver.ExecutorFactory)
+	if !ok {
+		return strategy.Execute(ctx, s.io, plan)
+	}
+
+	executor, err := factory.NewExecutor(plan)
+	if err != nil {
+		return solver.Result{}, err
+	}
+	s.setActiveExecutor(plan.ID, executor)
+	defer func() {
+		s.clearActiveExecutor(executor)
+		s.discardPendingStrategyMessages()
+		_ = executor.Close()
+	}()
+	if err := s.flushPendingStrategyMessages(ctx, executor); err != nil {
+		return solver.Result{}, err
+	}
+	return executor.Execute(ctx, s.io)
+}
+
+func (s *Session) setActiveExecutor(planID string, executor solver.PlanExecutor) {
+	s.strategyMu.Lock()
+	defer s.strategyMu.Unlock()
+	s.activePlan = planID
+	s.executor = executor
+}
+
+func (s *Session) clearActiveExecutor(executor solver.PlanExecutor) {
+	s.strategyMu.Lock()
+	defer s.strategyMu.Unlock()
+	if s.executor == executor {
+		s.executor = nil
+		s.activePlan = ""
+	}
+}
+
+func (s *Session) localObservationCount() int {
+	s.obsMu.Lock()
+	defer s.obsMu.Unlock()
+	return len(s.observations)
 }
 
 func classifyError(err error) string {
@@ -372,12 +481,12 @@ func (s *Session) HandleMessage(ctx context.Context, msg solver.Message) error {
 		}
 		return s.handleEnvelopeMessage(msg)
 	case solver.MessageKindStrategy:
-		strategy, handler, pending := s.strategyHandler()
-		if pending || strategy == nil || !handler {
+		target, pending := s.strategyHandler()
+		if pending || target == nil {
 			s.enqueueStrategyMessage(msg)
 			return nil
 		}
-		return strategy.(solver.MessageHandler).HandleMessage(ctx, s.io, msg)
+		return target.HandleMessage(ctx, s.io, msg)
 	default:
 		return nil
 	}
@@ -402,6 +511,9 @@ func (s *Session) Close() error {
 	}
 
 	s.transition(StateClosed)
+	if executor := s.currentExecutor(); executor != nil {
+		_ = executor.Close()
+	}
 	if s.cfg.Binder != nil {
 		_ = s.cfg.Binder.Unbind(context.Background(), s.cfg.PeerID)
 	}
@@ -630,10 +742,7 @@ func (s *Session) recordRemoteObservation(obs rproto.Observation, receivedAt tim
 	}
 
 	s.obsMu.Lock()
-	s.observations = append(s.observations, solverObs)
-	if len(s.observations) > 100 {
-		s.observations = s.observations[len(s.observations)-100:]
-	}
+	s.remoteObs = appendObservation(s.remoteObs, solverObs, 100)
 	s.obsMu.Unlock()
 }
 
@@ -660,34 +769,41 @@ func (s *Session) currentStrategy() solver.Strategy {
 	return s.strategy
 }
 
-func (s *Session) strategyHandler() (solver.Strategy, bool, bool) {
+func (s *Session) currentExecutor() solver.PlanExecutor {
 	s.strategyMu.RLock()
 	defer s.strategyMu.RUnlock()
-	if s.strategy == nil {
-		return nil, false, true
+	return s.executor
+}
+
+func (s *Session) strategyHandler() (strategyMessageTarget, bool) {
+	s.strategyMu.RLock()
+	defer s.strategyMu.RUnlock()
+	if s.executor != nil {
+		return s.executor, false
 	}
-	_, ok := s.strategy.(solver.MessageHandler)
-	return s.strategy, ok, false
+	if s.strategy == nil {
+		return nil, true
+	}
+	if _, ok := s.strategy.(solver.ExecutorFactory); ok {
+		return nil, true
+	}
+	handler, ok := s.strategy.(solver.MessageHandler)
+	if !ok {
+		return nil, false
+	}
+	return handler, false
 }
 
 func (s *Session) enqueueStrategyMessage(msg solver.Message) {
 	s.strategyMu.Lock()
 	defer s.strategyMu.Unlock()
-	if s.strategy != nil {
-		return
-	}
 	s.pending = append(s.pending, cloneMessage(msg))
 }
 
-func (s *Session) flushPendingStrategyMessages(ctx context.Context, strategy solver.Strategy) error {
-	handler, ok := strategy.(solver.MessageHandler)
-	if !ok {
-		s.strategyMu.Lock()
-		s.pending = nil
-		s.strategyMu.Unlock()
+func (s *Session) flushPendingStrategyMessages(ctx context.Context, handler strategyMessageTarget) error {
+	if handler == nil {
 		return nil
 	}
-
 	for {
 		s.strategyMu.Lock()
 		pending := append([]solver.Message(nil), s.pending...)
@@ -703,6 +819,12 @@ func (s *Session) flushPendingStrategyMessages(ctx context.Context, strategy sol
 			}
 		}
 	}
+}
+
+func (s *Session) discardPendingStrategyMessages() {
+	s.strategyMu.Lock()
+	defer s.strategyMu.Unlock()
+	s.pending = nil
 }
 
 func (s *Session) newEnvelope(msgType string, payload any) (rproto.SessionEnvelope, error) {
@@ -731,16 +853,19 @@ func (io *solverIO) ReportObservation(ctx context.Context, obs solver.Observatio
 }
 
 func (s *Session) reportObservation(ctx context.Context, obs solver.Observation) error {
-	// Store locally
-	s.obsMu.Lock()
-	s.observations = append(s.observations, obs)
-	// Keep last 100 observations
-	if len(s.observations) > 100 {
-		s.observations = s.observations[len(s.observations)-100:]
+	if obs.Timestamp.IsZero() {
+		obs.Timestamp = time.Now()
 	}
-	s.obsMu.Unlock()
 
-	// Send to remote peer
+	s.obsMu.Lock()
+	s.observations = appendObservation(s.observations, obs, 100)
+	s.obsMu.Unlock()
+	if s.cfg.ObservationSink != nil {
+		if err := s.cfg.ObservationSink.Record(obs); err != nil {
+			return err
+		}
+	}
+
 	envelope, err := s.newEnvelope(rproto.MsgTypeObservation, rproto.Observation{
 		Strategy:       obs.Strategy,
 		PlanID:         obs.PlanID,
@@ -772,6 +897,41 @@ func (s *Session) reportObservation(ctx context.Context, obs solver.Observation)
 		Type:      rproto.MsgTypeObservation,
 		Payload:   payload,
 	})
+}
+
+func (s *Session) emitObservation(ctx context.Context, obs solver.Observation) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	_ = s.reportObservation(ctx, obs)
+}
+
+func appendObservation(list []solver.Observation, obs solver.Observation, limit int) []solver.Observation {
+	list = append(list, obs)
+	if limit > 0 && len(list) > limit {
+		list = list[len(list)-limit:]
+	}
+	return list
+}
+
+func durationMS(d time.Duration) int64 {
+	if d <= 0 {
+		return 0
+	}
+	return d.Milliseconds()
+}
+
+func addrString(addr any) string {
+	switch v := addr.(type) {
+	case nil:
+		return ""
+	case string:
+		return v
+	case interface{ String() string }:
+		return v.String()
+	default:
+		return fmt.Sprint(v)
+	}
 }
 
 func cloneCapability(capability rproto.Capability) rproto.Capability {

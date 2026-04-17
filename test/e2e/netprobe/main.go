@@ -2,50 +2,64 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"time"
+
+	"winkyou/pkg/probe/lab"
 )
 
 func main() {
-	if len(os.Args) < 2 {
-		fatalf("usage: netprobe <tcp-serve|tcp-check|udp-serve|udp-check> [flags]")
-	}
-
-	switch os.Args[1] {
-	case "tcp-serve":
-		serveTCP(os.Args[2:])
-	case "tcp-check":
-		checkTCP(os.Args[2:])
-	case "udp-serve":
-		serveUDP(os.Args[2:])
-	case "udp-check":
-		checkUDP(os.Args[2:])
-	default:
-		fatalf("unknown mode %q", os.Args[1])
+	if err := run(os.Args[1:], os.Stdout); err != nil {
+		fatalf("%v", err)
 	}
 }
 
-func serveTCP(args []string) {
-	fs := flag.NewFlagSet("tcp-serve", flag.ExitOnError)
+func run(args []string, stdout io.Writer) error {
+	if len(args) < 1 {
+		return fmt.Errorf("usage: netprobe <tcp-serve|tcp-check|udp-serve|udp-check|script-run> [flags]")
+	}
+
+	switch args[0] {
+	case "tcp-serve":
+		return serveTCP(args[1:])
+	case "tcp-check":
+		return checkTCP(args[1:])
+	case "udp-serve":
+		return serveUDP(args[1:])
+	case "udp-check":
+		return checkUDP(args[1:])
+	case "script-run":
+		return runScript(args[1:], stdout)
+	default:
+		return fmt.Errorf("unknown mode %q", args[0])
+	}
+}
+
+func serveTCP(args []string) error {
+	fs := flag.NewFlagSet("tcp-serve", flag.ContinueOnError)
 	listenAddr := fs.String("listen", "", "listen address")
 	expect := fs.String("expect", "", "expected payload")
 	reply := fs.String("reply", "", "reply payload")
 	timeout := fs.Duration("timeout", 10*time.Second, "timeout")
-	_ = fs.Parse(args)
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
 
 	listener, err := net.Listen("tcp4", *listenAddr)
 	if err != nil {
-		fatalf("tcp listen: %v", err)
+		return fmt.Errorf("tcp listen: %w", err)
 	}
 	defer listener.Close()
 	_ = listener.(*net.TCPListener).SetDeadline(time.Now().Add(*timeout))
 
 	conn, err := listener.Accept()
 	if err != nil {
-		fatalf("tcp accept: %v", err)
+		return fmt.Errorf("tcp accept: %w", err)
 	}
 	defer conn.Close()
 	_ = conn.SetDeadline(time.Now().Add(*timeout))
@@ -53,60 +67,66 @@ func serveTCP(args []string) {
 	buffer := make([]byte, 2048)
 	n, err := conn.Read(buffer)
 	if err != nil {
-		fatalf("tcp read: %v", err)
+		return fmt.Errorf("tcp read: %w", err)
 	}
 	if string(buffer[:n]) != *expect {
-		fatalf("tcp payload = %q, want %q", string(buffer[:n]), *expect)
+		return fmt.Errorf("tcp payload = %q, want %q", string(buffer[:n]), *expect)
 	}
 	if _, err := conn.Write([]byte(*reply)); err != nil {
-		fatalf("tcp write: %v", err)
+		return fmt.Errorf("tcp write: %w", err)
 	}
+	return nil
 }
 
-func checkTCP(args []string) {
-	fs := flag.NewFlagSet("tcp-check", flag.ExitOnError)
+func checkTCP(args []string) error {
+	fs := flag.NewFlagSet("tcp-check", flag.ContinueOnError)
 	addr := fs.String("addr", "", "remote address")
 	message := fs.String("message", "", "request payload")
 	expect := fs.String("expect", "", "expected reply")
 	timeout := fs.Duration("timeout", 5*time.Second, "timeout")
-	_ = fs.Parse(args)
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
 
 	dialer := net.Dialer{Timeout: *timeout}
 	conn, err := dialer.DialContext(context.Background(), "tcp4", *addr)
 	if err != nil {
-		fatalf("tcp dial: %v", err)
+		return fmt.Errorf("tcp dial: %w", err)
 	}
 	defer conn.Close()
 	_ = conn.SetDeadline(time.Now().Add(*timeout))
 
 	if _, err := conn.Write([]byte(*message)); err != nil {
-		fatalf("tcp write: %v", err)
+		return fmt.Errorf("tcp write: %w", err)
 	}
 	buffer := make([]byte, 2048)
 	n, err := conn.Read(buffer)
 	if err != nil {
-		fatalf("tcp read: %v", err)
+		return fmt.Errorf("tcp read: %w", err)
 	}
 	if string(buffer[:n]) != *expect {
-		fatalf("tcp reply = %q, want %q", string(buffer[:n]), *expect)
+		return fmt.Errorf("tcp reply = %q, want %q", string(buffer[:n]), *expect)
 	}
+	return nil
 }
 
-func serveUDP(args []string) {
-	fs := flag.NewFlagSet("udp-serve", flag.ExitOnError)
+func serveUDP(args []string) error {
+	fs := flag.NewFlagSet("udp-serve", flag.ContinueOnError)
 	listenAddr := fs.String("listen", "", "listen address")
 	expect := fs.String("expect", "", "expected payload")
 	reply := fs.String("reply", "", "reply payload")
 	timeout := fs.Duration("timeout", 10*time.Second, "timeout")
-	_ = fs.Parse(args)
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
 
 	addr, err := net.ResolveUDPAddr("udp4", *listenAddr)
 	if err != nil {
-		fatalf("udp resolve listen addr: %v", err)
+		return fmt.Errorf("udp resolve listen addr: %w", err)
 	}
 	conn, err := net.ListenUDP("udp4", addr)
 	if err != nil {
-		fatalf("udp listen: %v", err)
+		return fmt.Errorf("udp listen: %w", err)
 	}
 	defer conn.Close()
 	_ = conn.SetDeadline(time.Now().Add(*timeout))
@@ -114,42 +134,73 @@ func serveUDP(args []string) {
 	buffer := make([]byte, 2048)
 	n, remote, err := conn.ReadFromUDP(buffer)
 	if err != nil {
-		fatalf("udp read: %v", err)
+		return fmt.Errorf("udp read: %w", err)
 	}
 	if string(buffer[:n]) != *expect {
-		fatalf("udp payload = %q, want %q", string(buffer[:n]), *expect)
+		return fmt.Errorf("udp payload = %q, want %q", string(buffer[:n]), *expect)
 	}
 	if _, err := conn.WriteToUDP([]byte(*reply), remote); err != nil {
-		fatalf("udp write: %v", err)
+		return fmt.Errorf("udp write: %w", err)
 	}
+	return nil
 }
 
-func checkUDP(args []string) {
-	fs := flag.NewFlagSet("udp-check", flag.ExitOnError)
+func checkUDP(args []string) error {
+	fs := flag.NewFlagSet("udp-check", flag.ContinueOnError)
 	addr := fs.String("addr", "", "remote address")
 	message := fs.String("message", "", "request payload")
 	expect := fs.String("expect", "", "expected reply")
 	timeout := fs.Duration("timeout", 5*time.Second, "timeout")
-	_ = fs.Parse(args)
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
 
 	conn, err := net.DialTimeout("udp4", *addr, *timeout)
 	if err != nil {
-		fatalf("udp dial: %v", err)
+		return fmt.Errorf("udp dial: %w", err)
 	}
 	defer conn.Close()
 	_ = conn.SetDeadline(time.Now().Add(*timeout))
 
 	if _, err := conn.Write([]byte(*message)); err != nil {
-		fatalf("udp write: %v", err)
+		return fmt.Errorf("udp write: %w", err)
 	}
 	buffer := make([]byte, 2048)
 	n, err := conn.Read(buffer)
 	if err != nil {
-		fatalf("udp read: %v", err)
+		return fmt.Errorf("udp read: %w", err)
 	}
 	if string(buffer[:n]) != *expect {
-		fatalf("udp reply = %q, want %q", string(buffer[:n]), *expect)
+		return fmt.Errorf("udp reply = %q, want %q", string(buffer[:n]), *expect)
 	}
+	return nil
+}
+
+func runScript(args []string, stdout io.Writer) error {
+	fs := flag.NewFlagSet("script-run", flag.ContinueOnError)
+	scriptPath := fs.String("script", "", "path to probe script JSON")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if *scriptPath == "" {
+		return fmt.Errorf("script-run: --script is required")
+	}
+
+	script, err := lab.LoadScript(*scriptPath)
+	if err != nil {
+		return err
+	}
+	result, runErr := (lab.Runner{}).Run(context.Background(), script)
+	encoded, err := json.MarshalIndent(result, "", "  ")
+	if err != nil {
+		return err
+	}
+	if stdout != nil {
+		if _, err := fmt.Fprintln(stdout, string(encoded)); err != nil {
+			return err
+		}
+	}
+	return runErr
 }
 
 func fatalf(format string, args ...any) {

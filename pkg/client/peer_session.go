@@ -121,6 +121,7 @@ func (e *engine) newPeerRunner(s *peerSession) (*sesspkg.Session, error) {
 		Resolver:              e.newStrategyResolver(),
 		Binder:                sesspkg.NewTunnelBinder(e.tun, e),
 		Sender:                peerMessageSender{engine: e},
+		ObservationSink:       e.observationStore,
 		RunTimeout:            e.legacyICERunTimeout(),
 		CapabilityWaitTimeout: e.capabilityWaitTimeout(),
 		Hooks: sesspkg.Hooks{

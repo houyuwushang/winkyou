@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
@@ -15,6 +16,7 @@ import (
 	"winkyou/pkg/logger"
 	"winkyou/pkg/nat"
 	"winkyou/pkg/netif"
+	solverstore "winkyou/pkg/solver/store"
 	"winkyou/pkg/tunnel"
 )
 
@@ -49,6 +51,8 @@ type engine struct {
 	nat        nat.NATTraversal
 	coord      coordclient.CoordinatorClient
 	pingConn   *net.UDPConn
+
+	observationStore *solverstore.ObservationStore
 
 	runCtx    context.Context
 	runCancel context.CancelFunc
@@ -191,6 +195,7 @@ func (e *engine) Start(ctx context.Context) (err error) {
 		return err
 	}
 	e.nat = natTraversal
+	e.initObservationStore()
 	e.initPeerManager()
 
 	natType := nat.NATTypeUnknown
@@ -235,6 +240,27 @@ func (e *engine) Start(ctx context.Context) (err error) {
 	e.setState(EngineStateConnected, "")
 	cleanup = false
 	return nil
+}
+
+func (e *engine) initObservationStore() {
+	if e.observationStore != nil {
+		return
+	}
+	store := solverstore.NewObservationStore(e.observationStorePath())
+	_ = store.LoadFromFile()
+	e.observationStore = store
+}
+
+func (e *engine) observationStorePath() string {
+	if strings.TrimSpace(e.statePath) == "" {
+		return ""
+	}
+	dir := filepath.Dir(e.statePath)
+	base := strings.TrimSuffix(filepath.Base(e.statePath), filepath.Ext(e.statePath))
+	if base == "" || base == "." {
+		base = "wink-runtime"
+	}
+	return filepath.Join(dir, base+".observations.jsonl")
 }
 
 func (e *engine) Stop() error {

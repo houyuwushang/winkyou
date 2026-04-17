@@ -139,7 +139,7 @@ func (e *engine) legacyICEStrategyConfig() legacyice.Config {
 		ConnectTimeout: e.iceConnectTimeout(),
 		CheckTimeout:   e.iceCheckTimeout(),
 	}
-	cfg.NewICEAgent = func(ctx context.Context, controlling bool) (nat.ICEAgent, error) {
+	cfg.NewICEAgent = func(ctx context.Context, req legacyice.AgentRequest) (nat.ICEAgent, error) {
 		if ctx == nil {
 			ctx = context.Background()
 		}
@@ -152,8 +152,8 @@ func (e *engine) legacyICEStrategyConfig() legacyice.Config {
 			ConnectTimeout: cfg.ConnectTimeout,
 			STUNServers:    e.cfg.NAT.STUNServers,
 			TURNServers:    toNATTURNServers(e.cfg.NAT.TURNServers),
-			Controlling:    controlling,
-			ForceRelay:     e.cfg.NAT.ForceRelay,
+			Controlling:    req.Controlling,
+			ForceRelay:     req.ForceRelay,
 		})
 	}
 	return cfg
