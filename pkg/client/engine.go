@@ -472,6 +472,11 @@ func (e *engine) syncTunnelPeerStateLocked() {
 		}
 		peer.TxBytes = tunnelPeer.TxBytes
 		peer.RxBytes = tunnelPeer.RxBytes
+		peer.TransportTxPackets = tunnelPeer.TransportTxPackets
+		peer.TransportTxBytes = tunnelPeer.TransportTxBytes
+		peer.TransportRxPackets = tunnelPeer.TransportRxPackets
+		peer.TransportRxBytes = tunnelPeer.TransportRxBytes
+		peer.TransportLastError = tunnelPeer.TransportLastError
 		if tunnelPeer.Endpoint != nil {
 			peer.Endpoint = cloneUDPAddr(tunnelPeer.Endpoint)
 		}

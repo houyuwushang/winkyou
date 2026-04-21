@@ -120,11 +120,16 @@ func TestUpdateStatusCountersSyncsTunnelPeerState(t *testing.T) {
 			},
 		},
 		tun: fakeTunnelForEngineTest{peers: []*tunnel.PeerStatus{{
-			PublicKey:     pub,
-			Endpoint:      &net.UDPAddr{IP: net.ParseIP("203.0.113.10"), Port: 51820},
-			LastHandshake: time.Unix(1_700_000_005, 0),
-			TxBytes:       64,
-			RxBytes:       128,
+			PublicKey:          pub,
+			Endpoint:           &net.UDPAddr{IP: net.ParseIP("203.0.113.10"), Port: 51820},
+			LastHandshake:      time.Unix(1_700_000_005, 0),
+			TxBytes:            64,
+			RxBytes:            128,
+			TransportTxPackets: 3,
+			TransportTxBytes:   96,
+			TransportRxPackets: 4,
+			TransportRxBytes:   144,
+			TransportLastError: "write: broken pipe",
 		}}},
 	}
 
@@ -139,6 +144,15 @@ func TestUpdateStatusCountersSyncsTunnelPeerState(t *testing.T) {
 	}
 	if peer.LastHandshake.Unix() != 1_700_000_005 {
 		t.Fatalf("peer last handshake = %v, want unix 1700000005", peer.LastHandshake)
+	}
+	if peer.TransportTxPackets != 3 || peer.TransportTxBytes != 96 {
+		t.Fatalf("peer transport tx = packets=%d bytes=%d, want 3/96", peer.TransportTxPackets, peer.TransportTxBytes)
+	}
+	if peer.TransportRxPackets != 4 || peer.TransportRxBytes != 144 {
+		t.Fatalf("peer transport rx = packets=%d bytes=%d, want 4/144", peer.TransportRxPackets, peer.TransportRxBytes)
+	}
+	if peer.TransportLastError != "write: broken pipe" {
+		t.Fatalf("peer transport error = %q, want write: broken pipe", peer.TransportLastError)
 	}
 }
 

@@ -72,16 +72,24 @@ func TestPeersWithRuntimeState(t *testing.T) {
 		},
 		Peers: []winkclient.RuntimePeerStatus{
 			{
-				NodeID:         "node-abc",
-				Name:           "alice",
-				VirtualIP:      "10.100.0.2",
-				PublicKey:      "AAAA",
-				State:          "connected",
-				Endpoint:       "1.2.3.4:51820",
-				ConnectionType: "direct",
-				TxBytes:        1024,
-				RxBytes:        2048,
-				LastSeen:       time.Date(2026, 4, 10, 12, 0, 0, 0, time.UTC),
+				NodeID:             "node-abc",
+				Name:               "alice",
+				VirtualIP:          "10.100.0.2",
+				PublicKey:          "AAAA",
+				State:              "connected",
+				Endpoint:           "1.2.3.4:51820",
+				ConnectionType:     "direct",
+				TxBytes:            1024,
+				RxBytes:            2048,
+				ICEState:           "connected",
+				LocalCandidate:     "relay:203.0.113.10:50000",
+				RemoteCandidate:    "host:10.0.0.2:51820",
+				TransportTxPackets: 7,
+				TransportTxBytes:   700,
+				TransportRxPackets: 8,
+				TransportRxBytes:   800,
+				TransportLastError: "read: broken pipe",
+				LastSeen:           time.Date(2026, 4, 10, 12, 0, 0, 0, time.UTC),
 			},
 			{
 				NodeID:    "node-def",
@@ -125,6 +133,15 @@ func TestPeersWithRuntimeState(t *testing.T) {
 	}
 	if !strings.Contains(output, "1.0 KiB") {
 		t.Errorf("output should contain formatted tx bytes, got: %s", output)
+	}
+	if !strings.Contains(output, "relay:203.0.113.10:50000") {
+		t.Errorf("output should contain local candidate, got: %s", output)
+	}
+	if !strings.Contains(output, "7 pkts / 700 B") {
+		t.Errorf("output should contain transport tx stats, got: %s", output)
+	}
+	if !strings.Contains(output, "read: broken pipe") {
+		t.Errorf("output should contain transport error, got: %s", output)
 	}
 
 	// Clean up for next subtest.

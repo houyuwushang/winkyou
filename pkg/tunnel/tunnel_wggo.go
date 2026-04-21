@@ -332,6 +332,22 @@ func (w *wggoTunnel) refreshPeerStatsLocked() {
 			w.emitLocked(TunnelEvent{Type: EventPeerHandshake, PeerKey: key, Timestamp: w.now()})
 		}
 	}
+	for key, cur := range w.peers {
+		stats, ok := w.bind.TransportStats(key)
+		if !ok {
+			cur.TransportTxPackets = 0
+			cur.TransportTxBytes = 0
+			cur.TransportRxPackets = 0
+			cur.TransportRxBytes = 0
+			cur.TransportLastError = ""
+			continue
+		}
+		cur.TransportTxPackets = stats.txPackets
+		cur.TransportTxBytes = stats.txBytes
+		cur.TransportRxPackets = stats.rxPackets
+		cur.TransportRxBytes = stats.rxBytes
+		cur.TransportLastError = stats.lastError
+	}
 }
 
 func (w *wggoTunnel) emitLocked(ev TunnelEvent) {
@@ -444,6 +460,8 @@ type boundTransport struct {
 	endpoint  *transportEndpoint
 	stopCh    chan struct{}
 	closeOnce sync.Once
+	statsMu   sync.RWMutex
+	stats     transportCounters
 }
 
 type transportEndpoint struct {
@@ -453,6 +471,14 @@ type transportEndpoint struct {
 	id         string
 	remoteAddr net.Addr
 	localAddr  net.Addr
+}
+
+type transportCounters struct {
+	txPackets uint64
+	txBytes   uint64
+	rxPackets uint64
+	rxBytes   uint64
+	lastError string
 }
 
 func newPeerTransportBind() *peerTransportBind {
@@ -512,8 +538,10 @@ func (b *peerTransportBind) Send(bufs [][]byte, ep wgconn.Endpoint) error {
 			continue
 		}
 		if err := transport.conn.WritePacket(context.Background(), buf); err != nil {
+			transport.recordError(err)
 			return err
 		}
+		transport.recordSend(len(buf))
 	}
 	return nil
 }
@@ -606,6 +634,16 @@ func (b *peerTransportBind) TransportRemoteAddr(publicKey PublicKey) *net.UDPAdd
 	return nil
 }
 
+func (b *peerTransportBind) TransportStats(publicKey PublicKey) (transportCounters, bool) {
+	b.mu.RLock()
+	transport := b.transports[publicKey]
+	b.mu.RUnlock()
+	if transport == nil {
+		return transportCounters{}, false
+	}
+	return transport.snapshot(), true
+}
+
 func (b *peerTransportBind) ResolveEndpoint(endpoint string) *net.UDPAddr {
 	if !strings.HasPrefix(endpoint, transportEndpointPrefix) {
 		addr, err := net.ResolveUDPAddr("udp", endpoint)
@@ -638,11 +676,13 @@ func (b *peerTransportBind) readTransportLoop(transport *boundTransport) {
 					continue
 				}
 			}
+			transport.recordError(err)
 			return
 		}
 		if n == 0 {
 			continue
 		}
+		transport.recordReceive(n)
 
 		packet := transportPacket{
 			data:     append([]byte(nil), buffer[:n]...),
@@ -779,6 +819,47 @@ func (t *boundTransport) Close() error {
 		}
 	})
 	return err
+}
+
+func (t *boundTransport) recordSend(size int) {
+	if t == nil || size <= 0 {
+		return
+	}
+	t.statsMu.Lock()
+	t.stats.txPackets++
+	t.stats.txBytes += uint64(size)
+	t.statsMu.Unlock()
+}
+
+func (t *boundTransport) recordReceive(size int) {
+	if t == nil || size <= 0 {
+		return
+	}
+	t.statsMu.Lock()
+	t.stats.rxPackets++
+	t.stats.rxBytes += uint64(size)
+	t.statsMu.Unlock()
+}
+
+func (t *boundTransport) recordError(err error) {
+	if t == nil || err == nil {
+		return
+	}
+	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) || errors.Is(err, net.ErrClosed) {
+		return
+	}
+	t.statsMu.Lock()
+	t.stats.lastError = err.Error()
+	t.statsMu.Unlock()
+}
+
+func (t *boundTransport) snapshot() transportCounters {
+	if t == nil {
+		return transportCounters{}
+	}
+	t.statsMu.RLock()
+	defer t.statsMu.RUnlock()
+	return t.stats
 }
 
 func readDeviceSnapshot(device *wgdevice.Device, bind *peerTransportBind) (*deviceSnapshot, error) {

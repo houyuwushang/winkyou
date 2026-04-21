@@ -43,20 +43,25 @@ type RuntimeEngineStatus struct {
 }
 
 type RuntimePeerStatus struct {
-	NodeID          string    `json:"node_id"`
-	Name            string    `json:"name"`
-	VirtualIP       string    `json:"virtual_ip"`
-	PublicKey       string    `json:"public_key"`
-	State           string    `json:"state"`
-	Endpoint        string    `json:"endpoint,omitempty"`
-	LastSeen        time.Time `json:"last_seen"`
-	LastHandshake   time.Time `json:"last_handshake"`
-	TxBytes         uint64    `json:"tx_bytes"`
-	RxBytes         uint64    `json:"rx_bytes"`
-	ConnectionType  string    `json:"connection_type"`
-	ICEState        string    `json:"ice_state,omitempty"`
-	LocalCandidate  string    `json:"local_candidate,omitempty"`
-	RemoteCandidate string    `json:"remote_candidate,omitempty"`
+	NodeID             string    `json:"node_id"`
+	Name               string    `json:"name"`
+	VirtualIP          string    `json:"virtual_ip"`
+	PublicKey          string    `json:"public_key"`
+	State              string    `json:"state"`
+	Endpoint           string    `json:"endpoint,omitempty"`
+	LastSeen           time.Time `json:"last_seen"`
+	LastHandshake      time.Time `json:"last_handshake"`
+	TxBytes            uint64    `json:"tx_bytes"`
+	RxBytes            uint64    `json:"rx_bytes"`
+	ConnectionType     string    `json:"connection_type"`
+	ICEState           string    `json:"ice_state,omitempty"`
+	LocalCandidate     string    `json:"local_candidate,omitempty"`
+	RemoteCandidate    string    `json:"remote_candidate,omitempty"`
+	TransportTxPackets uint64    `json:"transport_tx_packets"`
+	TransportTxBytes   uint64    `json:"transport_tx_bytes"`
+	TransportRxPackets uint64    `json:"transport_rx_packets"`
+	TransportRxBytes   uint64    `json:"transport_rx_bytes"`
+	TransportLastError string    `json:"transport_last_error,omitempty"`
 }
 
 func RuntimeStatePath(configPath string) string {
@@ -155,20 +160,25 @@ func newRuntimeStateSnapshot(status *EngineStatus, peers []*PeerStatus) *Runtime
 			continue
 		}
 		state.Peers = append(state.Peers, RuntimePeerStatus{
-			NodeID:          peer.NodeID,
-			Name:            peer.Name,
-			VirtualIP:       ipString(peer.VirtualIP),
-			PublicKey:       peer.PublicKey,
-			State:           peer.State.String(),
-			Endpoint:        udpAddrString(peer.Endpoint),
-			LastSeen:        peer.LastSeen,
-			LastHandshake:   peer.LastHandshake,
-			TxBytes:         peer.TxBytes,
-			RxBytes:         peer.RxBytes,
-			ConnectionType:  peer.ConnectionType.String(),
-			ICEState:        peer.ICEState,
-			LocalCandidate:  peer.LocalCandidate,
-			RemoteCandidate: peer.RemoteCandidate,
+			NodeID:             peer.NodeID,
+			Name:               peer.Name,
+			VirtualIP:          ipString(peer.VirtualIP),
+			PublicKey:          peer.PublicKey,
+			State:              peer.State.String(),
+			Endpoint:           udpAddrString(peer.Endpoint),
+			LastSeen:           peer.LastSeen,
+			LastHandshake:      peer.LastHandshake,
+			TxBytes:            peer.TxBytes,
+			RxBytes:            peer.RxBytes,
+			ConnectionType:     peer.ConnectionType.String(),
+			ICEState:           peer.ICEState,
+			LocalCandidate:     peer.LocalCandidate,
+			RemoteCandidate:    peer.RemoteCandidate,
+			TransportTxPackets: peer.TransportTxPackets,
+			TransportTxBytes:   peer.TransportTxBytes,
+			TransportRxPackets: peer.TransportRxPackets,
+			TransportRxBytes:   peer.TransportRxBytes,
+			TransportLastError: peer.TransportLastError,
 		})
 	}
 

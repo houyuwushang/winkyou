@@ -134,6 +134,20 @@ func TestPeerTransportBindSendAndReceive(t *testing.T) {
 	if err := <-recvDone; err != nil {
 		t.Fatalf("transport write error: %v", err)
 	}
+
+	stats, ok := bind.TransportStats(publicKey)
+	if !ok {
+		t.Fatal("TransportStats() = missing, want stats for attached transport")
+	}
+	if stats.txPackets != 1 || stats.txBytes != uint64(len(wantSend)) {
+		t.Fatalf("transport tx stats = packets=%d bytes=%d, want 1/%d", stats.txPackets, stats.txBytes, len(wantSend))
+	}
+	if stats.rxPackets != 1 || stats.rxBytes != uint64(len(wantRecv)) {
+		t.Fatalf("transport rx stats = packets=%d bytes=%d, want 1/%d", stats.rxPackets, stats.rxBytes, len(wantRecv))
+	}
+	if stats.lastError != "" {
+		t.Fatalf("transport last error = %q, want empty", stats.lastError)
+	}
 }
 
 func TestPeerTransportBindAcceptsFramedStreamAdapter(t *testing.T) {
@@ -244,6 +258,40 @@ func TestPeerTransportBindDetachClosesTransport(t *testing.T) {
 	case <-conn.closed:
 	case <-time.After(time.Second):
 		t.Fatal("detached transport was not closed")
+	}
+}
+
+func TestPeerTransportBindRecordsTransportError(t *testing.T) {
+	bind := newPeerTransportBind()
+	defer bind.Close()
+
+	publicKey := makeTestKey(88)
+	left, right := net.Pipe()
+	defer left.Close()
+
+	endpointID, err := bind.AttachTransport(publicKey, iceadapter.New(left, "test/error"))
+	if err != nil {
+		t.Fatalf("AttachTransport() error: %v", err)
+	}
+	defer bind.DetachTransport(publicKey)
+
+	endpoint, err := bind.ParseEndpoint(endpointID)
+	if err != nil {
+		t.Fatalf("ParseEndpoint() error: %v", err)
+	}
+	_ = right.Close()
+
+	err = bind.Send([][]byte{[]byte("wink-error")}, endpoint)
+	if err == nil {
+		t.Fatal("Send() error = nil, want transport write failure")
+	}
+
+	stats, ok := bind.TransportStats(publicKey)
+	if !ok {
+		t.Fatal("TransportStats() = missing, want stats for attached transport")
+	}
+	if stats.lastError == "" {
+		t.Fatal("transport last error = empty, want captured write failure")
 	}
 }
 

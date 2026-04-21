@@ -210,10 +210,15 @@ func (m *memTunnel) emitLocked(ev TunnelEvent) {
 // clonePeerStatus returns a deep copy of a PeerStatus.
 func clonePeerStatus(ps *PeerStatus) *PeerStatus {
 	cp := &PeerStatus{
-		PublicKey:     ps.PublicKey,
-		LastHandshake: ps.LastHandshake,
-		TxBytes:       ps.TxBytes,
-		RxBytes:       ps.RxBytes,
+		PublicKey:          ps.PublicKey,
+		LastHandshake:      ps.LastHandshake,
+		TxBytes:            ps.TxBytes,
+		RxBytes:            ps.RxBytes,
+		TransportTxPackets: ps.TransportTxPackets,
+		TransportTxBytes:   ps.TransportTxBytes,
+		TransportRxPackets: ps.TransportRxPackets,
+		TransportRxBytes:   ps.TransportRxBytes,
+		TransportLastError: ps.TransportLastError,
 	}
 	if ps.Endpoint != nil {
 		cp.Endpoint = &net.UDPAddr{
