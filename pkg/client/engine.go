@@ -390,6 +390,17 @@ func (e *engine) upsertPeer(peer *coordclient.PeerInfo, event PeerEvent) {
 	if ok {
 		updated.State = current.State
 		updated.ConnectionType = current.ConnectionType
+		updated.ICEState = current.ICEState
+		updated.LocalCandidate = current.LocalCandidate
+		updated.RemoteCandidate = current.RemoteCandidate
+		updated.LastHandshake = current.LastHandshake
+		updated.TxBytes = current.TxBytes
+		updated.RxBytes = current.RxBytes
+		updated.TransportTxPackets = current.TransportTxPackets
+		updated.TransportTxBytes = current.TransportTxBytes
+		updated.TransportRxPackets = current.TransportRxPackets
+		updated.TransportRxBytes = current.TransportRxBytes
+		updated.TransportLastError = current.TransportLastError
 		if !peer.Online {
 			updated.State = PeerStateDisconnected
 		}
@@ -482,6 +493,8 @@ func (e *engine) syncTunnelPeerStateLocked() {
 		}
 		if !tunnelPeer.LastHandshake.IsZero() {
 			peer.LastHandshake = tunnelPeer.LastHandshake
+			peer.State = PeerStateConnected
+			peer.LastSeen = tunnelPeer.LastHandshake
 		}
 	}
 }

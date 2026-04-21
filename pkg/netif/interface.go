@@ -49,6 +49,14 @@ type NetworkInterface interface {
 	RemoveRoute(dst *net.IPNet) error
 }
 
+// MemoryTestInterface exposes directional packet injection helpers used by
+// unprivileged tests when the in-memory backend stands in for a TUN device.
+type MemoryTestInterface interface {
+	NetworkInterface
+	InjectPacket(buf []byte) (int, error)
+	ReceivePacket(buf []byte) (int, error)
+}
+
 // New creates a NetworkInterface based on cfg.
 func New(cfg Config) (NetworkInterface, error) {
 	if cfg.MTU <= 0 {

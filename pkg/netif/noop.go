@@ -24,10 +24,12 @@ type memoryInterface struct {
 	ifType string
 	mtu    int
 
-	mu      sync.Mutex
-	cond    *sync.Cond
-	closed  bool
-	packets [][]byte
+	mu            sync.Mutex
+	readCond      *sync.Cond
+	writeCond     *sync.Cond
+	closed        bool
+	outboundQueue [][]byte
+	inboundQueue  [][]byte
 
 	ip     net.IP
 	mask   net.IPMask
@@ -41,7 +43,8 @@ func newMemoryInterface(cfg Config) *memoryInterface {
 		mtu:    cfg.MTU,
 		routes: make(map[string]routeEntry),
 	}
-	m.cond = sync.NewCond(&m.mu)
+	m.readCond = sync.NewCond(&m.mu)
+	m.writeCond = sync.NewCond(&m.mu)
 	return m
 }
 
@@ -57,21 +60,25 @@ func (m *memoryInterface) Read(buf []byte) (int, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	for len(m.packets) == 0 && !m.closed {
-		m.cond.Wait()
+	for len(m.outboundQueue) == 0 && !m.closed {
+		m.readCond.Wait()
 	}
 
-	if len(m.packets) == 0 && m.closed {
+	if len(m.outboundQueue) == 0 && m.closed {
 		return 0, net.ErrClosed
 	}
 
-	packet := m.packets[0]
-	m.packets[0] = nil
-	m.packets = m.packets[1:]
+	packet := m.outboundQueue[0]
+	m.outboundQueue[0] = nil
+	m.outboundQueue = m.outboundQueue[1:]
 	return copy(buf, packet), nil
 }
 
 func (m *memoryInterface) Write(buf []byte) (int, error) {
+	return m.enqueueInbound(buf)
+}
+
+func (m *memoryInterface) InjectPacket(buf []byte) (int, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -83,8 +90,47 @@ func (m *memoryInterface) Write(buf []byte) (int, error) {
 	}
 
 	packet := append([]byte(nil), buf...)
-	m.packets = append(m.packets, packet)
-	m.cond.Signal()
+	m.outboundQueue = append(m.outboundQueue, packet)
+	m.readCond.Signal()
+	return len(packet), nil
+}
+
+func (m *memoryInterface) ReceivePacket(buf []byte) (int, error) {
+	if len(buf) == 0 {
+		return 0, nil
+	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	for len(m.inboundQueue) == 0 && !m.closed {
+		m.writeCond.Wait()
+	}
+
+	if len(m.inboundQueue) == 0 && m.closed {
+		return 0, net.ErrClosed
+	}
+
+	packet := m.inboundQueue[0]
+	m.inboundQueue[0] = nil
+	m.inboundQueue = m.inboundQueue[1:]
+	return copy(buf, packet), nil
+}
+
+func (m *memoryInterface) enqueueInbound(buf []byte) (int, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if m.closed {
+		return 0, net.ErrClosed
+	}
+	if len(buf) == 0 {
+		return 0, nil
+	}
+
+	packet := append([]byte(nil), buf...)
+	m.inboundQueue = append(m.inboundQueue, packet)
+	m.writeCond.Signal()
 	return len(packet), nil
 }
 
@@ -96,7 +142,8 @@ func (m *memoryInterface) Close() error {
 		return nil
 	}
 	m.closed = true
-	m.cond.Broadcast()
+	m.readCond.Broadcast()
+	m.writeCond.Broadcast()
 	return nil
 }
 

@@ -145,6 +145,9 @@ func TestUpdateStatusCountersSyncsTunnelPeerState(t *testing.T) {
 	if peer.LastHandshake.Unix() != 1_700_000_005 {
 		t.Fatalf("peer last handshake = %v, want unix 1700000005", peer.LastHandshake)
 	}
+	if peer.State != PeerStateConnected {
+		t.Fatalf("peer state = %s, want connected after handshake", peer.State)
+	}
 	if peer.TransportTxPackets != 3 || peer.TransportTxBytes != 96 {
 		t.Fatalf("peer transport tx = packets=%d bytes=%d, want 3/96", peer.TransportTxPackets, peer.TransportTxBytes)
 	}

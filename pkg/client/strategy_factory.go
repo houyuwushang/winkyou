@@ -145,6 +145,7 @@ func (e *engine) legacyICEStrategyConfig() legacyice.Config {
 		GatherTimeout:  e.iceGatherTimeout(),
 		ConnectTimeout: e.iceConnectTimeout(),
 		CheckTimeout:   e.iceCheckTimeout(),
+		ForceRelay:     e.cfg.NAT.ForceRelay,
 	}
 	cfg.NewICEAgent = func(ctx context.Context, req legacyice.AgentRequest) (nat.ICEAgent, error) {
 		if ctx == nil {

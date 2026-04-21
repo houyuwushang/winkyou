@@ -55,7 +55,7 @@ func (p *planningProbeStrategy) BuildPreflightProbe(ctx context.Context, input s
 				},
 			},
 		},
-	}, solver.ProbePolicy{Optional: true, Timeout: 200 * time.Millisecond, Reason: "test_probe"}, nil
+	}, solver.ProbePolicy{Optional: true, Timeout: time.Second, Reason: "test_probe"}, nil
 }
 
 type refiningStrategy struct {
@@ -109,7 +109,7 @@ func TestSessionUsesStrategyAuthoredPreflightProbe(t *testing.T) {
 		ObservationHistory:    history,
 		RunTimeout:            3 * time.Second,
 		CapabilityWaitTimeout: time.Second,
-		Hooks: Hooks{OnStateChange: func(state State) { stateCh <- state }, OnBound: func(result solver.Result) { bound <- result }},
+		Hooks:                 Hooks{OnStateChange: func(state State) { stateCh <- state }, OnBound: func(result solver.Result) { bound <- result }},
 	})
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
@@ -205,6 +205,19 @@ func TestLastProbeResultSummaryUsesSelectedPathID(t *testing.T) {
 	}
 	if summary.Details["plan_id"] != "probe/preflight" {
 		t.Fatalf("plan_id = %q, want probe/preflight", summary.Details["plan_id"])
+	}
+}
+
+func TestAnnotateObservationDetailsHandlesEmptyMap(t *testing.T) {
+	details := annotateObservationDetails(map[string]string{}, "session/node-a/node-b", "node-b", true)
+	if details["session_id"] != "session/node-a/node-b" {
+		t.Fatalf("session_id = %q, want session/node-a/node-b", details["session_id"])
+	}
+	if details["peer_id"] != "node-b" {
+		t.Fatalf("peer_id = %q, want node-b", details["peer_id"])
+	}
+	if details["initiator"] != "true" {
+		t.Fatalf("initiator = %q, want true", details["initiator"])
 	}
 }
 

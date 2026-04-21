@@ -157,27 +157,46 @@ func TestAddRemoveRouteLifecycle(t *testing.T) {
 	}
 }
 
-func TestWriteThenReadPayload(t *testing.T) {
+func TestInjectThenReadAndWriteThenReceivePayload(t *testing.T) {
 	ni := newMemoryInterface(Config{Backend: "userspace", MTU: 1280})
 
-	payload := []byte("hello packet")
-	n, err := ni.Write(payload)
+	outbound := []byte("hello outbound packet")
+	n, err := ni.InjectPacket(outbound)
 	if err != nil {
-		t.Fatalf("Write() error = %v", err)
+		t.Fatalf("InjectPacket() error = %v", err)
 	}
-	if n != len(payload) {
-		t.Fatalf("Write() = %d, want %d", n, len(payload))
+	if n != len(outbound) {
+		t.Fatalf("InjectPacket() = %d, want %d", n, len(outbound))
 	}
 
-	payload[0] = 'X'
+	outbound[0] = 'X'
 
 	buf := make([]byte, 64)
 	n, err = ni.Read(buf)
 	if err != nil {
 		t.Fatalf("Read() error = %v", err)
 	}
-	if got := string(buf[:n]); got != "hello packet" {
-		t.Fatalf("Read() payload = %q, want %q", got, "hello packet")
+	if got := string(buf[:n]); got != "hello outbound packet" {
+		t.Fatalf("Read() payload = %q, want %q", got, "hello outbound packet")
+	}
+
+	inbound := []byte("hello inbound packet")
+	n, err = ni.Write(inbound)
+	if err != nil {
+		t.Fatalf("Write() error = %v", err)
+	}
+	if n != len(inbound) {
+		t.Fatalf("Write() = %d, want %d", n, len(inbound))
+	}
+
+	inbound[0] = 'Y'
+
+	n, err = ni.ReceivePacket(buf)
+	if err != nil {
+		t.Fatalf("ReceivePacket() error = %v", err)
+	}
+	if got := string(buf[:n]); got != "hello inbound packet" {
+		t.Fatalf("ReceivePacket() payload = %q, want %q", got, "hello inbound packet")
 	}
 }
 
@@ -204,6 +223,32 @@ func TestCloseUnblocksRead(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("blocked Read did not exit after Close")
+	}
+}
+
+func TestCloseUnblocksReceivePacket(t *testing.T) {
+	ni := newMemoryInterface(Config{Backend: "userspace", MTU: 1280})
+
+	done := make(chan error, 1)
+	go func() {
+		buf := make([]byte, 32)
+		_, err := ni.ReceivePacket(buf)
+		done <- err
+	}()
+
+	time.Sleep(25 * time.Millisecond)
+
+	if err := ni.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+
+	select {
+	case err := <-done:
+		if !errors.Is(err, net.ErrClosed) {
+			t.Fatalf("ReceivePacket() after Close error = %v, want net.ErrClosed", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("blocked ReceivePacket did not exit after Close")
 	}
 }
 

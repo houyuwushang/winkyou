@@ -1736,7 +1736,7 @@ func cloneProbeResult(result pmodel.Result) pmodel.Result {
 }
 
 func cloneStringMap(in map[string]string) map[string]string {
-	if len(in) == 0 {
+	if in == nil {
 		return nil
 	}
 	out := make(map[string]string, len(in))
