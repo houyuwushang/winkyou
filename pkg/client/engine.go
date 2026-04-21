@@ -490,6 +490,13 @@ func (e *engine) cloneStatusLocked() *EngineStatus {
 }
 
 func (e *engine) persistState() {
+	e.mu.RLock()
+	started := e.started
+	statePath := e.statePath
+	e.mu.RUnlock()
+	if !started || strings.TrimSpace(statePath) == "" {
+		return
+	}
 	status, peers := e.snapshot()
 	if err := WriteRuntimeState(e.statePath, newRuntimeStateSnapshot(status, peers)); err != nil {
 		e.log.Warn("failed to persist runtime state", logger.Error(err), logger.String("path", e.statePath))

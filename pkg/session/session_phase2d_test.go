@@ -184,6 +184,30 @@ func TestSessionUsesStrategyAuthoredPreflightProbe(t *testing.T) {
 	}
 }
 
+func TestLastProbeResultSummaryUsesSelectedPathID(t *testing.T) {
+	s := &Session{}
+	s.meta.LastProbeResult = pmodel.Result{
+		ScriptType:     pmodel.ScriptTypePreflight,
+		PlanID:         "probe/preflight",
+		Success:        true,
+		SelectedPathID: "relay/path",
+		ErrorClass:     "none",
+		FinishedAt:     time.Unix(1_710_000_000, 0),
+	}
+	s.meta.LastProbeResultAt = s.meta.LastProbeResult.FinishedAt
+
+	summary := s.lastProbeResultSummary()
+	if summary == nil {
+		t.Fatal("lastProbeResultSummary() = nil")
+	}
+	if summary.PathID != "relay/path" {
+		t.Fatalf("PathID = %q, want relay/path", summary.PathID)
+	}
+	if summary.Details["plan_id"] != "probe/preflight" {
+		t.Fatalf("plan_id = %q, want probe/preflight", summary.Details["plan_id"])
+	}
+}
+
 func TestSessionSkipsProbingWhenStrategyDoesNotImplementPlanner(t *testing.T) {
 	transport := &fakeTransport{}
 	strategy := &fakeStrategy{name: "legacy_ice_udp", transport: transport}
