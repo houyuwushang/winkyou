@@ -57,6 +57,42 @@ Not completed:
 - `pkg/rendezvous/client`: coordinator-backed rendezvous channel adapter
 - `pkg/tunnel`: WireGuard data plane consuming `transport.PacketTransport`
 
+## Relay Handshake Troubleshooting
+
+When relay is expected, use `wink peers` or `wink peers --json` first. The CLI surfaces the full chain from ICE selection to transport attachment to WireGuard handshake.
+
+Example:
+
+```text
+Peer 1
+  Name:        beta
+  Node ID:     node-000002
+  Virtual IP:  10.77.0.2
+  Public Key:  BRWDltpykmj7xkz5mscwH82XtleebmfOtYvvaIxIRVQ=
+  State:       connected
+  Endpoint:    127.0.0.1:65042
+  Conn Type:   relay
+  ICE State:   connected
+  Local Cand:  relay:127.0.0.1:65040
+  Remote Cand: relay:127.0.0.1:65042
+  Tx:          1.2 KiB
+  Rx:          304 B
+  Xport Tx:    13 pkts / 1.2 KiB
+  Xport Rx:    4 pkts / 304 B
+  Xport Err:   -
+  Handshake:   2026-04-22T16:04:34Z
+  Last Seen:   2026-04-22T16:04:34Z
+```
+
+Interpretation:
+
+- `ICE State` is not `connected` or `completed`: the problem is still in ICE/TURN or candidate exchange.
+- `Local Cand` / `Remote Cand` do not contain `relay` when relay is expected: the wrong path was selected or relay candidates were never gathered.
+- `Local Cand` / `Remote Cand` show `relay`, but `Xport Tx` / `Xport Rx` stay at `0`: the ICE transport was selected, but the `PacketTransport` was not attached or did not stay alive.
+- `Xport Tx` / `Xport Rx` grow and `Xport Err` is non-empty: transport/bind read or write failed after ICE connected.
+- `Xport Tx` / `Xport Rx` grow and `Handshake` stays `-`: relay packets are moving, but WireGuard handshake has not completed.
+- `Handshake` is non-`-`, but payload traffic still fails: check `AllowedIPs`, routes, firewall rules, and MTU on both peers.
+
 ## Legacy Freeze
 
 The legacy ICE/TURN-centric baseline was frozen before the reboot:
