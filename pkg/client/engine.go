@@ -390,6 +390,17 @@ func (e *engine) upsertPeer(peer *coordclient.PeerInfo, event PeerEvent) {
 	if ok {
 		updated.State = current.State
 		updated.ConnectionType = current.ConnectionType
+		updated.ICEState = current.ICEState
+		updated.LocalCandidate = current.LocalCandidate
+		updated.RemoteCandidate = current.RemoteCandidate
+		updated.LastHandshake = current.LastHandshake
+		updated.TxBytes = current.TxBytes
+		updated.RxBytes = current.RxBytes
+		updated.TransportTxPackets = current.TransportTxPackets
+		updated.TransportTxBytes = current.TransportTxBytes
+		updated.TransportRxPackets = current.TransportRxPackets
+		updated.TransportRxBytes = current.TransportRxBytes
+		updated.TransportLastError = current.TransportLastError
 		if !peer.Online {
 			updated.State = PeerStateDisconnected
 		}
@@ -472,11 +483,18 @@ func (e *engine) syncTunnelPeerStateLocked() {
 		}
 		peer.TxBytes = tunnelPeer.TxBytes
 		peer.RxBytes = tunnelPeer.RxBytes
+		peer.TransportTxPackets = tunnelPeer.TransportTxPackets
+		peer.TransportTxBytes = tunnelPeer.TransportTxBytes
+		peer.TransportRxPackets = tunnelPeer.TransportRxPackets
+		peer.TransportRxBytes = tunnelPeer.TransportRxBytes
+		peer.TransportLastError = tunnelPeer.TransportLastError
 		if tunnelPeer.Endpoint != nil {
 			peer.Endpoint = cloneUDPAddr(tunnelPeer.Endpoint)
 		}
 		if !tunnelPeer.LastHandshake.IsZero() {
 			peer.LastHandshake = tunnelPeer.LastHandshake
+			peer.State = PeerStateConnected
+			peer.LastSeen = tunnelPeer.LastHandshake
 		}
 	}
 }
@@ -490,6 +508,13 @@ func (e *engine) cloneStatusLocked() *EngineStatus {
 }
 
 func (e *engine) persistState() {
+	e.mu.RLock()
+	started := e.started
+	statePath := e.statePath
+	e.mu.RUnlock()
+	if !started || strings.TrimSpace(statePath) == "" {
+		return
+	}
 	status, peers := e.snapshot()
 	if err := WriteRuntimeState(e.statePath, newRuntimeStateSnapshot(status, peers)); err != nil {
 		e.log.Warn("failed to persist runtime state", logger.Error(err), logger.String("path", e.statePath))

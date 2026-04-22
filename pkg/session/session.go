@@ -1397,7 +1397,7 @@ func (s *Session) lastProbeResultSummary() *solver.ProbeResultSummary {
 		ScriptType: s.meta.LastProbeResult.ScriptType,
 		Success:    s.meta.LastProbeResult.Success,
 		ErrorClass: s.meta.LastProbeResult.ErrorClass,
-		PathID:     firstNonEmpty(s.meta.LastProbeResult.PathID, s.meta.LastProbeResult.SelectedPathID),
+		PathID:     s.meta.LastProbeResult.SelectedPathID,
 		Details: map[string]string{
 			"plan_id":     s.meta.LastProbeResult.PlanID,
 			"event_count": fmt.Sprintf("%d", len(s.meta.LastProbeResult.Events)),
@@ -1736,7 +1736,7 @@ func cloneProbeResult(result pmodel.Result) pmodel.Result {
 }
 
 func cloneStringMap(in map[string]string) map[string]string {
-	if len(in) == 0 {
+	if in == nil {
 		return nil
 	}
 	out := make(map[string]string, len(in))

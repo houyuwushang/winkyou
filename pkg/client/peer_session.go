@@ -215,7 +215,9 @@ func (e *engine) handlePeerSessionBound(nodeID string, s *peerSession, result so
 
 	e.mu.Lock()
 	if peer := e.peers[nodeID]; peer != nil {
-		peer.State = PeerStateConnecting
+		if peer.State != PeerStateConnected && peer.LastHandshake.IsZero() {
+			peer.State = PeerStateConnecting
+		}
 		peer.ConnectionType = connectionTypeFromSummary(result.Summary.ConnectionType)
 		peer.Endpoint = udpAddrFromAddr(result.Summary.RemoteAddr)
 		peer.ICEState = result.Summary.Details["ice_state"]

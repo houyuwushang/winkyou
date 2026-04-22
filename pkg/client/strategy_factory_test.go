@@ -5,7 +5,9 @@ import (
 	"net"
 	"strings"
 	"testing"
+	"time"
 
+	"winkyou/pkg/config"
 	rproto "winkyou/pkg/rendezvous/proto"
 	sesspkg "winkyou/pkg/session"
 	"winkyou/pkg/solver"
@@ -102,5 +104,23 @@ func TestStrategyResolverResolveMissingCapabilityWithoutFallback(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "fallback disabled") {
 		t.Fatalf("Resolve() error = %v, want fallback disabled", err)
+	}
+}
+
+func TestLegacyICEStrategyConfigPropagatesForceRelay(t *testing.T) {
+	eng := &engine{
+		cfg: config.Config{
+			NAT: config.NATConfig{
+				GatherTimeout:  3 * time.Second,
+				ConnectTimeout: 4 * time.Second,
+				CheckTimeout:   5 * time.Second,
+				ForceRelay:     true,
+			},
+		},
+	}
+
+	cfg := eng.legacyICEStrategyConfig()
+	if !cfg.ForceRelay {
+		t.Fatal("legacyICEStrategyConfig().ForceRelay = false, want true")
 	}
 }

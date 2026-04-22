@@ -31,7 +31,7 @@ test-e2e-privileged:
 	WINKYOU_E2E_PRIVILEGED=1 $(GO) test -tags=privileged_e2e ./test/e2e/... -count=1
 
 test-e2e-relay:
-	WINKYOU_FORCE_RELAY=1 WINKYOU_NETIF_ALLOW_MEMORY=1 WINKYOU_TUNNEL_ALLOW_MEMORY=1 $(GO) test ./test/e2e/... -count=1 -run TestRelay
+	WINKYOU_FORCE_RELAY=1 WINKYOU_NETIF_ALLOW_MEMORY=1 WINKYOU_TUNNEL_ALLOW_MEMORY=1 $(GO) test ./pkg/client ./test/e2e/... -count=1 -run TestRelay
 
 test-e2e-relay-privileged:
 	WINKYOU_E2E_PRIVILEGED=1 WINKYOU_FORCE_RELAY=1 $(GO) test -tags=privileged_e2e ./test/e2e/... -count=1 -run TestRelay

@@ -55,7 +55,7 @@ func (p *planningProbeStrategy) BuildPreflightProbe(ctx context.Context, input s
 				},
 			},
 		},
-	}, solver.ProbePolicy{Optional: true, Timeout: 200 * time.Millisecond, Reason: "test_probe"}, nil
+	}, solver.ProbePolicy{Optional: true, Timeout: time.Second, Reason: "test_probe"}, nil
 }
 
 type refiningStrategy struct {
@@ -109,7 +109,7 @@ func TestSessionUsesStrategyAuthoredPreflightProbe(t *testing.T) {
 		ObservationHistory:    history,
 		RunTimeout:            3 * time.Second,
 		CapabilityWaitTimeout: time.Second,
-		Hooks: Hooks{OnStateChange: func(state State) { stateCh <- state }, OnBound: func(result solver.Result) { bound <- result }},
+		Hooks:                 Hooks{OnStateChange: func(state State) { stateCh <- state }, OnBound: func(result solver.Result) { bound <- result }},
 	})
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
@@ -181,6 +181,43 @@ func TestSessionUsesStrategyAuthoredPreflightProbe(t *testing.T) {
 	snapshot := s.Snapshot()
 	if !snapshot.PreflightProbeAttempted || !snapshot.PreflightProbeSucceeded {
 		t.Fatalf("preflight probe attempted=%t succeeded=%t, want true/true", snapshot.PreflightProbeAttempted, snapshot.PreflightProbeSucceeded)
+	}
+}
+
+func TestLastProbeResultSummaryUsesSelectedPathID(t *testing.T) {
+	s := &Session{}
+	s.meta.LastProbeResult = pmodel.Result{
+		ScriptType:     pmodel.ScriptTypePreflight,
+		PlanID:         "probe/preflight",
+		Success:        true,
+		SelectedPathID: "relay/path",
+		ErrorClass:     "none",
+		FinishedAt:     time.Unix(1_710_000_000, 0),
+	}
+	s.meta.LastProbeResultAt = s.meta.LastProbeResult.FinishedAt
+
+	summary := s.lastProbeResultSummary()
+	if summary == nil {
+		t.Fatal("lastProbeResultSummary() = nil")
+	}
+	if summary.PathID != "relay/path" {
+		t.Fatalf("PathID = %q, want relay/path", summary.PathID)
+	}
+	if summary.Details["plan_id"] != "probe/preflight" {
+		t.Fatalf("plan_id = %q, want probe/preflight", summary.Details["plan_id"])
+	}
+}
+
+func TestAnnotateObservationDetailsHandlesEmptyMap(t *testing.T) {
+	details := annotateObservationDetails(map[string]string{}, "session/node-a/node-b", "node-b", true)
+	if details["session_id"] != "session/node-a/node-b" {
+		t.Fatalf("session_id = %q, want session/node-a/node-b", details["session_id"])
+	}
+	if details["peer_id"] != "node-b" {
+		t.Fatalf("peer_id = %q, want node-b", details["peer_id"])
+	}
+	if details["initiator"] != "true" {
+		t.Fatalf("initiator = %q, want true", details["initiator"])
 	}
 }
 

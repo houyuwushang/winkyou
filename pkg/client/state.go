@@ -64,21 +64,26 @@ func (s EngineState) String() string {
 }
 
 type PeerStatus struct {
-	NodeID         string
-	Name           string
-	VirtualIP      net.IP
-	PublicKey      string
-	State          PeerState
-	Endpoint       *net.UDPAddr
-	Latency        time.Duration
-	LastSeen       time.Time
-	LastHandshake  time.Time
-	TxBytes        uint64
-	RxBytes        uint64
-	ConnectionType ConnectionType
-	ICEState       string
-	LocalCandidate string
-	RemoteCandidate string
+	NodeID             string
+	Name               string
+	VirtualIP          net.IP
+	PublicKey          string
+	State              PeerState
+	Endpoint           *net.UDPAddr
+	Latency            time.Duration
+	LastSeen           time.Time
+	LastHandshake      time.Time
+	TxBytes            uint64
+	RxBytes            uint64
+	ConnectionType     ConnectionType
+	ICEState           string
+	LocalCandidate     string
+	RemoteCandidate    string
+	TransportTxPackets uint64
+	TransportTxBytes   uint64
+	TransportRxPackets uint64
+	TransportRxBytes   uint64
+	TransportLastError string
 }
 
 type PeerEvent int

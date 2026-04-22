@@ -52,8 +52,14 @@ func newPeersCmd(opts *Options) *cobra.Command {
 				cmd.Printf("  State:      %s\n", dashIfEmpty(p.State))
 				cmd.Printf("  Endpoint:   %s\n", dashIfEmpty(p.Endpoint))
 				cmd.Printf("  Conn Type:  %s\n", dashIfEmpty(p.ConnectionType))
+				cmd.Printf("  ICE State:  %s\n", dashIfEmpty(p.ICEState))
+				cmd.Printf("  Local Cand: %s\n", dashIfEmpty(p.LocalCandidate))
+				cmd.Printf("  Remote Cand: %s\n", dashIfEmpty(p.RemoteCandidate))
 				cmd.Printf("  Tx:         %s\n", formatBytes(p.TxBytes))
 				cmd.Printf("  Rx:         %s\n", formatBytes(p.RxBytes))
+				cmd.Printf("  Xport Tx:   %d pkts / %s\n", p.TransportTxPackets, formatBytes(p.TransportTxBytes))
+				cmd.Printf("  Xport Rx:   %d pkts / %s\n", p.TransportRxPackets, formatBytes(p.TransportRxBytes))
+				cmd.Printf("  Xport Err:  %s\n", dashIfEmpty(p.TransportLastError))
 				if !p.LastHandshake.IsZero() {
 					cmd.Printf("  Handshake:  %s\n", p.LastHandshake.Format(time.RFC3339))
 				} else {

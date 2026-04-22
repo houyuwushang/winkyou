@@ -70,7 +70,7 @@ func (w *wggoTunnel) Start() error {
 
 	w.tunDevice = newNetifDevice(w.cfg.Interface)
 	w.bind = newPeerTransportBind()
-	w.device = wgdevice.NewDevice(w.tunDevice, w.bind, wgdevice.NewLogger(wgdevice.LogLevelSilent, "winkyou"))
+	w.device = wgdevice.NewDevice(w.tunDevice, w.bind, wgdevice.NewLogger(wggoLogLevel(), "winkyou"))
 
 	if err := w.device.IpcSet(buildDeviceIPC(w.cfg.PrivateKey, w.cfg.ListenPort)); err != nil {
 		w.device.Close()
@@ -104,6 +104,8 @@ func (w *wggoTunnel) Stop() error {
 	}
 	closeCh := w.closeCh
 	device := w.device
+	tunDevice := w.tunDevice
+	bind := w.bind
 	w.started = false
 	w.stopped = true
 	w.closeCh = nil
@@ -111,6 +113,12 @@ func (w *wggoTunnel) Stop() error {
 
 	if closeCh != nil {
 		close(closeCh)
+	}
+	if tunDevice != nil {
+		_ = tunDevice.Close()
+	}
+	if bind != nil {
+		_ = bind.Shutdown()
 	}
 	if device != nil {
 		device.Close()
@@ -332,6 +340,22 @@ func (w *wggoTunnel) refreshPeerStatsLocked() {
 			w.emitLocked(TunnelEvent{Type: EventPeerHandshake, PeerKey: key, Timestamp: w.now()})
 		}
 	}
+	for key, cur := range w.peers {
+		stats, ok := w.bind.TransportStats(key)
+		if !ok {
+			cur.TransportTxPackets = 0
+			cur.TransportTxBytes = 0
+			cur.TransportRxPackets = 0
+			cur.TransportRxBytes = 0
+			cur.TransportLastError = ""
+			continue
+		}
+		cur.TransportTxPackets = stats.txPackets
+		cur.TransportTxBytes = stats.txBytes
+		cur.TransportRxPackets = stats.rxPackets
+		cur.TransportRxBytes = stats.rxBytes
+		cur.TransportLastError = stats.lastError
+	}
 }
 
 func (w *wggoTunnel) emitLocked(ev TunnelEvent) {
@@ -372,7 +396,6 @@ func newNetifDevice(ni interface {
 		ni:     ni,
 		events: make(chan wgtun.Event, 2),
 	}
-	d.events <- wgtun.EventUp
 	d.events <- wgtun.EventMTUUpdate
 	return d
 }
@@ -433,8 +456,10 @@ type transportPacket struct {
 type peerTransportBind struct {
 	mu         sync.RWMutex
 	base       wgconn.Bind
+	rebindMu   sync.Mutex
+	rebindCh   chan struct{}
 	closeOnce  sync.Once
-	closeCh    chan struct{}
+	shutdownCh chan struct{}
 	recvCh     chan transportPacket
 	transports map[PublicKey]*boundTransport
 }
@@ -444,6 +469,8 @@ type boundTransport struct {
 	endpoint  *transportEndpoint
 	stopCh    chan struct{}
 	closeOnce sync.Once
+	statsMu   sync.RWMutex
+	stats     transportCounters
 }
 
 type transportEndpoint struct {
@@ -455,10 +482,30 @@ type transportEndpoint struct {
 	localAddr  net.Addr
 }
 
+type transportCounters struct {
+	txPackets uint64
+	txBytes   uint64
+	rxPackets uint64
+	rxBytes   uint64
+	lastError string
+}
+
+type noOpBind struct {
+	closeOnce sync.Once
+}
+
 func newPeerTransportBind() *peerTransportBind {
+	if os.Getenv("WINKYOU_NETIF_ALLOW_MEMORY") == "1" {
+		return &peerTransportBind{
+			base:       &noOpBind{},
+			shutdownCh: make(chan struct{}),
+			recvCh:     make(chan transportPacket, 1024),
+			transports: make(map[PublicKey]*boundTransport),
+		}
+	}
 	return &peerTransportBind{
 		base:       wgconn.NewDefaultBind(),
-		closeCh:    make(chan struct{}),
+		shutdownCh: make(chan struct{}),
 		recvCh:     make(chan transportPacket, 1024),
 		transports: make(map[PublicKey]*boundTransport),
 	}
@@ -469,16 +516,25 @@ func (b *peerTransportBind) Open(port uint16) ([]wgconn.ReceiveFunc, uint16, err
 	if err != nil {
 		return nil, 0, err
 	}
+	rebindCh := b.beginReceiveCycle()
 	fns := make([]wgconn.ReceiveFunc, 0, len(baseFns)+1)
-	fns = append(fns, b.receiveFromTransports)
+	fns = append(fns, func(packets [][]byte, sizes []int, eps []wgconn.Endpoint) (int, error) {
+		return b.receiveFromTransportsUntil(rebindCh, packets, sizes, eps)
+	})
 	fns = append(fns, baseFns...)
 	return fns, actualPort, nil
 }
 
 func (b *peerTransportBind) Close() error {
+	b.endReceiveCycle()
+	return b.base.Close()
+}
+
+func (b *peerTransportBind) Shutdown() error {
 	var err error
 	b.closeOnce.Do(func() {
-		close(b.closeCh)
+		close(b.shutdownCh)
+		b.endReceiveCycle()
 		b.mu.Lock()
 		for _, transport := range b.transports {
 			_ = transport.Close()
@@ -512,8 +568,10 @@ func (b *peerTransportBind) Send(bufs [][]byte, ep wgconn.Endpoint) error {
 			continue
 		}
 		if err := transport.conn.WritePacket(context.Background(), buf); err != nil {
+			transport.recordError(err)
 			return err
 		}
+		transport.recordSend(len(buf))
 	}
 	return nil
 }
@@ -606,6 +664,16 @@ func (b *peerTransportBind) TransportRemoteAddr(publicKey PublicKey) *net.UDPAdd
 	return nil
 }
 
+func (b *peerTransportBind) TransportStats(publicKey PublicKey) (transportCounters, bool) {
+	b.mu.RLock()
+	transport := b.transports[publicKey]
+	b.mu.RUnlock()
+	if transport == nil {
+		return transportCounters{}, false
+	}
+	return transport.snapshot(), true
+}
+
 func (b *peerTransportBind) ResolveEndpoint(endpoint string) *net.UDPAddr {
 	if !strings.HasPrefix(endpoint, transportEndpointPrefix) {
 		addr, err := net.ResolveUDPAddr("udp", endpoint)
@@ -632,17 +700,19 @@ func (b *peerTransportBind) readTransportLoop(transport *boundTransport) {
 				select {
 				case <-transport.stopCh:
 					return
-				case <-b.closeCh:
+				case <-b.shutdownCh:
 					return
 				default:
 					continue
 				}
 			}
+			transport.recordError(err)
 			return
 		}
 		if n == 0 {
 			continue
 		}
+		transport.recordReceive(n)
 
 		packet := transportPacket{
 			data:     append([]byte(nil), buffer[:n]...),
@@ -652,19 +722,25 @@ func (b *peerTransportBind) readTransportLoop(transport *boundTransport) {
 		case b.recvCh <- packet:
 		case <-transport.stopCh:
 			return
-		case <-b.closeCh:
+		case <-b.shutdownCh:
 			return
 		}
 	}
 }
 
 func (b *peerTransportBind) receiveFromTransports(packets [][]byte, sizes []int, eps []wgconn.Endpoint) (int, error) {
+	return b.receiveFromTransportsUntil(nil, packets, sizes, eps)
+}
+
+func (b *peerTransportBind) receiveFromTransportsUntil(rebindCh <-chan struct{}, packets [][]byte, sizes []int, eps []wgconn.Endpoint) (int, error) {
 	if len(packets) == 0 || len(sizes) == 0 || len(eps) == 0 {
 		return 0, nil
 	}
 
 	select {
-	case <-b.closeCh:
+	case <-b.shutdownCh:
+		return 0, net.ErrClosed
+	case <-rebindCh:
 		return 0, net.ErrClosed
 	case packet := <-b.recvCh:
 		n := copy(packets[0], packet.data)
@@ -683,6 +759,27 @@ func (b *peerTransportBind) receiveFromTransports(packets [][]byte, sizes []int,
 			}
 		}
 		return count, nil
+	}
+}
+
+func (b *peerTransportBind) beginReceiveCycle() chan struct{} {
+	b.rebindMu.Lock()
+	defer b.rebindMu.Unlock()
+
+	if b.rebindCh != nil {
+		close(b.rebindCh)
+	}
+	b.rebindCh = make(chan struct{})
+	return b.rebindCh
+}
+
+func (b *peerTransportBind) endReceiveCycle() {
+	b.rebindMu.Lock()
+	defer b.rebindMu.Unlock()
+
+	if b.rebindCh != nil {
+		close(b.rebindCh)
+		b.rebindCh = nil
 	}
 }
 
@@ -779,6 +876,47 @@ func (t *boundTransport) Close() error {
 		}
 	})
 	return err
+}
+
+func (t *boundTransport) recordSend(size int) {
+	if t == nil || size <= 0 {
+		return
+	}
+	t.statsMu.Lock()
+	t.stats.txPackets++
+	t.stats.txBytes += uint64(size)
+	t.statsMu.Unlock()
+}
+
+func (t *boundTransport) recordReceive(size int) {
+	if t == nil || size <= 0 {
+		return
+	}
+	t.statsMu.Lock()
+	t.stats.rxPackets++
+	t.stats.rxBytes += uint64(size)
+	t.statsMu.Unlock()
+}
+
+func (t *boundTransport) recordError(err error) {
+	if t == nil || err == nil {
+		return
+	}
+	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) || errors.Is(err, net.ErrClosed) {
+		return
+	}
+	t.statsMu.Lock()
+	t.stats.lastError = err.Error()
+	t.statsMu.Unlock()
+}
+
+func (t *boundTransport) snapshot() transportCounters {
+	if t == nil {
+		return transportCounters{}
+	}
+	t.statsMu.RLock()
+	defer t.statsMu.RUnlock()
+	return t.stats
 }
 
 func readDeviceSnapshot(device *wgdevice.Device, bind *peerTransportBind) (*deviceSnapshot, error) {
@@ -989,3 +1127,31 @@ func allowMemoryTunnelForTest() bool {
 	}
 	return strings.HasSuffix(os.Args[0], ".test")
 }
+
+func wggoLogLevel() int {
+	if os.Getenv("WINKYOU_TUNNEL_DEBUG") == "1" {
+		return wgdevice.LogLevelVerbose
+	}
+	return wgdevice.LogLevelSilent
+}
+
+func (b *noOpBind) Open(port uint16) ([]wgconn.ReceiveFunc, uint16, error) {
+	return nil, port, nil
+}
+
+func (b *noOpBind) Close() error {
+	b.closeOnce.Do(func() {})
+	return nil
+}
+
+func (b *noOpBind) SetMark(mark uint32) error { return nil }
+
+func (b *noOpBind) Send(bufs [][]byte, ep wgconn.Endpoint) error {
+	return net.ErrClosed
+}
+
+func (b *noOpBind) ParseEndpoint(s string) (wgconn.Endpoint, error) {
+	return nil, fmt.Errorf("tunnel: base udp bind is disabled")
+}
+
+func (b *noOpBind) BatchSize() int { return 1 }

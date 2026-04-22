@@ -103,6 +103,23 @@ func (s *rankingExecutorStrategy) RankPlans(_ context.Context, input solver.Rank
 	return solver.RankedPlans{Plans: append([]solver.Plan(nil), plans...), Reason: "no_probe_signal"}, nil
 }
 
+func (s *rankingExecutorStrategy) BuildPreflightProbe(context.Context, solver.ProbeInput) (*solver.ProbeScript, solver.ProbePolicy, error) {
+	return &solver.ProbeScript{
+		ScriptType: pmodel.ScriptTypePreflight,
+		PlanID:     "probe/preflight",
+		Steps: []solver.ProbeStep{
+			{
+				Action: "report",
+				Params: map[string]string{
+					"event":       "probe_ready",
+					"script_type": pmodel.ScriptTypePreflight,
+					"strategy":    s.name,
+				},
+			},
+		},
+	}, solver.ProbePolicy{Optional: true, Timeout: 200 * time.Millisecond, Reason: "test_probe"}, nil
+}
+
 func (s *rankingExecutorStrategy) snapshot() ([]string, []solver.RankInput) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -189,6 +206,7 @@ func TestSessionPreflightProbeSuccessDoesNotBlockStrategyFlow(t *testing.T) {
 	remoteRunner := &fakeProbeRunner{result: pmodel.Result{Success: true, Events: []solver.Observation{{Strategy: pmodel.StrategyName, Event: "probe_ready", Timestamp: time.Now()}}}}
 	localTransport := &fakeTransport{}
 	remoteTransport := &fakeTransport{}
+	localStrategy := &planningProbeStrategy{fakeStrategy: fakeStrategy{name: "legacy_ice_udp", transport: localTransport}}
 
 	var local, remote *Session
 	localSender.sendFn = func(msg solver.Message) error { return remote.HandleMessage(context.Background(), msg) }
@@ -215,7 +233,7 @@ func TestSessionPreflightProbeSuccessDoesNotBlockStrategyFlow(t *testing.T) {
 		LocalNodeID:           "node-a",
 		PeerID:                "node-b",
 		Initiator:             true,
-		Resolver:              &fakeResolver{local: probeCapability(), strategy: &fakeStrategy{name: "legacy_ice_udp", transport: localTransport}, selection: Selection{StrategyName: "legacy_ice_udp", Negotiated: true}},
+		Resolver:              &fakeResolver{local: probeCapability(), strategy: localStrategy, selection: Selection{StrategyName: "legacy_ice_udp", Negotiated: true}},
 		Sender:                localSender,
 		ProbeRunner:           localRunner,
 		RunTimeout:            time.Second,
@@ -256,6 +274,7 @@ func TestSessionPreflightProbeTimeoutFallsBackToCandidateLoop(t *testing.T) {
 	remoteRunner := &fakeProbeRunner{result: pmodel.Result{Success: true}}
 	localTransport := &fakeTransport{}
 	remoteTransport := &fakeTransport{}
+	localStrategy := &planningProbeStrategy{fakeStrategy: fakeStrategy{name: "legacy_ice_udp", transport: localTransport}}
 
 	var local, remote *Session
 	localSender.sendFn = func(msg solver.Message) error { return remote.HandleMessage(context.Background(), msg) }
@@ -287,7 +306,7 @@ func TestSessionPreflightProbeTimeoutFallsBackToCandidateLoop(t *testing.T) {
 		LocalNodeID:           "node-a",
 		PeerID:                "node-b",
 		Initiator:             true,
-		Resolver:              &fakeResolver{local: probeCapability(), strategy: &fakeStrategy{name: "legacy_ice_udp", transport: localTransport}, selection: Selection{StrategyName: "legacy_ice_udp", Negotiated: true}},
+		Resolver:              &fakeResolver{local: probeCapability(), strategy: localStrategy, selection: Selection{StrategyName: "legacy_ice_udp", Negotiated: true}},
 		Sender:                localSender,
 		ProbeRunner:           &fakeProbeRunner{result: pmodel.Result{Success: true}},
 		RunTimeout:            time.Second,
@@ -311,8 +330,8 @@ func TestSessionPreflightProbeTimeoutFallsBackToCandidateLoop(t *testing.T) {
 	if !snapshot.PreflightProbeAttempted || snapshot.PreflightProbeSucceeded {
 		t.Fatalf("preflight flags = attempted:%t succeeded:%t, want true/false", snapshot.PreflightProbeAttempted, snapshot.PreflightProbeSucceeded)
 	}
-	if !containsObservationEvent(local.Observations(), "probe_script_failed") {
-		t.Fatalf("local observations = %+v, want probe_script_failed", local.Observations())
+	if !containsObservationEvent(local.Observations(), "probe_failed") {
+		t.Fatalf("local observations = %+v, want probe_failed", local.Observations())
 	}
 }
 
