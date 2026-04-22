@@ -159,6 +159,56 @@ func TestUpdateStatusCountersSyncsTunnelPeerState(t *testing.T) {
 	}
 }
 
+func TestBindingPeerRelayBootstrapKeepaliveUsesInitiatorOnly(t *testing.T) {
+	pub := mustTestPublicKey(t)
+	basePeer := &PeerStatus{
+		NodeID:    "node-2",
+		PublicKey: pub.String(),
+		VirtualIP: net.ParseIP("10.77.0.2"),
+		Endpoint:  &net.UDPAddr{IP: net.ParseIP("203.0.113.10"), Port: 51820},
+	}
+
+	t.Run("initiator retains keepalive", func(t *testing.T) {
+		eng := &engine{
+			cfg: config.Config{
+				NAT: config.NATConfig{ForceRelay: true},
+			},
+			peers: map[string]*PeerStatus{"node-2": clonePeerStatus(basePeer)},
+			peerMgr: &peerManager{sessions: map[string]*peerSession{
+				"node-2": {initiator: true},
+			}},
+		}
+
+		bindingPeer, err := eng.BindingPeer(context.Background(), "node-2")
+		if err != nil {
+			t.Fatalf("BindingPeer() error = %v", err)
+		}
+		if bindingPeer.Keepalive != 10*time.Second {
+			t.Fatalf("BindingPeer().Keepalive = %v, want 10s for initiator", bindingPeer.Keepalive)
+		}
+	})
+
+	t.Run("controlled disables bootstrap keepalive", func(t *testing.T) {
+		eng := &engine{
+			cfg: config.Config{
+				NAT: config.NATConfig{ForceRelay: true},
+			},
+			peers: map[string]*PeerStatus{"node-2": clonePeerStatus(basePeer)},
+			peerMgr: &peerManager{sessions: map[string]*peerSession{
+				"node-2": {initiator: false},
+			}},
+		}
+
+		bindingPeer, err := eng.BindingPeer(context.Background(), "node-2")
+		if err != nil {
+			t.Fatalf("BindingPeer() error = %v", err)
+		}
+		if bindingPeer.Keepalive != 0 {
+			t.Fatalf("BindingPeer().Keepalive = %v, want 0 for controlled relay bootstrap", bindingPeer.Keepalive)
+		}
+	})
+}
+
 type fakeTunnelForEngineTest struct {
 	peers  []*tunnel.PeerStatus
 	stats  *tunnel.TunnelStats
