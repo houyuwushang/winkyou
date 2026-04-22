@@ -104,8 +104,9 @@ func TestRuntimeStateRoundTrip(t *testing.T) {
 	if len(loaded.Peers) != 1 || loaded.Peers[0].NodeID != "node-2" {
 		t.Fatalf("loaded peers = %#v", loaded.Peers)
 	}
-	if loaded.Peers[0].LastHandshake != now.Add(3*time.Second) {
-		t.Fatalf("loaded last handshake = %v, want %v", loaded.Peers[0].LastHandshake, now.Add(3*time.Second))
+	wantHandshake := now.Add(3 * time.Second)
+	if !loaded.Peers[0].LastHandshake.Equal(wantHandshake) {
+		t.Fatalf("loaded last handshake = %v, want instant %v", loaded.Peers[0].LastHandshake, wantHandshake)
 	}
 }
 
