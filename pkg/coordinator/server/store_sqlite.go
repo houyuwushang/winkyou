@@ -49,6 +49,8 @@ func NewSQLiteStore(networkCIDR string, leaseTTL time.Duration, now func() time.
 	if err != nil {
 		return nil, fmt.Errorf("coordinator server: open sqlite: %w", err)
 	}
+	db.SetMaxOpenConns(1)
+	db.SetMaxIdleConns(1)
 	store := &SQLiteStore{db: db, network: prefix.Masked(), leaseTTL: leaseTTL, now: now}
 	if err := store.migrate(); err != nil {
 		_ = db.Close()
@@ -66,6 +68,7 @@ func (s *SQLiteStore) Close() error {
 
 func (s *SQLiteStore) migrate() error {
 	stmts := []string{
+		`PRAGMA busy_timeout=5000;`,
 		`PRAGMA journal_mode=WAL;`,
 		`CREATE TABLE IF NOT EXISTS nodes (
 			node_id TEXT PRIMARY KEY,
