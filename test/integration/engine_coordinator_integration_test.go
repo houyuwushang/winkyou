@@ -60,10 +60,10 @@ func TestEngineRuntimeStateLifecycleAgainstCoordinator(t *testing.T) {
 func TestTwoEnginesDiscoverEachOtherViaCoordinator(t *testing.T) {
 	harness := startCoordinatorHarness(t)
 
-	alpha := newTestEngine(t, harness.addr(), "alpha", filepath.Join(t.TempDir(), "alpha.yaml"), func(cfg *config.Config) {
+	alpha := newTestEngine(t, harness.addr(), "alpha", "", func(cfg *config.Config) {
 		cfg.NAT.STUNServers = nil
 	})
-	beta := newTestEngine(t, harness.addr(), "beta", filepath.Join(t.TempDir(), "beta.yaml"), func(cfg *config.Config) {
+	beta := newTestEngine(t, harness.addr(), "beta", "", func(cfg *config.Config) {
 		cfg.NAT.STUNServers = nil
 	})
 
@@ -103,6 +103,13 @@ func TestTwoEnginesDiscoverEachOtherViaCoordinator(t *testing.T) {
 	}
 	if len(beta.GetPeers()) != 1 {
 		t.Fatalf("len(beta peers) = %d, want 1", len(beta.GetPeers()))
+	}
+
+	if err := alpha.Stop(); err != nil {
+		t.Fatalf("alpha Stop() error = %v", err)
+	}
+	if err := beta.Stop(); err != nil {
+		t.Fatalf("beta Stop() error = %v", err)
 	}
 }
 

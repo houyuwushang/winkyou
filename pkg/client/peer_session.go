@@ -300,14 +300,20 @@ func (e *engine) BindingPeer(ctx context.Context, peerID string) (*sesspkg.Bindi
 }
 
 func (s peerMessageSender) Send(ctx context.Context, peerID string, msg solver.Message) error {
-	if s.engine == nil || s.engine.coord == nil {
+	if s.engine == nil {
+		return ErrEngineNotStarted
+	}
+	s.engine.mu.RLock()
+	coord := s.engine.coord
+	s.engine.mu.RUnlock()
+	if coord == nil {
 		return ErrEngineNotStarted
 	}
 	signalType, payload, err := outboundSignalForSolverMessage(msg)
 	if err != nil {
 		return err
 	}
-	return s.engine.coord.SendSignal(ctx, peerID, signalType, payload)
+	return coord.SendSignal(ctx, peerID, signalType, payload)
 }
 
 func peerSessionState(s *peerSession) sesspkg.State {
