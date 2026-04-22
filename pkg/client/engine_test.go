@@ -210,6 +210,32 @@ func TestBindingPeerRelayBootstrapKeepaliveUsesInitiatorOnly(t *testing.T) {
 	})
 }
 
+func TestSchedulePeerRetryUsesCapturedRunContext(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	session := &peerSession{initiator: true}
+	eng := &engine{
+		cfg: config.Config{
+			NAT: config.NATConfig{
+				RetryInterval:    5 * time.Millisecond,
+				RetryMaxInterval: 5 * time.Millisecond,
+			},
+		},
+		runCtx: ctx,
+		peerMgr: &peerManager{sessions: map[string]*peerSession{
+			"node-2": session,
+		}},
+	}
+
+	eng.schedulePeerRetry("node-2", session)
+
+	eng.mu.Lock()
+	eng.runCtx = nil
+	eng.mu.Unlock()
+	cancel()
+
+	time.Sleep(25 * time.Millisecond)
+}
+
 type fakeTunnelForEngineTest struct {
 	peers  []*tunnel.PeerStatus
 	stats  *tunnel.TunnelStats
