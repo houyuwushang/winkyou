@@ -3,54 +3,24 @@ package legacyice
 import (
 	"context"
 
-	"winkyou/pkg/probe/model"
 	"winkyou/pkg/solver"
 )
 
 func (s *Strategy) RankPlans(_ context.Context, input solver.RankInput, plans []solver.Plan) (solver.RankedPlans, error) {
 	ordered := append([]solver.Plan(nil), plans...)
-	observations := make([]solver.Observation, 0, len(input.LocalObservations)+len(input.RemoteObservations))
-
-	solveInput := solver.SolveInput{
-		SessionID:    input.SessionID,
-		RemoteNodeID: input.RemoteNodeID,
-	}
-
-	for _, obs := range input.LocalObservations {
-		if relevantObservationForSession(solveInput, obs) {
-			observations = append(observations, obs)
-		}
-	}
-	for _, obs := range input.RemoteObservations {
-		if obs.Strategy == "" || obs.Strategy == StrategyName {
-			observations = append(observations, obs)
-		}
-	}
-
-	var directFailures, directSuccesses, relaySuccesses int
-	for _, obs := range observations {
-		switch {
-		case obs.PlanID == "legacyice/direct_prefer" && obs.Event == "candidate_failed":
-			directFailures++
-		case obs.PlanID == "legacyice/direct_prefer" && isDirectSuccess(obs):
-			directSuccesses++
-		case obs.PlanID == "legacyice/relay_only" && isRelaySuccess(obs):
-			relaySuccesses++
-		}
-	}
-
-	hasDirect := hasPlan(plans, "legacyice/direct_prefer")
-	hasRelay := hasPlan(plans, "legacyice/relay_only")
+	evidence := summarizeRankEvidence(input)
+	hasDirect := hasPlan(plans, planIDDirectPrefer)
+	hasRelay := hasPlan(plans, planIDRelayOnly)
 
 	switch {
-	case hasDirect && hasRelay && directFailures > 0 && relaySuccesses > 0:
+	case hasDirect && hasRelay && evidence.relayPreferred():
 		return solver.RankedPlans{
-			Plans:  reorderPlans(plans, "legacyice/relay_only", "legacyice/direct_prefer"),
+			Plans:  reorderPlans(plans, planIDRelayOnly, planIDDirectPrefer),
 			Reason: "recent_direct_failure_with_relay_success",
 		}, nil
-	case directSuccesses > 0:
+	case evidence.directSuccessful():
 		return solver.RankedPlans{Plans: ordered, Reason: "recent_direct_success"}, nil
-	case input.LastProbeResult != nil && input.LastProbeResult.ScriptType == model.ScriptTypePreflight && input.LastProbeResult.Success:
+	case evidence.PreflightSuccess:
 		return solver.RankedPlans{Plans: ordered, Reason: "preflight_ok_default"}, nil
 	default:
 		return solver.RankedPlans{Plans: ordered, Reason: "no_relevant_history"}, nil

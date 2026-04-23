@@ -82,6 +82,34 @@ func (r *refiningStrategy) RefinePlans(ctx context.Context, in solver.SolveInput
 	}, nil
 }
 
+type evidencePlanningStrategy struct {
+	fakeStrategy
+	planInput solver.SolveInput
+}
+
+func (e *evidencePlanningStrategy) Plan(ctx context.Context, in solver.SolveInput) ([]solver.Plan, error) {
+	_ = ctx
+	e.planInput = in
+
+	directFailures := 0
+	relaySuccesses := 0
+	for _, obs := range in.LocalObservations {
+		switch {
+		case obs.PlanID == "legacyice/direct_prefer" && obs.Event == "candidate_failed":
+			directFailures++
+		case obs.PlanID == "legacyice/relay_only" && obs.Event == "candidate_succeeded":
+			relaySuccesses++
+		}
+	}
+	if directFailures >= 2 && relaySuccesses > 0 {
+		return []solver.Plan{{ID: "legacyice/relay_only", Strategy: e.name}}, nil
+	}
+	return []solver.Plan{
+		{ID: "legacyice/direct_prefer", Strategy: e.name},
+		{ID: "legacyice/relay_only", Strategy: e.name},
+	}, nil
+}
+
 func TestSessionUsesStrategyAuthoredPreflightProbe(t *testing.T) {
 	transport := &fakeTransport{}
 	strategy := &planningProbeStrategy{fakeStrategy: fakeStrategy{name: "legacy_ice_udp", transport: transport}}
@@ -220,6 +248,78 @@ func TestAnnotateObservationDetailsHandlesEmptyMap(t *testing.T) {
 	}
 	if details["initiator"] != "true" {
 		t.Fatalf("initiator = %q, want true", details["initiator"])
+	}
+}
+
+func TestSessionLetsEvidenceShapePlanGenerationBeforeRefine(t *testing.T) {
+	transport := &fakeTransport{}
+	strategy := &evidencePlanningStrategy{fakeStrategy: fakeStrategy{name: "legacy_ice_udp", transport: transport}}
+	sender := &fakeSender{}
+	history := fakeObservationHistory{items: []solver.Observation{
+		{
+			Strategy: "legacy_ice_udp",
+			PlanID:   "legacyice/direct_prefer",
+			Event:    "candidate_failed",
+			Details: map[string]string{
+				"session_id": "session/node-a/node-b",
+				"peer_id":    "node-b",
+			},
+		},
+		{
+			Strategy: "legacy_ice_udp",
+			PlanID:   "legacyice/direct_prefer",
+			Event:    "candidate_failed",
+			Details: map[string]string{
+				"session_id": "session/node-a/node-b",
+				"peer_id":    "node-b",
+			},
+		},
+		{
+			Strategy:       "legacy_ice_udp",
+			PlanID:         "legacyice/relay_only",
+			Event:          "candidate_succeeded",
+			ConnectionType: "relay",
+			Details: map[string]string{
+				"session_id": "session/node-a/node-b",
+				"peer_id":    "node-b",
+			},
+		},
+	}}
+
+	s, err := New(Config{
+		SessionID:             "session/node-a/node-b",
+		LocalNodeID:           "node-a",
+		PeerID:                "node-b",
+		Initiator:             false,
+		Resolver:              &fakeResolver{local: rproto.Capability{Strategies: []string{"legacy_ice_udp"}}, strategy: strategy, selection: Selection{StrategyName: "legacy_ice_udp", Negotiated: true}},
+		Sender:                sender,
+		ObservationHistory:    history,
+		RunTimeout:            3 * time.Second,
+		CapabilityWaitTimeout: time.Second,
+	})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	if err := s.Start(context.Background()); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	if err := s.HandleMessage(context.Background(), envelopeMessage(t, "session/node-a/node-b", "node-b", "node-a", rproto.MsgTypeCapability, 1, rproto.Capability{Strategies: []string{"legacy_ice_udp"}}, time.Now())); err != nil {
+		t.Fatalf("HandleMessage(capability) error = %v", err)
+	}
+	waitForState(t, s, StateBound)
+
+	if len(strategy.planInput.LocalObservations) < 3 {
+		t.Fatalf("Plan() local observations = %d, want strong evidence history", len(strategy.planInput.LocalObservations))
+	}
+	snapshot := s.Snapshot()
+	if len(snapshot.LastPlanSetBeforeRefine) != 1 || snapshot.LastPlanSetBeforeRefine[0] != "legacyice/relay_only" {
+		t.Fatalf("LastPlanSetBeforeRefine = %v, want evidence-shaped relay_only before refine", snapshot.LastPlanSetBeforeRefine)
+	}
+	if len(snapshot.LastPlanSetAfterRefine) != 1 || snapshot.LastPlanSetAfterRefine[0] != "legacyice/relay_only" {
+		t.Fatalf("LastPlanSetAfterRefine = %v, want relay_only without refiner mutation", snapshot.LastPlanSetAfterRefine)
+	}
+	if len(snapshot.LastPlanOrder) != 1 || snapshot.LastPlanOrder[0] != "legacyice/relay_only" {
+		t.Fatalf("LastPlanOrder = %v, want relay_only candidate loop order", snapshot.LastPlanOrder)
 	}
 }
 
