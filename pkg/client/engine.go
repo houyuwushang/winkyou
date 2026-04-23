@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"net"
-	"os"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -271,12 +270,13 @@ func (e *engine) probeRunner() *probelab.Runner {
 }
 
 func (e *engine) Stop() error {
-	e.mu.RLock()
+	e.mu.Lock()
 	if !e.started {
-		e.mu.RUnlock()
+		e.mu.Unlock()
 		return nil
 	}
-	e.mu.RUnlock()
+	e.started = false
+	e.mu.Unlock()
 
 	e.setState(EngineStateStopping, "")
 
@@ -292,9 +292,6 @@ func (e *engine) Stop() error {
 
 	e.wg.Wait()
 	e.cleanupResources()
-	e.mu.Lock()
-	e.started = false
-	e.mu.Unlock()
 
 	e.setState(EngineStateStopped, "")
 	if err := RemoveRuntimeState(e.statePath); err != nil {
@@ -592,11 +589,7 @@ func (e *engine) removeObservationState() error {
 	if strings.TrimSpace(path) == "" {
 		return nil
 	}
-	err := os.Remove(path)
-	if errors.Is(err, os.ErrNotExist) {
-		return nil
-	}
-	return err
+	return removePathWithRetry(path)
 }
 
 func (e *engine) currentNodeID() string {

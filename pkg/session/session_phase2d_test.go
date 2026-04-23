@@ -121,7 +121,9 @@ func TestSessionUsesStrategyAuthoredPreflightProbe(t *testing.T) {
 	if err := s.HandleMessage(context.Background(), envelopeMessage(t, "session/node-a/node-b", "node-b", "node-a", rproto.MsgTypeCapability, 1, rproto.Capability{Strategies: []string{"legacy_ice_udp"}, Features: []string{rproto.FeatureProbeLabV1, rproto.FeatureProbeScriptV1}}, time.Now())); err != nil {
 		t.Fatalf("HandleMessage(capability) error = %v", err)
 	}
-	if err := s.HandleMessage(context.Background(), envelopeMessage(t, "session/node-a/node-b", "node-b", "node-a", rproto.MsgTypeProbeResult, 2, rproto.ProbeResult{ScriptType: pmodel.ScriptTypePreflight, PlanID: "probe/preflight", Success: true, FinishedAt: time.Now()}, time.Now())); err != nil {
+	waitForEnvelopeMessage(t, sender.Messages, rproto.MsgTypeProbeScript)
+	probeReceivedAt := time.Now()
+	if err := s.HandleMessage(context.Background(), envelopeMessage(t, "session/node-a/node-b", "node-b", "node-a", rproto.MsgTypeProbeResult, 2, rproto.ProbeResult{ScriptType: pmodel.ScriptTypePreflight, PlanID: "probe/preflight", Success: true, FinishedAt: probeReceivedAt}, probeReceivedAt)); err != nil {
 		t.Fatalf("HandleMessage(probe_result) error = %v", err)
 	}
 

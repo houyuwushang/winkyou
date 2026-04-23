@@ -104,8 +104,9 @@ func TestRuntimeStateRoundTrip(t *testing.T) {
 	if len(loaded.Peers) != 1 || loaded.Peers[0].NodeID != "node-2" {
 		t.Fatalf("loaded peers = %#v", loaded.Peers)
 	}
-	if loaded.Peers[0].LastHandshake != now.Add(3*time.Second) {
-		t.Fatalf("loaded last handshake = %v, want %v", loaded.Peers[0].LastHandshake, now.Add(3*time.Second))
+	wantHandshake := now.Add(3 * time.Second)
+	if !loaded.Peers[0].LastHandshake.Equal(wantHandshake) {
+		t.Fatalf("loaded last handshake = %v, want instant %v", loaded.Peers[0].LastHandshake, wantHandshake)
 	}
 }
 
@@ -157,6 +158,82 @@ func TestUpdateStatusCountersSyncsTunnelPeerState(t *testing.T) {
 	if peer.TransportLastError != "write: broken pipe" {
 		t.Fatalf("peer transport error = %q, want write: broken pipe", peer.TransportLastError)
 	}
+}
+
+func TestBindingPeerRelayBootstrapKeepaliveUsesInitiatorOnly(t *testing.T) {
+	pub := mustTestPublicKey(t)
+	basePeer := &PeerStatus{
+		NodeID:    "node-2",
+		PublicKey: pub.String(),
+		VirtualIP: net.ParseIP("10.77.0.2"),
+		Endpoint:  &net.UDPAddr{IP: net.ParseIP("203.0.113.10"), Port: 51820},
+	}
+
+	t.Run("initiator retains keepalive", func(t *testing.T) {
+		eng := &engine{
+			cfg: config.Config{
+				NAT: config.NATConfig{ForceRelay: true},
+			},
+			peers: map[string]*PeerStatus{"node-2": clonePeerStatus(basePeer)},
+			peerMgr: &peerManager{sessions: map[string]*peerSession{
+				"node-2": {initiator: true},
+			}},
+		}
+
+		bindingPeer, err := eng.BindingPeer(context.Background(), "node-2")
+		if err != nil {
+			t.Fatalf("BindingPeer() error = %v", err)
+		}
+		if bindingPeer.Keepalive != 10*time.Second {
+			t.Fatalf("BindingPeer().Keepalive = %v, want 10s for initiator", bindingPeer.Keepalive)
+		}
+	})
+
+	t.Run("controlled disables bootstrap keepalive", func(t *testing.T) {
+		eng := &engine{
+			cfg: config.Config{
+				NAT: config.NATConfig{ForceRelay: true},
+			},
+			peers: map[string]*PeerStatus{"node-2": clonePeerStatus(basePeer)},
+			peerMgr: &peerManager{sessions: map[string]*peerSession{
+				"node-2": {initiator: false},
+			}},
+		}
+
+		bindingPeer, err := eng.BindingPeer(context.Background(), "node-2")
+		if err != nil {
+			t.Fatalf("BindingPeer() error = %v", err)
+		}
+		if bindingPeer.Keepalive != 0 {
+			t.Fatalf("BindingPeer().Keepalive = %v, want 0 for controlled relay bootstrap", bindingPeer.Keepalive)
+		}
+	})
+}
+
+func TestSchedulePeerRetryUsesCapturedRunContext(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	session := &peerSession{initiator: true}
+	eng := &engine{
+		cfg: config.Config{
+			NAT: config.NATConfig{
+				RetryInterval:    5 * time.Millisecond,
+				RetryMaxInterval: 5 * time.Millisecond,
+			},
+		},
+		runCtx: ctx,
+		peerMgr: &peerManager{sessions: map[string]*peerSession{
+			"node-2": session,
+		}},
+	}
+
+	eng.schedulePeerRetry("node-2", session)
+
+	eng.mu.Lock()
+	eng.runCtx = nil
+	eng.mu.Unlock()
+	cancel()
+
+	time.Sleep(25 * time.Millisecond)
 }
 
 type fakeTunnelForEngineTest struct {

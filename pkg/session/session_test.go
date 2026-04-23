@@ -496,3 +496,16 @@ func findEnvelopeMessage(messages []solver.Message, msgType string) (solver.Mess
 	}
 	return solver.Message{}, false
 }
+
+func waitForEnvelopeMessage(t *testing.T, messages func() []solver.Message, msgType string) solver.Message {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if msg, ok := findEnvelopeMessage(messages(), msgType); ok {
+			return msg
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("messages = %+v, want %s envelope", messages(), msgType)
+	return solver.Message{}
+}

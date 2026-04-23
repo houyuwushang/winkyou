@@ -268,6 +268,11 @@ func (e *engine) handlePeerSessionError(nodeID string, s *peerSession, err error
 func (e *engine) BindingPeer(ctx context.Context, peerID string) (*sesspkg.BindingPeer, error) {
 	e.mu.RLock()
 	peer, ok := e.peers[peerID]
+	session := (*peerSession)(nil)
+	if e.peerMgr != nil {
+		session = e.peerMgr.sessions[peerID]
+	}
+	relayBootstrap := e.cfg.NAT.ForceRelay || (len(e.cfg.NAT.TURNServers) > 0 && len(e.cfg.NAT.STUNServers) == 0)
 	e.mu.RUnlock()
 	if !ok || peer == nil {
 		return nil, ErrPeerNotFound
@@ -281,23 +286,34 @@ func (e *engine) BindingPeer(ctx context.Context, peerID string) (*sesspkg.Bindi
 	if err != nil {
 		return nil, err
 	}
+
+	keepalive := 10 * time.Second
+	if relayBootstrap && session != nil && !session.initiator {
+		keepalive = 0
+	}
 	return &sesspkg.BindingPeer{
 		PublicKey:  publicKey,
 		AllowedIPs: []net.IPNet{*allowedIP},
 		Endpoint:   cloneUDPAddr(peer.Endpoint),
-		Keepalive:  10 * time.Second,
+		Keepalive:  keepalive,
 	}, nil
 }
 
 func (s peerMessageSender) Send(ctx context.Context, peerID string, msg solver.Message) error {
-	if s.engine == nil || s.engine.coord == nil {
+	if s.engine == nil {
+		return ErrEngineNotStarted
+	}
+	s.engine.mu.RLock()
+	coord := s.engine.coord
+	s.engine.mu.RUnlock()
+	if coord == nil {
 		return ErrEngineNotStarted
 	}
 	signalType, payload, err := outboundSignalForSolverMessage(msg)
 	if err != nil {
 		return err
 	}
-	return s.engine.coord.SendSignal(ctx, peerID, signalType, payload)
+	return coord.SendSignal(ctx, peerID, signalType, payload)
 }
 
 func peerSessionState(s *peerSession) sesspkg.State {

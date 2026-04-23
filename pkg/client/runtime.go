@@ -113,11 +113,7 @@ func WriteRuntimeState(path string, state *RuntimeState) error {
 
 func RemoveRuntimeState(path string) error {
 	target := RuntimeStatePath(path)
-	err := os.Remove(target)
-	if errors.Is(err, os.ErrNotExist) {
-		return nil
-	}
-	return err
+	return removePathWithRetry(target)
 }
 
 func (s *RuntimeState) IsFresh(maxAge time.Duration) bool {
@@ -204,4 +200,18 @@ func udpAddrString(addr *net.UDPAddr) string {
 		return ""
 	}
 	return addr.String()
+}
+
+func removePathWithRetry(target string) error {
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		err := os.Remove(target)
+		if err == nil || errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		if time.Now().After(deadline) {
+			return err
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
 }
