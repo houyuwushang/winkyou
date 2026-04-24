@@ -5,6 +5,7 @@ WinkYou is being refactored from an ICE/TURN-centric VPN implementation into a `
 ## Active Architecture Baseline
 
 - Active baseline: [`docs/CONNECTIVITY-SOLVER-BASELINE.md`](./docs/CONNECTIVITY-SOLVER-BASELINE.md)
+- Phase 2D freeze gate: [`docs/PHASE2D-FREEZE.md`](./docs/PHASE2D-FREEZE.md)
 - Frozen legacy MVP baseline notice: [`docs/EXECUTION-BASELINE.md`](./docs/EXECUTION-BASELINE.md)
 - Historical legacy snapshot reference: [`docs/legacy/EXECUTION-BASELINE-legacy.md`](./docs/legacy/EXECUTION-BASELINE-legacy.md)
 
@@ -21,7 +22,9 @@ The current runnable path is still:
 - session-managed peer lifecycle
 - rendezvous v2 capability / observation / probe / path-commit envelope exchange on the existing coordinator channel
 
-This is now a Phase 2D runtime slice. The current work keeps the existing UDP/ICE/WireGuard vertical slice runnable while evolving probe/observation from "ordering basis" to "planning basis" — evidence now shapes plan generation and pruning, not just ranking.
+Phase 2D is freeze-ready. The next architecture entry point is Phase 3A: Strategy Portfolio Foundation, which should define and test multi-strategy selection boundaries before adding any real TCP, QUIC, proxy, or no-admin transport line.
+
+The current runnable path remains the legacy ICE/UDP plus WireGuard vertical slice, with evidence now shaping plan generation and pruning, not just ranking.
 
 ## Current Deployable Path
 
@@ -42,6 +45,7 @@ Not completed:
 ## Repository Map
 
 - Active architecture baseline: [`docs/CONNECTIVITY-SOLVER-BASELINE.md`](./docs/CONNECTIVITY-SOLVER-BASELINE.md)
+- Phase 2D freeze gate: [`docs/PHASE2D-FREEZE.md`](./docs/PHASE2D-FREEZE.md)
 - Supplemental architecture notes: [`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md)
 - Documentation index: [`docs/README.md`](./docs/README.md)
 - Quickstart assets: [`deploy/quickstart/`](./deploy/quickstart/)
