@@ -221,7 +221,7 @@ Delivered:
 
 **Status**: Frozen at tag `phase2c-freeze-2026-04-17`
 
-### Phase 2D (Completed / Freeze-Ready)
+### Phase 2D (Completed / Frozen)
 
 **Scope**: Evolve probe/observation from "ordering basis" to "planning basis" — let evidence shape plan generation and pruning, not just ranking.
 
@@ -245,7 +245,7 @@ Required outcome:
 - complex public probe infrastructure
 - coordinator proto redesign
 
-**Status**: Completed / freeze-ready. The freeze tag has not been created yet; see [`PHASE2D-FREEZE.md`](./PHASE2D-FREEZE.md) for the gate and tag procedure.
+**Status**: Frozen at tag `phase2d-freeze-2026-04-24`; see [`PHASE2D-FREEZE.md`](./PHASE2D-FREEZE.md) for the regression gate.
 
 ### Phase 3A (Next)
 
@@ -293,3 +293,4 @@ If an old document conflicts with this file, this file wins.
 - `phase2a-freeze-2026-04-16`
 - `phase2b-freeze-2026-04-17`
 - `phase2c-freeze-2026-04-17`
+- `phase2d-freeze-2026-04-24`

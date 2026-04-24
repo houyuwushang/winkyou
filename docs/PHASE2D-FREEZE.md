@@ -2,15 +2,11 @@
 
 ## Status
 
-Phase 2D is completed and freeze-ready.
-
-The freeze tag has not been created yet. The expected tag name for this gate is:
+Phase 2D is completed and frozen at tag:
 
 ```bash
 phase2d-freeze-2026-04-24
 ```
-
-Create and push that tag only after the freeze gate commands pass and the release owner confirms the tag operation.
 
 ## Scope
 
@@ -41,7 +37,7 @@ Relay is a valid solved path, not a failure state. The only real strategy in thi
 
 ## Freeze Gate Commands
 
-Run these commands before creating a Phase 2D freeze tag:
+Run these commands to validate the Phase 2D frozen baseline:
 
 ```bash
 go test ./pkg/solver/strategy/legacyice -count=10
@@ -59,11 +55,11 @@ make test-phase2d
 
 The `make test-phase2d` target uses POSIX-style environment assignment for the relay smoke command. Use Linux, macOS, or a compatible shell for that target. Windows CI still covers `go test ./...`; on Windows shells, run the relay smoke command with equivalent environment variables.
 
-## Tag Procedure
+## Tag Record
 
-Do not create or push the tag until the gate has passed and the release owner has confirmed the operation.
+The Phase 2D freeze tag has already been created and pushed. Do not recreate or move it.
 
-Suggested commands:
+Historical commands used for the freeze:
 
 ```bash
 git switch main
@@ -71,8 +67,6 @@ git pull --ff-only origin main
 git tag -a phase2d-freeze-2026-04-24 -m "Freeze Phase 2D evidence-driven planning baseline"
 git push origin phase2d-freeze-2026-04-24
 ```
-
-After tagging, update `docs/CONNECTIVITY-SOLVER-BASELINE.md` from freeze-ready to frozen-at-tag status in a follow-up change.
 
 ## Known Non-Goals
 
