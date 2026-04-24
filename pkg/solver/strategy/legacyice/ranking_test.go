@@ -16,6 +16,7 @@ func TestStrategyRankPlansPrefersRelayAfterDirectFailures(t *testing.T) {
 	plans := defaultPlans()
 
 	ranked, err := strategy.RankPlans(context.Background(), solver.RankInput{
+		LocalNodeID:      "node-a",
 		SessionID:        "session/node-a/node-b",
 		RemoteNodeID:     "node-b",
 		RemoteCapability: rproto.Capability{Strategies: []string{StrategyName}},
@@ -40,6 +41,7 @@ func TestStrategyRankPlansKeepsDirectFirstAfterDirectSuccess(t *testing.T) {
 	plans := defaultPlans()
 
 	ranked, err := strategy.RankPlans(context.Background(), solver.RankInput{
+		LocalNodeID:  "node-a",
 		SessionID:    "session/node-a/node-b",
 		RemoteNodeID: "node-b",
 		LocalObservations: []solver.Observation{
@@ -95,6 +97,54 @@ func TestStrategyRankPlansUsesSuccessfulPreflightAsNeutralSignal(t *testing.T) {
 	}
 }
 
+func TestStrategyRankPlansIgnoresCrossSessionRemoteEvidence(t *testing.T) {
+	strategy := New(Config{})
+	plans := defaultPlans()
+
+	ranked, err := strategy.RankPlans(context.Background(), solver.RankInput{
+		LocalNodeID:  "node-a",
+		SessionID:    "session/node-a/node-b",
+		RemoteNodeID: "node-b",
+		RemoteObservations: []solver.Observation{
+			observationWithScope(planIDDirectPrefer, "candidate_failed", "", "session/node-x/node-y", "node-a"),
+			observationWithScope(planIDRelayOnly, "candidate_succeeded", "relay", "session/node-x/node-y", "node-a"),
+		},
+	}, plans)
+	if err != nil {
+		t.Fatalf("RankPlans() error = %v", err)
+	}
+	if !slices.Equal(planIDs(ranked.Plans), planIDs(plans)) {
+		t.Fatalf("ranked plans = %v, want default order %v", planIDs(ranked.Plans), planIDs(plans))
+	}
+	if ranked.Reason != "no_relevant_history" {
+		t.Fatalf("Reason = %q, want no_relevant_history", ranked.Reason)
+	}
+}
+
+func TestStrategyRankPlansCanUseUnscopedRemoteEvidenceAsWeakHint(t *testing.T) {
+	strategy := New(Config{})
+	plans := defaultPlans()
+
+	ranked, err := strategy.RankPlans(context.Background(), solver.RankInput{
+		LocalNodeID:  "node-a",
+		SessionID:    "session/node-a/node-b",
+		RemoteNodeID: "node-b",
+		RemoteObservations: []solver.Observation{
+			unscopedObservation(planIDDirectPrefer, "candidate_failed", ""),
+			unscopedObservation(planIDRelayOnly, "candidate_succeeded", "relay"),
+		},
+	}, plans)
+	if err != nil {
+		t.Fatalf("RankPlans() error = %v", err)
+	}
+	if !slices.Equal(planIDs(ranked.Plans), []string{planIDRelayOnly, planIDDirectPrefer}) {
+		t.Fatalf("ranked plans = %v, want weak relay hint to rank relay first", planIDs(ranked.Plans))
+	}
+	if ranked.Reason != "recent_direct_failure_with_relay_success" {
+		t.Fatalf("Reason = %q, want recent_direct_failure_with_relay_success", ranked.Reason)
+	}
+}
+
 func defaultPlans() []solver.Plan {
 	return []solver.Plan{
 		{ID: "legacyice/direct_prefer", Strategy: StrategyName},
@@ -103,15 +153,28 @@ func defaultPlans() []solver.Plan {
 }
 
 func observationForRanking(planID, event, connectionType, peerID string) solver.Observation {
+	return observationWithScope(planID, event, connectionType, "session/node-a/node-b", peerID)
+}
+
+func observationWithScope(planID, event, connectionType, sessionID, peerID string) solver.Observation {
 	return solver.Observation{
 		Strategy:       StrategyName,
 		PlanID:         planID,
 		Event:          event,
 		ConnectionType: connectionType,
 		Details: map[string]string{
-			"session_id": "session/node-a/node-b",
+			"session_id": sessionID,
 			"peer_id":    peerID,
 		},
+	}
+}
+
+func unscopedObservation(planID, event, connectionType string) solver.Observation {
+	return solver.Observation{
+		Strategy:       StrategyName,
+		PlanID:         planID,
+		Event:          event,
+		ConnectionType: connectionType,
 	}
 }
 
