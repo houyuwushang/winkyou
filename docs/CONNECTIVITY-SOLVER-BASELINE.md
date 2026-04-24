@@ -221,7 +221,7 @@ Delivered:
 
 **Status**: Frozen at tag `phase2c-freeze-2026-04-17`
 
-### Phase 2D (Current)
+### Phase 2D (Completed / Freeze-Ready)
 
 **Scope**: Evolve probe/observation from "ordering basis" to "planning basis" — let evidence shape plan generation and pruning, not just ranking.
 
@@ -244,6 +244,26 @@ Required outcome:
 - concurrent candidate execution
 - complex public probe infrastructure
 - coordinator proto redesign
+
+**Status**: Completed / freeze-ready. The freeze tag has not been created yet; see [`PHASE2D-FREEZE.md`](./PHASE2D-FREEZE.md) for the gate and tag procedure.
+
+### Phase 3A (Next)
+
+**Scope**: Strategy Portfolio Foundation.
+
+Required outcome:
+
+- document the boundary for multiple solver strategies without implementing a second real transport path
+- verify strategy selection and resolver behavior can support more than `legacy_ice_udp`
+- keep solver core and session APIs strategy-agnostic
+- use fake or mock strategies where tests need multiple strategy names
+
+**Not in Phase 3A entry work**:
+
+- real TCP/443, QUIC, HTTP CONNECT, WebSocket, or peer relay transport
+- real new data plane
+- coordinator proto or rendezvous envelope redesign
+- broad solver/session rewrites
 
 ## Not In Scope Yet
 
