@@ -5,7 +5,8 @@
 1. Active architecture baseline: [`CONNECTIVITY-SOLVER-BASELINE.md`](./CONNECTIVITY-SOLVER-BASELINE.md)
 2. Repository homepage and status summary: [`../README.md`](../README.md)
 3. Phase 2D freeze gate: [`PHASE2D-FREEZE.md`](./PHASE2D-FREEZE.md)
-4. Supplemental architecture notes: [`ARCHITECTURE.md`](./ARCHITECTURE.md)
+4. Phase 3A strategy portfolio entry: [`PHASE3A-STRATEGY-PORTFOLIO.md`](./PHASE3A-STRATEGY-PORTFOLIO.md)
+5. Supplemental architecture notes: [`ARCHITECTURE.md`](./ARCHITECTURE.md)
 
 ## Legacy Material
 
