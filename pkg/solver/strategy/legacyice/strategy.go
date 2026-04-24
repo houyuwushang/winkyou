@@ -32,9 +32,19 @@ func (s *Strategy) Plan(ctx context.Context, in solver.SolveInput) ([]solver.Pla
 	s.input = in
 	s.mu.Unlock()
 
-	plans := []solver.Plan{
+	plans := s.basePlans()
+	evidence := summarizeSolveEvidence(in)
+	if evidence.strongRelayOnly() {
+		return annotatePlanEvidence([]solver.Plan{plans[1]}, evidence.hint()), nil
+	}
+
+	return annotatePlanEvidence(plans, evidence.hint()), nil
+}
+
+func (s *Strategy) basePlans() []solver.Plan {
+	return []solver.Plan{
 		{
-			ID:       "legacyice/direct_prefer",
+			ID:       planIDDirectPrefer,
 			Strategy: s.Name(),
 			Metadata: map[string]string{
 				"transport":   "ice_udp",
@@ -43,7 +53,7 @@ func (s *Strategy) Plan(ctx context.Context, in solver.SolveInput) ([]solver.Pla
 			},
 		},
 		{
-			ID:       "legacyice/relay_only",
+			ID:       planIDRelayOnly,
 			Strategy: s.Name(),
 			Metadata: map[string]string{
 				"transport":   "ice_udp",
@@ -52,8 +62,20 @@ func (s *Strategy) Plan(ctx context.Context, in solver.SolveInput) ([]solver.Pla
 			},
 		},
 	}
+}
 
-	return plans, nil
+func annotatePlanEvidence(plans []solver.Plan, hint string) []solver.Plan {
+	out := make([]solver.Plan, 0, len(plans))
+	for _, plan := range plans {
+		next := plan
+		next.Metadata = make(map[string]string, len(plan.Metadata)+1)
+		for k, v := range plan.Metadata {
+			next.Metadata[k] = v
+		}
+		next.Metadata["evidence_hint"] = hint
+		out = append(out, next)
+	}
+	return out
 }
 
 func (s *Strategy) NewExecutor(plan solver.Plan) (solver.PlanExecutor, error) {

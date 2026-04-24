@@ -69,6 +69,11 @@ func TestStrategyBuildPreflightProbeReturnsStrategyAuthoredScript(t *testing.T) 
 		SessionID:    "session/node-a/node-b",
 		RemoteNodeID: "node-b",
 		Initiator:    true,
+		LocalObservations: []solver.Observation{
+			observationForRanking(planIDDirectPrefer, "candidate_failed", "", "node-b"),
+			observationForRanking(planIDDirectPrefer, "candidate_failed", "", "node-b"),
+			observationForRanking(planIDRelayOnly, "candidate_succeeded", "relay", "node-b"),
+		},
 	})
 	if err != nil {
 		t.Fatalf("BuildPreflightProbe() error = %v", err)
@@ -84,6 +89,16 @@ func TestStrategyBuildPreflightProbeReturnsStrategyAuthoredScript(t *testing.T) 
 	}
 	if len(script.Steps) == 0 {
 		t.Fatal("expected strategy-authored probe steps")
+	}
+	report := script.Steps[len(script.Steps)-1].Params
+	if report["session_id"] != "session/node-a/node-b" || report["remote_node_id"] != "node-b" {
+		t.Fatalf("probe report params = %#v, want session and remote node details", report)
+	}
+	if report["evidence_hint"] != "strong_relay_only" {
+		t.Fatalf("evidence_hint = %q, want strong_relay_only", report["evidence_hint"])
+	}
+	if report["direct_failures"] != "2" || report["relay_successes"] != "1" {
+		t.Fatalf("probe evidence counters = %#v, want direct_failures=2 relay_successes=1", report)
 	}
 	if !policy.Optional {
 		t.Fatal("expected preflight probe to be optional")
