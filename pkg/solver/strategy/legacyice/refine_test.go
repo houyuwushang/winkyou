@@ -15,6 +15,7 @@ func TestStrategyRefinePlansPrunesDirectUnderStrongRelayEvidence(t *testing.T) {
 	plans := defaultPlans()
 
 	refined, err := strategy.RefinePlans(context.Background(), solver.SolveInput{
+		LocalNodeID:  "node-a",
 		SessionID:    "session/node-a/node-b",
 		RemoteNodeID: "node-b",
 		LocalObservations: []solver.Observation{
@@ -39,11 +40,67 @@ func TestStrategyRefinePlansPrunesDirectUnderStrongRelayEvidence(t *testing.T) {
 	}
 }
 
+func TestStrategyRefinePlansKeepsDirectWhenRemoteEvidenceIsStaleOrUnscoped(t *testing.T) {
+	strategy := New(Config{})
+	plans := defaultPlans()
+
+	tests := []struct {
+		name               string
+		remoteObservations []solver.Observation
+	}{
+		{
+			name: "cross session",
+			remoteObservations: []solver.Observation{
+				observationWithScope(planIDDirectPrefer, "candidate_failed", "", "session/node-x/node-y", "node-a"),
+				observationWithScope(planIDDirectPrefer, "candidate_failed", "", "session/node-x/node-y", "node-a"),
+				observationWithScope(planIDRelayOnly, "candidate_succeeded", "relay", "session/node-x/node-y", "node-a"),
+			},
+		},
+		{
+			name: "cross peer",
+			remoteObservations: []solver.Observation{
+				observationWithScope(planIDDirectPrefer, "candidate_failed", "", "session/node-a/node-b", "node-x"),
+				observationWithScope(planIDDirectPrefer, "candidate_failed", "", "session/node-a/node-b", "node-x"),
+				observationWithScope(planIDRelayOnly, "candidate_succeeded", "relay", "session/node-a/node-b", "node-x"),
+			},
+		},
+		{
+			name: "unscoped",
+			remoteObservations: []solver.Observation{
+				unscopedObservation(planIDDirectPrefer, "candidate_failed", ""),
+				unscopedObservation(planIDDirectPrefer, "candidate_failed", ""),
+				unscopedObservation(planIDRelayOnly, "candidate_succeeded", "relay"),
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			refined, err := strategy.RefinePlans(context.Background(), solver.SolveInput{
+				LocalNodeID:        "node-a",
+				SessionID:          "session/node-a/node-b",
+				RemoteNodeID:       "node-b",
+				RemoteObservations: tt.remoteObservations,
+			}, plans)
+			if err != nil {
+				t.Fatalf("RefinePlans() error = %v", err)
+			}
+			if !slices.Equal(planIDs(refined.Plans), planIDs(plans)) {
+				t.Fatalf("refined plans = %v, want default order %v", planIDs(refined.Plans), planIDs(plans))
+			}
+			if refined.Reason != "no_refinement" {
+				t.Fatalf("Reason = %q, want no_refinement", refined.Reason)
+			}
+		})
+	}
+}
+
 func TestStrategyRefinePlansKeepsPlansWithoutStrongEvidence(t *testing.T) {
 	strategy := New(Config{})
 	plans := defaultPlans()
 
 	refined, err := strategy.RefinePlans(context.Background(), solver.SolveInput{
+		LocalNodeID:  "node-a",
 		SessionID:    "session/node-a/node-b",
 		RemoteNodeID: "node-b",
 		LocalObservations: []solver.Observation{
@@ -66,6 +123,7 @@ func TestStrategyBuildPreflightProbeReturnsStrategyAuthoredScript(t *testing.T) 
 	strategy := New(Config{})
 
 	script, policy, err := strategy.BuildPreflightProbe(context.Background(), solver.ProbeInput{
+		LocalNodeID:  "node-a",
 		SessionID:    "session/node-a/node-b",
 		RemoteNodeID: "node-b",
 		Initiator:    true,

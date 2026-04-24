@@ -11,17 +11,20 @@ const (
 )
 
 type evidenceSummary struct {
-	DirectFailures   int
-	DirectSuccesses  int
-	RelaySuccesses   int
-	PreflightSuccess bool
-	PreflightFailure bool
+	DirectFailures         int
+	DirectSuccesses        int
+	RelaySuccesses         int
+	PruningDirectFailures  int
+	PruningDirectSuccesses int
+	PruningRelaySuccesses  int
+	PreflightSuccess       bool
+	PreflightFailure       bool
 }
 
 func summarizeSolveEvidence(input solver.SolveInput) evidenceSummary {
 	summary := evidenceSummary{}
-	for _, obs := range collectRelevantObservations(input) {
-		summary.addObservation(obs)
+	for _, evidence := range collectRelevantObservationEvidence(input) {
+		summary.addObservation(evidence)
 	}
 	summary.addProbeResult(input.LastProbeResult)
 	return summary
@@ -54,29 +57,39 @@ func summarizeProbeEvidence(input solver.ProbeInput) evidenceSummary {
 	})
 }
 
-func collectRelevantObservations(input solver.SolveInput) []solver.Observation {
-	observations := make([]solver.Observation, 0, len(input.LocalObservations)+len(input.RemoteObservations))
+func collectRelevantObservationEvidence(input solver.SolveInput) []observationEvidence {
+	observations := make([]observationEvidence, 0, len(input.LocalObservations)+len(input.RemoteObservations))
 	for _, obs := range input.LocalObservations {
-		if relevantObservationForSession(input, obs) {
-			observations = append(observations, obs)
+		if evidence, ok := relevantObservationForInput(input, obs, observationSourceLocal); ok {
+			observations = append(observations, evidence)
 		}
 	}
 	for _, obs := range input.RemoteObservations {
-		if obs.Strategy == "" || obs.Strategy == StrategyName {
-			observations = append(observations, obs)
+		if evidence, ok := relevantObservationForInput(input, obs, observationSourceRemote); ok {
+			observations = append(observations, evidence)
 		}
 	}
 	return observations
 }
 
-func (e *evidenceSummary) addObservation(obs solver.Observation) {
+func (e *evidenceSummary) addObservation(evidence observationEvidence) {
+	obs := evidence.Observation
 	switch {
 	case obs.PlanID == planIDDirectPrefer && obs.Event == "candidate_failed":
 		e.DirectFailures++
+		if evidence.CanDrivePruning {
+			e.PruningDirectFailures++
+		}
 	case obs.PlanID == planIDDirectPrefer && isDirectSuccess(obs):
 		e.DirectSuccesses++
+		if evidence.CanDrivePruning {
+			e.PruningDirectSuccesses++
+		}
 	case obs.PlanID == planIDRelayOnly && isRelaySuccess(obs):
 		e.RelaySuccesses++
+		if evidence.CanDrivePruning {
+			e.PruningRelaySuccesses++
+		}
 	}
 }
 
@@ -92,10 +105,10 @@ func (e *evidenceSummary) addProbeResult(result *solver.ProbeResultSummary) {
 }
 
 func (e evidenceSummary) strongRelayOnly() bool {
-	return e.DirectFailures >= 2 &&
-		e.RelaySuccesses > 0 &&
+	return e.PruningDirectFailures >= 2 &&
+		e.PruningRelaySuccesses > 0 &&
 		!e.PreflightSuccess &&
-		e.DirectSuccesses == 0
+		e.PruningDirectSuccesses == 0
 }
 
 func (e evidenceSummary) relayPreferred() bool {

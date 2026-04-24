@@ -232,6 +232,7 @@ Required outcome:
 - strategy `Plan(...)` receives evidence context and can adapt plan generation
 - new `PlanRefiner` interface allows strategies to prune plans based on evidence
 - `legacy_ice_udp` demonstrates real plan pruning (e.g., dropping `direct_prefer` under strong relay evidence)
+- Evidence that prunes candidate plans must be scoped to the current session/peer; unscoped history may inform hints/ranking but must not by itself remove viable plans.
 - probe result and observations flow through generic solver inputs, not strategy side-channels
 - probing becomes an explicit state machine phase
 - the solver still runs only the existing `legacy_ice_udp` strategy
