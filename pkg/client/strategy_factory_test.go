@@ -12,6 +12,7 @@ import (
 	sesspkg "winkyou/pkg/session"
 	"winkyou/pkg/solver"
 	"winkyou/pkg/solver/strategy/legacyice"
+	"winkyou/pkg/solver/strategy/relayonly"
 )
 
 type resolverStrategy struct {
@@ -113,8 +114,8 @@ func TestEngineStrategyResolverDefaultsToLegacyWithImplicitFallback(t *testing.T
 	resolver := eng.newStrategyResolver()
 
 	capability := resolver.LocalCapability()
-	if len(capability.Strategies) != 1 || capability.Strategies[0] != legacyice.StrategyName {
-		t.Fatalf("LocalCapability().Strategies = %#v, want default legacy strategy", capability.Strategies)
+	if len(capability.Strategies) != 2 || capability.Strategies[0] != legacyice.StrategyName || capability.Strategies[1] != relayonly.StrategyName {
+		t.Fatalf("LocalCapability().Strategies = %#v, want legacy then relay_only", capability.Strategies)
 	}
 
 	strategy, selection, err := resolver.Resolve(rproto.Capability{}, true)
@@ -126,6 +127,22 @@ func TestEngineStrategyResolverDefaultsToLegacyWithImplicitFallback(t *testing.T
 	}
 	if selection != (sesspkg.Selection{StrategyName: legacyice.StrategyName, Negotiated: false}) {
 		t.Fatalf("Resolve(empty capability) selection = %#v, want implicit legacy fallback", selection)
+	}
+}
+
+func TestEngineStrategyResolverSelectsRelayOnlyWhenRemoteOnlySupportsRelayOnly(t *testing.T) {
+	eng := &engine{}
+	resolver := eng.newStrategyResolver()
+
+	strategy, selection, err := resolver.Resolve(rproto.Capability{Strategies: []string{relayonly.StrategyName}}, true)
+	if err != nil {
+		t.Fatalf("Resolve(relay_only) error = %v", err)
+	}
+	if strategy.Name() != relayonly.StrategyName {
+		t.Fatalf("Resolve(relay_only) strategy = %q, want %q", strategy.Name(), relayonly.StrategyName)
+	}
+	if selection != (sesspkg.Selection{StrategyName: relayonly.StrategyName, Negotiated: true}) {
+		t.Fatalf("Resolve(relay_only) selection = %#v, want negotiated relay_only", selection)
 	}
 }
 

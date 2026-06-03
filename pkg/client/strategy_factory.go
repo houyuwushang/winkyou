@@ -9,6 +9,7 @@ import (
 	sesspkg "winkyou/pkg/session"
 	"winkyou/pkg/solver"
 	"winkyou/pkg/solver/strategy/legacyice"
+	"winkyou/pkg/solver/strategy/relayonly"
 )
 
 type ResolverPolicy = sesspkg.PortfolioResolverPolicy
@@ -44,6 +45,12 @@ func (e *engine) newStrategyResolver() sesspkg.StrategyResolver {
 			name: legacyice.StrategyName,
 			build: func() solver.Strategy {
 				return legacyice.New(legacyCfg)
+			},
+		},
+		{
+			name: relayonly.StrategyName,
+			build: func() solver.Strategy {
+				return relayonly.New(legacyCfg)
 			},
 		},
 	}, ResolverPolicy{

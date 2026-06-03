@@ -10,6 +10,7 @@ import (
 
 	rproto "winkyou/pkg/rendezvous/proto"
 	"winkyou/pkg/solver"
+	"winkyou/pkg/solver/strategy/relayonly"
 )
 
 func TestPortfolioResolverLocalCapabilityAdvertisesRegisteredStrategies(t *testing.T) {
@@ -309,6 +310,72 @@ func TestSessionStrategySelectionUsesPortfolioResolver(t *testing.T) {
 	}
 }
 
+func TestSessionRelayOnlyPathCommitAndObservationsUseRelayOnlyStrategy(t *testing.T) {
+	strategy := &relayOnlySessionStrategy{transport: &fakeTransport{}}
+	resolver := &fakeResolver{
+		local:     rproto.Capability{Strategies: []string{relayonly.StrategyName}},
+		strategy:  strategy,
+		selection: Selection{StrategyName: relayonly.StrategyName, Negotiated: true},
+	}
+	sender := &fakeSender{}
+
+	s, err := New(Config{
+		SessionID:             "session/node-a/node-b",
+		LocalNodeID:           "node-a",
+		PeerID:                "node-b",
+		Initiator:             true,
+		Resolver:              resolver,
+		Sender:                sender,
+		RunTimeout:            3 * time.Second,
+		CapabilityWaitTimeout: time.Second,
+	})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	if err := s.Start(context.Background()); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	if err := s.HandleMessage(context.Background(), envelopeMessage(t, "session/node-a/node-b", "node-b", "node-a", rproto.MsgTypeCapability, 1, rproto.Capability{Strategies: []string{relayonly.StrategyName}}, time.Now())); err != nil {
+		t.Fatalf("HandleMessage(capability) error = %v", err)
+	}
+	waitForState(t, s, StateBound)
+
+	pathCommitMsg := waitForEnvelopeMessage(t, sender.Messages, rproto.MsgTypePathCommit)
+	envelope, err := rproto.UnmarshalEnvelope(pathCommitMsg.Payload)
+	if err != nil {
+		t.Fatalf("UnmarshalEnvelope(path_commit) error = %v", err)
+	}
+	pathCommit := mustDecodePathCommit(t, envelope.Payload)
+	if pathCommit.Strategy != relayonly.StrategyName {
+		t.Fatalf("path_commit strategy = %q, want %q", pathCommit.Strategy, relayonly.StrategyName)
+	}
+
+	wantEvents := map[string]bool{
+		"candidate_planned": false,
+		"path_selected":     false,
+		"path_committed":    false,
+	}
+	for _, obs := range s.Observations() {
+		if _, ok := wantEvents[obs.Event]; !ok {
+			continue
+		}
+		if obs.Strategy != relayonly.StrategyName {
+			t.Fatalf("%s observation strategy = %q, want %q; obs=%#v", obs.Event, obs.Strategy, relayonly.StrategyName, obs)
+		}
+		wantEvents[obs.Event] = true
+	}
+	for event, seen := range wantEvents {
+		if !seen {
+			t.Fatalf("observations = %#v, want event %s", s.Observations(), event)
+		}
+	}
+
+	if err := s.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+}
+
 func newTestPortfolioResolver(t *testing.T, entries []StrategyEntry) *PortfolioResolver {
 	t.Helper()
 	resolver, err := NewPortfolioResolver(entries)
@@ -335,6 +402,33 @@ func countingStrategyFactory(name string, builds map[string]int) func() solver.S
 		return &fakeStrategy{name: name, transport: &fakeTransport{}}
 	}
 }
+
+type relayOnlySessionStrategy struct {
+	transport *fakeTransport
+}
+
+func (s *relayOnlySessionStrategy) Name() string { return relayonly.StrategyName }
+
+func (s *relayOnlySessionStrategy) Plan(context.Context, solver.SolveInput) ([]solver.Plan, error) {
+	return []solver.Plan{{
+		ID:       relayonly.PlanID,
+		Strategy: relayonly.StrategyName,
+		Metadata: map[string]string{"mode": "relay_only"},
+	}}, nil
+}
+
+func (s *relayOnlySessionStrategy) Execute(context.Context, solver.SessionIO, solver.Plan) (solver.Result, error) {
+	return solver.Result{
+		Transport: s.transport,
+		Summary: solver.PathSummary{
+			PathID:         "relayonly:relay:session/node-a/node-b",
+			ConnectionType: "relay",
+			RemoteAddr:     s.transport.RemoteAddr(),
+		},
+	}, nil
+}
+
+func (s *relayOnlySessionStrategy) Close() error { return nil }
 
 func mustDecodePathCommit(t *testing.T, payload []byte) rproto.PathCommit {
 	t.Helper()

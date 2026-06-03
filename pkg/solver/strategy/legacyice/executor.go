@@ -48,7 +48,7 @@ func newExecutor(cfg Config, input solver.SolveInput, plan solver.Plan, execCfg 
 
 func (e *executor) Execute(ctx context.Context, sess solver.SessionIO) (solver.Result, error) {
 	e.report(sess, solver.Observation{
-		Strategy:  StrategyName,
+		Strategy:  e.strategyName(),
 		PlanID:    e.plan.ID,
 		Event:     "candidate_started",
 		TimeoutMS: e.cfg.ConnectTimeout.Milliseconds(),
@@ -340,7 +340,7 @@ func (e *executor) reportFailure(sess solver.SessionIO, err error) {
 	}
 	e.failOnce.Do(func() {
 		e.report(sess, solver.Observation{
-			Strategy:   StrategyName,
+			Strategy:   e.strategyName(),
 			PlanID:     e.plan.ID,
 			Event:      "candidate_failed",
 			ErrorClass: classifyObservationError(err),
@@ -358,7 +358,7 @@ func (e *executor) report(sess solver.SessionIO, obs solver.Observation) {
 		return
 	}
 	if obs.Strategy == "" {
-		obs.Strategy = StrategyName
+		obs.Strategy = e.strategyName()
 	}
 	if obs.PlanID == "" {
 		obs.PlanID = e.plan.ID
@@ -367,6 +367,13 @@ func (e *executor) report(sess solver.SessionIO, obs solver.Observation) {
 		obs.Timestamp = time.Now()
 	}
 	_ = sess.ReportObservation(context.Background(), obs)
+}
+
+func (e *executor) strategyName() string {
+	if e.plan.Strategy != "" {
+		return e.plan.Strategy
+	}
+	return StrategyName
 }
 
 type managedTransport struct {
@@ -423,7 +430,6 @@ func observationFromPair(planID, event, pathID, connectionType string, pair *nat
 		details = map[string]string{}
 	}
 	return solver.Observation{
-		Strategy:       StrategyName,
 		PlanID:         planID,
 		Event:          event,
 		PathID:         pathID,
