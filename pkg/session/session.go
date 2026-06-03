@@ -45,6 +45,8 @@ type Session struct {
 
 	capabilityCh  chan struct{}
 	probeResultCh chan probeResultSignal
+	probeResultMu sync.Mutex
+	probeResults  map[string]probeResultSignal
 
 	lastPlan solver.Plan
 	lastRes  solver.Result
@@ -93,6 +95,7 @@ func New(cfg Config) (*Session, error) {
 		io:            &solverIO{cfg: cfg},
 		capabilityCh:  make(chan struct{}, 1),
 		probeResultCh: make(chan probeResultSignal, 8),
+		probeResults:  make(map[string]probeResultSignal),
 		meta: Snapshot{
 			SessionID:       cfg.SessionID,
 			PeerID:          cfg.PeerID,

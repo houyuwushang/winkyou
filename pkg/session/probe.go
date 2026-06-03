@@ -57,12 +57,18 @@ func (s *Session) runStrategyPreflightProbe(ctx context.Context, strategy solver
 		return err
 	}
 
+	if signal, ok := s.latestProbeResult(localScript.ScriptType, sentAt); ok {
+		return s.completePreflightProbe(signal)
+	}
+
 	timeout := policy.Timeout
 	if timeout <= 0 {
 		timeout = s.preflightProbeTimeout()
 	}
 	waitCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
+	cachePoll := time.NewTicker(10 * time.Millisecond)
+	defer cachePoll.Stop()
 
 	for {
 		select {
@@ -72,20 +78,42 @@ func (s *Session) runStrategyPreflightProbe(ctx context.Context, strategy solver
 				return waitCtx.Err()
 			}
 			return waitCtx.Err()
+		case <-cachePoll.C:
+			if signal, ok := s.latestProbeResult(localScript.ScriptType, sentAt); ok {
+				return s.completePreflightProbe(signal)
+			}
 		case signal := <-s.probeResultCh:
-			if signal.result.ScriptType != localScript.ScriptType {
+			if !probeResultMatches(signal, localScript.ScriptType, sentAt) {
 				continue
 			}
-			if signal.at.Before(sentAt) && signal.result.FinishedAt.Before(sentAt) {
-				continue
-			}
-			s.setPreflightAttempt(true, signal.result.Success)
-			if !signal.result.Success {
-				return fmt.Errorf("session: preflight probe failed: %s", signal.result.ErrorClass)
-			}
-			return nil
+			return s.completePreflightProbe(signal)
 		}
 	}
+}
+
+func (s *Session) latestProbeResult(scriptType string, sentAt time.Time) (probeResultSignal, bool) {
+	s.probeResultMu.Lock()
+	defer s.probeResultMu.Unlock()
+	signal, ok := s.probeResults[scriptType]
+	if !ok || !probeResultMatches(signal, scriptType, sentAt) {
+		return probeResultSignal{}, false
+	}
+	return signal, true
+}
+
+func probeResultMatches(signal probeResultSignal, scriptType string, sentAt time.Time) bool {
+	if signal.result.ScriptType != scriptType {
+		return false
+	}
+	return !signal.at.Before(sentAt) || !signal.result.FinishedAt.Before(sentAt)
+}
+
+func (s *Session) completePreflightProbe(signal probeResultSignal) error {
+	s.setPreflightAttempt(true, signal.result.Success)
+	if !signal.result.Success {
+		return fmt.Errorf("session: preflight probe failed: %s", signal.result.ErrorClass)
+	}
+	return nil
 }
 
 func (s *Session) setPreflightAttempt(attempted, succeeded bool) {
@@ -279,6 +307,10 @@ func (s *Session) handleProbeResult(receivedAt time.Time, result rproto.ProbeRes
 		s.meta.LastProbeResultAt = localResult.FinishedAt
 	}
 	s.metaMu.Unlock()
+
+	s.probeResultMu.Lock()
+	s.probeResults[localResult.ScriptType] = probeResultSignal{result: localResult, at: receivedAt}
+	s.probeResultMu.Unlock()
 
 	s.emitObservation(s.runContext(), solver.Observation{
 		Strategy:       pmodel.StrategyName,

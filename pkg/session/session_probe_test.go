@@ -268,6 +268,84 @@ func TestSessionPreflightProbeSuccessDoesNotBlockStrategyFlow(t *testing.T) {
 	}
 }
 
+func TestSessionPreflightUsesLatestProbeResultWhenSignalChannelIsFull(t *testing.T) {
+	localSender := &callbackSender{}
+	strategy := &rankingExecutorStrategy{
+		name: "legacy_ice_udp",
+		plans: []solver.Plan{
+			{ID: "plan-a", Strategy: "legacy_ice_udp"},
+			{ID: "plan-b", Strategy: "legacy_ice_udp"},
+		},
+		executors: map[string]*scriptedExecutor{
+			"plan-a": newScriptedExecutor(solver.Result{
+				Transport: &fakeTransport{},
+				Summary: solver.PathSummary{
+					PathID:         "path/a",
+					ConnectionType: "direct",
+				},
+			}, nil),
+			"plan-b": newScriptedExecutor(solver.Result{
+				Transport: &fakeTransport{},
+				Summary: solver.PathSummary{
+					PathID:         "path/b",
+					ConnectionType: "direct",
+				},
+			}, nil),
+		},
+	}
+
+	var local *Session
+	localSender.sendFn = func(msg solver.Message) error {
+		if msg.Type != rproto.MsgTypeProbeScript {
+			return nil
+		}
+		for i := 0; i < cap(local.probeResultCh); i++ {
+			local.probeResultCh <- probeResultSignal{
+				result: pmodel.Result{ScriptType: "other", FinishedAt: time.Now()},
+				at:     time.Now(),
+			}
+		}
+		receivedAt := time.Now()
+		return local.HandleMessage(context.Background(), envelopeMessage(t, "session/node-a/node-b", "node-b", "node-a", rproto.MsgTypeProbeResult, 2, rproto.ProbeResult{
+			ScriptType:     pmodel.ScriptTypePreflight,
+			PlanID:         "probe/preflight",
+			Success:        true,
+			SelectedPathID: "path/a",
+			FinishedAt:     receivedAt,
+		}, receivedAt))
+	}
+
+	var err error
+	local, err = New(Config{
+		SessionID:             "session/node-a/node-b",
+		LocalNodeID:           "node-a",
+		PeerID:                "node-b",
+		Initiator:             true,
+		Resolver:              &fakeResolver{local: probeCapability("legacy_ice_udp"), strategy: strategy, selection: Selection{StrategyName: "legacy_ice_udp", Negotiated: true}},
+		Sender:                localSender,
+		RunTimeout:            3 * time.Second,
+		CapabilityWaitTimeout: time.Second,
+	})
+	if err != nil {
+		t.Fatalf("New(local) error = %v", err)
+	}
+	if err := local.HandleMessage(context.Background(), envelopeMessage(t, "session/node-a/node-b", "node-b", "node-a", rproto.MsgTypeCapability, 1, probeCapability("legacy_ice_udp"), time.Now())); err != nil {
+		t.Fatalf("HandleMessage(capability) error = %v", err)
+	}
+	if err := local.Start(context.Background()); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+
+	waitForState(t, local, StateBound)
+	snapshot := local.Snapshot()
+	if !snapshot.PreflightProbeSucceeded {
+		t.Fatalf("PreflightProbeSucceeded = false, want true from cached result; snapshot=%#v", snapshot)
+	}
+	if snapshot.LastProbeResult.ScriptType != pmodel.ScriptTypePreflight || !snapshot.LastProbeResult.Success {
+		t.Fatalf("LastProbeResult = %#v, want successful preflight result", snapshot.LastProbeResult)
+	}
+}
+
 func TestSessionPreflightProbeTimeoutFallsBackToCandidateLoop(t *testing.T) {
 	localSender := &callbackSender{}
 	remoteSender := &callbackSender{}
