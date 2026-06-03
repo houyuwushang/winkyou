@@ -48,15 +48,6 @@ func addrString(addr any) string {
 	}
 }
 
-func firstNonEmpty(values ...string) string {
-	for _, value := range values {
-		if strings.TrimSpace(value) != "" {
-			return value
-		}
-	}
-	return ""
-}
-
 func annotateObservationDetails(details map[string]string, sessionID, peerID string, initiator bool) map[string]string {
 	if details == nil {
 		details = make(map[string]string, 3)
