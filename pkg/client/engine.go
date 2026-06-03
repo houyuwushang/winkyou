@@ -16,6 +16,7 @@ import (
 	"winkyou/pkg/logger"
 	"winkyou/pkg/nat"
 	"winkyou/pkg/netif"
+	"winkyou/pkg/netutil"
 	probelab "winkyou/pkg/probe/lab"
 	solverstore "winkyou/pkg/solver/store"
 	"winkyou/pkg/tunnel"
@@ -402,7 +403,7 @@ func (e *engine) upsertPeer(peer *coordclient.PeerInfo, event PeerEvent) {
 			updated.State = PeerStateDisconnected
 		}
 		if updated.Endpoint == nil {
-			updated.Endpoint = cloneUDPAddr(current.Endpoint)
+			updated.Endpoint = netutil.CloneUDPAddr(current.Endpoint)
 		}
 	}
 	e.peers[updated.NodeID] = updated
@@ -486,7 +487,7 @@ func (e *engine) syncTunnelPeerStateLocked() {
 		peer.TransportRxBytes = tunnelPeer.TransportRxBytes
 		peer.TransportLastError = tunnelPeer.TransportLastError
 		if tunnelPeer.Endpoint != nil {
-			peer.Endpoint = cloneUDPAddr(tunnelPeer.Endpoint)
+			peer.Endpoint = netutil.CloneUDPAddr(tunnelPeer.Endpoint)
 		}
 		if !tunnelPeer.LastHandshake.IsZero() {
 			peer.LastHandshake = tunnelPeer.LastHandshake
@@ -646,19 +647,8 @@ func clonePeerStatus(peer *PeerStatus) *PeerStatus {
 
 	out := *peer
 	out.VirtualIP = append(net.IP(nil), peer.VirtualIP...)
-	out.Endpoint = cloneUDPAddr(peer.Endpoint)
+	out.Endpoint = netutil.CloneUDPAddr(peer.Endpoint)
 	return &out
-}
-
-func cloneUDPAddr(addr *net.UDPAddr) *net.UDPAddr {
-	if addr == nil {
-		return nil
-	}
-	return &net.UDPAddr{
-		IP:   append(net.IP(nil), addr.IP...),
-		Port: addr.Port,
-		Zone: addr.Zone,
-	}
 }
 
 func cloneIPNet(prefix *net.IPNet) *net.IPNet {

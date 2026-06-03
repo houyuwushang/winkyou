@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"winkyou/pkg/logger"
+	"winkyou/pkg/netutil"
 	sesspkg "winkyou/pkg/session"
 	"winkyou/pkg/solver"
 	"winkyou/pkg/tunnel"
@@ -219,7 +220,7 @@ func (e *engine) handlePeerSessionBound(nodeID string, s *peerSession, result so
 			peer.State = PeerStateConnecting
 		}
 		peer.ConnectionType = connectionTypeFromSummary(result.Summary.ConnectionType)
-		peer.Endpoint = udpAddrFromAddr(result.Summary.RemoteAddr)
+		peer.Endpoint = netutil.UDPAddrFromAddr(result.Summary.RemoteAddr)
 		peer.ICEState = result.Summary.Details["ice_state"]
 		peer.LocalCandidate = result.Summary.Details["local_candidate"]
 		peer.RemoteCandidate = result.Summary.Details["remote_candidate"]
@@ -294,7 +295,7 @@ func (e *engine) BindingPeer(ctx context.Context, peerID string) (*sesspkg.Bindi
 	return &sesspkg.BindingPeer{
 		PublicKey:  publicKey,
 		AllowedIPs: []net.IPNet{*allowedIP},
-		Endpoint:   cloneUDPAddr(peer.Endpoint),
+		Endpoint:   netutil.CloneUDPAddr(peer.Endpoint),
 		Keepalive:  keepalive,
 	}, nil
 }
@@ -343,28 +344,6 @@ func parsePeerAllowedIP(ip net.IP) (net.IP, *net.IPNet, error) {
 		maskBits = 128
 	}
 	return net.ParseCIDR(ip.String() + fmt.Sprintf("/%d", maskBits))
-}
-
-func udpAddrFromAddr(addr net.Addr) *net.UDPAddr {
-	if addr == nil {
-		return nil
-	}
-	if udpAddr, ok := addr.(*net.UDPAddr); ok {
-		return cloneUDPAddr(udpAddr)
-	}
-	host, portText, err := net.SplitHostPort(addr.String())
-	if err != nil {
-		return nil
-	}
-	port, err := net.LookupPort("udp", portText)
-	if err != nil {
-		return nil
-	}
-	ip := net.ParseIP(host)
-	if ip == nil {
-		return nil
-	}
-	return &net.UDPAddr{IP: append(net.IP(nil), ip...), Port: port}
 }
 
 func (e *engine) sessionContext() context.Context {

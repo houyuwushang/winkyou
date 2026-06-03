@@ -3,6 +3,7 @@ package client
 import (
 	"time"
 
+	"winkyou/pkg/netutil"
 	"winkyou/pkg/tunnel"
 )
 
@@ -65,7 +66,7 @@ func (e *engine) markPeerConnected(publicKey tunnel.PublicKey, at time.Time) {
 				session.retryPending = false
 				path := session.lastPath
 				session.connectMu.Unlock()
-				if endpoint := udpAddrFromAddr(path.RemoteAddr); endpoint != nil {
+				if endpoint := netutil.UDPAddrFromAddr(path.RemoteAddr); endpoint != nil {
 					peer.Endpoint = endpoint
 				}
 				peer.ConnectionType = connectionTypeFromSummary(path.ConnectionType)

@@ -6,6 +6,7 @@ import (
 	"net"
 	"time"
 
+	"winkyou/pkg/netutil"
 	"winkyou/pkg/transport"
 	"winkyou/pkg/tunnel"
 )
@@ -49,12 +50,12 @@ func (b *TunnelBinder) Bind(ctx context.Context, peerID string, pt transport.Pac
 	cfg := &tunnel.PeerConfig{
 		PublicKey:  peer.PublicKey,
 		AllowedIPs: append([]net.IPNet(nil), peer.AllowedIPs...),
-		Endpoint:   cloneUDPAddr(peer.Endpoint),
+		Endpoint:   netutil.CloneUDPAddr(peer.Endpoint),
 		Transport:  pt,
 		Keepalive:  peer.Keepalive,
 	}
 	if cfg.Endpoint == nil {
-		cfg.Endpoint = udpAddrFromAddr(pt.RemoteAddr())
+		cfg.Endpoint = netutil.UDPAddrFromAddr(pt.RemoteAddr())
 	}
 	return b.tun.AddPeer(cfg)
 }
@@ -68,33 +69,4 @@ func (b *TunnelBinder) Unbind(ctx context.Context, peerID string) error {
 		return err
 	}
 	return b.tun.RemovePeer(peer.PublicKey)
-}
-
-func udpAddrFromAddr(addr net.Addr) *net.UDPAddr {
-	if addr == nil {
-		return nil
-	}
-	if udpAddr, ok := addr.(*net.UDPAddr); ok {
-		return cloneUDPAddr(udpAddr)
-	}
-	host, portText, err := net.SplitHostPort(addr.String())
-	if err != nil {
-		return nil
-	}
-	port, err := net.LookupPort("udp", portText)
-	if err != nil {
-		return nil
-	}
-	ip := net.ParseIP(host)
-	if ip == nil {
-		return nil
-	}
-	return &net.UDPAddr{IP: append(net.IP(nil), ip...), Port: port}
-}
-
-func cloneUDPAddr(addr *net.UDPAddr) *net.UDPAddr {
-	if addr == nil {
-		return nil
-	}
-	return &net.UDPAddr{IP: append(net.IP(nil), addr.IP...), Port: addr.Port, Zone: addr.Zone}
 }
