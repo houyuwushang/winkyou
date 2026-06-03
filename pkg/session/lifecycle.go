@@ -102,7 +102,12 @@ func (s *Session) Close() error {
 }
 
 func (s *Session) transition(next State) {
-	s.sm.Transition(next)
+	if err := s.sm.Transition(next); err != nil {
+		if s.cfg.Hooks.OnError != nil {
+			s.cfg.Hooks.OnError(err)
+		}
+		return
+	}
 	s.metaMu.Lock()
 	s.meta.State = next
 	s.metaMu.Unlock()

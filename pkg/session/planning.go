@@ -124,9 +124,10 @@ func (s *Session) selectAndExecute(ctx context.Context) error {
 		}
 	}
 
+	s.transition(StateBinding)
+
 	// Bind the winner
 	if s.cfg.Binder != nil {
-		s.transition(StateBinding)
 		if err := s.cfg.Binder.Bind(context.Background(), s.cfg.PeerID, best.Result.Transport); err != nil {
 			_ = best.Result.Transport.Close()
 			s.fail(err)
