@@ -1,5 +1,8 @@
 # WinkYou 开发计划与管理文档
 
+> [!IMPORTANT]
+> **Archive / Brainstorm**: This is an early planning and management document. It is preserved for traceability and is not the active roadmap. Use [`docs/CONNECTIVITY-SOLVER-BASELINE.md`](docs/CONNECTIVITY-SOLVER-BASELINE.md) as the current architecture authority.
+
 > 说明：本文件保留项目开发管理与长期排期视角。
 > 对于当前 MVP 执行，如与 `docs/EXECUTION-BASELINE.md` 冲突，以执行基线为准。
 

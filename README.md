@@ -22,6 +22,7 @@ The current runnable path is still:
 - `PacketTransport`-based tunnel binding
 - session-managed peer lifecycle
 - rendezvous v2 capability / observation / probe / path-commit envelope exchange on the existing coordinator channel
+- `relay_only` as a second real strategy, registered after `legacy_ice_udp` for compatibility
 
 Phase 2D is frozen at tag `phase2d-freeze-2026-04-24`. The next architecture entry point is Phase 3A: Strategy Portfolio Foundation, which should define and test multi-strategy selection boundaries before adding any real TCP, QUIC, proxy, or no-admin transport line.
 
@@ -41,7 +42,7 @@ Not completed:
 - `userspace`
 - `proxy`
 - no-admin mode
-- second solver strategy and full observation/scoring/learning pipeline
+- full observation/scoring/learning pipeline
 
 ## Repository Map
 
@@ -59,6 +60,7 @@ Not completed:
 - `pkg/session`: session lifecycle, state machine, capability handling, binder coordination
 - `pkg/solver`: generic solver interfaces
 - `pkg/solver/strategy/legacyice`: compatibility strategy for the current ICE/UDP path
+- `pkg/solver/strategy/relayonly`: relay-only strategy wrapper over the legacy ICE/TURN executor
 - `pkg/rendezvous/proto`: session v2 envelope types
 - `pkg/rendezvous/client`: coordinator-backed rendezvous channel adapter
 - `pkg/tunnel`: WireGuard data plane consuming `transport.PacketTransport`

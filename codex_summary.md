@@ -1,5 +1,8 @@
 # WinkYou 计划审阅总结
 
+> [!IMPORTANT]
+> **Archive**: This summary was written against an older document-only repository state. It is preserved for traceability and is not a current project status report. Use [`docs/CONNECTIVITY-SOLVER-BASELINE.md`](docs/CONNECTIVITY-SOLVER-BASELINE.md) as the current architecture authority.
+
 本文件只收录我能直接从当前仓库内容证实的事实，不收录无法在仓库内复核的推断。
 结论基于以下范围：`winkplan.md`、`manage.md`、`question.md`、`guess.md`、`selfhost.md`、`selfdev.md`、`protocol.md`、`wink-protocol-v1.md`、`docs/README.md`、`docs/ARCHITECTURE.md`、`docs/tasks/TASK-01..07.md`。
 

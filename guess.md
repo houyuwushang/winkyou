@@ -1,5 +1,8 @@
 # WinkYou 问题解决方案与建议
 
+> [!IMPORTANT]
+> **Archive / Brainstorm**: This is an early answer/proposal document for the historical question backlog. It is preserved for traceability and is not the active roadmap. Use [`docs/CONNECTIVITY-SOLVER-BASELINE.md`](docs/CONNECTIVITY-SOLVER-BASELINE.md) as the current architecture authority.
+
 > 本文档针对 question.md 中提出的问题，经过调研后给出解决方案和建议。
 > 
 > 更新日期: 2026-04-02

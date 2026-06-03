@@ -1,5 +1,8 @@
 # WinkYou 完全自研开发计划
 
+> [!IMPORTANT]
+> **Proposal / Brainstorm**: This document is retained as historical self-development planning. It is not the active implementation plan. Use [`docs/CONNECTIVITY-SOLVER-BASELINE.md`](docs/CONNECTIVITY-SOLVER-BASELINE.md) as the current architecture authority.
+
 > 本文档描述：如果核心组件全部自己写，具体要写什么、怎么写、按什么顺序。
 > 
 > 与 selfhost.md 的关系：selfhost.md 是"先跑通再替换"的渐进策略，本文档是那个"替换"阶段的详细施工图纸。两份文档配合使用：MVP阶段看TASK文档，自研阶段看本文档。

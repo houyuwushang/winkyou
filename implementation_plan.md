@@ -27,7 +27,8 @@ WinkYou = connectivity solver + WireGuard 数据平面
 |------|------|------|
 | Phase 1 ~ 2D | ✅ 冻结 | `phase2d-freeze-2026-04-24` |
 | Phase 3A (Strategy Portfolio Foundation) | ✅ 合并 | commit `bae1266` |
-| Phase 3B+ | ❌ 未开始 | — |
+| Phase 3B code health | ✅ 完成 | commits `a89c5f6`..`4431f82` |
+| Phase 4A relay_only | ✅ 完成 | commit `f28d4b1` |
 
 Phase 3A 已交付：`PortfolioResolver`、`StrategyEntry`、strategy selection 测试覆盖、fake strategy 验证。session 不再硬编码 `legacy_ice_udp`。
 
@@ -96,7 +97,9 @@ Phase 2D 不是纸面设计。`SolveInput` 包含 `LocalObservations`、`RemoteO
 
 ---
 
-#### 问题 2: `session.go` 是 1748 行的巨型文件
+#### 已处理 2: `session.go` 巨型文件已机械拆分
+
+**当前状态**: `pkg/session` 已拆分为 lifecycle/selection/planning/probe/observation/envelope/helpers 等职责文件，`session.go` 只保留 `Session` 结构、构造和简单访问器。
 
 **位置**: [session.go](file:///d:/workspace/winkyou/pkg/session/session.go)
 
@@ -133,7 +136,9 @@ session/
 
 ### S1 — 严重但不紧急
 
-#### 问题 3: 状态机没有转换验证
+#### 已处理 3: 状态机已加入合法转换验证
+
+**当前状态**: `pkg/session/state_machine.go` 已包含合法转换表，非法转换会返回错误并通过 session error hook 可观测。
 
 **位置**: [state_machine.go](file:///d:/workspace/winkyou/pkg/session/state_machine.go) — **只有 25 行**
 
@@ -164,7 +169,9 @@ var validTransitions = map[State][]State{
 
 ---
 
-#### 问题 4: `cloneUDPAddr` 和 `udpAddrFromAddr` 在两个包中重复定义
+#### 已处理 4: UDP address helper 已提取到公共包
+
+**当前状态**: `pkg/netutil/addr.go` 提供 `UDPAddrFromAddr` 和 `CloneUDPAddr`，session/client 相关重复实现已替换。
 
 **位置**:
 - [session/binder.go L73-100](file:///d:/workspace/winkyou/pkg/session/binder.go#L73-L100): `udpAddrFromAddr()` + `cloneUDPAddr()`
@@ -177,7 +184,9 @@ var validTransitions = map[State][]State{
 
 ---
 
-#### 问题 5: `context.Background()` 在已有 context 的场景中被使用
+#### 已处理 5: session 正常路径已改用有界 context
+
+**当前状态**: Bind、path commit、observation、probe script/result 发送使用传入 context 或 session run context，并加短超时；cleanup 路径使用独立有界 cleanup context。
 
 **位置**: [session.go](file:///d:/workspace/winkyou/pkg/session/session.go) 多处
 
@@ -203,7 +212,9 @@ s.cfg.Binder.Unbind(context.Background(), ...)
 
 ---
 
-#### 问题 6: `strategyResolver`（client 包）和 `PortfolioResolver`（session 包）存在职责重叠
+#### 已处理 6: 生产 resolver 已收敛到 session portfolio resolver
+
+**当前状态**: `pkg/session` 提供 factory-based portfolio resolver；client 只组装 strategy factory entries，保留 lazy factory、implicit legacy fallback 和 production 注册顺序。
 
 **位置**:
 - [client/strategy_factory.go](file:///d:/workspace/winkyou/pkg/client/strategy_factory.go): `strategyResolver` struct
@@ -224,7 +235,9 @@ s.cfg.Binder.Unbind(context.Background(), ...)
 
 ### S2 — 中等
 
-#### 问题 7: Observation 列表采用 slice 截断而非环形缓冲
+#### 已处理 7: Observation 截断已避免长期保留旧底层数组
+
+**当前状态**: session observation history 和 `ObservationStore` 在超过 limit 时复制保留尾部到新 slice，不再通过简单切片长期持有旧数组。
 
 **位置**: [session.go L989-995](file:///d:/workspace/winkyou/pkg/session/session.go#L989-L995)
 
@@ -244,7 +257,9 @@ func appendObservation(list []solver.Observation, obs solver.Observation, limit 
 
 ---
 
-#### 问题 8: CI 没有 lint 和 vet 步骤
+#### 已处理 8: CI 已补基础质量门
+
+**当前状态**: Makefile 和 Linux CI 已加入 `go vet ./...` 与核心包 race test gate；未引入新的 golangci-lint 框架。
 
 **位置**: [ci.yml](file:///d:/workspace/winkyou/.github/workflows/ci.yml)
 
@@ -257,7 +272,9 @@ CI 只跑 `go test ./...`，没有：
 
 ---
 
-#### 问题 9: `probeResultCh` 容量只有 8，可能丢信号
+#### 已处理 9: probe result 已增加 latest-result 缓存
+
+**当前状态**: `handleProbeResult` 会按 script type 保存 latest result；`runStrategyPreflightProbe` 等待前和等待期间都会检查缓存，channel 满导致的非阻塞发送丢信号不再丢失最新结果。
 
 **位置**: [session.go L95](file:///d:/workspace/winkyou/pkg/session/session.go#L95)
 
@@ -279,7 +296,9 @@ default:  // 满了就丢弃
 
 ---
 
-#### 问题 10: `_ =` 忽略错误返回值
+#### 已处理 10: 关键 cleanup/report 忽略错误已有可观测性
+
+**当前状态**: session observation 发送失败会进入 error hook，session cleanup 超时/取消可观测；client engine/peer session 的 cleanup close/remove/load 失败会记录 debug 日志。剩余 `_ =` 主要在测试、生成代码或明确忽略的 deadline/parse 场景。
 
 全局搜索 `_ =` 在 session.go 和 engine.go 中有约 15 处。其中多数是清理路径上的 `Close()` 返回值（可接受），但有几处值得注意：
 
@@ -292,30 +311,30 @@ default:  // 满了就丢弃
 
 ### S3 — 轻微 / 改善
 
-#### 问题 11: `firstNonEmpty()` 函数定义了但从未使用
+#### 已处理 11: `firstNonEmpty()` session dead helper 已删除
 
 **位置**: [session.go L1466-1473](file:///d:/workspace/winkyou/pkg/session/session.go#L1466-L1473)
 
 Dead code。应删除或加 `//nolint:unused` 注释说明保留原因。
 
-#### 问题 12: `session.go:162-164` — 接受 nil ctx 不符合 Go 惯例
+#### 已处理 12: `Session.Start(nil)` 已返回错误
 
 ```go
 func (s *Session) Start(ctx context.Context) error {
     if ctx == nil {
-        ctx = context.Background()
+        return fmt.Errorf("session: nil context")
     }
 ```
 
 Go 的惯例是 `context.Context` 参数永远不为 nil（参见 [context package doc](https://pkg.go.dev/context)）。防御性处理 nil ctx 会掩盖调用方的 bug。
 
-#### 问题 13: `winkplan.md` 与实际代码严重脱节
+#### 已处理 13: `winkplan.md` 已标记 Deprecated / Archive
 
-`winkplan.md` 描述的目录结构（`pkg/node/`, `platform/`, `internal/`）、协议设计（`messages.proto`）、功能规划（TAP、MagicDNS、SOCKS5 proxy）与实际代码对应不上。这是早期的 brainstorm 文档，但 README 没有标注它已过时。
+`winkplan.md` 描述的目录结构（`pkg/node/`, `platform/`, `internal/`）、协议设计（`messages.proto`）、功能规划（TAP、MagicDNS、SOCKS5 proxy）与实际代码对应不上。这是早期的 brainstorm 文档；现在已在文件顶部和文档索引中标注为过时归档材料。
 
-**建议**: 在 `winkplan.md` 顶部加明确的 deprecation notice，指向 `docs/CONNECTIVITY-SOLVER-BASELINE.md` 作为当前架构权威。
+**当前状态**: `winkplan.md` 顶部已声明其为早期长期规划文档，并指向 `docs/CONNECTIVITY-SOLVER-BASELINE.md` 作为当前架构权威。
 
-#### 问题 14: 多份 "架构分析" 文档定位不清
+#### 已处理 14: 多份架构/brainstorm 文档已明确定位
 
 仓库里有：
 - `docs/ARCHITECTURE.md` (1.8KB)
@@ -336,7 +355,7 @@ Go 的惯例是 `context.Context` 参数永远不为 nil（参见 [context packa
 
 超过 **270KB** 的 markdown 文档，但只有 `docs/CONNECTIVITY-SOLVER-BASELINE.md` 是真正的架构权威。其余文档之间有矛盾、有重叠、有过时内容。
 
-**建议**: 非权威文档必须明确 Proposal/Archive/Brainstorm 定位；当前选择保留原路径并在 `docs/README.md` 中明确分级，避免破坏既有相对链接。
+**当前状态**: `docs/ARCHITECTURE-*`、`docs/improvements/*` 和根目录 brainstorm/proposal 文档均已加 Proposal/Archive/Brainstorm 标记；`docs/README.md` 已明确 Active baseline、Current roadmap、Proposals、Archive/Brainstorm 分级。当前选择保留原路径，避免破坏既有相对链接。
 
 #### 已处理 15: NAT 超时配置已暴露到 config（不再列为硬编码问题）
 
@@ -354,31 +373,30 @@ ICE gather/connect/check timeout 已通过 `config.NATConfig` 暴露，并由 `c
 
 Phase 3A (Strategy Portfolio Foundation) 已完成。以下是我基于代码现实给出的路线：
 
-### Phase 3B: Code Health Sprint (1-2 周)
+### Phase 3B: Code Health Sprint（已完成）
 
 > **原则**: 不加功能，只还技术债
 
-| 任务 | 优先级 | 工作量 |
-|------|--------|--------|
-| 从 git 移除二进制文件 | S0 | 0.5h |
-| 拆分 session.go 为 6-8 个文件 | S0 | 4h |
-| 状态机添加转换验证 | S1 | 2h |
-| 提取 `cloneUDPAddr`/`udpAddrFromAddr` 到公共包 | S1 | 1h |
-| CI 加 vet + race detector | S2 | 1h |
-| 清理过时文档（加 deprecation notice） | S3 | 1h |
-| 修复 context.Background() 误用 | S1 | 2h |
+| 任务 | 状态 |
+|------|------|
+| 根目录二进制当前 tree 跟踪检查 | ✅ 当前未跟踪 |
+| 拆分 session.go 为职责文件 | ✅ 完成 |
+| 状态机添加转换验证 | ✅ 完成 |
+| 提取 `cloneUDPAddr`/`udpAddrFromAddr` 到公共包 | ✅ 完成 |
+| CI 加 vet + race detector | ✅ 完成 |
+| 清理过时文档（加 deprecation notice） | ✅ 完成 |
+| 修复 context.Background() 误用 | ✅ 完成 |
 
-### Phase 4A: Second Strategy Skeleton (3-4 周)
+### Phase 4A: Second Strategy Skeleton（已完成）
 
 > **目标**: 添加第一个 非 ICE/UDP 策略的骨架，证明 solver 的 multi-strategy 能力在运行时工作
 
-候选方案（按实现难度从低到高）：
+已选择并实现 **`relay_only` 策略**。production resolver 注册顺序保持：
 
-1. **`relay_only` 策略** — 跳过 ICE 打洞，直接用 TURN relay。最简单，可以从 `legacyice/relay_only` plan 提取为独立策略
-2. **`tcp_framed` 策略** — 通过 TCP 连接承载 `PacketTransport`（你已有 `transport/framedstream` 适配器）。需要 coordinator 支持 TCP endpoint 协商
-3. **`quic_datagram` 策略** — 通过 QUIC Datagram 承载。需要引入 `quic-go` 依赖
+1. `legacy_ice_udp`
+2. `relay_only`
 
-**建议从方案 1 开始**: 它的代码改动最小，但能端到端验证 `PortfolioResolver` → strategy selection → 不同 strategy 执行 → Bind 的完整流程。
+旧 peer 空 capability 仍 fallback 到 `legacy_ice_udp`；远端只 advertise `relay_only` 时可选择 `relay_only`。
 
 ### Phase 4B: Observation → Scoring Closed Loop
 
@@ -386,30 +404,27 @@ Phase 3A (Strategy Portfolio Foundation) 已完成。以下是我基于代码现
 
 ---
 
-## 五、需要你做的决策
+## 五、已收敛的决策
 
 > [!IMPORTANT]
-> 以下问题会影响后续开发方向，请给出你的判断。
+> 以下问题曾影响后续开发方向；当前状态已按代码和文档现实收敛。
 
-### 决策 1: `PortfolioResolver` vs `strategyResolver` 的定位
+### 已决策 1: 生产 resolver 使用 session factory portfolio resolver
 
-`PortfolioResolver` 是未来生产路径的 resolver，还是仅作为 Phase 3A 测试基础设施？如果是前者，`engine.newStrategyResolver()` 应该迁移到 `PortfolioResolver`，淘汰 `strategyResolver`。
+`pkg/session` 提供 resolver 权威实现，`engine.newStrategyResolver()` 只负责组装 strategy factory entries。
 
-### 决策 2: `brainstorm.md` / `wink-protocol-v1.md` 的 Wink Protocol 自研数据平面计划是否继续
+### 已决策 2: 当前数据平面继续使用 wireguard-go，Wink Protocol 文档归为 proposal/brainstorm
 
-你在 brainstorm.md 里设计了一个自研协议（Noise KK + AES-GCM 协商 + 短头部 + 0-RTT），这跟当前 wireguard-go 数据平面是两条完全不同的路。你是打算：
-- (A) 继续用 wireguard-go，在 solver/transport 层做差异化？
-- (B) 将来真的替换数据平面为自研 Wink Protocol？
-- (C) 两个都支持，作为 solver strategy 的不同选项？
+当前 active baseline 仍是 connectivity solver + WireGuard data plane。`brainstorm.md`、`protocol.md`、`wink-protocol-v1.md` 保留为历史 proposal，不作为当前实现路线。
 
-### 决策 3: Phase 3B 先做还是跳过直接进 Phase 4A
+### 已决策 3: Phase 3B 已先完成，再进入 Phase 4A
 
-上面列的 code health 任务（拆文件、修状态机、移二进制）不增加功能但会大幅提升代码可维护性。你愿意花 1-2 周做这个还是直接上功能？
+Phase 3B code health 已完成，随后实现了 Phase 4A 的 `relay_only`。
 
-### 决策 4: 第二策略选哪个
+### 已决策 4: 第二策略选择 `relay_only`
 
-`relay_only`（最简单） vs `tcp_framed`（最有实际价值） vs `quic_datagram`（最前沿但依赖最重）？
+`tcp_framed` 和 `quic_datagram` 不在本轮范围内。
 
-### 决策 5: 那些大量的 brainstorm/analysis 文档怎么处理
+### 已决策 5: 大量 brainstorm/analysis 文档保留原路径并明确标记
 
-保留在仓库根目录还是归档到 `docs/archive/`？它们总共 270KB，比源码还大。
+为了避免破坏既有相对链接，当前保留原路径；所有非权威文档通过 Proposal/Archive/Brainstorm 顶部说明和 `docs/README.md` 分级降低误导风险。

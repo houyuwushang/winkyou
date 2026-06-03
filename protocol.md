@@ -1,5 +1,8 @@
 # WinkYou 自研协议设计方案
 
+> [!IMPORTANT]
+> **Proposal / Brainstorm**: This document is retained as historical protocol brainstorming. It is not the active data-plane plan. Use [`docs/CONNECTIVITY-SOLVER-BASELINE.md`](docs/CONNECTIVITY-SOLVER-BASELINE.md) as the current architecture authority.
+
 > 本文档探讨：如果要从协议层获得极致性能，需要动什么、怎么动、有什么代价。
 > 
 > 前提：团队有密码学背景，能理解协议安全性分析，愿意承担自研协议的风险。

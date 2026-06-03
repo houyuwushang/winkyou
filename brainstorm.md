@@ -1,5 +1,8 @@
 # WireGuard协议分析与改进方案
 
+> [!IMPORTANT]
+> **Proposal / Brainstorm**: This document is retained as historical protocol brainstorming. It is not the active data-plane plan. Use [`docs/CONNECTIVITY-SOLVER-BASELINE.md`](docs/CONNECTIVITY-SOLVER-BASELINE.md) as the current architecture authority.
+
 > 头脑风暴：WireGuard有什么可以改进的地方？如何在不牺牲安全性的前提下超越它？
 >
 > 创建日期: 2026-04-02

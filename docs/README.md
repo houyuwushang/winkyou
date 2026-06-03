@@ -31,5 +31,19 @@ These files are proposal/brainstorm material from the 2026-05 architecture overh
 - Historical task breakdowns: [`tasks/`](./tasks)
 - Peer relay notes: [`PEER-RELAY-DESIGN.md`](./PEER-RELAY-DESIGN.md)
 - Deployment questions log: [`DEPLOYMENT-QUESTIONS-2026-04-15.md`](./DEPLOYMENT-QUESTIONS-2026-04-15.md)
+- Deployment hardening summary: [`../DEPLOYMENT-SUMMARY.md`](../DEPLOYMENT-SUMMARY.md)
+
+Root-level archive/proposal documents:
+
+- [`../winkplan.md`](../winkplan.md)
+- [`../brainstorm.md`](../brainstorm.md)
+- [`../selfdev.md`](../selfdev.md)
+- [`../selfhost.md`](../selfhost.md)
+- [`../manage.md`](../manage.md)
+- [`../question.md`](../question.md)
+- [`../guess.md`](../guess.md)
+- [`../protocol.md`](../protocol.md)
+- [`../wink-protocol-v1.md`](../wink-protocol-v1.md)
+- [`../codex_summary.md`](../codex_summary.md)
 
 Archive and brainstorm documents are preserved for traceability. Do not treat them as current implementation instructions unless a current roadmap entry explicitly references them.

@@ -1,5 +1,8 @@
 # WinkYou - P2P 内网穿透虚拟局域网项目规划
 
+> [!IMPORTANT]
+> **Deprecated / Archive**: This is an early long-range planning document and no longer matches the current code structure or architecture. Use [`docs/CONNECTIVITY-SOLVER-BASELINE.md`](docs/CONNECTIVITY-SOLVER-BASELINE.md) as the current architecture authority.
+
 > 说明：本文件保留项目长期规划与演进路线。
 > 对于当前 MVP 执行，如与 `docs/EXECUTION-BASELINE.md` 冲突，以执行基线为准。
 
