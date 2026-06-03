@@ -11,6 +11,7 @@ import (
 	rproto "winkyou/pkg/rendezvous/proto"
 	sesspkg "winkyou/pkg/session"
 	"winkyou/pkg/solver"
+	"winkyou/pkg/solver/strategy/legacyice"
 )
 
 type resolverStrategy struct {
@@ -68,8 +69,8 @@ func TestStrategyResolverResolveNoIntersection(t *testing.T) {
 	if err == nil {
 		t.Fatal("Resolve() error = nil, want no intersection failure")
 	}
-	if !strings.Contains(err.Error(), "no compatible strategy") {
-		t.Fatalf("Resolve() error = %v, want no compatible strategy", err)
+	if !strings.Contains(err.Error(), "no mutually supported strategy") {
+		t.Fatalf("Resolve() error = %v, want no mutually supported strategy", err)
 	}
 }
 
@@ -104,6 +105,27 @@ func TestStrategyResolverResolveMissingCapabilityWithoutFallback(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "fallback disabled") {
 		t.Fatalf("Resolve() error = %v, want fallback disabled", err)
+	}
+}
+
+func TestEngineStrategyResolverDefaultsToLegacyWithImplicitFallback(t *testing.T) {
+	eng := &engine{}
+	resolver := eng.newStrategyResolver()
+
+	capability := resolver.LocalCapability()
+	if len(capability.Strategies) != 1 || capability.Strategies[0] != legacyice.StrategyName {
+		t.Fatalf("LocalCapability().Strategies = %#v, want default legacy strategy", capability.Strategies)
+	}
+
+	strategy, selection, err := resolver.Resolve(rproto.Capability{}, true)
+	if err != nil {
+		t.Fatalf("Resolve(empty capability) error = %v", err)
+	}
+	if strategy.Name() != legacyice.StrategyName {
+		t.Fatalf("Resolve(empty capability) strategy = %q, want %q", strategy.Name(), legacyice.StrategyName)
+	}
+	if selection != (sesspkg.Selection{StrategyName: legacyice.StrategyName, Negotiated: false}) {
+		t.Fatalf("Resolve(empty capability) selection = %#v, want implicit legacy fallback", selection)
 	}
 }
 

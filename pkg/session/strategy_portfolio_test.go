@@ -9,6 +9,7 @@ import (
 	"time"
 
 	rproto "winkyou/pkg/rendezvous/proto"
+	"winkyou/pkg/solver"
 )
 
 func TestPortfolioResolverLocalCapabilityAdvertisesRegisteredStrategies(t *testing.T) {
@@ -141,6 +142,100 @@ func TestPortfolioResolverRejectsEntryNameMismatch(t *testing.T) {
 	}
 }
 
+func TestFactoryPortfolioResolverSelectsFirstMutualByLocalOrder(t *testing.T) {
+	builds := map[string]int{}
+	resolver := newTestFactoryPortfolioResolver(t, []StrategyFactoryEntry{
+		{Name: "legacy_ice_udp", Build: countingStrategyFactory("legacy_ice_udp", builds)},
+		{Name: "future_quic", Build: countingStrategyFactory("future_quic", builds)},
+	}, PortfolioResolverPolicy{}, nil)
+
+	strategy, selection, err := resolver.Resolve(rproto.Capability{Strategies: []string{"future_quic", "legacy_ice_udp"}}, true)
+	if err != nil {
+		t.Fatalf("Resolve() error = %v", err)
+	}
+	if strategy.Name() != "legacy_ice_udp" {
+		t.Fatalf("Resolve() strategy = %q, want legacy_ice_udp", strategy.Name())
+	}
+	if selection != (Selection{StrategyName: "legacy_ice_udp", Negotiated: true}) {
+		t.Fatalf("Resolve() selection = %#v, want negotiated legacy_ice_udp", selection)
+	}
+	if builds["legacy_ice_udp"] != 1 || builds["future_quic"] != 0 {
+		t.Fatalf("factory builds = %#v, want only legacy_ice_udp built once", builds)
+	}
+}
+
+func TestFactoryPortfolioResolverErrorsWhenNoMutualStrategy(t *testing.T) {
+	resolver := newTestFactoryPortfolioResolver(t, []StrategyFactoryEntry{
+		{Name: "legacy_ice_udp", Build: countingStrategyFactory("legacy_ice_udp", nil)},
+	}, PortfolioResolverPolicy{}, nil)
+
+	strategy, selection, err := resolver.Resolve(rproto.Capability{Strategies: []string{"future_quic"}}, true)
+	if err == nil {
+		t.Fatal("Resolve() error = nil, want no mutual strategy error")
+	}
+	if strategy != nil {
+		t.Fatalf("Resolve() strategy = %#v, want nil", strategy)
+	}
+	if selection != (Selection{}) {
+		t.Fatalf("Resolve() selection = %#v, want zero value", selection)
+	}
+	if !strings.Contains(err.Error(), "no mutually supported strategy") {
+		t.Fatalf("Resolve() error = %q, want no mutually supported strategy", err)
+	}
+}
+
+func TestFactoryPortfolioResolverAllowsImplicitLegacyFallback(t *testing.T) {
+	resolver := newTestFactoryPortfolioResolver(t, []StrategyFactoryEntry{
+		{Name: "legacy_ice_udp", Build: countingStrategyFactory("legacy_ice_udp", nil)},
+	}, PortfolioResolverPolicy{
+		CompatibilityDefault: "legacy_ice_udp",
+		AllowImplicitLegacy:  true,
+	}, nil)
+
+	strategy, selection, err := resolver.Resolve(rproto.Capability{}, true)
+	if err != nil {
+		t.Fatalf("Resolve() error = %v", err)
+	}
+	if strategy.Name() != "legacy_ice_udp" {
+		t.Fatalf("Resolve() strategy = %q, want legacy_ice_udp", strategy.Name())
+	}
+	if selection != (Selection{StrategyName: "legacy_ice_udp", Negotiated: false}) {
+		t.Fatalf("Resolve() selection = %#v, want implicit legacy fallback", selection)
+	}
+}
+
+func TestFactoryPortfolioResolverSkipsInvalidAndDuplicateFactories(t *testing.T) {
+	builds := map[string]int{}
+	resolver := newTestFactoryPortfolioResolver(t, []StrategyFactoryEntry{
+		{Name: "", Build: countingStrategyFactory("empty", builds)},
+		{Name: "ignored_nil"},
+		{Name: "legacy_ice_udp", Build: countingStrategyFactory("legacy_ice_udp", builds)},
+		{Name: "legacy_ice_udp", Build: countingStrategyFactory("duplicate_legacy", builds)},
+	}, PortfolioResolverPolicy{}, []string{rproto.FeatureProbeLabV1})
+
+	capability := resolver.LocalCapability()
+	if got, want := capability.Strategies, []string{"legacy_ice_udp"}; !slices.Equal(got, want) {
+		t.Fatalf("LocalCapability().Strategies = %#v, want %#v", got, want)
+	}
+	if got, want := capability.Features, []string{rproto.FeatureProbeLabV1}; !slices.Equal(got, want) {
+		t.Fatalf("LocalCapability().Features = %#v, want %#v", got, want)
+	}
+
+	strategy, selection, err := resolver.Resolve(rproto.Capability{Strategies: []string{"legacy_ice_udp"}}, true)
+	if err != nil {
+		t.Fatalf("Resolve() error = %v", err)
+	}
+	if strategy.Name() != "legacy_ice_udp" {
+		t.Fatalf("Resolve() strategy = %q, want legacy_ice_udp", strategy.Name())
+	}
+	if selection != (Selection{StrategyName: "legacy_ice_udp", Negotiated: true}) {
+		t.Fatalf("Resolve() selection = %#v, want negotiated legacy_ice_udp", selection)
+	}
+	if builds["legacy_ice_udp"] != 1 || builds["duplicate_legacy"] != 0 || builds["empty"] != 0 {
+		t.Fatalf("factory builds = %#v, want only first valid legacy factory built", builds)
+	}
+}
+
 func TestSessionStrategySelectionUsesPortfolioResolver(t *testing.T) {
 	legacy := &fakeStrategy{name: "legacy_ice_udp", transport: &fakeTransport{}}
 	fakeTCP := &fakeStrategy{name: "fake_tcp_443", transport: &fakeTransport{}}
@@ -221,6 +316,24 @@ func newTestPortfolioResolver(t *testing.T, entries []StrategyEntry) *PortfolioR
 		t.Fatalf("NewPortfolioResolver() error = %v", err)
 	}
 	return resolver
+}
+
+func newTestFactoryPortfolioResolver(t *testing.T, entries []StrategyFactoryEntry, policy PortfolioResolverPolicy, features []string) *FactoryPortfolioResolver {
+	t.Helper()
+	resolver, err := NewFactoryPortfolioResolver(entries, policy, features)
+	if err != nil {
+		t.Fatalf("NewFactoryPortfolioResolver() error = %v", err)
+	}
+	return resolver
+}
+
+func countingStrategyFactory(name string, builds map[string]int) func() solver.Strategy {
+	return func() solver.Strategy {
+		if builds != nil {
+			builds[name]++
+		}
+		return &fakeStrategy{name: name, transport: &fakeTransport{}}
+	}
 }
 
 func mustDecodePathCommit(t *testing.T, payload []byte) rproto.PathCommit {
