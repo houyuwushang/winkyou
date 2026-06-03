@@ -10,6 +10,8 @@ import (
 	"winkyou/pkg/solver"
 )
 
+const observationMemoryLimit = 1000
+
 // ObservationStore provides minimal persistent storage for observations
 type ObservationStore struct {
 	mu           sync.Mutex
@@ -35,9 +37,7 @@ func (s *ObservationStore) Record(obs solver.Observation) error {
 	s.mu.Lock()
 	s.observations = append(s.observations, obs)
 	// Keep last 1000 observations in memory
-	if len(s.observations) > 1000 {
-		s.observations = s.observations[len(s.observations)-1000:]
-	}
+	s.observations = trimObservationHistory(s.observations, observationMemoryLimit)
 	s.mu.Unlock()
 
 	// Persist to file if configured
@@ -123,11 +123,18 @@ func (s *ObservationStore) LoadFromFile() error {
 	}
 
 	// Keep last 1000
-	if len(s.observations) > 1000 {
-		s.observations = s.observations[len(s.observations)-1000:]
-	}
+	s.observations = trimObservationHistory(s.observations, observationMemoryLimit)
 
 	return nil
+}
+
+func trimObservationHistory(observations []solver.Observation, limit int) []solver.Observation {
+	if limit <= 0 || len(observations) <= limit {
+		return observations
+	}
+	retained := make([]solver.Observation, limit)
+	copy(retained, observations[len(observations)-limit:])
+	return retained
 }
 
 func splitLines(data []byte) [][]byte {

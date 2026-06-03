@@ -123,7 +123,9 @@ func (s *Session) emitObservation(ctx context.Context, obs solver.Observation) {
 func appendObservation(list []solver.Observation, obs solver.Observation, limit int) []solver.Observation {
 	list = append(list, obs)
 	if limit > 0 && len(list) > limit {
-		list = list[len(list)-limit:]
+		retained := make([]solver.Observation, limit)
+		copy(retained, list[len(list)-limit:])
+		return retained
 	}
 	return list
 }
