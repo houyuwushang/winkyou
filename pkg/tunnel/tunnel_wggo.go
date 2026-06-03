@@ -92,7 +92,7 @@ func (w *wggoTunnel) Start() error {
 	w.closeCh = make(chan struct{})
 	w.refreshPeerStatsLocked()
 	w.wg.Add(1)
-	go w.statsLoop()
+	go w.statsLoop(w.closeCh)
 	return nil
 }
 
@@ -114,6 +114,8 @@ func (w *wggoTunnel) Stop() error {
 	if closeCh != nil {
 		close(closeCh)
 	}
+	w.wg.Wait()
+
 	if tunDevice != nil {
 		_ = tunDevice.Close()
 	}
@@ -123,7 +125,6 @@ func (w *wggoTunnel) Stop() error {
 	if device != nil {
 		device.Close()
 	}
-	w.wg.Wait()
 
 	w.mu.Lock()
 	w.device = nil
@@ -288,7 +289,7 @@ func (w *wggoTunnel) GetStats() *TunnelStats {
 
 func (w *wggoTunnel) Events() <-chan TunnelEvent { return w.events }
 
-func (w *wggoTunnel) statsLoop() {
+func (w *wggoTunnel) statsLoop(closeCh <-chan struct{}) {
 	defer w.wg.Done()
 	ticker := time.NewTicker(statsRefreshInterval)
 	defer ticker.Stop()
@@ -297,7 +298,7 @@ func (w *wggoTunnel) statsLoop() {
 		select {
 		case <-ticker.C:
 			w.refreshPeerStats()
-		case <-w.closeCh:
+		case <-closeCh:
 			return
 		}
 	}
