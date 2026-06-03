@@ -86,26 +86,27 @@ func (s *Session) Close() error {
 
 	s.transition(StateClosed)
 	if executor := s.currentExecutor(); executor != nil {
-		_ = executor.Close()
+		s.ignoreCleanupError(s.runCleanup(executor.Close))
 	}
 	if s.cfg.Binder != nil {
-		_ = s.cfg.Binder.Unbind(context.Background(), s.cfg.PeerID)
+		s.ignoreCleanupError(s.runCleanupWithContext(func(ctx context.Context) error {
+			return s.cfg.Binder.Unbind(ctx, s.cfg.PeerID)
+		}))
 	}
 	if s.lastRes.Transport != nil {
-		_ = s.lastRes.Transport.Close()
+		transport := s.lastRes.Transport
 		s.lastRes.Transport = nil
+		s.ignoreCleanupError(s.runCleanup(transport.Close))
 	}
 	if strategy := s.currentStrategy(); strategy != nil {
-		return strategy.Close()
+		return s.runCleanup(strategy.Close)
 	}
 	return nil
 }
 
 func (s *Session) transition(next State) {
 	if err := s.sm.Transition(next); err != nil {
-		if s.cfg.Hooks.OnError != nil {
-			s.cfg.Hooks.OnError(err)
-		}
+		s.notifyError(err)
 		return
 	}
 	s.metaMu.Lock()
@@ -118,9 +119,7 @@ func (s *Session) transition(next State) {
 
 func (s *Session) fail(err error) {
 	s.transition(StateFailed)
-	if s.cfg.Hooks.OnError != nil && err != nil {
-		s.cfg.Hooks.OnError(err)
-	}
+	s.notifyError(err)
 }
 
 func (s *Session) executionTimeout() time.Duration {
@@ -138,4 +137,60 @@ func (s *Session) runContext() context.Context {
 	s.startMu.Lock()
 	defer s.startMu.Unlock()
 	return s.runCtx
+}
+
+func (s *Session) operationContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	if ctx == nil {
+		ctx = s.runContext()
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return context.WithTimeout(ctx, defaultOperationTimeout)
+}
+
+func (s *Session) cleanupContext() (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.Background(), defaultCleanupTimeout)
+}
+
+func (s *Session) runCleanup(fn func() error) error {
+	ctx, cancel := s.cleanupContext()
+	defer cancel()
+
+	return runWithContext(ctx, fn)
+}
+
+func (s *Session) runCleanupWithContext(fn func(context.Context) error) error {
+	ctx, cancel := s.cleanupContext()
+	defer cancel()
+
+	return runWithContext(ctx, func() error {
+		return fn(ctx)
+	})
+}
+
+func runWithContext(ctx context.Context, fn func() error) error {
+	done := make(chan error, 1)
+	go func() {
+		done <- fn()
+	}()
+
+	select {
+	case err := <-done:
+		return err
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func (s *Session) ignoreCleanupError(err error) {
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		s.notifyError(err)
+	}
+}
+
+func (s *Session) notifyError(err error) {
+	if s.cfg.Hooks.OnError != nil && err != nil {
+		s.cfg.Hooks.OnError(err)
+	}
 }

@@ -104,7 +104,9 @@ func (s *Session) reportObservation(ctx context.Context, obs solver.Observation)
 		return err
 	}
 
-	return s.io.Send(ctx, solver.Message{
+	sendCtx, cancel := s.operationContext(ctx)
+	defer cancel()
+	return s.io.Send(sendCtx, solver.Message{
 		Kind:      solver.MessageKindEnvelope,
 		Namespace: envelopeNamespace,
 		Type:      rproto.MsgTypeObservation,
@@ -113,10 +115,9 @@ func (s *Session) reportObservation(ctx context.Context, obs solver.Observation)
 }
 
 func (s *Session) emitObservation(ctx context.Context, obs solver.Observation) {
-	if ctx == nil {
-		ctx = context.Background()
+	if err := s.reportObservation(ctx, obs); err != nil {
+		s.notifyError(err)
 	}
-	_ = s.reportObservation(ctx, obs)
 }
 
 func appendObservation(list []solver.Observation, obs solver.Observation, limit int) []solver.Observation {

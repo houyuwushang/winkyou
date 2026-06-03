@@ -17,7 +17,7 @@ func (s *Session) selectAndExecute(ctx context.Context) error {
 	}
 
 	if err := s.runStrategyPreflightProbe(ctx, strategy); err != nil {
-		s.emitObservation(context.Background(), solver.Observation{
+		s.emitObservation(ctx, solver.Observation{
 			Strategy:   strategy.Name(),
 			Event:      "probe_failed",
 			ErrorClass: classifyError(err),
@@ -43,7 +43,7 @@ func (s *Session) selectAndExecute(ctx context.Context) error {
 	plans, refineReason := s.refinePlans(ctx, strategy, solveInput, plans)
 	s.recordPlanRefine(plansBefore, planIDs(plans), refineReason)
 	if refineReason != "no_refinement" {
-		s.emitObservation(context.Background(), solver.Observation{
+		s.emitObservation(ctx, solver.Observation{
 			Strategy: strategy.Name(),
 			Event:    "plans_refined",
 			Reason:   refineReason,
@@ -60,7 +60,7 @@ func (s *Session) selectAndExecute(ctx context.Context) error {
 
 	plans, orderReason := s.rankPlans(ctx, strategy, plans)
 	s.recordPlanOrder(plans, orderReason)
-	s.emitObservation(context.Background(), solver.Observation{
+	s.emitObservation(ctx, solver.Observation{
 		Strategy: strategy.Name(),
 		Event:    "plan_ordered",
 		Reason:   orderReason,
@@ -78,7 +78,7 @@ func (s *Session) selectAndExecute(ctx context.Context) error {
 
 	// Execute candidate loop with budget
 	budget := solver.DefaultBudget()
-	outcomes := s.executeCandidateLoop(strategy, plans, budget)
+	outcomes := s.executeCandidateLoop(ctx, strategy, plans, budget)
 
 	// Select best outcome
 	best := solver.SelectBestOutcome(outcomes)
@@ -103,7 +103,7 @@ func (s *Session) selectAndExecute(ctx context.Context) error {
 	best.SelectionReason = "highest_score"
 	s.lastPlan = best.Plan
 	s.lastRes = *best.Result
-	s.emitObservation(context.Background(), solver.Observation{
+	s.emitObservation(ctx, solver.Observation{
 		Strategy:       best.Plan.Strategy,
 		PlanID:         best.Plan.ID,
 		Event:          "path_selected",
@@ -120,7 +120,7 @@ func (s *Session) selectAndExecute(ctx context.Context) error {
 	// Clean up non-selected transports
 	for i := range outcomes {
 		if !outcomes[i].Selected && outcomes[i].Result != nil && outcomes[i].Result.Transport != nil {
-			_ = outcomes[i].Result.Transport.Close()
+			s.ignoreCleanupError(s.runCleanup(outcomes[i].Result.Transport.Close))
 		}
 	}
 
@@ -128,12 +128,15 @@ func (s *Session) selectAndExecute(ctx context.Context) error {
 
 	// Bind the winner
 	if s.cfg.Binder != nil {
-		if err := s.cfg.Binder.Bind(context.Background(), s.cfg.PeerID, best.Result.Transport); err != nil {
-			_ = best.Result.Transport.Close()
+		bindCtx, cancel := s.operationContext(ctx)
+		err := s.cfg.Binder.Bind(bindCtx, s.cfg.PeerID, best.Result.Transport)
+		cancel()
+		if err != nil {
+			s.ignoreCleanupError(s.runCleanup(best.Result.Transport.Close))
 			s.fail(err)
 			return nil
 		}
-		s.emitObservation(context.Background(), solver.Observation{
+		s.emitObservation(ctx, solver.Observation{
 			Strategy:       best.Plan.Strategy,
 			PlanID:         best.Plan.ID,
 			Event:          "bind_succeeded",
@@ -146,16 +149,18 @@ func (s *Session) selectAndExecute(ctx context.Context) error {
 	}
 
 	// Send path commit
-	if err := s.sendPathCommit(context.Background(), *best.Result); err != nil {
+	if err := s.sendPathCommit(ctx, *best.Result); err != nil {
 		if s.cfg.Binder != nil {
-			_ = s.cfg.Binder.Unbind(context.Background(), s.cfg.PeerID)
+			s.ignoreCleanupError(s.runCleanupWithContext(func(cleanupCtx context.Context) error {
+				return s.cfg.Binder.Unbind(cleanupCtx, s.cfg.PeerID)
+			}))
 		}
-		_ = best.Result.Transport.Close()
+		s.ignoreCleanupError(s.runCleanup(best.Result.Transport.Close))
 		s.lastRes.Transport = nil
 		s.fail(err)
 		return nil
 	}
-	s.emitObservation(context.Background(), solver.Observation{
+	s.emitObservation(ctx, solver.Observation{
 		Strategy:       best.Plan.Strategy,
 		PlanID:         best.Plan.ID,
 		Event:          "path_committed",
@@ -172,7 +177,7 @@ func (s *Session) selectAndExecute(ctx context.Context) error {
 	return nil
 }
 
-func (s *Session) executeCandidateLoop(strategy solver.Strategy, plans []solver.Plan, budget solver.ExecutionBudget) []solver.CandidateOutcome {
+func (s *Session) executeCandidateLoop(ctx context.Context, strategy solver.Strategy, plans []solver.Plan, budget solver.ExecutionBudget) []solver.CandidateOutcome {
 	outcomes := make([]solver.CandidateOutcome, 0, len(plans))
 	budgetStart := time.Now()
 
@@ -189,7 +194,7 @@ func (s *Session) executeCandidateLoop(strategy solver.Strategy, plans []solver.
 			break
 		}
 
-		s.emitObservation(context.Background(), solver.Observation{
+		s.emitObservation(ctx, solver.Observation{
 			Strategy:  plan.Strategy,
 			PlanID:    plan.ID,
 			Event:     "candidate_planned",
@@ -199,7 +204,7 @@ func (s *Session) executeCandidateLoop(strategy solver.Strategy, plans []solver.
 				"candidate_total": fmt.Sprintf("%d", maxCandidates),
 			},
 		})
-		outcome := s.executeCandidate(strategy, plan)
+		outcome := s.executeCandidate(ctx, strategy, plan)
 		outcomes = append(outcomes, outcome)
 	}
 
@@ -211,7 +216,7 @@ func (s *Session) executeCandidateLoop(strategy solver.Strategy, plans []solver.
 	return outcomes
 }
 
-func (s *Session) executeCandidate(strategy solver.Strategy, plan solver.Plan) solver.CandidateOutcome {
+func (s *Session) executeCandidate(ctx context.Context, strategy solver.Strategy, plan solver.Plan) solver.CandidateOutcome {
 	startTime := time.Now()
 	initialObsCount := s.localObservationCount()
 	outcome := solver.CandidateOutcome{
@@ -220,7 +225,10 @@ func (s *Session) executeCandidate(strategy solver.Strategy, plan solver.Plan) s
 	}
 
 	s.transition(StateExecuting)
-	execCtx := s.runContext()
+	execCtx := ctx
+	if execCtx == nil {
+		execCtx = s.runContext()
+	}
 	if execCtx == nil {
 		execCtx = context.Background()
 	}
@@ -260,7 +268,7 @@ func (s *Session) executePlan(ctx context.Context, strategy solver.Strategy, pla
 	defer func() {
 		s.clearActiveExecutor(executor)
 		s.discardPendingStrategyMessages()
-		_ = executor.Close()
+		s.ignoreCleanupError(s.runCleanup(executor.Close))
 	}()
 	if err := s.flushPendingStrategyMessages(ctx, executor); err != nil {
 		return solver.Result{}, err

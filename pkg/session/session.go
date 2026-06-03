@@ -14,6 +14,10 @@ const defaultCapabilityWaitTimeout = 2 * time.Second
 
 const defaultPreflightProbeTimeout = 500 * time.Millisecond
 
+const defaultOperationTimeout = 2 * time.Second
+
+const defaultCleanupTimeout = 2 * time.Second
+
 type Session struct {
 	cfg Config
 

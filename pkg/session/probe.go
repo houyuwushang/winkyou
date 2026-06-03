@@ -114,7 +114,7 @@ func (s *Session) sendProbeScript(ctx context.Context, script pmodel.Script) err
 		return err
 	}
 	s.recordProbeScript(script, time.Now())
-	s.emitObservation(context.Background(), solver.Observation{
+	s.emitObservation(ctx, solver.Observation{
 		Strategy: pmodel.StrategyName,
 		PlanID:   script.PlanID,
 		Event:    "probe_script_sent",
@@ -124,7 +124,9 @@ func (s *Session) sendProbeScript(ctx context.Context, script pmodel.Script) err
 			"step_count":  fmt.Sprintf("%d", len(script.Steps)),
 		},
 	})
-	return s.io.Send(ctx, solver.Message{
+	sendCtx, cancel := s.operationContext(ctx)
+	defer cancel()
+	return s.io.Send(sendCtx, solver.Message{
 		Kind:      solver.MessageKindEnvelope,
 		Namespace: envelopeNamespace,
 		Type:      rproto.MsgTypeProbeScript,
@@ -141,7 +143,9 @@ func (s *Session) sendProbeResult(ctx context.Context, result pmodel.Result) err
 	if err != nil {
 		return err
 	}
-	return s.io.Send(ctx, solver.Message{
+	sendCtx, cancel := s.operationContext(ctx)
+	defer cancel()
+	return s.io.Send(sendCtx, solver.Message{
 		Kind:      solver.MessageKindEnvelope,
 		Namespace: envelopeNamespace,
 		Type:      rproto.MsgTypeProbeResult,
@@ -152,7 +156,8 @@ func (s *Session) sendProbeResult(ctx context.Context, result pmodel.Result) err
 func (s *Session) handleProbeScript(receivedAt time.Time, script rproto.ProbeScript) {
 	localScript := probeScriptFromProto(script)
 	s.recordProbeScript(localScript, receivedAt)
-	s.emitObservation(context.Background(), solver.Observation{
+	runCtx := s.runContext()
+	s.emitObservation(runCtx, solver.Observation{
 		Strategy: pmodel.StrategyName,
 		PlanID:   localScript.PlanID,
 		Event:    "probe_script_received",
@@ -167,7 +172,8 @@ func (s *Session) handleProbeScript(receivedAt time.Time, script rproto.ProbeScr
 }
 
 func (s *Session) runProbeScript(script pmodel.Script) {
-	s.emitObservation(context.Background(), solver.Observation{
+	runCtx := s.runContext()
+	s.emitObservation(runCtx, solver.Observation{
 		Strategy: pmodel.StrategyName,
 		PlanID:   script.PlanID,
 		Event:    "probe_script_started",
@@ -189,7 +195,7 @@ func (s *Session) runProbeScript(script pmodel.Script) {
 		s.meta.LastProbeResult = cloneProbeResult(result)
 		s.meta.LastProbeResultAt = result.FinishedAt
 		s.metaMu.Unlock()
-		s.emitObservation(context.Background(), solver.Observation{
+		s.emitObservation(runCtx, solver.Observation{
 			Strategy:   pmodel.StrategyName,
 			PlanID:     script.PlanID,
 			Event:      "probe_script_failed",
@@ -199,11 +205,12 @@ func (s *Session) runProbeScript(script pmodel.Script) {
 				"script_type": script.ScriptType,
 			},
 		})
-		_ = s.sendProbeResult(context.Background(), result)
+		if err := s.sendProbeResult(runCtx, result); err != nil {
+			s.notifyError(err)
+		}
 		return
 	}
 
-	runCtx := s.runContext()
 	if runCtx == nil {
 		runCtx = context.Background()
 	}
@@ -225,14 +232,14 @@ func (s *Session) runProbeScript(script pmodel.Script) {
 	s.meta.LastProbeResultAt = result.FinishedAt
 	s.metaMu.Unlock()
 	for _, obs := range result.Events {
-		s.emitObservation(context.Background(), obs)
+		s.emitObservation(runCtx, obs)
 	}
 	if err != nil || !result.Success {
 		reason := script.ScriptType
 		if err != nil {
 			reason = err.Error()
 		}
-		s.emitObservation(context.Background(), solver.Observation{
+		s.emitObservation(runCtx, solver.Observation{
 			Strategy:   pmodel.StrategyName,
 			PlanID:     script.PlanID,
 			Event:      "probe_script_failed",
@@ -243,7 +250,7 @@ func (s *Session) runProbeScript(script pmodel.Script) {
 			},
 		})
 	} else {
-		s.emitObservation(context.Background(), solver.Observation{
+		s.emitObservation(runCtx, solver.Observation{
 			Strategy: pmodel.StrategyName,
 			PlanID:   script.PlanID,
 			Event:    "probe_script_succeeded",
@@ -253,7 +260,9 @@ func (s *Session) runProbeScript(script pmodel.Script) {
 			},
 		})
 	}
-	_ = s.sendProbeResult(context.Background(), result)
+	if err := s.sendProbeResult(runCtx, result); err != nil {
+		s.notifyError(err)
+	}
 }
 
 func (s *Session) handleProbeResult(receivedAt time.Time, result rproto.ProbeResult) {
@@ -271,7 +280,7 @@ func (s *Session) handleProbeResult(receivedAt time.Time, result rproto.ProbeRes
 	}
 	s.metaMu.Unlock()
 
-	s.emitObservation(context.Background(), solver.Observation{
+	s.emitObservation(s.runContext(), solver.Observation{
 		Strategy:       pmodel.StrategyName,
 		PlanID:         localResult.PlanID,
 		Event:          "probe_result_received",

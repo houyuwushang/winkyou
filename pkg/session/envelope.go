@@ -38,7 +38,9 @@ func (s *Session) sendCapability(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	return s.io.Send(ctx, solver.Message{
+	sendCtx, cancel := s.operationContext(ctx)
+	defer cancel()
+	return s.io.Send(sendCtx, solver.Message{
 		Kind:       solver.MessageKindEnvelope,
 		Namespace:  envelopeNamespace,
 		Type:       rproto.MsgTypeCapability,
@@ -60,7 +62,9 @@ func (s *Session) sendPathCommit(ctx context.Context, result solver.Result) erro
 	if err != nil {
 		return err
 	}
-	return s.io.Send(ctx, solver.Message{
+	sendCtx, cancel := s.operationContext(ctx)
+	defer cancel()
+	return s.io.Send(sendCtx, solver.Message{
 		Kind:       solver.MessageKindEnvelope,
 		Namespace:  envelopeNamespace,
 		Type:       rproto.MsgTypePathCommit,
