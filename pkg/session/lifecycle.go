@@ -3,13 +3,14 @@ package session
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"time"
 )
 
 func (s *Session) Start(ctx context.Context) error {
 	if ctx == nil {
-		ctx = context.Background()
+		return fmt.Errorf("session: nil context")
 	}
 
 	s.startMu.Lock()

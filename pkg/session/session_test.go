@@ -297,6 +297,23 @@ func TestSessionStartCapabilitySelectionAndPathCommit(t *testing.T) {
 	}
 }
 
+func TestSessionStartRejectsNilContext(t *testing.T) {
+	s, err := New(Config{
+		SessionID:   "session/node-a/node-b",
+		LocalNodeID: "node-a",
+		PeerID:      "node-b",
+		Initiator:   true,
+		Resolver:    &fakeResolver{local: rproto.Capability{Strategies: []string{"legacy_ice_udp"}}, strategy: &fakeStrategy{name: "legacy_ice_udp", transport: &fakeTransport{}}, selection: Selection{StrategyName: "legacy_ice_udp"}},
+		Sender:      &fakeSender{},
+	})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	if err := s.Start(nil); err == nil {
+		t.Fatal("Start(nil) error = nil, want nil context error")
+	}
+}
+
 func TestSessionCapabilityAndPathCommitUpdatesSnapshotIdempotently(t *testing.T) {
 	transport := &fakeTransport{}
 	sender := &fakeSender{}
