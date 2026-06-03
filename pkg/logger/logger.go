@@ -178,4 +178,3 @@ func newSink(opts Options) (zapcore.WriteSyncer, func() error, error) {
 func Nop() Logger {
 	return &zapLogger{base: zap.NewNop()}
 }
-

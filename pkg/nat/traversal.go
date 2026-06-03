@@ -1,4 +1,4 @@
-﻿package nat
+package nat
 
 import (
 	"context"

@@ -14,10 +14,10 @@ func TestRelevantObservationForInputScopesLocalAndRemoteEvidence(t *testing.T) {
 	}
 
 	tests := []struct {
-		name     string
-		source   observationSource
-		obs      solver.Observation
-		wantOK   bool
+		name      string
+		source    observationSource
+		obs       solver.Observation
+		wantOK    bool
 		wantPrune bool
 	}{
 		{

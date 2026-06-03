@@ -36,7 +36,7 @@ func TestRelayOnlyICEAgent(t *testing.T) {
 				Password: turnPass,
 			},
 		},
-		ForceRelay: true,
+		ForceRelay:  true,
 		Controlling: true,
 	}
 

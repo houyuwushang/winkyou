@@ -37,4 +37,3 @@ func String() string {
 		info.GoVersion,
 	)
 }
-

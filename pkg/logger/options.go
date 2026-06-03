@@ -29,4 +29,3 @@ func FromConfig(cfg *config.LogConfig) Options {
 		File:   cfg.File,
 	}
 }
-

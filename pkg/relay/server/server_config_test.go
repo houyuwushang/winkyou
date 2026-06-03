@@ -7,13 +7,13 @@ import (
 
 func TestResolveListenAndRelayBindAddress(t *testing.T) {
 	tests := []struct {
-		name            string
-		listenAddress   string
-		relayIP         net.IP
-		allowWildcard   bool
-		wantErr         bool
-		wantListen      string
-		wantBind        string
+		name          string
+		listenAddress string
+		relayIP       net.IP
+		allowWildcard bool
+		wantErr       bool
+		wantListen    string
+		wantBind      string
 	}{
 		{
 			name:          "wildcard with relay IP without allow flag",

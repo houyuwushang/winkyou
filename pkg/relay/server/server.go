@@ -11,13 +11,13 @@ import (
 )
 
 type Config struct {
-	ListenAddress        string
-	Realm                string
-	Users                map[string]string
-	RelayAddress         string
-	MinPort              int
-	MaxPort              int
-	AllowWildcardListen  bool
+	ListenAddress       string
+	Realm               string
+	Users               map[string]string
+	RelayAddress        string
+	MinPort             int
+	MaxPort             int
+	AllowWildcardListen bool
 }
 
 type Server struct {

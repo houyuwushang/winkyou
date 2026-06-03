@@ -1,4 +1,4 @@
-﻿// Package nat defines the NAT traversal and ICE abstractions for the MVP.
+// Package nat defines the NAT traversal and ICE abstractions for the MVP.
 package nat
 
 import (
@@ -74,10 +74,10 @@ func (t NATType) String() string {
 type CandidateType int
 
 const (
-	CandidateTypeHost CandidateType = iota // local address
-	CandidateTypeSrflx                     // STUN server-reflexive
-	CandidateTypePrflx                     // peer-reflexive
-	CandidateTypeRelay                     // TURN relay
+	CandidateTypeHost  CandidateType = iota // local address
+	CandidateTypeSrflx                      // STUN server-reflexive
+	CandidateTypePrflx                      // peer-reflexive
+	CandidateTypeRelay                      // TURN relay
 )
 
 func (ct CandidateType) String() string {

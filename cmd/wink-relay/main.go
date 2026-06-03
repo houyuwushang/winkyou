@@ -17,15 +17,15 @@ func main() { os.Exit(run()) }
 
 func run() int {
 	var (
-		listen             string
-		realm              string
-		users              string
-		relayIP            string
-		externalIP         string
-		minPort            int
-		maxPort            int
+		listen              string
+		realm               string
+		users               string
+		relayIP             string
+		externalIP          string
+		minPort             int
+		maxPort             int
 		allowWildcardListen bool
-		showVersion        bool
+		showVersion         bool
 	)
 	flag.StringVar(&listen, "listen", ":3478", "udp listen address")
 	flag.StringVar(&realm, "realm", "winkyou", "turn realm")
