@@ -51,7 +51,7 @@ func (e *engine) ensurePeerSession(nodeID string) (*peerSession, error) {
 				delete(e.peerMgr.sessions, nodeID)
 			}
 			e.mu.Unlock()
-			closePeerSession(existing)
+			e.closePeerSession(existing)
 			continue
 		}
 
@@ -73,12 +73,12 @@ func (e *engine) ensurePeerSession(nodeID string) (*peerSession, error) {
 		e.mu.Lock()
 		if e.peerMgr == nil {
 			e.mu.Unlock()
-			_ = runner.Close()
+			e.logCleanupError("close unused peer session", runner.Close(), logger.String("node_id", nodeID))
 			return nil, fmt.Errorf("client: peer manager not ready")
 		}
 		if existing, ok := e.peerMgr.sessions[nodeID]; ok {
 			e.mu.Unlock()
-			_ = runner.Close()
+			e.logCleanupError("close unused peer session", runner.Close(), logger.String("node_id", nodeID))
 			return existing, nil
 		}
 		e.peerMgr.sessions[nodeID] = s
@@ -353,7 +353,7 @@ func (e *engine) sessionContext() context.Context {
 	return context.Background()
 }
 
-func closePeerSession(session *peerSession) {
+func (e *engine) closePeerSession(session *peerSession) {
 	if session == nil {
 		return
 	}
@@ -370,7 +370,7 @@ func closePeerSession(session *peerSession) {
 	session.connectMu.Unlock()
 
 	if runner != nil {
-		_ = runner.Close()
+		e.logCleanupError("close peer session", runner.Close(), logger.String("node_id", session.nodeID))
 	}
 }
 

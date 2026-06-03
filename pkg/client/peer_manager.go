@@ -75,7 +75,7 @@ func (e *engine) cleanupPeer(nodeID string) {
 	e.updateStatusCountersLocked()
 	e.mu.Unlock()
 	if s != nil {
-		closePeerSession(s)
+		e.closePeerSession(s)
 	}
 
 	e.mu.RLock()
@@ -83,7 +83,7 @@ func (e *engine) cleanupPeer(nodeID string) {
 	e.mu.RUnlock()
 	if peer != nil {
 		if pub, err := tunnel.ParsePublicKey(peer.PublicKey); err == nil && e.tun != nil {
-			_ = e.tun.RemovePeer(pub)
+			e.logCleanupError("remove tunnel peer", e.tun.RemovePeer(pub), logger.String("node_id", nodeID))
 		}
 	}
 	e.persistState()

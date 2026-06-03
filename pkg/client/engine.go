@@ -113,8 +113,8 @@ func (e *engine) Start(ctx context.Context) (err error) {
 		e.started = false
 		e.mu.Unlock()
 		e.setState(EngineStateStopped, errorString(err))
-		_ = RemoveRuntimeState(e.statePath)
-		_ = e.removeObservationState()
+		e.logCleanupError("remove runtime state", RemoveRuntimeState(e.statePath), logger.String("path", e.statePath))
+		e.logCleanupError("remove observation state", e.removeObservationState())
 	}()
 
 	if strings.TrimSpace(e.cfg.Coordinator.URL) == "" {
@@ -250,7 +250,9 @@ func (e *engine) initObservationStore() {
 		return
 	}
 	store := solverstore.NewObservationStore(e.observationStorePath())
-	_ = store.LoadFromFile()
+	if err := store.LoadFromFile(); err != nil {
+		e.log.Debug("failed to load observation history", logger.Error(err), logger.String("path", e.observationStorePath()))
+	}
 	e.observationStore = store
 }
 
@@ -288,7 +290,8 @@ func (e *engine) Stop() error {
 		e.coord.StopHeartbeat()
 	}
 	if e.pingConn != nil {
-		_ = e.pingConn.Close()
+		e.logCleanupError("close ping responder", e.pingConn.Close())
+		e.pingConn = nil
 	}
 
 	e.wg.Wait()
@@ -559,30 +562,38 @@ func (e *engine) cleanupResources() {
 	}
 	if e.peerMgr != nil {
 		for _, s := range e.peerMgr.sessions {
-			closePeerSession(s)
+			e.closePeerSession(s)
 		}
 		e.peerMgr.sessions = map[string]*peerSession{}
 	}
 	if e.tun != nil {
-		_ = e.tun.Stop()
+		e.logCleanupError("stop tunnel", e.tun.Stop())
 		e.tun = nil
 	}
 	if e.coord != nil {
-		_ = e.coord.Close()
+		e.logCleanupError("close coordinator", e.coord.Close())
 		e.coord = nil
 	}
 	if e.pingConn != nil {
-		_ = e.pingConn.Close()
+		e.logCleanupError("close ping responder", e.pingConn.Close())
 		e.pingConn = nil
 	}
 	if e.netif != nil {
-		_ = e.netif.Close()
+		e.logCleanupError("close network interface", e.netif.Close())
 		e.netif = nil
 	}
 	e.nat = nil
 	e.observationStore = nil
 	e.runCtx = nil
 	e.runCancel = nil
+}
+
+func (e *engine) logCleanupError(action string, err error, fields ...logger.Field) {
+	if err == nil {
+		return
+	}
+	fields = append(fields, logger.Error(err))
+	e.log.Debug(action+" failed", fields...)
 }
 
 func (e *engine) removeObservationState() error {
