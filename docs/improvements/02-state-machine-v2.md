@@ -1,5 +1,8 @@
 # 改进方案 02：完整的状态机实现
 
+> [!IMPORTANT]
+> **Proposal / Archive**: This improvement note is part of the 2026-05 architecture overhaul proposal set. It is historical reference material, not the active implementation plan. See [`../CONNECTIVITY-SOLVER-BASELINE.md`](../CONNECTIVITY-SOLVER-BASELINE.md) for the current baseline.
+
 ## 问题描述
 
 **当前状态**: 状态机过于简单，只有 25 行代码

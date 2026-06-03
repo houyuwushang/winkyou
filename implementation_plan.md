@@ -40,7 +40,7 @@ Phase 3A 已交付：`PortfolioResolver`、`StrategyEntry`、strategy selection 
 | 核心包数量 | 14 个 (`pkg/*`) |
 | 测试包 | 30 个（全部通过） |
 | 最大单文件 | `session.go` — **1748 行** |
-| 二进制提交 | 3 个 (wink.exe 22.7MB, netprobe.exe 3.4MB, e2e.test 23.1MB) |
+| 根目录二进制跟踪 | 当前未跟踪 `wink.exe` / `netprobe.exe` / `e2e.test` |
 
 ---
 
@@ -82,17 +82,17 @@ Phase 2D 不是纸面设计。`SolveInput` 包含 `LocalObservations`、`RemoteO
 
 ### S0 — 必须立即处理
 
-#### 问题 1: 仓库里提交了 49.2MB 二进制文件
+#### 已澄清 1: 根目录二进制当前未被 Git 跟踪（不再列为 S0）
 
 **位置**: 仓库根目录  
 **文件**: `wink.exe` (22.7MB) + `netprobe.exe` (3.4MB) + `e2e.test` (23.1MB)
 
-这三个文件被 `git add` 跟踪了。每次 clone 都要下载 49.2MB 的二进制，而且它们会在 git history 中永久存在。对于一个 615KB 源码的项目，这是不可接受的。
+当前 `git ls-files wink.exe netprobe.exe e2e.test` 无输出，说明这三个根目录二进制不在当前 tree 中被跟踪。不要再把它列为当前 S0 清理项。
 
-**修复**:
-1. `.gitignore` 添加 `*.exe`, `*.test`, `e2e.test`
-2. `git rm --cached wink.exe netprobe.exe e2e.test`
-3. 考虑 `git filter-repo` 清理历史（如果仓库已公开）
+**后续原则**:
+1. 若未来再次出现，先用 `git ls-files` 确认是否被跟踪。
+2. 只在确认当前 tree 跟踪这些文件时做 `git rm --cached`。
+3. 不要为这个判断自动 rewrite history；历史清理必须单独决策。
 
 ---
 
@@ -336,15 +336,17 @@ Go 的惯例是 `context.Context` 参数永远不为 nil（参见 [context packa
 
 超过 **270KB** 的 markdown 文档，但只有 `docs/CONNECTIVITY-SOLVER-BASELINE.md` 是真正的架构权威。其余文档之间有矛盾、有重叠、有过时内容。
 
-**建议**: 把非权威文档统一移到 `docs/archive/` 或 `docs/brainstorm/`，在 `docs/README.md` 中明确分级。
+**建议**: 非权威文档必须明确 Proposal/Archive/Brainstorm 定位；当前选择保留原路径并在 `docs/README.md` 中明确分级，避免破坏既有相对链接。
 
-#### 问题 15: NAT 超时配置硬编码在 client 包内部
+#### 已处理 15: NAT 超时配置已暴露到 config（不再列为硬编码问题）
 
-**位置**: [client/nat_timeouts.go](file:///d:/workspace/winkyou/pkg/client/nat_timeouts.go)
+**位置**:
+- [config/config.go](file:///d:/workspace/winkyou/pkg/config/config.go)
+- [client/nat_timeouts.go](file:///d:/workspace/winkyou/pkg/client/nat_timeouts.go)
 
-ICE gather/connect/check timeout 是 `engine` struct 的方法返回硬编码值，不从 config 读取。在高延迟网络环境（如跨国连接）下，默认超时可能太短。
+ICE gather/connect/check timeout 已通过 `config.NATConfig` 暴露，并由 `client/nat_timeouts.go` 从 `e.cfg.NAT` 读取；默认值在 config defaults/validator 中维护。
 
-**建议**: 暴露到 `config.Config` 中，加合理默认值。
+**后续原则**: 如需调整高延迟网络行为，修改配置默认值或文档示例，不再把它作为“硬编码在 client 包内部”的架构缺陷。
 
 ---
 

@@ -1,5 +1,8 @@
 # WinkYou 架构改进文档索引
 
+> [!IMPORTANT]
+> **Proposal / Archive**: This index points to the 2026-05 architecture overhaul proposal set. These documents are preserved for reference and are not the active architecture baseline. Use [`CONNECTIVITY-SOLVER-BASELINE.md`](./CONNECTIVITY-SOLVER-BASELINE.md) as the current source of truth.
+
 > **目的**: 提供所有架构改进相关文档的快速导航
 > 
 > **目标读者**: 架构师、开发工程师、测试工程师、技术负责人

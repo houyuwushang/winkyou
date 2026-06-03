@@ -1,5 +1,8 @@
 # WinkYou 架构深度分析 - 从 8/10 到 9.5/10
 
+> [!IMPORTANT]
+> **Proposal / Archive**: This document is a 2026-05 architecture overhaul proposal and brainstorm artifact. It is not the active architecture baseline. Use [`CONNECTIVITY-SOLVER-BASELINE.md`](./CONNECTIVITY-SOLVER-BASELINE.md) as the current source of truth.
+
 > **目标**: 将架构质量从当前的 8/10 提升到 9.5/10，打造技术上独一无二的产品
 > 
 > **分析范围**: 22,473 行 Go 代码，24 个使用锁的文件，167 处 context 使用

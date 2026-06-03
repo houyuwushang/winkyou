@@ -1,22 +1,35 @@
 # Documentation Index
 
-## Primary Entry Points
+## Active Baseline
 
-1. Active architecture baseline: [`CONNECTIVITY-SOLVER-BASELINE.md`](./CONNECTIVITY-SOLVER-BASELINE.md)
-2. Repository homepage and status summary: [`../README.md`](../README.md)
-3. Phase 2D freeze gate: [`PHASE2D-FREEZE.md`](./PHASE2D-FREEZE.md)
-4. Phase 3A strategy portfolio entry: [`PHASE3A-STRATEGY-PORTFOLIO.md`](./PHASE3A-STRATEGY-PORTFOLIO.md)
-5. Supplemental architecture notes: [`ARCHITECTURE.md`](./ARCHITECTURE.md)
+- Current architecture authority: [`CONNECTIVITY-SOLVER-BASELINE.md`](./CONNECTIVITY-SOLVER-BASELINE.md)
+- Repository homepage and status summary: [`../README.md`](../README.md)
+- Supplemental architecture notes: [`ARCHITECTURE.md`](./ARCHITECTURE.md)
 
-## Legacy Material
+When documents disagree, treat `CONNECTIVITY-SOLVER-BASELINE.md` as the source of truth for connectivity solver/session/strategy boundaries.
+
+## Current Roadmap
+
+- Phase 2D freeze gate: [`PHASE2D-FREEZE.md`](./PHASE2D-FREEZE.md)
+- Phase 3A strategy portfolio entry: [`PHASE3A-STRATEGY-PORTFOLIO.md`](./PHASE3A-STRATEGY-PORTFOLIO.md)
+- Phase 3B+ working plan: [`../implementation_plan.md`](../implementation_plan.md)
+
+## Proposals
+
+These files are proposal/brainstorm material from the 2026-05 architecture overhaul pass. They remain useful context, but they are not active authority and should not override the baseline.
+
+- [`ARCHITECTURE-DEEP-ANALYSIS.md`](./ARCHITECTURE-DEEP-ANALYSIS.md)
+- [`ARCHITECTURE-ROADMAP.md`](./ARCHITECTURE-ROADMAP.md)
+- [`ARCHITECTURE-RISK-REGISTER.md`](./ARCHITECTURE-RISK-REGISTER.md)
+- [`ARCHITECTURE-IMPROVEMENT-INDEX.md`](./ARCHITECTURE-IMPROVEMENT-INDEX.md)
+- [`improvements/`](./improvements)
+
+## Archive / Brainstorm
 
 - Legacy baseline notice: [`EXECUTION-BASELINE.md`](./EXECUTION-BASELINE.md)
 - Historical legacy snapshot pointer: [`legacy/EXECUTION-BASELINE-legacy.md`](./legacy/EXECUTION-BASELINE-legacy.md)
-
-## Additional References
-
+- Historical task breakdowns: [`tasks/`](./tasks)
 - Peer relay notes: [`PEER-RELAY-DESIGN.md`](./PEER-RELAY-DESIGN.md)
 - Deployment questions log: [`DEPLOYMENT-QUESTIONS-2026-04-15.md`](./DEPLOYMENT-QUESTIONS-2026-04-15.md)
-- Historical task breakdowns: [`tasks/`](./tasks)
 
-The task documents are historical planning artifacts written against the legacy MVP baseline. They are not the current architecture authority.
+Archive and brainstorm documents are preserved for traceability. Do not treat them as current implementation instructions unless a current roadmap entry explicitly references them.

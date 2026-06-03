@@ -1,5 +1,8 @@
 # WinkYou 架构改造风险清单
 
+> [!IMPORTANT]
+> **Proposal / Archive**: This document belongs to the 2026-05 architecture overhaul proposal set. It is retained for historical risk context and is not the active architecture baseline. Use [`CONNECTIVITY-SOLVER-BASELINE.md`](./CONNECTIVITY-SOLVER-BASELINE.md) as the current source of truth.
+
 > **目的**: 系统性识别架构改造中的风险，制定缓解措施和回滚方案
 > 
 > **更新频率**: 每周一次

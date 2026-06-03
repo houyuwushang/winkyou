@@ -1,5 +1,8 @@
 # WinkYou 架构改进 - 团队执行路线图
 
+> [!IMPORTANT]
+> **Proposal / Archive**: This document is a 2026-05 architecture overhaul proposal and brainstorm artifact. It is not the active roadmap or current architecture baseline. Use [`CONNECTIVITY-SOLVER-BASELINE.md`](./CONNECTIVITY-SOLVER-BASELINE.md) as the current source of truth.
+
 > **目标**: 将架构质量从 6.2/10 提升到 9.5/10
 > 
 > **总工期**: 16 周（4 个月）

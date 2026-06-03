@@ -1,5 +1,8 @@
 # 改进方案 10：混沌工程测试
 
+> [!IMPORTANT]
+> **Proposal / Archive**: This improvement note is part of the 2026-05 architecture overhaul proposal set. It is historical reference material, not the active implementation plan. See [`../CONNECTIVITY-SOLVER-BASELINE.md`](../CONNECTIVITY-SOLVER-BASELINE.md) for the current baseline.
+
 ## 问题描述
 
 **当前状态**: 缺少混沌测试，生产环境表现不可预测
