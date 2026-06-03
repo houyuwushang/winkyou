@@ -146,6 +146,43 @@ func TestEngineStrategyResolverSelectsRelayOnlyWhenRemoteOnlySupportsRelayOnly(t
 	}
 }
 
+func TestEngineStrategyResolverForceRelayPrefersRelayOnlyWhenMutual(t *testing.T) {
+	eng := &engine{cfg: config.Config{NAT: config.NATConfig{ForceRelay: true}}}
+	resolver := eng.newStrategyResolver()
+
+	capability := resolver.LocalCapability()
+	if len(capability.Strategies) != 2 || capability.Strategies[0] != relayonly.StrategyName || capability.Strategies[1] != legacyice.StrategyName {
+		t.Fatalf("LocalCapability().Strategies = %#v, want relay_only then legacy", capability.Strategies)
+	}
+
+	strategy, selection, err := resolver.Resolve(rproto.Capability{Strategies: []string{legacyice.StrategyName, relayonly.StrategyName}}, true)
+	if err != nil {
+		t.Fatalf("Resolve(mutual relay_only) error = %v", err)
+	}
+	if strategy.Name() != relayonly.StrategyName {
+		t.Fatalf("Resolve(mutual relay_only) strategy = %q, want %q", strategy.Name(), relayonly.StrategyName)
+	}
+	if selection != (sesspkg.Selection{StrategyName: relayonly.StrategyName, Negotiated: true}) {
+		t.Fatalf("Resolve(mutual relay_only) selection = %#v, want negotiated relay_only", selection)
+	}
+}
+
+func TestEngineStrategyResolverForceRelayKeepsImplicitLegacyFallback(t *testing.T) {
+	eng := &engine{cfg: config.Config{NAT: config.NATConfig{ForceRelay: true}}}
+	resolver := eng.newStrategyResolver()
+
+	strategy, selection, err := resolver.Resolve(rproto.Capability{}, true)
+	if err != nil {
+		t.Fatalf("Resolve(empty capability) error = %v", err)
+	}
+	if strategy.Name() != legacyice.StrategyName {
+		t.Fatalf("Resolve(empty capability) strategy = %q, want %q", strategy.Name(), legacyice.StrategyName)
+	}
+	if selection != (sesspkg.Selection{StrategyName: legacyice.StrategyName, Negotiated: false}) {
+		t.Fatalf("Resolve(empty capability) selection = %#v, want implicit legacy fallback", selection)
+	}
+}
+
 func TestLegacyICEStrategyConfigPropagatesForceRelay(t *testing.T) {
 	eng := &engine{
 		cfg: config.Config{

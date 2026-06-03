@@ -18,6 +18,7 @@ WinkYou = connectivity solver + secure WireGuard data plane
 - Phase 3B code health 已完成，包括 CI 质量门、session 机械拆分、状态转换校验、resolver 统一、context 边界修复和若干小型清理
 - Phase 4A 已新增 `relay_only` strategy
 - 当前生产注册顺序保持兼容：`legacy_ice_udp` -> `relay_only`
+- `nat.force_relay: true` 会把生产 strategy 顺序切到 `relay_only` -> `legacy_ice_udp`
 - 旧 peer 空 capability 仍会隐式 fallback 到 `legacy_ice_udp`
 
 当文档发生冲突时，以 [`docs/CONNECTIVITY-SOLVER-BASELINE.md`](./docs/CONNECTIVITY-SOLVER-BASELINE.md) 作为 session、solver、strategy 和 transport 边界的判断依据。部分历史架构文档已标记为 proposal/archive，不能覆盖 active baseline。
@@ -38,6 +39,19 @@ WinkYou = connectivity solver + secure WireGuard data plane
 
 - `legacy_ice_udp`：兼容现有 ICE/UDP 路径，内部支持 `direct_prefer` 和 `relay_only` execution plan
 - `relay_only`：第二个真实 strategy，是 `legacyice` 的 thin wrapper，强制 relay，并对外以 `relay_only` 出现在 capability、observation 和 path_commit 中
+
+显式验证 relay-only 路径时，可以先使用现有兼容配置入口：
+
+```yaml
+nat:
+  force_relay: true
+  turn_servers:
+    - url: turn:your-turn.example.com:3478?transport=udp
+      username: winkdemo
+      password: winkdemo-pass
+```
+
+在该模式下，如果双方都支持 `relay_only`，生产 resolver 会优先选择 `relay_only`。如果远端是旧 peer 且没有上报 capability，仍会 fallback 到 `legacy_ice_udp`，但 legacy ICE agent 会继续使用 relay-only candidate gathering。
 
 尚未完成：
 
@@ -86,6 +100,7 @@ make check
 make test-race
 make test-phase2d
 make test-phase3a
+make test-phase4a
 make build-all
 ```
 

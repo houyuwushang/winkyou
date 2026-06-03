@@ -5,6 +5,7 @@
 This is the active architecture baseline for WinkYou.
 
 - Active baseline: this file
+- Current relay-only freeze gate: [`PHASE4A-RELAY-ONLY-FREEZE.md`](./PHASE4A-RELAY-ONLY-FREEZE.md)
 - Legacy baseline notice: [`EXECUTION-BASELINE.md`](./EXECUTION-BASELINE.md)
 - Frozen legacy tag: `legacy-ice-turn-baseline-2026-04-15`
 
@@ -107,11 +108,16 @@ This is the stable packet boundary for all future path types.
 
 The solver core admits multiple strategies.
 
-Current real strategy:
+Current real strategies:
 
 - `legacy_ice_udp`
+- `relay_only`
 
-Future strategies may include relay-first, TCP-assisted, QUIC, or other transports, but the solver core should not encode those details directly.
+Production registration remains compatible by default: `legacy_ice_udp` first, then `relay_only`.
+
+When the existing `nat.force_relay` compatibility setting is enabled, production strategy priority changes to `relay_only` first, then `legacy_ice_udp`. Legacy fallback remains available for old peers with empty capability, and the legacy ICE path must still force relay candidate gathering in that mode.
+
+Future strategies may include TCP-assisted, QUIC, proxy-friendly, or other transports, but the solver core should not encode those details directly.
 
 ### Session
 
@@ -247,7 +253,7 @@ Required outcome:
 
 **Status**: Frozen at tag `phase2d-freeze-2026-04-24`; see [`PHASE2D-FREEZE.md`](./PHASE2D-FREEZE.md) for the regression gate.
 
-### Phase 3A (Next)
+### Phase 3A (Completed)
 
 **Scope**: Strategy Portfolio Foundation.
 
@@ -265,9 +271,46 @@ Required outcome:
 - coordinator proto or rendezvous envelope redesign
 - broad solver/session rewrites
 
+**Status**: Completed. The session boundary has a portfolio resolver foundation, production uses the session resolver implementation, and tests cover deterministic strategy selection.
+
+### Phase 3B (Completed)
+
+**Scope**: Code health before adding more real transport behavior.
+
+Delivered:
+
+- CI and Makefile quality gates for `go vet` and scoped race tests
+- mechanical split of the large session implementation by concern
+- minimal session state transition validation
+- production resolver convergence on the session portfolio resolver
+- bounded contexts for normal session operations and cleanup
+- shared UDP address helpers
+- safer observation history truncation
+- latest probe-result retention
+
+**Status**: Completed.
+
+### Phase 4A (Completed / Frozen)
+
+**Scope**: Make `relay_only` the second real strategy and freeze its production behavior.
+
+Delivered:
+
+- `pkg/solver/strategy/relayonly` wraps the legacy ICE/TURN executor in relay-only mode
+- `relay_only` produces a single `relayonly/turn_relay` plan
+- production resolver registers both `legacy_ice_udp` and `relay_only`
+- default production order remains `legacy_ice_udp` -> `relay_only`
+- `nat.force_relay=true` makes production selection prefer `relay_only` when both peers support it
+- old peers with empty capability still fallback to `legacy_ice_udp`, with relay-only ICE candidate gathering preserved
+- `path_commit.strategy` and candidate/path observations preserve `relay_only` when that strategy is selected
+- `make test-phase4a` defines the Phase 4A regression gate
+
+**Status**: Frozen by [`PHASE4A-RELAY-ONLY-FREEZE.md`](./PHASE4A-RELAY-ONLY-FREEZE.md).
+
 ## Not In Scope Yet
 
-- second fully implemented strategy beyond `legacy_ice_udp`
+- a third real strategy beyond `legacy_ice_udp` and `relay_only`
+- non-UDP packet transports such as `tcp_framed` or `quic_datagram`
 - full observation collection and scoring with learning feedback
 - new coordinator transport or protobuf redesign
 - GUI, daemon, no-admin, proxy, or userspace completion work

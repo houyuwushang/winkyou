@@ -40,7 +40,7 @@ func newStrategyResolverWithFeatures(factories []strategyFactory, policy Resolve
 
 func (e *engine) newStrategyResolver() sesspkg.StrategyResolver {
 	legacyCfg := e.legacyICEStrategyConfig()
-	return newStrategyResolverWithFeatures([]strategyFactory{
+	factories := []strategyFactory{
 		{
 			name: legacyice.StrategyName,
 			build: func() solver.Strategy {
@@ -53,7 +53,11 @@ func (e *engine) newStrategyResolver() sesspkg.StrategyResolver {
 				return relayonly.New(legacyCfg)
 			},
 		},
-	}, ResolverPolicy{
+	}
+	if e.cfg.NAT.ForceRelay {
+		factories = []strategyFactory{factories[1], factories[0]}
+	}
+	return newStrategyResolverWithFeatures(factories, ResolverPolicy{
 		CompatibilityDefault: legacyice.StrategyName,
 		AllowImplicitLegacy:  true,
 	}, probeFeatures(e.probeRunner() != nil))
