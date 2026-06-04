@@ -18,6 +18,8 @@ client runtime 也已经新增基础可观测字段：
 
 `wink peers` 文本输出和 JSON 输出都会带出这些字段，用于区分“coordinator/control plane 已断”和“WireGuard/data plane 仍活着”。
 
+client 还修复了一个真实验证中暴露的恢复问题：当本端不是 deterministic initiator 时，之前 `startPeerConnect` 和 peer session retry 会直接返回，导致高 node id 一侧在远端 stale session 或远端未重新发起时长期停在 `data_state=connecting/failed`。现在 controlled side 也会启动 session 并按 `nat.retry_interval` 重试；`initiator` 仍只作为 session/strategy 角色输入，不再作为 client 层是否允许恢复连接的门槛。
+
 这仍只是控制面韧性的早期补强，还不能说明“断开 coordinator 后一定保持连接”。仍待完成和验证：
 
 - 用真实双节点环境验证 coordinator 进程退出，而不是断开 natpierce/跳板网络。
@@ -47,6 +49,16 @@ client runtime 也已经新增基础可观测字段：
 - `10.88.0.1` 和 `10.88.0.2` 双向 ping 成功
 
 这证明数据面没有通过 `chen-win` TURN relay 转发。但当断开本机到 `chen-win` 的 natpierce 连接后，WinkYou 连接也断开。
+
+后续使用 `chen2001` 通过 SSH 登录 `chen-win` 后，已确认可以只停止 `wink-coordinator` 进程而不触碰 natpierce/underlay 网络。当前尚未执行 kill-coordinator 验证，因为重启本机验证版 client 后，前置数据面没有重新达到 bound/handshake：
+
+- coordinator 在 `chen-win` 上运行，进程名 `wink-coordinator`。
+- `local-a` 控制面在线，能看到 `inner-b`，但 runtime 显示 `control_state=connected`、`data_state=failed/connecting`、`connected_peers=0`。
+- 本机 controlled-side retry 修复后，`local-a` 会重新进入 solver 并写出新的 observation，但没有收到足够的远端响应完成 direct path。
+- 未加 candidate filter 时曾选中过 `100.64.0.0/10` 地址段 candidate，并出现 `transport: short packet write 0/148`；这不是纯 coordinator outage 现象。
+- 仅在本机加 `nat.candidate_interface_include: natpierce` 和 `nat.candidate_cidr_include: 10.6.22.0/24` 会让本机过滤生效，但远端 `inner-b` 未同步配置时无法形成可用 candidate pair。
+
+因此，下一次真实验证的前置条件是：先让两端都重新达到 `State: connected`、WireGuard handshake 非空且 `ping 10.88.0.1/10.88.0.2` 成功，再在 `chen-win` 上停止 coordinator 进程。不要在数据面未 bound 时停止 coordinator；那只能验证“尚未建链时 coordinator 不可用会失败”，不能验证“已建链后控制面断线是否保持”。
 
 ## 拓扑澄清
 
@@ -105,7 +117,7 @@ coordinator bootstrap
 
 ### P0: 控制面断线不拆已连接数据面
 
-- 状态：peer offline update 触发的误清理路径已加第一层保护；真实 coordinator 进程退出和 heartbeat/signaling failure 仍需验证。
+- 状态：peer offline update 触发的误清理路径已加第一层保护；controlled side session retry 已修复；真实 coordinator 进程退出和 heartbeat/signaling failure 仍需在已 bound 数据面上验证。
 - 已 bound 且 WireGuard handshake 正常的 peer 收到 offline/update 丢失时，不要立即 `cleanupPeer`。
 - 保留 tunnel peer、endpoint、PacketTransport 和 session snapshot。
 - peer 状态应区分 control plane 和 data plane，例如：

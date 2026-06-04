@@ -28,7 +28,7 @@ WinkYou = connectivity solver + secure WireGuard data plane
 - `wink up/down/status/peers/logs` 已形成长期运行 CLI 工作流；Linux systemd 和 Windows 启动项文档已补齐
 - v0.1 release workflow 已能构建 Windows client、Linux client、Linux coordinator、Linux relay 和 SHA256SUMS
 - NAT/ICE 已支持 candidate interface include/exclude 和 candidate CIDR include/exclude；`wink doctor` 会展示过滤配置并检查 runtime candidate 是否命中排除 CIDR
-- 真实双节点验证已证明 `legacy_ice_udp` direct path 可以建立虚拟局域网，但也暴露出 coordinator 仍是持续控制面依赖；client 已加第一层 peer-offline 保护，并已在 runtime/`wink peers` 中暴露 control/data 状态和最近成功 path cache；`pkg/peercontrol` 已冻结 in-band peer control 消息模型，后续仍需真实 coordinator outage 验证和网络循环接入；详见 [`docs/CONTROL-PLANE-RESILIENCE.md`](./docs/CONTROL-PLANE-RESILIENCE.md)
+- 真实双节点验证已证明 `legacy_ice_udp` direct path 可以建立虚拟局域网，但也暴露出 coordinator 仍是持续控制面依赖；client 已加第一层 peer-offline 保护和 controlled-side retry，并已在 runtime/`wink peers` 中暴露 control/data 状态和最近成功 path cache；`pkg/peercontrol` 已冻结 in-band peer control 消息模型，后续仍需在已 bound 数据面上做真实 coordinator outage 验证和网络循环接入；详见 [`docs/CONTROL-PLANE-RESILIENCE.md`](./docs/CONTROL-PLANE-RESILIENCE.md)
 
 当文档发生冲突时，以 [`docs/CONNECTIVITY-SOLVER-BASELINE.md`](./docs/CONNECTIVITY-SOLVER-BASELINE.md) 作为 session、solver、strategy 和 transport 边界的判断依据。部分历史架构文档已标记为 proposal/archive，不能覆盖 active baseline。
 

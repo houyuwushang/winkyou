@@ -423,18 +423,21 @@ Phase 3A (Strategy Portfolio Foundation) 已完成。以下是我基于代码现
 1. coordinator 部署在 `chen-win` 时，断开本机到 `chen-win` 的 natpierce 后，连接也会断。这里不能把两个 `10.6.22.1` 当成同一个直接可达节点：本机侧的 `10.6.22.1` 是 natpierce 虚拟网关，`inner-gw` 位于 `chen-win` 另一侧虚拟网内。断开 natpierce 同时会影响 coordinator、跳板和可能的 underlay candidate，不是纯 coordinator outage 测试。根因方向仍是控制面持续依赖 coordinator，以及 client 对 peer offline/control-plane loss 的处理可能拆掉已 bound 的 tunnel peer。
 2. 当前 direct candidate 可能使用 Tailscale/peer-reflexive 地址或 Docker bridge host 地址。这证明没有走 `chen-win` TURN relay，但不能证明完全不借助已有 overlay。
 
-当前已完成两层基础补强：
+当前已完成多层基础补强：
 
 - peer offline update 到达时，如果本地 peer 仍有最近 WireGuard handshake、packet counters 且没有 transport error，client 不再立即 `cleanupPeer`。
+- controlled side peer session 已允许主动启动和 retry，避免高 node id 一侧在远端 stale session 或远端未重新发起时长期停在 `data_state=connecting/failed`。
 - runtime/peer status 已新增 `control_state`、`data_state` 和最近成功 path cache 字段，`wink peers` 文本输出和 JSON 输出都能展示这些状态。
 - 已建立数据面后的 in-band peer control 消息模型已加入 `pkg/peercontrol`，覆盖 heartbeat、path health、endpoint update、capability refresh 和 re-ICE request 的校验与 JSON 编解码。
 - NAT/ICE 已新增 candidate interface include/exclude 和 candidate CIDR include/exclude 配置，并传入 Pion ICE agent；`wink doctor` 会展示过滤配置并检查 runtime candidate 是否命中 excluded CIDR。
+
+2026-06-04 后续验证中，已能使用 `chen2001` SSH 到 `chen-win` 并确认 `wink-coordinator` 进程可被单独停止；但尚未执行 kill-coordinator 验证，因为本机验证版 client 重启后数据面未重新达到 bound/handshake。当前 runtime 只证明 control plane 可见 peer，不能证明 data plane 已建立。下一次验证必须先恢复两端 `State: connected`、WireGuard handshake 非空且双向 ping 成功，再停止 `chen-win` 上的 coordinator 进程。
 
 这还没有覆盖所有 coordinator 进程退出、heartbeat 失败、signaling stream 断开、cached path 恢复或 in-band control 网络循环接入场景。
 
 后续 TODO：
 
-- 保持 natpierce/underlay 不断，只停止 `chen-win` 上的 coordinator 进程，做真实 outage 验证。
+- 保持 natpierce/underlay 不断，并且先确认两端数据面已 bound/handshake 成功；随后只停止 `chen-win` 上的 coordinator 进程，做真实 outage 验证。
 - 已 bound 且 WireGuard handshake 正常的 peer 不应因 coordinator 短暂不可达、heartbeat 失败或 peer offline 事件被立即清理。
 - 增加 coordinator outage / heartbeat/signaling failure 回归测试，确保已连接数据面不会被误拆。
 - 后续把已缓存的 peer lease、最近成功 endpoint、strategy、path summary 和 last handshake 用于恢复或 cached path 重试。
