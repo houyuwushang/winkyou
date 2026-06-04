@@ -44,6 +44,13 @@ Constraints:
 
 - it is not just an ICE signal forwarder
 - it does not decide the final path by itself
+- after a path is bound, rendezvous availability should be treated as control-plane health, not as proof that the data path must be torn down
+
+Current gap:
+
+- the client still treats peer offline/control-plane loss too aggressively in some paths
+- v0.1 hardening should preserve already-bound tunnel peers while the WireGuard data plane remains healthy
+- see [`CONTROL-PLANE-RESILIENCE.md`](./CONTROL-PLANE-RESILIENCE.md) for the deployment evidence and TODO list
 
 ### Observation Plane
 
@@ -150,6 +157,8 @@ The client CLI owns operator workflow around the engine:
 - `wink status`, `wink peers`, `wink logs`, and `wink doctor` inspect runtime state, logs, and diagnostics
 
 Runtime state and log files are operational artifacts, not solver inputs. By default runtime state is derived from the config path; service deployments can pass `--state` to store it under `/var/lib/wink` or another explicit runtime directory.
+
+Client runtime must eventually distinguish coordinator/control-plane state from data-plane state. A peer with a recent WireGuard handshake and an attached `PacketTransport` should not be removed only because coordinator heartbeat or peer-online status is temporarily unavailable.
 
 ### Binder
 
@@ -352,6 +361,9 @@ Constraints:
 - TCP NAT hole punching for `tcp_framed`
 - full observation collection and scoring with learning feedback
 - new coordinator transport or protobuf redesign
+- coordinator-less first bootstrap for arbitrary NATed peers
+- in-band peer control channel over an already established virtual network
+- ICE interface include/exclude policy and candidate CIDR filtering
 - GUI, daemon, no-admin, proxy, or userspace completion work
 
 ## Legacy Relationship

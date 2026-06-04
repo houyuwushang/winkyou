@@ -1,6 +1,6 @@
 # WinkYou 排障指南
 
-本文按连接链路分层排查。当前可用命令主要是 `wink status`、`wink peers`、client 日志、coordinator 日志和 coturn 日志；专用 `wink doctor` 会在后续阶段补齐。
+本文按连接链路分层排查。当前可用命令主要是 `wink status`、`wink peers`、`wink logs`、`wink doctor`、client 日志、coordinator 日志和 coturn 日志。
 
 ## 1. Config
 
@@ -35,6 +35,13 @@ wink --config node-a.yaml status
 - 连接失败：确认 TCP `50051` 已开放
 - auth 失败：确认 client 的 `coordinator.auth_key` 和 `WINK_AUTH_KEY` 一致
 - 看不到 peer：两台 client 必须连接同一个 coordinator，且 `wink up` 进程仍在运行
+- 已经 `State: connected` 后断开 coordinator 所在网络，peer 随后断开：这是当前控制面韧性缺口。现有 client 可能把 peer offline/control-plane loss 转成 `cleanupPeer`，从而拆掉已 bound 的 tunnel peer。详见 [`CONTROL-PLANE-RESILIENCE.md`](./CONTROL-PLANE-RESILIENCE.md)。
+
+部署建议：
+
+- coordinator 应部署在双方都能稳定访问的位置，例如公网服务器或固定内网节点。
+- 不要把唯一 coordinator 放在临时跳板链路后面；否则断开跳板/natpierce 后，心跳、peer discovery 和 session signaling 都会失效。
+- 已建立数据面未来应能容忍 coordinator 短暂不可达，但这仍是 TODO，不应在当前版本中假设已经完成。
 
 ## 3. STUN/TURN
 
@@ -98,6 +105,7 @@ Xport Err
 - `Handshake: -` 且 `Conn Type: relay`：优先排查 coturn relay 端口范围
 - `Xport Tx` 增长但 `Xport Rx` 不增长：对端 client 可能未运行或 relay 回包失败
 - `State: connected` 但 ping 不通：检查双方虚拟 IP、系统防火墙和 ICMP 策略
+- 如果 `State: connected` 且 `Conn Type: direct`，但候选地址显示为 Tailscale、Docker bridge、其他 VPN/TAP 地址，这只能证明当前 path 不是 TURN relay；不能证明完全不借助已有 overlay。纯 NAT piercing 验证需要后续的 ICE interface include/exclude 或 candidate CIDR 过滤。
 
 ## 6. Strategy Selection
 

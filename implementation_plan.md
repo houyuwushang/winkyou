@@ -31,7 +31,7 @@ WinkYou = connectivity solver + WireGuard 数据平面
 | Phase 4A relay_only | ✅ 冻结 | `make test-phase4a` |
 | Connectivity policy / fallback / scoring | ✅ 完成 | `auto` / `relay_only`、ordered fallback、observation ordering |
 | `tcp_framed` alpha | ✅ 完成 | 显式 TCP PacketTransport 验证 |
-| v0.1 运维闭环 | 🟡 进行中 | self-host quickstart、doctor、long-running workflow、release pipeline |
+| v0.1 运维闭环 | 🟡 进行中 | self-host quickstart、doctor、long-running workflow、release pipeline、控制面韧性补强 |
 | v0.1 freeze gate | ✅ 已定义 | `docs/V0.1-FREEZE.md` |
 
 Phase 3A 已交付：`PortfolioResolver`、`StrategyEntry`、strategy selection 测试覆盖、fake strategy 验证。session 不再硬编码 `legacy_ice_udp`。
@@ -413,6 +413,26 @@ Phase 3A (Strategy Portfolio Foundation) 已完成。以下是我基于代码现
 ### v0.1 Operations Track（进行中）
 
 已完成 self-host quickstart、`wink doctor` 分层诊断、`wink logs`、长期运行客户端文档、release workflow 和 v0.1 freeze gate。下一步应按 freeze gate 做真实部署验证，而不是继续扩大架构范围。
+
+### v0.1 Hardening: Control Plane Resilience（新增 TODO）
+
+2026-06-04 真实双节点验证证明：本机 Windows 节点与 `inner-gw` Linux 节点可以通过 `legacy_ice_udp` direct path 建立 `10.88.0.0/24` 虚拟局域网，且两端未配置 TURN relay，双向 ping 成功。
+
+同时暴露了两个必须记录的限制：
+
+1. coordinator 部署在 `chen-win` 时，断开本机到 `chen-win` 的 natpierce 后，连接也会断。根因是控制面仍持续依赖 coordinator；当前 client 对 peer offline/control-plane loss 的处理可能触发 `cleanupPeer`，拆掉已 bound 的 tunnel peer。
+2. 当前 direct candidate 可能使用 Tailscale/peer-reflexive 地址或 Docker bridge host 地址。这证明没有走 `chen-win` TURN relay，但不能证明完全不借助已有 overlay。
+
+后续 TODO：
+
+- 已 bound 且 WireGuard handshake 正常的 peer 不应因 coordinator 短暂不可达或 peer offline 事件被立即清理。
+- runtime/peer status 需要区分 control plane 状态和 data plane 状态。
+- 增加 coordinator outage / peer offline 回归测试，确保已连接数据面不会被误拆。
+- 缓存 peer lease、最近成功 endpoint、strategy、path summary 和 last handshake。
+- 增加 ICE interface include/exclude 或 candidate CIDR 过滤，用于排除 Tailscale、Docker bridge、其他 VPN/TAP 干扰。
+- 已建立虚拟网后可设计 in-band peer control channel 承载 heartbeat、endpoint update、re-ICE request、capability refresh 和 observation exchange；但首次 bootstrap 仍需要 coordinator、手动配置或其他 rendezvous。
+
+详见 [`docs/CONTROL-PLANE-RESILIENCE.md`](./docs/CONTROL-PLANE-RESILIENCE.md)。
 
 ---
 
