@@ -1,7 +1,9 @@
 package client
 
 import (
+	"encoding/json"
 	"fmt"
+	"time"
 
 	coordclient "winkyou/pkg/coordinator/client"
 	rendezvousclient "winkyou/pkg/rendezvous/client"
@@ -11,6 +13,14 @@ import (
 )
 
 const sessionEnvelopeNamespace = "rendezvous.v2"
+const strategySignalKind = "strategy_message"
+
+type strategySignalEnvelope struct {
+	Kind      string `json:"kind"`
+	Namespace string `json:"namespace"`
+	Type      string `json:"type"`
+	Payload   []byte `json:"payload,omitempty"`
+}
 
 func outboundSignalForSolverMessage(msg solver.Message) (coordclient.SignalType, []byte, error) {
 	switch msg.Kind {
@@ -24,7 +34,11 @@ func outboundSignalForSolverMessage(msg solver.Message) (coordclient.SignalType,
 		return coordclient.SIGNAL_UNSPECIFIED, append([]byte(nil), msg.Payload...), nil
 	case solver.MessageKindStrategy:
 		if msg.Namespace != legacyice.Namespace {
-			return coordclient.SIGNAL_UNSPECIFIED, nil, fmt.Errorf("client: unsupported strategy namespace %q", msg.Namespace)
+			payload, err := marshalStrategySignal(msg)
+			if err != nil {
+				return coordclient.SIGNAL_UNSPECIFIED, nil, err
+			}
+			return coordclient.SIGNAL_UNSPECIFIED, payload, nil
 		}
 		switch msg.Type {
 		case legacyice.MessageTypeOffer:
@@ -48,6 +62,9 @@ func inboundSolverMessageFromSignal(signal *coordclient.SignalNotification) (sol
 
 	switch signal.Type {
 	case coordclient.SIGNAL_UNSPECIFIED:
+		if msg, ok, err := strategyMessageFromSignal(signal, unixOrZero(signal.Timestamp)); ok || err != nil {
+			return msg, ok, err
+		}
 		envelope, ok, err := rendezvousclient.EnvelopeFromSignal(signal)
 		if err != nil || !ok {
 			return solver.Message{}, ok, err
@@ -68,4 +85,45 @@ func inboundSolverMessageFromSignal(signal *coordclient.SignalNotification) (sol
 	default:
 		return solver.Message{}, false, nil
 	}
+}
+
+func marshalStrategySignal(msg solver.Message) ([]byte, error) {
+	if msg.Namespace == "" {
+		return nil, fmt.Errorf("client: strategy message namespace is required")
+	}
+	if msg.Type == "" {
+		return nil, fmt.Errorf("client: strategy message type is required")
+	}
+	return json.Marshal(strategySignalEnvelope{
+		Kind:      strategySignalKind,
+		Namespace: msg.Namespace,
+		Type:      msg.Type,
+		Payload:   append([]byte(nil), msg.Payload...),
+	})
+}
+
+func strategyMessageFromSignal(signal *coordclient.SignalNotification, receivedAt time.Time) (solver.Message, bool, error) {
+	if signal == nil || signal.Type != coordclient.SIGNAL_UNSPECIFIED || len(signal.Payload) == 0 {
+		return solver.Message{}, false, nil
+	}
+	var envelope strategySignalEnvelope
+	if err := json.Unmarshal(signal.Payload, &envelope); err != nil {
+		return solver.Message{}, false, nil
+	}
+	if envelope.Kind == "" {
+		return solver.Message{}, false, nil
+	}
+	if envelope.Kind != strategySignalKind {
+		return solver.Message{}, true, fmt.Errorf("client: unsupported unspecified signal kind %q", envelope.Kind)
+	}
+	if envelope.Namespace == "" || envelope.Type == "" {
+		return solver.Message{}, true, fmt.Errorf("client: strategy signal namespace and type are required")
+	}
+	return solver.Message{
+		Kind:       solver.MessageKindStrategy,
+		Namespace:  envelope.Namespace,
+		Type:       envelope.Type,
+		Payload:    append([]byte(nil), envelope.Payload...),
+		ReceivedAt: receivedAt,
+	}, true, nil
 }

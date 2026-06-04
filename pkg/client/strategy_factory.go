@@ -11,6 +11,7 @@ import (
 	"winkyou/pkg/solver"
 	"winkyou/pkg/solver/strategy/legacyice"
 	"winkyou/pkg/solver/strategy/relayonly"
+	"winkyou/pkg/solver/strategy/tcpframed"
 )
 
 type ResolverPolicy = sesspkg.PortfolioResolverPolicy
@@ -73,6 +74,17 @@ func (e *engine) strategyFactoriesForOrder(legacyCfg legacyice.Config) []strateg
 					return relayonly.New(legacyCfg)
 				},
 			})
+		case tcpframed.StrategyName:
+			if !e.cfg.TCPFramed.Enabled {
+				continue
+			}
+			tcpCfg := e.tcpFramedStrategyConfig()
+			factories = append(factories, strategyFactory{
+				name: tcpframed.StrategyName,
+				build: func() solver.Strategy {
+					return tcpframed.New(tcpCfg)
+				},
+			})
 		}
 	}
 	return factories
@@ -119,6 +131,14 @@ func (e *engine) legacyICEStrategyConfig() legacyice.Config {
 		})
 	}
 	return cfg
+}
+
+func (e *engine) tcpFramedStrategyConfig() tcpframed.Config {
+	return tcpframed.Config{
+		ListenAddr:    e.cfg.TCPFramed.ListenAddr,
+		AdvertiseAddr: e.cfg.TCPFramed.AdvertiseAddr,
+		DialTimeout:   e.cfg.TCPFramed.DialTimeout,
+	}
 }
 
 func preferRelayOnly(order []string) []string {

@@ -26,8 +26,14 @@ func TestLoadValidFile(t *testing.T) {
 	if cfg.Connectivity.Mode != "auto" {
 		t.Fatalf("connectivity mode = %q, want auto", cfg.Connectivity.Mode)
 	}
-	if len(cfg.Connectivity.StrategyOrder) != 2 || cfg.Connectivity.StrategyOrder[0] != "legacy_ice_udp" || cfg.Connectivity.StrategyOrder[1] != "relay_only" {
-		t.Fatalf("connectivity strategy order = %#v, want legacy_ice_udp then relay_only", cfg.Connectivity.StrategyOrder)
+	if len(cfg.Connectivity.StrategyOrder) != 3 || cfg.Connectivity.StrategyOrder[0] != "legacy_ice_udp" || cfg.Connectivity.StrategyOrder[1] != "relay_only" || cfg.Connectivity.StrategyOrder[2] != "tcp_framed" {
+		t.Fatalf("connectivity strategy order = %#v, want legacy_ice_udp, relay_only, tcp_framed", cfg.Connectivity.StrategyOrder)
+	}
+	if !cfg.TCPFramed.Enabled || cfg.TCPFramed.ListenAddr != "127.0.0.1:0" || cfg.TCPFramed.AdvertiseAddr != "127.0.0.1:12345" {
+		t.Fatalf("tcp_framed config = %#v, want enabled loopback config", cfg.TCPFramed)
+	}
+	if cfg.TCPFramed.DialTimeout.String() != "2s" {
+		t.Fatalf("tcp_framed.dial_timeout = %s, want 2s", cfg.TCPFramed.DialTimeout)
 	}
 }
 
@@ -82,6 +88,12 @@ func TestDefaultConnectivityPolicy(t *testing.T) {
 	}
 	if len(cfg.Connectivity.StrategyOrder) != 2 || cfg.Connectivity.StrategyOrder[0] != "legacy_ice_udp" || cfg.Connectivity.StrategyOrder[1] != "relay_only" {
 		t.Fatalf("default strategy order = %#v, want legacy_ice_udp then relay_only", cfg.Connectivity.StrategyOrder)
+	}
+	if cfg.TCPFramed.Enabled {
+		t.Fatal("default tcp_framed.enabled = true, want false")
+	}
+	if cfg.TCPFramed.ListenAddr != "0.0.0.0:0" {
+		t.Fatalf("default tcp_framed.listen_addr = %q, want 0.0.0.0:0", cfg.TCPFramed.ListenAddr)
 	}
 }
 

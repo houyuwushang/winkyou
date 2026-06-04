@@ -112,18 +112,20 @@ Current real strategies:
 
 - `legacy_ice_udp`
 - `relay_only`
+- `tcp_framed` (alpha, explicit reachable TCP only)
 
-Production registration remains compatible by default: `legacy_ice_udp` first, then `relay_only`.
+Production registration remains compatible by default: `legacy_ice_udp` first, then `relay_only`. `tcp_framed` is disabled by default and is registered only when `tcp_framed.enabled=true` and it appears in `connectivity.strategy_order`.
 
 The connectivity policy layer controls production strategy priority:
 
 - `connectivity.mode=auto`: use configured strategy order, defaulting to `legacy_ice_udp` -> `relay_only`
 - `connectivity.mode=relay_only`: prefer `relay_only`, then fallback to `legacy_ice_udp`
 - `connectivity.strategy_order`: optional priority list for known production strategies
+- `tcp_framed.enabled=true`: allows the `tcp_framed` alpha strategy to be advertised and selected when listed in strategy order
 
 The existing `nat.force_relay` setting remains a compatibility entry and maps to relay-only behavior. Legacy fallback remains available for old peers with empty capability, and the legacy ICE path must still force relay candidate gathering in relay-only mode.
 
-Future strategies may include TCP-assisted, QUIC, proxy-friendly, or other transports, but the solver core should not encode those details directly.
+Future strategies may include QUIC, proxy-friendly, or other transports, but the solver core should not encode those details directly.
 
 ### Session
 
@@ -313,10 +315,30 @@ Delivered:
 
 **Status**: Frozen by [`PHASE4A-RELAY-ONLY-FREEZE.md`](./PHASE4A-RELAY-ONLY-FREEZE.md).
 
+### Phase 4B Alpha: `tcp_framed`
+
+**Scope**: Prove a non-UDP `PacketTransport` strategy can bind through the existing solver/session/tunnel boundary.
+
+Delivered:
+
+- `pkg/solver/strategy/tcpframed` creates a single `tcpframed/direct` plan
+- strategy messages exchange explicit TCP endpoints through the existing client signal path
+- successful connections are wrapped with `transport/framedstream`
+- production registration is opt-in through `tcp_framed.enabled=true`
+- no `PacketTransport` interface change
+
+Constraints:
+
+- no TCP NAT hole punching guarantee
+- no QUIC, WebSocket, or HTTP CONNECT implementation
+- no rendezvous envelope schema change
+
+**Status**: Alpha.
+
 ## Not In Scope Yet
 
-- a third real strategy beyond `legacy_ice_udp` and `relay_only`
-- non-UDP packet transports such as `tcp_framed` or `quic_datagram`
+- QUIC datagram, HTTP CONNECT, WebSocket, or proxy-friendly transports
+- TCP NAT hole punching for `tcp_framed`
 - full observation collection and scoring with learning feedback
 - new coordinator transport or protobuf redesign
 - GUI, daemon, no-admin, proxy, or userspace completion work

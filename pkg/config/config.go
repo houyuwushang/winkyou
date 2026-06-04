@@ -10,6 +10,7 @@ type Config struct {
 	WireGuard    WireGuardConfig    `mapstructure:"wireguard" yaml:"wireguard"`
 	NAT          NATConfig          `mapstructure:"nat" yaml:"nat"`
 	Connectivity ConnectivityConfig `mapstructure:"connectivity" yaml:"connectivity"`
+	TCPFramed    TCPFramedConfig    `mapstructure:"tcp_framed" yaml:"tcp_framed"`
 }
 
 type NodeConfig struct {
@@ -59,6 +60,13 @@ type NATConfig struct {
 type ConnectivityConfig struct {
 	Mode          string   `mapstructure:"mode" yaml:"mode"`
 	StrategyOrder []string `mapstructure:"strategy_order" yaml:"strategy_order"`
+}
+
+type TCPFramedConfig struct {
+	Enabled       bool          `mapstructure:"enabled" yaml:"enabled"`
+	ListenAddr    string        `mapstructure:"listen_addr" yaml:"listen_addr"`
+	AdvertiseAddr string        `mapstructure:"advertise_addr" yaml:"advertise_addr"`
+	DialTimeout   time.Duration `mapstructure:"dial_timeout" yaml:"dial_timeout"`
 }
 
 type TURNServerConfig struct {

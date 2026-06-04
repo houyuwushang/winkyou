@@ -8,6 +8,7 @@ import (
 	rproto "winkyou/pkg/rendezvous/proto"
 	"winkyou/pkg/solver"
 	"winkyou/pkg/solver/strategy/legacyice"
+	"winkyou/pkg/solver/strategy/tcpframed"
 )
 
 func TestLegacySignalAdaptersRoundTrip(t *testing.T) {
@@ -125,5 +126,41 @@ func TestEnvelopeSignalAdaptersRoundTrip(t *testing.T) {
 				t.Fatalf("payload round trip mismatch")
 			}
 		})
+	}
+}
+
+func TestGenericStrategySignalAdapterRoundTrip(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0)
+	msg := tcpframed.NewMessage(tcpframed.MessageTypeOffer, []byte(`{"session_id":"session/node-a/node-b"}`), now)
+
+	signalType, payload, err := outboundSignalForSolverMessage(msg)
+	if err != nil {
+		t.Fatalf("outboundSignalForSolverMessage() error = %v", err)
+	}
+	if signalType != coordclient.SIGNAL_UNSPECIFIED {
+		t.Fatalf("signalType = %v, want SIGNAL_UNSPECIFIED", signalType)
+	}
+
+	inbound, ok, err := inboundSolverMessageFromSignal(&coordclient.SignalNotification{
+		FromNode:  "node-a",
+		ToNode:    "node-b",
+		Type:      signalType,
+		Payload:   payload,
+		Timestamp: now.Unix(),
+	})
+	if err != nil {
+		t.Fatalf("inboundSolverMessageFromSignal() error = %v", err)
+	}
+	if !ok {
+		t.Fatal("inboundSolverMessageFromSignal() ok = false, want true")
+	}
+	if inbound.Kind != solver.MessageKindStrategy || inbound.Namespace != tcpframed.Namespace || inbound.Type != tcpframed.MessageTypeOffer {
+		t.Fatalf("inbound = %#v, want tcpframed offer", inbound)
+	}
+	if string(inbound.Payload) != string(msg.Payload) {
+		t.Fatalf("payload = %q, want %q", inbound.Payload, msg.Payload)
+	}
+	if !inbound.ReceivedAt.Equal(now) {
+		t.Fatalf("ReceivedAt = %s, want %s", inbound.ReceivedAt, now)
 	}
 }

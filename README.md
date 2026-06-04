@@ -10,14 +10,16 @@ WinkYou = connectivity solver + secure WireGuard data plane
 
 ## 当前状态
 
-当前代码已经完成 Phase 3B code health，并已进入 Phase 4A 的第一个真实扩展点：`relay_only` 作为第二个真实 strategy。
+当前代码已经完成 Phase 3B code health、Phase 4A `relay_only` 冻结，并开始进入非 UDP PacketTransport alpha 验证。
 
 - 活跃架构权威：[`docs/CONNECTIVITY-SOLVER-BASELINE.md`](./docs/CONNECTIVITY-SOLVER-BASELINE.md)
 - Phase 2D 已冻结：`phase2d-freeze-2026-04-24`
 - Phase 3A strategy portfolio foundation 已落地
 - Phase 3B code health 已完成，包括 CI 质量门、session 机械拆分、状态转换校验、resolver 统一、context 边界修复和若干小型清理
 - Phase 4A 已新增 `relay_only` strategy
+- `tcp_framed` 已作为 alpha strategy 加入，用来验证 framed stream 可以承载 `PacketTransport`
 - 当前生产注册顺序保持兼容：`legacy_ice_udp` -> `relay_only`
+- `tcp_framed` 默认禁用，只有显式 `tcp_framed.enabled: true` 且加入 `connectivity.strategy_order` 时才会注册
 - `connectivity.mode: relay_only` 会把生产 strategy 顺序切到 `relay_only` -> `legacy_ice_udp`
 - 旧的 `nat.force_relay: true` 仍兼容映射到 relay-only 行为
 - 旧 peer 空 capability 仍会隐式 fallback 到 `legacy_ice_udp`
@@ -40,6 +42,7 @@ WinkYou = connectivity solver + secure WireGuard data plane
 
 - `legacy_ice_udp`：兼容现有 ICE/UDP 路径，内部支持 `direct_prefer` 和 `relay_only` execution plan
 - `relay_only`：第二个真实 strategy，是 `legacyice` 的 thin wrapper，强制 relay，并对外以 `relay_only` 出现在 capability、observation 和 path_commit 中
+- `tcp_framed`：alpha 非 UDP strategy，使用显式可达 TCP 地址和 `transport/framedstream` 适配器，不承诺 NAT TCP 打洞
 
 默认连接策略：
 
@@ -49,6 +52,23 @@ connectivity:
   strategy_order:
     - legacy_ice_udp
     - relay_only
+```
+
+显式验证 `tcp_framed` alpha 路径时，需要同时启用 strategy 和配置可达 TCP 地址：
+
+```yaml
+connectivity:
+  mode: auto
+  strategy_order:
+    - legacy_ice_udp
+    - relay_only
+    - tcp_framed
+
+tcp_framed:
+  enabled: true
+  listen_addr: "0.0.0.0:0"
+  advertise_addr: "203.0.113.10:39000"
+  dial_timeout: 5s
 ```
 
 显式验证 relay-only 路径时，优先使用连接策略入口：
@@ -84,7 +104,8 @@ nat:
 
 - no-admin mode
 - proxy/userspace-only 产品路径
-- TCP framed、QUIC datagram、HTTP CONNECT、WebSocket 等真实 transport strategy
+- QUIC datagram、HTTP CONNECT、WebSocket 等真实 transport strategy
+- `tcp_framed` 仍是 alpha，不做 NAT TCP 打洞承诺
 - 完整 observation -> scoring -> learning 闭环
 - GUI 或桌面常驻 daemon
 

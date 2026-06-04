@@ -23,6 +23,8 @@ const (
 	defaultNATRetryInterval    = 2 * time.Second
 	defaultNATRetryMaxInterval = 10 * time.Second
 	defaultConnectivityMode    = "auto"
+	defaultTCPFramedListenAddr = "0.0.0.0:0"
+	defaultTCPFramedDialTime   = 5 * time.Second
 )
 
 var defaultConnectivityStrategyOrder = []string{"legacy_ice_udp", "relay_only"}
@@ -63,6 +65,11 @@ func Default() Config {
 		Connectivity: ConnectivityConfig{
 			Mode:          defaultConnectivityMode,
 			StrategyOrder: append([]string(nil), defaultConnectivityStrategyOrder...),
+		},
+		TCPFramed: TCPFramedConfig{
+			Enabled:     false,
+			ListenAddr:  defaultTCPFramedListenAddr,
+			DialTimeout: defaultTCPFramedDialTime,
 		},
 	}
 }

@@ -14,6 +14,7 @@ import (
 	"winkyou/pkg/solver"
 	"winkyou/pkg/solver/strategy/legacyice"
 	"winkyou/pkg/solver/strategy/relayonly"
+	"winkyou/pkg/solver/strategy/tcpframed"
 )
 
 type resolverStrategy struct {
@@ -218,6 +219,31 @@ func TestEngineStrategyResolverStrategyOrderCanPreferRelayOnly(t *testing.T) {
 	}
 	if selection != (sesspkg.Selection{StrategyName: relayonly.StrategyName, Negotiated: true}) {
 		t.Fatalf("Resolve(mutual relay_only) selection = %#v, want negotiated relay_only", selection)
+	}
+}
+
+func TestEngineStrategyResolverRegistersTCPFramedWhenEnabled(t *testing.T) {
+	cfg := config.Default()
+	cfg.Connectivity.StrategyOrder = []string{tcpframed.StrategyName, legacyice.StrategyName, relayonly.StrategyName}
+	cfg.TCPFramed.Enabled = true
+	cfg.TCPFramed.ListenAddr = "127.0.0.1:0"
+	eng := &engine{cfg: cfg}
+	resolver := eng.newStrategyResolver()
+
+	capability := resolver.LocalCapability()
+	if got, want := capability.Strategies, []string{tcpframed.StrategyName, legacyice.StrategyName, relayonly.StrategyName}; !slices.Equal(got, want) {
+		t.Fatalf("LocalCapability().Strategies = %#v, want %#v", got, want)
+	}
+
+	strategy, selection, err := resolver.Resolve(rproto.Capability{Strategies: []string{tcpframed.StrategyName}}, true)
+	if err != nil {
+		t.Fatalf("Resolve(tcp_framed) error = %v", err)
+	}
+	if strategy.Name() != tcpframed.StrategyName {
+		t.Fatalf("Resolve(tcp_framed) strategy = %q, want %q", strategy.Name(), tcpframed.StrategyName)
+	}
+	if selection != (sesspkg.Selection{StrategyName: tcpframed.StrategyName, Negotiated: true}) {
+		t.Fatalf("Resolve(tcp_framed) selection = %#v, want negotiated tcp_framed", selection)
 	}
 }
 

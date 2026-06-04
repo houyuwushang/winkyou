@@ -13,7 +13,7 @@ var (
 	validLogOutputs             = map[string]struct{}{"stderr": {}, "stdout": {}, "file": {}}
 	validBackends               = map[string]struct{}{"auto": {}, "tun": {}, "userspace": {}, "proxy": {}}
 	validConnectivityModes      = map[string]struct{}{"auto": {}, "relay_only": {}}
-	validConnectivityStrategies = map[string]struct{}{"legacy_ice_udp": {}, "relay_only": {}}
+	validConnectivityStrategies = map[string]struct{}{"legacy_ice_udp": {}, "relay_only": {}, "tcp_framed": {}}
 )
 
 func (c *Config) Validate() error {
@@ -103,6 +103,14 @@ func (c *Config) Validate() error {
 			return fmt.Errorf("duplicate connectivity.strategy_order[%d]: %q", i, strategy)
 		}
 		seenStrategies[name] = struct{}{}
+	}
+	if c.TCPFramed.Enabled {
+		if strings.TrimSpace(c.TCPFramed.ListenAddr) == "" {
+			return errors.New("tcp_framed.listen_addr must not be empty when tcp_framed.enabled=true")
+		}
+		if c.TCPFramed.DialTimeout <= 0 {
+			return errors.New("tcp_framed.dial_timeout must be greater than zero when tcp_framed.enabled=true")
+		}
 	}
 
 	return nil

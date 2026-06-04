@@ -33,7 +33,6 @@ func GeneratePrivateKey() (PrivateKey, error) {
 }
 
 // PublicKey derives the Curve25519 public key from the private key.
-//
 func (k PrivateKey) PublicKey() PublicKey {
 	var pub PublicKey
 	curve25519.ScalarBaseMult((*[32]byte)(&pub), (*[32]byte)(&k))
