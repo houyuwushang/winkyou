@@ -13,6 +13,10 @@ func TestQuickstartConfigsLoad(t *testing.T) {
 	files := []string{
 		filepath.Join("..", "..", "deploy", "quickstart", "windows-client.yaml"),
 		filepath.Join("..", "..", "deploy", "quickstart", "linux-peer.yaml"),
+		filepath.Join("..", "..", "deploy", "quickstart", "config.node-a.yaml"),
+		filepath.Join("..", "..", "deploy", "quickstart", "config.node-b.yaml"),
+		filepath.Join("..", "..", "deploy", "quickstart", "config.node-a.relay-only.yaml"),
+		filepath.Join("..", "..", "deploy", "quickstart", "config.node-b.relay-only.yaml"),
 	}
 
 	for _, src := range files {

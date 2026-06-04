@@ -1,0 +1,40 @@
+version: "3.8"
+
+services:
+  coordinator:
+    build:
+      context: ../..
+      dockerfile: deploy/quickstart/Dockerfile.coordinator
+    container_name: winkyou-coordinator
+    restart: unless-stopped
+    network_mode: host
+    command:
+      - --listen
+      - ${WINK_COORD_LISTEN:-:50051}
+      - --network-cidr
+      - ${WINK_NETWORK_CIDR:-10.42.0.0/24}
+      - --lease-ttl
+      - ${WINK_LEASE_TTL:-30s}
+      - --auth-key
+      - ${WINK_AUTH_KEY:-wink-demo-key}
+      - --store-backend
+      - ${WINK_STORE_BACKEND:-memory}
+
+  coturn:
+    image: coturn/coturn:4.6.3
+    container_name: winkyou-coturn
+    restart: unless-stopped
+    network_mode: host
+    command:
+      - --listening-port=3478
+      - --listening-ip=0.0.0.0
+      - --external-ip=${WINK_PUBLIC_IP:?set WINK_PUBLIC_IP to the server public IPv4}
+      - --min-port=49152
+      - --max-port=65535
+      - --realm=winkyou
+      - --user=${WINK_TURN_USER:-winkdemo}:${WINK_TURN_PASSWORD:-winkdemo-pass}
+      - --fingerprint
+      - --lt-cred-mech
+      - --no-multicast-peers
+      - --no-cli
+      - --verbose

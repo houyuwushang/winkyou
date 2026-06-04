@@ -130,6 +130,8 @@ nat:
 - [`pkg/probe`](./pkg/probe)：probe model/lab
 - [`deploy/quickstart`](./deploy/quickstart)：快速部署素材
 - [`deploy/coturn`](./deploy/coturn)：TURN relay 部署素材
+- [`docs/SELFHOST-QUICKSTART.md`](./docs/SELFHOST-QUICKSTART.md)：自托管快速部署
+- [`docs/TROUBLESHOOTING.md`](./docs/TROUBLESHOOTING.md)：分层排障指南
 - [`docs/README.md`](./docs/README.md)：文档分级索引
 
 ## 常用命令

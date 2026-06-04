@@ -14,6 +14,11 @@ When documents disagree, treat `CONNECTIVITY-SOLVER-BASELINE.md` as the source o
 - Phase 3A strategy portfolio entry: [`PHASE3A-STRATEGY-PORTFOLIO.md`](./PHASE3A-STRATEGY-PORTFOLIO.md)
 - Phase 3B+ working plan: [`../implementation_plan.md`](../implementation_plan.md)
 
+## Operator Docs
+
+- Self-host quickstart: [`SELFHOST-QUICKSTART.md`](./SELFHOST-QUICKSTART.md)
+- Troubleshooting: [`TROUBLESHOOTING.md`](./TROUBLESHOOTING.md)
+
 ## Proposals
 
 These files are proposal/brainstorm material from the 2026-05 architecture overhaul pass. They remain useful context, but they are not active authority and should not override the baseline.
