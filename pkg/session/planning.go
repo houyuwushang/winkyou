@@ -11,11 +11,48 @@ import (
 )
 
 func (s *Session) selectAndExecute(ctx context.Context) error {
-	strategy, err := s.selectStrategy(ctx)
+	candidates, err := s.resolveStrategyCandidates(ctx)
 	if err != nil {
 		return err
 	}
 
+	var lastErr error
+	for i, candidate := range candidates {
+		if err := s.setSelectedStrategyCandidate(candidate); err != nil {
+			return err
+		}
+		if err := s.executeSelectedStrategy(ctx, candidate.Strategy); err == nil {
+			return nil
+		} else {
+			lastErr = err
+			s.emitObservation(ctx, solver.Observation{
+				Strategy:   candidate.Name,
+				Event:      "strategy_failed",
+				ErrorClass: classifyError(err),
+				Reason:     err.Error(),
+				Details: map[string]string{
+					"candidate_index": fmt.Sprintf("%d", i),
+					"candidate_total": fmt.Sprintf("%d", len(candidates)),
+				},
+			})
+			s.discardPendingStrategyMessages()
+			s.clearSelectedStrategy()
+			s.ignoreCleanupError(s.runCleanup(candidate.Strategy.Close))
+			if ctx != nil && ctx.Err() != nil {
+				return err
+			}
+		}
+	}
+
+	if lastErr != nil {
+		s.fail(lastErr)
+		return nil
+	}
+	s.fail(fmt.Errorf("session: no strategy candidates available"))
+	return nil
+}
+
+func (s *Session) executeSelectedStrategy(ctx context.Context, strategy solver.Strategy) error {
 	if err := s.runStrategyPreflightProbe(ctx, strategy); err != nil {
 		s.emitObservation(ctx, solver.Observation{
 			Strategy:   strategy.Name(),
@@ -83,19 +120,20 @@ func (s *Session) selectAndExecute(ctx context.Context) error {
 	// Select best outcome
 	best := solver.SelectBestOutcome(outcomes)
 	if best == nil {
-		// Collect error info from all outcomes
 		var lastErr error
-		for _, o := range outcomes {
+		for i := range outcomes {
+			o := outcomes[i]
+			if o.Result != nil && o.Result.Transport != nil {
+				s.ignoreCleanupError(s.runCleanup(o.Result.Transport.Close))
+			}
 			if o.Err != nil {
 				lastErr = o.Err
 			}
 		}
 		if lastErr != nil {
-			s.fail(lastErr)
-		} else {
-			s.fail(fmt.Errorf("session: no successful candidate from %d plans", len(plans)))
+			return lastErr
 		}
-		return nil
+		return fmt.Errorf("session: no successful candidate from %d plans", len(plans))
 	}
 
 	// Mark selected
@@ -133,8 +171,7 @@ func (s *Session) selectAndExecute(ctx context.Context) error {
 		cancel()
 		if err != nil {
 			s.ignoreCleanupError(s.runCleanup(best.Result.Transport.Close))
-			s.fail(err)
-			return nil
+			return err
 		}
 		s.emitObservation(ctx, solver.Observation{
 			Strategy:       best.Plan.Strategy,
@@ -157,8 +194,7 @@ func (s *Session) selectAndExecute(ctx context.Context) error {
 		}
 		s.ignoreCleanupError(s.runCleanup(best.Result.Transport.Close))
 		s.lastRes.Transport = nil
-		s.fail(err)
-		return nil
+		return err
 	}
 	s.emitObservation(ctx, solver.Observation{
 		Strategy:       best.Plan.Strategy,

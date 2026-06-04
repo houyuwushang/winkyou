@@ -47,6 +47,33 @@ func TestPortfolioResolverSelectsFirstMutualStrategyByRegistrationOrder(t *testi
 	}
 }
 
+func TestPortfolioResolverResolveAllReturnsMutualStrategiesByRegistrationOrder(t *testing.T) {
+	legacy := &fakeStrategy{name: "legacy_ice_udp", transport: &fakeTransport{}}
+	relay := &fakeStrategy{name: relayonly.StrategyName, transport: &fakeTransport{}}
+	fakeTCP := &fakeStrategy{name: "fake_tcp_443", transport: &fakeTransport{}}
+	resolver := newTestPortfolioResolver(t, []StrategyEntry{
+		{Name: legacy.Name(), Strategy: legacy},
+		{Name: relay.Name(), Strategy: relay},
+		{Name: fakeTCP.Name(), Strategy: fakeTCP},
+	})
+
+	candidates, err := resolver.ResolveAll(ResolveInput{
+		RemoteCapability: rproto.Capability{Strategies: []string{"fake_tcp_443", "legacy_ice_udp", relayonly.StrategyName}},
+		Initiator:        true,
+	})
+	if err != nil {
+		t.Fatalf("ResolveAll() error = %v", err)
+	}
+	if got, want := candidateNames(candidates), []string{"legacy_ice_udp", relayonly.StrategyName, "fake_tcp_443"}; !slices.Equal(got, want) {
+		t.Fatalf("ResolveAll() candidates = %#v, want %#v", got, want)
+	}
+	for _, candidate := range candidates {
+		if !candidate.Selection.Negotiated {
+			t.Fatalf("candidate %#v Selection.Negotiated = false, want true", candidate)
+		}
+	}
+}
+
 func TestPortfolioResolverSkipsUnsupportedLocalStrategy(t *testing.T) {
 	legacy := &fakeStrategy{name: "legacy_ice_udp", transport: &fakeTransport{}}
 	fakeTCP := &fakeStrategy{name: "fake_tcp_443", transport: &fakeTransport{}}
@@ -202,6 +229,49 @@ func TestFactoryPortfolioResolverAllowsImplicitLegacyFallback(t *testing.T) {
 	}
 	if selection != (Selection{StrategyName: "legacy_ice_udp", Negotiated: false}) {
 		t.Fatalf("Resolve() selection = %#v, want implicit legacy fallback", selection)
+	}
+}
+
+func TestFactoryPortfolioResolverResolveAllReturnsMutualStrategiesByLocalOrder(t *testing.T) {
+	builds := map[string]int{}
+	resolver := newTestFactoryPortfolioResolver(t, []StrategyFactoryEntry{
+		{Name: "legacy_ice_udp", Build: countingStrategyFactory("legacy_ice_udp", builds)},
+		{Name: relayonly.StrategyName, Build: countingStrategyFactory(relayonly.StrategyName, builds)},
+	}, PortfolioResolverPolicy{}, nil)
+
+	candidates, err := resolver.ResolveAll(ResolveInput{
+		RemoteCapability: rproto.Capability{Strategies: []string{relayonly.StrategyName, "legacy_ice_udp"}},
+		Initiator:        true,
+	})
+	if err != nil {
+		t.Fatalf("ResolveAll() error = %v", err)
+	}
+	if got, want := candidateNames(candidates), []string{"legacy_ice_udp", relayonly.StrategyName}; !slices.Equal(got, want) {
+		t.Fatalf("ResolveAll() candidates = %#v, want %#v", got, want)
+	}
+	if builds["legacy_ice_udp"] != 1 || builds[relayonly.StrategyName] != 1 {
+		t.Fatalf("factory builds = %#v, want both mutual strategies built once", builds)
+	}
+}
+
+func TestFactoryPortfolioResolverResolveAllAllowsImplicitLegacyFallback(t *testing.T) {
+	resolver := newTestFactoryPortfolioResolver(t, []StrategyFactoryEntry{
+		{Name: "legacy_ice_udp", Build: countingStrategyFactory("legacy_ice_udp", nil)},
+		{Name: relayonly.StrategyName, Build: countingStrategyFactory(relayonly.StrategyName, nil)},
+	}, PortfolioResolverPolicy{
+		CompatibilityDefault: "legacy_ice_udp",
+		AllowImplicitLegacy:  true,
+	}, nil)
+
+	candidates, err := resolver.ResolveAll(ResolveInput{RemoteCapability: rproto.Capability{}, Initiator: true})
+	if err != nil {
+		t.Fatalf("ResolveAll(empty capability) error = %v", err)
+	}
+	if got, want := candidateNames(candidates), []string{"legacy_ice_udp"}; !slices.Equal(got, want) {
+		t.Fatalf("ResolveAll(empty capability) candidates = %#v, want %#v", got, want)
+	}
+	if candidates[0].Selection != (Selection{StrategyName: "legacy_ice_udp", Negotiated: false}) {
+		t.Fatalf("ResolveAll(empty capability) selection = %#v, want implicit legacy fallback", candidates[0].Selection)
 	}
 }
 
@@ -401,6 +471,14 @@ func countingStrategyFactory(name string, builds map[string]int) func() solver.S
 		}
 		return &fakeStrategy{name: name, transport: &fakeTransport{}}
 	}
+}
+
+func candidateNames(candidates []StrategyCandidate) []string {
+	names := make([]string, 0, len(candidates))
+	for _, candidate := range candidates {
+		names = append(names, candidate.Name)
+	}
+	return names
 }
 
 type relayOnlySessionStrategy struct {

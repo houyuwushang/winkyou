@@ -124,6 +124,33 @@ func (r *PortfolioResolver) Resolve(remote rproto.Capability, initiator bool) (s
 	return nil, Selection{}, fmt.Errorf("session: no mutually supported strategy between local=%v and remote=%v", strategyEntryNames(r.entries), remote.Strategies)
 }
 
+func (r *PortfolioResolver) ResolveAll(input ResolveInput) ([]StrategyCandidate, error) {
+	if r == nil {
+		return nil, fmt.Errorf("session: strategy portfolio resolver is nil")
+	}
+
+	names := mutualStrategies(strategyEntryNames(r.entries), input.RemoteCapability)
+	if len(names) == 0 {
+		return nil, fmt.Errorf("session: no mutually supported strategy between local=%v and remote=%v", strategyEntryNames(r.entries), input.RemoteCapability.Strategies)
+	}
+
+	candidates := make([]StrategyCandidate, 0, len(names))
+	for _, name := range names {
+		for _, entry := range r.entries {
+			if entry.Name != name {
+				continue
+			}
+			candidates = append(candidates, StrategyCandidate{
+				Name:      entry.Name,
+				Strategy:  entry.Strategy,
+				Selection: Selection{StrategyName: entry.Name, Negotiated: true},
+			})
+			break
+		}
+	}
+	return candidates, nil
+}
+
 func (r *FactoryPortfolioResolver) LocalCapability() rproto.Capability {
 	if r == nil {
 		return rproto.Capability{}
@@ -162,6 +189,45 @@ func (r *FactoryPortfolioResolver) Resolve(remote rproto.Capability, initiator b
 	return nil, Selection{}, fmt.Errorf("session: no mutually supported strategy between local=%v and remote=%v", r.order, remote.Strategies)
 }
 
+func (r *FactoryPortfolioResolver) ResolveAll(input ResolveInput) ([]StrategyCandidate, error) {
+	if r == nil {
+		return nil, fmt.Errorf("session: factory strategy portfolio resolver is nil")
+	}
+
+	names := mutualStrategies(r.order, input.RemoteCapability)
+	if len(names) == 0 {
+		if len(input.RemoteCapability.Strategies) == 0 && r.policy.AllowImplicitLegacy && r.policy.CompatibilityDefault != "" {
+			strategy, err := r.build(r.policy.CompatibilityDefault)
+			if err != nil {
+				return nil, err
+			}
+			return []StrategyCandidate{{
+				Name:      r.policy.CompatibilityDefault,
+				Strategy:  strategy,
+				Selection: Selection{StrategyName: r.policy.CompatibilityDefault, Negotiated: false},
+			}}, nil
+		}
+		if len(input.RemoteCapability.Strategies) == 0 {
+			return nil, fmt.Errorf("session: remote capability missing and compatibility fallback disabled")
+		}
+		return nil, fmt.Errorf("session: no mutually supported strategy between local=%v and remote=%v", r.order, input.RemoteCapability.Strategies)
+	}
+
+	candidates := make([]StrategyCandidate, 0, len(names))
+	for _, name := range names {
+		strategy, err := r.build(name)
+		if err != nil {
+			return nil, err
+		}
+		candidates = append(candidates, StrategyCandidate{
+			Name:      name,
+			Strategy:  strategy,
+			Selection: Selection{StrategyName: name, Negotiated: true},
+		})
+	}
+	return candidates, nil
+}
+
 func (r *FactoryPortfolioResolver) build(name string) (solver.Strategy, error) {
 	build, ok := r.factories[name]
 	if !ok {
@@ -190,8 +256,16 @@ func strategyEntryNames(entries []StrategyEntry) []string {
 }
 
 func firstMutualStrategy(localOrder []string, remote rproto.Capability) (string, bool) {
-	if len(remote.Strategies) == 0 {
+	mutual := mutualStrategies(localOrder, remote)
+	if len(mutual) == 0 {
 		return "", false
+	}
+	return mutual[0], true
+}
+
+func mutualStrategies(localOrder []string, remote rproto.Capability) []string {
+	if len(remote.Strategies) == 0 {
+		return nil
 	}
 	remoteSet := make(map[string]struct{}, len(remote.Strategies))
 	for _, name := range remote.Strategies {
@@ -200,10 +274,11 @@ func firstMutualStrategy(localOrder []string, remote rproto.Capability) (string,
 		}
 		remoteSet[name] = struct{}{}
 	}
+	mutual := make([]string, 0, len(localOrder))
 	for _, name := range localOrder {
 		if _, ok := remoteSet[name]; ok {
-			return name, true
+			mutual = append(mutual, name)
 		}
 	}
-	return "", false
+	return mutual
 }

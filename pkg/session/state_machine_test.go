@@ -38,6 +38,31 @@ func TestStateMachineRejectsInvalidTransitions(t *testing.T) {
 	}
 }
 
+func TestStateMachineAllowsFallbackReentryTransitions(t *testing.T) {
+	tests := []struct {
+		name string
+		from State
+		to   State
+	}{
+		{name: "executing_to_planning", from: StateExecuting, to: StatePlanning},
+		{name: "executing_to_probing", from: StateExecuting, to: StateProbing},
+		{name: "planning_to_planning", from: StatePlanning, to: StatePlanning},
+		{name: "binding_to_planning", from: StateBinding, to: StatePlanning},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			sm := NewStateMachine(tt.from)
+			if err := sm.Transition(tt.to); err != nil {
+				t.Fatalf("Transition(%q -> %q) error = %v, want nil", tt.from, tt.to, err)
+			}
+			if got := sm.State(); got != tt.to {
+				t.Fatalf("State() = %q, want %q", got, tt.to)
+			}
+		})
+	}
+}
+
 func TestSessionTransitionReportsInvalidTransition(t *testing.T) {
 	var reported error
 	s, err := New(Config{

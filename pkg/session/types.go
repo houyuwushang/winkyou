@@ -46,6 +46,29 @@ type StrategyResolver interface {
 	Resolve(remote rproto.Capability, initiator bool) (solver.Strategy, Selection, error)
 }
 
+type StrategyCandidate struct {
+	Name      string
+	Strategy  solver.Strategy
+	Selection Selection
+}
+
+type ResolveInput struct {
+	SessionID          string
+	LocalNodeID        string
+	PeerID             string
+	Initiator          bool
+	LocalCapability    rproto.Capability
+	RemoteCapability   rproto.Capability
+	LocalObservations  []solver.Observation
+	RemoteObservations []solver.Observation
+	LastProbeResult    *solver.ProbeResultSummary
+}
+
+type OrderedStrategyResolver interface {
+	StrategyResolver
+	ResolveAll(input ResolveInput) ([]StrategyCandidate, error)
+}
+
 type ProbeRunner interface {
 	Run(ctx context.Context, script pmodel.Script) (pmodel.Result, error)
 }
