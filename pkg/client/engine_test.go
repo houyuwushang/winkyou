@@ -429,6 +429,76 @@ func TestSchedulePeerRetryUsesCapturedRunContext(t *testing.T) {
 	time.Sleep(25 * time.Millisecond)
 }
 
+func TestSchedulePeerRetryAllowsControlledSide(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	session := &peerSession{initiator: false}
+	eng := &engine{
+		cfg: config.Config{
+			NAT: config.NATConfig{
+				RetryInterval:    time.Minute,
+				RetryMaxInterval: time.Minute,
+			},
+		},
+		runCtx: ctx,
+		peerMgr: &peerManager{sessions: map[string]*peerSession{
+			"node-1": session,
+		}},
+	}
+
+	eng.schedulePeerRetry("node-1", session)
+
+	session.connectMu.Lock()
+	defer session.connectMu.Unlock()
+	if !session.retryPending {
+		t.Fatal("non-initiator peer session should schedule retry while data path is not alive")
+	}
+	if session.retryDelay != time.Minute {
+		t.Fatalf("retry delay = %v, want %v", session.retryDelay, time.Minute)
+	}
+}
+
+func TestStartPeerConnectAllowsControlledSide(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	cfg := config.Default()
+	cfg.NAT.RetryInterval = time.Minute
+	cfg.NAT.RetryMaxInterval = time.Minute
+
+	eng := &engine{
+		cfg:    cfg,
+		log:    logger.Nop(),
+		runCtx: ctx,
+		status: EngineStatus{NodeID: "node-2"},
+		peers: map[string]*PeerStatus{
+			"node-1": {
+				NodeID:    "node-1",
+				PublicKey: mustTestPublicKey(t).String(),
+				VirtualIP: net.ParseIP("10.77.0.1"),
+				State:     PeerStateConnecting,
+			},
+		},
+		peerMgr: &peerManager{sessions: map[string]*peerSession{}},
+	}
+
+	eng.startPeerConnect("node-1")
+
+	session := eng.peerMgr.sessions["node-1"]
+	if session == nil {
+		t.Fatal("controlled-side peer session was not created")
+	}
+	if session.initiator {
+		t.Fatal("test setup expected controlled-side session")
+	}
+	session.connectMu.Lock()
+	defer session.connectMu.Unlock()
+	if !session.retryPending {
+		t.Fatal("controlled-side peer session should retry after start failure")
+	}
+}
+
 type fakeTunnelForEngineTest struct {
 	peers       []*tunnel.PeerStatus
 	stats       *tunnel.TunnelStats

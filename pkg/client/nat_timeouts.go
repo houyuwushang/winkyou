@@ -39,7 +39,7 @@ func (e *engine) peerRetryMaxInterval() time.Duration {
 
 func (e *engine) schedulePeerRetry(nodeID string, session *peerSession) {
 	runCtx := e.runCtx
-	if session == nil || !session.initiator || runCtx == nil {
+	if session == nil || runCtx == nil {
 		return
 	}
 

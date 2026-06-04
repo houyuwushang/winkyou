@@ -90,7 +90,7 @@ func (e *engine) ensurePeerSession(nodeID string) (*peerSession, error) {
 
 func (e *engine) startPeerConnect(nodeID string) {
 	s, err := e.ensurePeerSession(nodeID)
-	if err != nil || !s.initiator {
+	if err != nil {
 		return
 	}
 	e.startPeerSession(s)
