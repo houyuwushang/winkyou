@@ -3,11 +3,15 @@ VERSION ?= dev
 COMMIT ?= $(shell git rev-parse --short HEAD 2>/dev/null)
 BUILD_TIME ?= $(shell if command -v powershell >/dev/null 2>&1; then powershell -NoProfile -Command "[DateTime]::UtcNow.ToString('yyyy-MM-ddTHH:mm:ssZ')"; else date -u +%Y-%m-%dT%H:%M:%SZ; fi)
 LDFLAGS := -X 'winkyou/pkg/version.Version=$(VERSION)' -X 'winkyou/pkg/version.Commit=$(COMMIT)' -X 'winkyou/pkg/version.BuildTime=$(BUILD_TIME)'
+DIST_DIR ?= dist
 
-.PHONY: tidy fmt vet test test-race check test-unit test-integration test-e2e test-e2e-privileged test-e2e-relay test-e2e-relay-privileged test-phase2d test-phase3a test-phase4a build build-all build-wink build-wink-coordinator build-wink-relay build-windows-client build-linux-client build-linux-coordinator build-linux-relay build-deploy-preview ensure-bin
+.PHONY: tidy fmt vet test test-race check test-unit test-integration test-e2e test-e2e-privileged test-e2e-relay test-e2e-relay-privileged test-phase2d test-phase3a test-phase4a build build-all build-release checksum-release clean-dist build-wink build-wink-coordinator build-wink-relay build-windows-client build-linux-client build-linux-coordinator build-linux-relay build-deploy-preview ensure-bin ensure-dist
 
 ensure-bin:
 	@mkdir -p bin
+
+ensure-dist:
+	@mkdir -p $(DIST_DIR)
 
 tidy:
 	$(GO) mod tidy
@@ -73,7 +77,19 @@ build-wink-coordinator: ensure-bin
 build-wink-relay: ensure-bin
 	$(GO) build -ldflags "$(LDFLAGS)" -o bin/wink-relay ./cmd/wink-relay
 
-build-all: build-wink build-wink-coordinator build-wink-relay
+build-all: build-wink build-wink-coordinator build-wink-relay build-release
+
+build-release: ensure-dist
+	GOOS=windows GOARCH=amd64 CGO_ENABLED=0 $(GO) build -ldflags "$(LDFLAGS)" -o $(DIST_DIR)/wink-windows-amd64.exe ./cmd/wink
+	GOOS=linux GOARCH=amd64 CGO_ENABLED=0 $(GO) build -ldflags "$(LDFLAGS)" -o $(DIST_DIR)/wink-linux-amd64 ./cmd/wink
+	GOOS=linux GOARCH=amd64 CGO_ENABLED=0 $(GO) build -ldflags "$(LDFLAGS)" -o $(DIST_DIR)/wink-coordinator-linux-amd64 ./cmd/wink-coordinator
+	GOOS=linux GOARCH=amd64 CGO_ENABLED=0 $(GO) build -ldflags "$(LDFLAGS)" -o $(DIST_DIR)/wink-relay-linux-amd64 ./cmd/wink-relay
+
+checksum-release: build-release
+	cd $(DIST_DIR) && sha256sum wink-* > SHA256SUMS
+
+clean-dist:
+	rm -rf $(DIST_DIR)
 
 build-windows-client: ensure-bin
 	GOOS=windows GOARCH=amd64 $(GO) build -ldflags "$(LDFLAGS)" -o bin/wink.exe ./cmd/wink

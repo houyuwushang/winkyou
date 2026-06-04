@@ -1,0 +1,76 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version string to embed, for example v0.1.0"
+        required: false
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  build-release:
+    name: Build release artifacts
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Resolve version metadata
+        shell: bash
+        run: |
+          version="${{ inputs.version }}"
+          if [ -z "$version" ]; then
+            if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+              version="${GITHUB_REF_NAME}"
+            else
+              version="snapshot-${GITHUB_SHA::7}"
+            fi
+          fi
+          echo "VERSION=$version" >> "$GITHUB_ENV"
+          echo "COMMIT=${GITHUB_SHA::12}" >> "$GITHUB_ENV"
+          echo "BUILD_TIME=$(date -u +'%Y-%m-%dT%H:%M:%SZ')" >> "$GITHUB_ENV"
+
+      - name: Run tests
+        run: go test ./... -count=1
+
+      - name: Build artifacts
+        run: make clean-dist build-release VERSION="$VERSION" COMMIT="$COMMIT" BUILD_TIME="$BUILD_TIME"
+
+      - name: Create checksums
+        run: cd dist && sha256sum wink-* > SHA256SUMS
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: winkyou-${{ env.VERSION }}-artifacts
+          path: |
+            dist/wink-windows-amd64.exe
+            dist/wink-linux-amd64
+            dist/wink-coordinator-linux-amd64
+            dist/wink-relay-linux-amd64
+            dist/SHA256SUMS
+          if-no-files-found: error
+
+      - name: Publish tag release
+        if: github.ref_type == 'tag'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$VERSION" dist/* \
+            --title "$VERSION" \
+            --notes-file docs/RELEASE-NOTES-TEMPLATE.md \
+            --verify-tag
