@@ -50,7 +50,7 @@ client 还修复了一个真实验证中暴露的恢复问题：当本端不是 
 
 这证明数据面没有通过 `chen-win` TURN relay 转发。但当断开本机到 `chen-win` 的 natpierce 连接后，WinkYou 连接也断开。
 
-后续使用 `chen2001` 通过 SSH 登录 `chen-win` 后，已确认可以只停止 `wink-coordinator` 进程而不触碰 natpierce/underlay 网络。当前尚未执行 kill-coordinator 验证，因为重启本机验证版 client 后，前置数据面没有重新达到 bound/handshake：
+后续通过 SSH 密码登录 `chen-win` 后，已确认可以只停止 `wink-coordinator` 进程而不触碰 natpierce/underlay 网络。当前尚未执行 kill-coordinator 验证，因为重启本机验证版 client 后，前置数据面没有重新达到 bound/handshake：
 
 - coordinator 在 `chen-win` 上运行，进程名 `wink-coordinator`。
 - `local-a` 控制面在线，能看到 `inner-b`，但 runtime 显示 `control_state=connected`、`data_state=failed/connecting`、`connected_peers=0`。
@@ -59,6 +59,8 @@ client 还修复了一个真实验证中暴露的恢复问题：当本端不是 
 - 仅在本机加 `nat.candidate_interface_include: natpierce` 和 `nat.candidate_cidr_include: 10.6.22.0/24` 会让本机过滤生效，但远端 `inner-b` 未同步配置时无法形成可用 candidate pair。
 
 因此，下一次真实验证的前置条件是：先让两端都重新达到 `State: connected`、WireGuard handshake 非空且 `ping 10.88.0.1/10.88.0.2` 成功，再在 `chen-win` 上停止 coordinator 进程。不要在数据面未 bound 时停止 coordinator；那只能验证“尚未建链时 coordinator 不可用会失败”，不能验证“已建链后控制面断线是否保持”。
+
+新增安全验证脚本 [`scripts/verify-control-plane-outage.py`](../scripts/verify-control-plane-outage.py)，用于后续真实 kill-coordinator 回归。该脚本会先检查本机 `wink peers --json`、`last_handshake`、transport error 和 overlay ping；只有确认已经存在 connected/bound peer 后，才会读取环境变量里的 chen-win SSH 密码并停止远端 coordinator。当前本机 runtime 仍没有 bound peer 时，脚本会直接退出并拒绝触碰远端进程。
 
 ## 拓扑澄清
 

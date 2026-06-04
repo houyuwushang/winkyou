@@ -431,7 +431,9 @@ Phase 3A (Strategy Portfolio Foundation) 已完成。以下是我基于代码现
 - 已建立数据面后的 in-band peer control 消息模型已加入 `pkg/peercontrol`，覆盖 heartbeat、path health、endpoint update、capability refresh 和 re-ICE request 的校验与 JSON 编解码。
 - NAT/ICE 已新增 candidate interface include/exclude 和 candidate CIDR include/exclude 配置，并传入 Pion ICE agent；`wink doctor` 会展示过滤配置并检查 runtime candidate 是否命中 excluded CIDR。
 
-2026-06-04 后续验证中，已能使用 `chen2001` SSH 到 `chen-win` 并确认 `wink-coordinator` 进程可被单独停止；但尚未执行 kill-coordinator 验证，因为本机验证版 client 重启后数据面未重新达到 bound/handshake。当前 runtime 只证明 control plane 可见 peer，不能证明 data plane 已建立。下一次验证必须先恢复两端 `State: connected`、WireGuard handshake 非空且双向 ping 成功，再停止 `chen-win` 上的 coordinator 进程。
+2026-06-04 后续验证中，已能通过 SSH 密码登录 `chen-win` 并确认 `wink-coordinator` 进程可被单独停止；但尚未执行 kill-coordinator 验证，因为本机验证版 client 重启后数据面未重新达到 bound/handshake。当前 runtime 只证明 control plane 可见 peer，不能证明 data plane 已建立。下一次验证必须先恢复两端 `State: connected`、WireGuard handshake 非空且双向 ping 成功，再停止 `chen-win` 上的 coordinator 进程。
+
+已新增 `scripts/verify-control-plane-outage.py` 作为安全回归脚本。它会先检查本机 `wink peers --json`、WireGuard handshake、transport error 和 overlay ping；只有确认数据面已 bound 后才会读取 SSH 密码并停止 `chen-win` 上的 coordinator。当前 runtime 未 bound 时，脚本会拒绝执行远端停进程动作。
 
 这还没有覆盖所有 coordinator 进程退出、heartbeat 失败、signaling stream 断开、cached path 恢复或 in-band control 网络循环接入场景。
 
