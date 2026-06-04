@@ -23,7 +23,7 @@ client runtime 也已经新增基础可观测字段：
 - 用真实双节点环境验证 coordinator 进程退出，而不是断开 natpierce/跳板网络。
 - coordinator heartbeat 或 signaling stream 失败时，不主动拆除已 bound 的 data plane。
 - 使用最近成功 path/cache 做恢复或重试；当前只完成状态展示和缓存。
-- 已建立虚拟网后的 in-band peer control channel。
+- 已建立虚拟网后的 in-band peer control channel 运行时接入；消息模型和 JSON 编解码已冻结在 `pkg/peercontrol`。
 
 ## 已验证现象
 
@@ -99,7 +99,7 @@ coordinator bootstrap
   -> coordinator outage tolerated
 ```
 
-连接建立后，节点可以通过虚拟局域网内的 in-band control channel 交换后续控制信息。但这只能接管已建立路径之后的控制消息，不能替代首次 bootstrap。
+连接建立后，节点可以通过虚拟局域网内的 in-band control channel 交换后续控制信息。但这只能接管已建立路径之后的控制消息，不能替代首次 bootstrap。当前已冻结消息模型，详见 [`INBAND-PEER-CONTROL.md`](./INBAND-PEER-CONTROL.md)。
 
 ## TODO
 
@@ -137,6 +137,8 @@ coordinator bootstrap
 这允许 coordinator 短暂不可用时继续展示状态，也为后续 cached path 重试打基础。
 
 ### P1: in-band control channel
+
+状态：消息模型、校验和 JSON 编解码已加入 `pkg/peercontrol`；client 网络循环尚未接入。
 
 已建立虚拟网后，可以在 `10.88.0.0/24` 内增加轻量 peer control channel，承载：
 

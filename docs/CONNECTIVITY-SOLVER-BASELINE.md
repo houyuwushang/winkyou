@@ -166,6 +166,8 @@ Coordinator-less operation has a strict boundary:
 - before the first path is bound, arbitrary NATed peers still need coordinator/rendezvous, a stable bootstrap node, static endpoint/port mapping, an existing overlay, or manual candidate exchange
 - disconnecting an underlay overlay such as natpierce is not equivalent to killing only the coordinator process, because it can also remove the selected data-path candidate
 
+The in-band control message model is frozen in `pkg/peercontrol` and documented in [`INBAND-PEER-CONTROL.md`](./INBAND-PEER-CONTROL.md). It is not yet wired into the long-running client network loop.
+
 ### Binder
 
 The binder attaches the selected `PacketTransport` to the tunnel.
@@ -368,7 +370,7 @@ Constraints:
 - full observation collection and scoring with learning feedback
 - new coordinator transport or protobuf redesign
 - coordinator-less first bootstrap for arbitrary NATed peers
-- in-band peer control channel over an already established virtual network
+- runtime wiring for the in-band peer control channel over an already established virtual network
 - ICE interface include/exclude policy and candidate CIDR filtering
 - GUI, daemon, no-admin, proxy, or userspace completion work
 

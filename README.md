@@ -27,7 +27,7 @@ WinkYou = connectivity solver + secure WireGuard data plane
 - `wink doctor` 已提供 config、coordinator、TURN、本地接口、strategy、tunnel、transport 的分层诊断
 - `wink up/down/status/peers/logs` 已形成长期运行 CLI 工作流；Linux systemd 和 Windows 启动项文档已补齐
 - v0.1 release workflow 已能构建 Windows client、Linux client、Linux coordinator、Linux relay 和 SHA256SUMS
-- 真实双节点验证已证明 `legacy_ice_udp` direct path 可以建立虚拟局域网，但也暴露出 coordinator 仍是持续控制面依赖；client 已加第一层 peer-offline 保护，并已在 runtime/`wink peers` 中暴露 control/data 状态和最近成功 path cache；后续仍需真实 coordinator outage 验证和 in-band control；详见 [`docs/CONTROL-PLANE-RESILIENCE.md`](./docs/CONTROL-PLANE-RESILIENCE.md)
+- 真实双节点验证已证明 `legacy_ice_udp` direct path 可以建立虚拟局域网，但也暴露出 coordinator 仍是持续控制面依赖；client 已加第一层 peer-offline 保护，并已在 runtime/`wink peers` 中暴露 control/data 状态和最近成功 path cache；`pkg/peercontrol` 已冻结 in-band peer control 消息模型，后续仍需真实 coordinator outage 验证和网络循环接入；详见 [`docs/CONTROL-PLANE-RESILIENCE.md`](./docs/CONTROL-PLANE-RESILIENCE.md)
 
 当文档发生冲突时，以 [`docs/CONNECTIVITY-SOLVER-BASELINE.md`](./docs/CONNECTIVITY-SOLVER-BASELINE.md) 作为 session、solver、strategy 和 transport 边界的判断依据。部分历史架构文档已标记为 proposal/archive，不能覆盖 active baseline。
 
@@ -114,7 +114,7 @@ nat:
 - `tcp_framed` 仍是 alpha，不做 NAT TCP 打洞承诺
 - 高级 learning/scoring 闭环
 - coordinator 断线后保持已 bound 数据面的完整控制面韧性：peer-offline 误清理和 runtime control/data/path cache 已先修，heartbeat/signaling failure、cached path 恢复和真实 kill-coordinator 测试仍待完成
-- 已建立虚拟网后的 in-band peer control channel，用于 heartbeat、path health、capability refresh 和 re-ICE request；它不能替代首次 bootstrap
+- 已建立虚拟网后的 in-band peer control channel 运行时接入；消息模型已在 `pkg/peercontrol` 冻结，但还没有接入 client 网络循环
 - ICE candidate 接口 include/exclude 或 CIDR 过滤，用于排除 Tailscale、Docker bridge、其他 VPN/TAP 干扰并验证纯 NAT piercing
 - GUI、移动端、原生 Windows service
 
@@ -142,6 +142,7 @@ nat:
 - [`docs/SELFHOST-QUICKSTART.md`](./docs/SELFHOST-QUICKSTART.md)：自托管快速部署
 - [`docs/LONG-RUNNING-CLIENT.md`](./docs/LONG-RUNNING-CLIENT.md)：长期运行客户端、日志和 service/startup 工作流
 - [`docs/CONTROL-PLANE-RESILIENCE.md`](./docs/CONTROL-PLANE-RESILIENCE.md)：真实部署中暴露的控制面断线、P2P 保持和候选接口过滤 TODO
+- [`docs/INBAND-PEER-CONTROL.md`](./docs/INBAND-PEER-CONTROL.md)：已建立数据面后的 peer control 消息模型和边界
 - [`docs/TROUBLESHOOTING.md`](./docs/TROUBLESHOOTING.md)：分层排障指南
 - [`docs/RELEASE.md`](./docs/RELEASE.md)：release 构建、校验和发布流程
 - [`docs/V0.1-FREEZE.md`](./docs/V0.1-FREEZE.md)：v0.1 Alpha freeze gate 与验收边界
