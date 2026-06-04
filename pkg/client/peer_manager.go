@@ -44,11 +44,21 @@ func (e *engine) handleSignal(signal *coordclient.SignalNotification) {
 	e.mu.Lock()
 	peer, ok := e.peers[signal.FromNode]
 	if !ok {
-		peer = &PeerStatus{NodeID: signal.FromNode, State: PeerStateDisconnected, ConnectionType: ConnectionTypeDirect}
+		peer = &PeerStatus{
+			NodeID:         signal.FromNode,
+			State:          PeerStateDisconnected,
+			ControlState:   PeerControlStateConnected,
+			DataState:      PeerDataStateConnecting,
+			ConnectionType: ConnectionTypeDirect,
+		}
 		e.peers[signal.FromNode] = peer
 	}
+	peer.ControlState = PeerControlStateConnected
 	if peer.State == PeerStateDisconnected {
 		peer.State = PeerStateConnecting
+	}
+	if peer.DataState == "" || peer.DataState == PeerDataStateStale {
+		peer.DataState = PeerDataStateConnecting
 	}
 	peer.LastSeen = time.Now()
 	e.updateStatusCountersLocked()
@@ -69,6 +79,8 @@ func (e *engine) cleanupPeer(nodeID string) {
 	e.mu.Lock()
 	if p := e.peers[nodeID]; p != nil {
 		p.State = PeerStateDisconnected
+		p.ControlState = PeerControlStateDisconnected
+		p.DataState = PeerDataStateFailed
 		p.Endpoint = nil
 	}
 	s := (*peerSession)(nil)

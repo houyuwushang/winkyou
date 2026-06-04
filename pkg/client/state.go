@@ -69,6 +69,8 @@ type PeerStatus struct {
 	VirtualIP          net.IP
 	PublicKey          string
 	State              PeerState
+	ControlState       PeerControlState
+	DataState          PeerDataState
 	Endpoint           *net.UDPAddr
 	Latency            time.Duration
 	LastSeen           time.Time
@@ -84,6 +86,11 @@ type PeerStatus struct {
 	TransportRxPackets uint64
 	TransportRxBytes   uint64
 	TransportLastError string
+	LastPathID         string
+	LastPathStrategy   string
+	LastPathEndpoint   string
+	LastPathConnType   string
+	LastPathUpdatedAt  time.Time
 }
 
 type PeerEvent int
@@ -113,6 +120,38 @@ func (s PeerState) String() string {
 	default:
 		return "disconnected"
 	}
+}
+
+type PeerControlState string
+
+const (
+	PeerControlStateConnected    PeerControlState = "connected"
+	PeerControlStateDegraded     PeerControlState = "degraded"
+	PeerControlStateDisconnected PeerControlState = "disconnected"
+)
+
+func (s PeerControlState) String() string {
+	if s == "" {
+		return "unknown"
+	}
+	return string(s)
+}
+
+type PeerDataState string
+
+const (
+	PeerDataStateConnecting PeerDataState = "connecting"
+	PeerDataStateBound      PeerDataState = "bound"
+	PeerDataStateAlive      PeerDataState = "alive"
+	PeerDataStateStale      PeerDataState = "stale"
+	PeerDataStateFailed     PeerDataState = "failed"
+)
+
+func (s PeerDataState) String() string {
+	if s == "" {
+		return "stale"
+	}
+	return string(s)
 }
 
 type ConnectionType int

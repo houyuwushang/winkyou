@@ -229,6 +229,12 @@ func TestSessionStartCapabilitySelectionAndPathCommit(t *testing.T) {
 		if result.Summary.PathID != "fake/path" {
 			t.Fatalf("OnBound() path_id = %q, want fake/path", result.Summary.PathID)
 		}
+		if result.Summary.Details["strategy"] != "legacy_ice_udp" {
+			t.Fatalf("OnBound() strategy detail = %q, want legacy_ice_udp", result.Summary.Details["strategy"])
+		}
+		if result.Summary.Details["plan_id"] == "" {
+			t.Fatal("OnBound() plan_id detail should be set")
+		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("timed out waiting for OnBound()")
 	}

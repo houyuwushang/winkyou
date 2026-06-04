@@ -140,8 +140,10 @@ func (s *Session) executeSelectedStrategy(ctx context.Context, strategy solver.S
 	// Mark selected
 	best.Selected = true
 	best.SelectionReason = "highest_score"
+	annotatedResult := annotateResultPath(*best.Result, best.Plan)
+	best.Result = &annotatedResult
 	s.lastPlan = best.Plan
-	s.lastRes = *best.Result
+	s.lastRes = annotatedResult
 	s.emitObservation(ctx, solver.Observation{
 		Strategy:       best.Plan.Strategy,
 		PlanID:         best.Plan.ID,
@@ -251,6 +253,21 @@ func (s *Session) executeCandidateLoop(ctx context.Context, strategy solver.Stra
 	}
 
 	return outcomes
+}
+
+func annotateResultPath(result solver.Result, plan solver.Plan) solver.Result {
+	details := make(map[string]string, len(result.Summary.Details)+2)
+	for key, value := range result.Summary.Details {
+		details[key] = value
+	}
+	if _, ok := details["strategy"]; !ok && plan.Strategy != "" {
+		details["strategy"] = plan.Strategy
+	}
+	if _, ok := details["plan_id"]; !ok && plan.ID != "" {
+		details["plan_id"] = plan.ID
+	}
+	result.Summary.Details = details
+	return result
 }
 
 func (s *Session) executeCandidate(ctx context.Context, strategy solver.Strategy, plan solver.Plan) solver.CandidateOutcome {

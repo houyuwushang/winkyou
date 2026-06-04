@@ -27,7 +27,7 @@ WinkYou = connectivity solver + secure WireGuard data plane
 - `wink doctor` 已提供 config、coordinator、TURN、本地接口、strategy、tunnel、transport 的分层诊断
 - `wink up/down/status/peers/logs` 已形成长期运行 CLI 工作流；Linux systemd 和 Windows 启动项文档已补齐
 - v0.1 release workflow 已能构建 Windows client、Linux client、Linux coordinator、Linux relay 和 SHA256SUMS
-- 真实双节点验证已证明 `legacy_ice_udp` direct path 可以建立虚拟局域网，但也暴露出 coordinator 仍是持续控制面依赖；client 已加第一层 peer-offline 保护，后续仍需真实 coordinator outage 验证、runtime 状态拆分和 in-band control；详见 [`docs/CONTROL-PLANE-RESILIENCE.md`](./docs/CONTROL-PLANE-RESILIENCE.md)
+- 真实双节点验证已证明 `legacy_ice_udp` direct path 可以建立虚拟局域网，但也暴露出 coordinator 仍是持续控制面依赖；client 已加第一层 peer-offline 保护，并已在 runtime/`wink peers` 中暴露 control/data 状态和最近成功 path cache；后续仍需真实 coordinator outage 验证和 in-band control；详见 [`docs/CONTROL-PLANE-RESILIENCE.md`](./docs/CONTROL-PLANE-RESILIENCE.md)
 
 当文档发生冲突时，以 [`docs/CONNECTIVITY-SOLVER-BASELINE.md`](./docs/CONNECTIVITY-SOLVER-BASELINE.md) 作为 session、solver、strategy 和 transport 边界的判断依据。部分历史架构文档已标记为 proposal/archive，不能覆盖 active baseline。
 
@@ -113,7 +113,7 @@ nat:
 - 自研 Wink Protocol 数据平面
 - `tcp_framed` 仍是 alpha，不做 NAT TCP 打洞承诺
 - 高级 learning/scoring 闭环
-- coordinator 断线后保持已 bound 数据面的完整控制面韧性：peer-offline 误清理已先修，heartbeat/signaling failure、runtime control/data 状态和真实 kill-coordinator 测试仍待完成
+- coordinator 断线后保持已 bound 数据面的完整控制面韧性：peer-offline 误清理和 runtime control/data/path cache 已先修，heartbeat/signaling failure、cached path 恢复和真实 kill-coordinator 测试仍待完成
 - 已建立虚拟网后的 in-band peer control channel，用于 heartbeat、path health、capability refresh 和 re-ICE request；它不能替代首次 bootstrap
 - ICE candidate 接口 include/exclude 或 CIDR 过滤，用于排除 Tailscale、Docker bridge、其他 VPN/TAP 干扰并验证纯 NAT piercing
 - GUI、移动端、原生 Windows service

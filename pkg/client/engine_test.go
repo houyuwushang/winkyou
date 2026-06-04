@@ -13,6 +13,7 @@ import (
 	coordclient "winkyou/pkg/coordinator/client"
 	"winkyou/pkg/coordinator/server"
 	"winkyou/pkg/logger"
+	"winkyou/pkg/solver"
 	"winkyou/pkg/tunnel"
 
 	"google.golang.org/grpc"
@@ -84,10 +85,17 @@ func TestRuntimeStateRoundTrip(t *testing.T) {
 			Uptime:      "5s",
 		},
 		Peers: []RuntimePeerStatus{{
-			NodeID:        "node-2",
-			Name:          "beta",
-			State:         PeerStateConnecting.String(),
-			LastHandshake: now.Add(3 * time.Second),
+			NodeID:            "node-2",
+			Name:              "beta",
+			State:             PeerStateConnecting.String(),
+			ControlState:      PeerControlStateConnected.String(),
+			DataState:         PeerDataStateBound.String(),
+			LastHandshake:     now.Add(3 * time.Second),
+			LastPathID:        "relayonly/turn_relay",
+			LastPathStrategy:  "relay_only",
+			LastPathEndpoint:  "203.0.113.10:50000",
+			LastPathConnType:  ConnectionTypeRelay.String(),
+			LastPathUpdatedAt: now.Add(4 * time.Second),
 		}},
 	}
 
@@ -108,6 +116,12 @@ func TestRuntimeStateRoundTrip(t *testing.T) {
 	wantHandshake := now.Add(3 * time.Second)
 	if !loaded.Peers[0].LastHandshake.Equal(wantHandshake) {
 		t.Fatalf("loaded last handshake = %v, want instant %v", loaded.Peers[0].LastHandshake, wantHandshake)
+	}
+	if loaded.Peers[0].ControlState != PeerControlStateConnected.String() || loaded.Peers[0].DataState != PeerDataStateBound.String() {
+		t.Fatalf("loaded peer states = control=%q data=%q", loaded.Peers[0].ControlState, loaded.Peers[0].DataState)
+	}
+	if loaded.Peers[0].LastPathStrategy != "relay_only" || loaded.Peers[0].LastPathEndpoint != "203.0.113.10:50000" {
+		t.Fatalf("loaded path cache = %#v", loaded.Peers[0])
 	}
 }
 
@@ -156,6 +170,9 @@ func TestUpdateStatusCountersSyncsTunnelPeerState(t *testing.T) {
 	}
 	if peer.State != PeerStateConnected {
 		t.Fatalf("peer state = %s, want connected after handshake", peer.State)
+	}
+	if peer.DataState != PeerDataStateFailed {
+		t.Fatalf("peer data state = %s, want failed while transport error is present", peer.DataState)
 	}
 	if peer.TransportTxPackets != 3 || peer.TransportTxBytes != 96 {
 		t.Fatalf("peer transport tx = packets=%d bytes=%d, want 3/96", peer.TransportTxPackets, peer.TransportTxBytes)
@@ -218,6 +235,12 @@ func TestPeerOfflinePreservesConnectedDataPath(t *testing.T) {
 	if peer.State != PeerStateConnected {
 		t.Fatalf("peer state = %s, want connected while data path is alive", peer.State)
 	}
+	if peer.ControlState != PeerControlStateDisconnected {
+		t.Fatalf("peer control state = %s, want disconnected after offline update", peer.ControlState)
+	}
+	if peer.DataState != PeerDataStateAlive {
+		t.Fatalf("peer data state = %s, want alive while data path is retained", peer.DataState)
+	}
 	if peer.Endpoint == nil || peer.Endpoint.String() != endpoint.String() {
 		t.Fatalf("peer endpoint = %v, want retained %s", peer.Endpoint, endpoint)
 	}
@@ -264,6 +287,12 @@ func TestPeerOfflineCleansStaleDataPath(t *testing.T) {
 	if peer.State != PeerStateDisconnected {
 		t.Fatalf("peer state = %s, want disconnected for stale data path", peer.State)
 	}
+	if peer.ControlState != PeerControlStateDisconnected {
+		t.Fatalf("peer control state = %s, want disconnected", peer.ControlState)
+	}
+	if peer.DataState != PeerDataStateFailed {
+		t.Fatalf("peer data state = %s, want failed after cleanup", peer.DataState)
+	}
 	if peer.Endpoint != nil {
 		t.Fatalf("peer endpoint = %v, want cleared", peer.Endpoint)
 	}
@@ -272,6 +301,55 @@ func TestPeerOfflineCleansStaleDataPath(t *testing.T) {
 	}
 	if removeCalls != 1 {
 		t.Fatalf("RemovePeer calls = %d, want 1", removeCalls)
+	}
+}
+
+func TestPeerSessionBoundRecordsPathCache(t *testing.T) {
+	eng := &engine{
+		peers: map[string]*PeerStatus{
+			"node-2": {
+				NodeID:    "node-2",
+				Name:      "beta",
+				PublicKey: mustTestPublicKey(t).String(),
+				State:     PeerStateConnecting,
+			},
+		},
+	}
+	session := &peerSession{}
+	remoteAddr := &net.UDPAddr{IP: net.ParseIP("203.0.113.10"), Port: 50000}
+
+	eng.handlePeerSessionBound("node-2", session, solver.Result{
+		Summary: solver.PathSummary{
+			PathID:         "relayonly/turn_relay",
+			ConnectionType: "relay",
+			RemoteAddr:     remoteAddr,
+			Details: map[string]string{
+				"strategy":         "relay_only",
+				"ice_state":        "connected",
+				"local_candidate":  "relay:198.51.100.10:50001",
+				"remote_candidate": "relay:203.0.113.10:50000",
+			},
+		},
+	})
+
+	peer := eng.peers["node-2"]
+	if peer == nil {
+		t.Fatal("peer was removed")
+	}
+	if peer.DataState != PeerDataStateBound {
+		t.Fatalf("peer data state = %s, want bound", peer.DataState)
+	}
+	if peer.LastPathID != "relayonly/turn_relay" || peer.LastPathStrategy != "relay_only" {
+		t.Fatalf("peer path cache = id=%q strategy=%q", peer.LastPathID, peer.LastPathStrategy)
+	}
+	if peer.LastPathEndpoint != remoteAddr.String() || peer.LastPathConnType != "relay" {
+		t.Fatalf("peer path endpoint/type = %q/%q", peer.LastPathEndpoint, peer.LastPathConnType)
+	}
+	if peer.LastPathUpdatedAt.IsZero() {
+		t.Fatal("peer last path updated time should be set")
+	}
+	if peer.ICEState != "connected" || peer.LocalCandidate == "" || peer.RemoteCandidate == "" {
+		t.Fatalf("peer ICE diagnostics were not recorded: %#v", peer)
 	}
 }
 

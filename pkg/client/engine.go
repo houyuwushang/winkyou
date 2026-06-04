@@ -390,6 +390,8 @@ func (e *engine) upsertPeer(peer *coordclient.PeerInfo, event PeerEvent) {
 	current, ok := e.peers[updated.NodeID]
 	if ok {
 		updated.State = current.State
+		updated.ControlState = current.ControlState
+		updated.DataState = current.DataState
 		updated.ConnectionType = current.ConnectionType
 		updated.ICEState = current.ICEState
 		updated.LocalCandidate = current.LocalCandidate
@@ -402,8 +404,31 @@ func (e *engine) upsertPeer(peer *coordclient.PeerInfo, event PeerEvent) {
 		updated.TransportRxPackets = current.TransportRxPackets
 		updated.TransportRxBytes = current.TransportRxBytes
 		updated.TransportLastError = current.TransportLastError
+		updated.LastPathID = current.LastPathID
+		updated.LastPathStrategy = current.LastPathStrategy
+		updated.LastPathEndpoint = current.LastPathEndpoint
+		updated.LastPathConnType = current.LastPathConnType
+		updated.LastPathUpdatedAt = current.LastPathUpdatedAt
 		if !peer.Online && !peerDataPathAlive(current) {
 			updated.State = PeerStateDisconnected
+			updated.DataState = PeerDataStateStale
+		}
+		if !peer.Online && peerDataPathAlive(current) && (updated.DataState == "" || updated.DataState == PeerDataStateConnecting || updated.DataState == PeerDataStateStale) {
+			updated.DataState = PeerDataStateAlive
+		}
+		if updated.ControlState == "" {
+			if peer.Online {
+				updated.ControlState = PeerControlStateConnected
+			} else {
+				updated.ControlState = PeerControlStateDisconnected
+			}
+		}
+		if updated.DataState == "" {
+			if peer.Online {
+				updated.DataState = PeerDataStateConnecting
+			} else {
+				updated.DataState = PeerDataStateStale
+			}
 		}
 		if updated.Endpoint == nil {
 			updated.Endpoint = netutil.CloneUDPAddr(current.Endpoint)
@@ -489,12 +514,18 @@ func (e *engine) syncTunnelPeerStateLocked() {
 		peer.TransportRxPackets = tunnelPeer.TransportRxPackets
 		peer.TransportRxBytes = tunnelPeer.TransportRxBytes
 		peer.TransportLastError = tunnelPeer.TransportLastError
+		if tunnelPeer.TransportLastError != "" {
+			peer.DataState = PeerDataStateFailed
+		}
 		if tunnelPeer.Endpoint != nil {
 			peer.Endpoint = netutil.CloneUDPAddr(tunnelPeer.Endpoint)
 		}
 		if !tunnelPeer.LastHandshake.IsZero() {
 			peer.LastHandshake = tunnelPeer.LastHandshake
 			peer.State = PeerStateConnected
+			if tunnelPeer.TransportLastError == "" {
+				peer.DataState = PeerDataStateAlive
+			}
 			peer.LastSeen = tunnelPeer.LastHandshake
 		}
 	}
@@ -618,10 +649,14 @@ func toPeerStatus(peer *coordclient.PeerInfo) *PeerStatus {
 		VirtualIP:      net.ParseIP(peer.VirtualIP),
 		LastSeen:       unixOrZero(peer.LastSeen),
 		State:          PeerStateDisconnected,
+		ControlState:   PeerControlStateDisconnected,
+		DataState:      PeerDataStateStale,
 		ConnectionType: ConnectionTypeDirect,
 	}
 	if peer.Online {
 		status.State = PeerStateConnecting
+		status.ControlState = PeerControlStateConnected
+		status.DataState = PeerDataStateConnecting
 	}
 	if len(peer.Endpoints) > 0 {
 		if endpoint, err := net.ResolveUDPAddr("udp", peer.Endpoints[0]); err == nil {

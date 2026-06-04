@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -186,8 +187,18 @@ func (e *engine) handlePeerSessionState(nodeID string, s *peerSession, state ses
 
 	if state == sesspkg.StateCapabilityExchange || state == sesspkg.StateSelecting || state == sesspkg.StatePlanning || state == sesspkg.StateExecuting || state == sesspkg.StateBinding || state == sesspkg.StateBound {
 		e.mu.Lock()
-		if peer := e.peers[nodeID]; peer != nil && peer.State != PeerStateConnected {
-			peer.State = PeerStateConnecting
+		if peer := e.peers[nodeID]; peer != nil {
+			if peer.State != PeerStateConnected {
+				peer.State = PeerStateConnecting
+			}
+			if peer.ControlState == "" {
+				peer.ControlState = PeerControlStateConnected
+			}
+			if state == sesspkg.StateBound {
+				peer.DataState = PeerDataStateBound
+			} else if peer.DataState == "" || peer.DataState == PeerDataStateStale {
+				peer.DataState = PeerDataStateConnecting
+			}
 			peer.LastSeen = time.Now()
 			e.updateStatusCountersLocked()
 		}
@@ -224,7 +235,11 @@ func (e *engine) handlePeerSessionBound(nodeID string, s *peerSession, result so
 		peer.ICEState = result.Summary.Details["ice_state"]
 		peer.LocalCandidate = result.Summary.Details["local_candidate"]
 		peer.RemoteCandidate = result.Summary.Details["remote_candidate"]
-		peer.LastSeen = time.Now()
+		now := time.Now()
+		peer.ControlState = PeerControlStateConnected
+		peer.DataState = PeerDataStateBound
+		recordPeerPath(peer, result.Summary, now)
+		peer.LastSeen = now
 		e.updateStatusCountersLocked()
 		snapshot = clonePeerStatus(peer)
 		handlers = append([]func(peer *PeerStatus, event PeerEvent){}, e.peerHandlers...)
@@ -254,6 +269,7 @@ func (e *engine) handlePeerSessionError(nodeID string, s *peerSession, err error
 		if peer.State != PeerStateDisconnected {
 			peer.State = PeerStateConnecting
 		}
+		peer.DataState = PeerDataStateFailed
 		peer.LastSeen = time.Now()
 		e.updateStatusCountersLocked()
 	}
@@ -330,6 +346,50 @@ func connectionTypeFromSummary(value string) ConnectionType {
 		return ConnectionTypeRelay
 	}
 	return ConnectionTypeDirect
+}
+
+func recordPeerPath(peer *PeerStatus, summary solver.PathSummary, at time.Time) {
+	if peer == nil {
+		return
+	}
+	if at.IsZero() {
+		at = time.Now()
+	}
+	peer.LastPathID = summary.PathID
+	peer.LastPathStrategy = pathStrategy(summary)
+	peer.LastPathEndpoint = addrString(summary.RemoteAddr)
+	peer.LastPathConnType = summary.ConnectionType
+	if peer.LastPathID != "" || peer.LastPathStrategy != "" || peer.LastPathEndpoint != "" || peer.LastPathConnType != "" {
+		peer.LastPathUpdatedAt = at
+	}
+}
+
+func pathStrategy(summary solver.PathSummary) string {
+	if summary.Details != nil {
+		if strategy := strings.TrimSpace(summary.Details["strategy"]); strategy != "" {
+			return strategy
+		}
+		if transport := strings.TrimSpace(summary.Details["transport"]); transport == "tcp_framed" {
+			return transport
+		}
+	}
+	switch {
+	case strings.HasPrefix(summary.PathID, "relayonly/"):
+		return "relay_only"
+	case strings.HasPrefix(summary.PathID, "legacyice/"):
+		return "legacy_ice_udp"
+	case strings.HasPrefix(summary.PathID, "tcpframed/"):
+		return "tcp_framed"
+	default:
+		return ""
+	}
+}
+
+func addrString(addr net.Addr) string {
+	if addr == nil {
+		return ""
+	}
+	return addr.String()
 }
 
 func sessionIDForNodes(localNodeID, peerNodeID string) string {

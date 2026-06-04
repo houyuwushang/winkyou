@@ -6,12 +6,23 @@
 
 已完成第一层保护：当 coordinator 或 peer update 把一个 peer 标记为 offline，但本地仍能看到该 peer 有最近的 WireGuard handshake、packet counters 且没有 transport error 时，client 不再立即执行 `cleanupPeer`，从而避免主动移除已连接的 tunnel peer。
 
-这只是控制面韧性的第一步，还不能说明“断开 coordinator 后一定保持连接”。仍待完成和验证：
+client runtime 也已经新增基础可观测字段：
+
+- `control_state`
+- `data_state`
+- `last_path_id`
+- `last_path_strategy`
+- `last_path_endpoint`
+- `last_path_connection_type`
+- `last_path_updated_at`
+
+`wink peers` 文本输出和 JSON 输出都会带出这些字段，用于区分“coordinator/control plane 已断”和“WireGuard/data plane 仍活着”。
+
+这仍只是控制面韧性的早期补强，还不能说明“断开 coordinator 后一定保持连接”。仍待完成和验证：
 
 - 用真实双节点环境验证 coordinator 进程退出，而不是断开 natpierce/跳板网络。
 - coordinator heartbeat 或 signaling stream 失败时，不主动拆除已 bound 的 data plane。
-- runtime state 明确拆分 control plane 状态和 data plane 状态。
-- 保存最近成功 path/cache，用于状态展示和后续恢复。
+- 使用最近成功 path/cache 做恢复或重试；当前只完成状态展示和缓存。
 - 已建立虚拟网后的 in-band peer control channel。
 
 ## 已验证现象
@@ -112,7 +123,9 @@ coordinator bootstrap
 
 ### P1: 缓存 peer lease 和最近成功 path
 
-本地 runtime/state 应保存：
+状态：基础 runtime/cache 字段已加入 `PeerStatus`、runtime JSON 和 `wink peers` 输出。后续还需要把这些缓存用于重启后的恢复或 cached path 重试。
+
+本地 runtime/state 已开始保存：
 
 - peer public key
 - peer virtual IP
@@ -121,7 +134,7 @@ coordinator bootstrap
 - path summary
 - last handshake time
 
-这允许 coordinator 短暂不可用时继续展示状态，也为重启后的 cached path 重试打基础。
+这允许 coordinator 短暂不可用时继续展示状态，也为后续 cached path 重试打基础。
 
 ### P1: in-band control channel
 

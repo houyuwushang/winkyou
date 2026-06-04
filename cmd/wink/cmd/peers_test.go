@@ -77,8 +77,13 @@ func TestPeersWithRuntimeState(t *testing.T) {
 				VirtualIP:          "10.100.0.2",
 				PublicKey:          "AAAA",
 				State:              "connected",
+				ControlState:       "connected",
+				DataState:          "alive",
 				Endpoint:           "1.2.3.4:51820",
 				ConnectionType:     "direct",
+				LastPathID:         "legacyice/direct_prefer",
+				LastPathStrategy:   "legacy_ice_udp",
+				LastPathEndpoint:   "1.2.3.4:51820",
 				TxBytes:            1024,
 				RxBytes:            2048,
 				ICEState:           "connected",
@@ -131,6 +136,12 @@ func TestPeersWithRuntimeState(t *testing.T) {
 	if !strings.Contains(output, "1.2.3.4:51820") {
 		t.Error("output should contain endpoint")
 	}
+	if !strings.Contains(output, "Control:") || !strings.Contains(output, "Data:") {
+		t.Errorf("output should contain control/data state, got: %s", output)
+	}
+	if !strings.Contains(output, "legacyice/direct_prefer") || !strings.Contains(output, "legacy_ice_udp") {
+		t.Errorf("output should contain last path cache, got: %s", output)
+	}
 	if !strings.Contains(output, "1.0 KiB") {
 		t.Errorf("output should contain formatted tx bytes, got: %s", output)
 	}
@@ -162,12 +173,16 @@ func TestPeersWithRuntimeStateJSON(t *testing.T) {
 		},
 		Peers: []winkclient.RuntimePeerStatus{
 			{
-				NodeID:    "node-abc",
-				Name:      "alice",
-				VirtualIP: "10.100.0.2",
-				State:     "connected",
-				TxBytes:   5000,
-				RxBytes:   6000,
+				NodeID:           "node-abc",
+				Name:             "alice",
+				VirtualIP:        "10.100.0.2",
+				State:            "connected",
+				ControlState:     "connected",
+				DataState:        "alive",
+				LastPathID:       "relayonly/turn_relay",
+				LastPathStrategy: "relay_only",
+				TxBytes:          5000,
+				RxBytes:          6000,
 			},
 		},
 	}
@@ -202,6 +217,12 @@ func TestPeersWithRuntimeStateJSON(t *testing.T) {
 	}
 	if result[0].TxBytes != 5000 {
 		t.Errorf("TxBytes = %d, want 5000", result[0].TxBytes)
+	}
+	if result[0].ControlState != "connected" || result[0].DataState != "alive" {
+		t.Errorf("states = control=%q data=%q", result[0].ControlState, result[0].DataState)
+	}
+	if result[0].LastPathStrategy != "relay_only" {
+		t.Errorf("LastPathStrategy = %q, want relay_only", result[0].LastPathStrategy)
 	}
 }
 

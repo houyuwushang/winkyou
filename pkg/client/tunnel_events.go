@@ -55,6 +55,10 @@ func (e *engine) markPeerConnected(publicKey tunnel.PublicKey, at time.Time) {
 		}
 
 		peer.State = PeerStateConnected
+		peer.DataState = PeerDataStateAlive
+		if peer.ControlState == "" {
+			peer.ControlState = PeerControlStateConnected
+		}
 		peer.LastSeen = at
 
 		if e.peerMgr != nil {
@@ -70,6 +74,7 @@ func (e *engine) markPeerConnected(publicKey tunnel.PublicKey, at time.Time) {
 					peer.Endpoint = endpoint
 				}
 				peer.ConnectionType = connectionTypeFromSummary(path.ConnectionType)
+				recordPeerPath(peer, path, at)
 			}
 		}
 

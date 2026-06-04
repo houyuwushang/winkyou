@@ -48,6 +48,8 @@ type RuntimePeerStatus struct {
 	VirtualIP          string    `json:"virtual_ip"`
 	PublicKey          string    `json:"public_key"`
 	State              string    `json:"state"`
+	ControlState       string    `json:"control_state"`
+	DataState          string    `json:"data_state"`
 	Endpoint           string    `json:"endpoint,omitempty"`
 	LastSeen           time.Time `json:"last_seen"`
 	LastHandshake      time.Time `json:"last_handshake"`
@@ -62,6 +64,11 @@ type RuntimePeerStatus struct {
 	TransportRxPackets uint64    `json:"transport_rx_packets"`
 	TransportRxBytes   uint64    `json:"transport_rx_bytes"`
 	TransportLastError string    `json:"transport_last_error,omitempty"`
+	LastPathID         string    `json:"last_path_id,omitempty"`
+	LastPathStrategy   string    `json:"last_path_strategy,omitempty"`
+	LastPathEndpoint   string    `json:"last_path_endpoint,omitempty"`
+	LastPathConnType   string    `json:"last_path_connection_type,omitempty"`
+	LastPathUpdatedAt  time.Time `json:"last_path_updated_at,omitempty"`
 }
 
 func RuntimeStatePath(configPath string) string {
@@ -164,6 +171,8 @@ func newRuntimeStateSnapshot(status *EngineStatus, peers []*PeerStatus) *Runtime
 			VirtualIP:          ipString(peer.VirtualIP),
 			PublicKey:          peer.PublicKey,
 			State:              peer.State.String(),
+			ControlState:       peer.ControlState.String(),
+			DataState:          peer.DataState.String(),
 			Endpoint:           udpAddrString(peer.Endpoint),
 			LastSeen:           peer.LastSeen,
 			LastHandshake:      peer.LastHandshake,
@@ -178,6 +187,11 @@ func newRuntimeStateSnapshot(status *EngineStatus, peers []*PeerStatus) *Runtime
 			TransportRxPackets: peer.TransportRxPackets,
 			TransportRxBytes:   peer.TransportRxBytes,
 			TransportLastError: peer.TransportLastError,
+			LastPathID:         peer.LastPathID,
+			LastPathStrategy:   peer.LastPathStrategy,
+			LastPathEndpoint:   peer.LastPathEndpoint,
+			LastPathConnType:   peer.LastPathConnType,
+			LastPathUpdatedAt:  peer.LastPathUpdatedAt,
 		})
 	}
 
