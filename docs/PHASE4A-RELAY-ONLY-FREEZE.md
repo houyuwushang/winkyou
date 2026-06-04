@@ -80,3 +80,14 @@ Phase 4A does not include:
 ## Next Phase
 
 The next phase should add an explicit connectivity policy layer with stable user-facing mode and strategy-order configuration. It should keep `nat.force_relay` compatible with existing users.
+
+## Post-Freeze Note
+
+The connectivity policy layer now exists. Prefer:
+
+```yaml
+connectivity:
+  mode: relay_only
+```
+
+The `nat.force_relay` setting remains supported as a compatibility mapping to relay-only behavior.

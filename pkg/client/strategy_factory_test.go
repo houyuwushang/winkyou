@@ -146,6 +146,83 @@ func TestEngineStrategyResolverSelectsRelayOnlyWhenRemoteOnlySupportsRelayOnly(t
 	}
 }
 
+func TestEngineStrategyResolverConnectivityRelayOnlyModePrefersRelayOnly(t *testing.T) {
+	cfg := config.Default()
+	cfg.Connectivity.Mode = relayonly.StrategyName
+	eng := &engine{cfg: cfg}
+	resolver := eng.newStrategyResolver()
+
+	capability := resolver.LocalCapability()
+	if len(capability.Strategies) != 2 || capability.Strategies[0] != relayonly.StrategyName || capability.Strategies[1] != legacyice.StrategyName {
+		t.Fatalf("LocalCapability().Strategies = %#v, want relay_only then legacy", capability.Strategies)
+	}
+
+	strategy, selection, err := resolver.Resolve(rproto.Capability{Strategies: []string{legacyice.StrategyName, relayonly.StrategyName}}, true)
+	if err != nil {
+		t.Fatalf("Resolve(mutual relay_only) error = %v", err)
+	}
+	if strategy.Name() != relayonly.StrategyName {
+		t.Fatalf("Resolve(mutual relay_only) strategy = %q, want %q", strategy.Name(), relayonly.StrategyName)
+	}
+	if selection != (sesspkg.Selection{StrategyName: relayonly.StrategyName, Negotiated: true}) {
+		t.Fatalf("Resolve(mutual relay_only) selection = %#v, want negotiated relay_only", selection)
+	}
+}
+
+func TestEngineStrategyResolverStrategyOrderCanPreferRelayOnly(t *testing.T) {
+	cfg := config.Default()
+	cfg.Connectivity.StrategyOrder = []string{relayonly.StrategyName, legacyice.StrategyName}
+	eng := &engine{cfg: cfg}
+	resolver := eng.newStrategyResolver()
+
+	capability := resolver.LocalCapability()
+	if len(capability.Strategies) != 2 || capability.Strategies[0] != relayonly.StrategyName || capability.Strategies[1] != legacyice.StrategyName {
+		t.Fatalf("LocalCapability().Strategies = %#v, want relay_only then legacy", capability.Strategies)
+	}
+
+	strategy, selection, err := resolver.Resolve(rproto.Capability{Strategies: []string{legacyice.StrategyName, relayonly.StrategyName}}, true)
+	if err != nil {
+		t.Fatalf("Resolve(mutual relay_only) error = %v", err)
+	}
+	if strategy.Name() != relayonly.StrategyName {
+		t.Fatalf("Resolve(mutual relay_only) strategy = %q, want %q", strategy.Name(), relayonly.StrategyName)
+	}
+	if selection != (sesspkg.Selection{StrategyName: relayonly.StrategyName, Negotiated: true}) {
+		t.Fatalf("Resolve(mutual relay_only) selection = %#v, want negotiated relay_only", selection)
+	}
+}
+
+func TestEngineStrategyResolverConnectivityRelayOnlyKeepsImplicitLegacyFallback(t *testing.T) {
+	cfg := config.Default()
+	cfg.Connectivity.Mode = relayonly.StrategyName
+	eng := &engine{cfg: cfg}
+	resolver := eng.newStrategyResolver()
+
+	strategy, selection, err := resolver.Resolve(rproto.Capability{}, true)
+	if err != nil {
+		t.Fatalf("Resolve(empty capability) error = %v", err)
+	}
+	if strategy.Name() != legacyice.StrategyName {
+		t.Fatalf("Resolve(empty capability) strategy = %q, want %q", strategy.Name(), legacyice.StrategyName)
+	}
+	if selection != (sesspkg.Selection{StrategyName: legacyice.StrategyName, Negotiated: false}) {
+		t.Fatalf("Resolve(empty capability) selection = %#v, want implicit legacy fallback", selection)
+	}
+}
+
+func TestNewEngineRejectsUnknownConnectivityStrategy(t *testing.T) {
+	cfg := config.Default()
+	cfg.Connectivity.StrategyOrder = []string{legacyice.StrategyName, "future_quic"}
+
+	_, err := NewEngine(&cfg, nil, "")
+	if err == nil {
+		t.Fatal("NewEngine() error = nil, want unknown strategy error")
+	}
+	if !strings.Contains(err.Error(), `invalid connectivity.strategy_order[1]: "future_quic"`) {
+		t.Fatalf("NewEngine() error = %v, want unknown strategy error", err)
+	}
+}
+
 func TestEngineStrategyResolverForceRelayPrefersRelayOnlyWhenMutual(t *testing.T) {
 	eng := &engine{cfg: config.Config{NAT: config.NATConfig{ForceRelay: true}}}
 	resolver := eng.newStrategyResolver()
@@ -192,6 +269,19 @@ func TestLegacyICEStrategyConfigPropagatesForceRelay(t *testing.T) {
 				CheckTimeout:   5 * time.Second,
 				ForceRelay:     true,
 			},
+		},
+	}
+
+	cfg := eng.legacyICEStrategyConfig()
+	if !cfg.ForceRelay {
+		t.Fatal("legacyICEStrategyConfig().ForceRelay = false, want true")
+	}
+}
+
+func TestLegacyICEStrategyConfigConnectivityRelayOnlyForcesRelay(t *testing.T) {
+	eng := &engine{
+		cfg: config.Config{
+			Connectivity: config.ConnectivityConfig{Mode: relayonly.StrategyName},
 		},
 	}
 

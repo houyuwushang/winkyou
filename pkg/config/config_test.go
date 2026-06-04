@@ -23,6 +23,12 @@ func TestLoadValidFile(t *testing.T) {
 	if cfg.WireGuard.ListenPort != 51821 {
 		t.Fatalf("expected listen port 51821, got %d", cfg.WireGuard.ListenPort)
 	}
+	if cfg.Connectivity.Mode != "auto" {
+		t.Fatalf("connectivity mode = %q, want auto", cfg.Connectivity.Mode)
+	}
+	if len(cfg.Connectivity.StrategyOrder) != 2 || cfg.Connectivity.StrategyOrder[0] != "legacy_ice_udp" || cfg.Connectivity.StrategyOrder[1] != "relay_only" {
+		t.Fatalf("connectivity strategy order = %#v, want legacy_ice_udp then relay_only", cfg.Connectivity.StrategyOrder)
+	}
 }
 
 func TestLoadUsesDefaultsWhenFileMissing(t *testing.T) {
@@ -66,6 +72,29 @@ func TestValidateInvalidConfig(t *testing.T) {
 	err := cfg.Validate()
 	if err == nil {
 		t.Fatal("expected validation error, got nil")
+	}
+}
+
+func TestDefaultConnectivityPolicy(t *testing.T) {
+	cfg := config.Default()
+	if cfg.Connectivity.Mode != "auto" {
+		t.Fatalf("default connectivity mode = %q, want auto", cfg.Connectivity.Mode)
+	}
+	if len(cfg.Connectivity.StrategyOrder) != 2 || cfg.Connectivity.StrategyOrder[0] != "legacy_ice_udp" || cfg.Connectivity.StrategyOrder[1] != "relay_only" {
+		t.Fatalf("default strategy order = %#v, want legacy_ice_udp then relay_only", cfg.Connectivity.StrategyOrder)
+	}
+}
+
+func TestValidateRejectsUnknownConnectivityStrategy(t *testing.T) {
+	cfg := config.Default()
+	cfg.Connectivity.StrategyOrder = []string{"legacy_ice_udp", "future_quic"}
+
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("expected validation error, got nil")
+	}
+	if got := err.Error(); got != `invalid connectivity.strategy_order[1]: "future_quic"` {
+		t.Fatalf("Validate() error = %q, want unknown strategy error", got)
 	}
 }
 

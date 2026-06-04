@@ -2,6 +2,7 @@ package client
 
 import (
 	"context"
+	"strings"
 	"time"
 
 	"winkyou/pkg/nat"
@@ -40,27 +41,51 @@ func newStrategyResolverWithFeatures(factories []strategyFactory, policy Resolve
 
 func (e *engine) newStrategyResolver() sesspkg.StrategyResolver {
 	legacyCfg := e.legacyICEStrategyConfig()
-	factories := []strategyFactory{
-		{
-			name: legacyice.StrategyName,
-			build: func() solver.Strategy {
-				return legacyice.New(legacyCfg)
-			},
-		},
-		{
-			name: relayonly.StrategyName,
-			build: func() solver.Strategy {
-				return relayonly.New(legacyCfg)
-			},
-		},
-	}
-	if e.cfg.NAT.ForceRelay {
-		factories = []strategyFactory{factories[1], factories[0]}
-	}
+	factories := e.strategyFactoriesForOrder(legacyCfg)
 	return newStrategyResolverWithFeatures(factories, ResolverPolicy{
 		CompatibilityDefault: legacyice.StrategyName,
 		AllowImplicitLegacy:  true,
 	}, probeFeatures(e.probeRunner() != nil))
+}
+
+func (e *engine) strategyFactoriesForOrder(legacyCfg legacyice.Config) []strategyFactory {
+	order := e.connectivityStrategyOrder()
+	factories := make([]strategyFactory, 0, len(order))
+	for _, name := range order {
+		switch name {
+		case legacyice.StrategyName:
+			factories = append(factories, strategyFactory{
+				name: legacyice.StrategyName,
+				build: func() solver.Strategy {
+					return legacyice.New(legacyCfg)
+				},
+			})
+		case relayonly.StrategyName:
+			factories = append(factories, strategyFactory{
+				name: relayonly.StrategyName,
+				build: func() solver.Strategy {
+					return relayonly.New(legacyCfg)
+				},
+			})
+		}
+	}
+	return factories
+}
+
+func (e *engine) connectivityStrategyOrder() []string {
+	order := append([]string(nil), e.cfg.Connectivity.StrategyOrder...)
+	if len(order) == 0 {
+		order = []string{legacyice.StrategyName, relayonly.StrategyName}
+	}
+	if e.relayOnlyMode() {
+		order = preferRelayOnly(order)
+	}
+	return ensureLegacyFallback(order)
+}
+
+func (e *engine) relayOnlyMode() bool {
+	mode := strings.ToLower(strings.TrimSpace(e.cfg.Connectivity.Mode))
+	return mode == relayonly.StrategyName || e.cfg.NAT.ForceRelay
 }
 
 func (e *engine) legacyICEStrategyConfig() legacyice.Config {
@@ -68,7 +93,7 @@ func (e *engine) legacyICEStrategyConfig() legacyice.Config {
 		GatherTimeout:  e.iceGatherTimeout(),
 		ConnectTimeout: e.iceConnectTimeout(),
 		CheckTimeout:   e.iceCheckTimeout(),
-		ForceRelay:     e.cfg.NAT.ForceRelay,
+		ForceRelay:     e.relayOnlyMode(),
 	}
 	cfg.NewICEAgent = func(ctx context.Context, req legacyice.AgentRequest) (nat.ICEAgent, error) {
 		if ctx == nil {
@@ -88,6 +113,36 @@ func (e *engine) legacyICEStrategyConfig() legacyice.Config {
 		})
 	}
 	return cfg
+}
+
+func preferRelayOnly(order []string) []string {
+	next := []string{relayonly.StrategyName}
+	for _, name := range order {
+		if name == relayonly.StrategyName {
+			continue
+		}
+		next = append(next, name)
+	}
+	return next
+}
+
+func ensureLegacyFallback(order []string) []string {
+	seen := make(map[string]struct{}, len(order)+1)
+	next := make([]string, 0, len(order)+1)
+	for _, name := range order {
+		if strings.TrimSpace(name) == "" {
+			continue
+		}
+		if _, exists := seen[name]; exists {
+			continue
+		}
+		seen[name] = struct{}{}
+		next = append(next, name)
+	}
+	if _, ok := seen[legacyice.StrategyName]; !ok {
+		next = append(next, legacyice.StrategyName)
+	}
+	return next
 }
 
 func (e *engine) legacyICERunTimeout() time.Duration {

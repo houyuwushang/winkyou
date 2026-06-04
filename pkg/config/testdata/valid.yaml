@@ -27,3 +27,8 @@ nat:
       username: "wink"
       password: "secret"
 
+connectivity:
+  mode: auto
+  strategy_order:
+    - legacy_ice_udp
+    - relay_only

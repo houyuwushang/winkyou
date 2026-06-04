@@ -8,10 +8,12 @@ import (
 )
 
 var (
-	validLogLevels  = map[string]struct{}{"debug": {}, "info": {}, "warn": {}, "error": {}}
-	validLogFormats = map[string]struct{}{"text": {}, "json": {}}
-	validLogOutputs = map[string]struct{}{"stderr": {}, "stdout": {}, "file": {}}
-	validBackends   = map[string]struct{}{"auto": {}, "tun": {}, "userspace": {}, "proxy": {}}
+	validLogLevels              = map[string]struct{}{"debug": {}, "info": {}, "warn": {}, "error": {}}
+	validLogFormats             = map[string]struct{}{"text": {}, "json": {}}
+	validLogOutputs             = map[string]struct{}{"stderr": {}, "stdout": {}, "file": {}}
+	validBackends               = map[string]struct{}{"auto": {}, "tun": {}, "userspace": {}, "proxy": {}}
+	validConnectivityModes      = map[string]struct{}{"auto": {}, "relay_only": {}}
+	validConnectivityStrategies = map[string]struct{}{"legacy_ice_udp": {}, "relay_only": {}}
 )
 
 func (c *Config) Validate() error {
@@ -79,6 +81,28 @@ func (c *Config) Validate() error {
 		if strings.TrimSpace(server.URL) == "" {
 			return fmt.Errorf("nat.turn_servers[%d].url must not be empty", i)
 		}
+	}
+
+	mode := strings.ToLower(strings.TrimSpace(c.Connectivity.Mode))
+	if mode == "" {
+		mode = "auto"
+	}
+	if err := requireOneOf("connectivity.mode", mode, validConnectivityModes); err != nil {
+		return err
+	}
+	seenStrategies := make(map[string]struct{}, len(c.Connectivity.StrategyOrder))
+	for i, strategy := range c.Connectivity.StrategyOrder {
+		name := strings.TrimSpace(strategy)
+		if name == "" {
+			return fmt.Errorf("connectivity.strategy_order[%d] must not be empty", i)
+		}
+		if _, ok := validConnectivityStrategies[name]; !ok {
+			return fmt.Errorf("invalid connectivity.strategy_order[%d]: %q", i, strategy)
+		}
+		if _, exists := seenStrategies[name]; exists {
+			return fmt.Errorf("duplicate connectivity.strategy_order[%d]: %q", i, strategy)
+		}
+		seenStrategies[name] = struct{}{}
 	}
 
 	return nil

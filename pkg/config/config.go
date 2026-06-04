@@ -3,12 +3,13 @@ package config
 import "time"
 
 type Config struct {
-	Node        NodeConfig        `mapstructure:"node" yaml:"node"`
-	Log         LogConfig         `mapstructure:"log" yaml:"log"`
-	Coordinator CoordinatorConfig `mapstructure:"coordinator" yaml:"coordinator"`
-	NetIf       NetIfConfig       `mapstructure:"netif" yaml:"netif"`
-	WireGuard   WireGuardConfig   `mapstructure:"wireguard" yaml:"wireguard"`
-	NAT         NATConfig         `mapstructure:"nat" yaml:"nat"`
+	Node         NodeConfig         `mapstructure:"node" yaml:"node"`
+	Log          LogConfig          `mapstructure:"log" yaml:"log"`
+	Coordinator  CoordinatorConfig  `mapstructure:"coordinator" yaml:"coordinator"`
+	NetIf        NetIfConfig        `mapstructure:"netif" yaml:"netif"`
+	WireGuard    WireGuardConfig    `mapstructure:"wireguard" yaml:"wireguard"`
+	NAT          NATConfig          `mapstructure:"nat" yaml:"nat"`
+	Connectivity ConnectivityConfig `mapstructure:"connectivity" yaml:"connectivity"`
 }
 
 type NodeConfig struct {
@@ -53,6 +54,11 @@ type NATConfig struct {
 	STUNServers      []string           `mapstructure:"stun_servers" yaml:"stun_servers"`
 	TURNServers      []TURNServerConfig `mapstructure:"turn_servers" yaml:"turn_servers"`
 	ForceRelay       bool               `mapstructure:"force_relay" yaml:"force_relay"`
+}
+
+type ConnectivityConfig struct {
+	Mode          string   `mapstructure:"mode" yaml:"mode"`
+	StrategyOrder []string `mapstructure:"strategy_order" yaml:"strategy_order"`
 }
 
 type TURNServerConfig struct {

@@ -115,7 +115,13 @@ Current real strategies:
 
 Production registration remains compatible by default: `legacy_ice_udp` first, then `relay_only`.
 
-When the existing `nat.force_relay` compatibility setting is enabled, production strategy priority changes to `relay_only` first, then `legacy_ice_udp`. Legacy fallback remains available for old peers with empty capability, and the legacy ICE path must still force relay candidate gathering in that mode.
+The connectivity policy layer controls production strategy priority:
+
+- `connectivity.mode=auto`: use configured strategy order, defaulting to `legacy_ice_udp` -> `relay_only`
+- `connectivity.mode=relay_only`: prefer `relay_only`, then fallback to `legacy_ice_udp`
+- `connectivity.strategy_order`: optional priority list for known production strategies
+
+The existing `nat.force_relay` setting remains a compatibility entry and maps to relay-only behavior. Legacy fallback remains available for old peers with empty capability, and the legacy ICE path must still force relay candidate gathering in relay-only mode.
 
 Future strategies may include TCP-assisted, QUIC, proxy-friendly, or other transports, but the solver core should not encode those details directly.
 

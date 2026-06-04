@@ -73,4 +73,7 @@ func setDefaults(v *viper.Viper, cfg Config) {
 	v.SetDefault("nat.retry_max_interval", cfg.NAT.RetryMaxInterval)
 	v.SetDefault("nat.stun_servers", cfg.NAT.STUNServers)
 	v.SetDefault("nat.turn_servers", cfg.NAT.TURNServers)
+
+	v.SetDefault("connectivity.mode", cfg.Connectivity.Mode)
+	v.SetDefault("connectivity.strategy_order", cfg.Connectivity.StrategyOrder)
 }

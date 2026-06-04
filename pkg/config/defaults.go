@@ -22,7 +22,10 @@ const (
 	defaultNATCheckTimeout     = 12 * time.Second
 	defaultNATRetryInterval    = 2 * time.Second
 	defaultNATRetryMaxInterval = 10 * time.Second
+	defaultConnectivityMode    = "auto"
 )
+
+var defaultConnectivityStrategyOrder = []string{"legacy_ice_udp", "relay_only"}
 
 func Default() Config {
 	return Config{
@@ -56,6 +59,10 @@ func Default() Config {
 				"stun:stun.l.google.com:19302",
 				"stun:stun.cloudflare.com:3478",
 			},
+		},
+		Connectivity: ConnectivityConfig{
+			Mode:          defaultConnectivityMode,
+			StrategyOrder: append([]string(nil), defaultConnectivityStrategyOrder...),
 		},
 	}
 }
