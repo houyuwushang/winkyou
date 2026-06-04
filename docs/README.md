@@ -12,6 +12,7 @@ When documents disagree, treat `CONNECTIVITY-SOLVER-BASELINE.md` as the source o
 
 - Phase 2D freeze gate: [`PHASE2D-FREEZE.md`](./PHASE2D-FREEZE.md)
 - Phase 3A strategy portfolio entry: [`PHASE3A-STRATEGY-PORTFOLIO.md`](./PHASE3A-STRATEGY-PORTFOLIO.md)
+- v0.1 freeze gate: [`V0.1-FREEZE.md`](./V0.1-FREEZE.md)
 - Phase 3B+ working plan: [`../implementation_plan.md`](../implementation_plan.md)
 
 ## Operator Docs

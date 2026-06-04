@@ -32,6 +32,7 @@ WinkYou = connectivity solver + WireGuard 数据平面
 | Connectivity policy / fallback / scoring | ✅ 完成 | `auto` / `relay_only`、ordered fallback、observation ordering |
 | `tcp_framed` alpha | ✅ 完成 | 显式 TCP PacketTransport 验证 |
 | v0.1 运维闭环 | 🟡 进行中 | self-host quickstart、doctor、long-running workflow、release pipeline |
+| v0.1 freeze gate | ✅ 已定义 | `docs/V0.1-FREEZE.md` |
 
 Phase 3A 已交付：`PortfolioResolver`、`StrategyEntry`、strategy selection 测试覆盖、fake strategy 验证。session 不再硬编码 `legacy_ice_udp`。
 
@@ -411,7 +412,7 @@ Phase 3A (Strategy Portfolio Foundation) 已完成。以下是我基于代码现
 
 ### v0.1 Operations Track（进行中）
 
-已完成 self-host quickstart、`wink doctor` 分层诊断、`wink logs`、长期运行客户端文档和 release workflow。下一步应继续补 v0.1 freeze gate，而不是继续扩大架构范围。
+已完成 self-host quickstart、`wink doctor` 分层诊断、`wink logs`、长期运行客户端文档、release workflow 和 v0.1 freeze gate。下一步应按 freeze gate 做真实部署验证，而不是继续扩大架构范围。
 
 ---
 

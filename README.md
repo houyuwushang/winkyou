@@ -13,6 +13,7 @@ WinkYou = connectivity solver + secure WireGuard data plane
 当前代码已经完成 Phase 3B code health、Phase 4A `relay_only` 冻结，并开始进入非 UDP PacketTransport alpha 验证和 v0.1 运维闭环。
 
 - 活跃架构权威：[`docs/CONNECTIVITY-SOLVER-BASELINE.md`](./docs/CONNECTIVITY-SOLVER-BASELINE.md)
+- v0.1 freeze gate：[`docs/V0.1-FREEZE.md`](./docs/V0.1-FREEZE.md)
 - Phase 2D 已冻结：`phase2d-freeze-2026-04-24`
 - Phase 3A strategy portfolio foundation 已落地
 - Phase 3B code health 已完成，包括 CI 质量门、session 机械拆分、状态转换校验、resolver 统一、context 边界修复和若干小型清理
@@ -108,6 +109,7 @@ nat:
 - no-admin mode
 - proxy/userspace-only 产品路径
 - QUIC datagram、HTTP CONNECT、WebSocket 等真实 transport strategy
+- 自研 Wink Protocol 数据平面
 - `tcp_framed` 仍是 alpha，不做 NAT TCP 打洞承诺
 - 高级 learning/scoring 闭环
 - GUI、移动端、原生 Windows service
@@ -137,6 +139,7 @@ nat:
 - [`docs/LONG-RUNNING-CLIENT.md`](./docs/LONG-RUNNING-CLIENT.md)：长期运行客户端、日志和 service/startup 工作流
 - [`docs/TROUBLESHOOTING.md`](./docs/TROUBLESHOOTING.md)：分层排障指南
 - [`docs/RELEASE.md`](./docs/RELEASE.md)：release 构建、校验和发布流程
+- [`docs/V0.1-FREEZE.md`](./docs/V0.1-FREEZE.md)：v0.1 Alpha freeze gate 与验收边界
 - [`docs/README.md`](./docs/README.md)：文档分级索引
 
 ## 常用命令

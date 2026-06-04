@@ -5,6 +5,7 @@
 This is the active architecture baseline for WinkYou.
 
 - Active baseline: this file
+- Current v0.1 freeze gate: [`V0.1-FREEZE.md`](./V0.1-FREEZE.md)
 - Current relay-only freeze gate: [`PHASE4A-RELAY-ONLY-FREEZE.md`](./PHASE4A-RELAY-ONLY-FREEZE.md)
 - Legacy baseline notice: [`EXECUTION-BASELINE.md`](./EXECUTION-BASELINE.md)
 - Frozen legacy tag: `legacy-ice-turn-baseline-2026-04-15`
