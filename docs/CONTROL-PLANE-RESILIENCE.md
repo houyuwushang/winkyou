@@ -57,10 +57,13 @@ client 还修复了一个真实验证中暴露的恢复问题：当本端不是 
 - 本机 controlled-side retry 修复后，`local-a` 会重新进入 solver 并写出新的 observation，但没有收到足够的远端响应完成 direct path。
 - 未加 candidate filter 时曾选中过 `100.64.0.0/10` 地址段 candidate，并出现 `transport: short packet write 0/148`；这不是纯 coordinator outage 现象。
 - 仅在本机加 `nat.candidate_interface_include: natpierce` 和 `nat.candidate_cidr_include: 10.6.22.0/24` 会让本机过滤生效，但远端 `inner-b` 未同步配置时无法形成可用 candidate pair。
+- 进一步检查发现，`chen-win` 上的 coordinator 以默认 memory store 启动；重启 coordinator 后 `ListPeers` 返回空数组，说明注册表丢失，而旧 client 只保留本地 runtime 状态，没有自动重新注册，导致看起来 control 连接还在、实际 coordinator 不知道任何 peer。
 
 因此，下一次真实验证的前置条件是：先让两端都重新达到 `State: connected`、WireGuard handshake 非空且 `ping 10.88.0.1/10.88.0.2` 成功，再在 `chen-win` 上停止 coordinator 进程。不要在数据面未 bound 时停止 coordinator；那只能验证“尚未建链时 coordinator 不可用会失败”，不能验证“已建链后控制面断线是否保持”。
 
 新增安全验证脚本 [`scripts/verify-control-plane-outage.py`](../scripts/verify-control-plane-outage.py)，用于后续真实 kill-coordinator 回归。该脚本会先检查本机 `wink peers --json`、`last_handshake`、transport error 和 overlay ping；只有确认已经存在 connected/bound peer 后，才会读取环境变量里的 chen-win SSH 密码并停止远端 coordinator。当前本机 runtime 仍没有 bound peer 时，脚本会直接退出并拒绝触碰远端进程。
+
+代码已补上 coordinator client 的 NotFound 恢复路径：heartbeat 发现当前 node 在 coordinator 中不存在时，会关闭旧 signal stream 并用最近一次 register 请求重新注册。这主要用于 coordinator 持久化 store 或稳定身份恢复场景。当前 chen-win 测试部署仍需要切到 `--store-backend sqlite --sqlite-path ...`，并让两端 client 都运行包含该修复的新版本后，再进行真实 outage 验证。
 
 ## 拓扑澄清
 
@@ -119,7 +122,7 @@ coordinator bootstrap
 
 ### P0: 控制面断线不拆已连接数据面
 
-- 状态：peer offline update 触发的误清理路径已加第一层保护；controlled side session retry 已修复；真实 coordinator 进程退出和 heartbeat/signaling failure 仍需在已 bound 数据面上验证。
+- 状态：peer offline update 触发的误清理路径已加第一层保护；controlled side session retry 已修复；coordinator heartbeat NotFound 会触发 client 重新注册；真实 coordinator 进程退出和 heartbeat/signaling failure 仍需在已 bound 数据面上验证。
 - 已 bound 且 WireGuard handshake 正常的 peer 收到 offline/update 丢失时，不要立即 `cleanupPeer`。
 - 保留 tunnel peer、endpoint、PacketTransport 和 session snapshot。
 - peer 状态应区分 control plane 和 data plane，例如：
@@ -198,4 +201,4 @@ nat:
 
 ### P2: 部署建议
 
-生产 quickstart 中 coordinator 应部署在双方都能稳定访问的公网或固定网络位置。`chen-win` 可以作为 SSH 跳板或临时测试机，但不应作为唯一控制面依赖；否则断开 natpierce 后，peer discovery、heartbeat 和 session signaling 都会失效。
+生产 quickstart 中 coordinator 应部署在双方都能稳定访问的公网或固定网络位置，并优先使用持久化 store，例如 `--store-backend sqlite --sqlite-path /var/lib/wink/coordinator.db`。`chen-win` 可以作为 SSH 跳板或临时测试机，但不应作为唯一控制面依赖；否则断开 natpierce 后，peer discovery、heartbeat 和 session signaling 都会失效。测试环境如果使用 memory store，重启 coordinator 会丢失注册表，必须重启或升级两端 client 重新注册后才能继续建链。
