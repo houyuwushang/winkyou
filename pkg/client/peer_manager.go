@@ -29,6 +29,10 @@ func (e *engine) handlePeerUpdate(peer *coordclient.PeerInfo, event coordclient.
 		e.startPeerConnect(peer.NodeID)
 		return
 	}
+	if e.peerDataPathAlive(peer.NodeID) {
+		e.persistState()
+		return
+	}
 	e.cleanupPeer(peer.NodeID)
 }
 
@@ -87,4 +91,22 @@ func (e *engine) cleanupPeer(nodeID string) {
 		}
 	}
 	e.persistState()
+}
+
+func (e *engine) peerDataPathAlive(nodeID string) bool {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.updateStatusCountersLocked()
+	return peerDataPathAlive(e.peers[nodeID])
+}
+
+func peerDataPathAlive(peer *PeerStatus) bool {
+	if peer == nil || peer.LastHandshake.IsZero() || peer.TransportLastError != "" {
+		return false
+	}
+	return peer.State == PeerStateConnected ||
+		peer.TransportTxPackets > 0 ||
+		peer.TransportRxPackets > 0 ||
+		peer.TxBytes > 0 ||
+		peer.RxBytes > 0
 }

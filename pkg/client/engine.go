@@ -402,7 +402,7 @@ func (e *engine) upsertPeer(peer *coordclient.PeerInfo, event PeerEvent) {
 		updated.TransportRxPackets = current.TransportRxPackets
 		updated.TransportRxBytes = current.TransportRxBytes
 		updated.TransportLastError = current.TransportLastError
-		if !peer.Online {
+		if !peer.Online && !peerDataPathAlive(current) {
 			updated.State = PeerStateDisconnected
 		}
 		if updated.Endpoint == nil {

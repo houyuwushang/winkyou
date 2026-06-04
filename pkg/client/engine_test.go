@@ -10,6 +10,7 @@ import (
 
 	coordinatorv1 "winkyou/api/proto/coordinatorv1"
 	"winkyou/pkg/config"
+	coordclient "winkyou/pkg/coordinator/client"
 	"winkyou/pkg/coordinator/server"
 	"winkyou/pkg/logger"
 	"winkyou/pkg/tunnel"
@@ -167,6 +168,113 @@ func TestUpdateStatusCountersSyncsTunnelPeerState(t *testing.T) {
 	}
 }
 
+func TestPeerOfflinePreservesConnectedDataPath(t *testing.T) {
+	pub := mustTestPublicKey(t)
+	now := time.Unix(1_700_000_010, 0)
+	removeCalls := 0
+	session := &peerSession{bound: true}
+	endpoint := &net.UDPAddr{IP: net.ParseIP("203.0.113.10"), Port: 51820}
+	eng := &engine{
+		status: EngineStatus{NodeID: "node-1"},
+		peers: map[string]*PeerStatus{
+			"node-2": {
+				NodeID:             "node-2",
+				Name:               "beta",
+				PublicKey:          pub.String(),
+				VirtualIP:          net.ParseIP("10.77.0.2"),
+				State:              PeerStateConnected,
+				Endpoint:           endpoint,
+				LastHandshake:      now,
+				TransportTxPackets: 3,
+				TransportRxPackets: 4,
+			},
+		},
+		peerMgr: &peerManager{sessions: map[string]*peerSession{"node-2": session}},
+		tun: fakeTunnelForEngineTest{
+			removeCalls: &removeCalls,
+			peers: []*tunnel.PeerStatus{{
+				PublicKey:          pub,
+				Endpoint:           endpoint,
+				LastHandshake:      now,
+				TransportTxPackets: 3,
+				TransportRxPackets: 4,
+			}},
+		},
+	}
+
+	eng.handlePeerUpdate(&coordclient.PeerInfo{
+		NodeID:    "node-2",
+		Name:      "beta",
+		PublicKey: pub.String(),
+		VirtualIP: "10.77.0.2",
+		Online:    false,
+		LastSeen:  now.Add(time.Second).Unix(),
+	}, coordclient.PeerEventOffline)
+
+	peer := eng.peers["node-2"]
+	if peer == nil {
+		t.Fatal("peer was removed")
+	}
+	if peer.State != PeerStateConnected {
+		t.Fatalf("peer state = %s, want connected while data path is alive", peer.State)
+	}
+	if peer.Endpoint == nil || peer.Endpoint.String() != endpoint.String() {
+		t.Fatalf("peer endpoint = %v, want retained %s", peer.Endpoint, endpoint)
+	}
+	if got := eng.peerMgr.sessions["node-2"]; got != session {
+		t.Fatalf("peer session = %p, want retained %p", got, session)
+	}
+	if removeCalls != 0 {
+		t.Fatalf("RemovePeer calls = %d, want 0", removeCalls)
+	}
+}
+
+func TestPeerOfflineCleansStaleDataPath(t *testing.T) {
+	pub := mustTestPublicKey(t)
+	removeCalls := 0
+	eng := &engine{
+		status: EngineStatus{NodeID: "node-1"},
+		peers: map[string]*PeerStatus{
+			"node-2": {
+				NodeID:    "node-2",
+				Name:      "beta",
+				PublicKey: pub.String(),
+				VirtualIP: net.ParseIP("10.77.0.2"),
+				State:     PeerStateConnecting,
+				Endpoint:  &net.UDPAddr{IP: net.ParseIP("203.0.113.10"), Port: 51820},
+			},
+		},
+		peerMgr: &peerManager{sessions: map[string]*peerSession{"node-2": {}}},
+		tun:     fakeTunnelForEngineTest{removeCalls: &removeCalls},
+	}
+
+	eng.handlePeerUpdate(&coordclient.PeerInfo{
+		NodeID:    "node-2",
+		Name:      "beta",
+		PublicKey: pub.String(),
+		VirtualIP: "10.77.0.2",
+		Online:    false,
+		LastSeen:  time.Unix(1_700_000_020, 0).Unix(),
+	}, coordclient.PeerEventOffline)
+
+	peer := eng.peers["node-2"]
+	if peer == nil {
+		t.Fatal("peer was removed")
+	}
+	if peer.State != PeerStateDisconnected {
+		t.Fatalf("peer state = %s, want disconnected for stale data path", peer.State)
+	}
+	if peer.Endpoint != nil {
+		t.Fatalf("peer endpoint = %v, want cleared", peer.Endpoint)
+	}
+	if _, ok := eng.peerMgr.sessions["node-2"]; ok {
+		t.Fatal("peer session should be removed for stale data path")
+	}
+	if removeCalls != 1 {
+		t.Fatalf("RemovePeer calls = %d, want 1", removeCalls)
+	}
+}
+
 func TestBindingPeerRelayBootstrapKeepaliveUsesInitiatorOnly(t *testing.T) {
 	pub := mustTestPublicKey(t)
 	basePeer := &PeerStatus{
@@ -244,15 +352,21 @@ func TestSchedulePeerRetryUsesCapturedRunContext(t *testing.T) {
 }
 
 type fakeTunnelForEngineTest struct {
-	peers  []*tunnel.PeerStatus
-	stats  *tunnel.TunnelStats
-	events chan tunnel.TunnelEvent
+	peers       []*tunnel.PeerStatus
+	stats       *tunnel.TunnelStats
+	events      chan tunnel.TunnelEvent
+	removeCalls *int
 }
 
-func (f fakeTunnelForEngineTest) Start() error                      { return nil }
-func (f fakeTunnelForEngineTest) Stop() error                       { return nil }
-func (f fakeTunnelForEngineTest) AddPeer(*tunnel.PeerConfig) error  { return nil }
-func (f fakeTunnelForEngineTest) RemovePeer(tunnel.PublicKey) error { return nil }
+func (f fakeTunnelForEngineTest) Start() error                     { return nil }
+func (f fakeTunnelForEngineTest) Stop() error                      { return nil }
+func (f fakeTunnelForEngineTest) AddPeer(*tunnel.PeerConfig) error { return nil }
+func (f fakeTunnelForEngineTest) RemovePeer(tunnel.PublicKey) error {
+	if f.removeCalls != nil {
+		*f.removeCalls = *f.removeCalls + 1
+	}
+	return nil
+}
 func (f fakeTunnelForEngineTest) UpdatePeerEndpoint(tunnel.PublicKey, *net.UDPAddr) error {
 	return nil
 }
