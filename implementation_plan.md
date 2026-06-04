@@ -420,17 +420,20 @@ Phase 3A (Strategy Portfolio Foundation) 已完成。以下是我基于代码现
 
 同时暴露了两个必须记录的限制：
 
-1. coordinator 部署在 `chen-win` 时，断开本机到 `chen-win` 的 natpierce 后，连接也会断。根因是控制面仍持续依赖 coordinator；当前 client 对 peer offline/control-plane loss 的处理可能触发 `cleanupPeer`，拆掉已 bound 的 tunnel peer。
+1. coordinator 部署在 `chen-win` 时，断开本机到 `chen-win` 的 natpierce 后，连接也会断。这里不能把两个 `10.6.22.1` 当成同一个直接可达节点：本机侧的 `10.6.22.1` 是 natpierce 虚拟网关，`inner-gw` 位于 `chen-win` 另一侧虚拟网内。断开 natpierce 同时会影响 coordinator、跳板和可能的 underlay candidate，不是纯 coordinator outage 测试。根因方向仍是控制面持续依赖 coordinator，以及 client 对 peer offline/control-plane loss 的处理可能拆掉已 bound 的 tunnel peer。
 2. 当前 direct candidate 可能使用 Tailscale/peer-reflexive 地址或 Docker bridge host 地址。这证明没有走 `chen-win` TURN relay，但不能证明完全不借助已有 overlay。
+
+当前已完成第一层保护：peer offline update 到达时，如果本地 peer 仍有最近 WireGuard handshake、packet counters 且没有 transport error，client 不再立即 `cleanupPeer`。这还没有覆盖所有 coordinator 进程退出、heartbeat 失败或 signaling stream 断开的场景。
 
 后续 TODO：
 
-- 已 bound 且 WireGuard handshake 正常的 peer 不应因 coordinator 短暂不可达或 peer offline 事件被立即清理。
+- 保持 natpierce/underlay 不断，只停止 `chen-win` 上的 coordinator 进程，做真实 outage 验证。
+- 已 bound 且 WireGuard handshake 正常的 peer 不应因 coordinator 短暂不可达、heartbeat 失败或 peer offline 事件被立即清理。
 - runtime/peer status 需要区分 control plane 状态和 data plane 状态。
 - 增加 coordinator outage / peer offline 回归测试，确保已连接数据面不会被误拆。
 - 缓存 peer lease、最近成功 endpoint、strategy、path summary 和 last handshake。
 - 增加 ICE interface include/exclude 或 candidate CIDR 过滤，用于排除 Tailscale、Docker bridge、其他 VPN/TAP 干扰。
-- 已建立虚拟网后可设计 in-band peer control channel 承载 heartbeat、endpoint update、re-ICE request、capability refresh 和 observation exchange；但首次 bootstrap 仍需要 coordinator、手动配置或其他 rendezvous。
+- 已建立虚拟网后可设计 in-band peer control channel 承载 heartbeat、endpoint update、re-ICE request、capability refresh 和 observation exchange；但首次 bootstrap 仍需要 coordinator、稳定 bootstrap 节点、静态 endpoint/端口映射、已有 overlay、手动交换信息或其他 rendezvous。
 
 详见 [`docs/CONTROL-PLANE-RESILIENCE.md`](./docs/CONTROL-PLANE-RESILIENCE.md)。
 

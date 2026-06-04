@@ -2,6 +2,18 @@
 
 本文记录 2026-06-04 真实部署验证后暴露的问题和后续 TODO。它是当前 active 运维说明，不能替代 [`CONNECTIVITY-SOLVER-BASELINE.md`](./CONNECTIVITY-SOLVER-BASELINE.md) 的架构边界。
 
+## 当前代码状态
+
+已完成第一层保护：当 coordinator 或 peer update 把一个 peer 标记为 offline，但本地仍能看到该 peer 有最近的 WireGuard handshake、packet counters 且没有 transport error 时，client 不再立即执行 `cleanupPeer`，从而避免主动移除已连接的 tunnel peer。
+
+这只是控制面韧性的第一步，还不能说明“断开 coordinator 后一定保持连接”。仍待完成和验证：
+
+- 用真实双节点环境验证 coordinator 进程退出，而不是断开 natpierce/跳板网络。
+- coordinator heartbeat 或 signaling stream 失败时，不主动拆除已 bound 的 data plane。
+- runtime state 明确拆分 control plane 状态和 data plane 状态。
+- 保存最近成功 path/cache，用于状态展示和后续恢复。
+- 已建立虚拟网后的 in-band peer control channel。
+
 ## 已验证现象
 
 测试拓扑：
@@ -11,6 +23,7 @@
 - `inner-gw` 作为远端 Linux 节点
 - 本机只能通过 `chen-win` 跳板 SSH 到 `inner-gw`
 - 两端 WinkYou 配置只启用 STUN，没有配置 TURN relay
+- 本机 Windows 的 Wintun 依赖由本地下载的 `D:\deployment\winkyou\bin\wintun.dll` 提供；正式部署文档不能假设系统已经全局安装 Wintun
 
 验证结果：
 
@@ -31,6 +44,9 @@
 - 本机看到的 `10.6.22.1` 是本机/`chen-win` 所在的 natpierce 虚拟网关。
 - `inner-gw` 的 `10.6.22.1` 是 `chen-win` 另一侧能看到的虚拟局域网节点。
 - `inner-gw` 不是本机可直接访问的 `10.6.22.1`。
+- `local-a` 和 `inner-gw` 不是同一个二层/三层可直达网络里的两个普通节点，而是通过 natpierce/跳板链路间接互通的两个节点。
+
+因此，直接断开本机到 `chen-win` 的 natpierce 连接不是一个纯粹的 coordinator outage 测试。它会同时移除 coordinator 可达性、SSH 跳板可达性，并且可能移除 ICE 选中的 underlay candidate 所依赖的路径。要单独验证“coordinator 挂了以后已建立数据面是否保持”，应该保持 natpierce/underlay 网络不动，只在 `chen-win` 上停止 coordinator 进程。
 
 ## 根因判断
 
@@ -55,6 +71,11 @@
 
 如果双方都在 NAT 后面，尤其是 symmetric NAT，且没有任何第三方会合点或手动配置，双方无法凭空知道对方当前公网映射地址，也无法完成 ICE candidate exchange。
 
+换句话说：
+
+- 已建立连接之后，可以设计由虚拟局域网参与节点自行承载的 in-band signaling/control，用来保持状态、交换 health、触发 re-ICE 或刷新 capability。
+- 从零启动时，如果没有 coordinator、bootstrap 节点、静态 endpoint、端口映射、已有 overlay 或手动交换信息，通用 NAT 后的双方无法可靠发现彼此并建立虚拟局域网。
+
 ## 目标方向
 
 coordinator 应降级为 bootstrap 服务，而不是已建立数据面的持续依赖：
@@ -73,6 +94,7 @@ coordinator bootstrap
 
 ### P0: 控制面断线不拆已连接数据面
 
+- 状态：peer offline update 触发的误清理路径已加第一层保护；真实 coordinator 进程退出和 heartbeat/signaling failure 仍需验证。
 - 已 bound 且 WireGuard handshake 正常的 peer 收到 offline/update 丢失时，不要立即 `cleanupPeer`。
 - 保留 tunnel peer、endpoint、PacketTransport 和 session snapshot。
 - peer 状态应区分 control plane 和 data plane，例如：
@@ -82,9 +104,11 @@ coordinator bootstrap
 
 ### P0: 增加回归测试
 
+- 已有 fake peer offline 回归覆盖 connected peer 不应被立即 `RemovePeer`。
 - fake coordinator 发出 peer offline 后，已 connected peer 不应被 `RemovePeer`。
 - coordinator heartbeat 失败时，client 进程不应主动拆除已 bound transport。
 - path commit 已完成后，短时间 control outage 不应导致 `wink peers` 从 connected 直接变 disconnected。
+- 真实环境验证应保持 natpierce/underlay 不断，只停止 `chen-win` 上的 coordinator 进程，再观察 `wink peers`、WireGuard handshake 和双向 ping。
 
 ### P1: 缓存 peer lease 和最近成功 path
 
@@ -111,6 +135,13 @@ coordinator bootstrap
 - path health report
 
 该通道必须是后置能力：只有数据面已经可用时才能使用，不能承担首次发现和首次穿透。
+
+最小实现边界：
+
+- 不替代首次 coordinator/rendezvous bootstrap。
+- 不改变 `transport.PacketTransport` 接口。
+- 不把 NAT/ICE 细节塞回 `pkg/session`。
+- 先承载 heartbeat/path health/capability refresh，再考虑 re-ICE 或 strategy re-selection。
 
 ### P1: 纯 NAT piercing 验证需要候选接口控制
 

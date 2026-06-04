@@ -158,7 +158,13 @@ The client CLI owns operator workflow around the engine:
 
 Runtime state and log files are operational artifacts, not solver inputs. By default runtime state is derived from the config path; service deployments can pass `--state` to store it under `/var/lib/wink` or another explicit runtime directory.
 
-Client runtime must eventually distinguish coordinator/control-plane state from data-plane state. A peer with a recent WireGuard handshake and an attached `PacketTransport` should not be removed only because coordinator heartbeat or peer-online status is temporarily unavailable.
+Client runtime must distinguish coordinator/control-plane state from data-plane state. The first peer-offline cleanup guard is already in place: a peer with recent WireGuard handshake evidence, packet counters, and no transport error should not be removed only because a peer update reports it offline. This does not yet complete control-plane resilience. Heartbeat failure, signaling stream failure, runtime state fields, cached path state, and real coordinator-process outage validation remain v0.1 hardening work.
+
+Coordinator-less operation has a strict boundary:
+
+- after a path is bound, in-band peer control may carry heartbeat, path health, capability refresh, observation exchange, endpoint updates, or re-ICE requests
+- before the first path is bound, arbitrary NATed peers still need coordinator/rendezvous, a stable bootstrap node, static endpoint/port mapping, an existing overlay, or manual candidate exchange
+- disconnecting an underlay overlay such as natpierce is not equivalent to killing only the coordinator process, because it can also remove the selected data-path candidate
 
 ### Binder
 

@@ -41,7 +41,8 @@ wink --config node-a.yaml status
 
 - coordinator 应部署在双方都能稳定访问的位置，例如公网服务器或固定内网节点。
 - 不要把唯一 coordinator 放在临时跳板链路后面；否则断开跳板/natpierce 后，心跳、peer discovery 和 session signaling 都会失效。
-- 已建立数据面未来应能容忍 coordinator 短暂不可达，但这仍是 TODO，不应在当前版本中假设已经完成。
+- 已建立数据面未来应能容忍 coordinator 短暂不可达。当前已修 peer offline update 导致的第一层误清理风险，但 heartbeat/signaling failure、runtime control/data 状态和真实 coordinator outage 验证仍是 TODO。
+- 如果要单独验证 coordinator outage，不要断开 natpierce/跳板网络；应保持 underlay 不动，只停止 coordinator 进程，再观察 `wink peers`、WireGuard handshake 和双向 ping。断开 natpierce 会同时改变控制面和可能的数据面候选路径，不能单独证明 coordinator 问题。
 
 ## 3. STUN/TURN
 
@@ -70,6 +71,7 @@ Windows：
 
 - 用管理员权限运行终端
 - 确认 Wintun/TUN backend 可用
+- 如果是手动下载的 Wintun，建议把 `wintun.dll` 放在 `wink.exe` 同目录或部署脚本明确复制到运行目录；本地验证环境曾使用 `D:\deployment\winkyou\bin\wintun.dll`
 - 如果创建接口失败，先重启终端或系统，再确认安全软件没有拦截虚拟网卡
 
 Linux：
