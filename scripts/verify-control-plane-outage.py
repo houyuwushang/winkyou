@@ -35,13 +35,18 @@ class SSHConfig:
 
 
 def main() -> int:
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    if hasattr(sys.stderr, "reconfigure"):
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+
     args = parse_args()
 
     print(f"Checking local data-plane precondition with {args.wink_path}...")
     before_peers = load_peers(args)
     bound_peer = require_bound_peer(before_peers)
-    require_ping(args.ping_target)
-    print(f"Precondition OK: peer {peer_label(bound_peer)} is connected; ping {args.ping_target} works.")
+    require_overlay_probe(args, bound_peer)
+    print(f"Precondition OK: peer {peer_label(bound_peer)} is connected; {args.ping_method} probe works.")
 
     ssh_cfg = resolve_ssh_config(args.chen_host, args.chen_user)
     password = remote_password(args.password_env)
@@ -58,8 +63,8 @@ def main() -> int:
             print("Checking data plane during coordinator outage...")
             during_peers = load_peers(args)
             require_same_bound_peer(during_peers, bound_peer)
-            require_ping(args.ping_target)
-            print("Outage check OK: peer remains connected and overlay ping still works.")
+            require_overlay_probe(args, bound_peer)
+            print("Outage check OK: peer remains connected and overlay probe still works.")
         finally:
             if args.restart_task:
                 print(f"Restarting coordinator task: {args.restart_task}")
@@ -83,6 +88,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--config-path", default=str(DEFAULT_CONFIG))
     parser.add_argument("--state-path", default=str(DEFAULT_STATE))
     parser.add_argument("--ping-target", default="10.88.0.1")
+    parser.add_argument("--peer-target", default="", help="peer name/node_id/virtual_ip for wink ping; defaults to the bound peer")
+    parser.add_argument("--ping-method", choices=("wink", "icmp"), default="wink", help="overlay probe method")
     parser.add_argument("--coordinator-process", default="wink-coordinator")
     parser.add_argument("--restart-task", default="WinkYouCoordinator")
     parser.add_argument("--observe-seconds", type=int, default=20)
@@ -150,6 +157,7 @@ def run_remote(client: paramiko.SSHClient, powershell: str, timeout: int = 30) -
 
 def process_query(name: str) -> str:
     return f"""
+$ProgressPreference='SilentlyContinue'
 $ErrorActionPreference='SilentlyContinue'
 Get-Process -Name '{ps_quote(name)}' | Select-Object Id,ProcessName,Path,StartTime | Format-List
 Get-NetTCPConnection -LocalPort 50051 | Select-Object LocalAddress,RemoteAddress,RemotePort,State,OwningProcess | Format-Table -AutoSize
@@ -158,15 +166,28 @@ Get-NetTCPConnection -LocalPort 50051 | Select-Object LocalAddress,RemoteAddress
 
 def stop_process(name: str) -> str:
     return f"""
-$ErrorActionPreference='Continue'
-Get-Process -Name '{ps_quote(name)}' -ErrorAction SilentlyContinue | Stop-Process -Force
+$ProgressPreference='SilentlyContinue'
+$ErrorActionPreference='SilentlyContinue'
+$procs = @(Get-Process -Name '{ps_quote(name)}' -ErrorAction SilentlyContinue)
+if ($procs.Count -eq 0) {{
+    'coordinator process was not running'
+}} else {{
+    $procs | Stop-Process -Force -ErrorAction SilentlyContinue
+    'stopped coordinator process count: ' + $procs.Count
+}}
 Start-Sleep -Seconds 2
-Get-Process -Name '{ps_quote(name)}' -ErrorAction SilentlyContinue | Select-Object Id,ProcessName,Path | Format-List
+$remaining = @(Get-Process -Name '{ps_quote(name)}' -ErrorAction SilentlyContinue)
+if ($remaining.Count -gt 0) {{
+    $remaining | Select-Object Id,ProcessName,Path | Format-List
+    exit 1
+}}
+'coordinator process stopped'
 """
 
 
 def start_task(name: str) -> str:
     return f"""
+$ProgressPreference='SilentlyContinue'
 $ErrorActionPreference='Continue'
 Start-ScheduledTask -TaskName '{ps_quote(name)}'
 Start-Sleep -Seconds 5
@@ -229,7 +250,31 @@ def zero_time(value: Any) -> bool:
     return text == "" or text.startswith("0001-01-01")
 
 
-def require_ping(target: str) -> None:
+def require_overlay_probe(args: argparse.Namespace, peer: dict[str, Any]) -> None:
+    if args.ping_method == "icmp":
+        require_icmp_ping(args.ping_target)
+        return
+    require_wink_ping(args, peer)
+
+
+def require_wink_ping(args: argparse.Namespace, peer: dict[str, Any]) -> None:
+    target = args.peer_target.strip() or peer_label(peer)
+    command = [
+        args.wink_path,
+        "--config",
+        args.config_path,
+        "--state",
+        args.state_path,
+        "ping",
+        target,
+    ]
+    proc = subprocess.run(command, capture_output=True, text=True, encoding="utf-8", errors="replace")
+    if proc.returncode != 0:
+        detail = (proc.stderr.strip() or proc.stdout.strip()).replace("\n", " ")
+        raise SystemExit(f"wink ping failed for {target}; refusing coordinator outage verification. {detail}")
+
+
+def require_icmp_ping(target: str) -> None:
     flag = "-n" if os.name == "nt" else "-c"
     command = ["ping", flag, "3", target]
     proc = subprocess.run(command, capture_output=True, text=True, encoding="utf-8", errors="replace")

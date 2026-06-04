@@ -20,9 +20,9 @@ client runtime 也已经新增基础可观测字段：
 
 client 还修复了一个真实验证中暴露的恢复问题：当本端不是 deterministic initiator 时，之前 `startPeerConnect` 和 peer session retry 会直接返回，导致高 node id 一侧在远端 stale session 或远端未重新发起时长期停在 `data_state=connecting/failed`。现在 controlled side 也会启动 session 并按 `nat.retry_interval` 重试；`initiator` 仍只作为 session/strategy 角色输入，不再作为 client 层是否允许恢复连接的门槛。
 
-这仍只是控制面韧性的早期补强，还不能说明“断开 coordinator 后一定保持连接”。仍待完成和验证：
+这仍只是控制面韧性的早期补强，还不能说明“所有控制面故障下都一定保持连接”。仍待完成和验证：
 
-- 用真实双节点环境验证 coordinator 进程退出，而不是断开 natpierce/跳板网络。
+- 扩展真实双节点环境验证，覆盖更长时间 coordinator 进程退出、heartbeat failure 和 signaling stream failure，而不是断开 natpierce/跳板网络。
 - coordinator heartbeat 或 signaling stream 失败时，不主动拆除已 bound 的 data plane。
 - 使用最近成功 path/cache 做恢复或重试；当前只完成状态展示和缓存。
 - 已建立虚拟网后的 in-band peer control channel 运行时接入；消息模型和 JSON 编解码已冻结在 `pkg/peercontrol`。
@@ -50,7 +50,7 @@ client 还修复了一个真实验证中暴露的恢复问题：当本端不是 
 
 这证明数据面没有通过 `chen-win` TURN relay 转发。但当断开本机到 `chen-win` 的 natpierce 连接后，WinkYou 连接也断开。
 
-后续通过 SSH 密码登录 `chen-win` 后，已确认可以只停止 `wink-coordinator` 进程而不触碰 natpierce/underlay 网络。当前尚未执行 kill-coordinator 验证，因为重启本机验证版 client 后，前置数据面没有重新达到 bound/handshake：
+后续通过 SSH 密码登录 `chen-win` 后，已确认可以只停止 `wink-coordinator` 进程而不触碰 natpierce/underlay 网络。排查过程中先暴露了一个部署问题：重启本机验证版 client 后，前置数据面一度没有重新达到 bound/handshake：
 
 - coordinator 在 `chen-win` 上运行，进程名 `wink-coordinator`。
 - `local-a` 控制面在线，能看到 `inner-b`，但 runtime 显示 `control_state=connected`、`data_state=failed/connecting`、`connected_peers=0`。
@@ -59,9 +59,20 @@ client 还修复了一个真实验证中暴露的恢复问题：当本端不是 
 - 仅在本机加 `nat.candidate_interface_include: natpierce` 和 `nat.candidate_cidr_include: 10.6.22.0/24` 会让本机过滤生效，但远端 `inner-b` 未同步配置时无法形成可用 candidate pair。
 - 进一步检查发现，`chen-win` 上的 coordinator 以默认 memory store 启动；重启 coordinator 后 `ListPeers` 返回空数组，说明注册表丢失，而旧 client 只保留本地 runtime 状态，没有自动重新注册，导致看起来 control 连接还在、实际 coordinator 不知道任何 peer。
 
-因此，下一次真实验证的前置条件是：先让两端都重新达到 `State: connected`、WireGuard handshake 非空且 `ping 10.88.0.1/10.88.0.2` 成功，再在 `chen-win` 上停止 coordinator 进程。不要在数据面未 bound 时停止 coordinator；那只能验证“尚未建链时 coordinator 不可用会失败”，不能验证“已建链后控制面断线是否保持”。
+修复和部署调整后，2026-06-04 21:48 已完成基础真实 outage 验证：
 
-新增安全验证脚本 [`scripts/verify-control-plane-outage.py`](../scripts/verify-control-plane-outage.py)，用于后续真实 kill-coordinator 回归。该脚本会先检查本机 `wink peers --json`、`last_handshake`、transport error 和 overlay ping；只有确认已经存在 connected/bound peer 后，才会读取环境变量里的 chen-win SSH 密码并停止远端 coordinator。当前本机 runtime 仍没有 bound peer 时，脚本会直接退出并拒绝触碰远端进程。
+- `chen-win` coordinator scheduled task 已切到 SQLite store：`--store-backend sqlite --sqlite-path coordinator.db`。
+- coordinator 注册表按原身份恢复为 `inner-b=node-000001/10.88.0.1`、`local-a=node-000002/10.88.0.2`。
+- 本机运行包含 coordinator NotFound 重注册修复的新验证版 client。
+- 验证前 `wink peers` 显示 `inner-b` 为 `state=connected`、`data_state=alive`、WireGuard handshake 非空、transport packet counters 非零。
+- `wink ping inner-b` 成功。
+- 只停止 `chen-win` 上的 `wink-coordinator` 进程，保持 natpierce/underlay 不动。
+- coordinator 停止 15 秒期间，`wink peers --json` 仍显示 peer connected/bound，`wink ping inner-b` 仍成功。
+- verifier 随后通过 scheduled task 拉起 coordinator，重启后 `wink ping inner-b` 继续成功。
+
+因此，基础结论是：在这次 direct path 已 bound 的真实环境中，短时间只停止 coordinator 进程不会拆掉数据面。不要把这个结论扩大为“任意控制面故障、任意时长、任意网络拓扑都能保持”。下一步仍需覆盖 heartbeat/signaling stream 长时间失败、cached path 恢复和 in-band peer control 接入。
+
+安全验证脚本 [`scripts/verify-control-plane-outage.py`](../scripts/verify-control-plane-outage.py) 已用于上述真实 kill-coordinator 回归。该脚本会先检查本机 `wink peers --json`、`last_handshake`、transport error 和 overlay probe；默认使用 `wink ping`，也可用 `--ping-method icmp` 切回系统 ICMP。只有确认已经存在 connected/bound peer 后，才会读取环境变量里的 chen-win SSH 密码并停止远端 coordinator。当前本机 runtime 没有 bound peer 时，脚本会直接退出并拒绝触碰远端进程。
 
 代码已补上 coordinator client 的 NotFound 恢复路径：heartbeat 发现当前 node 在 coordinator 中不存在时，会关闭旧 signal stream 并用最近一次 register 请求重新注册。这主要用于 coordinator 持久化 store 或稳定身份恢复场景。当前 chen-win 测试部署仍需要切到 `--store-backend sqlite --sqlite-path ...`，并让两端 client 都运行包含该修复的新版本后，再进行真实 outage 验证。
 
@@ -122,7 +133,7 @@ coordinator bootstrap
 
 ### P0: 控制面断线不拆已连接数据面
 
-- 状态：peer offline update 触发的误清理路径已加第一层保护；controlled side session retry 已修复；coordinator heartbeat NotFound 会触发 client 重新注册；真实 coordinator 进程退出和 heartbeat/signaling failure 仍需在已 bound 数据面上验证。
+- 状态：peer offline update 触发的误清理路径已加第一层保护；controlled side session retry 已修复；coordinator heartbeat NotFound 会触发 client 重新注册；已 bound 数据面上的短时间真实 coordinator 进程退出验证已通过；更长时间 heartbeat/signaling failure 仍需验证。
 - 已 bound 且 WireGuard handshake 正常的 peer 收到 offline/update 丢失时，不要立即 `cleanupPeer`。
 - 保留 tunnel peer、endpoint、PacketTransport 和 session snapshot。
 - peer 状态应区分 control plane 和 data plane，例如：
@@ -136,7 +147,7 @@ coordinator bootstrap
 - fake coordinator 发出 peer offline 后，已 connected peer 不应被 `RemovePeer`。
 - coordinator heartbeat 失败时，client 进程不应主动拆除已 bound transport。
 - path commit 已完成后，短时间 control outage 不应导致 `wink peers` 从 connected 直接变 disconnected。
-- 真实环境验证应保持 natpierce/underlay 不断，只停止 `chen-win` 上的 coordinator 进程，再观察 `wink peers`、WireGuard handshake 和双向 ping。
+- 真实环境验证应保持 natpierce/underlay 不断，只停止 `chen-win` 上的 coordinator 进程，再观察 `wink peers`、WireGuard handshake 和 `wink ping`；基础 15 秒 outage 已通过，后续应扩展时长和故障类型。
 
 ### P1: 缓存 peer lease 和最近成功 path
 

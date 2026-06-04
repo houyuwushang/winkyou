@@ -432,18 +432,20 @@ Phase 3A (Strategy Portfolio Foundation) 已完成。以下是我基于代码现
 - NAT/ICE 已新增 candidate interface include/exclude 和 candidate CIDR include/exclude 配置，并传入 Pion ICE agent；`wink doctor` 会展示过滤配置并检查 runtime candidate 是否命中 excluded CIDR。
 - coordinator client 已新增 heartbeat NotFound 恢复路径：当 coordinator 重启或持久化 store 恢复后发现当前 node 不存在时，client 会关闭旧 signal stream 并使用最近一次 register 请求重新注册。
 
-2026-06-04 后续验证中，已能通过 SSH 密码登录 `chen-win` 并确认 `wink-coordinator` 进程可被单独停止；但尚未执行 kill-coordinator 验证，因为本机验证版 client 重启后数据面未重新达到 bound/handshake。当前 runtime 只证明 control plane 可见 peer，不能证明 data plane 已建立。下一次验证必须先恢复两端 `State: connected`、WireGuard handshake 非空且双向 ping 成功，再停止 `chen-win` 上的 coordinator 进程。
+2026-06-04 后续验证中，已能通过 SSH 密码登录 `chen-win` 并确认 `wink-coordinator` 进程可被单独停止。排查中先发现本机验证版 client 重启后数据面未重新达到 bound/handshake，原因是 chen-win coordinator 使用 memory store，重启后 `ListPeers` 为空，旧 client 不会自动重新注册。随后 chen-win coordinator scheduled task 已切换到 SQLite store，并按原 public key 顺序恢复 `inner-b=node-000001/10.88.0.1`、`local-a=node-000002/10.88.0.2`。
+
+2026-06-04 21:48 已执行基础 kill-coordinator 验证：本机和 `inner-b` 已处于 `State: connected`、WireGuard handshake 非空、transport counters 非零、`wink ping inner-b` 成功；随后只停止 `chen-win` 上的 coordinator 进程 15 秒，不断开 natpierce/underlay；停机期间 `wink peers --json` 仍显示 peer connected/bound，`wink ping inner-b` 仍成功；脚本随后通过 scheduled task 拉起 coordinator，重启后 `wink ping` 继续成功。
 
 已新增 `scripts/verify-control-plane-outage.py` 作为安全回归脚本。它会先检查本机 `wink peers --json`、WireGuard handshake、transport error 和 overlay ping；只有确认数据面已 bound 后才会读取 SSH 密码并停止 `chen-win` 上的 coordinator。当前 runtime 未 bound 时，脚本会拒绝执行远端停进程动作。
 
-本次排查还确认了一个部署层根因：`chen-win` 当前 coordinator 以默认 memory store 启动，重启后 `ListPeers` 为空，已运行的旧 client 不会自动重新注册，导致本机 runtime 仍显示旧 peer、实际 coordinator 已不知道任何 peer。测试部署应切换到 `--store-backend sqlite --sqlite-path ...`，并让两端 client 都运行包含 NotFound 重注册修复的新版本后，再做 kill-coordinator 验证。
+本次排查还确认了一个部署层根因：`chen-win` 原 coordinator 以默认 memory store 启动，重启后 `ListPeers` 为空，已运行的旧 client 不会自动重新注册，导致本机 runtime 仍显示旧 peer、实际 coordinator 已不知道任何 peer。测试部署已切换到 `--store-backend sqlite --sqlite-path coordinator.db`；后续长期测试仍应让两端 client 都运行包含 NotFound 重注册修复的新版本。
 
 这还没有覆盖所有 coordinator 进程退出、heartbeat 失败、signaling stream 断开、cached path 恢复或 in-band control 网络循环接入场景。
 
 后续 TODO：
 
-- 保持 natpierce/underlay 不断，并且先确认两端数据面已 bound/handshake 成功；随后只停止 `chen-win` 上的 coordinator 进程，做真实 outage 验证。
-- 测试部署的 coordinator 使用持久化 SQLite store，避免重启后注册表为空。
+- 保持 natpierce/underlay 不断，并且先确认两端数据面已 bound/handshake 成功；随后只停止 `chen-win` 上的 coordinator 进程，做更长时间 outage 验证。
+- 测试部署的 coordinator 使用持久化 SQLite store，避免重启后注册表为空；当前 chen-win scheduled task 已切到 SQLite。
 - 已 bound 且 WireGuard handshake 正常的 peer 不应因 coordinator 短暂不可达、heartbeat 失败或 peer offline 事件被立即清理。
 - 增加 coordinator outage / heartbeat/signaling failure 回归测试，确保已连接数据面不会被误拆。
 - 后续把已缓存的 peer lease、最近成功 endpoint、strategy、path summary 和 last handshake 用于恢复或 cached path 重试。
