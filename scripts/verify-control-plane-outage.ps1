@@ -16,7 +16,38 @@ function Invoke-Ssh {
         [string]$HostName,
         [string]$Command
     )
-    ssh -o BatchMode=yes -o ConnectTimeout=8 $HostName $Command
+    $stdout = New-TemporaryFile
+    $stderr = New-TemporaryFile
+    try {
+        $args = @(
+            "-n",
+            "-o", "BatchMode=yes",
+            "-o", "NumberOfPasswordPrompts=0",
+            "-o", "PreferredAuthentications=publickey",
+            "-o", "ConnectTimeout=5",
+            "-o", "ConnectionAttempts=1",
+            $HostName,
+            $Command
+        )
+        $process = Start-Process -FilePath "ssh" -ArgumentList $args -NoNewWindow -PassThru -RedirectStandardOutput $stdout.FullName -RedirectStandardError $stderr.FullName
+        if (!$process.WaitForExit(12000)) {
+            Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue
+            throw "ssh timed out while running command on $HostName"
+        }
+        $out = Get-Content -Raw -Path $stdout.FullName -ErrorAction SilentlyContinue
+        $err = Get-Content -Raw -Path $stderr.FullName -ErrorAction SilentlyContinue
+        if ($out) {
+            Write-Host $out.TrimEnd()
+        }
+        if ($process.ExitCode -ne 0) {
+            if ($err) {
+                throw $err.Trim()
+            }
+            throw "ssh exited with code $($process.ExitCode)"
+        }
+    } finally {
+        Remove-Item -Force -ErrorAction SilentlyContinue $stdout.FullName, $stderr.FullName
+    }
 }
 
 function Show-Peers {
