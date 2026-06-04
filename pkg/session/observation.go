@@ -68,7 +68,7 @@ func (s *Session) reportObservation(ctx context.Context, obs solver.Observation)
 	if obs.Timestamp.IsZero() {
 		obs.Timestamp = time.Now()
 	}
-	obs.Details = annotateObservationDetails(obs.Details, s.cfg.SessionID, s.cfg.PeerID, s.cfg.Initiator)
+	obs.Details = annotateObservationDetails(obs.Details, s.cfg.SessionID, s.cfg.LocalNodeID, s.cfg.PeerID, s.cfg.Initiator)
 
 	s.obsMu.Lock()
 	s.observations = appendObservation(s.observations, obs, 100)

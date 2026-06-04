@@ -137,6 +137,8 @@ func (s *Session) Snapshot() Snapshot {
 		LastProbeResultAt:       s.meta.LastProbeResultAt,
 		LastPlanOrder:           append([]string(nil), s.meta.LastPlanOrder...),
 		LastPlanOrderReason:     s.meta.LastPlanOrderReason,
+		LastStrategyOrder:       append([]string(nil), s.meta.LastStrategyOrder...),
+		LastStrategyOrderReason: s.meta.LastStrategyOrderReason,
 		LastPlanSetBeforeRefine: append([]string(nil), s.meta.LastPlanSetBeforeRefine...),
 		LastPlanSetAfterRefine:  append([]string(nil), s.meta.LastPlanSetAfterRefine...),
 		LastPlanRefineReason:    s.meta.LastPlanRefineReason,

@@ -3,6 +3,7 @@ package session
 import (
 	"context"
 	"errors"
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -46,8 +47,15 @@ func TestSessionOrderedStrategyFallbackBindsSecondStrategy(t *testing.T) {
 	}
 	waitForState(t, s, StateBound)
 
-	if got := s.Snapshot().SelectedStrategy; got != second.name {
+	snapshot := s.Snapshot()
+	if got := snapshot.SelectedStrategy; got != second.name {
 		t.Fatalf("SelectedStrategy = %q, want %q", got, second.name)
+	}
+	if got, want := snapshot.LastStrategyOrder, []string{first.name, second.name}; !slices.Equal(got, want) {
+		t.Fatalf("LastStrategyOrder = %#v, want %#v", got, want)
+	}
+	if got := snapshot.LastStrategyOrderReason; got != "resolver_order" {
+		t.Fatalf("LastStrategyOrderReason = %q, want resolver_order", got)
 	}
 	if first.execCount() != 1 {
 		t.Fatalf("first exec count = %d, want 1", first.execCount())

@@ -3,6 +3,7 @@ package client
 import (
 	"context"
 	"net"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -143,6 +144,34 @@ func TestEngineStrategyResolverSelectsRelayOnlyWhenRemoteOnlySupportsRelayOnly(t
 	}
 	if selection != (sesspkg.Selection{StrategyName: relayonly.StrategyName, Negotiated: true}) {
 		t.Fatalf("Resolve(relay_only) selection = %#v, want negotiated relay_only", selection)
+	}
+}
+
+func TestEngineStrategyResolverOrdersRelayOnlyFromScopedObservations(t *testing.T) {
+	eng := &engine{cfg: config.Default()}
+	resolver := eng.newStrategyResolver()
+	ordered, ok := resolver.(sesspkg.OrderedStrategyResolver)
+	if !ok {
+		t.Fatalf("resolver %T does not implement OrderedStrategyResolver", resolver)
+	}
+
+	candidates, err := ordered.ResolveAll(sesspkg.ResolveInput{
+		SessionID:        "session/node-a/node-b",
+		LocalNodeID:      "node-a",
+		PeerID:           "node-b",
+		Initiator:        true,
+		RemoteCapability: rproto.Capability{Strategies: []string{legacyice.StrategyName, relayonly.StrategyName}},
+		LocalObservations: []solver.Observation{
+			clientStrategyOrderObservation(legacyice.StrategyName, "candidate_failed", "", "timeout", true),
+			clientStrategyOrderObservation(legacyice.StrategyName, "candidate_failed", "", "unreachable", true),
+			clientStrategyOrderObservation(relayonly.StrategyName, "candidate_succeeded", "relay", "", true),
+		},
+	})
+	if err != nil {
+		t.Fatalf("ResolveAll() error = %v", err)
+	}
+	if got, want := resolverCandidateNames(candidates), []string{relayonly.StrategyName, legacyice.StrategyName}; !slices.Equal(got, want) {
+		t.Fatalf("ResolveAll() candidates = %#v, want %#v", got, want)
 	}
 }
 
@@ -289,4 +318,31 @@ func TestLegacyICEStrategyConfigConnectivityRelayOnlyForcesRelay(t *testing.T) {
 	if !cfg.ForceRelay {
 		t.Fatal("legacyICEStrategyConfig().ForceRelay = false, want true")
 	}
+}
+
+func resolverCandidateNames(candidates []sesspkg.StrategyCandidate) []string {
+	names := make([]string, 0, len(candidates))
+	for _, candidate := range candidates {
+		names = append(names, candidate.Name)
+	}
+	return names
+}
+
+func clientStrategyOrderObservation(strategy, event, connectionType, errorClass string, scoped bool) solver.Observation {
+	obs := solver.Observation{
+		Strategy:       strategy,
+		Event:          event,
+		ConnectionType: connectionType,
+		ErrorClass:     errorClass,
+	}
+	if scoped {
+		obs.Details = map[string]string{
+			"session_id":     "session/node-a/node-b",
+			"local_node_id":  "node-a",
+			"peer_id":        "node-b",
+			"remote_node_id": "node-b",
+			"initiator":      "true",
+		}
+	}
+	return obs
 }

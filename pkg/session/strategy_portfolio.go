@@ -2,6 +2,7 @@ package session
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 
 	rproto "winkyou/pkg/rendezvous/proto"
@@ -25,6 +26,9 @@ type StrategyFactoryEntry struct {
 type PortfolioResolverPolicy struct {
 	CompatibilityDefault string
 	AllowImplicitLegacy  bool
+	DirectStrategy       string
+	RelayStrategy        string
+	PinnedFirstStrategy  string
 }
 
 type FactoryPortfolioResolver struct {
@@ -33,6 +37,8 @@ type FactoryPortfolioResolver struct {
 	factories  map[string]func() solver.Strategy
 	policy     PortfolioResolverPolicy
 }
+
+const recentStrategyObservationLimit = 32
 
 func NewPortfolioResolver(entries []StrategyEntry) (*PortfolioResolver, error) {
 	if len(entries) == 0 {
@@ -195,6 +201,7 @@ func (r *FactoryPortfolioResolver) ResolveAll(input ResolveInput) ([]StrategyCan
 	}
 
 	names := mutualStrategies(r.order, input.RemoteCapability)
+	orderReason := "configured_order"
 	if len(names) == 0 {
 		if len(input.RemoteCapability.Strategies) == 0 && r.policy.AllowImplicitLegacy && r.policy.CompatibilityDefault != "" {
 			strategy, err := r.build(r.policy.CompatibilityDefault)
@@ -205,6 +212,7 @@ func (r *FactoryPortfolioResolver) ResolveAll(input ResolveInput) ([]StrategyCan
 				Name:      r.policy.CompatibilityDefault,
 				Strategy:  strategy,
 				Selection: Selection{StrategyName: r.policy.CompatibilityDefault, Negotiated: false},
+				Reason:    "implicit_legacy_fallback",
 			}}, nil
 		}
 		if len(input.RemoteCapability.Strategies) == 0 {
@@ -212,6 +220,7 @@ func (r *FactoryPortfolioResolver) ResolveAll(input ResolveInput) ([]StrategyCan
 		}
 		return nil, fmt.Errorf("session: no mutually supported strategy between local=%v and remote=%v", r.order, input.RemoteCapability.Strategies)
 	}
+	names, orderReason = orderStrategiesFromObservations(names, input, r.policy)
 
 	candidates := make([]StrategyCandidate, 0, len(names))
 	for _, name := range names {
@@ -223,6 +232,7 @@ func (r *FactoryPortfolioResolver) ResolveAll(input ResolveInput) ([]StrategyCan
 			Name:      name,
 			Strategy:  strategy,
 			Selection: Selection{StrategyName: name, Negotiated: true},
+			Reason:    orderReason,
 		})
 	}
 	return candidates, nil
@@ -281,4 +291,198 @@ func mutualStrategies(localOrder []string, remote rproto.Capability) []string {
 		}
 	}
 	return mutual
+}
+
+func orderStrategiesFromObservations(names []string, input ResolveInput, policy PortfolioResolverPolicy) ([]string, string) {
+	ordered := append([]string(nil), names...)
+	if len(ordered) <= 1 {
+		return ordered, "single_strategy"
+	}
+	if policy.PinnedFirstStrategy != "" {
+		if pinned := moveStrategyFirst(ordered, policy.PinnedFirstStrategy); pinned != nil {
+			return pinned, "pinned:" + policy.PinnedFirstStrategy
+		}
+	}
+
+	scores, reason := scoreStrategyOrder(ordered, input, policy)
+	index := make(map[string]int, len(ordered))
+	for i, name := range ordered {
+		index[name] = i
+	}
+	sort.SliceStable(scores, func(i, j int) bool {
+		if scores[i].Score == scores[j].Score {
+			return index[scores[i].Name] < index[scores[j].Name]
+		}
+		return scores[i].Score > scores[j].Score
+	})
+	for i, score := range scores {
+		ordered[i] = score.Name
+	}
+	return ordered, reason
+}
+
+func scoreStrategyOrder(names []string, input ResolveInput, policy PortfolioResolverPolicy) ([]StrategyScore, string) {
+	scores := make([]StrategyScore, 0, len(names))
+	for i, name := range names {
+		scores = append(scores, StrategyScore{
+			Name:   name,
+			Score:  (len(names) - i) * 10,
+			Reason: "configured_order",
+		})
+	}
+
+	directStrategy := strings.TrimSpace(policy.DirectStrategy)
+	relayStrategy := strings.TrimSpace(policy.RelayStrategy)
+	if directStrategy == "" || relayStrategy == "" {
+		return scores, "configured_order"
+	}
+
+	evidence := summarizeStrategyOrderEvidence(input, directStrategy, relayStrategy)
+	reasons := make([]string, 0, 4)
+	for i := range scores {
+		switch scores[i].Name {
+		case relayStrategy:
+			if evidence.RelaySuccesses > 0 {
+				scores[i].Score += 30
+				reasons = append(reasons, "relay_success")
+			}
+			if evidence.DirectFailures >= 2 {
+				scores[i].Score += 40
+				reasons = append(reasons, "direct_failures")
+			}
+			if evidence.RelayFailures > 0 {
+				scores[i].Score -= 20
+				reasons = append(reasons, "relay_failure")
+			}
+		case directStrategy:
+			if evidence.DirectSuccesses > 0 {
+				scores[i].Score += 30
+				reasons = append(reasons, "direct_success")
+			}
+		}
+		if len(reasons) > 0 {
+			scores[i].Reason = "observation_scored:" + strings.Join(uniqueStrings(reasons), ",")
+		}
+	}
+	if len(reasons) == 0 {
+		return scores, "configured_order"
+	}
+	return scores, "observation_scored:" + strings.Join(uniqueStrings(reasons), ",")
+}
+
+type strategyOrderEvidence struct {
+	DirectFailures  int
+	DirectSuccesses int
+	RelayFailures   int
+	RelaySuccesses  int
+}
+
+func summarizeStrategyOrderEvidence(input ResolveInput, directStrategy, relayStrategy string) strategyOrderEvidence {
+	summary := strategyOrderEvidence{}
+	for _, obs := range recentScopedStrategyObservations(input, recentStrategyObservationLimit) {
+		switch {
+		case observationMatchesStrategyOrPath(obs, relayStrategy, "relay") && observationSuccess(obs):
+			summary.RelaySuccesses++
+		case observationMatchesStrategyOrPath(obs, relayStrategy, "relay") && observationFailure(obs):
+			summary.RelayFailures++
+		case observationMatchesStrategyOrPath(obs, directStrategy, "direct") && observationSuccess(obs):
+			summary.DirectSuccesses++
+		case observationMatchesStrategyOrPath(obs, directStrategy, "") && observationFailure(obs):
+			summary.DirectFailures++
+		}
+	}
+	return summary
+}
+
+func recentScopedStrategyObservations(input ResolveInput, limit int) []solver.Observation {
+	scoped := make([]solver.Observation, 0, len(input.LocalObservations)+len(input.RemoteObservations))
+	for _, obs := range input.LocalObservations {
+		if observationScopeMatchesResolveInput(obs, input, false) {
+			scoped = append(scoped, obs)
+		}
+	}
+	for _, obs := range input.RemoteObservations {
+		if observationScopeMatchesResolveInput(obs, input, true) {
+			scoped = append(scoped, obs)
+		}
+	}
+	if limit > 0 && len(scoped) > limit {
+		return append([]solver.Observation(nil), scoped[len(scoped)-limit:]...)
+	}
+	return scoped
+}
+
+func observationScopeMatchesResolveInput(obs solver.Observation, input ResolveInput, remoteSource bool) bool {
+	if input.SessionID == "" || input.LocalNodeID == "" || input.PeerID == "" {
+		return false
+	}
+	if obs.Details == nil {
+		return false
+	}
+	if strings.TrimSpace(obs.Details["session_id"]) != input.SessionID {
+		return false
+	}
+	if remoteSource {
+		return strings.TrimSpace(obs.Details["local_node_id"]) == input.PeerID &&
+			strings.TrimSpace(obs.Details["remote_node_id"]) == input.LocalNodeID &&
+			strings.TrimSpace(obs.Details["peer_id"]) == input.LocalNodeID &&
+			strings.TrimSpace(obs.Details["initiator"]) == fmt.Sprintf("%t", !input.Initiator)
+	}
+	return strings.TrimSpace(obs.Details["local_node_id"]) == input.LocalNodeID &&
+		strings.TrimSpace(obs.Details["remote_node_id"]) == input.PeerID &&
+		strings.TrimSpace(obs.Details["peer_id"]) == input.PeerID &&
+		strings.TrimSpace(obs.Details["initiator"]) == fmt.Sprintf("%t", input.Initiator)
+}
+
+func observationMatchesStrategyOrPath(obs solver.Observation, strategy, connectionType string) bool {
+	if strategy != "" && obs.Strategy == strategy {
+		return true
+	}
+	return connectionType != "" && obs.ConnectionType == connectionType
+}
+
+func observationSuccess(obs solver.Observation) bool {
+	switch obs.Event {
+	case "candidate_succeeded", "path_selected", "bind_succeeded", "path_committed":
+		return true
+	default:
+		return false
+	}
+}
+
+func observationFailure(obs solver.Observation) bool {
+	if obs.ErrorClass == "timeout" || obs.ErrorClass == "unreachable" {
+		return true
+	}
+	return strings.Contains(obs.Event, "failed")
+}
+
+func moveStrategyFirst(names []string, strategy string) []string {
+	for i, name := range names {
+		if name != strategy {
+			continue
+		}
+		next := make([]string, 0, len(names))
+		next = append(next, name)
+		next = append(next, names[:i]...)
+		next = append(next, names[i+1:]...)
+		return next
+	}
+	return nil
+}
+
+func uniqueStrings(values []string) []string {
+	seen := make(map[string]struct{}, len(values))
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		if value == "" {
+			continue
+		}
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		out = append(out, value)
+	}
+	return out
 }

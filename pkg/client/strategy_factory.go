@@ -42,10 +42,16 @@ func newStrategyResolverWithFeatures(factories []strategyFactory, policy Resolve
 func (e *engine) newStrategyResolver() sesspkg.StrategyResolver {
 	legacyCfg := e.legacyICEStrategyConfig()
 	factories := e.strategyFactoriesForOrder(legacyCfg)
-	return newStrategyResolverWithFeatures(factories, ResolverPolicy{
+	policy := ResolverPolicy{
 		CompatibilityDefault: legacyice.StrategyName,
 		AllowImplicitLegacy:  true,
-	}, probeFeatures(e.probeRunner() != nil))
+		DirectStrategy:       legacyice.StrategyName,
+		RelayStrategy:        relayonly.StrategyName,
+	}
+	if e.relayOnlyMode() {
+		policy.PinnedFirstStrategy = relayonly.StrategyName
+	}
+	return newStrategyResolverWithFeatures(factories, policy, probeFeatures(e.probeRunner() != nil))
 }
 
 func (e *engine) strategyFactoriesForOrder(legacyCfg legacyice.Config) []strategyFactory {

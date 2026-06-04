@@ -50,6 +50,13 @@ type StrategyCandidate struct {
 	Name      string
 	Strategy  solver.Strategy
 	Selection Selection
+	Reason    string
+}
+
+type StrategyScore struct {
+	Name   string
+	Score  int
+	Reason string
 }
 
 type ResolveInput struct {
@@ -115,6 +122,8 @@ type Snapshot struct {
 	LastProbeResultAt       time.Time
 	LastPlanOrder           []string
 	LastPlanOrderReason     string
+	LastStrategyOrder       []string
+	LastStrategyOrderReason string
 	LastPlanSetBeforeRefine []string
 	LastPlanSetAfterRefine  []string
 	LastPlanRefineReason    string

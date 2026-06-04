@@ -239,12 +239,18 @@ func TestLastProbeResultSummaryUsesSelectedPathID(t *testing.T) {
 }
 
 func TestAnnotateObservationDetailsHandlesEmptyMap(t *testing.T) {
-	details := annotateObservationDetails(map[string]string{}, "session/node-a/node-b", "node-b", true)
+	details := annotateObservationDetails(map[string]string{}, "session/node-a/node-b", "node-a", "node-b", true)
 	if details["session_id"] != "session/node-a/node-b" {
 		t.Fatalf("session_id = %q, want session/node-a/node-b", details["session_id"])
 	}
+	if details["local_node_id"] != "node-a" {
+		t.Fatalf("local_node_id = %q, want node-a", details["local_node_id"])
+	}
 	if details["peer_id"] != "node-b" {
 		t.Fatalf("peer_id = %q, want node-b", details["peer_id"])
+	}
+	if details["remote_node_id"] != "node-b" {
+		t.Fatalf("remote_node_id = %q, want node-b", details["remote_node_id"])
 	}
 	if details["initiator"] != "true" {
 		t.Fatalf("initiator = %q, want true", details["initiator"])

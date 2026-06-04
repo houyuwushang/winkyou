@@ -254,6 +254,117 @@ func TestFactoryPortfolioResolverResolveAllReturnsMutualStrategiesByLocalOrder(t
 	}
 }
 
+func TestFactoryPortfolioResolverStrategyOrderKeepsConfiguredOrderWithoutHistory(t *testing.T) {
+	resolver := newTestFactoryPortfolioResolver(t, []StrategyFactoryEntry{
+		{Name: "legacy_ice_udp", Build: countingStrategyFactory("legacy_ice_udp", nil)},
+		{Name: relayonly.StrategyName, Build: countingStrategyFactory(relayonly.StrategyName, nil)},
+	}, strategyOrderTestPolicy(), nil)
+
+	candidates, err := resolver.ResolveAll(strategyOrderResolveInput(nil))
+	if err != nil {
+		t.Fatalf("ResolveAll() error = %v", err)
+	}
+	if got, want := candidateNames(candidates), []string{"legacy_ice_udp", relayonly.StrategyName}; !slices.Equal(got, want) {
+		t.Fatalf("ResolveAll() candidates = %#v, want %#v", got, want)
+	}
+	if got := candidates[0].Reason; got != "configured_order" {
+		t.Fatalf("ResolveAll() reason = %q, want configured_order", got)
+	}
+}
+
+func TestFactoryPortfolioResolverStrategyOrderMovesRelayAfterScopedDirectFailures(t *testing.T) {
+	resolver := newTestFactoryPortfolioResolver(t, []StrategyFactoryEntry{
+		{Name: "legacy_ice_udp", Build: countingStrategyFactory("legacy_ice_udp", nil)},
+		{Name: relayonly.StrategyName, Build: countingStrategyFactory(relayonly.StrategyName, nil)},
+	}, strategyOrderTestPolicy(), nil)
+	observations := []solver.Observation{
+		strategyOrderObservation("legacy_ice_udp", "candidate_failed", "", "timeout", true),
+		strategyOrderObservation("legacy_ice_udp", "candidate_failed", "", "unreachable", true),
+		strategyOrderObservation(relayonly.StrategyName, "candidate_succeeded", "relay", "", true),
+	}
+
+	candidates, err := resolver.ResolveAll(strategyOrderResolveInput(observations))
+	if err != nil {
+		t.Fatalf("ResolveAll() error = %v", err)
+	}
+	if got, want := candidateNames(candidates), []string{relayonly.StrategyName, "legacy_ice_udp"}; !slices.Equal(got, want) {
+		t.Fatalf("ResolveAll() candidates = %#v, want %#v", got, want)
+	}
+	if got := candidates[0].Reason; !strings.Contains(got, "observation_scored") || !strings.Contains(got, "relay_success") || !strings.Contains(got, "direct_failures") {
+		t.Fatalf("ResolveAll() reason = %q, want observation scoring details", got)
+	}
+}
+
+func TestFactoryPortfolioResolverStrategyOrderKeepsLegacyAfterScopedDirectSuccess(t *testing.T) {
+	resolver := newTestFactoryPortfolioResolver(t, []StrategyFactoryEntry{
+		{Name: "legacy_ice_udp", Build: countingStrategyFactory("legacy_ice_udp", nil)},
+		{Name: relayonly.StrategyName, Build: countingStrategyFactory(relayonly.StrategyName, nil)},
+	}, strategyOrderTestPolicy(), nil)
+	observations := []solver.Observation{
+		strategyOrderObservation("legacy_ice_udp", "path_selected", "direct", "", true),
+		strategyOrderObservation(relayonly.StrategyName, "candidate_succeeded", "relay", "", true),
+	}
+
+	candidates, err := resolver.ResolveAll(strategyOrderResolveInput(observations))
+	if err != nil {
+		t.Fatalf("ResolveAll() error = %v", err)
+	}
+	if got, want := candidateNames(candidates), []string{"legacy_ice_udp", relayonly.StrategyName}; !slices.Equal(got, want) {
+		t.Fatalf("ResolveAll() candidates = %#v, want %#v", got, want)
+	}
+	if got := candidates[0].Reason; !strings.Contains(got, "direct_success") {
+		t.Fatalf("ResolveAll() reason = %q, want direct_success evidence", got)
+	}
+}
+
+func TestFactoryPortfolioResolverStrategyOrderIgnoresUnscopedObservations(t *testing.T) {
+	resolver := newTestFactoryPortfolioResolver(t, []StrategyFactoryEntry{
+		{Name: "legacy_ice_udp", Build: countingStrategyFactory("legacy_ice_udp", nil)},
+		{Name: relayonly.StrategyName, Build: countingStrategyFactory(relayonly.StrategyName, nil)},
+	}, strategyOrderTestPolicy(), nil)
+	observations := []solver.Observation{
+		strategyOrderObservation("legacy_ice_udp", "candidate_failed", "", "timeout", false),
+		strategyOrderObservation("legacy_ice_udp", "candidate_failed", "", "unreachable", false),
+		strategyOrderObservation(relayonly.StrategyName, "candidate_succeeded", "relay", "", false),
+	}
+
+	candidates, err := resolver.ResolveAll(strategyOrderResolveInput(observations))
+	if err != nil {
+		t.Fatalf("ResolveAll() error = %v", err)
+	}
+	if got, want := candidateNames(candidates), []string{"legacy_ice_udp", relayonly.StrategyName}; !slices.Equal(got, want) {
+		t.Fatalf("ResolveAll() candidates = %#v, want %#v", got, want)
+	}
+	if got := candidates[0].Reason; got != "configured_order" {
+		t.Fatalf("ResolveAll() reason = %q, want configured_order", got)
+	}
+}
+
+func TestFactoryPortfolioResolverStrategyOrderPinsRelayOnlyFirst(t *testing.T) {
+	resolver := newTestFactoryPortfolioResolver(t, []StrategyFactoryEntry{
+		{Name: "legacy_ice_udp", Build: countingStrategyFactory("legacy_ice_udp", nil)},
+		{Name: relayonly.StrategyName, Build: countingStrategyFactory(relayonly.StrategyName, nil)},
+	}, PortfolioResolverPolicy{
+		DirectStrategy:      "legacy_ice_udp",
+		RelayStrategy:       relayonly.StrategyName,
+		PinnedFirstStrategy: relayonly.StrategyName,
+	}, nil)
+	observations := []solver.Observation{
+		strategyOrderObservation("legacy_ice_udp", "path_selected", "direct", "", true),
+	}
+
+	candidates, err := resolver.ResolveAll(strategyOrderResolveInput(observations))
+	if err != nil {
+		t.Fatalf("ResolveAll() error = %v", err)
+	}
+	if got, want := candidateNames(candidates), []string{relayonly.StrategyName, "legacy_ice_udp"}; !slices.Equal(got, want) {
+		t.Fatalf("ResolveAll() candidates = %#v, want %#v", got, want)
+	}
+	if got := candidates[0].Reason; got != "pinned:"+relayonly.StrategyName {
+		t.Fatalf("ResolveAll() reason = %q, want relay pin", got)
+	}
+}
+
 func TestFactoryPortfolioResolverResolveAllAllowsImplicitLegacyFallback(t *testing.T) {
 	resolver := newTestFactoryPortfolioResolver(t, []StrategyFactoryEntry{
 		{Name: "legacy_ice_udp", Build: countingStrategyFactory("legacy_ice_udp", nil)},
@@ -479,6 +590,43 @@ func candidateNames(candidates []StrategyCandidate) []string {
 		names = append(names, candidate.Name)
 	}
 	return names
+}
+
+func strategyOrderTestPolicy() PortfolioResolverPolicy {
+	return PortfolioResolverPolicy{
+		DirectStrategy: "legacy_ice_udp",
+		RelayStrategy:  relayonly.StrategyName,
+	}
+}
+
+func strategyOrderResolveInput(observations []solver.Observation) ResolveInput {
+	return ResolveInput{
+		SessionID:         "session/node-a/node-b",
+		LocalNodeID:       "node-a",
+		PeerID:            "node-b",
+		Initiator:         true,
+		RemoteCapability:  rproto.Capability{Strategies: []string{relayonly.StrategyName, "legacy_ice_udp"}},
+		LocalObservations: observations,
+	}
+}
+
+func strategyOrderObservation(strategy, event, connectionType, errorClass string, scoped bool) solver.Observation {
+	obs := solver.Observation{
+		Strategy:       strategy,
+		Event:          event,
+		ConnectionType: connectionType,
+		ErrorClass:     errorClass,
+	}
+	if scoped {
+		obs.Details = map[string]string{
+			"session_id":     "session/node-a/node-b",
+			"local_node_id":  "node-a",
+			"peer_id":        "node-b",
+			"remote_node_id": "node-b",
+			"initiator":      "true",
+		}
+	}
+	return obs
 }
 
 type relayOnlySessionStrategy struct {

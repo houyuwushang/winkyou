@@ -48,17 +48,21 @@ func addrString(addr any) string {
 	}
 }
 
-func annotateObservationDetails(details map[string]string, sessionID, peerID string, initiator bool) map[string]string {
+func annotateObservationDetails(details map[string]string, sessionID, localNodeID, peerID string, initiator bool) map[string]string {
 	if details == nil {
-		details = make(map[string]string, 3)
+		details = make(map[string]string, 5)
 	} else {
 		details = cloneStringMap(details)
 	}
 	if sessionID != "" {
 		details["session_id"] = sessionID
 	}
+	if localNodeID != "" {
+		details["local_node_id"] = localNodeID
+	}
 	if peerID != "" {
 		details["peer_id"] = peerID
+		details["remote_node_id"] = peerID
 	}
 	details["initiator"] = fmt.Sprintf("%t", initiator)
 	return details

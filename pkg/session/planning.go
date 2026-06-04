@@ -15,6 +15,7 @@ func (s *Session) selectAndExecute(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	s.recordStrategyOrder(ctx, candidates)
 
 	var lastErr error
 	for i, candidate := range candidates {
@@ -389,6 +390,28 @@ func (s *Session) recordPlanOrder(plans []solver.Plan, reason string) {
 	s.metaMu.Unlock()
 }
 
+func (s *Session) recordStrategyOrder(ctx context.Context, candidates []StrategyCandidate) {
+	names := strategyCandidateNames(candidates)
+	reason := strategyCandidateOrderReason(candidates)
+	s.metaMu.Lock()
+	s.meta.LastStrategyOrder = names
+	s.meta.LastStrategyOrderReason = reason
+	s.metaMu.Unlock()
+
+	strategy := ""
+	if len(names) > 0 {
+		strategy = names[0]
+	}
+	s.emitObservation(ctx, solver.Observation{
+		Strategy: strategy,
+		Event:    "strategy_ordered",
+		Reason:   reason,
+		Details: map[string]string{
+			"order": strings.Join(names, ","),
+		},
+	})
+}
+
 func (s *Session) recordPlanRefine(before, after []string, reason string) {
 	s.metaMu.Lock()
 	s.meta.LastPlanSetBeforeRefine = append([]string(nil), before...)
@@ -403,6 +426,23 @@ func planIDs(plans []solver.Plan) []string {
 		out = append(out, plan.ID)
 	}
 	return out
+}
+
+func strategyCandidateNames(candidates []StrategyCandidate) []string {
+	out := make([]string, 0, len(candidates))
+	for _, candidate := range candidates {
+		out = append(out, candidate.Name)
+	}
+	return out
+}
+
+func strategyCandidateOrderReason(candidates []StrategyCandidate) string {
+	for _, candidate := range candidates {
+		if strings.TrimSpace(candidate.Reason) != "" {
+			return candidate.Reason
+		}
+	}
+	return "resolver_order"
 }
 
 func samePlanSet(left, right []solver.Plan) bool {
