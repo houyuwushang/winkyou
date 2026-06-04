@@ -33,6 +33,7 @@ type grpcClient struct {
 	conn         *grpc.ClientConn
 	rpc          coordinatorv1.CoordinatorClient
 	nodeID       string
+	registerReq  *RegisterRequest
 	signalStream grpc.BidiStreamingClient[coordinatorv1.SignalEnvelope, coordinatorv1.SignalEnvelope]
 	signalCancel context.CancelFunc
 
@@ -137,6 +138,7 @@ func (c *grpcClient) Register(ctx context.Context, req *RegisterRequest) (*Regis
 
 	c.mu.Lock()
 	c.nodeID = resp.GetNodeId()
+	c.registerReq = cloneRegisterRequest(req)
 	c.mu.Unlock()
 
 	if err := c.ensureSignalStream(); err != nil {
@@ -344,6 +346,9 @@ func (c *grpcClient) sendHeartbeat(ctx context.Context) {
 		Timestamp: time.Now().Unix(),
 	})
 	if err != nil {
+		if status.Code(err) == codes.NotFound {
+			c.recoverRegistration(ctx)
+		}
 		return
 	}
 
@@ -357,6 +362,15 @@ func (c *grpcClient) sendHeartbeat(ctx context.Context) {
 		}
 		c.dispatchPeer(peer, PeerEventUpsert)
 	}
+}
+
+func (c *grpcClient) recoverRegistration(ctx context.Context) {
+	req := c.lastRegisterRequest()
+	if req == nil {
+		return
+	}
+	c.closeSignalStream()
+	_, _ = c.Register(ctx, req)
 }
 
 func (c *grpcClient) ensureSignalStream() error {
@@ -441,6 +455,22 @@ func (c *grpcClient) clearSignalStream(stream grpc.BidiStreamingClient[coordinat
 	_ = stream.CloseSend()
 }
 
+func (c *grpcClient) closeSignalStream() {
+	c.mu.Lock()
+	stream := c.signalStream
+	cancel := c.signalCancel
+	c.signalStream = nil
+	c.signalCancel = nil
+	c.mu.Unlock()
+
+	if cancel != nil {
+		cancel()
+	}
+	if stream != nil {
+		_ = stream.CloseSend()
+	}
+}
+
 func (c *grpcClient) rpcClient() coordinatorv1.CoordinatorClient {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
@@ -451,6 +481,12 @@ func (c *grpcClient) currentNodeID() string {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	return c.nodeID
+}
+
+func (c *grpcClient) lastRegisterRequest() *RegisterRequest {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return cloneRegisterRequest(c.registerReq)
 }
 
 func (c *grpcClient) callContext(ctx context.Context) (context.Context, context.CancelFunc) {
@@ -585,6 +621,18 @@ func cloneMetadata(metadata map[string]string) map[string]string {
 		out[key] = value
 	}
 	return out
+}
+
+func cloneRegisterRequest(req *RegisterRequest) *RegisterRequest {
+	if req == nil {
+		return nil
+	}
+	return &RegisterRequest{
+		PublicKey: req.PublicKey,
+		Name:      req.Name,
+		AuthKey:   req.AuthKey,
+		Metadata:  cloneMetadata(req.Metadata),
+	}
 }
 
 func cloneBytes(payload []byte) []byte {

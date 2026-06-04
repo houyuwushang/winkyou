@@ -13,6 +13,8 @@ import (
 	"winkyou/pkg/coordinator/server"
 
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 func TestGRPCClientRegisterListGetAndSignal(t *testing.T) {
@@ -128,6 +130,74 @@ func TestStartHeartbeatAndStopHeartbeat(t *testing.T) {
 	}
 }
 
+func TestHeartbeatNotFoundTriggersReregisterAndSignalRebind(t *testing.T) {
+	service := newCoordinatorService(t)
+	recovering := &recoveringCoordinatorServer{inner: service}
+	listener, stop := startCoordinator(t, recovering)
+	defer stop()
+
+	alpha := newTestClient(t, listener.Addr().String())
+	defer func() {
+		_ = alpha.Close()
+	}()
+
+	alphaResp, err := alpha.Register(context.Background(), &client.RegisterRequest{
+		PublicKey: "alpha-recover-pub",
+		Name:      "alpha",
+	})
+	if err != nil {
+		t.Fatalf("alpha Register() error = %v", err)
+	}
+
+	if err := alpha.StartHeartbeat(context.Background(), 20*time.Millisecond); err != nil {
+		t.Fatalf("StartHeartbeat() error = %v", err)
+	}
+
+	deadline := time.Now().Add(2 * time.Second)
+	for atomic.LoadInt64(&recovering.registers) < 2 {
+		if time.Now().After(deadline) {
+			t.Fatalf("register count = %d, want at least 2", atomic.LoadInt64(&recovering.registers))
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	signalCh := make(chan *client.SignalNotification, 1)
+	alpha.OnSignal(func(signal *client.SignalNotification) {
+		select {
+		case signalCh <- signal:
+		default:
+		}
+	})
+
+	beta := newTestClient(t, listener.Addr().String())
+	defer func() {
+		_ = beta.Close()
+	}()
+	betaResp, err := beta.Register(context.Background(), &client.RegisterRequest{
+		PublicKey: "beta-recover-pub",
+		Name:      "beta",
+	})
+	if err != nil {
+		t.Fatalf("beta Register() error = %v", err)
+	}
+
+	if err := beta.SendSignal(context.Background(), alphaResp.NodeID, client.SIGNAL_ICE_OFFER, []byte("after-rebind")); err != nil {
+		t.Fatalf("SendSignal() after re-register error = %v", err)
+	}
+
+	select {
+	case signal := <-signalCh:
+		if signal.FromNode != betaResp.NodeID {
+			t.Fatalf("signal.FromNode = %q, want %q", signal.FromNode, betaResp.NodeID)
+		}
+		if string(signal.Payload) != "after-rebind" {
+			t.Fatalf("signal.Payload = %q, want after-rebind", string(signal.Payload))
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for signal after re-register")
+	}
+}
+
 func TestGRPCClientRecoverAfterCoordinatorRestartWithSQLite(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "coordinator.db")
 
@@ -188,6 +258,40 @@ type countingCoordinatorServer struct {
 
 	inner      coordinatorv1.CoordinatorServer
 	heartbeats int64
+}
+
+type recoveringCoordinatorServer struct {
+	coordinatorv1.UnimplementedCoordinatorServer
+
+	inner      coordinatorv1.CoordinatorServer
+	registers  int64
+	heartbeats int64
+	notFound   int32
+}
+
+func (s *recoveringCoordinatorServer) Register(ctx context.Context, req *coordinatorv1.RegisterRequest) (*coordinatorv1.RegisterResponse, error) {
+	atomic.AddInt64(&s.registers, 1)
+	return s.inner.Register(ctx, req)
+}
+
+func (s *recoveringCoordinatorServer) Heartbeat(ctx context.Context, req *coordinatorv1.HeartbeatRequest) (*coordinatorv1.HeartbeatResponse, error) {
+	atomic.AddInt64(&s.heartbeats, 1)
+	if atomic.CompareAndSwapInt32(&s.notFound, 0, 1) {
+		return nil, status.Error(codes.NotFound, "node not found after coordinator restart")
+	}
+	return s.inner.Heartbeat(ctx, req)
+}
+
+func (s *recoveringCoordinatorServer) ListPeers(ctx context.Context, req *coordinatorv1.ListPeersRequest) (*coordinatorv1.ListPeersResponse, error) {
+	return s.inner.ListPeers(ctx, req)
+}
+
+func (s *recoveringCoordinatorServer) GetPeer(ctx context.Context, req *coordinatorv1.GetPeerRequest) (*coordinatorv1.PeerInfo, error) {
+	return s.inner.GetPeer(ctx, req)
+}
+
+func (s *recoveringCoordinatorServer) Signal(stream grpc.BidiStreamingServer[coordinatorv1.SignalEnvelope, coordinatorv1.SignalEnvelope]) error {
+	return s.inner.Signal(stream)
 }
 
 func (s *countingCoordinatorServer) Register(ctx context.Context, req *coordinatorv1.RegisterRequest) (*coordinatorv1.RegisterResponse, error) {
