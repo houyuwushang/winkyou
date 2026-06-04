@@ -26,9 +26,12 @@ WinkYou = connectivity solver + WireGuard 数据平面
 | 阶段 | 状态 | 标签 |
 |------|------|------|
 | Phase 1 ~ 2D | ✅ 冻结 | `phase2d-freeze-2026-04-24` |
-| Phase 3A (Strategy Portfolio Foundation) | ✅ 合并 | commit `bae1266` |
-| Phase 3B code health | ✅ 完成 | commits `a89c5f6`..`4431f82` |
-| Phase 4A relay_only | ✅ 完成 | commit `f28d4b1` |
+| Phase 3A (Strategy Portfolio Foundation) | ✅ 合并 | session portfolio resolver |
+| Phase 3B code health | ✅ 完成 | CI、session 拆分、state validation、context 边界 |
+| Phase 4A relay_only | ✅ 冻结 | `make test-phase4a` |
+| Connectivity policy / fallback / scoring | ✅ 完成 | `auto` / `relay_only`、ordered fallback、observation ordering |
+| `tcp_framed` alpha | ✅ 完成 | 显式 TCP PacketTransport 验证 |
+| v0.1 运维闭环 | 🟡 进行中 | self-host quickstart、doctor、long-running workflow |
 
 Phase 3A 已交付：`PortfolioResolver`、`StrategyEntry`、strategy selection 测试覆盖、fake strategy 验证。session 不再硬编码 `legacy_ice_udp`。
 
@@ -36,11 +39,11 @@ Phase 3A 已交付：`PortfolioResolver`、`StrategyEntry`、strategy selection 
 
 | 指标 | 数值 |
 |------|------|
-| Go 源文件 | 112 个 |
-| 源码体积 | 615 KB |
+| Go 源文件 | 160 个 |
+| 源码体积 | 约 845 KB |
 | 核心包数量 | 14 个 (`pkg/*`) |
-| 测试包 | 30 个（全部通过） |
-| 最大单文件 | `session.go` — **1748 行** |
+| 测试包 | 33 个（当前 `go test ./... -count=1` 通过） |
+| 最大单文件 | `pkg/client/engine.go` |
 | 根目录二进制跟踪 | 当前未跟踪 `wink.exe` / `netprobe.exe` / `e2e.test` |
 
 ---
@@ -398,9 +401,17 @@ Phase 3A (Strategy Portfolio Foundation) 已完成。以下是我基于代码现
 
 旧 peer 空 capability 仍 fallback 到 `legacy_ice_udp`；远端只 advertise `relay_only` 时可选择 `relay_only`。
 
-### Phase 4B: Observation → Scoring Closed Loop
+### Phase 4B: Ordered Fallback + Observation Strategy Ordering（已完成）
 
-这是 Phase 2D 遗留的 "not in scope" 项。在有两个真实策略之后，observation history 才有比较意义——可以回答 "上次 direct 失败了，这次应该先试 relay" 这类问题。
+当前 session 支持 ordered strategy fallback；production resolver 可以根据 connectivity policy 产出有序候选。`auto` 模式下 scoped observation 会影响 strategy order，但不会直接删除可用 strategy。
+
+### Phase 4C: Non-UDP PacketTransport Alpha（已完成）
+
+`tcp_framed` 已作为 alpha strategy 加入，用显式可达 TCP 地址和 `transport/framedstream` 证明非 UDP path 仍能输出 `PacketTransport`。该 strategy 默认禁用，不承诺 NAT TCP 打洞。
+
+### v0.1 Operations Track（进行中）
+
+已完成 self-host quickstart、`wink doctor` 分层诊断、`wink logs` 和长期运行客户端文档。下一步应继续补 release pipeline 与 v0.1 freeze gate，而不是继续扩大架构范围。
 
 ---
 
@@ -423,7 +434,7 @@ Phase 3B code health 已完成，随后实现了 Phase 4A 的 `relay_only`。
 
 ### 已决策 4: 第二策略选择 `relay_only`
 
-`tcp_framed` 和 `quic_datagram` 不在本轮范围内。
+第二个真实 strategy 已选择并冻结为 `relay_only`。`tcp_framed` 后续作为 alpha 非 UDP PacketTransport 验证加入；`quic_datagram` 仍不在 v0.1 实现范围内。
 
 ### 已决策 5: 大量 brainstorm/analysis 文档保留原路径并明确标记
 

@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"fmt"
+	"strings"
 
 	winkclient "winkyou/pkg/client"
 	"winkyou/pkg/config"
@@ -36,5 +37,15 @@ func loadRuntime(opts *Options) (*config.Config, logger.Logger, error) {
 }
 
 func runtimeStatePath(opts *Options) string {
-	return winkclient.RuntimeStatePath(opts.ConfigPath)
+	return winkclient.RuntimeStatePath(runtimeStateKey(opts))
+}
+
+func runtimeStateKey(opts *Options) string {
+	if opts != nil && strings.TrimSpace(opts.StatePath) != "" {
+		return opts.StatePath
+	}
+	if opts == nil {
+		return ""
+	}
+	return opts.ConfigPath
 }

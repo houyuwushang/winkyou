@@ -216,6 +216,43 @@ coordinator:
 	assertContains(t, output, "Known Peers:        0")
 }
 
+func TestDebugUsesExplicitRuntimeStatePath(t *testing.T) {
+	configPath := writeDebugConfig(t, `
+node:
+  name: alpha
+`)
+	statePath := filepath.Join(t.TempDir(), "wink.runtime.json")
+	state := &winkclient.RuntimeState{
+		Version:   "dev",
+		PID:       789,
+		StartedAt: time.Now(),
+		UpdatedAt: time.Now(),
+		Status: winkclient.RuntimeEngineStatus{
+			State:    "connected",
+			NodeID:   "node-explicit",
+			NodeName: "alpha",
+		},
+	}
+	if err := winkclient.WriteRuntimeState(statePath, state); err != nil {
+		t.Fatalf("WriteRuntimeState() error = %v", err)
+	}
+
+	opts := &Options{ConfigPath: configPath, StatePath: statePath}
+	cmd := newDebugCmd(opts)
+	buf := new(bytes.Buffer)
+	cmd.SetOut(buf)
+	cmd.SetErr(buf)
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("debug execute error: %v", err)
+	}
+
+	output := buf.String()
+	assertContains(t, output, "Runtime State Path: "+statePath)
+	assertContains(t, output, "Runtime State:      yes")
+	assertContains(t, output, "Node ID:            node-explicit")
+}
+
 func writeDebugConfig(t *testing.T, body string) string {
 	t.Helper()
 

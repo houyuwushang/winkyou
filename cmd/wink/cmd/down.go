@@ -14,7 +14,7 @@ func newDownCmd(opts *Options) *cobra.Command {
 		Use:   "down",
 		Short: "Disconnect and stop",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			state, err := winkclient.LoadRuntimeState(opts.ConfigPath)
+			state, err := winkclient.LoadRuntimeState(runtimeStateKey(opts))
 			if err != nil {
 				if errors.Is(err, winkclient.ErrRuntimeStateNotFound) {
 					cmd.Println("wink down: no active runtime state")
@@ -33,7 +33,7 @@ func newDownCmd(opts *Options) *cobra.Command {
 				}
 			}
 
-			if err := winkclient.RemoveRuntimeState(opts.ConfigPath); err != nil {
+			if err := winkclient.RemoveRuntimeState(runtimeStateKey(opts)); err != nil {
 				return err
 			}
 

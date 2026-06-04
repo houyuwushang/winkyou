@@ -19,7 +19,7 @@ func newPingCmd(opts *Options) *cobra.Command {
 		Short: "Probe peer reachability via virtual IP",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			state, err := winkclient.LoadRuntimeState(opts.ConfigPath)
+			state, err := winkclient.LoadRuntimeState(runtimeStateKey(opts))
 			if err != nil {
 				return err
 			}

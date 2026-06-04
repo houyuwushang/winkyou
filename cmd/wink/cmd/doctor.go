@@ -134,7 +134,7 @@ func runDoctor(ctx context.Context, opts *Options, flags doctorFlags, probes doc
 	}
 	result.add(interfaceProbe(ctx, cfg))
 
-	state, stateErr := winkclient.LoadRuntimeState(opts.ConfigPath)
+	state, stateErr := winkclient.LoadRuntimeState(runtimeStateKey(opts))
 	addStrategyChecks(&result, cfg, flags)
 	addTunnelChecks(&result, state, stateErr)
 	addTransportChecks(&result, state, stateErr)

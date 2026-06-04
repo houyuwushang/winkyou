@@ -8,6 +8,7 @@ import (
 
 type Options struct {
 	ConfigPath string
+	StatePath  string
 	Verbose    bool
 }
 
@@ -28,6 +29,7 @@ func newRootCmd() *cobra.Command {
 	}
 
 	cmd.PersistentFlags().StringVarP(&opts.ConfigPath, "config", "c", opts.ConfigPath, "config file path (default "+config.DefaultPath()+")")
+	cmd.PersistentFlags().StringVar(&opts.StatePath, "state", opts.StatePath, "runtime state file path (default next to config)")
 	cmd.PersistentFlags().BoolVarP(&opts.Verbose, "verbose", "v", false, "enable verbose logging")
 
 	cmd.AddCommand(
@@ -36,6 +38,7 @@ func newRootCmd() *cobra.Command {
 		newStatusCmd(opts),
 		newDoctorCmd(opts),
 		newDebugCmd(opts),
+		newLogsCmd(opts),
 		newPeersCmd(opts),
 		newPingCmd(opts),
 		newGenkeyCmd(),

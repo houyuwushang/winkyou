@@ -92,7 +92,7 @@ func collectDebugOutput(opts *Options) *debugOutput {
 		info.CoordinatorURL = cfg.Coordinator.URL
 	}
 
-	state, stateErr := winkclient.LoadRuntimeState(opts.ConfigPath)
+	state, stateErr := winkclient.LoadRuntimeState(runtimeStateKey(opts))
 	switch {
 	case stateErr == nil:
 		info.RuntimeState = &runtimeDebugState{

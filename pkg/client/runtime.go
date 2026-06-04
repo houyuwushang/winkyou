@@ -66,6 +66,9 @@ type RuntimePeerStatus struct {
 
 func RuntimeStatePath(configPath string) string {
 	resolved := strings.TrimSpace(configPath)
+	if strings.HasSuffix(strings.ToLower(filepath.Base(resolved)), ".runtime.json") {
+		return resolved
+	}
 	if resolved == "" {
 		resolved = config.DefaultPath()
 	}

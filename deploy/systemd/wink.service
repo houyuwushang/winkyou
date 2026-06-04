@@ -1,0 +1,24 @@
+[Unit]
+Description=WinkYou client
+Documentation=https://github.com/houyuwushang/winkyou
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=wink
+Group=wink
+WorkingDirectory=/var/lib/wink
+StateDirectory=wink
+LogsDirectory=wink
+ConfigurationDirectory=wink
+ExecStart=/usr/local/bin/wink --config /etc/wink/config.yaml --state /var/lib/wink/wink.runtime.json up
+ExecStop=/usr/local/bin/wink --config /etc/wink/config.yaml --state /var/lib/wink/wink.runtime.json down
+Restart=on-failure
+RestartSec=5s
+AmbientCapabilities=CAP_NET_ADMIN CAP_NET_RAW
+CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_RAW
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

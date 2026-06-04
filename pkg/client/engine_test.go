@@ -110,6 +110,13 @@ func TestRuntimeStateRoundTrip(t *testing.T) {
 	}
 }
 
+func TestRuntimeStatePathAcceptsExplicitRuntimeFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "wink.runtime.json")
+	if got := RuntimeStatePath(path); got != path {
+		t.Fatalf("RuntimeStatePath(%q) = %q, want exact path", path, got)
+	}
+}
+
 func TestUpdateStatusCountersSyncsTunnelPeerState(t *testing.T) {
 	pub := mustTestPublicKey(t)
 	eng := &engine{

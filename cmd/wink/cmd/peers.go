@@ -17,7 +17,7 @@ func newPeersCmd(opts *Options) *cobra.Command {
 		Use:   "peers",
 		Short: "Show connected peers",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			state, err := winkclient.LoadRuntimeState(opts.ConfigPath)
+			state, err := winkclient.LoadRuntimeState(runtimeStateKey(opts))
 			switch {
 			case err == nil:
 				// have state

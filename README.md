@@ -10,7 +10,7 @@ WinkYou = connectivity solver + secure WireGuard data plane
 
 ## 当前状态
 
-当前代码已经完成 Phase 3B code health、Phase 4A `relay_only` 冻结，并开始进入非 UDP PacketTransport alpha 验证。
+当前代码已经完成 Phase 3B code health、Phase 4A `relay_only` 冻结，并开始进入非 UDP PacketTransport alpha 验证和 v0.1 运维闭环。
 
 - 活跃架构权威：[`docs/CONNECTIVITY-SOLVER-BASELINE.md`](./docs/CONNECTIVITY-SOLVER-BASELINE.md)
 - Phase 2D 已冻结：`phase2d-freeze-2026-04-24`
@@ -23,6 +23,8 @@ WinkYou = connectivity solver + secure WireGuard data plane
 - `connectivity.mode: relay_only` 会把生产 strategy 顺序切到 `relay_only` -> `legacy_ice_udp`
 - 旧的 `nat.force_relay: true` 仍兼容映射到 relay-only 行为
 - 旧 peer 空 capability 仍会隐式 fallback 到 `legacy_ice_udp`
+- `wink doctor` 已提供 config、coordinator、TURN、本地接口、strategy、tunnel、transport 的分层诊断
+- `wink up/down/status/peers/logs` 已形成长期运行 CLI 工作流；Linux systemd 和 Windows 启动项文档已补齐
 
 当文档发生冲突时，以 [`docs/CONNECTIVITY-SOLVER-BASELINE.md`](./docs/CONNECTIVITY-SOLVER-BASELINE.md) 作为 session、solver、strategy 和 transport 边界的判断依据。部分历史架构文档已标记为 proposal/archive，不能覆盖 active baseline。
 
@@ -106,8 +108,8 @@ nat:
 - proxy/userspace-only 产品路径
 - QUIC datagram、HTTP CONNECT、WebSocket 等真实 transport strategy
 - `tcp_framed` 仍是 alpha，不做 NAT TCP 打洞承诺
-- 完整 observation -> scoring -> learning 闭环
-- GUI 或桌面常驻 daemon
+- 高级 learning/scoring 闭环
+- GUI、移动端、原生 Windows service
 
 ## 架构边界
 
@@ -131,10 +133,24 @@ nat:
 - [`deploy/quickstart`](./deploy/quickstart)：快速部署素材
 - [`deploy/coturn`](./deploy/coturn)：TURN relay 部署素材
 - [`docs/SELFHOST-QUICKSTART.md`](./docs/SELFHOST-QUICKSTART.md)：自托管快速部署
+- [`docs/LONG-RUNNING-CLIENT.md`](./docs/LONG-RUNNING-CLIENT.md)：长期运行客户端、日志和 service/startup 工作流
 - [`docs/TROUBLESHOOTING.md`](./docs/TROUBLESHOOTING.md)：分层排障指南
 - [`docs/README.md`](./docs/README.md)：文档分级索引
 
 ## 常用命令
+
+客户端运维入口：
+
+```bash
+wink --config <config.yaml> up
+wink --config <config.yaml> down
+wink --config <config.yaml> status
+wink --config <config.yaml> peers
+wink --config <config.yaml> logs
+wink --config <config.yaml> doctor
+```
+
+开发和回归入口：
 
 ```bash
 go fmt ./...

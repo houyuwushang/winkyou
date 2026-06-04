@@ -24,7 +24,7 @@ func newStatusCmd(opts *Options) *cobra.Command {
 				return err
 			}
 
-			state, stateErr := winkclient.LoadRuntimeState(opts.ConfigPath)
+			state, stateErr := winkclient.LoadRuntimeState(runtimeStateKey(opts))
 			switch {
 			case stateErr == nil:
 				if asJSON {

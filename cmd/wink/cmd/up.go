@@ -26,18 +26,18 @@ func newUpCmd(opts *Options) *cobra.Command {
 			}
 			defer log.Sync()
 
-			if state, stateErr := winkclient.LoadRuntimeState(opts.ConfigPath); stateErr == nil {
+			if state, stateErr := winkclient.LoadRuntimeState(runtimeStateKey(opts)); stateErr == nil {
 				if state.IsFresh(20 * time.Second) {
 					return fmt.Errorf("wink is already running (pid %d)", state.PID)
 				}
-				if err := winkclient.RemoveRuntimeState(opts.ConfigPath); err != nil {
+				if err := winkclient.RemoveRuntimeState(runtimeStateKey(opts)); err != nil {
 					return err
 				}
 			} else if !errors.Is(stateErr, winkclient.ErrRuntimeStateNotFound) {
 				return stateErr
 			}
 
-			engine, err := winkclient.NewEngine(cfg, log, opts.ConfigPath)
+			engine, err := winkclient.NewEngine(cfg, log, runtimeStateKey(opts))
 			if err != nil {
 				return err
 			}

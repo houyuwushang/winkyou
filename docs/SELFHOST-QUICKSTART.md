@@ -2,7 +2,7 @@
 
 本文给出一条从零跑通的最小路径：一台 Linux 公网服务器运行 coordinator + coturn，两台 client 加入同一个虚拟网络，并分别验证 direct path 与 relay path。
 
-当前 `wink up` 是前台进程。运行 client 的终端需要保持打开；后续 daemon/service 工作会在单独阶段完成。
+快速验证时可以直接以前台方式运行 `wink up` 并保持终端打开。长期运行请使用 [`LONG-RUNNING-CLIENT.md`](./LONG-RUNNING-CLIENT.md) 中的 systemd、Windows Task Scheduler 或 NSSM 工作流。
 
 ## 1. 前置条件
 
@@ -109,6 +109,7 @@ wink --config node-b.yaml up
 ```bash
 wink --config node-a.yaml status
 wink --config node-a.yaml peers
+wink --config node-a.yaml doctor
 ```
 
 看到 peer 后，记录对端 `Virtual IP`，尝试 ping：
@@ -177,6 +178,7 @@ Handshake:  <timestamp>
 - relay-only 节点 A：[`../deploy/quickstart/config.node-a.relay-only.yaml`](../deploy/quickstart/config.node-a.relay-only.yaml)
 - relay-only 节点 B：[`../deploy/quickstart/config.node-b.relay-only.yaml`](../deploy/quickstart/config.node-b.relay-only.yaml)
 - coturn 单独部署说明：[`../deploy/coturn/README.md`](../deploy/coturn/README.md)
+- 长期运行说明：[`LONG-RUNNING-CLIENT.md`](./LONG-RUNNING-CLIENT.md)
 
 ## 8. 安全提醒
 

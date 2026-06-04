@@ -17,6 +17,7 @@ When documents disagree, treat `CONNECTIVITY-SOLVER-BASELINE.md` as the source o
 ## Operator Docs
 
 - Self-host quickstart: [`SELFHOST-QUICKSTART.md`](./SELFHOST-QUICKSTART.md)
+- Long-running client workflow: [`LONG-RUNNING-CLIENT.md`](./LONG-RUNNING-CLIENT.md)
 - Troubleshooting: [`TROUBLESHOOTING.md`](./TROUBLESHOOTING.md)
 
 ## Proposals

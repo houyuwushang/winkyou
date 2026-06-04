@@ -140,6 +140,16 @@ Future strategies may include QUIC, proxy-friendly, or other transports, but the
 
 `pkg/session` does not own NAT or ICE dependencies directly.
 
+### Client Runtime
+
+The client CLI owns operator workflow around the engine:
+
+- `wink up` starts the long-running foreground client process
+- `wink down` stops a running client and clears runtime state
+- `wink status`, `wink peers`, `wink logs`, and `wink doctor` inspect runtime state, logs, and diagnostics
+
+Runtime state and log files are operational artifacts, not solver inputs. By default runtime state is derived from the config path; service deployments can pass `--state` to store it under `/var/lib/wink` or another explicit runtime directory.
+
 ### Binder
 
 The binder attaches the selected `PacketTransport` to the tunnel.
