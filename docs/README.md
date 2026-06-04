@@ -26,6 +26,7 @@ When documents disagree, treat `CONNECTIVITY-SOLVER-BASELINE.md` as the source o
 
 These files are proposal/brainstorm material from the 2026-05 architecture overhaul pass. They remain useful context, but they are not active authority and should not override the baseline.
 
+- [`proposals/HTTP-CONNECT-WEBSOCKET-STRATEGY.md`](./proposals/HTTP-CONNECT-WEBSOCKET-STRATEGY.md)
 - [`ARCHITECTURE-DEEP-ANALYSIS.md`](./ARCHITECTURE-DEEP-ANALYSIS.md)
 - [`ARCHITECTURE-ROADMAP.md`](./ARCHITECTURE-ROADMAP.md)
 - [`ARCHITECTURE-RISK-REGISTER.md`](./ARCHITECTURE-RISK-REGISTER.md)
