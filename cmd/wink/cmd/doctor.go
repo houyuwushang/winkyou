@@ -1,0 +1,400 @@
+package cmd
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"net"
+	"net/url"
+	"os"
+	"runtime"
+	"slices"
+	"strings"
+	"time"
+
+	"github.com/spf13/cobra"
+
+	winkclient "winkyou/pkg/client"
+	"winkyou/pkg/config"
+	"winkyou/pkg/solver/strategy/legacyice"
+	"winkyou/pkg/solver/strategy/relayonly"
+	"winkyou/pkg/solver/strategy/tcpframed"
+)
+
+type doctorStatus string
+
+const (
+	doctorOK   doctorStatus = "ok"
+	doctorWarn doctorStatus = "warn"
+	doctorFail doctorStatus = "fail"
+)
+
+type doctorCheck struct {
+	Layer      string       `json:"layer"`
+	Name       string       `json:"name"`
+	Status     doctorStatus `json:"status"`
+	Message    string       `json:"message"`
+	Suggestion string       `json:"suggestion,omitempty"`
+}
+
+type doctorSummary struct {
+	OK    int          `json:"ok"`
+	Warn  int          `json:"warn"`
+	Fail  int          `json:"fail"`
+	Worst doctorStatus `json:"worst"`
+}
+
+type doctorResult struct {
+	Checks  []doctorCheck `json:"checks"`
+	Summary doctorSummary `json:"summary"`
+}
+
+type doctorFlags struct {
+	asJSON   bool
+	relay    bool
+	strategy string
+}
+
+type doctorProbes struct {
+	Coordinator    func(context.Context, *config.Config) doctorCheck
+	TURN           func(context.Context, *config.Config) doctorCheck
+	LocalInterface func(context.Context, *config.Config) doctorCheck
+}
+
+func newDoctorCmd(opts *Options) *cobra.Command {
+	return newDoctorCmdWithProbes(opts, doctorProbes{})
+}
+
+func newDoctorCmdWithProbes(opts *Options, probes doctorProbes) *cobra.Command {
+	flags := doctorFlags{}
+	cmd := &cobra.Command{
+		Use:   "doctor",
+		Short: "Run layered connectivity diagnostics",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			result := runDoctor(cmd.Context(), opts, flags, probes)
+			if flags.asJSON {
+				return writeJSON(cmd, result)
+			}
+			printDoctorResult(cmd, result)
+			return nil
+		},
+	}
+	cmd.Flags().BoolVar(&flags.asJSON, "json", false, "output diagnostics as json")
+	cmd.Flags().BoolVar(&flags.relay, "relay", false, "require relay/TURN diagnostics")
+	cmd.Flags().StringVar(&flags.strategy, "strategy", "", "check one strategy by name")
+	return cmd
+}
+
+func runDoctor(ctx context.Context, opts *Options, flags doctorFlags, probes doctorProbes) doctorResult {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	result := doctorResult{}
+	configPath := opts.ConfigPath
+	if strings.TrimSpace(configPath) == "" {
+		configPath = config.DefaultPath()
+	}
+	if _, err := os.Stat(configPath); err == nil {
+		result.add(okCheck("config", "config file", "config file exists: "+configPath))
+	} else if opts.ConfigPath == "" && os.IsNotExist(err) {
+		result.add(warnCheck("config", "config file", "default config file not found; using built-in defaults", "create a config file or pass --config"))
+	} else if os.IsNotExist(err) {
+		result.add(failCheck("config", "config file", "config file not found: "+configPath, "check --config path"))
+	} else if err != nil {
+		result.add(failCheck("config", "config file", err.Error(), "check config file permissions"))
+	}
+
+	cfg, err := config.Load(opts.ConfigPath)
+	if err != nil {
+		result.add(failCheck("config", "config loaded", err.Error(), "fix the config validation error"))
+		result.finish()
+		return result
+	}
+	result.add(okCheck("config", "config loaded", "config loaded"))
+	addConfigChecks(&result, cfg)
+
+	coordinatorProbe := probes.Coordinator
+	if coordinatorProbe == nil {
+		coordinatorProbe = defaultCoordinatorProbe
+	}
+	result.add(coordinatorProbe(ctx, cfg))
+
+	turnProbe := probes.TURN
+	if turnProbe == nil {
+		turnProbe = func(ctx context.Context, cfg *config.Config) doctorCheck {
+			_ = ctx
+			return defaultTURNProbe(cfg, flags.relay || requestedStrategy(flags) == relayonly.StrategyName || cfg.Connectivity.Mode == relayonly.StrategyName)
+		}
+	}
+	result.add(turnProbe(ctx, cfg))
+
+	interfaceProbe := probes.LocalInterface
+	if interfaceProbe == nil {
+		interfaceProbe = defaultLocalInterfaceProbe
+	}
+	result.add(interfaceProbe(ctx, cfg))
+
+	state, stateErr := winkclient.LoadRuntimeState(opts.ConfigPath)
+	addStrategyChecks(&result, cfg, flags)
+	addTunnelChecks(&result, state, stateErr)
+	addTransportChecks(&result, state, stateErr)
+
+	result.finish()
+	return result
+}
+
+func addConfigChecks(result *doctorResult, cfg *config.Config) {
+	if strings.TrimSpace(cfg.Coordinator.URL) == "" {
+		result.add(failCheck("config", "coordinator url", "coordinator.url is empty", "set coordinator.url to grpc://host:50051"))
+	} else {
+		result.add(okCheck("config", "coordinator url", cfg.Coordinator.URL))
+	}
+	if strings.TrimSpace(cfg.Node.Name) == "" {
+		result.add(failCheck("config", "node name", "node.name is empty", "set node.name"))
+	} else {
+		result.add(okCheck("config", "node name", cfg.Node.Name))
+	}
+	if strings.TrimSpace(cfg.WireGuard.PrivateKey) == "" {
+		result.add(failCheck("config", "wireguard key", "wireguard.private_key is empty", "run wink genkey and update the config"))
+	} else if strings.HasPrefix(strings.TrimSpace(cfg.WireGuard.PrivateKey), "<") {
+		result.add(failCheck("config", "wireguard key", "wireguard.private_key is still a placeholder", "replace it with wink genkey output"))
+	} else {
+		result.add(okCheck("config", "wireguard key", "wireguard private key configured"))
+	}
+	if strings.TrimSpace(cfg.NetIf.Backend) == "" {
+		result.add(failCheck("config", "netif backend", "netif.backend is empty", "set netif.backend to tun, userspace, proxy, or auto"))
+	} else {
+		result.add(okCheck("config", "netif backend", cfg.NetIf.Backend))
+	}
+}
+
+func defaultCoordinatorProbe(ctx context.Context, cfg *config.Config) doctorCheck {
+	if strings.TrimSpace(cfg.Coordinator.URL) == "" {
+		return failCheck("coordinator", "reachable", "coordinator.url is empty", "set coordinator.url")
+	}
+	host, err := hostPortFromCoordinatorURL(cfg.Coordinator.URL)
+	if err != nil {
+		return failCheck("coordinator", "reachable", err.Error(), "use grpc://host:port")
+	}
+	dialCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	var dialer net.Dialer
+	conn, err := dialer.DialContext(dialCtx, "tcp", host)
+	if err != nil {
+		return failCheck("coordinator", "reachable", err.Error(), "check coordinator host, port, firewall, and auth key")
+	}
+	_ = conn.Close()
+	return okCheck("coordinator", "reachable", "tcp connect succeeded: "+host)
+}
+
+func defaultTURNProbe(cfg *config.Config, required bool) doctorCheck {
+	if len(cfg.NAT.TURNServers) == 0 {
+		if required {
+			return failCheck("nat", "turn", "relay diagnostics requested but nat.turn_servers is empty", "configure coturn and nat.turn_servers")
+		}
+		return warnCheck("nat", "turn", "no TURN server configured", "configure nat.turn_servers to validate relay paths")
+	}
+	for i, server := range cfg.NAT.TURNServers {
+		if strings.TrimSpace(server.URL) == "" || strings.TrimSpace(server.Username) == "" || strings.TrimSpace(server.Password) == "" {
+			return failCheck("nat", "turn", fmt.Sprintf("turn server %d is missing url, username, or password", i), "set static coturn credentials")
+		}
+	}
+	return okCheck("nat", "turn", fmt.Sprintf("%d TURN server(s) configured", len(cfg.NAT.TURNServers)))
+}
+
+func defaultLocalInterfaceProbe(ctx context.Context, cfg *config.Config) doctorCheck {
+	_ = ctx
+	backend := strings.ToLower(strings.TrimSpace(cfg.NetIf.Backend))
+	if backend == "tun" || backend == "auto" {
+		if runtime.GOOS == "linux" {
+			if _, err := os.Stat("/dev/net/tun"); err != nil {
+				return failCheck("local_interface", "tun", "/dev/net/tun is not available", "load tun module or run with proper permissions")
+			}
+		}
+		if runtime.GOOS == "windows" {
+			return warnCheck("local_interface", "wintun", "Wintun requires an elevated terminal", "run PowerShell or cmd as Administrator")
+		}
+	}
+	return okCheck("local_interface", "backend", "backend configured: "+cfg.NetIf.Backend)
+}
+
+func addStrategyChecks(result *doctorResult, cfg *config.Config, flags doctorFlags) {
+	order := configuredStrategyOrder(cfg)
+	if len(order) == 0 {
+		result.add(failCheck("strategy", "order", "no strategy order configured", "set connectivity.strategy_order"))
+		return
+	}
+	result.add(okCheck("strategy", "order", strings.Join(order, " -> ")))
+
+	strategy := requestedStrategy(flags)
+	if strategy == "" {
+		return
+	}
+	if !knownDoctorStrategy(strategy) {
+		result.add(failCheck("strategy", "requested", "unknown strategy: "+strategy, "use legacy_ice_udp, relay_only, or tcp_framed"))
+		return
+	}
+	if !slices.Contains(order, strategy) {
+		result.add(failCheck("strategy", "requested", strategy+" is not in connectivity.strategy_order", "add it to connectivity.strategy_order"))
+		return
+	}
+	if strategy == tcpframed.StrategyName && !cfg.TCPFramed.Enabled {
+		result.add(failCheck("strategy", "tcp_framed", "tcp_framed is in order but tcp_framed.enabled=false", "set tcp_framed.enabled=true"))
+		return
+	}
+	result.add(okCheck("strategy", "requested", strategy+" is locally selectable"))
+}
+
+func addTunnelChecks(result *doctorResult, state *winkclient.RuntimeState, stateErr error) {
+	if stateErr != nil {
+		if errors.Is(stateErr, winkclient.ErrRuntimeStateNotFound) {
+			result.add(warnCheck("tunnel", "runtime state", "runtime state not found", "start wink up and keep it running"))
+			return
+		}
+		result.add(failCheck("tunnel", "runtime state", stateErr.Error(), "check runtime state file permissions"))
+		return
+	}
+	if !state.IsFresh(20 * time.Second) {
+		result.add(warnCheck("tunnel", "runtime state", "runtime state is stale", "restart wink up or check the running process"))
+	} else {
+		result.add(okCheck("tunnel", "runtime state", "runtime state is fresh"))
+	}
+	if len(state.Peers) == 0 {
+		result.add(warnCheck("tunnel", "peers", "no online peers in runtime state", "start another client with the same coordinator"))
+		return
+	}
+	connected := 0
+	handshakes := 0
+	for _, peer := range state.Peers {
+		if peer.State == winkclient.PeerStateConnected.String() {
+			connected++
+		}
+		if !peer.LastHandshake.IsZero() {
+			handshakes++
+		}
+	}
+	if connected == 0 {
+		result.add(warnCheck("tunnel", "peers", "peers exist but none are connected", "check coordinator, strategy selection, and relay/direct reachability"))
+	} else {
+		result.add(okCheck("tunnel", "peers", fmt.Sprintf("%d connected peer(s)", connected)))
+	}
+	if handshakes == 0 {
+		result.add(warnCheck("tunnel", "wireguard handshake", "no peer handshake recorded", "check selected path and system firewall"))
+	} else {
+		result.add(okCheck("tunnel", "wireguard handshake", fmt.Sprintf("%d peer handshake(s) recorded", handshakes)))
+	}
+}
+
+func addTransportChecks(result *doctorResult, state *winkclient.RuntimeState, stateErr error) {
+	if stateErr != nil || state == nil || len(state.Peers) == 0 {
+		result.add(warnCheck("transport", "packet transport", "no runtime transport state", "start wink up and connect a peer"))
+		return
+	}
+	for _, peer := range state.Peers {
+		if peer.TransportLastError != "" {
+			result.add(failCheck("transport", "last error", fmt.Sprintf("%s: %s", firstNonEmpty(peer.Name, peer.NodeID), peer.TransportLastError), "check path reachability and relay firewall"))
+			return
+		}
+	}
+	totalTx := uint64(0)
+	totalRx := uint64(0)
+	for _, peer := range state.Peers {
+		totalTx += peer.TransportTxPackets
+		totalRx += peer.TransportRxPackets
+	}
+	if totalTx == 0 && totalRx == 0 {
+		result.add(warnCheck("transport", "packet counters", "transport packet counters are zero", "generate traffic, then run wink peers again"))
+		return
+	}
+	result.add(okCheck("transport", "packet counters", fmt.Sprintf("tx=%d rx=%d packets", totalTx, totalRx)))
+}
+
+func printDoctorResult(cmd *cobra.Command, result doctorResult) {
+	for _, check := range result.Checks {
+		cmd.Printf("[%s] %s: %s\n", strings.ToUpper(string(check.Status)), check.Name, check.Message)
+		if check.Suggestion != "" {
+			cmd.Printf("Suggestion: %s\n", check.Suggestion)
+		}
+	}
+	cmd.Printf("Summary: ok=%d warn=%d fail=%d\n", result.Summary.OK, result.Summary.Warn, result.Summary.Fail)
+}
+
+func (r *doctorResult) add(check doctorCheck) {
+	r.Checks = append(r.Checks, check)
+}
+
+func (r *doctorResult) finish() {
+	worst := doctorOK
+	for _, check := range r.Checks {
+		switch check.Status {
+		case doctorFail:
+			r.Summary.Fail++
+			worst = doctorFail
+		case doctorWarn:
+			r.Summary.Warn++
+			if worst != doctorFail {
+				worst = doctorWarn
+			}
+		default:
+			r.Summary.OK++
+		}
+	}
+	r.Summary.Worst = worst
+}
+
+func okCheck(layer, name, message string) doctorCheck {
+	return doctorCheck{Layer: layer, Name: name, Status: doctorOK, Message: message}
+}
+
+func warnCheck(layer, name, message, suggestion string) doctorCheck {
+	return doctorCheck{Layer: layer, Name: name, Status: doctorWarn, Message: message, Suggestion: suggestion}
+}
+
+func failCheck(layer, name, message, suggestion string) doctorCheck {
+	return doctorCheck{Layer: layer, Name: name, Status: doctorFail, Message: message, Suggestion: suggestion}
+}
+
+func requestedStrategy(flags doctorFlags) string {
+	return strings.ToLower(strings.TrimSpace(flags.strategy))
+}
+
+func configuredStrategyOrder(cfg *config.Config) []string {
+	order := append([]string(nil), cfg.Connectivity.StrategyOrder...)
+	if len(order) == 0 {
+		order = []string{legacyice.StrategyName, relayonly.StrategyName}
+	}
+	if cfg.Connectivity.Mode == relayonly.StrategyName {
+		order = append([]string{relayonly.StrategyName}, removeStrategy(order, relayonly.StrategyName)...)
+	}
+	return order
+}
+
+func removeStrategy(values []string, target string) []string {
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		if value != target {
+			out = append(out, value)
+		}
+	}
+	return out
+}
+
+func knownDoctorStrategy(strategy string) bool {
+	switch strategy {
+	case legacyice.StrategyName, relayonly.StrategyName, tcpframed.StrategyName:
+		return true
+	default:
+		return false
+	}
+}
+
+func hostPortFromCoordinatorURL(raw string) (string, error) {
+	parsed, err := url.Parse(raw)
+	if err != nil {
+		return "", err
+	}
+	if parsed.Host == "" {
+		return "", fmt.Errorf("coordinator url missing host: %q", raw)
+	}
+	return parsed.Host, nil
+}
