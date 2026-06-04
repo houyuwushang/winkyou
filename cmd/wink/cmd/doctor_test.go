@@ -122,6 +122,48 @@ func TestDoctorTextOutput(t *testing.T) {
 	}
 }
 
+func TestDoctorCandidateFilterDetectsExcludedRuntimeCandidate(t *testing.T) {
+	configPath := writeDoctorConfigWithNATExtra(t, "  candidate_cidr_exclude:\n    - 100.64.0.0/10\n")
+	writeDoctorRuntimeState(t, configPath, []winkclient.RuntimePeerStatus{{
+		NodeID:             "node-b",
+		Name:               "node-b",
+		State:              winkclient.PeerStateConnected.String(),
+		LocalCandidate:     "host:100.64.1.2:50000",
+		LastHandshake:      time.Now(),
+		TransportTxPackets: 2,
+		TransportRxPackets: 3,
+	}})
+
+	result := runDoctor(context.Background(), &Options{ConfigPath: configPath}, doctorFlags{}, healthyDoctorProbes())
+	check := findDoctorCheck(result, "nat", "candidate selected")
+	if check.Status != doctorFail || !strings.Contains(check.Message, "candidate_cidr_exclude") {
+		t.Fatalf("candidate selected check = %#v, want excluded CIDR failure", check)
+	}
+}
+
+func TestDoctorCandidateFilterAllowsRuntimeCandidate(t *testing.T) {
+	configPath := writeDoctorConfigWithNATExtra(t, "  candidate_cidr_include:\n    - 192.168.0.0/16\n  candidate_interface_exclude:\n    - tailscale0\n")
+	writeDoctorRuntimeState(t, configPath, []winkclient.RuntimePeerStatus{{
+		NodeID:             "node-b",
+		Name:               "node-b",
+		State:              winkclient.PeerStateConnected.String(),
+		LocalCandidate:     "host:192.168.1.2:50000",
+		LastHandshake:      time.Now(),
+		TransportTxPackets: 2,
+		TransportRxPackets: 3,
+	}})
+
+	result := runDoctor(context.Background(), &Options{ConfigPath: configPath}, doctorFlags{}, healthyDoctorProbes())
+	check := findDoctorCheck(result, "nat", "candidate selected")
+	if check.Status != doctorOK {
+		t.Fatalf("candidate selected check = %#v, want ok", check)
+	}
+	filterCheck := findDoctorCheck(result, "nat", "candidate filters")
+	if filterCheck.Status != doctorOK || !strings.Contains(filterCheck.Message, "interface_exclude=tailscale0") {
+		t.Fatalf("candidate filters check = %#v, want configured filter summary", filterCheck)
+	}
+}
+
 func healthyDoctorProbes() doctorProbes {
 	return doctorProbes{
 		Coordinator: func(context.Context, *config.Config) doctorCheck {
@@ -137,6 +179,10 @@ func healthyDoctorProbes() doctorProbes {
 }
 
 func writeDoctorConfig(t *testing.T) string {
+	return writeDoctorConfigWithNATExtra(t, "")
+}
+
+func writeDoctorConfigWithNATExtra(t *testing.T, natExtra string) string {
 	t.Helper()
 	body := `
 node:
@@ -153,6 +199,7 @@ nat:
     - url: turn:127.0.0.1:3478?transport=udp
       username: wink
       password: secret
+` + natExtra + `
 connectivity:
   mode: auto
   strategy_order:

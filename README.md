@@ -27,6 +27,7 @@ WinkYou = connectivity solver + secure WireGuard data plane
 - `wink doctor` 已提供 config、coordinator、TURN、本地接口、strategy、tunnel、transport 的分层诊断
 - `wink up/down/status/peers/logs` 已形成长期运行 CLI 工作流；Linux systemd 和 Windows 启动项文档已补齐
 - v0.1 release workflow 已能构建 Windows client、Linux client、Linux coordinator、Linux relay 和 SHA256SUMS
+- NAT/ICE 已支持 candidate interface include/exclude 和 candidate CIDR include/exclude；`wink doctor` 会展示过滤配置并检查 runtime candidate 是否命中排除 CIDR
 - 真实双节点验证已证明 `legacy_ice_udp` direct path 可以建立虚拟局域网，但也暴露出 coordinator 仍是持续控制面依赖；client 已加第一层 peer-offline 保护，并已在 runtime/`wink peers` 中暴露 control/data 状态和最近成功 path cache；`pkg/peercontrol` 已冻结 in-band peer control 消息模型，后续仍需真实 coordinator outage 验证和网络循环接入；详见 [`docs/CONTROL-PLANE-RESILIENCE.md`](./docs/CONTROL-PLANE-RESILIENCE.md)
 
 当文档发生冲突时，以 [`docs/CONNECTIVITY-SOLVER-BASELINE.md`](./docs/CONNECTIVITY-SOLVER-BASELINE.md) 作为 session、solver、strategy 和 transport 边界的判断依据。部分历史架构文档已标记为 proposal/archive，不能覆盖 active baseline。
@@ -105,6 +106,20 @@ nat:
 
 在 relay-only 模式下，如果双方都支持 `relay_only`，生产 resolver 会优先选择 `relay_only`。如果远端是旧 peer 且没有上报 capability，仍会 fallback 到 `legacy_ice_udp`，但 legacy ICE agent 会继续使用 relay-only candidate gathering。
 
+验证纯 NAT piercing 时，可以排除已有 overlay 或本地虚拟网卡：
+
+```yaml
+nat:
+  candidate_interface_exclude:
+    - tailscale0
+    - docker0
+  candidate_cidr_exclude:
+    - 100.64.0.0/10
+    - 172.16.0.0/12
+```
+
+Windows 接口名应使用系统实际接口名称，例如 `Tailscale`、`vEthernet (WSL)` 或 Docker/Wintun 对应名称。`wink doctor` 会展示当前过滤配置，并在 runtime candidate 命中排除 CIDR 时报告失败。
+
 尚未完成：
 
 - no-admin mode
@@ -115,7 +130,7 @@ nat:
 - 高级 learning/scoring 闭环
 - coordinator 断线后保持已 bound 数据面的完整控制面韧性：peer-offline 误清理和 runtime control/data/path cache 已先修，heartbeat/signaling failure、cached path 恢复和真实 kill-coordinator 测试仍待完成
 - 已建立虚拟网后的 in-band peer control channel 运行时接入；消息模型已在 `pkg/peercontrol` 冻结，但还没有接入 client 网络循环
-- ICE candidate 接口 include/exclude 或 CIDR 过滤，用于排除 Tailscale、Docker bridge、其他 VPN/TAP 干扰并验证纯 NAT piercing
+- 真实环境下排除 Tailscale、Docker bridge、其他 VPN/TAP 后的纯 NAT piercing 验证
 - GUI、移动端、原生 Windows service
 
 ## 架构边界

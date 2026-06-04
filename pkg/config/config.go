@@ -47,14 +47,18 @@ type WireGuardConfig struct {
 }
 
 type NATConfig struct {
-	GatherTimeout    time.Duration      `mapstructure:"gather_timeout" yaml:"gather_timeout"`
-	ConnectTimeout   time.Duration      `mapstructure:"connect_timeout" yaml:"connect_timeout"`
-	CheckTimeout     time.Duration      `mapstructure:"check_timeout" yaml:"check_timeout"`
-	RetryInterval    time.Duration      `mapstructure:"retry_interval" yaml:"retry_interval"`
-	RetryMaxInterval time.Duration      `mapstructure:"retry_max_interval" yaml:"retry_max_interval"`
-	STUNServers      []string           `mapstructure:"stun_servers" yaml:"stun_servers"`
-	TURNServers      []TURNServerConfig `mapstructure:"turn_servers" yaml:"turn_servers"`
-	ForceRelay       bool               `mapstructure:"force_relay" yaml:"force_relay"`
+	GatherTimeout             time.Duration      `mapstructure:"gather_timeout" yaml:"gather_timeout"`
+	ConnectTimeout            time.Duration      `mapstructure:"connect_timeout" yaml:"connect_timeout"`
+	CheckTimeout              time.Duration      `mapstructure:"check_timeout" yaml:"check_timeout"`
+	RetryInterval             time.Duration      `mapstructure:"retry_interval" yaml:"retry_interval"`
+	RetryMaxInterval          time.Duration      `mapstructure:"retry_max_interval" yaml:"retry_max_interval"`
+	STUNServers               []string           `mapstructure:"stun_servers" yaml:"stun_servers"`
+	TURNServers               []TURNServerConfig `mapstructure:"turn_servers" yaml:"turn_servers"`
+	ForceRelay                bool               `mapstructure:"force_relay" yaml:"force_relay"`
+	CandidateInterfaceInclude []string           `mapstructure:"candidate_interface_include" yaml:"candidate_interface_include"`
+	CandidateInterfaceExclude []string           `mapstructure:"candidate_interface_exclude" yaml:"candidate_interface_exclude"`
+	CandidateCIDRInclude      []string           `mapstructure:"candidate_cidr_include" yaml:"candidate_cidr_include"`
+	CandidateCIDRExclude      []string           `mapstructure:"candidate_cidr_exclude" yaml:"candidate_cidr_exclude"`
 }
 
 type ConnectivityConfig struct {

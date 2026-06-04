@@ -121,13 +121,17 @@ func (e *engine) legacyICEStrategyConfig() legacyice.Config {
 			return nil, ErrEngineNotStarted
 		}
 		return e.nat.NewICEAgent(nat.ICEConfig{
-			GatherTimeout:  cfg.GatherTimeout,
-			CheckTimeout:   cfg.CheckTimeout,
-			ConnectTimeout: cfg.ConnectTimeout,
-			STUNServers:    e.cfg.NAT.STUNServers,
-			TURNServers:    toNATTURNServers(e.cfg.NAT.TURNServers),
-			Controlling:    req.Controlling,
-			ForceRelay:     req.ForceRelay,
+			GatherTimeout:             cfg.GatherTimeout,
+			CheckTimeout:              cfg.CheckTimeout,
+			ConnectTimeout:            cfg.ConnectTimeout,
+			STUNServers:               e.cfg.NAT.STUNServers,
+			TURNServers:               toNATTURNServers(e.cfg.NAT.TURNServers),
+			Controlling:               req.Controlling,
+			CandidateInterfaceInclude: append([]string(nil), e.cfg.NAT.CandidateInterfaceInclude...),
+			CandidateInterfaceExclude: append([]string(nil), e.cfg.NAT.CandidateInterfaceExclude...),
+			CandidateCIDRInclude:      append([]string(nil), e.cfg.NAT.CandidateCIDRInclude...),
+			CandidateCIDRExclude:      append([]string(nil), e.cfg.NAT.CandidateCIDRExclude...),
+			ForceRelay:                req.ForceRelay,
 		})
 	}
 	return cfg

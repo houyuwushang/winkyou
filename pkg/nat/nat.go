@@ -27,12 +27,16 @@ type TURNServer struct {
 
 // ICEConfig holds the parameters for creating an ICE agent.
 type ICEConfig struct {
-	GatherTimeout  time.Duration // default: 5s
-	CheckTimeout   time.Duration // default: 10s
-	ConnectTimeout time.Duration // default: 30s
-	STUNServers    []string
-	TURNServers    []TURNServer
-	Controlling    bool
+	GatherTimeout             time.Duration // default: 5s
+	CheckTimeout              time.Duration // default: 10s
+	ConnectTimeout            time.Duration // default: 30s
+	STUNServers               []string
+	TURNServers               []TURNServer
+	Controlling               bool
+	CandidateInterfaceInclude []string
+	CandidateInterfaceExclude []string
+	CandidateCIDRInclude      []string
+	CandidateCIDRExclude      []string
 
 	// ForceRelay forces relay-only candidate gathering (test/debug only).
 	ForceRelay bool

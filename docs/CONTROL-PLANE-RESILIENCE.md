@@ -160,14 +160,27 @@ coordinator bootstrap
 
 ### P1: 纯 NAT piercing 验证需要候选接口控制
 
+状态：NAT/ICE 配置已支持 candidate interface include/exclude 和 candidate CIDR include/exclude；`wink doctor` 会展示过滤配置，并检查 runtime candidate 是否命中 excluded CIDR。
+
 本次 direct path 中 candidate 可能包含 Tailscale/peer-reflexive 地址或 Docker bridge host 地址。这证明没有使用 `chen-win` TURN relay，但不能证明完全不借助已有 overlay。
 
-后续需要增加或验证：
+当前可用配置：
 
-- ICE interface include/exclude 配置
-- candidate CIDR 过滤
-- 排除 Tailscale、Docker bridge、VPN/TAP 等接口的测试配置
-- `wink doctor` 输出 selected candidate 来源和是否来自 excluded interface
+```yaml
+nat:
+  candidate_interface_exclude:
+    - tailscale0
+    - docker0
+  candidate_cidr_exclude:
+    - 100.64.0.0/10
+    - 172.16.0.0/12
+```
+
+后续仍需要真实验证：
+
+- 排除 Tailscale、Docker bridge、VPN/TAP 等接口后的双节点 direct path。
+- Windows 上按真实接口名配置，例如 `Tailscale`、`vEthernet (WSL)` 或 Docker/Wintun 对应接口。
+- `wink doctor` 目前能检查 CIDR 命中；interface 名称无法从已选 candidate 字符串反推，后续如需精确说明来源，需要在 ICE gather 阶段记录 candidate/interface 映射。
 
 ### P2: 部署建议
 

@@ -3,6 +3,7 @@ package config
 import (
 	"errors"
 	"fmt"
+	"net"
 	"net/url"
 	"strings"
 )
@@ -82,6 +83,18 @@ func (c *Config) Validate() error {
 			return fmt.Errorf("nat.turn_servers[%d].url must not be empty", i)
 		}
 	}
+	if err := validateStringList("nat.candidate_interface_include", c.NAT.CandidateInterfaceInclude); err != nil {
+		return err
+	}
+	if err := validateStringList("nat.candidate_interface_exclude", c.NAT.CandidateInterfaceExclude); err != nil {
+		return err
+	}
+	if err := validateCIDRList("nat.candidate_cidr_include", c.NAT.CandidateCIDRInclude); err != nil {
+		return err
+	}
+	if err := validateCIDRList("nat.candidate_cidr_exclude", c.NAT.CandidateCIDRExclude); err != nil {
+		return err
+	}
 
 	mode := strings.ToLower(strings.TrimSpace(c.Connectivity.Mode))
 	if mode == "" {
@@ -119,6 +132,27 @@ func (c *Config) Validate() error {
 func requireOneOf(field, value string, allowed map[string]struct{}) error {
 	if _, ok := allowed[strings.ToLower(strings.TrimSpace(value))]; !ok {
 		return fmt.Errorf("invalid %s: %q", field, value)
+	}
+	return nil
+}
+
+func validateStringList(field string, values []string) error {
+	for i, value := range values {
+		if strings.TrimSpace(value) == "" {
+			return fmt.Errorf("%s[%d] must not be empty", field, i)
+		}
+	}
+	return nil
+}
+
+func validateCIDRList(field string, values []string) error {
+	for i, value := range values {
+		if strings.TrimSpace(value) == "" {
+			return fmt.Errorf("%s[%d] must not be empty", field, i)
+		}
+		if _, _, err := net.ParseCIDR(strings.TrimSpace(value)); err != nil {
+			return fmt.Errorf("invalid %s[%d]: %q", field, i, value)
+		}
 	}
 	return nil
 }

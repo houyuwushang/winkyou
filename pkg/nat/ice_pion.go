@@ -36,6 +36,10 @@ func newICEPionAgent(cfg ICEConfig) (ICEAgent, error) {
 	if err != nil {
 		return nil, err
 	}
+	ipFilter, err := buildCandidateIPFilter(cfg)
+	if err != nil {
+		return nil, err
+	}
 
 	failedTimeout := cfg.CheckTimeout
 	if failedTimeout <= 0 {
@@ -54,6 +58,8 @@ func newICEPionAgent(cfg ICEConfig) (ICEAgent, error) {
 		DisconnectedTimeout: &disconnectedTimeout,
 		FailedTimeout:       &failedTimeout,
 		KeepaliveInterval:   durationPtr(2 * time.Second),
+		InterfaceFilter:     buildCandidateInterfaceFilter(cfg),
+		IPFilter:            ipFilter,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("nat: create pion ice agent: %w", err)

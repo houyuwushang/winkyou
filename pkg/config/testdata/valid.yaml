@@ -26,6 +26,14 @@ nat:
     - url: "turn:relay.example.com:3478"
       username: "wink"
       password: "secret"
+  candidate_interface_include:
+    - "Ethernet"
+  candidate_interface_exclude:
+    - "tailscale0"
+  candidate_cidr_include:
+    - "192.168.0.0/16"
+  candidate_cidr_exclude:
+    - "100.64.0.0/10"
 
 connectivity:
   mode: auto

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"winkyou/pkg/config"
+	"winkyou/pkg/nat"
 	rproto "winkyou/pkg/rendezvous/proto"
 	sesspkg "winkyou/pkg/session"
 	"winkyou/pkg/solver"
@@ -344,6 +345,46 @@ func TestLegacyICEStrategyConfigConnectivityRelayOnlyForcesRelay(t *testing.T) {
 	if !cfg.ForceRelay {
 		t.Fatal("legacyICEStrategyConfig().ForceRelay = false, want true")
 	}
+}
+
+func TestLegacyICEStrategyConfigPropagatesCandidateFilters(t *testing.T) {
+	recorder := &recordingNATTraversal{}
+	eng := &engine{
+		nat: recorder,
+		cfg: config.Config{
+			NAT: config.NATConfig{
+				CandidateInterfaceInclude: []string{"Ethernet"},
+				CandidateInterfaceExclude: []string{"tailscale0"},
+				CandidateCIDRInclude:      []string{"192.168.0.0/16"},
+				CandidateCIDRExclude:      []string{"100.64.0.0/10"},
+			},
+		},
+	}
+
+	cfg := eng.legacyICEStrategyConfig()
+	if _, err := cfg.NewICEAgent(context.Background(), legacyice.AgentRequest{Controlling: true}); err != nil {
+		t.Fatalf("NewICEAgent() error = %v", err)
+	}
+	got := recorder.cfg
+	if got.CandidateInterfaceInclude[0] != "Ethernet" || got.CandidateInterfaceExclude[0] != "tailscale0" {
+		t.Fatalf("interface filters = include=%#v exclude=%#v", got.CandidateInterfaceInclude, got.CandidateInterfaceExclude)
+	}
+	if got.CandidateCIDRInclude[0] != "192.168.0.0/16" || got.CandidateCIDRExclude[0] != "100.64.0.0/10" {
+		t.Fatalf("cidr filters = include=%#v exclude=%#v", got.CandidateCIDRInclude, got.CandidateCIDRExclude)
+	}
+}
+
+type recordingNATTraversal struct {
+	cfg nat.ICEConfig
+}
+
+func (r *recordingNATTraversal) DetectNATType(context.Context) (nat.NATType, error) {
+	return nat.NATTypeUnknown, nil
+}
+
+func (r *recordingNATTraversal) NewICEAgent(cfg nat.ICEConfig) (nat.ICEAgent, error) {
+	r.cfg = cfg
+	return nil, nil
 }
 
 func resolverCandidateNames(candidates []sesspkg.StrategyCandidate) []string {

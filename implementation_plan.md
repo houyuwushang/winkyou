@@ -428,6 +428,7 @@ Phase 3A (Strategy Portfolio Foundation) 已完成。以下是我基于代码现
 - peer offline update 到达时，如果本地 peer 仍有最近 WireGuard handshake、packet counters 且没有 transport error，client 不再立即 `cleanupPeer`。
 - runtime/peer status 已新增 `control_state`、`data_state` 和最近成功 path cache 字段，`wink peers` 文本输出和 JSON 输出都能展示这些状态。
 - 已建立数据面后的 in-band peer control 消息模型已加入 `pkg/peercontrol`，覆盖 heartbeat、path health、endpoint update、capability refresh 和 re-ICE request 的校验与 JSON 编解码。
+- NAT/ICE 已新增 candidate interface include/exclude 和 candidate CIDR include/exclude 配置，并传入 Pion ICE agent；`wink doctor` 会展示过滤配置并检查 runtime candidate 是否命中 excluded CIDR。
 
 这还没有覆盖所有 coordinator 进程退出、heartbeat 失败、signaling stream 断开、cached path 恢复或 in-band control 网络循环接入场景。
 
@@ -437,7 +438,7 @@ Phase 3A (Strategy Portfolio Foundation) 已完成。以下是我基于代码现
 - 已 bound 且 WireGuard handshake 正常的 peer 不应因 coordinator 短暂不可达、heartbeat 失败或 peer offline 事件被立即清理。
 - 增加 coordinator outage / heartbeat/signaling failure 回归测试，确保已连接数据面不会被误拆。
 - 后续把已缓存的 peer lease、最近成功 endpoint、strategy、path summary 和 last handshake 用于恢复或 cached path 重试。
-- 增加 ICE interface include/exclude 或 candidate CIDR 过滤，用于排除 Tailscale、Docker bridge、其他 VPN/TAP 干扰。
+- 使用 ICE interface/CIDR 过滤排除 Tailscale、Docker bridge、其他 VPN/TAP 后，做真实纯 NAT piercing 验证。
 - 后续把 `pkg/peercontrol` 接入已建立虚拟网后的 client 网络循环；它可以承载 heartbeat、endpoint update、re-ICE request、capability refresh 和 path health，但首次 bootstrap 仍需要 coordinator、稳定 bootstrap 节点、静态 endpoint/端口映射、已有 overlay、手动交换信息或其他 rendezvous。
 
 详见 [`docs/CONTROL-PLANE-RESILIENCE.md`](./docs/CONTROL-PLANE-RESILIENCE.md)。

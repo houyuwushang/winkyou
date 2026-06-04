@@ -107,7 +107,20 @@ Xport Err
 - `Handshake: -` 且 `Conn Type: relay`：优先排查 coturn relay 端口范围
 - `Xport Tx` 增长但 `Xport Rx` 不增长：对端 client 可能未运行或 relay 回包失败
 - `State: connected` 但 ping 不通：检查双方虚拟 IP、系统防火墙和 ICMP 策略
-- 如果 `State: connected` 且 `Conn Type: direct`，但候选地址显示为 Tailscale、Docker bridge、其他 VPN/TAP 地址，这只能证明当前 path 不是 TURN relay；不能证明完全不借助已有 overlay。纯 NAT piercing 验证需要后续的 ICE interface include/exclude 或 candidate CIDR 过滤。
+- 如果 `State: connected` 且 `Conn Type: direct`，但候选地址显示为 Tailscale、Docker bridge、其他 VPN/TAP 地址，这只能证明当前 path 不是 TURN relay；不能证明完全不借助已有 overlay。纯 NAT piercing 验证应使用 ICE interface include/exclude 或 candidate CIDR 过滤后重新测试。
+当前可用过滤配置：
+
+```yaml
+nat:
+  candidate_interface_exclude:
+    - tailscale0
+    - docker0
+  candidate_cidr_exclude:
+    - 100.64.0.0/10
+    - 172.16.0.0/12
+```
+
+Windows 需要按真实接口名配置，例如 `Tailscale`、`vEthernet (WSL)` 或 Docker/Wintun 对应接口。过滤后重新启动两端 `wink up`，再用 `wink peers` 和 `wink doctor` 检查 selected candidate。
 
 ## 6. Strategy Selection
 

@@ -168,6 +168,8 @@ Coordinator-less operation has a strict boundary:
 
 The in-band control message model is frozen in `pkg/peercontrol` and documented in [`INBAND-PEER-CONTROL.md`](./INBAND-PEER-CONTROL.md). It is not yet wired into the long-running client network loop.
 
+NAT/ICE candidate filtering is owned by the NAT/legacy ICE boundary. Config supports candidate interface include/exclude and candidate CIDR include/exclude under `nat.*`; these filters are passed into the pion ICE agent. `pkg/session` and `pkg/solver` must remain unaware of interface or CIDR filtering details.
+
 ### Binder
 
 The binder attaches the selected `PacketTransport` to the tunnel.
@@ -371,7 +373,7 @@ Constraints:
 - new coordinator transport or protobuf redesign
 - coordinator-less first bootstrap for arbitrary NATed peers
 - runtime wiring for the in-band peer control channel over an already established virtual network
-- ICE interface include/exclude policy and candidate CIDR filtering
+- real-network validation of ICE interface/CIDR filters after excluding overlay interfaces
 - GUI, daemon, no-admin, proxy, or userspace completion work
 
 ## Legacy Relationship

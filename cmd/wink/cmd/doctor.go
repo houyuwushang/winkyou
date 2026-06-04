@@ -136,6 +136,7 @@ func runDoctor(ctx context.Context, opts *Options, flags doctorFlags, probes doc
 
 	state, stateErr := winkclient.LoadRuntimeState(runtimeStateKey(opts))
 	addStrategyChecks(&result, cfg, flags)
+	addCandidateFilterChecks(&result, cfg, state, stateErr)
 	addTunnelChecks(&result, state, stateErr)
 	addTransportChecks(&result, state, stateErr)
 
@@ -245,6 +246,41 @@ func addStrategyChecks(result *doctorResult, cfg *config.Config, flags doctorFla
 	result.add(okCheck("strategy", "requested", strategy+" is locally selectable"))
 }
 
+func addCandidateFilterChecks(result *doctorResult, cfg *config.Config, state *winkclient.RuntimeState, stateErr error) {
+	filterSummary := candidateFilterSummary(cfg)
+	if filterSummary == "" {
+		result.add(okCheck("nat", "candidate filters", "no candidate filters configured"))
+		return
+	}
+	result.add(okCheck("nat", "candidate filters", filterSummary))
+	if stateErr != nil || state == nil {
+		return
+	}
+
+	include, _ := parseDoctorCIDRs(cfg.NAT.CandidateCIDRInclude)
+	exclude, _ := parseDoctorCIDRs(cfg.NAT.CandidateCIDRExclude)
+	if len(include) == 0 && len(exclude) == 0 {
+		return
+	}
+	for _, peer := range state.Peers {
+		for _, raw := range []string{peer.LocalCandidate, peer.RemoteCandidate} {
+			candidateIP := candidateIP(raw)
+			if candidateIP == nil {
+				continue
+			}
+			if ipInDoctorCIDRs(candidateIP, exclude) {
+				result.add(failCheck("nat", "candidate selected", raw+" matches nat.candidate_cidr_exclude", "check candidate filters and restart wink up"))
+				return
+			}
+			if len(include) > 0 && !ipInDoctorCIDRs(candidateIP, include) {
+				result.add(warnCheck("nat", "candidate selected", raw+" is outside nat.candidate_cidr_include", "confirm runtime state is fresh and filters match the intended underlay"))
+				return
+			}
+		}
+	}
+	result.add(okCheck("nat", "candidate selected", "runtime candidates satisfy configured CIDR filters"))
+}
+
 func addTunnelChecks(result *doctorResult, state *winkclient.RuntimeState, stateErr error) {
 	if stateErr != nil {
 		if errors.Is(stateErr, winkclient.ErrRuntimeStateNotFound) {
@@ -352,6 +388,63 @@ func warnCheck(layer, name, message, suggestion string) doctorCheck {
 
 func failCheck(layer, name, message, suggestion string) doctorCheck {
 	return doctorCheck{Layer: layer, Name: name, Status: doctorFail, Message: message, Suggestion: suggestion}
+}
+
+func candidateFilterSummary(cfg *config.Config) string {
+	if cfg == nil {
+		return ""
+	}
+	parts := make([]string, 0, 4)
+	if len(cfg.NAT.CandidateInterfaceInclude) > 0 {
+		parts = append(parts, "interface_include="+strings.Join(cfg.NAT.CandidateInterfaceInclude, ","))
+	}
+	if len(cfg.NAT.CandidateInterfaceExclude) > 0 {
+		parts = append(parts, "interface_exclude="+strings.Join(cfg.NAT.CandidateInterfaceExclude, ","))
+	}
+	if len(cfg.NAT.CandidateCIDRInclude) > 0 {
+		parts = append(parts, "cidr_include="+strings.Join(cfg.NAT.CandidateCIDRInclude, ","))
+	}
+	if len(cfg.NAT.CandidateCIDRExclude) > 0 {
+		parts = append(parts, "cidr_exclude="+strings.Join(cfg.NAT.CandidateCIDRExclude, ","))
+	}
+	return strings.Join(parts, " ")
+}
+
+func parseDoctorCIDRs(values []string) ([]*net.IPNet, error) {
+	out := make([]*net.IPNet, 0, len(values))
+	for _, value := range values {
+		_, prefix, err := net.ParseCIDR(strings.TrimSpace(value))
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, prefix)
+	}
+	return out, nil
+}
+
+func candidateIP(raw string) net.IP {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil
+	}
+	_, addr, ok := strings.Cut(raw, ":")
+	if !ok {
+		return nil
+	}
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		return nil
+	}
+	return net.ParseIP(strings.Trim(host, "[]"))
+}
+
+func ipInDoctorCIDRs(ip net.IP, prefixes []*net.IPNet) bool {
+	for _, prefix := range prefixes {
+		if prefix != nil && prefix.Contains(ip) {
+			return true
+		}
+	}
+	return false
 }
 
 func requestedStrategy(flags doctorFlags) string {

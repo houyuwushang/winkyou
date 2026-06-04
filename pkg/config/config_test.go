@@ -35,6 +35,12 @@ func TestLoadValidFile(t *testing.T) {
 	if cfg.TCPFramed.DialTimeout.String() != "2s" {
 		t.Fatalf("tcp_framed.dial_timeout = %s, want 2s", cfg.TCPFramed.DialTimeout)
 	}
+	if len(cfg.NAT.CandidateInterfaceInclude) != 1 || cfg.NAT.CandidateInterfaceInclude[0] != "Ethernet" {
+		t.Fatalf("candidate interface include = %#v, want Ethernet", cfg.NAT.CandidateInterfaceInclude)
+	}
+	if len(cfg.NAT.CandidateCIDRExclude) != 1 || cfg.NAT.CandidateCIDRExclude[0] != "100.64.0.0/10" {
+		t.Fatalf("candidate cidr exclude = %#v, want 100.64.0.0/10", cfg.NAT.CandidateCIDRExclude)
+	}
 }
 
 func TestLoadUsesDefaultsWhenFileMissing(t *testing.T) {
@@ -107,6 +113,27 @@ func TestValidateRejectsUnknownConnectivityStrategy(t *testing.T) {
 	}
 	if got := err.Error(); got != `invalid connectivity.strategy_order[1]: "future_quic"` {
 		t.Fatalf("Validate() error = %q, want unknown strategy error", got)
+	}
+}
+
+func TestValidateCandidateFilters(t *testing.T) {
+	cfg := config.Default()
+	cfg.NAT.CandidateInterfaceInclude = []string{"Ethernet"}
+	cfg.NAT.CandidateInterfaceExclude = []string{"tailscale0"}
+	cfg.NAT.CandidateCIDRInclude = []string{"192.168.0.0/16"}
+	cfg.NAT.CandidateCIDRExclude = []string{"100.64.0.0/10"}
+
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("Validate() error = %v", err)
+	}
+
+	cfg.NAT.CandidateCIDRExclude = []string{"not-a-cidr"}
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("Validate() should reject invalid CIDR")
+	}
+	if got := err.Error(); got != `invalid nat.candidate_cidr_exclude[0]: "not-a-cidr"` {
+		t.Fatalf("Validate() error = %q, want invalid CIDR", got)
 	}
 }
 
