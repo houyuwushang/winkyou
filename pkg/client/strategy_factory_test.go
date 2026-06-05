@@ -395,11 +395,16 @@ func TestLegacyICEStrategyConfigPropagatesCandidateFilters(t *testing.T) {
 
 	if _, err := cfg.NewICEAgent(context.Background(), legacyice.AgentRequest{
 		PublicDirectCandidate: true,
+		CandidatePortMin:      40000,
+		CandidatePortMax:      40000,
 	}); err != nil {
 		t.Fatalf("NewICEAgent(public direct) error = %v", err)
 	}
 	if !recorder.cfg.PublicDirectCandidate {
 		t.Fatal("PublicDirectCandidate was not propagated to nat ICE config")
+	}
+	if recorder.cfg.CandidatePortMin != 40000 || recorder.cfg.CandidatePortMax != 40000 {
+		t.Fatalf("public direct candidate port range = %d-%d, want hint override 40000-40000", recorder.cfg.CandidatePortMin, recorder.cfg.CandidatePortMax)
 	}
 }
 

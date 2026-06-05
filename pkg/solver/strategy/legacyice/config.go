@@ -12,6 +12,8 @@ import (
 type AgentRequest struct {
 	Controlling           bool
 	ForceRelay            bool
+	CandidatePortMin      uint16
+	CandidatePortMax      uint16
 	CandidateCIDRExclude  []string
 	PublicDirectCandidate bool
 }

@@ -197,12 +197,17 @@ func (e *executor) ensureAgent(ctx context.Context) (nat.ICEAgent, error) {
 	if e.cfg.NewICEAgent == nil {
 		return nil, fmt.Errorf("legacyice: ice agent factory is nil")
 	}
-	agent, err := e.cfg.NewICEAgent(ctx, AgentRequest{
+	req := AgentRequest{
 		Controlling:           e.input.Initiator,
 		ForceRelay:            e.execCfg.ForceRelay,
 		CandidateCIDRExclude:  append([]string(nil), e.execCfg.CandidateCIDRExclude...),
 		PublicDirectCandidate: e.execCfg.PublicDirectCandidate,
-	})
+	}
+	if minPort, maxPort, ok := publicEndpointHintLocalPortRange(e.execCfg.PublicEndpointHints); ok {
+		req.CandidatePortMin = minPort
+		req.CandidatePortMax = maxPort
+	}
+	agent, err := e.cfg.NewICEAgent(ctx, req)
 	if err != nil {
 		return nil, err
 	}
@@ -729,6 +734,28 @@ func publicEndpointHintsHaveLocalBases(values []string) bool {
 		}
 	}
 	return false
+}
+
+func publicEndpointHintLocalPortRange(values []string) (uint16, uint16, bool) {
+	var port uint16
+	for _, raw := range values {
+		hint, err := parsePublicEndpointHint(raw)
+		if err != nil || !hint.local.IsValid() {
+			continue
+		}
+		next := uint16(hint.local.Port())
+		if port == 0 {
+			port = next
+			continue
+		}
+		if port != next {
+			return 0, 0, false
+		}
+	}
+	if port == 0 {
+		return 0, 0, false
+	}
+	return port, port, true
 }
 
 func publicEndpointHintPriority(index int) uint32 {

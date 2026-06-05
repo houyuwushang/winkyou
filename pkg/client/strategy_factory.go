@@ -121,12 +121,18 @@ func (e *engine) legacyICEStrategyConfig() legacyice.Config {
 		if e.nat == nil {
 			return nil, ErrEngineNotStarted
 		}
+		candidatePortMin := candidatePortValue(e.cfg.NAT.CandidatePortMin)
+		candidatePortMax := candidatePortValue(e.cfg.NAT.CandidatePortMax)
+		if req.CandidatePortMin > 0 && req.CandidatePortMax > 0 {
+			candidatePortMin = req.CandidatePortMin
+			candidatePortMax = req.CandidatePortMax
+		}
 		return e.nat.NewICEAgent(nat.ICEConfig{
 			GatherTimeout:             cfg.GatherTimeout,
 			CheckTimeout:              cfg.CheckTimeout,
 			ConnectTimeout:            cfg.ConnectTimeout,
-			CandidatePortMin:          candidatePortValue(e.cfg.NAT.CandidatePortMin),
-			CandidatePortMax:          candidatePortValue(e.cfg.NAT.CandidatePortMax),
+			CandidatePortMin:          candidatePortMin,
+			CandidatePortMax:          candidatePortMax,
 			STUNServers:               e.cfg.NAT.STUNServers,
 			TURNServers:               toNATTURNServers(e.cfg.NAT.TURNServers),
 			Controlling:               req.Controlling,

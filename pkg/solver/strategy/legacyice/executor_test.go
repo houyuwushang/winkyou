@@ -368,6 +368,80 @@ func TestPublicDirectAdvertisesConfiguredPublicEndpointHints(t *testing.T) {
 	}
 }
 
+func TestPublicDirectAgentRequestUsesMappedHintLocalPort(t *testing.T) {
+	agent := &recordingICEAgent{
+		connectErr:    context.Canceled,
+		connectCalled: make(chan struct{}),
+	}
+	var got AgentRequest
+	exec := newExecutor(Config{
+		NewICEAgent: func(ctx context.Context, req AgentRequest) (nat.ICEAgent, error) {
+			_ = ctx
+			got = req
+			return agent, nil
+		},
+		PublicEndpointHints: []string{"117.48.146.2:41000/192.168.1.20:40000"},
+	}, solver.SolveInput{
+		SessionID: "session/node-a/node-b",
+		Initiator: true,
+	}, solver.Plan{
+		ID:       planIDPublicDirect,
+		Strategy: StrategyName,
+		Metadata: map[string]string{"mode": string(modePublicDirect)},
+	}, executorConfig{
+		Mode:                  modePublicDirect,
+		PublicDirectCandidate: true,
+		PublicEndpointHints:   []string{"117.48.146.2:41000/192.168.1.20:40000"},
+	})
+
+	if _, err := exec.ensureAgent(context.Background()); err != nil {
+		t.Fatalf("ensureAgent(public direct hint port) error = %v", err)
+	}
+	if got.CandidatePortMin != 40000 || got.CandidatePortMax != 40000 {
+		t.Fatalf("public direct candidate port range = %d-%d, want 40000-40000", got.CandidatePortMin, got.CandidatePortMax)
+	}
+}
+
+func TestPublicDirectAgentRequestSkipsAmbiguousMappedHintPorts(t *testing.T) {
+	agent := &recordingICEAgent{
+		connectErr:    context.Canceled,
+		connectCalled: make(chan struct{}),
+	}
+	var got AgentRequest
+	exec := newExecutor(Config{
+		NewICEAgent: func(ctx context.Context, req AgentRequest) (nat.ICEAgent, error) {
+			_ = ctx
+			got = req
+			return agent, nil
+		},
+		PublicEndpointHints: []string{
+			"117.48.146.2:41000/192.168.1.20:40000",
+			"117.48.146.3:41001/192.168.1.20:40001",
+		},
+	}, solver.SolveInput{
+		SessionID: "session/node-a/node-b",
+		Initiator: true,
+	}, solver.Plan{
+		ID:       planIDPublicDirect,
+		Strategy: StrategyName,
+		Metadata: map[string]string{"mode": string(modePublicDirect)},
+	}, executorConfig{
+		Mode:                  modePublicDirect,
+		PublicDirectCandidate: true,
+		PublicEndpointHints: []string{
+			"117.48.146.2:41000/192.168.1.20:40000",
+			"117.48.146.3:41001/192.168.1.20:40001",
+		},
+	})
+
+	if _, err := exec.ensureAgent(context.Background()); err != nil {
+		t.Fatalf("ensureAgent(ambiguous hint ports) error = %v", err)
+	}
+	if got.CandidatePortMin != 0 || got.CandidatePortMax != 0 {
+		t.Fatalf("ambiguous public direct candidate port range = %d-%d, want no override", got.CandidatePortMin, got.CandidatePortMax)
+	}
+}
+
 func TestExecutorFiltersRemoteCandidatesByPlanMode(t *testing.T) {
 	hostCandidate := nat.Candidate{Type: nat.CandidateTypeHost, Address: &net.UDPAddr{IP: net.IPv4(10, 0, 0, 1), Port: 1001}}
 	overlayCandidate := nat.Candidate{Type: nat.CandidateTypeHost, Address: &net.UDPAddr{IP: net.IPv4(100, 102, 17, 35), Port: 1002}}
