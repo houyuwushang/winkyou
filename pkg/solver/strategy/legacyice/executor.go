@@ -202,7 +202,7 @@ func (e *executor) ensureAgent(ctx context.Context) (nat.ICEAgent, error) {
 		ForceRelay:               e.execCfg.ForceRelay,
 		CandidateCIDRInclude:     publicEndpointHintLocalBaseCIDRs(e.execCfg.PublicEndpointHints),
 		CandidateCIDRExclude:     append([]string(nil), e.execCfg.CandidateCIDRExclude...),
-		PublicDirectTrustedCIDRs: append([]string(nil), e.execCfg.PublicDirectTrustedCIDRs...),
+		PublicDirectTrustedCIDRs: e.trustedDirectCIDRs(),
 		PublicDirectCandidate:    e.execCfg.PublicDirectCandidate,
 	}
 	if minPort, maxPort, ok := publicEndpointHintLocalPortRange(e.execCfg.PublicEndpointHints); ok {
@@ -338,7 +338,7 @@ func (e *executor) startConnect(sess solver.SessionIO) {
 		connectionType := connectionTypeFromPair(pair)
 		pathID := e.pathID(connectionType)
 		transport := e.releaseTransport(agent, conn, pathID)
-		role, dependencies := pathPolicyMetadata(connectionType, pair, e.execCfg.Mode, e.publicDirectLocalBaseSnapshot(), e.execCfg.PublicDirectTrustedCIDRs)
+		role, dependencies := pathPolicyMetadata(connectionType, pair, e.execCfg.Mode, e.publicDirectLocalBaseSnapshot(), e.trustedDirectCIDRs())
 		metrics := selectedPairMetrics(agent)
 		details := selectedPairDetails(pair, e.execCfg.Mode)
 		details["ice_state"] = connectionStateString(agent)
@@ -413,6 +413,10 @@ func (e *executor) publicDirectLocalBaseSnapshot() map[string]struct{} {
 		out[ip] = struct{}{}
 	}
 	return out
+}
+
+func (e *executor) trustedDirectCIDRs() []string {
+	return mergeTrustedCIDRs(e.execCfg.DirectTrustedCIDRs, e.execCfg.PublicDirectTrustedCIDRs)
 }
 
 func (e *executor) releaseTransport(agent nat.ICEAgent, conn net.Conn, pathID string) transport.PacketTransport {
@@ -557,10 +561,10 @@ func candidatePairDependencyReason(pair *nat.CandidatePair, mode executionMode, 
 	if mode == modePublicDirect {
 		return publicDirectCandidatePairDependencyReason(pair, publicDirectLocalBases, publicDirectTrustedCIDRs)
 	}
-	if reason := candidateDependencyReason("local", pair.Local); reason != "" {
+	if reason := candidateDependencyReasonWithTrustedCIDRs("local", pair.Local, publicDirectTrustedCIDRs); reason != "" {
 		return reason
 	}
-	if reason := candidateDependencyReason("remote", pair.Remote); reason != "" {
+	if reason := candidateDependencyReasonWithTrustedCIDRs("remote", pair.Remote, publicDirectTrustedCIDRs); reason != "" {
 		return reason
 	}
 	return ""
@@ -678,7 +682,7 @@ func appendPublicEndpointHintCandidates(candidates []nat.Candidate, execCfg exec
 		seen[candidateAddressKey(candidate)] = struct{}{}
 	}
 	for i, raw := range execCfg.PublicEndpointHints {
-		candidate, err := publicEndpointHintCandidate(raw, i, execCfg.PublicDirectTrustedCIDRs)
+		candidate, err := publicEndpointHintCandidate(raw, i, mergeTrustedCIDRs(execCfg.DirectTrustedCIDRs, execCfg.PublicDirectTrustedCIDRs))
 		if err != nil {
 			return nil, err
 		}
@@ -891,7 +895,7 @@ func remoteCandidateRejectReason(candidate nat.Candidate, execCfg executorConfig
 		if candidate.Type == nat.CandidateTypeRelay {
 			return "remote_relay_candidate"
 		}
-		return candidateDependencyReasonWithTrustedCIDRs("remote", &candidate, execCfg.PublicDirectTrustedCIDRs)
+		return candidateDependencyReasonWithTrustedCIDRs("remote", &candidate, mergeTrustedCIDRs(execCfg.DirectTrustedCIDRs, execCfg.PublicDirectTrustedCIDRs))
 	case modeRelayOnly:
 		if candidate.Type != nat.CandidateTypeRelay {
 			return "remote_non_relay_candidate"
@@ -907,7 +911,26 @@ func localCandidateRejectReason(candidate nat.Candidate, execCfg executorConfig)
 	if candidate.Type == nat.CandidateTypeRelay {
 		return "local_relay_candidate"
 	}
-	return candidateDependencyReasonWithTrustedCIDRs("local", &candidate, execCfg.PublicDirectTrustedCIDRs)
+	return candidateDependencyReasonWithTrustedCIDRs("local", &candidate, mergeTrustedCIDRs(execCfg.DirectTrustedCIDRs, execCfg.PublicDirectTrustedCIDRs))
+}
+
+func mergeTrustedCIDRs(lists ...[]string) []string {
+	seen := make(map[string]struct{})
+	out := make([]string, 0)
+	for _, list := range lists {
+		for _, value := range list {
+			value = strings.TrimSpace(value)
+			if value == "" {
+				continue
+			}
+			if _, ok := seen[value]; ok {
+				continue
+			}
+			seen[value] = struct{}{}
+			out = append(out, value)
+		}
+	}
+	return out
 }
 
 type candidateFilterSummary struct {

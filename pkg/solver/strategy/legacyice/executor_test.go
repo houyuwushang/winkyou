@@ -75,12 +75,15 @@ func (c *capturingSessionIO) ReportObservation(_ context.Context, obs solver.Obs
 }
 
 func TestExecutorConfigForPlanProducesDistinctModes(t *testing.T) {
-	direct, err := executorConfigForPlan(solver.Plan{ID: "legacyice/direct_prefer", Metadata: map[string]string{"mode": "direct_prefer"}}, Config{})
+	direct, err := executorConfigForPlan(solver.Plan{ID: "legacyice/direct_prefer", Metadata: map[string]string{"mode": "direct_prefer"}}, Config{DirectTrustedCIDRs: []string{"100.64.0.0/10"}})
 	if err != nil {
 		t.Fatalf("executorConfigForPlan(direct) error = %v", err)
 	}
 	if direct.Mode != modeDirectPrefer || direct.ForceRelay {
 		t.Fatalf("direct config = %+v, want direct_prefer without force relay", direct)
+	}
+	if len(direct.DirectTrustedCIDRs) != 1 || direct.DirectTrustedCIDRs[0] != "100.64.0.0/10" {
+		t.Fatalf("direct trusted CIDRs = %#v, want 100.64.0.0/10", direct.DirectTrustedCIDRs)
 	}
 
 	publicDirect, err := executorConfigForPlan(solver.Plan{ID: "legacyice/public_direct", Metadata: map[string]string{"mode": "public_direct"}}, Config{})
@@ -439,7 +442,8 @@ func TestPublicDirectAgentRequestPropagatesTrustedCIDRs(t *testing.T) {
 			got = req
 			return agent, nil
 		},
-		PublicDirectTrustedCIDRs: []string{"100.64.0.0/10"},
+		DirectTrustedCIDRs:       []string{"100.64.0.0/10"},
+		PublicDirectTrustedCIDRs: []string{"198.18.0.0/15"},
 	}, solver.SolveInput{
 		SessionID: "session/node-a/node-b",
 		Initiator: true,
@@ -450,14 +454,15 @@ func TestPublicDirectAgentRequestPropagatesTrustedCIDRs(t *testing.T) {
 	}, executorConfig{
 		Mode:                     modePublicDirect,
 		PublicDirectCandidate:    true,
-		PublicDirectTrustedCIDRs: []string{"100.64.0.0/10"},
+		DirectTrustedCIDRs:       []string{"100.64.0.0/10"},
+		PublicDirectTrustedCIDRs: []string{"198.18.0.0/15"},
 	})
 
 	if _, err := exec.ensureAgent(context.Background()); err != nil {
 		t.Fatalf("ensureAgent(public direct trusted cidr) error = %v", err)
 	}
-	if len(got.PublicDirectTrustedCIDRs) != 1 || got.PublicDirectTrustedCIDRs[0] != "100.64.0.0/10" {
-		t.Fatalf("trusted CIDRs = %#v, want 100.64.0.0/10", got.PublicDirectTrustedCIDRs)
+	if len(got.PublicDirectTrustedCIDRs) != 2 || got.PublicDirectTrustedCIDRs[0] != "100.64.0.0/10" || got.PublicDirectTrustedCIDRs[1] != "198.18.0.0/15" {
+		t.Fatalf("trusted CIDRs = %#v, want merged direct/public-direct CIDRs", got.PublicDirectTrustedCIDRs)
 	}
 }
 

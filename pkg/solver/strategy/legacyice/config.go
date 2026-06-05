@@ -29,6 +29,7 @@ type Config struct {
 	CheckTimeout             time.Duration
 	ForceRelay               bool
 	PublicEndpointHints      []string
+	DirectTrustedCIDRs       []string
 	PublicDirectTrustedCIDRs []string
 }
 
@@ -46,6 +47,7 @@ type executorConfig struct {
 	CandidateCIDRExclude     []string
 	PublicDirectCandidate    bool
 	PublicEndpointHints      []string
+	DirectTrustedCIDRs       []string
 	PublicDirectTrustedCIDRs []string
 }
 
@@ -66,14 +68,17 @@ func executorConfigForPlan(plan solver.Plan, cfg Config) (executorConfig, error)
 	switch plan.ID {
 	case planIDDirectPrefer:
 		return executorConfig{
-			Mode:       modeDirectPrefer,
-			ForceRelay: cfg.ForceRelay,
+			Mode:                     modeDirectPrefer,
+			ForceRelay:               cfg.ForceRelay,
+			DirectTrustedCIDRs:       append([]string(nil), cfg.DirectTrustedCIDRs...),
+			PublicDirectTrustedCIDRs: append([]string(nil), cfg.PublicDirectTrustedCIDRs...),
 		}, nil
 	case planIDPublicDirect:
 		return executorConfig{
 			Mode:                     modePublicDirect,
 			PublicDirectCandidate:    true,
 			PublicEndpointHints:      append([]string(nil), cfg.PublicEndpointHints...),
+			DirectTrustedCIDRs:       append([]string(nil), cfg.DirectTrustedCIDRs...),
 			PublicDirectTrustedCIDRs: append([]string(nil), cfg.PublicDirectTrustedCIDRs...),
 		}, nil
 	case planIDRelayOnly:
@@ -86,13 +91,19 @@ func executorConfigForPlan(plan solver.Plan, cfg Config) (executorConfig, error)
 			return executorConfig{Mode: modeRelayOnly, ForceRelay: true}, nil
 		}
 		if mode := plan.Metadata["mode"]; mode == string(modeDirectPrefer) {
-			return executorConfig{Mode: modeDirectPrefer, ForceRelay: cfg.ForceRelay}, nil
+			return executorConfig{
+				Mode:                     modeDirectPrefer,
+				ForceRelay:               cfg.ForceRelay,
+				DirectTrustedCIDRs:       append([]string(nil), cfg.DirectTrustedCIDRs...),
+				PublicDirectTrustedCIDRs: append([]string(nil), cfg.PublicDirectTrustedCIDRs...),
+			}, nil
 		}
 		if mode := plan.Metadata["mode"]; mode == string(modePublicDirect) {
 			return executorConfig{
 				Mode:                     modePublicDirect,
 				PublicDirectCandidate:    true,
 				PublicEndpointHints:      append([]string(nil), cfg.PublicEndpointHints...),
+				DirectTrustedCIDRs:       append([]string(nil), cfg.DirectTrustedCIDRs...),
 				PublicDirectTrustedCIDRs: append([]string(nil), cfg.PublicDirectTrustedCIDRs...),
 			}, nil
 		}

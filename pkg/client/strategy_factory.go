@@ -113,6 +113,7 @@ func (e *engine) legacyICEStrategyConfig() legacyice.Config {
 		CheckTimeout:             e.iceCheckTimeout(),
 		ForceRelay:               e.relayOnlyMode(),
 		PublicEndpointHints:      append([]string(nil), e.cfg.NAT.PublicEndpointHints...),
+		DirectTrustedCIDRs:       append([]string(nil), e.cfg.NAT.DirectTrustedCIDRs...),
 		PublicDirectTrustedCIDRs: append([]string(nil), e.cfg.NAT.PublicDirectTrustedCIDRs...),
 	}
 	cfg.NewICEAgent = func(ctx context.Context, req legacyice.AgentRequest) (nat.ICEAgent, error) {
@@ -132,9 +133,9 @@ func (e *engine) legacyICEStrategyConfig() legacyice.Config {
 		if len(req.CandidateCIDRInclude) > 0 {
 			candidateCIDRInclude = append([]string(nil), req.CandidateCIDRInclude...)
 		}
-		publicDirectTrustedCIDRs := append([]string(nil), e.cfg.NAT.PublicDirectTrustedCIDRs...)
+		publicDirectTrustedCIDRs := mergeStrategyTrustedCIDRs(e.cfg.NAT.DirectTrustedCIDRs, e.cfg.NAT.PublicDirectTrustedCIDRs)
 		if len(req.PublicDirectTrustedCIDRs) > 0 {
-			publicDirectTrustedCIDRs = append([]string(nil), req.PublicDirectTrustedCIDRs...)
+			publicDirectTrustedCIDRs = mergeStrategyTrustedCIDRs(req.PublicDirectTrustedCIDRs)
 		}
 		return e.nat.NewICEAgent(nat.ICEConfig{
 			GatherTimeout:             cfg.GatherTimeout,
@@ -157,6 +158,25 @@ func (e *engine) legacyICEStrategyConfig() legacyice.Config {
 		})
 	}
 	return cfg
+}
+
+func mergeStrategyTrustedCIDRs(lists ...[]string) []string {
+	seen := make(map[string]struct{})
+	out := make([]string, 0)
+	for _, list := range lists {
+		for _, value := range list {
+			value = strings.TrimSpace(value)
+			if value == "" {
+				continue
+			}
+			if _, ok := seen[value]; ok {
+				continue
+			}
+			seen[value] = struct{}{}
+			out = append(out, value)
+		}
+	}
+	return out
 }
 
 func (e *engine) tcpFramedStrategyConfig() tcpframed.Config {

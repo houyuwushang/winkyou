@@ -45,6 +45,16 @@ func TestPathPolicyMetadataMarksOverlayCandidatesAsDependent(t *testing.T) {
 	}
 }
 
+func TestPathPolicyMetadataAllowsTrustedCIDRForDirectPrefer(t *testing.T) {
+	role, deps := pathPolicyMetadata("direct", candidatePair("117.48.146.2", "100.102.17.35"), modeDirectPrefer, nil, []string{"100.64.0.0/10"})
+	if role != solver.PathRoleProtectedDirect {
+		t.Fatalf("trusted direct role = %q, want %q", role, solver.PathRoleProtectedDirect)
+	}
+	if len(deps) != 0 {
+		t.Fatalf("trusted direct dependencies = %#v, want none", deps)
+	}
+}
+
 func TestPathPolicyMetadataMarksPrivateCandidatesAsDependent(t *testing.T) {
 	role, deps := pathPolicyMetadata("direct", candidatePair("10.6.22.2", "117.48.146.2"), modeDirectPrefer, nil, nil)
 	if role != solver.PathRolePrimaryCandidate {

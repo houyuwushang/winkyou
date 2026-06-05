@@ -362,7 +362,8 @@ func TestLegacyICEStrategyConfigPropagatesCandidateFilters(t *testing.T) {
 				NAT1To1IPs:                []string{"203.0.113.10/192.168.0.10"},
 				NAT1To1CandidateType:      "srflx",
 				PublicEndpointHints:       []string{"117.48.146.2:41000/192.168.1.20:40000"},
-				PublicDirectTrustedCIDRs:  []string{"100.64.0.0/10"},
+				DirectTrustedCIDRs:        []string{"100.64.0.0/10"},
+				PublicDirectTrustedCIDRs:  []string{"198.18.0.0/15"},
 			},
 		},
 	}
@@ -393,8 +394,11 @@ func TestLegacyICEStrategyConfigPropagatesCandidateFilters(t *testing.T) {
 	if len(cfg.PublicEndpointHints) != 1 || cfg.PublicEndpointHints[0] != "117.48.146.2:41000/192.168.1.20:40000" {
 		t.Fatalf("legacy public endpoint hints = %#v, want configured hint", cfg.PublicEndpointHints)
 	}
-	if len(cfg.PublicDirectTrustedCIDRs) != 1 || cfg.PublicDirectTrustedCIDRs[0] != "100.64.0.0/10" {
-		t.Fatalf("legacy trusted CIDRs = %#v, want configured trusted CIDR", cfg.PublicDirectTrustedCIDRs)
+	if len(cfg.DirectTrustedCIDRs) != 1 || cfg.DirectTrustedCIDRs[0] != "100.64.0.0/10" {
+		t.Fatalf("legacy direct trusted CIDRs = %#v, want configured direct trusted CIDR", cfg.DirectTrustedCIDRs)
+	}
+	if len(cfg.PublicDirectTrustedCIDRs) != 1 || cfg.PublicDirectTrustedCIDRs[0] != "198.18.0.0/15" {
+		t.Fatalf("legacy public direct trusted CIDRs = %#v, want configured public direct trusted CIDR", cfg.PublicDirectTrustedCIDRs)
 	}
 
 	if _, err := cfg.NewICEAgent(context.Background(), legacyice.AgentRequest{
@@ -414,8 +418,10 @@ func TestLegacyICEStrategyConfigPropagatesCandidateFilters(t *testing.T) {
 	if len(recorder.cfg.CandidateCIDRInclude) != 1 || recorder.cfg.CandidateCIDRInclude[0] != "192.168.1.20/32" {
 		t.Fatalf("public direct candidate CIDR include = %#v, want mapped hint local base override", recorder.cfg.CandidateCIDRInclude)
 	}
-	if len(recorder.cfg.PublicDirectTrustedCIDRs) != 1 || recorder.cfg.PublicDirectTrustedCIDRs[0] != "100.64.0.0/10" {
-		t.Fatalf("public direct trusted CIDRs = %#v, want configured trusted CIDR", recorder.cfg.PublicDirectTrustedCIDRs)
+	if len(recorder.cfg.PublicDirectTrustedCIDRs) != 2 ||
+		recorder.cfg.PublicDirectTrustedCIDRs[0] != "100.64.0.0/10" ||
+		recorder.cfg.PublicDirectTrustedCIDRs[1] != "198.18.0.0/15" {
+		t.Fatalf("public direct trusted CIDRs = %#v, want merged configured trusted CIDRs", recorder.cfg.PublicDirectTrustedCIDRs)
 	}
 }
 

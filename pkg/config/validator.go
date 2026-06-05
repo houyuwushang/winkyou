@@ -112,6 +112,9 @@ func (c *Config) Validate() error {
 	if err := validateCIDRList("nat.candidate_cidr_exclude", c.NAT.CandidateCIDRExclude); err != nil {
 		return err
 	}
+	if err := validateCIDRList("nat.direct_trusted_cidrs", c.NAT.DirectTrustedCIDRs); err != nil {
+		return err
+	}
 	if err := validateCIDRList("nat.public_direct_trusted_cidrs", c.NAT.PublicDirectTrustedCIDRs); err != nil {
 		return err
 	}
@@ -121,7 +124,8 @@ func (c *Config) Validate() error {
 	if err := validateNAT1To1IPs("nat.nat1to1_ips", c.NAT.NAT1To1IPs); err != nil {
 		return err
 	}
-	if err := validatePublicEndpointHints("nat.public_endpoint_hints", c.NAT.PublicEndpointHints, c.NAT.PublicDirectTrustedCIDRs); err != nil {
+	trustedDirectCIDRs := mergeStringLists(c.NAT.DirectTrustedCIDRs, c.NAT.PublicDirectTrustedCIDRs)
+	if err := validatePublicEndpointHints("nat.public_endpoint_hints", c.NAT.PublicEndpointHints, trustedDirectCIDRs); err != nil {
 		return err
 	}
 
@@ -242,6 +246,25 @@ func validatePublicEndpointHints(field string, values []string, trustedCIDRs []s
 		}
 	}
 	return nil
+}
+
+func mergeStringLists(lists ...[]string) []string {
+	seen := map[string]struct{}{}
+	out := make([]string, 0)
+	for _, list := range lists {
+		for _, value := range list {
+			value = strings.TrimSpace(value)
+			if value == "" {
+				continue
+			}
+			if _, ok := seen[value]; ok {
+				continue
+			}
+			seen[value] = struct{}{}
+			out = append(out, value)
+		}
+	}
+	return out
 }
 
 func parseNetipPrefixes(field string, values []string) ([]netip.Prefix, error) {

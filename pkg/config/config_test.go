@@ -59,8 +59,11 @@ func TestLoadValidFile(t *testing.T) {
 	if len(cfg.NAT.NAT1To1IPs) != 1 || cfg.NAT.NAT1To1IPs[0] != "203.0.113.10/192.168.0.10" {
 		t.Fatalf("nat1to1 ips = %#v, want explicit external/local mapping", cfg.NAT.NAT1To1IPs)
 	}
-	if len(cfg.NAT.PublicDirectTrustedCIDRs) != 1 || cfg.NAT.PublicDirectTrustedCIDRs[0] != "100.64.0.0/10" {
-		t.Fatalf("public direct trusted CIDRs = %#v, want 100.64.0.0/10", cfg.NAT.PublicDirectTrustedCIDRs)
+	if len(cfg.NAT.DirectTrustedCIDRs) != 1 || cfg.NAT.DirectTrustedCIDRs[0] != "100.64.0.0/10" {
+		t.Fatalf("direct trusted CIDRs = %#v, want 100.64.0.0/10", cfg.NAT.DirectTrustedCIDRs)
+	}
+	if len(cfg.NAT.PublicDirectTrustedCIDRs) != 1 || cfg.NAT.PublicDirectTrustedCIDRs[0] != "198.18.0.0/15" {
+		t.Fatalf("public direct trusted CIDRs = %#v, want 198.18.0.0/15", cfg.NAT.PublicDirectTrustedCIDRs)
 	}
 }
 
@@ -196,6 +199,16 @@ func TestValidateCandidateFilters(t *testing.T) {
 	if got := err.Error(); got != `invalid nat.public_direct_trusted_cidrs[0]: "not-a-cidr"` {
 		t.Fatalf("Validate() error = %q, want invalid public direct trusted CIDR", got)
 	}
+
+	cfg = config.Default()
+	cfg.NAT.DirectTrustedCIDRs = []string{"not-a-cidr"}
+	err = cfg.Validate()
+	if err == nil {
+		t.Fatal("Validate() should reject invalid direct trusted CIDR")
+	}
+	if got := err.Error(); got != `invalid nat.direct_trusted_cidrs[0]: "not-a-cidr"` {
+		t.Fatalf("Validate() error = %q, want invalid direct trusted CIDR", got)
+	}
 }
 
 func TestValidateNATPublicCandidateHints(t *testing.T) {
@@ -270,7 +283,7 @@ func TestValidateNATPublicCandidateHints(t *testing.T) {
 	}
 
 	cfg = config.Default()
-	cfg.NAT.PublicDirectTrustedCIDRs = []string{"100.64.0.0/10"}
+	cfg.NAT.DirectTrustedCIDRs = []string{"100.64.0.0/10"}
 	cfg.NAT.PublicEndpointHints = []string{"100.102.17.35:41000/100.102.17.36:40000"}
 	if err := cfg.Validate(); err != nil {
 		t.Fatalf("Validate() trusted public endpoint hint error = %v", err)
