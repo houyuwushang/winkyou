@@ -62,6 +62,9 @@ func TestLoadValidFile(t *testing.T) {
 	if cfg.NAT.AutoPublicEndpointHints {
 		t.Fatal("auto_public_endpoint_hints = true, want default sample false")
 	}
+	if cfg.NAT.PublicEndpointHintPortWindow != 0 {
+		t.Fatalf("public_endpoint_hint_port_window = %d, want default sample 0", cfg.NAT.PublicEndpointHintPortWindow)
+	}
 	if len(cfg.NAT.DirectTrustedCIDRs) != 1 || cfg.NAT.DirectTrustedCIDRs[0] != "100.64.0.0/10" {
 		t.Fatalf("direct trusted CIDRs = %#v, want 100.64.0.0/10", cfg.NAT.DirectTrustedCIDRs)
 	}
@@ -296,6 +299,26 @@ func TestValidateNATPublicCandidateHints(t *testing.T) {
 	cfg.NAT.PublicEndpointHints = []string{"100.102.17.35:41000/100.102.17.36:40000"}
 	if err := cfg.Validate(); err != nil {
 		t.Fatalf("Validate() trusted public endpoint hint error = %v", err)
+	}
+
+	cfg = config.Default()
+	cfg.NAT.PublicEndpointHintPortWindow = -1
+	err = cfg.Validate()
+	if err == nil {
+		t.Fatal("Validate() should reject negative public endpoint hint port window")
+	}
+	if got := err.Error(); got != "nat.public_endpoint_hint_port_window must be between 0 and 512" {
+		t.Fatalf("Validate() error = %q, want invalid public endpoint hint port window", got)
+	}
+
+	cfg = config.Default()
+	cfg.NAT.PublicEndpointHintPortWindow = 513
+	err = cfg.Validate()
+	if err == nil {
+		t.Fatal("Validate() should reject oversized public endpoint hint port window")
+	}
+	if got := err.Error(); got != "nat.public_endpoint_hint_port_window must be between 0 and 512" {
+		t.Fatalf("Validate() error = %q, want invalid public endpoint hint port window", got)
 	}
 }
 

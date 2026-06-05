@@ -677,48 +677,105 @@ func appendPublicEndpointHintCandidates(candidates []nat.Candidate, execCfg exec
 		return candidates, nil
 	}
 	out := append([]nat.Candidate(nil), candidates...)
-	seen := make(map[string]struct{}, len(out)+len(execCfg.PublicEndpointHints))
+	portWindow := publicEndpointHintPortWindow(execCfg.PublicEndpointHintPortWindow)
+	seen := make(map[string]struct{}, len(out)+len(execCfg.PublicEndpointHints)*(1+2*portWindow))
 	for _, candidate := range out {
 		seen[candidateAddressKey(candidate)] = struct{}{}
 	}
 	for i, raw := range execCfg.PublicEndpointHints {
-		candidate, err := publicEndpointHintCandidate(raw, i, mergeTrustedCIDRs(execCfg.DirectTrustedCIDRs, execCfg.PublicDirectTrustedCIDRs))
+		candidates, err := publicEndpointHintCandidates(raw, i, portWindow, mergeTrustedCIDRs(execCfg.DirectTrustedCIDRs, execCfg.PublicDirectTrustedCIDRs))
 		if err != nil {
 			return nil, err
 		}
-		key := candidateAddressKey(candidate)
-		if _, ok := seen[key]; ok {
-			continue
+		for _, candidate := range candidates {
+			key := candidateAddressKey(candidate)
+			if _, ok := seen[key]; ok {
+				continue
+			}
+			seen[key] = struct{}{}
+			out = append(out, candidate)
 		}
-		seen[key] = struct{}{}
-		out = append(out, candidate)
 	}
 	return out, nil
 }
 
 func publicEndpointHintCandidate(raw string, index int, trustedCIDRs []string) (nat.Candidate, error) {
-	hint, err := parsePublicEndpointHint(raw)
+	candidates, err := publicEndpointHintCandidates(raw, index, 0, trustedCIDRs)
 	if err != nil {
 		return nat.Candidate{}, err
 	}
+	return candidates[0], nil
+}
+
+func publicEndpointHintCandidates(raw string, index int, portWindow int, trustedCIDRs []string) ([]nat.Candidate, error) {
+	hint, err := parsePublicEndpointHint(raw)
+	if err != nil {
+		return nil, err
+	}
 	ip := net.IP(append([]byte(nil), hint.public.Addr().AsSlice()...))
 	if reason := nonPublicCandidateIPReason(ip); reason != "" && !candidateIPInCIDRs(ip, trustedCIDRs) {
-		return nat.Candidate{}, fmt.Errorf("legacyice: invalid public endpoint hint %q: %s", raw, reason)
+		return nil, fmt.Errorf("legacyice: invalid public endpoint hint %q: %s", raw, reason)
 	}
-	candidate := nat.Candidate{
-		Type:       nat.CandidateTypeSrflx,
-		Address:    &net.UDPAddr{IP: ip, Port: int(hint.public.Port())},
-		Priority:   publicEndpointHintPriority(index),
-		Foundation: fmt.Sprintf("public-hint-%d", index+1),
-	}
+	var related *net.UDPAddr
 	if hint.local.IsValid() {
 		localIP := net.IP(append([]byte(nil), hint.local.Addr().AsSlice()...))
 		if reason := publicEndpointHintLocalBaseRejectReason(localIP, trustedCIDRs); reason != "" {
-			return nat.Candidate{}, fmt.Errorf("legacyice: invalid public endpoint hint local base %q: %s", raw, reason)
+			return nil, fmt.Errorf("legacyice: invalid public endpoint hint local base %q: %s", raw, reason)
 		}
-		candidate.RelatedAddr = &net.UDPAddr{IP: localIP, Port: int(hint.local.Port())}
+		related = &net.UDPAddr{IP: localIP, Port: int(hint.local.Port())}
 	}
-	return candidate, nil
+
+	offsets := publicEndpointHintPortOffsets(hint.public.Port(), portWindow)
+	candidates := make([]nat.Candidate, 0, len(offsets))
+	for _, offset := range offsets {
+		port := int(hint.public.Port()) + offset
+		candidate := nat.Candidate{
+			Type:       nat.CandidateTypeSrflx,
+			Address:    &net.UDPAddr{IP: append(net.IP(nil), ip...), Port: port},
+			Priority:   publicEndpointHintPriorityForOffset(index, offset),
+			Foundation: publicEndpointHintFoundation(index, offset),
+		}
+		if related != nil {
+			candidate.RelatedAddr = &net.UDPAddr{IP: append(net.IP(nil), related.IP...), Port: related.Port}
+		}
+		candidates = append(candidates, candidate)
+	}
+	return candidates, nil
+}
+
+func publicEndpointHintPortWindow(window int) int {
+	if window < 0 {
+		return 0
+	}
+	if window > 512 {
+		return 512
+	}
+	return window
+}
+
+func publicEndpointHintPortOffsets(port uint16, window int) []int {
+	if window <= 0 {
+		return []int{0}
+	}
+	offsets := make([]int, 0, 1+2*window)
+	offsets = append(offsets, 0)
+	base := int(port)
+	for distance := 1; distance <= window; distance++ {
+		if base-distance >= 1 {
+			offsets = append(offsets, -distance)
+		}
+		if base+distance <= 65535 {
+			offsets = append(offsets, distance)
+		}
+	}
+	return offsets
+}
+
+func publicEndpointHintFoundation(index int, offset int) string {
+	if offset == 0 {
+		return fmt.Sprintf("public-hint-%d", index+1)
+	}
+	return fmt.Sprintf("public-hint-%d-offset-%d", index+1, offset)
 }
 
 func publicEndpointHintLocalBaseRejectReason(ip net.IP, trustedCIDRs []string) string {
@@ -838,11 +895,18 @@ func publicEndpointHintLocalBaseCIDRs(values []string) []string {
 }
 
 func publicEndpointHintPriority(index int) uint32 {
+	return publicEndpointHintPriorityForOffset(index, 0)
+}
+
+func publicEndpointHintPriorityForOffset(index int, offset int) uint32 {
 	const (
 		srflxTypePreference = 100
 		componentID         = 1
 	)
-	localPreference := 65535 - index
+	if offset < 0 {
+		offset = -offset
+	}
+	localPreference := 65535 - index*1024 - offset
 	if localPreference < 1 {
 		localPreference = 1
 	}

@@ -42,6 +42,7 @@ nat:
   nat1to1_ips:
     - "203.0.113.10/192.168.0.10"
   auto_public_endpoint_hints: false
+  public_endpoint_hint_port_window: 0
   direct_trusted_cidrs:
     - "100.64.0.0/10"
   public_direct_trusted_cidrs:

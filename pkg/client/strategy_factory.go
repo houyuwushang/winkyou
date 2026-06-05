@@ -133,14 +133,15 @@ func hasTURNServers(servers []config.TURNServerConfig) bool {
 
 func (e *engine) legacyICEStrategyConfig() legacyice.Config {
 	cfg := legacyice.Config{
-		GatherTimeout:            e.iceGatherTimeout(),
-		ConnectTimeout:           e.iceConnectTimeout(),
-		CheckTimeout:             e.iceCheckTimeout(),
-		ForceRelay:               e.relayOnlyMode(),
-		RelayDisabled:            e.disableLegacyRelayPlan(),
-		PublicEndpointHints:      e.publicEndpointHints(),
-		DirectTrustedCIDRs:       append([]string(nil), e.cfg.NAT.DirectTrustedCIDRs...),
-		PublicDirectTrustedCIDRs: append([]string(nil), e.cfg.NAT.PublicDirectTrustedCIDRs...),
+		GatherTimeout:                e.iceGatherTimeout(),
+		ConnectTimeout:               e.iceConnectTimeout(),
+		CheckTimeout:                 e.iceCheckTimeout(),
+		ForceRelay:                   e.relayOnlyMode(),
+		RelayDisabled:                e.disableLegacyRelayPlan(),
+		PublicEndpointHints:          e.publicEndpointHints(),
+		PublicEndpointHintPortWindow: e.cfg.NAT.PublicEndpointHintPortWindow,
+		DirectTrustedCIDRs:           append([]string(nil), e.cfg.NAT.DirectTrustedCIDRs...),
+		PublicDirectTrustedCIDRs:     append([]string(nil), e.cfg.NAT.PublicDirectTrustedCIDRs...),
 	}
 	cfg.NewICEAgent = func(ctx context.Context, req legacyice.AgentRequest) (nat.ICEAgent, error) {
 		if ctx == nil {
@@ -195,9 +196,6 @@ func (e *engine) publicEndpointHints() []string {
 
 func runtimePublicEndpointHintsFromReport(cfg config.NATConfig, report nat.STUNMappingReport) []string {
 	if !cfg.AutoPublicEndpointHints {
-		return nil
-	}
-	if report.NATType == nat.NATTypeSymmetric {
 		return nil
 	}
 	return nat.PublicEndpointHintsFromSTUNMapping(report)

@@ -372,6 +372,73 @@ func TestPublicDirectAdvertisesConfiguredPublicEndpointHints(t *testing.T) {
 	}
 }
 
+func TestPublicDirectExpandsPublicEndpointHintPortWindow(t *testing.T) {
+	candidates, err := appendPublicEndpointHintCandidates(nil, executorConfig{
+		Mode:                         modePublicDirect,
+		PublicEndpointHints:          []string{"117.48.146.2:41000/192.168.1.20:40000"},
+		PublicEndpointHintPortWindow: 2,
+	})
+	if err != nil {
+		t.Fatalf("appendPublicEndpointHintCandidates() error = %v", err)
+	}
+	got := make([]string, 0, len(candidates))
+	for _, candidate := range candidates {
+		if candidate.Type != nat.CandidateTypeSrflx {
+			t.Fatalf("candidate type = %s, want srflx", candidate.Type)
+		}
+		if candidate.RelatedAddr == nil || candidate.RelatedAddr.String() != "192.168.1.20:40000" {
+			t.Fatalf("candidate related addr = %#v, want 192.168.1.20:40000", candidate.RelatedAddr)
+		}
+		got = append(got, candidate.Address.String())
+	}
+	want := []string{
+		"117.48.146.2:41000",
+		"117.48.146.2:40999",
+		"117.48.146.2:41001",
+		"117.48.146.2:40998",
+		"117.48.146.2:41002",
+	}
+	if !slices.Equal(got, want) {
+		t.Fatalf("expanded hint candidates = %#v, want %#v", got, want)
+	}
+}
+
+func TestPublicDirectEndpointHintPortWindowClipsPortBounds(t *testing.T) {
+	candidates, err := appendPublicEndpointHintCandidates(nil, executorConfig{
+		Mode:                         modePublicDirect,
+		PublicEndpointHints:          []string{"117.48.146.2:1"},
+		PublicEndpointHintPortWindow: 2,
+	})
+	if err != nil {
+		t.Fatalf("appendPublicEndpointHintCandidates(low port) error = %v", err)
+	}
+	got := make([]string, 0, len(candidates))
+	for _, candidate := range candidates {
+		got = append(got, candidate.Address.String())
+	}
+	want := []string{"117.48.146.2:1", "117.48.146.2:2", "117.48.146.2:3"}
+	if !slices.Equal(got, want) {
+		t.Fatalf("low-port expanded hint candidates = %#v, want %#v", got, want)
+	}
+
+	candidates, err = appendPublicEndpointHintCandidates(nil, executorConfig{
+		Mode:                         modePublicDirect,
+		PublicEndpointHints:          []string{"117.48.146.2:65535"},
+		PublicEndpointHintPortWindow: 2,
+	})
+	if err != nil {
+		t.Fatalf("appendPublicEndpointHintCandidates(high port) error = %v", err)
+	}
+	got = got[:0]
+	for _, candidate := range candidates {
+		got = append(got, candidate.Address.String())
+	}
+	want = []string{"117.48.146.2:65535", "117.48.146.2:65534", "117.48.146.2:65533"}
+	if !slices.Equal(got, want) {
+		t.Fatalf("high-port expanded hint candidates = %#v, want %#v", got, want)
+	}
+}
+
 func TestPublicDirectAgentRequestUsesMappedHintLocalPort(t *testing.T) {
 	agent := &recordingICEAgent{
 		connectErr:    context.Canceled,

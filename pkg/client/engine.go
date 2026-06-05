@@ -211,7 +211,7 @@ func (e *engine) Start(ctx context.Context) (err error) {
 		natType = report.NATType
 		runtimePublicEndpointHints = runtimePublicEndpointHintsFromReport(e.cfg.NAT, report)
 		if len(runtimePublicEndpointHints) > 0 {
-			e.log.Info("using runtime public endpoint hints from stable STUN mapping", logger.String("hints", strings.Join(runtimePublicEndpointHints, ",")))
+			e.log.Info("using runtime public endpoint hints from STUN mapping", logger.String("hints", strings.Join(runtimePublicEndpointHints, ",")))
 		}
 	} else {
 		e.log.Warn("nat detection failed", logger.Error(detectErr))

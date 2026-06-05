@@ -444,17 +444,18 @@ func TestLegacyICEStrategyConfigPropagatesCandidateFilters(t *testing.T) {
 		nat: recorder,
 		cfg: config.Config{
 			NAT: config.NATConfig{
-				CandidatePortMin:          40000,
-				CandidatePortMax:          40100,
-				CandidateInterfaceInclude: []string{"Ethernet"},
-				CandidateInterfaceExclude: []string{"tailscale0"},
-				CandidateCIDRInclude:      []string{"192.168.0.0/16"},
-				CandidateCIDRExclude:      []string{"100.64.0.0/10"},
-				NAT1To1IPs:                []string{"203.0.113.10/192.168.0.10"},
-				NAT1To1CandidateType:      "srflx",
-				PublicEndpointHints:       []string{"117.48.146.2:41000/192.168.1.20:40000"},
-				DirectTrustedCIDRs:        []string{"100.64.0.0/10"},
-				PublicDirectTrustedCIDRs:  []string{"198.18.0.0/15"},
+				CandidatePortMin:             40000,
+				CandidatePortMax:             40100,
+				CandidateInterfaceInclude:    []string{"Ethernet"},
+				CandidateInterfaceExclude:    []string{"tailscale0"},
+				CandidateCIDRInclude:         []string{"192.168.0.0/16"},
+				CandidateCIDRExclude:         []string{"100.64.0.0/10"},
+				NAT1To1IPs:                   []string{"203.0.113.10/192.168.0.10"},
+				NAT1To1CandidateType:         "srflx",
+				PublicEndpointHints:          []string{"117.48.146.2:41000/192.168.1.20:40000"},
+				PublicEndpointHintPortWindow: 2,
+				DirectTrustedCIDRs:           []string{"100.64.0.0/10"},
+				PublicDirectTrustedCIDRs:     []string{"198.18.0.0/15"},
 			},
 		},
 	}
@@ -484,6 +485,9 @@ func TestLegacyICEStrategyConfigPropagatesCandidateFilters(t *testing.T) {
 	}
 	if len(cfg.PublicEndpointHints) != 1 || cfg.PublicEndpointHints[0] != "117.48.146.2:41000/192.168.1.20:40000" {
 		t.Fatalf("legacy public endpoint hints = %#v, want configured hint", cfg.PublicEndpointHints)
+	}
+	if cfg.PublicEndpointHintPortWindow != 2 {
+		t.Fatalf("legacy public endpoint hint port window = %d, want 2", cfg.PublicEndpointHintPortWindow)
 	}
 	if len(cfg.DirectTrustedCIDRs) != 1 || cfg.DirectTrustedCIDRs[0] != "100.64.0.0/10" {
 		t.Fatalf("legacy direct trusted CIDRs = %#v, want configured direct trusted CIDR", cfg.DirectTrustedCIDRs)
@@ -537,7 +541,7 @@ func TestLegacyICEStrategyConfigMergesRuntimePublicEndpointHints(t *testing.T) {
 	}
 }
 
-func TestRuntimePublicEndpointHintsFromReportRequiresOptInAndStableMapping(t *testing.T) {
+func TestRuntimePublicEndpointHintsFromReportRequiresOptIn(t *testing.T) {
 	report := nat.STUNMappingReport{
 		NATType: nat.NATTypeUnknown,
 		Probes: []nat.STUNMappingProbe{{
@@ -556,8 +560,8 @@ func TestRuntimePublicEndpointHintsFromReportRequiresOptInAndStableMapping(t *te
 	}
 
 	report.NATType = nat.NATTypeSymmetric
-	if got := runtimePublicEndpointHintsFromReport(cfg, report); len(got) != 0 {
-		t.Fatalf("runtimePublicEndpointHintsFromReport(symmetric) = %#v, want none", got)
+	if got := runtimePublicEndpointHintsFromReport(cfg, report); len(got) != 1 || got[0] != "198.51.100.44:45678/192.168.1.20:40000" {
+		t.Fatalf("runtimePublicEndpointHintsFromReport(symmetric opt-in) = %#v, want best-effort hint", got)
 	}
 }
 

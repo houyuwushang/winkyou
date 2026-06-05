@@ -18,6 +18,8 @@ var (
 	validConnectivityStrategies = map[string]struct{}{"legacy_ice_udp": {}, "relay_only": {}, "tcp_framed": {}}
 )
 
+const maxPublicEndpointHintPortWindow = 512
+
 func (c *Config) Validate() error {
 	if c == nil {
 		return errors.New("config is nil")
@@ -127,6 +129,9 @@ func (c *Config) Validate() error {
 	trustedDirectCIDRs := mergeStringLists(c.NAT.DirectTrustedCIDRs, c.NAT.PublicDirectTrustedCIDRs)
 	if err := validatePublicEndpointHints("nat.public_endpoint_hints", c.NAT.PublicEndpointHints, trustedDirectCIDRs); err != nil {
 		return err
+	}
+	if c.NAT.PublicEndpointHintPortWindow < 0 || c.NAT.PublicEndpointHintPortWindow > maxPublicEndpointHintPortWindow {
+		return fmt.Errorf("nat.public_endpoint_hint_port_window must be between 0 and %d", maxPublicEndpointHintPortWindow)
 	}
 
 	mode := strings.ToLower(strings.TrimSpace(c.Connectivity.Mode))

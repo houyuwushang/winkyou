@@ -80,6 +80,7 @@ func setDefaults(v *viper.Viper, cfg Config) {
 	v.SetDefault("nat.nat1to1_candidate_type", cfg.NAT.NAT1To1CandidateType)
 	v.SetDefault("nat.public_endpoint_hints", cfg.NAT.PublicEndpointHints)
 	v.SetDefault("nat.auto_public_endpoint_hints", cfg.NAT.AutoPublicEndpointHints)
+	v.SetDefault("nat.public_endpoint_hint_port_window", cfg.NAT.PublicEndpointHintPortWindow)
 	v.SetDefault("nat.direct_trusted_cidrs", cfg.NAT.DirectTrustedCIDRs)
 	v.SetDefault("nat.public_direct_trusted_cidrs", cfg.NAT.PublicDirectTrustedCIDRs)
 

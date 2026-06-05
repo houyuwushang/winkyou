@@ -48,26 +48,27 @@ type WireGuardConfig struct {
 }
 
 type NATConfig struct {
-	GatherTimeout             time.Duration      `mapstructure:"gather_timeout" yaml:"gather_timeout"`
-	ConnectTimeout            time.Duration      `mapstructure:"connect_timeout" yaml:"connect_timeout"`
-	CheckTimeout              time.Duration      `mapstructure:"check_timeout" yaml:"check_timeout"`
-	RetryInterval             time.Duration      `mapstructure:"retry_interval" yaml:"retry_interval"`
-	RetryMaxInterval          time.Duration      `mapstructure:"retry_max_interval" yaml:"retry_max_interval"`
-	CandidatePortMin          int                `mapstructure:"candidate_port_min" yaml:"candidate_port_min"`
-	CandidatePortMax          int                `mapstructure:"candidate_port_max" yaml:"candidate_port_max"`
-	STUNServers               []string           `mapstructure:"stun_servers" yaml:"stun_servers"`
-	TURNServers               []TURNServerConfig `mapstructure:"turn_servers" yaml:"turn_servers"`
-	ForceRelay                bool               `mapstructure:"force_relay" yaml:"force_relay"`
-	CandidateInterfaceInclude []string           `mapstructure:"candidate_interface_include" yaml:"candidate_interface_include"`
-	CandidateInterfaceExclude []string           `mapstructure:"candidate_interface_exclude" yaml:"candidate_interface_exclude"`
-	CandidateCIDRInclude      []string           `mapstructure:"candidate_cidr_include" yaml:"candidate_cidr_include"`
-	CandidateCIDRExclude      []string           `mapstructure:"candidate_cidr_exclude" yaml:"candidate_cidr_exclude"`
-	NAT1To1IPs                []string           `mapstructure:"nat1to1_ips" yaml:"nat1to1_ips"`
-	NAT1To1CandidateType      string             `mapstructure:"nat1to1_candidate_type" yaml:"nat1to1_candidate_type"`
-	PublicEndpointHints       []string           `mapstructure:"public_endpoint_hints" yaml:"public_endpoint_hints"`
-	AutoPublicEndpointHints   bool               `mapstructure:"auto_public_endpoint_hints" yaml:"auto_public_endpoint_hints"`
-	DirectTrustedCIDRs        []string           `mapstructure:"direct_trusted_cidrs" yaml:"direct_trusted_cidrs"`
-	PublicDirectTrustedCIDRs  []string           `mapstructure:"public_direct_trusted_cidrs" yaml:"public_direct_trusted_cidrs"`
+	GatherTimeout                time.Duration      `mapstructure:"gather_timeout" yaml:"gather_timeout"`
+	ConnectTimeout               time.Duration      `mapstructure:"connect_timeout" yaml:"connect_timeout"`
+	CheckTimeout                 time.Duration      `mapstructure:"check_timeout" yaml:"check_timeout"`
+	RetryInterval                time.Duration      `mapstructure:"retry_interval" yaml:"retry_interval"`
+	RetryMaxInterval             time.Duration      `mapstructure:"retry_max_interval" yaml:"retry_max_interval"`
+	CandidatePortMin             int                `mapstructure:"candidate_port_min" yaml:"candidate_port_min"`
+	CandidatePortMax             int                `mapstructure:"candidate_port_max" yaml:"candidate_port_max"`
+	STUNServers                  []string           `mapstructure:"stun_servers" yaml:"stun_servers"`
+	TURNServers                  []TURNServerConfig `mapstructure:"turn_servers" yaml:"turn_servers"`
+	ForceRelay                   bool               `mapstructure:"force_relay" yaml:"force_relay"`
+	CandidateInterfaceInclude    []string           `mapstructure:"candidate_interface_include" yaml:"candidate_interface_include"`
+	CandidateInterfaceExclude    []string           `mapstructure:"candidate_interface_exclude" yaml:"candidate_interface_exclude"`
+	CandidateCIDRInclude         []string           `mapstructure:"candidate_cidr_include" yaml:"candidate_cidr_include"`
+	CandidateCIDRExclude         []string           `mapstructure:"candidate_cidr_exclude" yaml:"candidate_cidr_exclude"`
+	NAT1To1IPs                   []string           `mapstructure:"nat1to1_ips" yaml:"nat1to1_ips"`
+	NAT1To1CandidateType         string             `mapstructure:"nat1to1_candidate_type" yaml:"nat1to1_candidate_type"`
+	PublicEndpointHints          []string           `mapstructure:"public_endpoint_hints" yaml:"public_endpoint_hints"`
+	AutoPublicEndpointHints      bool               `mapstructure:"auto_public_endpoint_hints" yaml:"auto_public_endpoint_hints"`
+	PublicEndpointHintPortWindow int                `mapstructure:"public_endpoint_hint_port_window" yaml:"public_endpoint_hint_port_window"`
+	DirectTrustedCIDRs           []string           `mapstructure:"direct_trusted_cidrs" yaml:"direct_trusted_cidrs"`
+	PublicDirectTrustedCIDRs     []string           `mapstructure:"public_direct_trusted_cidrs" yaml:"public_direct_trusted_cidrs"`
 }
 
 type ConnectivityConfig struct {
