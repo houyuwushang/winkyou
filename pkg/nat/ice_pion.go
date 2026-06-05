@@ -13,6 +13,11 @@ import (
 	"github.com/pion/stun"
 )
 
+const (
+	publicDirectCheckInterval      = 100 * time.Millisecond
+	publicDirectMaxBindingRequests = 25
+)
+
 type icePionAgent struct {
 	cfg ICEConfig
 
@@ -66,6 +71,8 @@ func newICEPionAgent(cfg ICEConfig) (ICEAgent, error) {
 		DisconnectedTimeout:    &disconnectedTimeout,
 		FailedTimeout:          &failedTimeout,
 		KeepaliveInterval:      durationPtr(2 * time.Second),
+		CheckInterval:          checkIntervalForConfig(cfg),
+		MaxBindingRequests:     maxBindingRequestsForConfig(cfg),
 		InterfaceFilter:        buildCandidateInterfaceFilter(cfg),
 		IPFilter:               ipFilter,
 	})
@@ -410,6 +417,21 @@ func candidateTypesForConfig(cfg ICEConfig) []pionice.CandidateType {
 		pionice.CandidateTypeServerReflexive,
 		pionice.CandidateTypeRelay,
 	}
+}
+
+func checkIntervalForConfig(cfg ICEConfig) *time.Duration {
+	if cfg.relayOnly || cfg.ForceRelay || !cfg.PublicDirectCandidate {
+		return nil
+	}
+	return durationPtr(publicDirectCheckInterval)
+}
+
+func maxBindingRequestsForConfig(cfg ICEConfig) *uint16 {
+	if cfg.relayOnly || cfg.ForceRelay || !cfg.PublicDirectCandidate {
+		return nil
+	}
+	value := uint16(publicDirectMaxBindingRequests)
+	return &value
 }
 
 func nat1To1IPsForConfig(cfg ICEConfig) []string {
