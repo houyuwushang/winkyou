@@ -798,6 +798,18 @@ func TestPublicDirectEmptyRemoteCandidatesFailsPlanWithoutBubbling(t *testing.T)
 	if obs := findObservation(io.observations, "candidate_failed"); obs == nil || !strings.Contains(obs.Reason, "no usable remote candidates") {
 		t.Fatalf("observations = %#v, want candidate_failed no usable remote candidates", io.observations)
 	}
+	obs := findObservation(io.observations, "candidate_failed")
+	if obs == nil {
+		t.Fatalf("observations = %#v, want candidate_failed", io.observations)
+	}
+	if obs.Details["last_remote_candidate_total"] != "3" || obs.Details["last_remote_candidate_kept"] != "0" {
+		t.Fatalf("candidate_failed details = %#v, want last remote candidate counts", obs.Details)
+	}
+	if !strings.Contains(obs.Details["last_remote_candidate_reject_reasons"], "remote_private_candidate=1") ||
+		!strings.Contains(obs.Details["last_remote_candidate_reject_reasons"], "remote_cgnat_or_overlay_candidate=1") ||
+		!strings.Contains(obs.Details["last_remote_candidate_reject_reasons"], "remote_relay_candidate=1") {
+		t.Fatalf("candidate_failed reject reasons = %q, want remote filter reasons", obs.Details["last_remote_candidate_reject_reasons"])
+	}
 }
 
 func stringSliceContains(values []string, want string) bool {

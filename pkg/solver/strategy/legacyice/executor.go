@@ -24,11 +24,13 @@ type executor struct {
 	plan    solver.Plan
 	execCfg executorConfig
 
-	mu                     sync.Mutex
-	agent                  nat.ICEAgent
-	connecting             bool
-	closed                 bool
-	publicDirectLocalBases map[string]struct{}
+	mu                      sync.Mutex
+	agent                   nat.ICEAgent
+	connecting              bool
+	closed                  bool
+	publicDirectLocalBases  map[string]struct{}
+	lastLocalFilterDetails  map[string]string
+	lastRemoteFilterDetails map[string]string
 
 	lifecycleCtx    context.Context
 	lifecycleCancel context.CancelFunc
@@ -440,18 +442,41 @@ func (e *executor) reportFailure(sess solver.SessionIO, err error) {
 		return
 	}
 	e.failOnce.Do(func() {
+		details := map[string]string{
+			"mode": string(e.execCfg.Mode),
+		}
+		if e.execCfg.Mode == modePublicDirect {
+			e.addPublicDirectFailureDetails(details)
+		}
 		e.report(sess, solver.Observation{
 			Strategy:   e.strategyName(),
 			PlanID:     e.plan.ID,
 			Event:      "candidate_failed",
 			ErrorClass: classifyObservationError(err),
 			Reason:     err.Error(),
-			Details: map[string]string{
-				"mode": string(e.execCfg.Mode),
-			},
-			Timestamp: time.Now(),
+			Details:    details,
+			Timestamp:  time.Now(),
 		})
 	})
+}
+
+func (e *executor) addPublicDirectFailureDetails(details map[string]string) {
+	if len(e.execCfg.PublicEndpointHints) > 0 {
+		details["public_endpoint_hint_count"] = strconv.Itoa(len(e.execCfg.PublicEndpointHints))
+		if e.execCfg.PublicEndpointHintPortWindow > 0 {
+			details["public_endpoint_hint_port_window"] = strconv.Itoa(publicEndpointHintPortWindow(e.execCfg.PublicEndpointHintPortWindow))
+		}
+	}
+	local, remote, agent := e.candidateFilterSnapshots()
+	for key, value := range local {
+		details["last_local_"+key] = value
+	}
+	for key, value := range remote {
+		details["last_remote_"+key] = value
+	}
+	if agent != nil {
+		details["ice_state"] = connectionStateString(agent)
+	}
 }
 
 func (e *executor) failRemoteCandidates(sess solver.SessionIO, messageType string) {
@@ -476,6 +501,7 @@ func (e *executor) reportCandidateFilter(sess solver.SessionIO, event, side, mes
 	if messageType != "" {
 		details["message_type"] = messageType
 	}
+	e.rememberCandidateFilterDetails(side, details)
 	e.report(sess, solver.Observation{
 		Strategy:  e.strategyName(),
 		PlanID:    e.plan.ID,
@@ -483,6 +509,26 @@ func (e *executor) reportCandidateFilter(sess solver.SessionIO, event, side, mes
 		Details:   details,
 		Timestamp: time.Now(),
 	})
+}
+
+func (e *executor) rememberCandidateFilterDetails(side string, details map[string]string) {
+	if e.execCfg.Mode != modePublicDirect {
+		return
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	switch side {
+	case "local":
+		e.lastLocalFilterDetails = cloneStringMap(details)
+	case "remote":
+		e.lastRemoteFilterDetails = cloneStringMap(details)
+	}
+}
+
+func (e *executor) candidateFilterSnapshots() (map[string]string, map[string]string, nat.ICEAgent) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return cloneStringMap(e.lastLocalFilterDetails), cloneStringMap(e.lastRemoteFilterDetails), e.agent
 }
 
 func (e *executor) report(sess solver.SessionIO, obs solver.Observation) {
@@ -999,6 +1045,17 @@ func mergeTrustedCIDRs(lists ...[]string) []string {
 			seen[value] = struct{}{}
 			out = append(out, value)
 		}
+	}
+	return out
+}
+
+func cloneStringMap(values map[string]string) map[string]string {
+	if len(values) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(values))
+	for key, value := range values {
+		out[key] = value
 	}
 	return out
 }
