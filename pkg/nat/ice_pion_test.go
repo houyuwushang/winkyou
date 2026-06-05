@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"net"
+	"slices"
 	"testing"
 	"time"
 
@@ -260,6 +261,27 @@ func TestPublicDirectDerivesOnlyUDPTURNAsSTUN(t *testing.T) {
 	}
 	if secureURI != nil {
 		t.Fatalf("secure TURN derived URI = %+v, want nil", secureURI)
+	}
+}
+
+func TestPublicDirectSTUNServerURLsDeduplicatesEffectiveProbeURLs(t *testing.T) {
+	urls, err := PublicDirectSTUNServerURLs(ICEConfig{
+		STUNServers: []string{
+			"stun:turn.example.com:3478",
+			"stun:stun.example.com:3478",
+		},
+		TURNServers: []TURNServer{{
+			URL:      "turn:turn.example.com:3478?transport=udp",
+			Username: "user",
+			Password: "pass",
+		}},
+	})
+	if err != nil {
+		t.Fatalf("PublicDirectSTUNServerURLs() error = %v", err)
+	}
+	want := []string{"stun:turn.example.com:3478", "stun:stun.example.com:3478"}
+	if !slices.Equal(urls, want) {
+		t.Fatalf("PublicDirectSTUNServerURLs() = %#v, want %#v", urls, want)
 	}
 }
 

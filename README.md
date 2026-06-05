@@ -158,7 +158,7 @@ nat:
 - `remote_candidates_filtered`：收到远端 offer/answer/candidate 后的过滤统计。
 - `candidate_total`、`candidate_kept`、`candidate_rejected`、`candidate_reject_reasons` 可用于判断是没有采到公网候选、候选被 `public_direct` 规则过滤，还是候选保留下来后 ICE 连通检查失败。
 
-`wink doctor` 也会对 `nat.stun_servers` 做一次 STUN binding probe，并读取 observation history 输出 `public direct evidence`。如果 STUN 已经失败，`legacyice/public_direct` 很可能无法采集到 server-reflexive candidate；自托管场景中，`public_direct` 也会把 UDP TURN URL 派生成同 host/port 的 STUN binding URL 使用，但不会使用 TURN relay candidate。如果 doctor 显示 `candidate_kept=0`，则按本端 gather 或远端过滤结果继续排查。此时应先换成两端都可达的 STUN 服务、检查 UDP 出站和防火墙，或改用 TURN/`relay_only`。
+`wink doctor` 也会对 public-direct 的有效 STUN 来源做一次 binding probe：包括 `nat.stun_servers`，以及从 UDP TURN URL 派生出的同 host/port STUN binding URL。自托管场景中，只配置 coturn 也能用同一个 UDP 入口检查 srflx 映射，但 `public_direct` 不会使用 TURN relay candidate。如果 STUN probe 已经失败，`legacyice/public_direct` 很可能无法采集到 server-reflexive candidate。如果 doctor 显示 `candidate_kept=0`，则按本端 gather 或远端过滤结果继续排查。此时应先换成两端都可达的 STUN/UDP TURN 服务、检查 UDP 出站和防火墙，或改用 TURN/`relay_only`。
 
 从当前版本起，`legacy_ice_udp` 默认会按顺序尝试：
 

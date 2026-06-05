@@ -54,6 +54,34 @@ type ICEConfig struct {
 	relayOnly bool
 }
 
+// PublicDirectSTUNServerURLs returns the effective STUN binding URLs used by a
+// public-direct ICE attempt. It includes configured STUN servers and UDP TURN
+// servers converted to unauthenticated STUN binding URLs on the same host/port.
+func PublicDirectSTUNServerURLs(cfg ICEConfig) ([]string, error) {
+	urls, err := buildPionURLs(ICEConfig{
+		STUNServers:           cfg.STUNServers,
+		TURNServers:           cfg.TURNServers,
+		PublicDirectCandidate: true,
+	})
+	if err != nil {
+		return nil, err
+	}
+	out := make([]string, 0, len(urls))
+	seen := make(map[string]struct{}, len(urls))
+	for _, uri := range urls {
+		if uri == nil {
+			continue
+		}
+		raw := uri.String()
+		if _, ok := seen[raw]; ok {
+			continue
+		}
+		seen[raw] = struct{}{}
+		out = append(out, raw)
+	}
+	return out, nil
+}
+
 // NATType represents the detected NAT type.
 type NATType int
 

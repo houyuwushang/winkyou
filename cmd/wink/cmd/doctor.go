@@ -208,12 +208,19 @@ func defaultCoordinatorProbe(ctx context.Context, cfg *config.Config) doctorChec
 }
 
 func defaultSTUNProbe(ctx context.Context, cfg *config.Config) doctorCheck {
-	if len(cfg.NAT.STUNServers) == 0 {
-		return warnCheck("nat", "stun", "no STUN server configured", "configure nat.stun_servers to gather public direct candidates, or use TURN/relay_only")
+	servers, err := nat.PublicDirectSTUNServerURLs(nat.ICEConfig{
+		STUNServers: cfg.NAT.STUNServers,
+		TURNServers: doctorNATTURNServers(cfg.NAT.TURNServers),
+	})
+	if err != nil {
+		return warnCheck("nat", "stun", "invalid public direct STUN/TURN configuration: "+err.Error(), "fix nat.stun_servers or UDP nat.turn_servers")
+	}
+	if len(servers) == 0 {
+		return warnCheck("nat", "stun", "no STUN server configured", "configure nat.stun_servers, configure UDP nat.turn_servers for coturn STUN binding, or use TURN/relay_only")
 	}
 
-	errs := make([]string, 0, len(cfg.NAT.STUNServers))
-	for _, server := range cfg.NAT.STUNServers {
+	errs := make([]string, 0, len(servers))
+	for _, server := range servers {
 		server = strings.TrimSpace(server)
 		if server == "" {
 			continue
@@ -228,9 +235,24 @@ func defaultSTUNProbe(ctx context.Context, cfg *config.Config) doctorCheck {
 		return okCheck("nat", "stun", fmt.Sprintf("mapped %s from local %s via %s", formatUDPAddr(result.MappedAddr), formatUDPAddr(result.LocalAddr), formatUDPAddr(result.ServerAddr)))
 	}
 	if len(errs) == 0 {
-		return warnCheck("nat", "stun", "no usable STUN server configured", "remove empty nat.stun_servers entries or configure a reachable STUN server")
+		return warnCheck("nat", "stun", "no usable STUN server configured", "remove empty nat.stun_servers entries or configure a reachable STUN/UDP TURN server")
 	}
 	return warnCheck("nat", "stun", "all STUN probes failed: "+strings.Join(errs, "; "), "configure a reachable STUN server near both peers, or use TURN/relay_only")
+}
+
+func doctorNATTURNServers(servers []config.TURNServerConfig) []nat.TURNServer {
+	if len(servers) == 0 {
+		return nil
+	}
+	out := make([]nat.TURNServer, 0, len(servers))
+	for _, server := range servers {
+		out = append(out, nat.TURNServer{
+			URL:      server.URL,
+			Username: server.Username,
+			Password: server.Password,
+		})
+	}
+	return out
 }
 
 func defaultTURNProbe(cfg *config.Config, required bool) doctorCheck {

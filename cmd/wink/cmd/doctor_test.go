@@ -3,7 +3,9 @@ package cmd
 import (
 	"bytes"
 	"context"
+	"encoding/binary"
 	"encoding/json"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -100,6 +102,29 @@ func TestDoctorSTUNWarnWhenProbeFails(t *testing.T) {
 	check := findDoctorCheck(result, "nat", "stun")
 	if check.Status != doctorWarn || !strings.Contains(check.Message, "all STUN probes failed") {
 		t.Fatalf("stun check = %#v, want STUN warning", check)
+	}
+}
+
+func TestDefaultSTUNProbeUsesUDPTURNAsPublicDirectHint(t *testing.T) {
+	server := startDoctorFakeSTUNServer(t, net.IPv4(198, 51, 100, 44), 45678)
+	defer server.Close()
+
+	cfg := config.Default()
+	cfg.NAT.STUNServers = nil
+	cfg.NAT.TURNServers = []config.TURNServerConfig{{
+		URL:      "turn:" + server.LocalAddr().String() + "?transport=udp",
+		Username: "wink",
+		Password: "secret",
+	}}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	check := defaultSTUNProbe(ctx, &cfg)
+	if check.Status != doctorOK {
+		t.Fatalf("defaultSTUNProbe() = %#v, want OK from UDP TURN-derived STUN source", check)
+	}
+	if !strings.Contains(check.Message, "mapped 198.51.100.44:45678") {
+		t.Fatalf("defaultSTUNProbe() message = %q, want mapped address", check.Message)
 	}
 }
 
@@ -522,3 +547,64 @@ func findDoctorCheck(result doctorResult, layer, name string) doctorCheck {
 	}
 	return doctorCheck{}
 }
+
+func startDoctorFakeSTUNServer(t *testing.T, mappedIP net.IP, mappedPort int) net.PacketConn {
+	t.Helper()
+	conn, err := net.ListenPacket("udp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("fake STUN server listen: %v", err)
+	}
+	go func() {
+		buf := make([]byte, 1500)
+		for {
+			n, clientAddr, err := conn.ReadFrom(buf)
+			if err != nil {
+				return
+			}
+			if n < doctorSTUNHeaderSize ||
+				binary.BigEndian.Uint16(buf[0:2]) != doctorSTUNMsgTypeBindingReq ||
+				binary.BigEndian.Uint32(buf[4:8]) != doctorSTUNMagicCookie {
+				continue
+			}
+			resp := buildDoctorFakeSTUNBindingResponse(buf[8:20], mappedIP, mappedPort)
+			_, _ = conn.WriteTo(resp, clientAddr)
+		}
+	}()
+	return conn
+}
+
+func buildDoctorFakeSTUNBindingResponse(txID []byte, ip net.IP, port int) []byte {
+	ip4 := ip.To4()
+	if ip4 == nil {
+		panic("doctor fake STUN helper only supports IPv4")
+	}
+	attrData := make([]byte, 8)
+	attrData[1] = 0x01
+	binary.BigEndian.PutUint16(attrData[2:4], uint16(port)^uint16(doctorSTUNMagicCookie>>16))
+	cookieBytes := make([]byte, 4)
+	binary.BigEndian.PutUint32(cookieBytes, doctorSTUNMagicCookie)
+	for i := range ip4 {
+		attrData[4+i] = ip4[i] ^ cookieBytes[i]
+	}
+
+	attr := make([]byte, 4+len(attrData))
+	binary.BigEndian.PutUint16(attr[0:2], doctorSTUNAttrXORMappedAddress)
+	binary.BigEndian.PutUint16(attr[2:4], uint16(len(attrData)))
+	copy(attr[4:], attrData)
+
+	resp := make([]byte, doctorSTUNHeaderSize+len(attr))
+	binary.BigEndian.PutUint16(resp[0:2], doctorSTUNMsgTypeBindingResp)
+	binary.BigEndian.PutUint16(resp[2:4], uint16(len(attr)))
+	binary.BigEndian.PutUint32(resp[4:8], doctorSTUNMagicCookie)
+	copy(resp[8:20], txID)
+	copy(resp[doctorSTUNHeaderSize:], attr)
+	return resp
+}
+
+const (
+	doctorSTUNMsgTypeBindingReq    = 0x0001
+	doctorSTUNMsgTypeBindingResp   = 0x0101
+	doctorSTUNAttrXORMappedAddress = 0x0020
+	doctorSTUNMagicCookie          = 0x2112A442
+	doctorSTUNHeaderSize           = 20
+)
