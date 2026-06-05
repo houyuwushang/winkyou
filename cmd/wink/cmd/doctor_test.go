@@ -371,6 +371,30 @@ func TestDoctorMultipathDisabledSuggestsEnable(t *testing.T) {
 	}
 }
 
+func TestDoctorMultipathRelayOnlyModeWarnsSinglePath(t *testing.T) {
+	configPath := writeDoctorConfigWithMultipathMode(t, "relay_only", false)
+
+	result := runDoctor(context.Background(), &Options{ConfigPath: configPath}, doctorFlags{}, healthyDoctorProbes())
+	check := findDoctorCheck(result, "multipath", "policy")
+	if check.Status != doctorWarn ||
+		!strings.Contains(check.Message, "relay-only policy keeps sessions single-path") ||
+		!strings.Contains(check.Suggestion, "connectivity.mode=auto") {
+		t.Fatalf("multipath relay-only policy check = %#v, want single-path warning", check)
+	}
+}
+
+func TestDoctorMultipathForceRelayWarnsSinglePath(t *testing.T) {
+	configPath := writeDoctorConfigWithMultipathMode(t, "auto", true)
+
+	result := runDoctor(context.Background(), &Options{ConfigPath: configPath}, doctorFlags{}, healthyDoctorProbes())
+	check := findDoctorCheck(result, "multipath", "policy")
+	if check.Status != doctorWarn ||
+		!strings.Contains(check.Message, "relay-only policy keeps sessions single-path") ||
+		!strings.Contains(check.Suggestion, "remove nat.force_relay") {
+		t.Fatalf("multipath force-relay policy check = %#v, want single-path warning", check)
+	}
+}
+
 func TestDoctorMultipathEnabledWithoutProtectedDirectWarns(t *testing.T) {
 	configPath := writeDoctorConfigWithMultipath(t)
 	writeDoctorRuntimeState(t, configPath, []winkclient.RuntimePeerStatus{{
@@ -662,6 +686,15 @@ connectivity:
 
 func writeDoctorConfigWithMultipath(t *testing.T) string {
 	t.Helper()
+	return writeDoctorConfigWithMultipathMode(t, "auto", false)
+}
+
+func writeDoctorConfigWithMultipathMode(t *testing.T, mode string, forceRelay bool) string {
+	t.Helper()
+	forceRelayLine := ""
+	if forceRelay {
+		forceRelayLine = "  force_relay: true\n"
+	}
 	body := `
 node:
   name: node-a
@@ -677,8 +710,9 @@ nat:
     - url: turn:127.0.0.1:3478?transport=udp
       username: wink
       password: secret
+` + forceRelayLine + `
 connectivity:
-  mode: auto
+  mode: ` + mode + `
   strategy_order:
     - relay_only
     - legacy_ice_udp

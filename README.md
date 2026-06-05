@@ -138,6 +138,8 @@ nat:
 
 在 relay-only 模式下，如果双方都支持 `relay_only`，生产 resolver 会优先选择 `relay_only`。如果远端是旧 peer 且没有上报 capability，仍会 fallback 到 `legacy_ice_udp`，但 legacy ICE agent 会继续使用 relay-only candidate gathering。
 
+注意：`connectivity.mode: relay_only` 和旧的 `nat.force_relay: true` 是单路径 relay 验证/保底模式，会关闭 protected-direct multipath。要同时保持“relay 或低延迟路径作为 primary + direct/P2P standby”，使用 `connectivity.mode: auto`，并把 `connectivity.strategy_order` 配成 `relay_only`、`legacy_ice_udp`。`wink doctor` 会在 multipath 已开启但 relay-only policy 实际导致单路径时给出 warning。
+
 验证纯 NAT piercing 时，可以排除已有 overlay 或本地虚拟网卡：
 
 ```yaml

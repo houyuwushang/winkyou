@@ -232,6 +232,8 @@ connectivity:
     shadow_write: false
 ```
 
+`connectivity.mode: relay_only` 和 `nat.force_relay: true` 会让生产路径保持单路径 relay 语义，即使配置里写了 `connectivity.multipath.enabled: true`，client 也不会同时保留 direct standby。要验证“relay primary + direct/P2P standby”，保持 `connectivity.mode: auto`，只把 `connectivity.strategy_order` 调成 `relay_only`、`legacy_ice_udp`，并确认 `connectivity.multipath.enabled: true`。`wink doctor` 的 `multipath/policy` 检查会提示 relay-only policy 导致的单路径状态。
+
 `tcp_framed` 仍是 alpha，仅用于显式可达 TCP 地址测试：
 
 ```yaml
