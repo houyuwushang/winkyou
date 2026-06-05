@@ -440,7 +440,11 @@ func (s *Session) executeCandidateLoop(ctx context.Context, strategy solver.Stra
 
 	// Score all outcomes
 	for i := range outcomes {
-		outcomes[i].Score = solver.ScoreOutcome(outcomes[i])
+		if s.cfg.PathPolicy.MultipathEnabled {
+			outcomes[i].Score = solver.ScoreOutcomeWithPolicy(outcomes[i], s.cfg.PathPolicy)
+		} else {
+			outcomes[i].Score = solver.ScoreOutcome(outcomes[i])
+		}
 	}
 
 	return outcomes

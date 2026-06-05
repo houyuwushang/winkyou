@@ -3,6 +3,7 @@ package solver
 import (
 	"context"
 	"net"
+	"strconv"
 	"time"
 
 	rproto "winkyou/pkg/rendezvous/proto"
@@ -239,6 +240,59 @@ func ScoreOutcome(outcome CandidateOutcome) int {
 	}
 
 	return score
+}
+
+func ScoreOutcomeWithPolicy(outcome CandidateOutcome, policy PathPolicy) int {
+	score := ScoreOutcome(outcome)
+	if score == 0 || !policy.MultipathEnabled {
+		return score
+	}
+
+	summary := outcome.Result.Summary
+	if latencyBonus, ok := pathLatencyBonus(summary); ok {
+		score += latencyBonus
+	}
+	if policy.DependencyPenalty > 0 && (IsRelayPath(summary) || hasPathDependency(summary)) {
+		score -= policy.DependencyPenalty
+	}
+	if policy.ProtectDirect && policy.DirectProtectionBonus > 0 && IsDirectPath(summary) {
+		score += policy.DirectProtectionBonus
+	}
+	if score < 1 {
+		return 1
+	}
+	return score
+}
+
+func pathLatencyBonus(summary PathSummary) (int, bool) {
+	if summary.Metrics == nil {
+		return 0, false
+	}
+	for _, key := range []string{"rtt_ms", "latency_ms"} {
+		raw := summary.Metrics[key]
+		if raw == "" {
+			continue
+		}
+		value, err := strconv.Atoi(raw)
+		if err != nil || value <= 0 {
+			continue
+		}
+		bonus := 200 - value
+		if bonus < 0 {
+			bonus = 0
+		}
+		return bonus, true
+	}
+	return 0, false
+}
+
+func hasPathDependency(summary PathSummary) bool {
+	for _, dependency := range summary.Dependencies {
+		if dependency.Kind != "" && dependency.Kind != PathDependencyNone {
+			return true
+		}
+	}
+	return false
 }
 
 // SelectBestOutcome picks the highest-scoring outcome from a list

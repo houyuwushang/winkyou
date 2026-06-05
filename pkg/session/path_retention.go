@@ -3,8 +3,29 @@ package session
 import "winkyou/pkg/solver"
 
 func selectPrimaryOutcome(outcomes []solver.CandidateOutcome, policy solver.PathPolicy) *solver.CandidateOutcome {
-	_ = policy
+	if policy.MultipathEnabled {
+		return selectPrimaryOutcomeWithPolicy(outcomes, policy)
+	}
 	return solver.SelectBestOutcome(outcomes)
+}
+
+func selectPrimaryOutcomeWithPolicy(outcomes []solver.CandidateOutcome, policy solver.PathPolicy) *solver.CandidateOutcome {
+	if len(outcomes) == 0 {
+		return nil
+	}
+	var best *solver.CandidateOutcome
+	bestScore := -1
+	for i := range outcomes {
+		score := solver.ScoreOutcomeWithPolicy(outcomes[i], policy)
+		if score > bestScore {
+			bestScore = score
+			best = &outcomes[i]
+		}
+	}
+	if best != nil && bestScore > 0 {
+		return best
+	}
+	return nil
 }
 
 func selectProtectedDirectOutcome(outcomes []solver.CandidateOutcome, policy solver.PathPolicy) *solver.CandidateOutcome {

@@ -115,6 +115,91 @@ func TestScoreOutcome(t *testing.T) {
 	}
 }
 
+func TestScoreOutcomeWithPolicyKeepsDefaultWhenDisabled(t *testing.T) {
+	outcome := CandidateOutcome{
+		Result: &Result{
+			Transport: &mockTransport{},
+			Summary: PathSummary{
+				PathID:         "relay/path",
+				ConnectionType: "relay",
+				Dependencies:   []PathDependency{{Kind: PathDependencyRelay}},
+				Metrics:        map[string]string{"rtt_ms": "1"},
+			},
+		},
+	}
+	if got, want := ScoreOutcomeWithPolicy(outcome, PathPolicy{}), ScoreOutcome(outcome); got != want {
+		t.Fatalf("ScoreOutcomeWithPolicy disabled = %d, want default %d", got, want)
+	}
+}
+
+func TestScoreOutcomeWithPolicyLowLatencyRelayCanBeatDirect(t *testing.T) {
+	policy := PathPolicy{
+		MultipathEnabled:      true,
+		ProtectDirect:         true,
+		DependencyPenalty:     50,
+		DirectProtectionBonus: 100,
+	}
+	relay := CandidateOutcome{
+		Result: &Result{
+			Transport: &mockTransport{},
+			Summary: PathSummary{
+				PathID:         "relay/path",
+				ConnectionType: "relay",
+				Dependencies:   []PathDependency{{Kind: PathDependencyRelay}},
+				Metrics:        map[string]string{"rtt_ms": "1"},
+			},
+		},
+	}
+	direct := CandidateOutcome{
+		Result: &Result{
+			Transport: &mockTransport{},
+			Summary: PathSummary{
+				PathID:         "direct/path",
+				ConnectionType: "direct",
+				Role:           PathRoleProtectedDirect,
+				Metrics:        map[string]string{"rtt_ms": "400"},
+			},
+		},
+	}
+	if relayScore, directScore := ScoreOutcomeWithPolicy(relay, policy), ScoreOutcomeWithPolicy(direct, policy); relayScore <= directScore {
+		t.Fatalf("policy scores relay=%d direct=%d, want low-latency relay primary possible", relayScore, directScore)
+	}
+}
+
+func TestScoreOutcomeWithPolicyDirectCanWin(t *testing.T) {
+	policy := PathPolicy{
+		MultipathEnabled:      true,
+		ProtectDirect:         true,
+		DependencyPenalty:     50,
+		DirectProtectionBonus: 100,
+	}
+	relay := CandidateOutcome{
+		Result: &Result{
+			Transport: &mockTransport{},
+			Summary: PathSummary{
+				PathID:         "relay/path",
+				ConnectionType: "relay",
+				Dependencies:   []PathDependency{{Kind: PathDependencyRelay}},
+				Metrics:        map[string]string{"rtt_ms": "90"},
+			},
+		},
+	}
+	direct := CandidateOutcome{
+		Result: &Result{
+			Transport: &mockTransport{},
+			Summary: PathSummary{
+				PathID:         "direct/path",
+				ConnectionType: "direct",
+				Role:           PathRoleProtectedDirect,
+				Metrics:        map[string]string{"rtt_ms": "20"},
+			},
+		},
+	}
+	if directScore, relayScore := ScoreOutcomeWithPolicy(direct, policy), ScoreOutcomeWithPolicy(relay, policy); directScore <= relayScore {
+		t.Fatalf("policy scores direct=%d relay=%d, want direct primary when better", directScore, relayScore)
+	}
+}
+
 func TestSelectBestOutcome(t *testing.T) {
 	directOutcome := CandidateOutcome{
 		Plan: Plan{ID: "direct"},

@@ -62,6 +62,53 @@ func TestRetainSuccessfulOutcomesKeepsProtectedDirectWhenPolicyEnabled(t *testin
 	}
 }
 
+func TestSelectPrimaryOutcomeUsesPolicyScoring(t *testing.T) {
+	relayTransport := &fakeTransport{}
+	directTransport := &fakeTransport{}
+	outcomes := []solver.CandidateOutcome{
+		successfulOutcome("relay/path", relayTransport, solver.PathSummary{
+			PathID:         "relay/path",
+			ConnectionType: "relay",
+			Dependencies:   []solver.PathDependency{{Kind: solver.PathDependencyRelay}},
+			Metrics:        map[string]string{"rtt_ms": "1"},
+		}),
+		successfulOutcome("direct/path", directTransport, solver.PathSummary{
+			PathID:         "direct/path",
+			ConnectionType: "direct",
+			Role:           solver.PathRoleProtectedDirect,
+			Metrics:        map[string]string{"rtt_ms": "400"},
+		}),
+	}
+	policy := solver.PathPolicy{
+		MultipathEnabled:      true,
+		ProtectDirect:         true,
+		MaxPaths:              2,
+		DependencyPenalty:     50,
+		DirectProtectionBonus: 100,
+	}
+
+	selected := selectPrimaryOutcome(outcomes, policy)
+	if selected == nil || selected.Result.Summary.PathID != "relay/path" {
+		t.Fatalf("selected primary = %#v, want relay/path", selected)
+	}
+	protected := selectProtectedDirectOutcome(outcomes, policy)
+	if protected == nil || protected.Result.Summary.PathID != "direct/path" {
+		t.Fatalf("protected direct = %#v, want direct/path", protected)
+	}
+}
+
+func TestSelectPrimaryOutcomeKeepsOldScoringWithoutPolicy(t *testing.T) {
+	outcomes := []solver.CandidateOutcome{
+		successfulOutcome("relay/path", &fakeTransport{}, solver.PathSummary{PathID: "relay/path", ConnectionType: "relay"}),
+		successfulOutcome("direct/path", &fakeTransport{}, solver.PathSummary{PathID: "direct/path", ConnectionType: "direct"}),
+	}
+
+	selected := selectPrimaryOutcome(outcomes, solver.PathPolicy{})
+	if selected == nil || selected.Result.Summary.PathID != "direct/path" {
+		t.Fatalf("selected primary = %#v, want direct/path under old scoring", selected)
+	}
+}
+
 func successfulOutcome(pathID string, transport *fakeTransport, summary solver.PathSummary) solver.CandidateOutcome {
 	return solver.CandidateOutcome{
 		Plan:   solver.Plan{ID: pathID + "/plan"},
