@@ -146,6 +146,8 @@ nat:
 
 无 TURN 的 `auto` 模式还会禁用 `legacy_ice_udp` 内部的 `legacyice/relay_only` plan。这样即使 observation history 里有旧的 relay success，当前会话也不会先等待不可用的 relay plan，而是把预算留给 `direct_prefer` 和 `public_direct`。显式 `connectivity.mode: relay_only` 或 `nat.force_relay: true` 仍会保留 relay-only 行为，用于检查 TURN 配置或强制 relay。
 
+`wink doctor` 的 `strategy/legacy plans` 检查会直接显示当前 legacy 内部执行顺序。无 TURN auto 模式应看到 `legacyice/direct_prefer -> legacyice/public_direct (relay plan disabled: no TURN configured)`；如果看到 `legacyice/relay_only` 排在里面，说明当前配置已经启用了 TURN 或显式 relay-only/force-relay。
+
 `wink doctor` 还会检查 mapped `public_endpoint_hints` 的本地 base IP 是否存在于本机接口上。如果这里出现 `public endpoint hint local base` warning，说明 hint 的本地部分很可能写成了虚拟局域网 peer 地址、旧地址或另一台机器的地址；`legacyice/public_direct` 会按这个 base 限制本地 gather，因此必须改成本机真实出口网卡 IP。
 
 默认 `legacy_ice_udp` 内部执行顺序为：

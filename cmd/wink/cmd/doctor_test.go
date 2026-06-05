@@ -91,6 +91,30 @@ func TestDoctorTURNFailWhenRelayRequired(t *testing.T) {
 	}
 }
 
+func TestDoctorLegacyPlansDisableRelayWithoutTURN(t *testing.T) {
+	configPath := writeDoctorConfigWithoutTURN(t)
+
+	result := runDoctor(context.Background(), &Options{ConfigPath: configPath}, doctorFlags{}, healthyDoctorProbes())
+	check := findDoctorCheck(result, "strategy", "legacy plans")
+	if check.Status != doctorOK ||
+		!strings.Contains(check.Message, "legacyice/direct_prefer -> legacyice/public_direct") ||
+		!strings.Contains(check.Message, "relay plan disabled") ||
+		strings.Contains(check.Message, "legacyice/relay_only") {
+		t.Fatalf("legacy plans check = %#v, want direct/public-direct with relay disabled", check)
+	}
+}
+
+func TestDoctorLegacyPlansIncludeRelayWithTURN(t *testing.T) {
+	configPath := writeDoctorConfig(t)
+
+	result := runDoctor(context.Background(), &Options{ConfigPath: configPath}, doctorFlags{}, healthyDoctorProbes())
+	check := findDoctorCheck(result, "strategy", "legacy plans")
+	if check.Status != doctorOK ||
+		!strings.Contains(check.Message, "legacyice/direct_prefer -> legacyice/public_direct -> legacyice/relay_only") {
+		t.Fatalf("legacy plans check = %#v, want direct/public-direct/relay", check)
+	}
+}
+
 func TestDoctorSTUNWarnWhenProbeFails(t *testing.T) {
 	configPath := writeDoctorConfig(t)
 	probes := healthyDoctorProbes()
@@ -711,6 +735,34 @@ nat:
       username: wink
       password: secret
 ` + natExtra + `
+connectivity:
+  mode: auto
+  strategy_order:
+    - legacy_ice_udp
+    - relay_only
+`
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(path, []byte(strings.TrimSpace(body)+"\n"), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	return path
+}
+
+func writeDoctorConfigWithoutTURN(t *testing.T) string {
+	t.Helper()
+	body := `
+node:
+  name: node-a
+coordinator:
+  url: grpc://127.0.0.1:50051
+  auth_key: test-auth
+netif:
+  backend: tun
+wireguard:
+  private_key: test-private-key
+nat:
+  stun_servers:
+    - stun:127.0.0.1:3478
 connectivity:
   mode: auto
   strategy_order:

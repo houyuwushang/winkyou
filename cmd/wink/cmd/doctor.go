@@ -38,7 +38,11 @@ const (
 
 const doctorInbandHealthWindow = 20 * time.Second
 
-const doctorPublicDirectPlanID = "legacyice/public_direct"
+const (
+	doctorLegacyDirectPreferPlanID = "legacyice/direct_prefer"
+	doctorPublicDirectPlanID       = "legacyice/public_direct"
+	doctorLegacyRelayOnlyPlanID    = "legacyice/relay_only"
+)
 
 type doctorCheck struct {
 	Layer      string       `json:"layer"`
@@ -433,6 +437,9 @@ func addStrategyChecks(result *doctorResult, cfg *config.Config, flags doctorFla
 		return
 	}
 	result.add(okCheck("strategy", "order", strings.Join(order, " -> ")))
+	if slices.Contains(order, legacyice.StrategyName) {
+		result.add(legacyPlanCheck(cfg))
+	}
 
 	strategy := requestedStrategy(flags)
 	if strategy == "" {
@@ -451,6 +458,33 @@ func addStrategyChecks(result *doctorResult, cfg *config.Config, flags doctorFla
 		return
 	}
 	result.add(okCheck("strategy", "requested", strategy+" is locally selectable"))
+}
+
+func legacyPlanCheck(cfg *config.Config) doctorCheck {
+	plans := []string{doctorLegacyDirectPreferPlanID, doctorPublicDirectPlanID}
+	if legacyRelayPlanEnabled(cfg) {
+		plans = append(plans, doctorLegacyRelayOnlyPlanID)
+		return okCheck("strategy", "legacy plans", strings.Join(plans, " -> "))
+	}
+	return okCheck("strategy", "legacy plans", strings.Join(plans, " -> ")+" (relay plan disabled: no TURN configured)")
+}
+
+func legacyRelayPlanEnabled(cfg *config.Config) bool {
+	if cfg == nil {
+		return true
+	}
+	return cfg.NAT.ForceRelay ||
+		strings.EqualFold(strings.TrimSpace(cfg.Connectivity.Mode), relayonly.StrategyName) ||
+		hasDoctorTURNServers(cfg.NAT.TURNServers)
+}
+
+func hasDoctorTURNServers(servers []config.TURNServerConfig) bool {
+	for _, server := range servers {
+		if strings.TrimSpace(server.URL) != "" {
+			return true
+		}
+	}
+	return false
 }
 
 func addCandidateFilterChecks(result *doctorResult, cfg *config.Config, state *winkclient.RuntimeState, stateErr error) {
