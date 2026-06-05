@@ -376,8 +376,9 @@ func (e *executor) rememberPublicDirectLocalBases(candidates []nat.Candidate) {
 		return
 	}
 	bases := make(map[string]struct{})
+	hasExplicitHintBase := publicEndpointHintsHaveLocalBases(e.execCfg.PublicEndpointHints)
 	for _, candidate := range candidates {
-		if candidate.Type == nat.CandidateTypeHost && len(e.execCfg.PublicEndpointHints) > 0 && candidate.Address != nil && candidate.Address.IP != nil && candidate.Address.IP.IsPrivate() {
+		if !hasExplicitHintBase && candidate.Type == nat.CandidateTypeHost && len(e.execCfg.PublicEndpointHints) > 0 && candidate.Address != nil && candidate.Address.IP != nil && candidate.Address.IP.IsPrivate() {
 			bases[candidate.Address.IP.String()] = struct{}{}
 			continue
 		}
@@ -662,20 +663,72 @@ func appendPublicEndpointHintCandidates(candidates []nat.Candidate, execCfg exec
 }
 
 func publicEndpointHintCandidate(raw string, index int) (nat.Candidate, error) {
-	endpoint, err := netip.ParseAddrPort(strings.TrimSpace(raw))
-	if err != nil || !endpoint.Addr().Is4() || endpoint.Port() == 0 {
-		return nat.Candidate{}, fmt.Errorf("legacyice: invalid public endpoint hint %q", raw)
+	hint, err := parsePublicEndpointHint(raw)
+	if err != nil {
+		return nat.Candidate{}, err
 	}
-	ip := net.IP(append([]byte(nil), endpoint.Addr().AsSlice()...))
+	ip := net.IP(append([]byte(nil), hint.public.Addr().AsSlice()...))
 	if reason := nonPublicCandidateIPReason(ip); reason != "" {
 		return nat.Candidate{}, fmt.Errorf("legacyice: invalid public endpoint hint %q: %s", raw, reason)
 	}
-	return nat.Candidate{
+	candidate := nat.Candidate{
 		Type:       nat.CandidateTypeSrflx,
-		Address:    &net.UDPAddr{IP: ip, Port: int(endpoint.Port())},
+		Address:    &net.UDPAddr{IP: ip, Port: int(hint.public.Port())},
 		Priority:   publicEndpointHintPriority(index),
 		Foundation: fmt.Sprintf("public-hint-%d", index+1),
-	}, nil
+	}
+	if hint.local.IsValid() {
+		localIP := net.IP(append([]byte(nil), hint.local.Addr().AsSlice()...))
+		candidate.RelatedAddr = &net.UDPAddr{IP: localIP, Port: int(hint.local.Port())}
+	}
+	return candidate, nil
+}
+
+type publicEndpointHint struct {
+	public netip.AddrPort
+	local  netip.AddrPort
+}
+
+func parsePublicEndpointHint(raw string) (publicEndpointHint, error) {
+	value := strings.TrimSpace(raw)
+	if value == "" {
+		return publicEndpointHint{}, fmt.Errorf("legacyice: public endpoint hint must not be empty")
+	}
+	parts := strings.Split(value, "/")
+	if len(parts) > 2 {
+		return publicEndpointHint{}, fmt.Errorf("legacyice: invalid public endpoint hint %q", raw)
+	}
+	public, err := parseEndpointHintAddrPort(parts[0])
+	if err != nil {
+		return publicEndpointHint{}, fmt.Errorf("legacyice: invalid public endpoint hint %q", raw)
+	}
+	hint := publicEndpointHint{public: public}
+	if len(parts) == 2 {
+		local, err := parseEndpointHintAddrPort(parts[1])
+		if err != nil {
+			return publicEndpointHint{}, fmt.Errorf("legacyice: invalid public endpoint hint local base %q", raw)
+		}
+		hint.local = local
+	}
+	return hint, nil
+}
+
+func parseEndpointHintAddrPort(raw string) (netip.AddrPort, error) {
+	endpoint, err := netip.ParseAddrPort(strings.TrimSpace(raw))
+	if err != nil || !endpoint.Addr().Is4() || endpoint.Port() == 0 {
+		return netip.AddrPort{}, fmt.Errorf("invalid endpoint")
+	}
+	return endpoint, nil
+}
+
+func publicEndpointHintsHaveLocalBases(values []string) bool {
+	for _, raw := range values {
+		hint, err := parsePublicEndpointHint(raw)
+		if err == nil && hint.local.IsValid() {
+			return true
+		}
+	}
+	return false
 }
 
 func publicEndpointHintPriority(index int) uint32 {

@@ -223,12 +223,39 @@ func validatePublicEndpointHints(field string, values []string) error {
 		if value == "" {
 			return fmt.Errorf("%s[%d] must not be empty", field, i)
 		}
-		endpoint, err := netip.ParseAddrPort(value)
-		if err != nil || !endpoint.Addr().Is4() || endpoint.Port() == 0 || !isPublicEndpointHintAddress(endpoint.Addr()) {
+		public, local, err := parsePublicEndpointHint(value)
+		if err != nil || !isPublicEndpointHintAddress(public.Addr()) || (local.IsValid() && !isPublicEndpointHintLocalAddress(local.Addr())) {
 			return fmt.Errorf("invalid %s[%d]: %q", field, i, value)
 		}
 	}
 	return nil
+}
+
+func parsePublicEndpointHint(value string) (netip.AddrPort, netip.AddrPort, error) {
+	parts := strings.Split(value, "/")
+	if len(parts) > 2 {
+		return netip.AddrPort{}, netip.AddrPort{}, fmt.Errorf("invalid endpoint hint")
+	}
+	public, err := parseEndpointHintAddrPort(parts[0])
+	if err != nil {
+		return netip.AddrPort{}, netip.AddrPort{}, err
+	}
+	if len(parts) == 1 {
+		return public, netip.AddrPort{}, nil
+	}
+	local, err := parseEndpointHintAddrPort(parts[1])
+	if err != nil {
+		return netip.AddrPort{}, netip.AddrPort{}, err
+	}
+	return public, local, nil
+}
+
+func parseEndpointHintAddrPort(value string) (netip.AddrPort, error) {
+	endpoint, err := netip.ParseAddrPort(strings.TrimSpace(value))
+	if err != nil || !endpoint.Addr().Is4() || endpoint.Port() == 0 {
+		return netip.AddrPort{}, fmt.Errorf("invalid endpoint")
+	}
+	return endpoint, nil
 }
 
 func isPublicEndpointHintAddress(addr netip.Addr) bool {
@@ -236,6 +263,19 @@ func isPublicEndpointHintAddress(addr netip.Addr) bool {
 		addr.IsUnspecified() ||
 		addr.IsLoopback() ||
 		addr.IsPrivate() ||
+		addr.IsLinkLocalUnicast() ||
+		addr.IsMulticast() {
+		return false
+	}
+	cgnat := netip.MustParsePrefix("100.64.0.0/10")
+	benchmark := netip.MustParsePrefix("198.18.0.0/15")
+	return !cgnat.Contains(addr) && !benchmark.Contains(addr)
+}
+
+func isPublicEndpointHintLocalAddress(addr netip.Addr) bool {
+	if !addr.IsValid() ||
+		addr.IsUnspecified() ||
+		addr.IsLoopback() ||
 		addr.IsLinkLocalUnicast() ||
 		addr.IsMulticast() {
 		return false
