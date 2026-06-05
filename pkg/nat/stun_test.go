@@ -231,6 +231,39 @@ func TestPublicEndpointHintsFromSTUNMappingSkipsOverlayLocalBase(t *testing.T) {
 	}
 }
 
+func TestPublicEndpointHintsFromSTUNMappingAllowsTrustedNonPublicEndpoint(t *testing.T) {
+	report := STUNMappingReport{
+		NATType: NATTypeUnknown,
+		Probes: []STUNMappingProbe{{
+			LocalAddr:  &net.UDPAddr{IP: net.IPv4(100, 102, 17, 35), Port: 40000},
+			MappedAddr: &net.UDPAddr{IP: net.IPv4(100, 102, 17, 36), Port: 45678},
+			ServerAddr: &net.UDPAddr{IP: net.IPv4(100, 102, 17, 1), Port: 3478},
+		}},
+	}
+	if hints := PublicEndpointHintsFromSTUNMapping(report); len(hints) != 0 {
+		t.Fatalf("PublicEndpointHintsFromSTUNMapping() = %#v, want no default non-public hint", hints)
+	}
+
+	hints := PublicEndpointHintsFromSTUNMappingWithTrustedCIDRs(report, []string{"100.64.0.0/10"})
+	if len(hints) != 1 || hints[0] != "100.102.17.36:45678/100.102.17.35:40000" {
+		t.Fatalf("PublicEndpointHintsFromSTUNMappingWithTrustedCIDRs() = %#v, want trusted mapped hint", hints)
+	}
+}
+
+func TestPublicEndpointHintsFromSTUNMappingStillRejectsInvalidTrustedEndpoint(t *testing.T) {
+	report := STUNMappingReport{
+		NATType: NATTypeUnknown,
+		Probes: []STUNMappingProbe{{
+			LocalAddr:  &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 40000},
+			MappedAddr: &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 45678},
+			ServerAddr: &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 3478},
+		}},
+	}
+	if hints := PublicEndpointHintsFromSTUNMappingWithTrustedCIDRs(report, []string{"0.0.0.0/0"}); len(hints) != 0 {
+		t.Fatalf("PublicEndpointHintsFromSTUNMappingWithTrustedCIDRs(loopback) = %#v, want no invalid hint", hints)
+	}
+}
+
 func TestStunBindTimeout(t *testing.T) {
 	// Server that never responds.
 	serverConn, err := net.ListenPacket("udp4", "127.0.0.1:0")

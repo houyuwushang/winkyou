@@ -198,7 +198,10 @@ func runtimePublicEndpointHintsFromReport(cfg config.NATConfig, report nat.STUNM
 	if !cfg.AutoPublicEndpointHints {
 		return nil
 	}
-	return nat.PublicEndpointHintsFromSTUNMapping(report)
+	return nat.PublicEndpointHintsFromSTUNMappingWithTrustedCIDRs(
+		report,
+		mergeStrategyTrustedCIDRs(cfg.DirectTrustedCIDRs, cfg.PublicDirectTrustedCIDRs),
+	)
 }
 
 func (e *engine) disableLegacyRelayPlan() bool {

@@ -264,7 +264,7 @@ func defaultSTUNProbe(ctx context.Context, cfg *config.Config) doctorCheck {
 		return warnCheck("nat", "stun", "all STUN probes failed: "+formatSTUNMappingReport(report), "configure a reachable STUN server near both peers, or use TURN/relay_only")
 	}
 	message := fmt.Sprintf("nat_type=%s %s", report.NATType.String(), formatSTUNMappingReport(report))
-	hintSuggestion := publicEndpointHintSuggestion(report)
+	hintSuggestion := publicEndpointHintSuggestion(report, cfg.NAT)
 	if report.NATType == nat.NATTypeSymmetric {
 		suggestion := "public direct may fail with endpoint-dependent mappings; compare natpierce endpoints, use auto_public_endpoint_hints plus a small public_endpoint_hint_port_window for best-effort probing, configure proven public_endpoint_hints if available, or use relay_only fallback"
 		if hintSuggestion != "" {
@@ -306,8 +306,8 @@ func formatSTUNMappingProbe(probe nat.STUNMappingProbe) string {
 	return fmt.Sprintf("%s mapped %s from local %s via %s", dashIfEmpty(probe.Server), formatUDPAddr(probe.MappedAddr), formatUDPAddr(probe.LocalAddr), formatUDPAddr(probe.ServerAddr))
 }
 
-func publicEndpointHintSuggestion(report nat.STUNMappingReport) string {
-	hints := observedPublicEndpointHints(report)
+func publicEndpointHintSuggestion(report nat.STUNMappingReport, cfg config.NATConfig) string {
+	hints := observedPublicEndpointHints(report, cfg)
 	if len(hints) == 0 {
 		return ""
 	}
@@ -317,8 +317,9 @@ func publicEndpointHintSuggestion(report nat.STUNMappingReport) string {
 	return "observed public endpoint hint candidate: nat.public_endpoint_hints=[" + quoteCSV(hints) + "]; verify this endpoint stays stable for the WinkYou ICE socket before relying on it"
 }
 
-func observedPublicEndpointHints(report nat.STUNMappingReport) []string {
-	return nat.PublicEndpointHintsFromSTUNMapping(report)
+func observedPublicEndpointHints(report nat.STUNMappingReport, cfg config.NATConfig) []string {
+	trusted := normalizeStringList(append(append([]string(nil), cfg.DirectTrustedCIDRs...), cfg.PublicDirectTrustedCIDRs...))
+	return nat.PublicEndpointHintsFromSTUNMappingWithTrustedCIDRs(report, trusted)
 }
 
 func quoteCSV(values []string) string {

@@ -196,7 +196,7 @@ func TestObservedPublicEndpointHintsIncludeUsableLocalBase(t *testing.T) {
 			MappedAddr: &net.UDPAddr{IP: net.ParseIP("117.48.146.2"), Port: 41000},
 			ServerAddr: &net.UDPAddr{IP: net.ParseIP("8.8.8.8"), Port: 19302},
 		}},
-	})
+	}, config.Default().NAT)
 	if len(hints) != 1 || hints[0] != "117.48.146.2:41000/192.168.1.20:50000" {
 		t.Fatalf("observedPublicEndpointHints() = %#v, want mapped public/local hint", hints)
 	}
@@ -210,9 +210,30 @@ func TestObservedPublicEndpointHintsSkipOverlayLocalBase(t *testing.T) {
 			MappedAddr: &net.UDPAddr{IP: net.ParseIP("117.48.146.2"), Port: 41000},
 			ServerAddr: &net.UDPAddr{IP: net.ParseIP("8.8.8.8"), Port: 19302},
 		}},
-	})
+	}, config.Default().NAT)
 	if len(hints) != 1 || hints[0] != "117.48.146.2:41000" {
 		t.Fatalf("observedPublicEndpointHints() = %#v, want public-only hint when local base is overlay-like", hints)
+	}
+}
+
+func TestObservedPublicEndpointHintsHonorTrustedCIDRs(t *testing.T) {
+	report := nat.STUNMappingReport{
+		NATType: nat.NATTypeUnknown,
+		Probes: []nat.STUNMappingProbe{{
+			LocalAddr:  &net.UDPAddr{IP: net.ParseIP("100.102.17.35"), Port: 50000},
+			MappedAddr: &net.UDPAddr{IP: net.ParseIP("100.102.17.36"), Port: 41000},
+			ServerAddr: &net.UDPAddr{IP: net.ParseIP("100.102.17.1"), Port: 19302},
+		}},
+	}
+	cfg := config.Default().NAT
+	if hints := observedPublicEndpointHints(report, cfg); len(hints) != 0 {
+		t.Fatalf("observedPublicEndpointHints(default) = %#v, want no untrusted non-public hint", hints)
+	}
+
+	cfg.DirectTrustedCIDRs = []string{"100.64.0.0/10"}
+	hints := observedPublicEndpointHints(report, cfg)
+	if len(hints) != 1 || hints[0] != "100.102.17.36:41000/100.102.17.35:50000" {
+		t.Fatalf("observedPublicEndpointHints(trusted) = %#v, want trusted non-public hint", hints)
 	}
 }
 

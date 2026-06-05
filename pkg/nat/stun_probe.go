@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"net/netip"
 	"slices"
 	"strings"
 )
@@ -134,17 +135,25 @@ func successfulSTUNMappingProbeCount(probes []STUNMappingProbe) int {
 // be public IPv4 endpoints, and local bases are included only when they look
 // like real underlay addresses instead of overlay or loopback interfaces.
 func PublicEndpointHintsFromSTUNMapping(report STUNMappingReport) []string {
+	return PublicEndpointHintsFromSTUNMappingWithTrustedCIDRs(report, nil)
+}
+
+// PublicEndpointHintsFromSTUNMappingWithTrustedCIDRs is like
+// PublicEndpointHintsFromSTUNMapping, but allows explicitly trusted non-public
+// underlay prefixes to appear in the mapped endpoint or local base.
+func PublicEndpointHintsFromSTUNMappingWithTrustedCIDRs(report STUNMappingReport, trustedCIDRs []string) []string {
+	trusted := parseEndpointHintTrustedCIDRs(trustedCIDRs)
 	seen := make(map[string]struct{}, len(report.Probes))
 	hints := make([]string, 0, len(report.Probes))
 	for _, probe := range report.Probes {
 		if probe.MappedAddr == nil || probe.MappedAddr.IP == nil || probe.MappedAddr.Port <= 0 {
 			continue
 		}
-		if !usablePublicEndpointHintIP(probe.MappedAddr.IP) {
+		if !usablePublicEndpointHintIP(probe.MappedAddr.IP, trusted) {
 			continue
 		}
 		hint := probe.MappedAddr.String()
-		if local := usablePublicEndpointHintLocalAddr(probe); local != nil {
+		if local := usablePublicEndpointHintLocalAddr(probe, trusted); local != nil {
 			hint += "/" + local.String()
 		}
 		if _, ok := seen[hint]; ok {
@@ -157,8 +166,8 @@ func PublicEndpointHintsFromSTUNMapping(report STUNMappingReport) []string {
 	return hints
 }
 
-func usablePublicEndpointHintLocalAddr(probe STUNMappingProbe) *net.UDPAddr {
-	if usableEndpointHintLocalAddr(probe.LocalAddr) {
+func usablePublicEndpointHintLocalAddr(probe STUNMappingProbe, trusted []netip.Prefix) *net.UDPAddr {
+	if usableEndpointHintLocalAddr(probe.LocalAddr, trusted) {
 		return cloneUDPAddr(probe.LocalAddr)
 	}
 	if probe.LocalAddr == nil || probe.LocalAddr.Port <= 0 || probe.ServerAddr == nil {
@@ -168,39 +177,80 @@ func usablePublicEndpointHintLocalAddr(probe STUNMappingProbe) *net.UDPAddr {
 		return nil
 	}
 	ip := localIPForUDPRoute(probe.ServerAddr)
-	if !usableEndpointHintLocalIP(ip) {
+	if !usableEndpointHintLocalIP(ip, trusted) {
 		return nil
 	}
 	return &net.UDPAddr{IP: ip, Port: probe.LocalAddr.Port}
 }
 
-func usableEndpointHintLocalAddr(addr *net.UDPAddr) bool {
-	return addr != nil && addr.Port > 0 && usableEndpointHintLocalIP(addr.IP)
+func usableEndpointHintLocalAddr(addr *net.UDPAddr, trusted []netip.Prefix) bool {
+	return addr != nil && addr.Port > 0 && usableEndpointHintLocalIP(addr.IP, trusted)
 }
 
-func usablePublicEndpointHintIP(ip net.IP) bool {
-	return ip != nil &&
-		ip.To4() != nil &&
-		!ip.IsUnspecified() &&
-		!ip.IsLoopback() &&
-		!ip.IsLinkLocalUnicast() &&
-		!ip.IsLinkLocalMulticast() &&
-		!ip.IsMulticast() &&
-		!ip.IsPrivate() &&
+func usablePublicEndpointHintIP(ip net.IP, trusted []netip.Prefix) bool {
+	if ip == nil ||
+		ip.To4() == nil ||
+		ip.IsUnspecified() ||
+		ip.IsLoopback() ||
+		ip.IsLinkLocalUnicast() ||
+		ip.IsLinkLocalMulticast() ||
+		ip.IsMulticast() {
+		return false
+	}
+	if ipInTrustedCIDRs(ip, trusted) {
+		return true
+	}
+	return !ip.IsPrivate() &&
 		!ipInCIDR(ip, "100.64.0.0/10") &&
 		!ipInCIDR(ip, "198.18.0.0/15")
 }
 
-func usableEndpointHintLocalIP(ip net.IP) bool {
-	return ip != nil &&
-		ip.To4() != nil &&
-		!ip.IsUnspecified() &&
-		!ip.IsLoopback() &&
-		!ip.IsLinkLocalUnicast() &&
-		!ip.IsLinkLocalMulticast() &&
-		!ip.IsMulticast() &&
-		!ipInCIDR(ip, "100.64.0.0/10") &&
+func usableEndpointHintLocalIP(ip net.IP, trusted []netip.Prefix) bool {
+	if ip == nil ||
+		ip.To4() == nil ||
+		ip.IsUnspecified() ||
+		ip.IsLoopback() ||
+		ip.IsLinkLocalUnicast() ||
+		ip.IsLinkLocalMulticast() ||
+		ip.IsMulticast() {
+		return false
+	}
+	if ipInTrustedCIDRs(ip, trusted) {
+		return true
+	}
+	return !ipInCIDR(ip, "100.64.0.0/10") &&
 		!ipInCIDR(ip, "198.18.0.0/15")
+}
+
+func parseEndpointHintTrustedCIDRs(values []string) []netip.Prefix {
+	prefixes := make([]netip.Prefix, 0, len(values))
+	for _, value := range values {
+		prefix, err := netip.ParsePrefix(strings.TrimSpace(value))
+		if err != nil {
+			continue
+		}
+		prefixes = append(prefixes, prefix)
+	}
+	return prefixes
+}
+
+func ipInTrustedCIDRs(ip net.IP, trusted []netip.Prefix) bool {
+	if ip == nil || len(trusted) == 0 {
+		return false
+	}
+	addr, ok := netip.AddrFromSlice(ip)
+	if !ok || !addr.IsValid() {
+		return false
+	}
+	if addr.Is4In6() {
+		addr = addr.Unmap()
+	}
+	for _, prefix := range trusted {
+		if prefix.Contains(addr) {
+			return true
+		}
+	}
+	return false
 }
 
 func localIPForUDPRoute(remote *net.UDPAddr) net.IP {
