@@ -797,12 +797,52 @@ func (e publicDirectEvidence) check(path string) doctorCheck {
 		return warnCheck("nat", "public direct evidence", publicDirectObservationMessage("local gather produced no usable public direct candidates", e.LocalGather, path), "check nat.stun_servers, UDP outbound reachability, candidate filters, NAT1To1 public hints, or nat.public_endpoint_hints")
 	}
 	if e.Failure != nil {
-		return warnCheck("nat", "public direct evidence", publicDirectObservationMessage("public direct attempt failed", e.Failure, path), "if natpierce succeeds, compare its mapped endpoint with WinkYou STUN/candidate observations and verify both peers run the latest binary")
+		message := publicDirectObservationMessage("public direct attempt failed", e.Failure, path)
+		if diagnostics := publicDirectCandidateDiagnostics(e.LocalGather, e.RemoteFilter); diagnostics != "" {
+			message += " " + diagnostics
+		}
+		suggestion := "if natpierce succeeds, compare its mapped endpoint with WinkYou STUN/candidate observations and verify both peers run the latest binary"
+		if observationCandidateKept(e.LocalGather) > 0 && observationCandidateKept(e.RemoteFilter) > 0 {
+			suggestion = "both sides had public-direct candidates; compare mapped endpoints, NAT type, firewall behavior, nat.connect_timeout, and public_endpoint_hints with the working natpierce path"
+		}
+		return warnCheck("nat", "public direct evidence", message, suggestion)
 	}
 	if e.Planned != nil {
 		return warnCheck("nat", "public direct evidence", publicDirectObservationMessage("public direct was planned but no final result was recorded", e.Planned, path), "keep both peers online long enough for legacyice/public_direct to gather, exchange, and check candidates")
 	}
 	return warnCheck("nat", "public direct evidence", "no legacyice/public_direct observations found in "+path, "ensure connectivity.mode is not relay_only, nat.force_relay=false, both peers are updated, and a peer connection has been attempted")
+}
+
+func publicDirectCandidateDiagnostics(localGather, remoteFilter *solver.Observation) string {
+	parts := make([]string, 0, 2)
+	if summary := observationCandidateSummary("local_gather", localGather); summary != "" {
+		parts = append(parts, summary)
+	}
+	if summary := observationCandidateSummary("remote_filter", remoteFilter); summary != "" {
+		parts = append(parts, summary)
+	}
+	return strings.Join(parts, " ")
+}
+
+func observationCandidateSummary(prefix string, obs *solver.Observation) string {
+	if obs == nil {
+		return ""
+	}
+	fields := make([]string, 0, 4)
+	for _, key := range []string{
+		"candidate_total",
+		"candidate_kept",
+		"candidate_reject_reasons",
+		"candidate_kept_samples",
+	} {
+		if value := observationDetail(obs, key); value != "" {
+			fields = append(fields, key+"="+value)
+		}
+	}
+	if len(fields) == 0 {
+		return ""
+	}
+	return prefix + "(" + strings.Join(fields, ",") + ")"
 }
 
 func publicDirectObservationMessage(prefix string, obs *solver.Observation, path string) string {

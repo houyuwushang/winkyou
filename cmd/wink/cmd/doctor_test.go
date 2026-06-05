@@ -402,6 +402,55 @@ func TestDoctorPublicDirectEvidenceWarnsForRemoteFilterNoCandidates(t *testing.T
 	}
 }
 
+func TestDoctorPublicDirectEvidenceFailureIncludesCandidateDiagnostics(t *testing.T) {
+	configPath := writeDoctorConfig(t)
+	writeDoctorObservationHistory(t, configPath, []solver.Observation{
+		{
+			PlanID: "legacyice/public_direct",
+			Event:  "candidate_gathered",
+			Details: map[string]string{
+				"candidate_side":         "local",
+				"candidate_total":        "2",
+				"candidate_kept":         "1",
+				"candidate_kept_samples": "srflx:117.48.146.2:41000<-192.168.1.20:50000",
+			},
+			Timestamp: time.Now(),
+		},
+		{
+			PlanID: "legacyice/public_direct",
+			Event:  "remote_candidates_filtered",
+			Details: map[string]string{
+				"candidate_side":         "remote",
+				"candidate_total":        "2",
+				"candidate_kept":         "1",
+				"candidate_kept_samples": "srflx:203.0.113.20:42000<-192.168.2.20:50000",
+			},
+			Timestamp: time.Now(),
+		},
+		{
+			PlanID:     "legacyice/public_direct",
+			Event:      "candidate_failed",
+			Reason:     "context deadline exceeded",
+			ErrorClass: "timeout",
+			Details: map[string]string{
+				"mode": "public_direct",
+			},
+			Timestamp: time.Now(),
+		},
+	})
+
+	result := runDoctor(context.Background(), &Options{ConfigPath: configPath}, doctorFlags{}, healthyDoctorProbes())
+	check := findDoctorCheck(result, "nat", "public direct evidence")
+	if check.Status != doctorWarn ||
+		!strings.Contains(check.Message, "public direct attempt failed") ||
+		!strings.Contains(check.Message, "local_gather(candidate_total=2,candidate_kept=1") ||
+		!strings.Contains(check.Message, "remote_filter(candidate_total=2,candidate_kept=1") ||
+		!strings.Contains(check.Message, "srflx:117.48.146.2:41000") ||
+		!strings.Contains(check.Suggestion, "both sides had public-direct candidates") {
+		t.Fatalf("public direct evidence check = %#v, want failure with local/remote candidate diagnostics", check)
+	}
+}
+
 func TestRuntimeStateKeyDefaultsToConfigDefault(t *testing.T) {
 	if got := runtimeStateKey(&Options{}); got != config.DefaultPath() {
 		t.Fatalf("runtimeStateKey(default) = %q, want %q", got, config.DefaultPath())

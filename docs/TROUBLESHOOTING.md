@@ -170,7 +170,7 @@ legacyice/direct_prefer -> legacyice/public_direct -> legacyice/relay_only
 wink --config <config.yaml> doctor
 ```
 
-查看 `public direct evidence` 检查。它会读取 observation history，直接提示 `legacyice/public_direct` 是没有记录、远端候选为 0、本端候选为 0、ICE 检查失败，还是已经选中/提交了 protected direct。客户端运行状态文件同目录下也会有 `<runtime-state-base>.observations.jsonl`，需要手工核对时可在 Windows 上用：
+查看 `public direct evidence` 检查。它会读取 observation history，直接提示 `legacyice/public_direct` 是没有记录、远端候选为 0、本端候选为 0、ICE 检查失败，还是已经选中/提交了 protected direct。若 ICE 检查失败但本端和远端都保留了 public-direct 候选，doctor 会把 `local_gather(...)` 和 `remote_filter(...)` 候选数量/样本合并到失败消息里，便于和 natpierce 实际公网端点对比。客户端运行状态文件同目录下也会有 `<runtime-state-base>.observations.jsonl`，需要手工核对时可在 Windows 上用：
 
 ```powershell
 Get-Content <runtime-state-base>.observations.jsonl |
