@@ -60,10 +60,9 @@ func (s *Session) selectAndExecute(ctx context.Context) error {
 
 func (s *Session) selectAndExecuteProtectedDirect(ctx context.Context, candidates []StrategyCandidate) error {
 	var (
-		allOutcomes      []solver.CandidateOutcome
-		lastErr          error
-		primaryKey       string
-		primaryCandidate *StrategyCandidate
+		allOutcomes []solver.CandidateOutcome
+		lastErr     error
+		primaryKey  string
 	)
 
 	for i, candidate := range candidates {
@@ -112,8 +111,6 @@ func (s *Session) selectAndExecuteProtectedDirect(ctx context.Context, candidate
 		allOutcomes = append(allOutcomes, outcomes...)
 		if primaryKey == "" {
 			primaryKey = outcomeKey(*best)
-			copied := candidate
-			primaryCandidate = &copied
 			if solver.IsProtectedDirectPath(best.Result.Summary) || !hasRemainingDirectCandidate(candidates[i+1:]) {
 				break
 			}
@@ -125,9 +122,12 @@ func (s *Session) selectAndExecuteProtectedDirect(ctx context.Context, candidate
 	}
 
 	if primaryKey != "" {
-		best := findOutcomeByKey(allOutcomes, primaryKey)
-		if primaryCandidate != nil {
-			if err := s.setSelectedStrategyCandidate(*primaryCandidate); err != nil {
+		best := selectPrimaryOutcome(allOutcomes, s.cfg.PathPolicy)
+		if best == nil {
+			best = findOutcomeByKey(allOutcomes, primaryKey)
+		}
+		if selectedCandidate := findStrategyCandidateForOutcome(candidates, best); selectedCandidate != nil {
+			if err := s.setSelectedStrategyCandidate(*selectedCandidate); err != nil {
 				return err
 			}
 		}
@@ -427,6 +427,25 @@ func findOutcomeByKey(outcomes []solver.CandidateOutcome, key string) *solver.Ca
 	for i := range outcomes {
 		if outcomeKey(outcomes[i]) == key {
 			return &outcomes[i]
+		}
+	}
+	return nil
+}
+
+func findStrategyCandidateForOutcome(candidates []StrategyCandidate, outcome *solver.CandidateOutcome) *StrategyCandidate {
+	if outcome == nil {
+		return nil
+	}
+	strategyName := strings.TrimSpace(outcome.Plan.Strategy)
+	if strategyName == "" && outcome.Result != nil && outcome.Result.Summary.Details != nil {
+		strategyName = strings.TrimSpace(outcome.Result.Summary.Details["strategy"])
+	}
+	if strategyName == "" {
+		return nil
+	}
+	for i := range candidates {
+		if candidates[i].Name == strategyName {
+			return &candidates[i]
 		}
 	}
 	return nil

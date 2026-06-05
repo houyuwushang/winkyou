@@ -182,7 +182,7 @@ func TestSessionFallbackDiscardsPendingStrategyMessagesBeforeNextStrategy(t *tes
 	}
 }
 
-func TestSessionMultipathProtectDirectContinuesAfterRelayPrimary(t *testing.T) {
+func TestSessionMultipathReevaluatesPrimaryAfterProtectedDirect(t *testing.T) {
 	relayTransport := &fakeTransport{}
 	directTransport := &fakeTransport{}
 	relay := &successfulFallbackStrategy{
@@ -240,11 +240,11 @@ func TestSessionMultipathProtectDirectContinuesAfterRelayPrimary(t *testing.T) {
 		t.Fatalf("bound transport = %T, want multipath stats provider", binder.boundTransport)
 	}
 	stats := provider.MultipathStats()
-	if stats.PrimaryPathID != "relay/path" || stats.ProtectedDirectPathID != "direct/path" || stats.ActivePathID != "relay/path" {
-		t.Fatalf("multipath stats = %#v", stats)
+	if stats.PrimaryPathID != "direct/path" || stats.ProtectedDirectPathID != "direct/path" || stats.ActivePathID != "direct/path" {
+		t.Fatalf("multipath stats = %#v, want protected direct as primary", stats)
 	}
-	if got := s.Snapshot().SelectedStrategy; got != relayonly.StrategyName {
-		t.Fatalf("SelectedStrategy = %q, want relay primary", got)
+	if got := s.Snapshot().SelectedStrategy; got != legacyice.StrategyName {
+		t.Fatalf("SelectedStrategy = %q, want protected direct strategy", got)
 	}
 }
 
