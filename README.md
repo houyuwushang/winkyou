@@ -26,7 +26,7 @@ WinkYou = connectivity solver + secure WireGuard data plane
 - `connectivity.mode: relay_only` 会把生产 strategy 顺序切到 `relay_only` -> `legacy_ice_udp`
 - 旧的 `nat.force_relay: true` 仍兼容映射到 relay-only 行为
 - 旧 peer 空 capability 仍会隐式 fallback 到 `legacy_ice_udp`
-- `wink doctor` 已提供 config、coordinator、STUN、TURN、本地接口、strategy、tunnel、transport 的分层诊断；STUN 检查会尝试 binding probe 并显示本机映射地址，`public direct evidence` 检查会读取 observation history，说明 `legacyice/public_direct` 是未尝试、无可用公网候选、ICE 检查失败，还是已证明 `protected_direct`
+- `wink doctor` 已提供 config、coordinator、STUN、TURN、本地接口、strategy、routing、tunnel、transport 的分层诊断；STUN 检查会尝试 binding probe 并显示本机映射地址，`public direct evidence` 检查会读取 observation history，说明 `legacyice/public_direct` 是未尝试、无可用公网候选、ICE 检查失败，还是已证明 `protected_direct`；`--route-target <ip>` 可以检查访问某个目标 IP 时当前操作系统实际选中的接口/本地地址/下一跳，并在命中 natpierce、Tailscale、Docker 等外部 overlay 接口时给出 warning
 - `wink up/down/status/peers/logs` 已形成长期运行 CLI 工作流；Linux systemd 和 Windows 启动项文档已补齐
 - v0.1 release workflow 已能构建 Windows client、Linux client、Linux coordinator、Linux relay 和 SHA256SUMS
 - NAT/ICE 已支持 candidate interface include/exclude 和 candidate CIDR include/exclude；`legacy_ice_udp` 现在会在普通 `direct_prefer` 后追加 `public_direct` 执行计划，用来排除私网、`100.64.0.0/10`、loopback、link-local 等 overlay/依赖不清的 candidate，再尝试独立公网 ICE direct；`wink doctor` 会展示过滤配置并检查 runtime candidate 是否命中排除 CIDR
@@ -83,7 +83,7 @@ node:
 
 其他 peer 从 coordinator 收到该发布后，会把 `10.6.22.0/24` 加入 chen-win 这个 peer 的 WireGuard `AllowedIPs`，并在本机加一条经由 chen-win 虚拟 IP 的系统路由。这不是默认 peer relay，也不会自动替任何 peer 转发任意网段；只有被显式配置的后端 CIDR 才会发布。网关机器本身仍必须允许 IP forwarding/转发，并放行对应防火墙规则。后端主机还必须能把 WinkYou 虚拟网段回包送回该网关；如果后端网络不能加静态回程路由，就需要在网关上做 SNAT/masquerade。
 
-排查时，`wink peers` 的 `Routes` 行和 `wink peers --json` 的 `advertised_routes` 字段会显示远端 peer 发布的后端网段；`wink doctor` 会在 `routing` 层报告本节点正在发布的路由、已绑定 peer 的远端发布路由，并检查本机操作系统路由表是否已经把远端后端网段指向对应 peer 的 WinkYou 虚拟 IP。配置了 `node.advertise_routes` 的网关 peer 还会检查当前操作系统的 IP forwarding 状态，同时提醒检查后端回程路由或 SNAT。
+排查时，`wink peers` 的 `Routes` 行和 `wink peers --json` 的 `advertised_routes` 字段会显示远端 peer 发布的后端网段；`wink doctor` 会在 `routing` 层报告本节点正在发布的路由、已绑定 peer 的远端发布路由，并检查本机操作系统路由表是否已经把远端后端网段指向对应 peer 的 WinkYou 虚拟 IP。配置了 `node.advertise_routes` 的网关 peer 还会检查当前操作系统的 IP forwarding 状态，同时提醒检查后端回程路由或 SNAT。要确认某个具体地址当前是否仍由 natpierce/Tailscale 等外部 overlay 承载，可以运行 `wink --config <config.yaml> doctor --route-target 10.6.22.1`；如果输出接口是 `natpierce`，这只能证明 natpierce overlay 能到达该地址，不能证明 WinkYou 已经独立承载这条路。
 
 默认 `auto` 模式会启用 protected-direct multipath：最多保留 primary + 一条 standby，并默认开启 shadow write，让 standby path 也持续收到数据包，从而维持 NAT/relay 状态。session 会执行预算内候选，而不是在第一个 direct 成功后立刻停止；legacy ICE 会把 selected pair 的 RTT 写入 path metrics，让低延迟 relay/其他 path 和高延迟 direct 能参与同一轮评分。默认 scoring 会惩罚 relay/依赖路径，并对 `unknown` 依赖加倍惩罚，同时给真正的 `protected_direct` 加保护分。这样当 `legacyice/direct_prefer` 选中了低延迟但依赖不清的 path，而 `legacyice/public_direct` 或后续 direct path 也成功时，client 会把它们组合成一个 `multipath` transport 绑定给 WireGuard；如果没有 RTT 证据，依赖不清的 direct-like path 不应仅因为看起来是 direct 就压过明确可用的 relay。
 

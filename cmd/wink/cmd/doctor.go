@@ -61,9 +61,10 @@ type doctorResult struct {
 }
 
 type doctorFlags struct {
-	asJSON   bool
-	relay    bool
-	strategy string
+	asJSON       bool
+	relay        bool
+	strategy     string
+	routeTargets []string
 }
 
 type doctorProbes struct {
@@ -73,6 +74,7 @@ type doctorProbes struct {
 	LocalInterface func(context.Context, *config.Config) doctorCheck
 	IPForwarding   func(context.Context, *config.Config) doctorCheck
 	RouteTable     func(context.Context, doctorAdvertisedRouteProbeInput) doctorCheck
+	RouteTarget    func(context.Context, string) doctorCheck
 }
 
 type doctorAdvertisedRouteProbeInput struct {
@@ -102,6 +104,7 @@ func newDoctorCmdWithProbes(opts *Options, probes doctorProbes) *cobra.Command {
 	cmd.Flags().BoolVar(&flags.asJSON, "json", false, "output diagnostics as json")
 	cmd.Flags().BoolVar(&flags.relay, "relay", false, "require relay/TURN diagnostics")
 	cmd.Flags().StringVar(&flags.strategy, "strategy", "", "check one strategy by name")
+	cmd.Flags().StringArrayVar(&flags.routeTargets, "route-target", nil, "check the OS route selected for a target IP")
 	return cmd
 }
 
@@ -170,6 +173,11 @@ func runDoctor(ctx context.Context, opts *Options, flags doctorFlags, probes doc
 		routeTableProbe = defaultAdvertisedRouteTableProbe
 	}
 	addAdvertisedRouteChecks(ctx, &result, cfg, state, stateErr, routeTableProbe)
+	routeTargetProbe := probes.RouteTarget
+	if routeTargetProbe == nil {
+		routeTargetProbe = defaultRouteTargetProbe
+	}
+	addRouteTargetChecks(ctx, &result, flags, routeTargetProbe)
 	if len(normalizeStringList(cfg.Node.AdvertiseRoutes)) > 0 {
 		ipForwardingProbe := probes.IPForwarding
 		if ipForwardingProbe == nil {
@@ -1004,6 +1012,187 @@ func defaultAdvertisedRouteTableProbe(ctx context.Context, input doctorAdvertise
 	default:
 		return warnCheck("routing", "os route table", "route table check is not implemented for "+runtime.GOOS, "verify the OS route for "+route+" via "+gateway+" manually")
 	}
+}
+
+func addRouteTargetChecks(ctx context.Context, result *doctorResult, flags doctorFlags, routeTargetProbe func(context.Context, string) doctorCheck) {
+	for _, target := range normalizeStringList(flags.routeTargets) {
+		if routeTargetProbe != nil {
+			result.add(routeTargetProbe(ctx, target))
+		}
+	}
+}
+
+type doctorRouteTargetProbeResult struct {
+	Target         string
+	InterfaceAlias string
+	InterfaceIndex string
+	LocalAddress   string
+	NextHop        string
+	Detail         string
+}
+
+func defaultRouteTargetProbe(ctx context.Context, target string) doctorCheck {
+	target = strings.TrimSpace(target)
+	if _, err := netip.ParseAddr(target); err != nil {
+		return failCheck("routing", "target route", "invalid target IP: "+target, "pass an IP address, for example --route-target 10.6.22.1")
+	}
+	switch runtime.GOOS {
+	case "windows":
+		probeCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+		defer cancel()
+		output, err := exec.CommandContext(probeCtx, "powershell.exe", "-NoProfile", "-NonInteractive", "-Command", windowsRouteTargetProbeScript(target)).CombinedOutput()
+		detail := strings.TrimSpace(string(output))
+		if err != nil {
+			if detail == "" {
+				detail = err.Error()
+			} else {
+				detail += ": " + err.Error()
+			}
+			return failCheck("routing", "target route", target+" route lookup failed: "+detail, "verify the target IP and OS route table")
+		}
+		return routeTargetCheck(parseWindowsRouteTargetProbeOutput(string(output)))
+	case "linux":
+		probeCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+		defer cancel()
+		output, err := exec.CommandContext(probeCtx, "ip", "-o", "route", "get", target).CombinedOutput()
+		detail := strings.TrimSpace(string(output))
+		if err != nil {
+			if detail == "" {
+				detail = err.Error()
+			} else {
+				detail += ": " + err.Error()
+			}
+			return failCheck("routing", "target route", target+" route lookup failed: "+detail, "verify the target IP and OS route table")
+		}
+		return routeTargetCheck(parseLinuxRouteTargetProbeOutput(target, string(output)))
+	default:
+		return warnCheck("routing", "target route", "target route check is not implemented for "+runtime.GOOS, "verify the OS route for "+target+" manually")
+	}
+}
+
+func routeTargetCheck(route doctorRouteTargetProbeResult) doctorCheck {
+	target := strings.TrimSpace(route.Target)
+	if target == "" {
+		target = "target"
+	}
+	message := target + " uses " + routeTargetRouteSummary(route)
+	if isLikelyExternalOverlayInterface(route.InterfaceAlias) {
+		return warnCheck("routing", "target route", message, "this target currently routes through an external overlay; to prove WinkYou carries it, advertise the backend route through a WinkYou peer and verify the route points to that peer virtual IP")
+	}
+	return okCheck("routing", "target route", message)
+}
+
+func routeTargetRouteSummary(route doctorRouteTargetProbeResult) string {
+	parts := make([]string, 0, 5)
+	if route.InterfaceAlias != "" {
+		parts = append(parts, "interface="+route.InterfaceAlias)
+	}
+	if route.InterfaceIndex != "" {
+		parts = append(parts, "ifindex="+route.InterfaceIndex)
+	}
+	if route.LocalAddress != "" {
+		parts = append(parts, "local="+route.LocalAddress)
+	}
+	if route.NextHop != "" {
+		parts = append(parts, "next_hop="+route.NextHop)
+	}
+	if len(parts) == 0 && route.Detail != "" {
+		parts = append(parts, route.Detail)
+	}
+	if len(parts) == 0 {
+		return "unknown route"
+	}
+	return strings.Join(parts, " ")
+}
+
+func windowsRouteTargetProbeScript(target string) string {
+	return strings.Join([]string{
+		fmt.Sprintf("$target = '%s'", strings.ReplaceAll(target, "'", "''")),
+		"$route = Find-NetRoute -RemoteIPAddress $target -ErrorAction Stop | Select-Object -First 1",
+		"if ($null -eq $route) { throw \"route not found: $target\" }",
+		"Write-Output (\"Target={0}\" -f $target)",
+		"Write-Output (\"InterfaceAlias={0}\" -f $route.InterfaceAlias)",
+		"Write-Output (\"InterfaceIndex={0}\" -f $route.InterfaceIndex)",
+		"Write-Output (\"LocalAddress={0}\" -f $route.IPAddress)",
+		"Write-Output (\"NextHop={0}\" -f $route.NextHop)",
+	}, "; ")
+}
+
+func parseWindowsRouteTargetProbeOutput(output string) doctorRouteTargetProbeResult {
+	values := parseDoctorKeyValueLines(output)
+	return doctorRouteTargetProbeResult{
+		Target:         values["target"],
+		InterfaceAlias: values["interfacealias"],
+		InterfaceIndex: values["interfaceindex"],
+		LocalAddress:   values["localaddress"],
+		NextHop:        values["nexthop"],
+		Detail:         strings.Join(nonEmptyTrimmedLines(output), "; "),
+	}
+}
+
+func parseLinuxRouteTargetProbeOutput(target, output string) doctorRouteTargetProbeResult {
+	fields := strings.Fields(strings.TrimSpace(output))
+	route := doctorRouteTargetProbeResult{
+		Target: target,
+		Detail: strings.Join(nonEmptyTrimmedLines(output), "; "),
+	}
+	for i := 0; i+1 < len(fields); i++ {
+		switch fields[i] {
+		case "dev":
+			route.InterfaceAlias = fields[i+1]
+		case "via":
+			route.NextHop = fields[i+1]
+		case "src":
+			route.LocalAddress = fields[i+1]
+		}
+	}
+	return route
+}
+
+func parseDoctorKeyValueLines(output string) map[string]string {
+	values := make(map[string]string)
+	for _, line := range nonEmptyTrimmedLines(output) {
+		key, value, ok := strings.Cut(line, "=")
+		if !ok {
+			continue
+		}
+		values[strings.ToLower(strings.TrimSpace(key))] = strings.TrimSpace(value)
+	}
+	return values
+}
+
+func nonEmptyTrimmedLines(output string) []string {
+	lines := make([]string, 0)
+	for _, line := range strings.Split(output, "\n") {
+		line = strings.TrimSpace(line)
+		if line != "" {
+			lines = append(lines, line)
+		}
+	}
+	return lines
+}
+
+func isLikelyExternalOverlayInterface(name string) bool {
+	name = strings.ToLower(strings.TrimSpace(name))
+	if name == "" {
+		return false
+	}
+	for _, token := range []string{
+		"natpierce",
+		"tailscale",
+		"zerotier",
+		"hamachi",
+		"docker",
+		"vethernet",
+		"virtualbox",
+		"vmware",
+		"loopback",
+	} {
+		if strings.Contains(name, token) {
+			return true
+		}
+	}
+	return false
 }
 
 func windowsRouteTableProbeScript(route string) string {

@@ -563,6 +563,40 @@ func TestDoctorAdvertisedRoutesRequireIPForwarding(t *testing.T) {
 	}
 }
 
+func TestDoctorRouteTargetWarnsExternalOverlay(t *testing.T) {
+	configPath := writeDoctorConfig(t)
+	probes := healthyDoctorProbes()
+	probes.RouteTarget = func(_ context.Context, target string) doctorCheck {
+		return routeTargetCheck(doctorRouteTargetProbeResult{
+			Target:         target,
+			InterfaceAlias: "natpierce",
+			InterfaceIndex: "31",
+			LocalAddress:   "10.6.22.3",
+		})
+	}
+
+	result := runDoctor(context.Background(), &Options{ConfigPath: configPath}, doctorFlags{routeTargets: []string{"10.6.22.1"}}, probes)
+	check := findDoctorCheck(result, "routing", "target route")
+	if check.Status != doctorWarn ||
+		!strings.Contains(check.Message, "10.6.22.1") ||
+		!strings.Contains(check.Message, "interface=natpierce") ||
+		!strings.Contains(check.Suggestion, "external overlay") {
+		t.Fatalf("target route check = %#v, want external overlay warning", check)
+	}
+}
+
+func TestDoctorRouteTargetAcceptsPhysicalInterface(t *testing.T) {
+	check := routeTargetCheck(doctorRouteTargetProbeResult{
+		Target:         "10.6.22.1",
+		InterfaceAlias: "Ethernet",
+		LocalAddress:   "192.168.1.20",
+		NextHop:        "192.168.1.1",
+	})
+	if check.Status != doctorOK || !strings.Contains(check.Message, "interface=Ethernet") || !strings.Contains(check.Message, "next_hop=192.168.1.1") {
+		t.Fatalf("target route check = %#v, want OK physical interface", check)
+	}
+}
+
 func TestParseWindowsIPForwardingProbeOutput(t *testing.T) {
 	enabled, detail := parseWindowsIPForwardingProbeOutput("IPEnableRouter=0\nForwardingEnabled=Ethernet,WinkYou\n")
 	if !enabled || !strings.Contains(detail, "Ethernet,WinkYou") {
@@ -571,6 +605,18 @@ func TestParseWindowsIPForwardingProbeOutput(t *testing.T) {
 	enabled, detail = parseWindowsIPForwardingProbeOutput("IPEnableRouter=0\nForwardingEnabled=\n")
 	if enabled || !strings.Contains(detail, "IPEnableRouter=0") {
 		t.Fatalf("parse disabled output = enabled=%v detail=%q, want disabled", enabled, detail)
+	}
+}
+
+func TestParseRouteTargetProbeOutput(t *testing.T) {
+	route := parseWindowsRouteTargetProbeOutput("Target=10.6.22.1\nInterfaceAlias=natpierce\nInterfaceIndex=31\nLocalAddress=10.6.22.3\nNextHop=\n")
+	if route.Target != "10.6.22.1" || route.InterfaceAlias != "natpierce" || route.InterfaceIndex != "31" || route.LocalAddress != "10.6.22.3" {
+		t.Fatalf("parseWindowsRouteTargetProbeOutput() = %#v, want route target details", route)
+	}
+
+	route = parseLinuxRouteTargetProbeOutput("10.6.22.1", "10.6.22.1 via 192.168.1.1 dev eth0 src 192.168.1.20 uid 1000\n")
+	if route.Target != "10.6.22.1" || route.InterfaceAlias != "eth0" || route.NextHop != "192.168.1.1" || route.LocalAddress != "192.168.1.20" {
+		t.Fatalf("parseLinuxRouteTargetProbeOutput() = %#v, want Linux route target details", route)
 	}
 }
 

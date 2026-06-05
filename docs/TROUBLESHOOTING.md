@@ -203,6 +203,14 @@ node:
 
 普通 `wink peers` 文本输出也会显示 `Routes` 行；`wink doctor` 的 `routing` 层会分别报告本节点 `node.advertise_routes` 正在发布的路由、当前操作系统 IP forwarding 状态、后端回程路由/SNAT 风险、运行时从远端 peer 收到的后端路由，以及本机操作系统路由表是否已经把这些远端后端网段指向对应 peer 的 WinkYou 虚拟 IP。如果 `routing/peer advertised routes` 只提示未绑定或没有运行时状态，先把对应 gateway peer 连到 `connected/bound`，再检查 Windows 路由表和 WireGuard `AllowedIPs`。如果 `routing/os route table` 失败，说明路由没有安装、下一跳错误或残留了旧路由，先重连 gateway peer 并清理 stale route；如果 `routing/ip forwarding` 失败，先在 gateway peer 上开启系统转发和防火墙放行；如果 `routing/backend return path` 提醒未验证，继续检查 inner-gw 的回程路由或 chen-win 上的 SNAT，否则 `inner-gw` 后端网段仍然不会通。
 
+如果某个地址看起来“能直连”，但怀疑它实际仍走 natpierce、Tailscale、Docker 或其他外部 overlay，运行：
+
+```powershell
+wink --config <config.yaml> doctor --route-target 10.6.22.1
+```
+
+`routing/target route` 会显示当前操作系统访问该目标 IP 选中的接口、本地地址和下一跳。如果接口是 `natpierce`，只能说明 natpierce overlay 正在承载这条路；要证明 WinkYou 独立承载，需要看到该目标网段作为远端 peer 的 `advertised_routes` 被安装到 WinkYou peer 虚拟 IP，或者看到 `legacyice/public_direct` 的 `protected_direct` observation。
+
 要验证 WinkYou 自己的路径，应以 `wink peers --json` 的 `last_path_role=protected_direct`、空 `last_path_dependencies`、非空 `protected_direct_path_id`，以及对应 observation 里的 `legacyice/public_direct` 成功记录为准。
 
 ## 6. Strategy Selection

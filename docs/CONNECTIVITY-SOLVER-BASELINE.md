@@ -179,6 +179,7 @@ The client CLI owns operator workflow around the engine:
 - `wink up` starts the long-running foreground client process
 - `wink down` stops a running client and clears runtime state
 - `wink status`, `wink peers`, `wink logs`, and `wink doctor` inspect runtime state, logs, and diagnostics
+- `wink doctor --route-target <ip>` may inspect the operating system route chosen for a concrete target IP and warn when the route is currently owned by an external overlay such as natpierce, Tailscale, Docker, or similar. This is an operator diagnostic only; it does not feed solver scoring or session state.
 
 Runtime state and log files are operational artifacts, not solver inputs. By default runtime state is derived from the config path; service deployments can pass `--state` to store it under `/var/lib/wink` or another explicit runtime directory.
 
