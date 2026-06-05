@@ -190,6 +190,8 @@ NAT/ICE candidate filtering and public candidate hints are owned by the NAT/lega
 
 When a legacy ICE plan receives an offer or answer whose remote candidates are all filtered out, that plan should fail internally and let the session continue to the next plan or strategy. Empty filtered candidates must not bubble up as a peer-session-level `nat: no remote candidates provided` error that prevents relay or public-direct fallback attempts.
 
+Session strategy messages may carry a top-level `plan_id`. When an executor is active, messages for a different plan must remain buffered for the matching future plan instead of being delivered to the current executor and ignored. This matters for sequential ICE plans such as `legacyice/direct_prefer` followed by `legacyice/public_direct`, where the two peers can advance at slightly different speeds.
+
 ICE `connection_type=direct` is a direct-like transport result, not a guarantee that the path is independent from existing overlays or jump-host underlays. Strategy implementations must annotate `PathSummary.Role` and `PathSummary.Dependencies` conservatively. A path may be exposed as `protected_direct` only when it is direct-like and has no explicit relay, peer, or unknown dependency. Candidates in `100.64.0.0/10`, loopback, link-local, private/VPN-like, or otherwise ambiguous ranges must not be used as proof of protected direct coverage. `legacyice/public_direct` reduces this ambiguity by excluding those candidates before the attempt; successful path metadata still has to be derived from the actually selected ICE pair.
 
 ### Binder

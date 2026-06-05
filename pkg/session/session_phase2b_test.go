@@ -324,6 +324,90 @@ func TestSessionRoutesMessagesToActiveExecutorAndDoesNotPolluteNextCandidate(t *
 	}
 }
 
+func TestSessionBuffersFuturePlanMessagesForMatchingExecutor(t *testing.T) {
+	firstExec := newScriptedExecutor(solver.Result{}, errors.New("first candidate failed"))
+	firstExec.waitForMessage = true
+	secondExec := newScriptedExecutor(solver.Result{
+		Transport: &fakeTransport{},
+		Summary: solver.PathSummary{
+			PathID:         "clean/path",
+			ConnectionType: "direct",
+			RemoteAddr:     (&fakeTransport{}).RemoteAddr(),
+		},
+	}, nil)
+	secondExec.waitForMessage = true
+	strategy := &executorFactoryStrategy{
+		name: "legacy_ice_udp",
+		plans: []solver.Plan{
+			{ID: "plan-fail", Strategy: "legacy_ice_udp"},
+			{ID: "plan-clean", Strategy: "legacy_ice_udp"},
+		},
+		executors: map[string]*scriptedExecutor{
+			"plan-fail":  firstExec,
+			"plan-clean": secondExec,
+		},
+	}
+	bound := make(chan solver.Result, 1)
+	s, err := New(Config{
+		SessionID:             "session/node-a/node-b",
+		LocalNodeID:           "node-a",
+		PeerID:                "node-b",
+		Initiator:             true,
+		Resolver:              &fakeResolver{local: rproto.Capability{Strategies: []string{"legacy_ice_udp"}}, strategy: strategy, selection: Selection{StrategyName: "legacy_ice_udp", Negotiated: true}},
+		Sender:                &callbackSender{},
+		RunTimeout:            2 * time.Second,
+		CapabilityWaitTimeout: time.Millisecond,
+		Hooks: Hooks{
+			OnBound: func(result solver.Result) {
+				bound <- result
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	if err := s.HandleMessage(context.Background(), envelopeMessage(t, "session/node-a/node-b", "node-b", "node-a", rproto.MsgTypeCapability, 1, rproto.Capability{Strategies: []string{"legacy_ice_udp"}}, time.Now())); err != nil {
+		t.Fatalf("HandleMessage(capability) error = %v", err)
+	}
+	if err := s.Start(context.Background()); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+
+	select {
+	case <-firstExec.started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for first executor to start")
+	}
+	if err := s.HandleMessage(context.Background(), solver.Message{Kind: solver.MessageKindStrategy, Namespace: "test", Type: "kick", Payload: []byte(`{"plan_id":"plan-clean","value":"future"}`)}); err != nil {
+		t.Fatalf("HandleMessage(future strategy) error = %v", err)
+	}
+	select {
+	case <-firstExec.messageHandled:
+		t.Fatal("future plan message was delivered to first executor")
+	case <-time.After(50 * time.Millisecond):
+	}
+	if err := s.HandleMessage(context.Background(), solver.Message{Kind: solver.MessageKindStrategy, Namespace: "test", Type: "kick", Payload: []byte(`{"plan_id":"plan-fail","value":"current"}`)}); err != nil {
+		t.Fatalf("HandleMessage(current strategy) error = %v", err)
+	}
+
+	select {
+	case result := <-bound:
+		if result.Summary.PathID != "clean/path" {
+			t.Fatalf("OnBound() path_id = %q, want clean/path", result.Summary.PathID)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for second executor success")
+	}
+
+	if got, _ := firstExec.snapshot(); got != 1 {
+		t.Fatalf("first executor messages = %d, want 1", got)
+	}
+	if got, _ := secondExec.snapshot(); got != 1 {
+		t.Fatalf("second executor messages = %d, want 1 buffered future message", got)
+	}
+}
+
 func TestSessionObservationFlowsFromStrategyToSinkAndRemote(t *testing.T) {
 	localTransport := &fakeTransport{}
 	remoteSender := &callbackSender{}

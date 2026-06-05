@@ -18,8 +18,12 @@ func (s *Session) HandleMessage(ctx context.Context, msg solver.Message) error {
 		}
 		return s.handleEnvelopeMessage(msg)
 	case solver.MessageKindStrategy:
-		target, pending := s.strategyHandler()
+		target, activePlan, pending := s.strategyHandlerSnapshot()
 		if pending || target == nil {
+			s.enqueueStrategyMessage(msg)
+			return nil
+		}
+		if shouldBufferForFuturePlan(msg, activePlan) {
 			s.enqueueStrategyMessage(msg)
 			return nil
 		}

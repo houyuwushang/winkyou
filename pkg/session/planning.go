@@ -205,7 +205,7 @@ func (s *Session) executeStrategyOutcomes(ctx context.Context, strategy solver.S
 
 	if _, usesExecutors := strategy.(solver.ExecutorFactory); !usesExecutors {
 		handler, _ := strategy.(solver.MessageHandler)
-		if err := s.flushPendingStrategyMessages(ctx, handler); err != nil {
+		if err := s.flushPendingStrategyMessages(ctx, handler, ""); err != nil {
 			return nil, err
 		}
 	}
@@ -213,6 +213,7 @@ func (s *Session) executeStrategyOutcomes(ctx context.Context, strategy solver.S
 	// Execute candidate loop with budget
 	budget := solver.DefaultBudget()
 	outcomes := s.executeCandidateLoop(ctx, strategy, plans, budget)
+	s.discardPendingStrategyMessages()
 
 	return outcomes, nil
 }
@@ -516,10 +517,10 @@ func (s *Session) executePlan(ctx context.Context, strategy solver.Strategy, pla
 	s.setActiveExecutor(plan.ID, executor)
 	defer func() {
 		s.clearActiveExecutor(executor)
-		s.discardPendingStrategyMessages()
+		s.discardPendingStrategyMessagesForPlan(plan.ID)
 		s.ignoreCleanupError(s.runCleanup(executor.Close))
 	}()
-	if err := s.flushPendingStrategyMessages(ctx, executor); err != nil {
+	if err := s.flushPendingStrategyMessages(ctx, executor, plan.ID); err != nil {
 		return solver.Result{}, err
 	}
 	return executor.Execute(ctx, s.io)
