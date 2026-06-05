@@ -398,6 +398,10 @@ func (e *engine) upsertPeer(peer *coordclient.PeerInfo, event PeerEvent) {
 	updated := toPeerStatus(peer)
 	current, ok := e.peers[updated.NodeID]
 	if ok {
+		now := time.Now()
+		coordinatorOnline := peer.Online
+		dataPlaneHealthy := peerDataPlaneHealthyAt(current, now)
+		inbandHeartbeatHealthy := peerInbandHeartbeatHealthyAt(current, now)
 		updated.State = current.State
 		updated.ControlState = current.ControlState
 		updated.DataState = current.DataState
@@ -426,22 +430,30 @@ func (e *engine) upsertPeer(peer *coordclient.PeerInfo, event PeerEvent) {
 		updated.LastPathEndpoint = current.LastPathEndpoint
 		updated.LastPathConnType = current.LastPathConnType
 		updated.LastPathUpdatedAt = current.LastPathUpdatedAt
-		if !peer.Online && !peerDataPathAlive(current) {
+		if coordinatorOnline {
+			updated.ControlState = PeerControlStateConnected
+		} else if inbandHeartbeatHealthy {
+			updated.ControlState = PeerControlStateDegraded
+		} else {
+			updated.ControlState = PeerControlStateDisconnected
+		}
+		if !coordinatorOnline && !dataPlaneHealthy {
 			updated.State = PeerStateDisconnected
 			updated.DataState = PeerDataStateStale
 		}
-		if !peer.Online && peerDataPathAlive(current) && (updated.DataState == "" || updated.DataState == PeerDataStateConnecting || updated.DataState == PeerDataStateStale) {
+		if !coordinatorOnline && dataPlaneHealthy && updated.TransportLastError == "" {
+			updated.State = PeerStateConnected
 			updated.DataState = PeerDataStateAlive
 		}
 		if updated.ControlState == "" {
-			if peer.Online {
+			if coordinatorOnline {
 				updated.ControlState = PeerControlStateConnected
 			} else {
 				updated.ControlState = PeerControlStateDisconnected
 			}
 		}
 		if updated.DataState == "" {
-			if peer.Online {
+			if coordinatorOnline {
 				updated.DataState = PeerDataStateConnecting
 			} else {
 				updated.DataState = PeerDataStateStale
@@ -480,6 +492,7 @@ func (e *engine) setState(state EngineState, errText string) {
 
 func (e *engine) updateStatusCountersLocked() {
 	e.syncTunnelPeerStateLocked()
+	e.applyPeerHealthStateLocked(time.Now())
 
 	connected := 0
 	for _, peer := range e.peers {

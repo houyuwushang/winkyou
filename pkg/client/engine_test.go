@@ -281,6 +281,161 @@ func TestPeerOfflinePreservesConnectedDataPath(t *testing.T) {
 	}
 }
 
+func TestPeerOfflineWithInbandHealthKeepsDataPath(t *testing.T) {
+	pub := mustTestPublicKey(t)
+	now := time.Now().UTC()
+	removeCalls := 0
+	session := &peerSession{bound: true}
+	eng := &engine{
+		status: EngineStatus{NodeID: "node-1"},
+		peers: map[string]*PeerStatus{
+			"node-2": {
+				NodeID:                 "node-2",
+				Name:                   "beta",
+				PublicKey:              pub.String(),
+				VirtualIP:              net.ParseIP("10.77.0.2"),
+				State:                  PeerStateConnected,
+				ControlState:           PeerControlStateConnected,
+				DataState:              PeerDataStateAlive,
+				LastInbandHeartbeatAt:  now,
+				LastInbandPathHealthAt: now,
+			},
+		},
+		peerMgr: &peerManager{sessions: map[string]*peerSession{"node-2": session}},
+		tun:     fakeTunnelForEngineTest{removeCalls: &removeCalls},
+	}
+
+	eng.handlePeerUpdate(&coordclient.PeerInfo{
+		NodeID:    "node-2",
+		Name:      "beta",
+		PublicKey: pub.String(),
+		VirtualIP: "10.77.0.2",
+		Online:    false,
+		LastSeen:  now.Unix(),
+	}, coordclient.PeerEventOffline)
+
+	peer := eng.peers["node-2"]
+	if peer == nil {
+		t.Fatal("peer was removed")
+	}
+	if peer.ControlState != PeerControlStateDegraded {
+		t.Fatalf("peer control state = %s, want degraded while in-band heartbeat is alive", peer.ControlState)
+	}
+	if peer.DataState != PeerDataStateAlive {
+		t.Fatalf("peer data state = %s, want alive while in-band path_health is alive", peer.DataState)
+	}
+	if peer.State != PeerStateConnected {
+		t.Fatalf("peer state = %s, want connected while data path is retained", peer.State)
+	}
+	if got := eng.peerMgr.sessions["node-2"]; got != session {
+		t.Fatalf("peer session = %p, want retained %p", got, session)
+	}
+	if removeCalls != 0 {
+		t.Fatalf("RemovePeer calls = %d, want 0", removeCalls)
+	}
+}
+
+func TestPeerOfflineWithOnlyInbandHeartbeatDoesNotCleanup(t *testing.T) {
+	pub := mustTestPublicKey(t)
+	now := time.Now().UTC()
+	removeCalls := 0
+	session := &peerSession{bound: true}
+	eng := &engine{
+		status: EngineStatus{NodeID: "node-1"},
+		peers: map[string]*PeerStatus{
+			"node-2": {
+				NodeID:                "node-2",
+				Name:                  "beta",
+				PublicKey:             pub.String(),
+				VirtualIP:             net.ParseIP("10.77.0.2"),
+				State:                 PeerStateConnected,
+				ControlState:          PeerControlStateConnected,
+				DataState:             PeerDataStateAlive,
+				LastInbandHeartbeatAt: now,
+			},
+		},
+		peerMgr: &peerManager{sessions: map[string]*peerSession{"node-2": session}},
+		tun:     fakeTunnelForEngineTest{removeCalls: &removeCalls},
+	}
+
+	eng.handlePeerUpdate(&coordclient.PeerInfo{
+		NodeID:    "node-2",
+		Name:      "beta",
+		PublicKey: pub.String(),
+		VirtualIP: "10.77.0.2",
+		Online:    false,
+		LastSeen:  now.Unix(),
+	}, coordclient.PeerEventOffline)
+
+	peer := eng.peers["node-2"]
+	if peer == nil {
+		t.Fatal("peer was removed")
+	}
+	if peer.ControlState != PeerControlStateDegraded {
+		t.Fatalf("peer control state = %s, want degraded while in-band heartbeat is alive", peer.ControlState)
+	}
+	if peer.DataState != PeerDataStateStale {
+		t.Fatalf("peer data state = %s, want stale without path_health or tunnel evidence", peer.DataState)
+	}
+	if got := eng.peerMgr.sessions["node-2"]; got != session {
+		t.Fatalf("peer session = %p, want retained %p", got, session)
+	}
+	if removeCalls != 0 {
+		t.Fatalf("RemovePeer calls = %d, want 0", removeCalls)
+	}
+}
+
+func TestPeerOfflineWithStaleInbandHealthCleansDataPath(t *testing.T) {
+	pub := mustTestPublicKey(t)
+	now := time.Now().UTC()
+	staleAt := now.Add(-inbandHealthWindow - time.Second)
+	removeCalls := 0
+	eng := &engine{
+		status: EngineStatus{NodeID: "node-1"},
+		peers: map[string]*PeerStatus{
+			"node-2": {
+				NodeID:                 "node-2",
+				Name:                   "beta",
+				PublicKey:              pub.String(),
+				VirtualIP:              net.ParseIP("10.77.0.2"),
+				State:                  PeerStateConnected,
+				ControlState:           PeerControlStateConnected,
+				DataState:              PeerDataStateAlive,
+				LastInbandHeartbeatAt:  staleAt,
+				LastInbandPathHealthAt: staleAt,
+			},
+		},
+		peerMgr: &peerManager{sessions: map[string]*peerSession{"node-2": {}}},
+		tun:     fakeTunnelForEngineTest{removeCalls: &removeCalls},
+	}
+
+	eng.handlePeerUpdate(&coordclient.PeerInfo{
+		NodeID:    "node-2",
+		Name:      "beta",
+		PublicKey: pub.String(),
+		VirtualIP: "10.77.0.2",
+		Online:    false,
+		LastSeen:  now.Unix(),
+	}, coordclient.PeerEventOffline)
+
+	peer := eng.peers["node-2"]
+	if peer == nil {
+		t.Fatal("peer was removed")
+	}
+	if peer.ControlState != PeerControlStateDisconnected {
+		t.Fatalf("peer control state = %s, want disconnected after stale in-band heartbeat", peer.ControlState)
+	}
+	if peer.DataState != PeerDataStateFailed {
+		t.Fatalf("peer data state = %s, want failed after cleanup", peer.DataState)
+	}
+	if _, ok := eng.peerMgr.sessions["node-2"]; ok {
+		t.Fatal("peer session should be removed after stale in-band health")
+	}
+	if removeCalls != 1 {
+		t.Fatalf("RemovePeer calls = %d, want 1", removeCalls)
+	}
+}
+
 func TestPeerOfflineCleansStaleDataPath(t *testing.T) {
 	pub := mustTestPublicKey(t)
 	removeCalls := 0

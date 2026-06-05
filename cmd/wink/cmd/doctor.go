@@ -29,6 +29,8 @@ const (
 	doctorFail doctorStatus = "fail"
 )
 
+const doctorInbandHealthWindow = 20 * time.Second
+
 type doctorCheck struct {
 	Layer      string       `json:"layer"`
 	Name       string       `json:"name"`
@@ -139,6 +141,7 @@ func runDoctor(ctx context.Context, opts *Options, flags doctorFlags, probes doc
 	addCandidateFilterChecks(&result, cfg, state, stateErr)
 	addTunnelChecks(&result, state, stateErr)
 	addTransportChecks(&result, state, stateErr)
+	addInbandHealthChecks(&result, state, stateErr)
 	addMultipathChecks(&result, cfg, state, stateErr)
 
 	result.finish()
@@ -346,6 +349,37 @@ func addTransportChecks(result *doctorResult, state *winkclient.RuntimeState, st
 	result.add(okCheck("transport", "packet counters", fmt.Sprintf("tx=%d rx=%d packets", totalTx, totalRx)))
 }
 
+func addInbandHealthChecks(result *doctorResult, state *winkclient.RuntimeState, stateErr error) {
+	if stateErr != nil || state == nil || len(state.Peers) == 0 {
+		result.add(warnCheck("in-band", "peer health", "no runtime in-band health state", "start wink up and connect a bound/alive peer"))
+		return
+	}
+
+	now := time.Now()
+	heartbeatPeers := make([]string, 0, len(state.Peers))
+	pathHealthPeers := make([]string, 0, len(state.Peers))
+	for _, peer := range state.Peers {
+		name := firstNonEmpty(peer.Name, peer.NodeID)
+		if runtimeTimeFreshAt(peer.LastInbandHeartbeatAt, now, doctorInbandHealthWindow) {
+			heartbeatPeers = append(heartbeatPeers, name)
+		}
+		if runtimeTimeFreshAt(peer.LastInbandPathHealthAt, now, doctorInbandHealthWindow) {
+			pathHealthPeers = append(pathHealthPeers, name)
+		}
+	}
+
+	if len(heartbeatPeers) == 0 {
+		result.add(warnCheck("in-band", "heartbeat", "no fresh in-band heartbeat observed", "keep the peer data path bound and wait for heartbeat exchange; coordinator loss will otherwise show disconnected"))
+	} else {
+		result.add(okCheck("in-band", "heartbeat", fmt.Sprintf("%d peer(s) fresh: %s", len(heartbeatPeers), strings.Join(heartbeatPeers, ","))))
+	}
+	if len(pathHealthPeers) == 0 {
+		result.add(warnCheck("in-band", "path health", "no fresh in-band path_health observed", "keep traffic flowing over the peer data path; data state will become stale when both tunnel and in-band health are stale"))
+	} else {
+		result.add(okCheck("in-band", "path health", fmt.Sprintf("%d peer(s) fresh: %s", len(pathHealthPeers), strings.Join(pathHealthPeers, ","))))
+	}
+}
+
 func addMultipathChecks(result *doctorResult, cfg *config.Config, state *winkclient.RuntimeState, stateErr error) {
 	if cfg == nil || !cfg.Connectivity.Multipath.Enabled {
 		result.add(warnCheck("multipath", "policy", "multipath is disabled", "set connectivity.multipath.enabled=true and keep connectivity.multipath.protect_direct=true"))
@@ -379,6 +413,19 @@ func addMultipathChecks(result *doctorResult, cfg *config.Config, state *winkcli
 		return
 	}
 	result.add(okCheck("multipath", "protected direct", strings.Join(activeDetails, "; ")))
+}
+
+func runtimeTimeFreshAt(ts, now time.Time, window time.Duration) bool {
+	if ts.IsZero() {
+		return false
+	}
+	if now.IsZero() {
+		now = time.Now()
+	}
+	if window <= 0 {
+		return true
+	}
+	return !ts.After(now) && now.Sub(ts) <= window
 }
 
 func printDoctorResult(cmd *cobra.Command, result doctorResult) {

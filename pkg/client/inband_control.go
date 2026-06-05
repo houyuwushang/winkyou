@@ -12,6 +12,7 @@ import (
 const (
 	InbandControlPort     = PingPort + 1
 	inbandControlInterval = 5 * time.Second
+	inbandHealthWindow    = 3 * inbandControlInterval
 )
 
 func (e *engine) startInbandControl(bindIP net.IP) error {
@@ -166,17 +167,37 @@ func (e *engine) handleInbandControlMessage(msg peercontrol.Message) {
 		seenAt = time.Now().UTC()
 	}
 
+	changed := false
 	e.mu.Lock()
 	peer := e.peers[msg.From]
 	if peer != nil {
 		if msg.Heartbeat != nil {
 			peer.LastInbandHeartbeatAt = seenAt
+			if peer.ControlState == "" || peer.ControlState == PeerControlStateDisconnected {
+				peer.ControlState = PeerControlStateDegraded
+			}
+			changed = true
 		}
 		if msg.PathHealth != nil {
 			peer.LastInbandPathHealthAt = seenAt
+			if peer.TransportLastError == "" {
+				peer.State = PeerStateConnected
+				peer.DataState = PeerDataStateAlive
+			}
+			if peer.ControlState == "" || peer.ControlState == PeerControlStateDisconnected {
+				peer.ControlState = PeerControlStateDegraded
+			}
+			changed = true
+		}
+		if changed {
+			peer.LastSeen = seenAt
+			e.applyPeerHealthStateLocked(seenAt)
 		}
 	}
 	e.mu.Unlock()
+	if changed {
+		e.persistState()
+	}
 }
 
 func peerInbandEligible(peer *PeerStatus) bool {

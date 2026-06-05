@@ -218,6 +218,52 @@ func TestDoctorMultipathProtectedDirectOK(t *testing.T) {
 	}
 }
 
+func TestDoctorInbandHealthOK(t *testing.T) {
+	configPath := writeDoctorConfig(t)
+	writeDoctorRuntimeState(t, configPath, []winkclient.RuntimePeerStatus{{
+		NodeID:                 "node-b",
+		Name:                   "node-b",
+		State:                  winkclient.PeerStateConnected.String(),
+		ControlState:           winkclient.PeerControlStateDegraded.String(),
+		DataState:              winkclient.PeerDataStateAlive.String(),
+		LastInbandHeartbeatAt:  time.Now(),
+		LastInbandPathHealthAt: time.Now(),
+		TransportTxPackets:     2,
+		TransportRxPackets:     3,
+	}})
+
+	result := runDoctor(context.Background(), &Options{ConfigPath: configPath}, doctorFlags{}, healthyDoctorProbes())
+	heartbeat := findDoctorCheck(result, "in-band", "heartbeat")
+	if heartbeat.Status != doctorOK || !strings.Contains(heartbeat.Message, "node-b") {
+		t.Fatalf("in-band heartbeat check = %#v, want fresh ok", heartbeat)
+	}
+	pathHealth := findDoctorCheck(result, "in-band", "path health")
+	if pathHealth.Status != doctorOK || !strings.Contains(pathHealth.Message, "node-b") {
+		t.Fatalf("in-band path health check = %#v, want fresh ok", pathHealth)
+	}
+}
+
+func TestDoctorInbandHealthMissingWarns(t *testing.T) {
+	configPath := writeDoctorConfig(t)
+	writeDoctorRuntimeState(t, configPath, []winkclient.RuntimePeerStatus{{
+		NodeID:             "node-b",
+		Name:               "node-b",
+		State:              winkclient.PeerStateConnected.String(),
+		TransportTxPackets: 2,
+		TransportRxPackets: 3,
+	}})
+
+	result := runDoctor(context.Background(), &Options{ConfigPath: configPath}, doctorFlags{}, healthyDoctorProbes())
+	heartbeat := findDoctorCheck(result, "in-band", "heartbeat")
+	if heartbeat.Status != doctorWarn || !strings.Contains(heartbeat.Message, "no fresh in-band heartbeat") {
+		t.Fatalf("in-band heartbeat check = %#v, want missing warning", heartbeat)
+	}
+	pathHealth := findDoctorCheck(result, "in-band", "path health")
+	if pathHealth.Status != doctorWarn || !strings.Contains(pathHealth.Message, "no fresh in-band path_health") {
+		t.Fatalf("in-band path health check = %#v, want missing warning", pathHealth)
+	}
+}
+
 func healthyDoctorProbes() doctorProbes {
 	return doctorProbes{
 		Coordinator: func(context.Context, *config.Config) doctorCheck {

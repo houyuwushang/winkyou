@@ -72,35 +72,37 @@ func TestPeersWithRuntimeState(t *testing.T) {
 		},
 		Peers: []winkclient.RuntimePeerStatus{
 			{
-				NodeID:                "node-abc",
-				Name:                  "alice",
-				VirtualIP:             "10.100.0.2",
-				PublicKey:             "AAAA",
-				State:                 "connected",
-				ControlState:          "connected",
-				DataState:             "alive",
-				Endpoint:              "1.2.3.4:51820",
-				ConnectionType:        "direct",
-				LastPathID:            "legacyice/direct_prefer",
-				LastPathStrategy:      "legacy_ice_udp",
-				LastPathEndpoint:      "1.2.3.4:51820",
-				TxBytes:               1024,
-				RxBytes:               2048,
-				ICEState:              "connected",
-				LocalCandidate:        "relay:203.0.113.10:50000",
-				RemoteCandidate:       "host:10.0.0.2:51820",
-				TransportTxPackets:    7,
-				TransportTxBytes:      700,
-				TransportRxPackets:    8,
-				TransportRxBytes:      800,
-				TransportLastError:    "read: broken pipe",
-				MultipathEnabled:      true,
-				PrimaryPathID:         "relay/path",
-				ProtectedDirectPathID: "direct/path",
-				StandbyPathIDs:        []string{"direct/path"},
-				ActivePathID:          "direct/path",
-				LastFailoverAt:        time.Date(2026, 4, 10, 12, 1, 0, 0, time.UTC),
-				LastSeen:              time.Date(2026, 4, 10, 12, 0, 0, 0, time.UTC),
+				NodeID:                 "node-abc",
+				Name:                   "alice",
+				VirtualIP:              "10.100.0.2",
+				PublicKey:              "AAAA",
+				State:                  "connected",
+				ControlState:           "connected",
+				DataState:              "alive",
+				Endpoint:               "1.2.3.4:51820",
+				ConnectionType:         "direct",
+				LastPathID:             "legacyice/direct_prefer",
+				LastPathStrategy:       "legacy_ice_udp",
+				LastPathEndpoint:       "1.2.3.4:51820",
+				TxBytes:                1024,
+				RxBytes:                2048,
+				ICEState:               "connected",
+				LocalCandidate:         "relay:203.0.113.10:50000",
+				RemoteCandidate:        "host:10.0.0.2:51820",
+				TransportTxPackets:     7,
+				TransportTxBytes:       700,
+				TransportRxPackets:     8,
+				TransportRxBytes:       800,
+				TransportLastError:     "read: broken pipe",
+				MultipathEnabled:       true,
+				PrimaryPathID:          "relay/path",
+				ProtectedDirectPathID:  "direct/path",
+				StandbyPathIDs:         []string{"direct/path"},
+				ActivePathID:           "direct/path",
+				LastFailoverAt:         time.Date(2026, 4, 10, 12, 1, 0, 0, time.UTC),
+				LastInbandHeartbeatAt:  time.Date(2026, 4, 10, 12, 2, 0, 0, time.UTC),
+				LastInbandPathHealthAt: time.Date(2026, 4, 10, 12, 3, 0, 0, time.UTC),
+				LastSeen:               time.Date(2026, 4, 10, 12, 0, 0, 0, time.UTC),
 			},
 			{
 				NodeID:    "node-def",
@@ -145,6 +147,9 @@ func TestPeersWithRuntimeState(t *testing.T) {
 	if !strings.Contains(output, "Control:") || !strings.Contains(output, "Data:") {
 		t.Errorf("output should contain control/data state, got: %s", output)
 	}
+	if !strings.Contains(output, "In-band HB: 2026-04-10T12:02:00Z") || !strings.Contains(output, "In-band PH: 2026-04-10T12:03:00Z") {
+		t.Errorf("output should contain in-band health timestamps, got: %s", output)
+	}
 	if !strings.Contains(output, "legacyice/direct_prefer") || !strings.Contains(output, "legacy_ice_udp") {
 		t.Errorf("output should contain last path cache, got: %s", output)
 	}
@@ -182,21 +187,23 @@ func TestPeersWithRuntimeStateJSON(t *testing.T) {
 		},
 		Peers: []winkclient.RuntimePeerStatus{
 			{
-				NodeID:                "node-abc",
-				Name:                  "alice",
-				VirtualIP:             "10.100.0.2",
-				State:                 "connected",
-				ControlState:          "connected",
-				DataState:             "alive",
-				LastPathID:            "relayonly/turn_relay",
-				LastPathStrategy:      "relay_only",
-				MultipathEnabled:      true,
-				PrimaryPathID:         "relay/path",
-				ProtectedDirectPathID: "direct/path",
-				StandbyPathIDs:        []string{"direct/path"},
-				ActivePathID:          "relay/path",
-				TxBytes:               5000,
-				RxBytes:               6000,
+				NodeID:                 "node-abc",
+				Name:                   "alice",
+				VirtualIP:              "10.100.0.2",
+				State:                  "connected",
+				ControlState:           "connected",
+				DataState:              "alive",
+				LastPathID:             "relayonly/turn_relay",
+				LastPathStrategy:       "relay_only",
+				MultipathEnabled:       true,
+				PrimaryPathID:          "relay/path",
+				ProtectedDirectPathID:  "direct/path",
+				StandbyPathIDs:         []string{"direct/path"},
+				ActivePathID:           "relay/path",
+				LastInbandHeartbeatAt:  time.Date(2026, 4, 10, 12, 2, 0, 0, time.UTC),
+				LastInbandPathHealthAt: time.Date(2026, 4, 10, 12, 3, 0, 0, time.UTC),
+				TxBytes:                5000,
+				RxBytes:                6000,
 			},
 		},
 	}
@@ -240,6 +247,9 @@ func TestPeersWithRuntimeStateJSON(t *testing.T) {
 	}
 	if !result[0].MultipathEnabled || result[0].ProtectedDirectPathID != "direct/path" {
 		t.Errorf("multipath fields = %#v", result[0])
+	}
+	if result[0].LastInbandHeartbeatAt.IsZero() || result[0].LastInbandPathHealthAt.IsZero() {
+		t.Errorf("in-band fields = %#v", result[0])
 	}
 }
 

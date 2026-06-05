@@ -84,6 +84,9 @@ func TestHandleInbandControlMessageUpdatesPeerTimestamps(t *testing.T) {
 	if !eng.peers["node-b"].LastInbandHeartbeatAt.Equal(heartbeatAt) {
 		t.Fatalf("heartbeat timestamp = %v, want %v", eng.peers["node-b"].LastInbandHeartbeatAt, heartbeatAt)
 	}
+	if eng.peers["node-b"].ControlState != PeerControlStateDegraded {
+		t.Fatalf("control state = %s, want degraded after in-band heartbeat", eng.peers["node-b"].ControlState)
+	}
 
 	pathHealthAt := heartbeatAt.Add(2 * time.Second)
 	pathHealth := peercontrol.NewPathHealth("node-b", "node-a", peercontrol.PathHealth{})
@@ -91,6 +94,9 @@ func TestHandleInbandControlMessageUpdatesPeerTimestamps(t *testing.T) {
 	eng.handleInbandControlMessage(pathHealth)
 	if !eng.peers["node-b"].LastInbandPathHealthAt.Equal(pathHealthAt) {
 		t.Fatalf("path health timestamp = %v, want %v", eng.peers["node-b"].LastInbandPathHealthAt, pathHealthAt)
+	}
+	if eng.peers["node-b"].DataState != PeerDataStateAlive {
+		t.Fatalf("data state = %s, want alive after in-band path_health", eng.peers["node-b"].DataState)
 	}
 }
 

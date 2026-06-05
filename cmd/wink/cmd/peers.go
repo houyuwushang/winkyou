@@ -53,6 +53,8 @@ func newPeersCmd(opts *Options) *cobra.Command {
 				cmd.Printf("  State:      %s\n", dashIfEmpty(p.State))
 				cmd.Printf("  Control:    %s\n", dashIfEmpty(p.ControlState))
 				cmd.Printf("  Data:       %s\n", dashIfEmpty(p.DataState))
+				cmd.Printf("  In-band HB: %s\n", formatOptionalTime(p.LastInbandHeartbeatAt))
+				cmd.Printf("  In-band PH: %s\n", formatOptionalTime(p.LastInbandPathHealthAt))
 				cmd.Printf("  Endpoint:   %s\n", dashIfEmpty(p.Endpoint))
 				cmd.Printf("  Conn Type:  %s\n", dashIfEmpty(p.ConnectionType))
 				cmd.Printf("  Path ID:    %s\n", dashIfEmpty(p.LastPathID))
@@ -103,6 +105,13 @@ func formatBoolEnabled(enabled bool) string {
 		return "enabled"
 	}
 	return "disabled"
+}
+
+func formatOptionalTime(ts time.Time) string {
+	if ts.IsZero() {
+		return "-"
+	}
+	return ts.Format(time.RFC3339)
 }
 
 func formatBytes(b uint64) string {

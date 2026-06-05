@@ -29,7 +29,7 @@ func (e *engine) handlePeerUpdate(peer *coordclient.PeerInfo, event coordclient.
 		e.startPeerConnect(peer.NodeID)
 		return
 	}
-	if e.peerDataPathAlive(peer.NodeID) {
+	if e.peerRetainsAfterCoordinatorLoss(peer.NodeID) {
 		e.persistState()
 		return
 	}
