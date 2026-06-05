@@ -18,12 +18,12 @@ func buildCandidateInterfaceFilter(cfg ICEConfig) func(string) bool {
 		if _, ok := exclude[normalized]; ok {
 			return false
 		}
-		if autoExcludeVirtual && isLikelyVirtualCandidateInterface(normalized) {
-			return false
-		}
 		if len(include) > 0 {
 			_, ok := include[normalized]
 			return ok
+		}
+		if autoExcludeVirtual && isLikelyVirtualCandidateInterface(normalized) {
+			return false
 		}
 		return true
 	}

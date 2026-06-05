@@ -48,7 +48,7 @@ func TestPublicDirectCandidateInterfaceFilterRejectsLikelyVirtualOverlays(t *tes
 	}
 }
 
-func TestPublicDirectCandidateInterfaceFilterKeepsExplicitExcludes(t *testing.T) {
+func TestPublicDirectCandidateInterfaceFilterHonorsExplicitInclude(t *testing.T) {
 	filter := buildCandidateInterfaceFilter(ICEConfig{
 		PublicDirectCandidate:     true,
 		CandidateInterfaceInclude: []string{"Ethernet", "natpierce"},
@@ -63,8 +63,11 @@ func TestPublicDirectCandidateInterfaceFilterKeepsExplicitExcludes(t *testing.T)
 	if filter("Wi-Fi") {
 		t.Fatal("Wi-Fi should fail explicit exclude")
 	}
-	if filter("natpierce") {
-		t.Fatal("natpierce should still be excluded for public direct")
+	if !filter("natpierce") {
+		t.Fatal("natpierce should pass explicit include for controlled public direct tests")
+	}
+	if filter("Tailscale") {
+		t.Fatal("Tailscale should not pass when it is not in explicit include list")
 	}
 }
 

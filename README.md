@@ -161,6 +161,8 @@ nat:
 
 Windows 接口名应使用系统实际接口名称，例如 `Tailscale`、`vEthernet (WSL)` 或 Docker/Wintun 对应名称。`wink doctor` 会展示当前过滤配置，并在 runtime candidate 命中排除 CIDR 时报告失败。
 
+`legacyice/public_direct` 默认还会自动跳过 natpierce、Tailscale、Docker、Wintun/WinkYou 等疑似 overlay/虚拟接口，避免把已有外部通道误判成 WinkYou 自己的 protected direct。需要复现“natpierce 能通”的同类路径时，可以显式配置 `nat.candidate_interface_include` 把具体接口加入本轮测试；显式 `candidate_interface_exclude` 仍然优先。这个开关只表示你允许 WinkYou 在该接口上采集候选，不等于已经证明断开 natpierce 后仍可独立保活；若要把非公网地址当作 protected-direct 证据，还必须配合已验证的 `nat.direct_trusted_cidrs`。
+
 如果两端有可确认的公网 1:1 映射或固定 UDP 端口映射，可以把公网候选提示交给 ICE agent，减少只依赖默认 STUN 采集的误判：
 
 ```yaml
