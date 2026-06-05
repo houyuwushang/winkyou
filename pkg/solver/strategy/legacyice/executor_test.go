@@ -546,6 +546,43 @@ func TestPublicDirectAgentRequestUsesMappedHintLocalPort(t *testing.T) {
 	}
 }
 
+func TestPublicDirectAgentRequestMergesMappedHintAndConfiguredCIDRInclude(t *testing.T) {
+	agent := &recordingICEAgent{
+		connectErr:    context.Canceled,
+		connectCalled: make(chan struct{}),
+	}
+	var got AgentRequest
+	exec := newExecutor(Config{
+		NewICEAgent: func(ctx context.Context, req AgentRequest) (nat.ICEAgent, error) {
+			_ = ctx
+			got = req
+			return agent, nil
+		},
+		PublicEndpointHints:  []string{"117.48.146.2:41000/192.168.1.20:40000"},
+		CandidateCIDRInclude: []string{"10.6.22.0/24"},
+	}, solver.SolveInput{
+		SessionID: "session/node-a/node-b",
+		Initiator: true,
+	}, solver.Plan{
+		ID:       planIDPublicDirect,
+		Strategy: StrategyName,
+		Metadata: map[string]string{"mode": string(modePublicDirect)},
+	}, executorConfig{
+		Mode:                  modePublicDirect,
+		PublicDirectCandidate: true,
+		PublicEndpointHints:   []string{"117.48.146.2:41000/192.168.1.20:40000"},
+		CandidateCIDRInclude:  []string{"10.6.22.0/24"},
+	})
+
+	if _, err := exec.ensureAgent(context.Background()); err != nil {
+		t.Fatalf("ensureAgent(public direct merged include) error = %v", err)
+	}
+	want := []string{"10.6.22.0/24", "192.168.1.20/32"}
+	if !slices.Equal(got.CandidateCIDRInclude, want) {
+		t.Fatalf("public direct candidate CIDR include = %#v, want merged %#v", got.CandidateCIDRInclude, want)
+	}
+}
+
 func TestPublicDirectAgentRequestUsesConfiguredCIDRIncludeWithoutMappedHint(t *testing.T) {
 	agent := &recordingICEAgent{
 		connectErr:    context.Canceled,

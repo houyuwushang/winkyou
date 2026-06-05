@@ -222,11 +222,10 @@ func (e *executor) ensureAgent(ctx context.Context) (nat.ICEAgent, error) {
 }
 
 func (e *executor) agentCandidateCIDRInclude() []string {
-	hintBases := publicEndpointHintLocalBaseCIDRs(e.execCfg.PublicEndpointHints)
-	if len(hintBases) > 0 {
-		return hintBases
-	}
-	return append([]string(nil), e.execCfg.CandidateCIDRInclude...)
+	return mergeTrustedCIDRs(
+		e.execCfg.CandidateCIDRInclude,
+		publicEndpointHintLocalBaseCIDRs(e.execCfg.PublicEndpointHints),
+	)
 }
 
 func (e *executor) sendOffer(ctx context.Context, sess solver.SessionIO) error {
