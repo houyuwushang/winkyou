@@ -440,6 +440,16 @@ func TestPublicDirectBindingRequestHandlerSwitchesOnlyPublicPairs(t *testing.T) 
 	if !trustedCGNATHandler(nil, cgnatLocal, trustedCGNATRemote, &pionice.CandidatePair{Local: cgnatLocal, Remote: trustedCGNATRemote}) {
 		t.Fatal("trusted CGNAT public-direct candidates should switch selected pair")
 	}
+	allowedCGNATHandler := bindingRequestHandlerForConfig(ICEConfig{
+		PublicDirectCandidate: true,
+		CandidateCIDRInclude:  []string{"100.64.0.0/10"},
+	})
+	if allowedCGNATHandler == nil {
+		t.Fatal("allowed public direct binding request handler should be configured")
+	}
+	if !allowedCGNATHandler(nil, cgnatLocal, trustedCGNATRemote, &pionice.CandidatePair{Local: cgnatLocal, Remote: trustedCGNATRemote}) {
+		t.Fatal("candidate CIDR include should allow public-direct selected pair switching")
+	}
 
 	benchmarkLocal := mustPionCandidate(t, Candidate{
 		Type:       CandidateTypeHost,

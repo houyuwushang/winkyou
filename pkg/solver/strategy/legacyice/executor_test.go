@@ -89,7 +89,7 @@ func TestExecutorConfigForPlanProducesDistinctModes(t *testing.T) {
 		t.Fatalf("direct trusted CIDRs = %#v, want 100.64.0.0/10", direct.DirectTrustedCIDRs)
 	}
 
-	publicDirect, err := executorConfigForPlan(solver.Plan{ID: "legacyice/public_direct", Metadata: map[string]string{"mode": "public_direct"}}, Config{})
+	publicDirect, err := executorConfigForPlan(solver.Plan{ID: "legacyice/public_direct", Metadata: map[string]string{"mode": "public_direct"}}, Config{CandidateCIDRInclude: []string{"10.6.22.0/24"}})
 	if err != nil {
 		t.Fatalf("executorConfigForPlan(public_direct) error = %v", err)
 	}
@@ -98,6 +98,9 @@ func TestExecutorConfigForPlanProducesDistinctModes(t *testing.T) {
 	}
 	if len(publicDirect.CandidateCIDRExclude) != 0 {
 		t.Fatalf("public direct CIDR excludes = %#v, want no agent-level excludes", publicDirect.CandidateCIDRExclude)
+	}
+	if len(publicDirect.CandidateCIDRInclude) != 1 || publicDirect.CandidateCIDRInclude[0] != "10.6.22.0/24" {
+		t.Fatalf("public direct CIDR includes = %#v, want configured include", publicDirect.CandidateCIDRInclude)
 	}
 
 	relay, err := executorConfigForPlan(solver.Plan{ID: "legacyice/relay_only", Metadata: map[string]string{"mode": "relay_only"}}, Config{})
@@ -543,6 +546,40 @@ func TestPublicDirectAgentRequestUsesMappedHintLocalPort(t *testing.T) {
 	}
 }
 
+func TestPublicDirectAgentRequestUsesConfiguredCIDRIncludeWithoutMappedHint(t *testing.T) {
+	agent := &recordingICEAgent{
+		connectErr:    context.Canceled,
+		connectCalled: make(chan struct{}),
+	}
+	var got AgentRequest
+	exec := newExecutor(Config{
+		NewICEAgent: func(ctx context.Context, req AgentRequest) (nat.ICEAgent, error) {
+			_ = ctx
+			got = req
+			return agent, nil
+		},
+		CandidateCIDRInclude: []string{"10.6.22.0/24"},
+	}, solver.SolveInput{
+		SessionID: "session/node-a/node-b",
+		Initiator: true,
+	}, solver.Plan{
+		ID:       planIDPublicDirect,
+		Strategy: StrategyName,
+		Metadata: map[string]string{"mode": string(modePublicDirect)},
+	}, executorConfig{
+		Mode:                  modePublicDirect,
+		PublicDirectCandidate: true,
+		CandidateCIDRInclude:  []string{"10.6.22.0/24"},
+	})
+
+	if _, err := exec.ensureAgent(context.Background()); err != nil {
+		t.Fatalf("ensureAgent(public direct cidr include) error = %v", err)
+	}
+	if len(got.CandidateCIDRInclude) != 1 || got.CandidateCIDRInclude[0] != "10.6.22.0/24" {
+		t.Fatalf("public direct candidate CIDR include = %#v, want configured include", got.CandidateCIDRInclude)
+	}
+}
+
 func TestPublicDirectTrustedCIDRAllowsEndpointHint(t *testing.T) {
 	const hint = "100.102.17.35:41000/100.102.17.36:40000"
 	if _, err := publicEndpointHintCandidate(hint, 0, nil); err == nil {
@@ -561,6 +598,30 @@ func TestPublicDirectTrustedCIDRAllowsEndpointHint(t *testing.T) {
 
 	if _, err := publicEndpointHintCandidate("117.48.146.2:41000/100.102.17.36:40000", 0, nil); err == nil {
 		t.Fatal("publicEndpointHintCandidate() error = nil, want default rejection for 100.64/10 local base")
+	}
+}
+
+func TestPublicDirectCandidateCIDRIncludeAllowsNonPublicCandidatesWithoutTrustingPath(t *testing.T) {
+	execCfg := executorConfig{
+		Mode:                 modePublicDirect,
+		CandidateCIDRInclude: []string{"10.6.22.0/24"},
+	}
+	local := nat.Candidate{Type: nat.CandidateTypeHost, Address: &net.UDPAddr{IP: net.IPv4(10, 6, 22, 3), Port: 40000}}
+	remote := nat.Candidate{Type: nat.CandidateTypeHost, Address: &net.UDPAddr{IP: net.IPv4(10, 6, 22, 1), Port: 41000}}
+
+	if reason := localCandidateRejectReason(local, execCfg); reason != "" {
+		t.Fatalf("local candidate reject reason = %q, want allowed by candidate CIDR include", reason)
+	}
+	if reason := remoteCandidateRejectReason(remote, execCfg); reason != "" {
+		t.Fatalf("remote candidate reject reason = %q, want allowed by candidate CIDR include", reason)
+	}
+
+	role, deps := pathPolicyMetadata("direct", &nat.CandidatePair{Local: &local, Remote: &remote}, modePublicDirect, nil, nil)
+	if role != solver.PathRolePrimaryCandidate {
+		t.Fatalf("role = %q, want dependent primary candidate without direct trust", role)
+	}
+	if len(deps) == 0 || deps[0].Kind != solver.PathDependencyUnknown {
+		t.Fatalf("dependencies = %#v, want unknown dependency without direct trust", deps)
 	}
 }
 

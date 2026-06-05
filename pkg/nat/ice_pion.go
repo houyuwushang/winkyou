@@ -537,15 +537,16 @@ func bindingRequestHandlerForConfig(cfg ICEConfig) func(*stun.Message, pionice.C
 		return nil
 	}
 	return func(_ *stun.Message, local, remote pionice.Candidate, pair *pionice.CandidatePair) bool {
-		return shouldSwitchPublicDirectPair(local, remote, pair, cfg.PublicDirectTrustedCIDRs)
+		return shouldSwitchPublicDirectPair(local, remote, pair, cfg.PublicDirectTrustedCIDRs, cfg.CandidateCIDRInclude)
 	}
 }
 
-func shouldSwitchPublicDirectPair(local, remote pionice.Candidate, pair *pionice.CandidatePair, trustedCIDRs []string) bool {
+func shouldSwitchPublicDirectPair(local, remote pionice.Candidate, pair *pionice.CandidatePair, trustedCIDRs []string, allowedCIDRs []string) bool {
 	if pair == nil || local == nil || remote == nil {
 		return false
 	}
-	return isPublicDirectLocalCandidate(local, trustedCIDRs) && isPublicDirectRemoteCandidate(remote, trustedCIDRs)
+	allowed := mergeCIDRStrings(trustedCIDRs, allowedCIDRs)
+	return isPublicDirectLocalCandidate(local, allowed) && isPublicDirectRemoteCandidate(remote, allowed)
 }
 
 func isPublicDirectLocalCandidate(candidate pionice.Candidate, trustedCIDRs []string) bool {
@@ -606,6 +607,25 @@ func publicDirectCandidateIPReason(ip net.IP, trustedCIDRs []string) string {
 	default:
 		return ""
 	}
+}
+
+func mergeCIDRStrings(lists ...[]string) []string {
+	seen := make(map[string]struct{})
+	out := make([]string, 0)
+	for _, list := range lists {
+		for _, value := range list {
+			value = strings.TrimSpace(value)
+			if value == "" {
+				continue
+			}
+			if _, ok := seen[value]; ok {
+				continue
+			}
+			seen[value] = struct{}{}
+			out = append(out, value)
+		}
+	}
+	return out
 }
 
 func ipInAnyCIDR(ip net.IP, cidrs []string) bool {

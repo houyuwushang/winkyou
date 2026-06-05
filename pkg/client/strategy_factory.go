@@ -138,6 +138,7 @@ func (e *engine) legacyICEStrategyConfig() legacyice.Config {
 		CheckTimeout:                 e.iceCheckTimeout(),
 		ForceRelay:                   e.relayOnlyMode(),
 		RelayDisabled:                e.disableLegacyRelayPlan(),
+		CandidateCIDRInclude:         append([]string(nil), e.cfg.NAT.CandidateCIDRInclude...),
 		PublicEndpointHints:          e.publicEndpointHints(),
 		PublicEndpointHintPortWindow: e.cfg.NAT.PublicEndpointHintPortWindow,
 		DirectTrustedCIDRs:           append([]string(nil), e.cfg.NAT.DirectTrustedCIDRs...),

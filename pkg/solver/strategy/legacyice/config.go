@@ -29,6 +29,7 @@ type Config struct {
 	CheckTimeout                 time.Duration
 	ForceRelay                   bool
 	RelayDisabled                bool
+	CandidateCIDRInclude         []string
 	PublicEndpointHints          []string
 	PublicEndpointHintPortWindow int
 	DirectTrustedCIDRs           []string
@@ -46,6 +47,7 @@ const (
 type executorConfig struct {
 	Mode                         executionMode
 	ForceRelay                   bool
+	CandidateCIDRInclude         []string
 	CandidateCIDRExclude         []string
 	PublicDirectCandidate        bool
 	PublicEndpointHints          []string
@@ -79,6 +81,7 @@ func executorConfigForPlan(plan solver.Plan, cfg Config) (executorConfig, error)
 	case planIDPublicDirect:
 		return executorConfig{
 			Mode:                         modePublicDirect,
+			CandidateCIDRInclude:         append([]string(nil), cfg.CandidateCIDRInclude...),
 			PublicDirectCandidate:        true,
 			PublicEndpointHints:          append([]string(nil), cfg.PublicEndpointHints...),
 			PublicEndpointHintPortWindow: cfg.PublicEndpointHintPortWindow,
@@ -105,6 +108,7 @@ func executorConfigForPlan(plan solver.Plan, cfg Config) (executorConfig, error)
 		if mode := plan.Metadata["mode"]; mode == string(modePublicDirect) {
 			return executorConfig{
 				Mode:                         modePublicDirect,
+				CandidateCIDRInclude:         append([]string(nil), cfg.CandidateCIDRInclude...),
 				PublicDirectCandidate:        true,
 				PublicEndpointHints:          append([]string(nil), cfg.PublicEndpointHints...),
 				PublicEndpointHintPortWindow: cfg.PublicEndpointHintPortWindow,

@@ -495,6 +495,9 @@ func TestLegacyICEStrategyConfigPropagatesCandidateFilters(t *testing.T) {
 	if len(cfg.PublicDirectTrustedCIDRs) != 1 || cfg.PublicDirectTrustedCIDRs[0] != "198.18.0.0/15" {
 		t.Fatalf("legacy public direct trusted CIDRs = %#v, want configured public direct trusted CIDR", cfg.PublicDirectTrustedCIDRs)
 	}
+	if len(cfg.CandidateCIDRInclude) != 1 || cfg.CandidateCIDRInclude[0] != "192.168.0.0/16" {
+		t.Fatalf("legacy candidate CIDR include = %#v, want configured include", cfg.CandidateCIDRInclude)
+	}
 
 	if _, err := cfg.NewICEAgent(context.Background(), legacyice.AgentRequest{
 		PublicDirectCandidate: true,

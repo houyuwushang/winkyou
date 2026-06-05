@@ -204,7 +204,7 @@ func (e *executor) ensureAgent(ctx context.Context) (nat.ICEAgent, error) {
 	req := AgentRequest{
 		Controlling:              e.input.Initiator,
 		ForceRelay:               e.execCfg.ForceRelay,
-		CandidateCIDRInclude:     publicEndpointHintLocalBaseCIDRs(e.execCfg.PublicEndpointHints),
+		CandidateCIDRInclude:     e.agentCandidateCIDRInclude(),
 		CandidateCIDRExclude:     append([]string(nil), e.execCfg.CandidateCIDRExclude...),
 		PublicDirectTrustedCIDRs: e.trustedDirectCIDRs(),
 		PublicDirectCandidate:    e.execCfg.PublicDirectCandidate,
@@ -219,6 +219,14 @@ func (e *executor) ensureAgent(ctx context.Context) (nat.ICEAgent, error) {
 	}
 	e.agent = agent
 	return agent, nil
+}
+
+func (e *executor) agentCandidateCIDRInclude() []string {
+	hintBases := publicEndpointHintLocalBaseCIDRs(e.execCfg.PublicEndpointHints)
+	if len(hintBases) > 0 {
+		return hintBases
+	}
+	return append([]string(nil), e.execCfg.CandidateCIDRInclude...)
 }
 
 func (e *executor) sendOffer(ctx context.Context, sess solver.SessionIO) error {
@@ -1032,7 +1040,7 @@ func remoteCandidateRejectReason(candidate nat.Candidate, execCfg executorConfig
 		if candidate.Type == nat.CandidateTypeRelay {
 			return "remote_relay_candidate"
 		}
-		return candidateDependencyReasonWithTrustedCIDRs("remote", &candidate, mergeTrustedCIDRs(execCfg.DirectTrustedCIDRs, execCfg.PublicDirectTrustedCIDRs))
+		return publicDirectCandidateRejectReason("remote", &candidate, execCfg)
 	case modeRelayOnly:
 		if candidate.Type != nat.CandidateTypeRelay {
 			return "remote_non_relay_candidate"
@@ -1048,7 +1056,31 @@ func localCandidateRejectReason(candidate nat.Candidate, execCfg executorConfig)
 	if candidate.Type == nat.CandidateTypeRelay {
 		return "local_relay_candidate"
 	}
-	return candidateDependencyReasonWithTrustedCIDRs("local", &candidate, mergeTrustedCIDRs(execCfg.DirectTrustedCIDRs, execCfg.PublicDirectTrustedCIDRs))
+	return publicDirectCandidateRejectReason("local", &candidate, execCfg)
+}
+
+func publicDirectCandidateRejectReason(side string, candidate *nat.Candidate, execCfg executorConfig) string {
+	if candidate == nil || candidate.Address == nil || candidate.Address.IP == nil {
+		return side + "_candidate_unavailable"
+	}
+	if candidate.Type == nat.CandidateTypeRelay {
+		return ""
+	}
+	if candidateIPInCIDRs(candidate.Address.IP, publicDirectCandidateAllowedCIDRs(execCfg)) {
+		return ""
+	}
+	if reason := nonPublicCandidateIPReason(candidate.Address.IP); reason != "" {
+		return side + "_" + reason
+	}
+	return ""
+}
+
+func publicDirectCandidateAllowedCIDRs(execCfg executorConfig) []string {
+	return mergeTrustedCIDRs(
+		execCfg.CandidateCIDRInclude,
+		execCfg.DirectTrustedCIDRs,
+		execCfg.PublicDirectTrustedCIDRs,
+	)
 }
 
 func mergeTrustedCIDRs(lists ...[]string) []string {
