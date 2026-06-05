@@ -938,7 +938,11 @@ func formatCandidate(candidate *nat.Candidate) string {
 	if candidate.Address == nil {
 		return candidate.Type.String()
 	}
-	return fmt.Sprintf("%s:%s", candidate.Type.String(), candidate.Address.String())
+	out := fmt.Sprintf("%s:%s", candidate.Type.String(), candidate.Address.String())
+	if candidate.RelatedAddr != nil {
+		out += "<-" + candidate.RelatedAddr.String()
+	}
+	return out
 }
 
 func selectedPairDetails(pair *nat.CandidatePair, mode executionMode) map[string]string {

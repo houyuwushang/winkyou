@@ -363,7 +363,7 @@ func TestPublicDirectAdvertisesConfiguredPublicEndpointHints(t *testing.T) {
 		t.Fatalf("path policy with unmapped private base = role %q deps %#v, want dependent direct", role, deps)
 	}
 	obs := findObservation(io.observations, "candidate_gathered")
-	if obs == nil || !strings.Contains(obs.Details["candidate_kept_samples"], "srflx:117.48.146.2:41000") {
+	if obs == nil || !strings.Contains(obs.Details["candidate_kept_samples"], "srflx:117.48.146.2:41000<-192.168.1.20:40000") {
 		t.Fatalf("observations = %#v, want kept public endpoint hint sample", io.observations)
 	}
 }

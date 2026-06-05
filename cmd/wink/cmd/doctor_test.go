@@ -205,7 +205,7 @@ func TestDoctorCandidateFilterAllowsRuntimeCandidate(t *testing.T) {
 }
 
 func TestDoctorCandidateFilterSummaryIncludesPublicCandidateHints(t *testing.T) {
-	configPath := writeDoctorConfigWithNATExtra(t, "  candidate_port_min: 40000\n  candidate_port_max: 40100\n  nat1to1_candidate_type: srflx\n  nat1to1_ips:\n    - 203.0.113.10/192.168.0.10\n  public_endpoint_hints:\n    - 117.48.146.2:41000\n")
+	configPath := writeDoctorConfigWithNATExtra(t, "  candidate_port_min: 40000\n  candidate_port_max: 40100\n  nat1to1_candidate_type: srflx\n  nat1to1_ips:\n    - 203.0.113.10/192.168.0.10\n  public_endpoint_hints:\n    - 117.48.146.2:41000/192.168.1.20:40000\n")
 
 	result := runDoctor(context.Background(), &Options{ConfigPath: configPath}, doctorFlags{}, healthyDoctorProbes())
 	check := findDoctorCheck(result, "nat", "candidate filters")
@@ -213,7 +213,7 @@ func TestDoctorCandidateFilterSummaryIncludesPublicCandidateHints(t *testing.T) 
 		!strings.Contains(check.Message, "port_range=40000-40100") ||
 		!strings.Contains(check.Message, "nat1to1_candidate_type=srflx") ||
 		!strings.Contains(check.Message, "nat1to1_ips=203.0.113.10/192.168.0.10") ||
-		!strings.Contains(check.Message, "public_endpoint_hints=117.48.146.2:41000") {
+		!strings.Contains(check.Message, "public_endpoint_hints=117.48.146.2:41000/192.168.1.20:40000") {
 		t.Fatalf("candidate filters check = %#v, want public candidate hint summary", check)
 	}
 }
