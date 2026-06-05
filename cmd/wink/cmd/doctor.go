@@ -156,6 +156,7 @@ func runDoctor(ctx context.Context, opts *Options, flags doctorFlags, probes doc
 	addCandidateFilterChecks(&result, cfg, state, stateErr)
 	addPublicDirectEvidenceChecks(&result, opts)
 	addTunnelChecks(&result, state, stateErr)
+	addAdvertisedRouteChecks(&result, cfg, state, stateErr)
 	addTransportChecks(&result, state, stateErr)
 	addInbandHealthChecks(&result, state, stateErr)
 	addMultipathChecks(&result, cfg, state, stateErr)
@@ -687,6 +688,48 @@ func addTunnelChecks(result *doctorResult, state *winkclient.RuntimeState, state
 	}
 }
 
+func addAdvertisedRouteChecks(result *doctorResult, cfg *config.Config, state *winkclient.RuntimeState, stateErr error) {
+	localRoutes := normalizeStringList(nil)
+	if cfg != nil {
+		localRoutes = normalizeStringList(cfg.Node.AdvertiseRoutes)
+	}
+	if len(localRoutes) > 0 {
+		result.add(okCheck("routing", "advertised routes", "publishing backend route(s): "+strings.Join(localRoutes, ",")))
+	} else {
+		result.add(okCheck("routing", "advertised routes", "no local backend routes configured"))
+	}
+
+	if stateErr != nil || state == nil || len(state.Peers) == 0 {
+		if len(localRoutes) > 0 {
+			result.add(warnCheck("routing", "peer advertised routes", "no runtime peer state to verify advertised routes", "start wink up and check peers after they bind"))
+		}
+		return
+	}
+
+	connected := make([]string, 0, len(state.Peers))
+	disconnected := make([]string, 0, len(state.Peers))
+	for _, peer := range state.Peers {
+		if len(peer.AdvertisedRoutes) == 0 {
+			continue
+		}
+		entry := fmt.Sprintf("%s=%s", firstNonEmpty(peer.Name, peer.NodeID), strings.Join(peer.AdvertisedRoutes, ","))
+		if peer.State == winkclient.PeerStateConnected.String() || peer.DataState == winkclient.PeerDataStateAlive.String() || peer.DataState == winkclient.PeerDataStateBound.String() {
+			connected = append(connected, entry)
+		} else {
+			disconnected = append(disconnected, entry)
+		}
+	}
+	if len(connected) > 0 {
+		result.add(okCheck("routing", "peer advertised routes", "active peer backend route(s): "+strings.Join(connected, "; ")))
+	}
+	if len(disconnected) > 0 {
+		result.add(warnCheck("routing", "peer advertised routes", "advertised route(s) from peers that are not bound: "+strings.Join(disconnected, "; "), "connect the gateway peer, then verify WireGuard AllowedIPs and OS route table"))
+	}
+	if len(localRoutes) == 0 && len(connected) == 0 && len(disconnected) == 0 {
+		result.add(okCheck("routing", "peer advertised routes", "no peer backend routes observed"))
+	}
+}
+
 func addTransportChecks(result *doctorResult, state *winkclient.RuntimeState, stateErr error) {
 	if stateErr != nil || state == nil || len(state.Peers) == 0 {
 		result.add(warnCheck("transport", "packet transport", "no runtime transport state", "start wink up and connect a peer"))
@@ -709,6 +752,17 @@ func addTransportChecks(result *doctorResult, state *winkclient.RuntimeState, st
 		return
 	}
 	result.add(okCheck("transport", "packet counters", fmt.Sprintf("tx=%d rx=%d packets", totalTx, totalRx)))
+}
+
+func normalizeStringList(values []string) []string {
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value != "" {
+			out = append(out, value)
+		}
+	}
+	return out
 }
 
 func addInbandHealthChecks(result *doctorResult, state *winkclient.RuntimeState, stateErr error) {

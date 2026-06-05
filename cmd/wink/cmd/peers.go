@@ -49,6 +49,7 @@ func newPeersCmd(opts *Options) *cobra.Command {
 				cmd.Printf("  Name:       %s\n", dashIfEmpty(p.Name))
 				cmd.Printf("  Node ID:    %s\n", dashIfEmpty(p.NodeID))
 				cmd.Printf("  Virtual IP: %s\n", dashIfEmpty(p.VirtualIP))
+				cmd.Printf("  Routes:     %s\n", dashIfEmpty(strings.Join(p.AdvertisedRoutes, ",")))
 				cmd.Printf("  Public Key: %s\n", dashIfEmpty(p.PublicKey))
 				cmd.Printf("  State:      %s\n", dashIfEmpty(p.State))
 				cmd.Printf("  Control:    %s\n", dashIfEmpty(p.ControlState))

@@ -437,6 +437,30 @@ func TestDoctorInbandHealthMissingWarns(t *testing.T) {
 	}
 }
 
+func TestDoctorAdvertisedRoutes(t *testing.T) {
+	configPath := writeDoctorConfigWithNodeExtra(t, "  advertise_routes:\n    - 10.6.22.0/24\n")
+	writeDoctorRuntimeState(t, configPath, []winkclient.RuntimePeerStatus{{
+		NodeID:             "node-b",
+		Name:               "chen-win",
+		State:              winkclient.PeerStateConnected.String(),
+		DataState:          winkclient.PeerDataStateBound.String(),
+		AdvertisedRoutes:   []string{"10.7.0.0/24"},
+		LastHandshake:      time.Now(),
+		TransportTxPackets: 2,
+		TransportRxPackets: 3,
+	}})
+
+	result := runDoctor(context.Background(), &Options{ConfigPath: configPath}, doctorFlags{}, healthyDoctorProbes())
+	local := findDoctorCheck(result, "routing", "advertised routes")
+	if local.Status != doctorOK || !strings.Contains(local.Message, "10.6.22.0/24") {
+		t.Fatalf("advertised routes check = %#v, want local route summary", local)
+	}
+	remote := findDoctorCheck(result, "routing", "peer advertised routes")
+	if remote.Status != doctorOK || !strings.Contains(remote.Message, "chen-win=10.7.0.0/24") {
+		t.Fatalf("peer advertised routes check = %#v, want active peer route summary", remote)
+	}
+}
+
 func healthyDoctorProbes() doctorProbes {
 	return doctorProbes{
 		Coordinator: func(context.Context, *config.Config) doctorCheck {
@@ -459,10 +483,19 @@ func writeDoctorConfig(t *testing.T) string {
 }
 
 func writeDoctorConfigWithNATExtra(t *testing.T, natExtra string) string {
+	return writeDoctorConfigWithNodeAndNATExtra(t, "", natExtra)
+}
+
+func writeDoctorConfigWithNodeExtra(t *testing.T, nodeExtra string) string {
+	return writeDoctorConfigWithNodeAndNATExtra(t, nodeExtra, "")
+}
+
+func writeDoctorConfigWithNodeAndNATExtra(t *testing.T, nodeExtra, natExtra string) string {
 	t.Helper()
 	body := `
 node:
   name: node-a
+` + nodeExtra + `
 coordinator:
   url: grpc://127.0.0.1:50051
   auth_key: test-auth

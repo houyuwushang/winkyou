@@ -76,6 +76,7 @@ func TestPeersWithRuntimeState(t *testing.T) {
 				Name:                   "alice",
 				VirtualIP:              "10.100.0.2",
 				PublicKey:              "AAAA",
+				AdvertisedRoutes:       []string{"10.6.22.0/24"},
 				State:                  "connected",
 				ControlState:           "connected",
 				DataState:              "alive",
@@ -145,6 +146,9 @@ func TestPeersWithRuntimeState(t *testing.T) {
 	if !strings.Contains(output, "10.100.0.2") {
 		t.Error("output should contain virtual IP")
 	}
+	if !strings.Contains(output, "Routes:     10.6.22.0/24") {
+		t.Errorf("output should contain advertised routes, got: %s", output)
+	}
 	if !strings.Contains(output, "1.2.3.4:51820") {
 		t.Error("output should contain endpoint")
 	}
@@ -200,6 +204,7 @@ func TestPeersWithRuntimeStateJSON(t *testing.T) {
 				NodeID:                 "node-abc",
 				Name:                   "alice",
 				VirtualIP:              "10.100.0.2",
+				AdvertisedRoutes:       []string{"10.6.22.0/24"},
 				State:                  "connected",
 				ControlState:           "connected",
 				DataState:              "alive",
@@ -248,6 +253,9 @@ func TestPeersWithRuntimeStateJSON(t *testing.T) {
 	}
 	if result[0].Name != "alice" {
 		t.Errorf("Name = %q, want %q", result[0].Name, "alice")
+	}
+	if len(result[0].AdvertisedRoutes) != 1 || result[0].AdvertisedRoutes[0] != "10.6.22.0/24" {
+		t.Errorf("AdvertisedRoutes = %#v, want 10.6.22.0/24", result[0].AdvertisedRoutes)
 	}
 	if result[0].TxBytes != 5000 {
 		t.Errorf("TxBytes = %d, want 5000", result[0].TxBytes)

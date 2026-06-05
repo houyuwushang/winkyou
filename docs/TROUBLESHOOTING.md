@@ -201,6 +201,8 @@ node:
 
 重新启动网关 peer 后，其他 peer 应在 `wink peers --json` 里看到该 peer 的 `advertised_routes` 包含 `10.6.22.0/24`。绑定成功后，本机会把这条网段加入该 peer 的 WireGuard `AllowedIPs`，并添加经由该 peer 虚拟 IP 的系统路由。网关 peer 仍必须在操作系统层开启 IP forwarding/转发，并允许防火墙通过该后端网段；否则路由会存在，但包仍可能在 chen-win 或 inner-gw 侧被丢弃。
 
+普通 `wink peers` 文本输出也会显示 `Routes` 行；`wink doctor` 的 `routing` 层会分别报告本节点 `node.advertise_routes` 正在发布的路由，以及运行时从远端 peer 收到的后端路由。如果 `routing/peer advertised routes` 只提示未绑定或没有运行时状态，先把对应 gateway peer 连到 `connected/bound`，再检查 Windows 路由表和 WireGuard `AllowedIPs`。
+
 要验证 WinkYou 自己的路径，应以 `wink peers --json` 的 `last_path_role=protected_direct`、空 `last_path_dependencies`、非空 `protected_direct_path_id`，以及对应 observation 里的 `legacyice/public_direct` 成功记录为准。
 
 ## 6. Strategy Selection
