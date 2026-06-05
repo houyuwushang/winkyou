@@ -9,7 +9,7 @@ import (
 )
 
 func TestPathPolicyMetadata(t *testing.T) {
-	directRole, directDeps := pathPolicyMetadata("direct", candidatePair("117.48.146.2", "1.1.1.1"))
+	directRole, directDeps := pathPolicyMetadata("direct", candidatePair("117.48.146.2", "1.1.1.1"), modeDirectPrefer, nil)
 	if directRole != solver.PathRoleProtectedDirect {
 		t.Fatalf("direct role = %q, want %q", directRole, solver.PathRoleProtectedDirect)
 	}
@@ -17,7 +17,7 @@ func TestPathPolicyMetadata(t *testing.T) {
 		t.Fatalf("direct dependencies = %#v, want none", directDeps)
 	}
 
-	relayRole, relayDeps := pathPolicyMetadata("relay", nil)
+	relayRole, relayDeps := pathPolicyMetadata("relay", nil, modeDirectPrefer, nil)
 	if relayRole != solver.PathRolePrimaryCandidate {
 		t.Fatalf("relay role = %q, want %q", relayRole, solver.PathRolePrimaryCandidate)
 	}
@@ -30,7 +30,7 @@ func TestPathPolicyMetadata(t *testing.T) {
 }
 
 func TestPathPolicyMetadataMarksOverlayCandidatesAsDependent(t *testing.T) {
-	role, deps := pathPolicyMetadata("direct", candidatePair("117.48.146.2", "100.102.17.35"))
+	role, deps := pathPolicyMetadata("direct", candidatePair("117.48.146.2", "100.102.17.35"), modeDirectPrefer, nil)
 	if role == solver.PathRoleProtectedDirect {
 		t.Fatalf("direct role = %q, want non-protected role for overlay candidate", role)
 	}
@@ -46,7 +46,7 @@ func TestPathPolicyMetadataMarksOverlayCandidatesAsDependent(t *testing.T) {
 }
 
 func TestPathPolicyMetadataMarksPrivateCandidatesAsDependent(t *testing.T) {
-	role, deps := pathPolicyMetadata("direct", candidatePair("10.6.22.2", "117.48.146.2"))
+	role, deps := pathPolicyMetadata("direct", candidatePair("10.6.22.2", "117.48.146.2"), modeDirectPrefer, nil)
 	if role != solver.PathRolePrimaryCandidate {
 		t.Fatalf("direct role = %q, want %q", role, solver.PathRolePrimaryCandidate)
 	}
@@ -55,14 +55,58 @@ func TestPathPolicyMetadataMarksPrivateCandidatesAsDependent(t *testing.T) {
 	}
 }
 
+func TestPathPolicyMetadataAllowsSrflxBaseLocalHostForPublicDirect(t *testing.T) {
+	role, deps := pathPolicyMetadata("direct", candidatePairWithTypes(nat.CandidateTypeHost, "192.168.1.20", nat.CandidateTypeSrflx, "117.48.146.2"), modePublicDirect, map[string]struct{}{"192.168.1.20": {}})
+	if role != solver.PathRoleProtectedDirect {
+		t.Fatalf("public direct role = %q, want %q", role, solver.PathRoleProtectedDirect)
+	}
+	if len(deps) != 0 {
+		t.Fatalf("public direct dependencies = %#v, want none", deps)
+	}
+}
+
+func TestPathPolicyMetadataKeepsUnadvertisedPrivateLocalDependentForPublicDirect(t *testing.T) {
+	role, deps := pathPolicyMetadata("direct", candidatePairWithTypes(nat.CandidateTypeHost, "192.168.1.20", nat.CandidateTypeSrflx, "117.48.146.2"), modePublicDirect, nil)
+	if role != solver.PathRolePrimaryCandidate {
+		t.Fatalf("public direct private role = %q, want %q", role, solver.PathRolePrimaryCandidate)
+	}
+	if len(deps) != 1 || deps[0].Reason != "local_private_candidate" {
+		t.Fatalf("public direct private deps = %#v, want local_private_candidate", deps)
+	}
+}
+
+func TestPathPolicyMetadataKeepsOverlayLocalDependentForPublicDirect(t *testing.T) {
+	role, deps := pathPolicyMetadata("direct", candidatePairWithTypes(nat.CandidateTypeHost, "100.102.17.35", nat.CandidateTypeSrflx, "117.48.146.2"), modePublicDirect, map[string]struct{}{"100.102.17.35": {}})
+	if role != solver.PathRolePrimaryCandidate {
+		t.Fatalf("public direct overlay role = %q, want %q", role, solver.PathRolePrimaryCandidate)
+	}
+	if len(deps) != 1 || deps[0].Reason != "local_cgnat_or_overlay_candidate" {
+		t.Fatalf("public direct overlay deps = %#v, want local_cgnat_or_overlay_candidate", deps)
+	}
+}
+
+func TestPathPolicyMetadataKeepsRemotePrivateDependentForPublicDirect(t *testing.T) {
+	role, deps := pathPolicyMetadata("direct", candidatePairWithTypes(nat.CandidateTypeHost, "192.168.1.20", nat.CandidateTypeHost, "10.0.0.50"), modePublicDirect, map[string]struct{}{"192.168.1.20": {}})
+	if role != solver.PathRolePrimaryCandidate {
+		t.Fatalf("public direct remote private role = %q, want %q", role, solver.PathRolePrimaryCandidate)
+	}
+	if len(deps) != 1 || deps[0].Reason != "remote_private_candidate" {
+		t.Fatalf("public direct remote private deps = %#v, want remote_private_candidate", deps)
+	}
+}
+
 func candidatePair(localIP, remoteIP string) *nat.CandidatePair {
+	return candidatePairWithTypes(nat.CandidateTypeSrflx, localIP, nat.CandidateTypePrflx, remoteIP)
+}
+
+func candidatePairWithTypes(localType nat.CandidateType, localIP string, remoteType nat.CandidateType, remoteIP string) *nat.CandidatePair {
 	return &nat.CandidatePair{
 		Local: &nat.Candidate{
-			Type:    nat.CandidateTypeSrflx,
+			Type:    localType,
 			Address: &net.UDPAddr{IP: net.ParseIP(localIP), Port: 10000},
 		},
 		Remote: &nat.Candidate{
-			Type:    nat.CandidateTypePrflx,
+			Type:    remoteType,
 			Address: &net.UDPAddr{IP: net.ParseIP(remoteIP), Port: 20000},
 		},
 	}

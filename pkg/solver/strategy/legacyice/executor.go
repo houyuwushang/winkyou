@@ -20,10 +20,11 @@ type executor struct {
 	plan    solver.Plan
 	execCfg executorConfig
 
-	mu         sync.Mutex
-	agent      nat.ICEAgent
-	connecting bool
-	closed     bool
+	mu                     sync.Mutex
+	agent                  nat.ICEAgent
+	connecting             bool
+	closed                 bool
+	publicDirectLocalBases map[string]struct{}
 
 	lifecycleCtx    context.Context
 	lifecycleCancel context.CancelFunc
@@ -205,6 +206,7 @@ func (e *executor) sendOffer(ctx context.Context, sess solver.SessionIO) error {
 	if err != nil {
 		return err
 	}
+	e.rememberPublicDirectLocalBases(candidates)
 	candidates = filterLocalCandidates(candidates, e.execCfg)
 	if len(candidates) == 0 {
 		return fmt.Errorf("legacyice: no usable local candidates for %s", e.execCfg.Mode)
@@ -243,6 +245,7 @@ func (e *executor) sendAnswer(ctx context.Context, sess solver.SessionIO) error 
 	if err != nil {
 		return err
 	}
+	e.rememberPublicDirectLocalBases(candidates)
 	candidates = filterLocalCandidates(candidates, e.execCfg)
 	if len(candidates) == 0 {
 		return fmt.Errorf("legacyice: no usable local candidates for %s", e.execCfg.Mode)
@@ -301,7 +304,7 @@ func (e *executor) startConnect(sess solver.SessionIO) {
 		connectionType := connectionTypeFromPair(pair)
 		pathID := e.pathID(connectionType)
 		transport := e.releaseTransport(agent, conn, pathID)
-		role, dependencies := pathPolicyMetadata(connectionType, pair)
+		role, dependencies := pathPolicyMetadata(connectionType, pair, e.execCfg.Mode, e.publicDirectLocalBaseSnapshot())
 		result := solver.Result{
 			Transport: transport,
 			Summary: solver.PathSummary{
@@ -336,6 +339,38 @@ func (e *executor) pathID(connectionType string) string {
 		return fmt.Sprintf("legacyice:%s:%s:%s", connectionType, e.execCfg.Mode, e.input.SessionID)
 	}
 	return fmt.Sprintf("legacyice:%s:%s", connectionType, e.input.SessionID)
+}
+
+func (e *executor) rememberPublicDirectLocalBases(candidates []nat.Candidate) {
+	if e.execCfg.Mode != modePublicDirect {
+		return
+	}
+	bases := make(map[string]struct{})
+	for _, candidate := range candidates {
+		if candidate.Type == nat.CandidateTypeRelay || candidate.RelatedAddr == nil || candidate.RelatedAddr.IP == nil {
+			continue
+		}
+		if candidateDependencyReason("local", &candidate) != "" {
+			continue
+		}
+		bases[candidate.RelatedAddr.IP.String()] = struct{}{}
+	}
+	e.mu.Lock()
+	e.publicDirectLocalBases = bases
+	e.mu.Unlock()
+}
+
+func (e *executor) publicDirectLocalBaseSnapshot() map[string]struct{} {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if len(e.publicDirectLocalBases) == 0 {
+		return nil
+	}
+	out := make(map[string]struct{}, len(e.publicDirectLocalBases))
+	for ip := range e.publicDirectLocalBases {
+		out[ip] = struct{}{}
+	}
+	return out
 }
 
 func (e *executor) releaseTransport(agent nat.ICEAgent, conn net.Conn, pathID string) transport.PacketTransport {
@@ -432,14 +467,14 @@ func connectionTypeFromPair(pair *nat.CandidatePair) string {
 	return "direct"
 }
 
-func pathPolicyMetadata(connectionType string, pair *nat.CandidatePair) (solver.PathRole, []solver.PathDependency) {
+func pathPolicyMetadata(connectionType string, pair *nat.CandidatePair, mode executionMode, publicDirectLocalBases map[string]struct{}) (solver.PathRole, []solver.PathDependency) {
 	if connectionType == "relay" {
 		return solver.PathRolePrimaryCandidate, []solver.PathDependency{{
 			Kind:   solver.PathDependencyRelay,
 			Reason: "turn_or_relay_candidate",
 		}}
 	}
-	if reason := candidatePairDependencyReason(pair); reason != "" {
+	if reason := candidatePairDependencyReason(pair, mode, publicDirectLocalBases); reason != "" {
 		return solver.PathRolePrimaryCandidate, []solver.PathDependency{{
 			Kind:   solver.PathDependencyUnknown,
 			Reason: reason,
@@ -448,9 +483,12 @@ func pathPolicyMetadata(connectionType string, pair *nat.CandidatePair) (solver.
 	return solver.PathRoleProtectedDirect, nil
 }
 
-func candidatePairDependencyReason(pair *nat.CandidatePair) string {
+func candidatePairDependencyReason(pair *nat.CandidatePair, mode executionMode, publicDirectLocalBases map[string]struct{}) string {
 	if pair == nil {
 		return "selected_pair_unavailable"
+	}
+	if mode == modePublicDirect {
+		return publicDirectCandidatePairDependencyReason(pair, publicDirectLocalBases)
 	}
 	if reason := candidateDependencyReason("local", pair.Local); reason != "" {
 		return reason
@@ -459,6 +497,41 @@ func candidatePairDependencyReason(pair *nat.CandidatePair) string {
 		return reason
 	}
 	return ""
+}
+
+func publicDirectCandidatePairDependencyReason(pair *nat.CandidatePair, localBases map[string]struct{}) string {
+	if reason := publicDirectLocalCandidateDependencyReason(pair.Local, localBases); reason != "" {
+		return reason
+	}
+	if reason := candidateDependencyReason("remote", pair.Remote); reason != "" {
+		return reason
+	}
+	return ""
+}
+
+func publicDirectLocalCandidateDependencyReason(candidate *nat.Candidate, localBases map[string]struct{}) string {
+	if candidate == nil || candidate.Address == nil || candidate.Address.IP == nil {
+		return "local_candidate_unavailable"
+	}
+	if candidate.Type == nat.CandidateTypeRelay {
+		return ""
+	}
+	ip := candidate.Address.IP
+	if ip.IsPrivate() && candidate.Type == nat.CandidateTypeHost && hasIP(localBases, ip) {
+		return ""
+	}
+	if reason := nonPublicCandidateIPReason(ip); reason != "" {
+		return "local_" + reason
+	}
+	return ""
+}
+
+func hasIP(values map[string]struct{}, ip net.IP) bool {
+	if ip == nil {
+		return false
+	}
+	_, ok := values[ip.String()]
+	return ok
 }
 
 func candidateDependencyReason(side string, candidate *nat.Candidate) string {

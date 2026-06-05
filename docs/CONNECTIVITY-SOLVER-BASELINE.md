@@ -134,6 +134,8 @@ Production registration remains compatible by default: `legacy_ice_udp` first, t
 
 When a dependent direct-like path and an independent protected direct path have the same base score, generic solver selection must prefer the less-dependent protected direct path. This prevents `legacyice/direct_prefer` overlay success from masking a later successful `legacyice/public_direct` attempt.
 
+For `legacyice/public_direct`, a local RFC1918 host candidate may be treated as the NAT base only when it matches the related/base address of a public STUN/server-reflexive candidate advertised by the same plan. Remote candidates must remain public, and local or remote `100.64.0.0/10`, loopback, link-local, multicast, benchmark/overlay, or relay candidates must not prove protected direct coverage.
+
 The connectivity policy layer controls production strategy priority:
 
 - `connectivity.mode=auto`: use configured strategy order, defaulting to `legacy_ice_udp` -> `relay_only`
