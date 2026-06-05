@@ -15,6 +15,7 @@ When documents disagree, treat `CONNECTIVITY-SOLVER-BASELINE.md` as the source o
 - v0.1 freeze gate: [`V0.1-FREEZE.md`](./V0.1-FREEZE.md)
 - Phase 3B+ working plan: [`../implementation_plan.md`](../implementation_plan.md)
 - Protected direct multipath goal: [`MULTIPATH-PROTECTED-DIRECT.md`](./MULTIPATH-PROTECTED-DIRECT.md)
+- Intermittent bootstrap broker: [`INTERMITTENT-BOOTSTRAP-BROKER.md`](./INTERMITTENT-BOOTSTRAP-BROKER.md)
 
 ## Operator Docs
 
