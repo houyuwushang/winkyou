@@ -35,7 +35,7 @@ func selectProtectedDirectOutcome(outcomes []solver.CandidateOutcome, policy sol
 	var selected *solver.CandidateOutcome
 	for i := range outcomes {
 		outcome := &outcomes[i]
-		if !isSuccessfulOutcome(*outcome) || !solver.IsDirectPath(outcome.Result.Summary) {
+		if !isSuccessfulOutcome(*outcome) || !solver.IsProtectedDirectPath(outcome.Result.Summary) {
 			continue
 		}
 		if selected == nil || outcome.Score > selected.Score {

@@ -200,6 +200,42 @@ func TestScoreOutcomeWithPolicyDirectCanWin(t *testing.T) {
 	}
 }
 
+func TestScoreOutcomeWithPolicyDoesNotBonusDependentDirectLikePath(t *testing.T) {
+	policy := PathPolicy{
+		MultipathEnabled:      true,
+		ProtectDirect:         true,
+		DependencyPenalty:     50,
+		DirectProtectionBonus: 100,
+	}
+	plainDirect := CandidateOutcome{
+		Result: &Result{
+			Transport: &mockTransport{},
+			Summary: PathSummary{
+				PathID:         "direct/path",
+				ConnectionType: "direct",
+				Role:           PathRoleProtectedDirect,
+			},
+		},
+	}
+	dependentDirect := CandidateOutcome{
+		Result: &Result{
+			Transport: &mockTransport{},
+			Summary: PathSummary{
+				PathID:         "overlay/path",
+				ConnectionType: "direct",
+				Role:           PathRolePrimaryCandidate,
+				Dependencies: []PathDependency{{
+					Kind:   PathDependencyUnknown,
+					Reason: "remote_cgnat_or_overlay_candidate",
+				}},
+			},
+		},
+	}
+	if protectedScore, dependentScore := ScoreOutcomeWithPolicy(plainDirect, policy), ScoreOutcomeWithPolicy(dependentDirect, policy); protectedScore <= dependentScore {
+		t.Fatalf("policy scores protected=%d dependent=%d, want protected direct bonus only for independent path", protectedScore, dependentScore)
+	}
+}
+
 func TestSelectBestOutcome(t *testing.T) {
 	directOutcome := CandidateOutcome{
 		Plan: Plan{ID: "direct"},

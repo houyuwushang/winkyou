@@ -114,7 +114,7 @@ func (s *Session) selectAndExecuteProtectedDirect(ctx context.Context, candidate
 			primaryKey = outcomeKey(*best)
 			copied := candidate
 			primaryCandidate = &copied
-			if solver.IsDirectPath(best.Result.Summary) || !hasRemainingDirectCandidate(candidates[i+1:]) {
+			if solver.IsProtectedDirectPath(best.Result.Summary) || !hasRemainingDirectCandidate(candidates[i+1:]) {
 				break
 			}
 			continue

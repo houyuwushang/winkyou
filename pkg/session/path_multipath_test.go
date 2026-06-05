@@ -81,6 +81,37 @@ func TestBuildResultTransportFromOutcomesBuildsRegularStandbyWithoutDirect(t *te
 	}
 }
 
+func TestBuildResultTransportFromOutcomesDoesNotExposeDependentDirectAsProtected(t *testing.T) {
+	primaryTransport := &fakeTransport{}
+	standbyTransport := &fakeTransport{}
+	outcomes := []solver.CandidateOutcome{
+		successfulOutcome("relay/a", primaryTransport, solver.PathSummary{PathID: "relay/a", ConnectionType: "relay", Role: solver.PathRolePrimaryCandidate}),
+		successfulOutcome("overlay/direct", standbyTransport, solver.PathSummary{
+			PathID:         "overlay/direct",
+			ConnectionType: "direct",
+			Role:           solver.PathRolePrimaryCandidate,
+			Dependencies: []solver.PathDependency{{
+				Kind:   solver.PathDependencyUnknown,
+				Reason: "remote_cgnat_or_overlay_candidate",
+			}},
+		}),
+	}
+	best := &outcomes[0]
+
+	result, _ := buildResultTransportFromOutcomes(best, outcomes, solver.PathPolicy{MultipathEnabled: true, ProtectDirect: true, MaxPaths: 2})
+	provider, ok := result.Transport.(multipath.StatsProvider)
+	if !ok {
+		t.Fatalf("transport = %T, want multipath stats provider", result.Transport)
+	}
+	defer result.Transport.Close()
+	if got := provider.MultipathStats().ProtectedDirectPathID; got != "" {
+		t.Fatalf("protected direct path id = %q, want empty for dependent direct-like path", got)
+	}
+	if got := result.Summary.Details["protected_direct_path_id"]; got != "" {
+		t.Fatalf("protected direct detail = %q, want empty for dependent direct-like path", got)
+	}
+}
+
 func TestSessionBindUsesMultipathTransportWhenPolicyEnabled(t *testing.T) {
 	strategy := &executorFactoryStrategy{
 		name: "legacy_ice_udp",

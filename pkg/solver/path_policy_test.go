@@ -18,6 +18,9 @@ func TestPathRoleAndDependencyHelpers(t *testing.T) {
 	if !IsDirectPath(protected) {
 		t.Fatal("IsDirectPath(protected role) = false, want true")
 	}
+	if !IsProtectedDirectPath(protected) {
+		t.Fatal("IsProtectedDirectPath(protected role) = false, want true")
+	}
 
 	relay := PathSummary{
 		ConnectionType: "direct",
@@ -35,6 +38,23 @@ func TestPathRoleAndDependencyHelpers(t *testing.T) {
 	}
 	if HasDependency(relay, PathDependencyCoordinator) {
 		t.Fatal("HasDependency(relay, coordinator) = true, want false")
+	}
+	if IsProtectedDirectPath(relay) {
+		t.Fatal("IsProtectedDirectPath(relay dependency) = true, want false")
+	}
+	overlayDirect := PathSummary{
+		ConnectionType: "direct",
+		Role:           PathRolePrimaryCandidate,
+		Dependencies: []PathDependency{{
+			Kind:   PathDependencyUnknown,
+			Reason: "remote_cgnat_or_overlay_candidate",
+		}},
+	}
+	if !IsDirectPath(overlayDirect) {
+		t.Fatal("IsDirectPath(overlay direct-like path) = false, want true")
+	}
+	if IsProtectedDirectPath(overlayDirect) {
+		t.Fatal("IsProtectedDirectPath(overlay direct-like path) = true, want false")
 	}
 }
 

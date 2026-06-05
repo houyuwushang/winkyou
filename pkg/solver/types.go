@@ -252,10 +252,10 @@ func ScoreOutcomeWithPolicy(outcome CandidateOutcome, policy PathPolicy) int {
 	if latencyBonus, ok := pathLatencyBonus(summary); ok {
 		score += latencyBonus
 	}
-	if policy.DependencyPenalty > 0 && (IsRelayPath(summary) || hasPathDependency(summary)) {
+	if policy.DependencyPenalty > 0 && (IsRelayPath(summary) || HasExplicitDependency(summary)) {
 		score -= policy.DependencyPenalty
 	}
-	if policy.ProtectDirect && policy.DirectProtectionBonus > 0 && IsDirectPath(summary) {
+	if policy.ProtectDirect && policy.DirectProtectionBonus > 0 && IsProtectedDirectPath(summary) {
 		score += policy.DirectProtectionBonus
 	}
 	if score < 1 {
@@ -284,15 +284,6 @@ func pathLatencyBonus(summary PathSummary) (int, bool) {
 		return bonus, true
 	}
 	return 0, false
-}
-
-func hasPathDependency(summary PathSummary) bool {
-	for _, dependency := range summary.Dependencies {
-		if dependency.Kind != "" && dependency.Kind != PathDependencyNone {
-			return true
-		}
-	}
-	return false
 }
 
 // SelectBestOutcome picks the highest-scoring outcome from a list

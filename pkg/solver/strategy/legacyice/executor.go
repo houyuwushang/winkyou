@@ -291,7 +291,7 @@ func (e *executor) startConnect(sess solver.SessionIO) {
 		connectionType := connectionTypeFromPair(pair)
 		pathID := fmt.Sprintf("legacyice:%s:%s", connectionType, e.input.SessionID)
 		transport := e.releaseTransport(agent, conn, pathID)
-		role, dependencies := pathPolicyMetadata(connectionType)
+		role, dependencies := pathPolicyMetadata(connectionType, pair)
 		result := solver.Result{
 			Transport: transport,
 			Summary: solver.PathSummary{
@@ -415,14 +415,72 @@ func connectionTypeFromPair(pair *nat.CandidatePair) string {
 	return "direct"
 }
 
-func pathPolicyMetadata(connectionType string) (solver.PathRole, []solver.PathDependency) {
+func pathPolicyMetadata(connectionType string, pair *nat.CandidatePair) (solver.PathRole, []solver.PathDependency) {
 	if connectionType == "relay" {
 		return solver.PathRolePrimaryCandidate, []solver.PathDependency{{
 			Kind:   solver.PathDependencyRelay,
 			Reason: "turn_or_relay_candidate",
 		}}
 	}
+	if reason := candidatePairDependencyReason(pair); reason != "" {
+		return solver.PathRolePrimaryCandidate, []solver.PathDependency{{
+			Kind:   solver.PathDependencyUnknown,
+			Reason: reason,
+		}}
+	}
 	return solver.PathRoleProtectedDirect, nil
+}
+
+func candidatePairDependencyReason(pair *nat.CandidatePair) string {
+	if pair == nil {
+		return "selected_pair_unavailable"
+	}
+	if reason := candidateDependencyReason("local", pair.Local); reason != "" {
+		return reason
+	}
+	if reason := candidateDependencyReason("remote", pair.Remote); reason != "" {
+		return reason
+	}
+	return ""
+}
+
+func candidateDependencyReason(side string, candidate *nat.Candidate) string {
+	if candidate == nil || candidate.Address == nil || candidate.Address.IP == nil {
+		return side + "_candidate_unavailable"
+	}
+	if candidate.Type == nat.CandidateTypeRelay {
+		return ""
+	}
+	if reason := nonPublicCandidateIPReason(candidate.Address.IP); reason != "" {
+		return side + "_" + reason
+	}
+	return ""
+}
+
+func nonPublicCandidateIPReason(ip net.IP) string {
+	switch {
+	case ip.IsUnspecified():
+		return "unspecified_candidate"
+	case ip.IsLoopback():
+		return "loopback_candidate"
+	case ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast():
+		return "link_local_candidate"
+	case ip.IsMulticast():
+		return "multicast_candidate"
+	case ip.IsPrivate():
+		return "private_candidate"
+	case isCandidateIPInCIDR(ip, "100.64.0.0/10"):
+		return "cgnat_or_overlay_candidate"
+	case isCandidateIPInCIDR(ip, "198.18.0.0/15"):
+		return "benchmark_or_overlay_candidate"
+	default:
+		return ""
+	}
+}
+
+func isCandidateIPInCIDR(ip net.IP, cidr string) bool {
+	_, network, err := net.ParseCIDR(cidr)
+	return err == nil && network.Contains(ip)
 }
 
 func filterRemoteCandidates(candidates []nat.Candidate, execCfg executorConfig) []nat.Candidate {

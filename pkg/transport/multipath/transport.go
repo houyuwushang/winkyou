@@ -222,7 +222,7 @@ func (t *Transport) MultipathStats() Stats {
 		if state.path.ID != t.primaryID {
 			stats.StandbyPathIDs = append(stats.StandbyPathIDs, state.path.ID)
 		}
-		if stats.ProtectedDirectPathID == "" && state.path.Role == solver.PathRoleProtectedDirect {
+		if stats.ProtectedDirectPathID == "" && isProtectedDirectPath(state.path) {
 			stats.ProtectedDirectPathID = state.path.ID
 		}
 		stats.Paths = append(stats.Paths, PathStats{
@@ -291,7 +291,7 @@ func (t *Transport) shadowWrite(ctx context.Context, activeID string, pkt []byte
 		return
 	}
 	for _, state := range t.snapshotPaths() {
-		if state.path.ID == activeID || state.path.Role != solver.PathRoleProtectedDirect {
+		if state.path.ID == activeID || !isProtectedDirectPath(state.path) {
 			continue
 		}
 		if err := t.writePath(ctx, state, pkt); err != nil {
@@ -337,7 +337,7 @@ func (t *Transport) selectStandby(excludeIDs ...string) *pathState {
 			best = state
 			continue
 		}
-		if state.path.Role == solver.PathRoleProtectedDirect && best.path.Role != solver.PathRoleProtectedDirect {
+		if isProtectedDirectPath(state.path) && !isProtectedDirectPath(best.path) {
 			best = state
 			continue
 		}
@@ -346,6 +346,14 @@ func (t *Transport) selectStandby(excludeIDs ...string) *pathState {
 		}
 	}
 	return best
+}
+
+func isProtectedDirectPath(path Path) bool {
+	summary := path.Summary
+	if summary.Role == "" {
+		summary.Role = path.Role
+	}
+	return solver.IsProtectedDirectPath(summary)
 }
 
 func (t *Transport) shouldPromoteReadPath(pathID string) bool {

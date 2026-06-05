@@ -170,6 +170,8 @@ The in-band control message model is frozen in `pkg/peercontrol` and documented 
 
 NAT/ICE candidate filtering is owned by the NAT/legacy ICE boundary. Config supports candidate interface include/exclude and candidate CIDR include/exclude under `nat.*`; these filters are passed into the pion ICE agent. `pkg/session` and `pkg/solver` must remain unaware of interface or CIDR filtering details.
 
+ICE `connection_type=direct` is a direct-like transport result, not a guarantee that the path is independent from existing overlays or jump-host underlays. Strategy implementations must annotate `PathSummary.Role` and `PathSummary.Dependencies` conservatively. A path may be exposed as `protected_direct` only when it is direct-like and has no explicit relay, peer, or unknown dependency. Candidates in `100.64.0.0/10`, loopback, link-local, private/VPN-like, or otherwise ambiguous ranges must not be used as proof of protected direct coverage.
+
 ### Binder
 
 The binder attaches the selected `PacketTransport` to the tunnel.

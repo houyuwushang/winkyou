@@ -62,6 +62,32 @@ func TestRetainSuccessfulOutcomesKeepsProtectedDirectWhenPolicyEnabled(t *testin
 	}
 }
 
+func TestRetainSuccessfulOutcomesDoesNotTreatDependentDirectAsProtected(t *testing.T) {
+	selectedTransport := &fakeTransport{}
+	dependentDirectTransport := &fakeTransport{}
+	outcomes := []solver.CandidateOutcome{
+		successfulOutcome("relay/path", selectedTransport, solver.PathSummary{PathID: "relay/path", ConnectionType: "relay"}),
+		successfulOutcome("overlay/path", dependentDirectTransport, solver.PathSummary{
+			PathID:         "overlay/path",
+			ConnectionType: "direct",
+			Role:           solver.PathRolePrimaryCandidate,
+			Dependencies: []solver.PathDependency{{
+				Kind:   solver.PathDependencyUnknown,
+				Reason: "remote_cgnat_or_overlay_candidate",
+			}},
+		}),
+	}
+	policy := solver.PathPolicy{MultipathEnabled: true, ProtectDirect: true, MaxPaths: 2}
+
+	if protected := selectProtectedDirectOutcome(outcomes, policy); protected != nil {
+		t.Fatalf("protected direct = %#v, want nil for dependent direct-like path", protected)
+	}
+	retained := retainSuccessfulOutcomes(outcomes, &outcomes[0], policy)
+	if len(retained) != 1 || retained[0].Result.Summary.PathID != "overlay/path" {
+		t.Fatalf("retained = %#v, want generic standby retention for max_paths", retained)
+	}
+}
+
 func TestSelectPrimaryOutcomeUsesPolicyScoring(t *testing.T) {
 	relayTransport := &fakeTransport{}
 	directTransport := &fakeTransport{}

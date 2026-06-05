@@ -76,7 +76,11 @@ func multipathSummary(primary solver.PathSummary, paths []multipath.Path) solver
 	standbyIDs := make([]string, 0, len(paths)-1)
 	for i := 1; i < len(paths); i++ {
 		standbyIDs = append(standbyIDs, paths[i].ID)
-		if paths[i].Role == solver.PathRoleProtectedDirect && details["protected_direct_path_id"] == "" {
+		pathSummary := paths[i].Summary
+		if pathSummary.Role == "" {
+			pathSummary.Role = paths[i].Role
+		}
+		if solver.IsProtectedDirectPath(pathSummary) && details["protected_direct_path_id"] == "" {
 			details["protected_direct_path_id"] = paths[i].ID
 		}
 	}

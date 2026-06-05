@@ -8,7 +8,8 @@
 
 ```text
 primary = 当前评分最优 path
-protected_direct = direct/P2P standby path
+direct_like = ICE/TCP 结果不是 TURN relay，但可能仍依赖 overlay/跳板 underlay
+protected_direct = 没有 relay/peer/unknown dependency 的 direct/P2P standby path
 failover = primary write/read error 或 health stale 后切换到 standby
 ```
 
@@ -49,12 +50,14 @@ WireGuard tunnel
 
 ## 为什么 direct path 应保持为 protected standby
 
-direct/P2P path 即使不是最低延迟，也有一个关键价值：它通常对 coordinator、relay 或中间节点的持续依赖更少。只要 direct path 已经建立并被 WireGuard 数据面验证过，它就应该尽量保留为 protected standby。
+direct/P2P path 即使不是最低延迟，也有一个关键价值：它通常对 coordinator、relay 或中间节点的持续依赖更少。只要 direct path 已经建立、被 WireGuard 数据面验证过，并且没有命中 relay/peer/unknown dependency，它就应该尽量保留为 protected standby。
+
+需要特别区分 ICE 的 `connection_type=direct` 和 WinkYou 的 `protected_direct`。前者只说明没有走 TURN relay；如果 selected candidate 命中 `100.64.0.0/10`、私网 VPN/TAP、loopback、link-local 或其他依赖不清的地址，它只能作为 direct-like path 记录，不应出现在 `protected_direct_path_id` 中。
 
 这不要求 direct path 永远成为 primary。合理策略是：
 
 - primary 仍由当前评分和运行质量决定。
-- direct/P2P 成功 path 被标记为 `protected_direct`。
+- 没有明确 dependency 的 direct/P2P 成功 path 被标记为 `protected_direct`。
 - primary 写失败、读失败或 health stale 时，优先 fail over 到 protected direct。
 - 如果 direct standby 不存在，`wink doctor` 应明确说明当前路径仍依赖中间节点，direct standby unavailable。
 

@@ -41,6 +41,12 @@ func IsDirectPath(summary PathSummary) bool {
 		summary.Role == PathRoleProtectedDirect
 }
 
+func IsProtectedDirectPath(summary PathSummary) bool {
+	return IsDirectPath(summary) &&
+		summary.Role == PathRoleProtectedDirect &&
+		!HasExplicitDependency(summary)
+}
+
 func IsRelayPath(summary PathSummary) bool {
 	if strings.EqualFold(summary.ConnectionType, "relay") {
 		return true
@@ -54,6 +60,15 @@ func HasDependency(summary PathSummary, kind PathDependencyKind) bool {
 	}
 	for _, dependency := range summary.Dependencies {
 		if dependency.Kind == kind {
+			return true
+		}
+	}
+	return false
+}
+
+func HasExplicitDependency(summary PathSummary) bool {
+	for _, dependency := range summary.Dependencies {
+		if dependency.Kind != "" && dependency.Kind != PathDependencyNone {
 			return true
 		}
 	}

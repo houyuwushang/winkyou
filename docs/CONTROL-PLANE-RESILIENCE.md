@@ -48,14 +48,14 @@ client 还修复了一个真实验证中暴露的恢复问题：当本端不是 
 - WireGuard handshake 出现
 - `10.88.0.1` 和 `10.88.0.2` 双向 ping 成功
 
-这证明数据面没有通过 `chen-win` TURN relay 转发。但当断开本机到 `chen-win` 的 natpierce 连接后，WinkYou 连接也断开。
+这证明数据面没有通过 `chen-win` TURN relay 转发。但 `Conn Type: direct` 在 ICE 语义里只表示选中的 candidate pair 不是 TURN relay，并不自动表示该 path 独立于已有 overlay 或跳板 underlay。历史 runtime/observation 多次记录 remote candidate 为 `100.102.17.35:*`，属于 `100.64.0.0/10`，因此更准确的判断是：该 path 是 ICE direct-like path，但很可能仍依赖 natpierce/chen-win 相关 underlay。断开本机到 `chen-win` 的 natpierce 连接后，WinkYou 连接也断开，这与上述证据并不矛盾。
 
 后续通过 SSH 密码登录 `chen-win` 后，已确认可以只停止 `wink-coordinator` 进程而不触碰 natpierce/underlay 网络。排查过程中先暴露了一个部署问题：重启本机验证版 client 后，前置数据面一度没有重新达到 bound/handshake：
 
 - coordinator 在 `chen-win` 上运行，进程名 `wink-coordinator`。
 - `local-a` 控制面在线，能看到 `inner-b`，但 runtime 显示 `control_state=connected`、`data_state=failed/connecting`、`connected_peers=0`。
 - 本机 controlled-side retry 修复后，`local-a` 会重新进入 solver 并写出新的 observation，但没有收到足够的远端响应完成 direct path。
-- 未加 candidate filter 时曾选中过 `100.64.0.0/10` 地址段 candidate，并出现 `transport: short packet write 0/148`；这不是纯 coordinator outage 现象。
+- 未加 candidate filter 时曾选中过 `100.64.0.0/10` 地址段 candidate，并出现 `transport: short packet write 0/148`；这不是纯 coordinator outage 现象，也不能作为独立 protected direct path 的证据。
 - 仅在本机加 `nat.candidate_interface_include: natpierce` 和 `nat.candidate_cidr_include: 10.6.22.0/24` 会让本机过滤生效，但远端 `inner-b` 未同步配置时无法形成可用 candidate pair。
 - 进一步检查发现，`chen-win` 上的 coordinator 以默认 memory store 启动；重启 coordinator 后 `ListPeers` 返回空数组，说明注册表丢失，而旧 client 只保留本地 runtime 状态，没有自动重新注册，导致看起来 control 连接还在、实际 coordinator 不知道任何 peer。
 
@@ -97,6 +97,8 @@ client 还修复了一个真实验证中暴露的恢复问题：当本端不是 
 - 两端注册、心跳、peer online 状态和 session 信令都依赖这个 coordinator
 
 当前 client 还有一个行为风险：收到 peer offline 或 coordinator 判断 peer 不在线时，会走 `cleanupPeer`，从而清理 peer session、tunnel peer 和 endpoint。这样即使数据面已经 bound，只要控制面短暂断开，也可能被主动拆掉。
+
+另一个已修正的代码层风险是 path metadata 误标注：过去 `legacy_ice_udp` 只要选中的 ICE pair 不是 relay candidate，就会把 path 标记为 `protected_direct`。现在 `100.64.0.0/10`、loopback、link-local、私网等非公网 candidate 会被标记为带 `unknown` dependency 的 direct-like path，不再作为 protected direct standby 对外承诺。它仍可作为普通 standby 保留，但 `protected_direct_path_id` 不会指向这类依赖不清的 path。
 
 ## 当前限制
 
