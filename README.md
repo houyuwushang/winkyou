@@ -14,6 +14,7 @@ WinkYou = connectivity solver + secure WireGuard data plane
 
 - 活跃架构权威：[`docs/CONNECTIVITY-SOLVER-BASELINE.md`](./docs/CONNECTIVITY-SOLVER-BASELINE.md)
 - v0.1 freeze gate：[`docs/V0.1-FREEZE.md`](./docs/V0.1-FREEZE.md)
+- v0.2 multipath/bootstrap freeze gate：[`docs/V0.2-MULTIPATH-FREEZE.md`](./docs/V0.2-MULTIPATH-FREEZE.md)
 - Protected direct multipath 目标：[`docs/MULTIPATH-PROTECTED-DIRECT.md`](./docs/MULTIPATH-PROTECTED-DIRECT.md)
 - Phase 2D 已冻结：`phase2d-freeze-2026-04-24`
 - Phase 3A strategy portfolio foundation 已落地
@@ -29,7 +30,7 @@ WinkYou = connectivity solver + secure WireGuard data plane
 - `wink up/down/status/peers/logs` 已形成长期运行 CLI 工作流；Linux systemd 和 Windows 启动项文档已补齐
 - v0.1 release workflow 已能构建 Windows client、Linux client、Linux coordinator、Linux relay 和 SHA256SUMS
 - NAT/ICE 已支持 candidate interface include/exclude 和 candidate CIDR include/exclude；`wink doctor` 会展示过滤配置并检查 runtime candidate 是否命中排除 CIDR
-- 真实双节点验证已证明 `legacy_ice_udp` direct path 可以建立虚拟局域网；在已 bound 数据面上只停止 chen-win 的 coordinator 进程 15 秒后，`wink ping` 仍成功，说明基础 coordinator outage 已通过。client 已加第一层 peer-offline 保护、controlled-side retry、coordinator NotFound 重注册，并已在 runtime/`wink peers` 中暴露 control/data 状态和最近成功 path cache；`pkg/peercontrol` 已冻结 in-band peer control 消息模型，后续仍需覆盖更长时间 heartbeat/signaling failure、cached path 恢复和网络循环接入；详见 [`docs/CONTROL-PLANE-RESILIENCE.md`](./docs/CONTROL-PLANE-RESILIENCE.md)
+- 真实双节点验证已证明 `legacy_ice_udp` direct path 可以建立虚拟局域网；在已 bound 数据面上只停止 chen-win 的 coordinator 进程 15 秒后，`wink ping` 仍成功，说明基础 coordinator outage 已通过。client 已加第一层 peer-offline 保护、controlled-side retry、coordinator NotFound 重注册，并已在 runtime/`wink peers` 中暴露 control/data 状态和最近成功 path cache；`pkg/peercontrol` 消息模型已冻结，client 已接入最小 in-band heartbeat/path_health 循环，后续仍需覆盖更长时间 heartbeat/signaling failure 和 cached path 恢复；详见 [`docs/CONTROL-PLANE-RESILIENCE.md`](./docs/CONTROL-PLANE-RESILIENCE.md)
 
 当文档发生冲突时，以 [`docs/CONNECTIVITY-SOLVER-BASELINE.md`](./docs/CONNECTIVITY-SOLVER-BASELINE.md) 作为 session、solver、strategy 和 transport 边界的判断依据。部分历史架构文档已标记为 proposal/archive，不能覆盖 active baseline。
 
@@ -139,9 +140,9 @@ Windows 接口名应使用系统实际接口名称，例如 `Tailscale`、`vEthe
 - 自研 Wink Protocol 数据平面
 - `tcp_framed` 仍是 alpha，不做 NAT TCP 打洞承诺
 - 高级 learning/scoring 闭环
-- protected direct multipath：下一步需要让 primary path 按质量选择，同时尽量保留 direct/P2P path 作为 protected standby，并在 primary 失败时 fail over
+- protected direct multipath：v0.2 freeze gate 已定义；后续重点是真实设备报告、protected direct standby 验证和 failover 边界收敛，见 [`docs/V0.2-MULTIPATH-FREEZE.md`](./docs/V0.2-MULTIPATH-FREEZE.md)
 - coordinator 断线后保持已 bound 数据面的完整控制面韧性：基础 kill-coordinator 验证已通过；peer-offline 误清理、controlled-side retry、coordinator NotFound 重注册和 runtime control/data/path cache 已先修；更长时间 heartbeat/signaling failure、cached path 恢复仍待完成
-- 已建立虚拟网后的 in-band peer control channel 运行时接入；消息模型已在 `pkg/peercontrol` 冻结，但还没有接入 client 网络循环
+- 已建立虚拟网后的 in-band peer control channel 已接入最小 heartbeat/path_health 运行时循环；后续仍需更长时间真实设备验证和恢复策略收敛
 - 真实环境下排除 Tailscale、Docker bridge、其他 VPN/TAP 后的纯 NAT piercing 验证
 - GUI、移动端、原生 Windows service
 
@@ -174,6 +175,7 @@ Windows 接口名应使用系统实际接口名称，例如 `Tailscale`、`vEthe
 - [`docs/TROUBLESHOOTING.md`](./docs/TROUBLESHOOTING.md)：分层排障指南
 - [`docs/RELEASE.md`](./docs/RELEASE.md)：release 构建、校验和发布流程
 - [`docs/V0.1-FREEZE.md`](./docs/V0.1-FREEZE.md)：v0.1 Alpha freeze gate 与验收边界
+- [`docs/V0.2-MULTIPATH-FREEZE.md`](./docs/V0.2-MULTIPATH-FREEZE.md)：v0.2 multipath/bootstrap freeze gate
 - [`docs/README.md`](./docs/README.md)：文档分级索引
 
 ## 常用命令

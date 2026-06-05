@@ -13,6 +13,7 @@ When documents disagree, treat `CONNECTIVITY-SOLVER-BASELINE.md` as the source o
 - Phase 2D freeze gate: [`PHASE2D-FREEZE.md`](./PHASE2D-FREEZE.md)
 - Phase 3A strategy portfolio entry: [`PHASE3A-STRATEGY-PORTFOLIO.md`](./PHASE3A-STRATEGY-PORTFOLIO.md)
 - v0.1 freeze gate: [`V0.1-FREEZE.md`](./V0.1-FREEZE.md)
+- v0.2 multipath/bootstrap freeze gate: [`V0.2-MULTIPATH-FREEZE.md`](./V0.2-MULTIPATH-FREEZE.md)
 - Phase 3B+ working plan: [`../implementation_plan.md`](../implementation_plan.md)
 - Protected direct multipath goal: [`MULTIPATH-PROTECTED-DIRECT.md`](./MULTIPATH-PROTECTED-DIRECT.md)
 - Intermittent bootstrap broker: [`INTERMITTENT-BOOTSTRAP-BROKER.md`](./INTERMITTENT-BOOTSTRAP-BROKER.md)
