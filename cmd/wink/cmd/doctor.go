@@ -16,6 +16,7 @@ import (
 
 	winkclient "winkyou/pkg/client"
 	"winkyou/pkg/config"
+	"winkyou/pkg/nat"
 	"winkyou/pkg/solver/strategy/legacyice"
 	"winkyou/pkg/solver/strategy/relayonly"
 	"winkyou/pkg/solver/strategy/tcpframed"
@@ -59,6 +60,7 @@ type doctorFlags struct {
 
 type doctorProbes struct {
 	Coordinator    func(context.Context, *config.Config) doctorCheck
+	STUN           func(context.Context, *config.Config) doctorCheck
 	TURN           func(context.Context, *config.Config) doctorCheck
 	LocalInterface func(context.Context, *config.Config) doctorCheck
 }
@@ -120,6 +122,12 @@ func runDoctor(ctx context.Context, opts *Options, flags doctorFlags, probes doc
 		coordinatorProbe = defaultCoordinatorProbe
 	}
 	result.add(coordinatorProbe(ctx, cfg))
+
+	stunProbe := probes.STUN
+	if stunProbe == nil {
+		stunProbe = defaultSTUNProbe
+	}
+	result.add(stunProbe(ctx, cfg))
 
 	turnProbe := probes.TURN
 	if turnProbe == nil {
@@ -190,6 +198,32 @@ func defaultCoordinatorProbe(ctx context.Context, cfg *config.Config) doctorChec
 	}
 	_ = conn.Close()
 	return okCheck("coordinator", "reachable", "tcp connect succeeded: "+host)
+}
+
+func defaultSTUNProbe(ctx context.Context, cfg *config.Config) doctorCheck {
+	if len(cfg.NAT.STUNServers) == 0 {
+		return warnCheck("nat", "stun", "no STUN server configured", "configure nat.stun_servers to gather public direct candidates, or use TURN/relay_only")
+	}
+
+	errs := make([]string, 0, len(cfg.NAT.STUNServers))
+	for _, server := range cfg.NAT.STUNServers {
+		server = strings.TrimSpace(server)
+		if server == "" {
+			continue
+		}
+		probeCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+		result, err := nat.ProbeSTUN(probeCtx, server)
+		cancel()
+		if err != nil {
+			errs = append(errs, fmt.Sprintf("%s: %v", server, err))
+			continue
+		}
+		return okCheck("nat", "stun", fmt.Sprintf("mapped %s from local %s via %s", formatUDPAddr(result.MappedAddr), formatUDPAddr(result.LocalAddr), formatUDPAddr(result.ServerAddr)))
+	}
+	if len(errs) == 0 {
+		return warnCheck("nat", "stun", "no usable STUN server configured", "remove empty nat.stun_servers entries or configure a reachable STUN server")
+	}
+	return warnCheck("nat", "stun", "all STUN probes failed: "+strings.Join(errs, "; "), "configure a reachable STUN server near both peers, or use TURN/relay_only")
 }
 
 func defaultTURNProbe(cfg *config.Config, required bool) doctorCheck {
@@ -590,4 +624,11 @@ func hostPortFromCoordinatorURL(raw string) (string, error) {
 		return "", fmt.Errorf("coordinator url missing host: %q", raw)
 	}
 	return parsed.Host, nil
+}
+
+func formatUDPAddr(addr *net.UDPAddr) string {
+	if addr == nil {
+		return "-"
+	}
+	return addr.String()
 }

@@ -139,6 +139,28 @@ func TestStunBindLocalServer(t *testing.T) {
 	}
 }
 
+func TestProbeSTUNLocalServer(t *testing.T) {
+	s := startFakeSTUNServer(t, net.IPv4(198, 51, 100, 42), 33333)
+	defer s.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	result, err := ProbeSTUN(ctx, s.LocalAddr().String())
+	if err != nil {
+		t.Fatalf("ProbeSTUN() error: %v", err)
+	}
+	if result.LocalAddr == nil {
+		t.Fatal("LocalAddr is nil")
+	}
+	if result.ServerAddr == nil || result.ServerAddr.String() != s.LocalAddr().String() {
+		t.Fatalf("ServerAddr = %v, want %s", result.ServerAddr, s.LocalAddr())
+	}
+	if result.MappedAddr == nil || !result.MappedAddr.IP.Equal(net.IPv4(198, 51, 100, 42)) || result.MappedAddr.Port != 33333 {
+		t.Fatalf("MappedAddr = %v, want 198.51.100.42:33333", result.MappedAddr)
+	}
+}
+
 func TestStunBindTimeout(t *testing.T) {
 	// Server that never responds.
 	serverConn, err := net.ListenPacket("udp4", "127.0.0.1:0")

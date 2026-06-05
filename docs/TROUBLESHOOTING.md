@@ -137,6 +137,8 @@ nat:
 
 这只适用于公网 IP/端口映射稳定的场景。若运营商 NAT 会为每个 UDP socket 动态改写端口，`nat1to1_ips` 不能保证复现 natpierce 的成功路径；应查看 `legacyice/public_direct` 是否采集到了 server-reflexive candidate，或使用 TURN/`relay_only` fallback。
 
+先运行 `wink --config <config.yaml> doctor` 看 `stun` 检查。如果 STUN probe 失败，说明当前配置的 `nat.stun_servers` 没能返回公网映射地址，`legacyice/public_direct` 大概率没有足够的公网候选可用。此时优先换成两端都可访问的 STUN 服务，确认 UDP 出站没有被拦截；如果无法保证公网 UDP NAT piercing，就使用 TURN/`relay_only` 作为保活路径。
+
 默认 `legacy_ice_udp` 内部执行顺序为：
 
 ```text

@@ -88,6 +88,20 @@ func TestDoctorTURNFailWhenRelayRequired(t *testing.T) {
 	}
 }
 
+func TestDoctorSTUNWarnWhenProbeFails(t *testing.T) {
+	configPath := writeDoctorConfig(t)
+	probes := healthyDoctorProbes()
+	probes.STUN = func(context.Context, *config.Config) doctorCheck {
+		return warnCheck("nat", "stun", "all STUN probes failed: timeout", "configure a reachable STUN server")
+	}
+
+	result := runDoctor(context.Background(), &Options{ConfigPath: configPath}, doctorFlags{}, probes)
+	check := findDoctorCheck(result, "nat", "stun")
+	if check.Status != doctorWarn || !strings.Contains(check.Message, "all STUN probes failed") {
+		t.Fatalf("stun check = %#v, want STUN warning", check)
+	}
+}
+
 func TestDoctorTunnelPermissionFail(t *testing.T) {
 	configPath := writeDoctorConfig(t)
 	probes := healthyDoctorProbes()
@@ -286,6 +300,9 @@ func healthyDoctorProbes() doctorProbes {
 	return doctorProbes{
 		Coordinator: func(context.Context, *config.Config) doctorCheck {
 			return okCheck("coordinator", "reachable", "fake coordinator reachable")
+		},
+		STUN: func(context.Context, *config.Config) doctorCheck {
+			return okCheck("nat", "stun", "fake STUN mapped address")
 		},
 		TURN: func(context.Context, *config.Config) doctorCheck {
 			return okCheck("nat", "turn", "fake TURN gather ok")
