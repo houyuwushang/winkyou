@@ -2,13 +2,16 @@ package cmd
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
 	"net/url"
 	"os"
+	"path/filepath"
 	"runtime"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -17,6 +20,7 @@ import (
 	winkclient "winkyou/pkg/client"
 	"winkyou/pkg/config"
 	"winkyou/pkg/nat"
+	"winkyou/pkg/solver"
 	"winkyou/pkg/solver/strategy/legacyice"
 	"winkyou/pkg/solver/strategy/relayonly"
 	"winkyou/pkg/solver/strategy/tcpframed"
@@ -31,6 +35,8 @@ const (
 )
 
 const doctorInbandHealthWindow = 20 * time.Second
+
+const doctorPublicDirectPlanID = "legacyice/public_direct"
 
 type doctorCheck struct {
 	Layer      string       `json:"layer"`
@@ -147,6 +153,7 @@ func runDoctor(ctx context.Context, opts *Options, flags doctorFlags, probes doc
 	state, stateErr := winkclient.LoadRuntimeState(runtimeStateKey(opts))
 	addStrategyChecks(&result, cfg, flags)
 	addCandidateFilterChecks(&result, cfg, state, stateErr)
+	addPublicDirectEvidenceChecks(&result, opts)
 	addTunnelChecks(&result, state, stateErr)
 	addTransportChecks(&result, state, stateErr)
 	addInbandHealthChecks(&result, state, stateErr)
@@ -317,6 +324,192 @@ func addCandidateFilterChecks(result *doctorResult, cfg *config.Config, state *w
 		}
 	}
 	result.add(okCheck("nat", "candidate selected", "runtime candidates satisfy configured CIDR filters"))
+}
+
+func addPublicDirectEvidenceChecks(result *doctorResult, opts *Options) {
+	path := observationStatePathFromKey(runtimeStateKey(opts))
+	observations, err := loadDoctorObservations(path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			result.add(warnCheck("nat", "public direct evidence", "observation history not found: "+path, "start wink up, attempt the peer connection, then run wink doctor again"))
+			return
+		}
+		result.add(warnCheck("nat", "public direct evidence", "observation history unreadable: "+err.Error(), "check runtime state permissions and run wink doctor again"))
+		return
+	}
+
+	evidence := summarizePublicDirectEvidence(observations)
+	result.add(evidence.check(path))
+}
+
+type publicDirectEvidence struct {
+	Planned      *solver.Observation
+	LocalGather  *solver.Observation
+	RemoteFilter *solver.Observation
+	Failure      *solver.Observation
+	Success      *solver.Observation
+	Selected     *solver.Observation
+	Committed    *solver.Observation
+}
+
+func summarizePublicDirectEvidence(observations []solver.Observation) publicDirectEvidence {
+	var evidence publicDirectEvidence
+	for i := range observations {
+		obs := &observations[i]
+		if !isPublicDirectObservation(*obs) {
+			continue
+		}
+		switch obs.Event {
+		case "candidate_planned", "candidate_started":
+			evidence.Planned = obs
+		case "candidate_gathered":
+			if observationDetail(obs, "candidate_side") == "local" || evidence.LocalGather == nil {
+				evidence.LocalGather = obs
+			}
+		case "remote_candidates_filtered":
+			evidence.RemoteFilter = obs
+		case "candidate_failed", "protected_direct_attempt_failed":
+			evidence.Failure = obs
+		case "candidate_succeeded", "selected_pair":
+			evidence.Success = obs
+		case "path_selected":
+			evidence.Selected = obs
+		case "path_committed":
+			evidence.Committed = obs
+		}
+	}
+	return evidence
+}
+
+func (e publicDirectEvidence) check(path string) doctorCheck {
+	if e.Committed != nil || e.Selected != nil {
+		obs := firstObservation(e.Committed, e.Selected)
+		role := observationDetail(obs, "path_role")
+		dependencies := observationDetail(obs, "path_dependencies")
+		if role == "protected_direct" && dependencies == "" {
+			return okCheck("nat", "public direct evidence", publicDirectObservationMessage("public direct protected path selected", obs, path))
+		}
+		return warnCheck("nat", "public direct evidence", publicDirectObservationMessage("public direct selected but not proven protected", obs, path), "check selected candidate addresses; dependent direct-like paths may still rely on an overlay or middle node")
+	}
+	if e.Success != nil {
+		return okCheck("nat", "public direct evidence", publicDirectObservationMessage("public direct ICE candidate succeeded", e.Success, path))
+	}
+	if e.RemoteFilter != nil && observationCandidateKept(e.RemoteFilter) == 0 {
+		return warnCheck("nat", "public direct evidence", publicDirectObservationMessage("remote has no usable public direct candidates", e.RemoteFilter, path), "check the remote peer STUN result, candidate filters, UDP firewall, and whether it only exposes private/100.64/overlay candidates")
+	}
+	if e.LocalGather != nil && observationCandidateKept(e.LocalGather) == 0 {
+		return warnCheck("nat", "public direct evidence", publicDirectObservationMessage("local gather produced no usable public direct candidates", e.LocalGather, path), "check nat.stun_servers, UDP outbound reachability, candidate filters, and NAT1To1 public candidate hints")
+	}
+	if e.Failure != nil {
+		return warnCheck("nat", "public direct evidence", publicDirectObservationMessage("public direct attempt failed", e.Failure, path), "if natpierce succeeds, compare its mapped endpoint with WinkYou STUN/candidate observations and verify both peers run the latest binary")
+	}
+	if e.Planned != nil {
+		return warnCheck("nat", "public direct evidence", publicDirectObservationMessage("public direct was planned but no final result was recorded", e.Planned, path), "keep both peers online long enough for legacyice/public_direct to gather, exchange, and check candidates")
+	}
+	return warnCheck("nat", "public direct evidence", "no legacyice/public_direct observations found in "+path, "ensure connectivity.mode is not relay_only, nat.force_relay=false, both peers are updated, and a peer connection has been attempted")
+}
+
+func publicDirectObservationMessage(prefix string, obs *solver.Observation, path string) string {
+	parts := []string{prefix}
+	if obs != nil {
+		if obs.Event != "" {
+			parts = append(parts, "event="+obs.Event)
+		}
+		if obs.PlanID != "" {
+			parts = append(parts, "plan="+obs.PlanID)
+		}
+		if obs.PathID != "" {
+			parts = append(parts, "path="+obs.PathID)
+		}
+		if obs.ConnectionType != "" {
+			parts = append(parts, "conn="+obs.ConnectionType)
+		}
+		if obs.LocalAddr != "" {
+			parts = append(parts, "local="+obs.LocalAddr)
+		}
+		if obs.RemoteAddr != "" {
+			parts = append(parts, "remote="+obs.RemoteAddr)
+		}
+		for _, key := range []string{"candidate_total", "candidate_kept", "candidate_rejected", "candidate_reject_reasons", "path_role", "path_dependencies"} {
+			if value := observationDetail(obs, key); value != "" {
+				parts = append(parts, key+"="+value)
+			}
+		}
+		if obs.Reason != "" {
+			parts = append(parts, "reason="+obs.Reason)
+		}
+	}
+	parts = append(parts, "source="+path)
+	return strings.Join(parts, " ")
+}
+
+func isPublicDirectObservation(obs solver.Observation) bool {
+	if strings.TrimSpace(obs.PlanID) == doctorPublicDirectPlanID {
+		return true
+	}
+	if obs.Details == nil {
+		return false
+	}
+	return strings.TrimSpace(obs.Details["plan_id"]) == doctorPublicDirectPlanID ||
+		strings.TrimSpace(obs.Details["mode"]) == "public_direct" ||
+		strings.TrimSpace(obs.Details["plan_mode"]) == "public_direct"
+}
+
+func observationCandidateKept(obs *solver.Observation) int {
+	value, err := strconv.Atoi(observationDetail(obs, "candidate_kept"))
+	if err != nil {
+		return -1
+	}
+	return value
+}
+
+func observationDetail(obs *solver.Observation, key string) string {
+	if obs == nil || obs.Details == nil {
+		return ""
+	}
+	return strings.TrimSpace(obs.Details[key])
+}
+
+func firstObservation(values ...*solver.Observation) *solver.Observation {
+	for _, value := range values {
+		if value != nil {
+			return value
+		}
+	}
+	return nil
+}
+
+func loadDoctorObservations(path string) ([]solver.Observation, error) {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	observations := make([]solver.Observation, 0)
+	for _, line := range strings.Split(string(raw), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		var obs solver.Observation
+		if err := json.Unmarshal([]byte(line), &obs); err != nil {
+			continue
+		}
+		observations = append(observations, obs)
+	}
+	return observations, nil
+}
+
+func observationStatePathFromKey(key string) string {
+	resolved := strings.TrimSpace(key)
+	if resolved == "" {
+		resolved = config.DefaultPath()
+	}
+	dir := filepath.Dir(resolved)
+	base := strings.TrimSuffix(filepath.Base(resolved), filepath.Ext(resolved))
+	if base == "" || base == "." || base == string(filepath.Separator) {
+		base = "wink"
+	}
+	return filepath.Join(dir, base+".observations.jsonl")
 }
 
 func addTunnelChecks(result *doctorResult, state *winkclient.RuntimeState, stateErr error) {

@@ -151,7 +151,13 @@ legacyice/direct_prefer -> legacyice/public_direct -> legacyice/relay_only
 
 当前 session 会按 strategy message 顶层 `plan_id` 缓存未来 plan 的消息。如果两端推进速度不一致，`legacyice/public_direct` 的 offer/answer 不应再被仍在执行 `legacyice/direct_prefer` 的 executor 吞掉。若仍看不到 `public_direct` 的 candidate 事件，优先确认两端二进制都已更新。
 
-如果 natpierce 能从本机直达 `inner-gw`，但 WinkYou 不能建立 `protected_direct`，不要先判断为“物理不可达”。先查看 observation history。客户端运行状态文件同目录下会有 `<runtime-state-base>.observations.jsonl`，可在 Windows 上先用：
+如果 natpierce 能从本机直达 `inner-gw`，但 WinkYou 不能建立 `protected_direct`，不要先判断为“物理不可达”。先运行：
+
+```powershell
+wink --config <config.yaml> doctor
+```
+
+查看 `public direct evidence` 检查。它会读取 observation history，直接提示 `legacyice/public_direct` 是没有记录、远端候选为 0、本端候选为 0、ICE 检查失败，还是已经选中/提交了 protected direct。客户端运行状态文件同目录下也会有 `<runtime-state-base>.observations.jsonl`，需要手工核对时可在 Windows 上用：
 
 ```powershell
 Get-Content <runtime-state-base>.observations.jsonl |

@@ -12,6 +12,7 @@ import (
 
 	winkclient "winkyou/pkg/client"
 	"winkyou/pkg/config"
+	"winkyou/pkg/solver"
 )
 
 func TestDoctorResultSummary(t *testing.T) {
@@ -188,6 +189,59 @@ func TestDoctorCandidateFilterSummaryIncludesPublicCandidateHints(t *testing.T) 
 		!strings.Contains(check.Message, "nat1to1_candidate_type=srflx") ||
 		!strings.Contains(check.Message, "nat1to1_ips=203.0.113.10/192.168.0.10") {
 		t.Fatalf("candidate filters check = %#v, want public candidate hint summary", check)
+	}
+}
+
+func TestDoctorPublicDirectEvidenceOK(t *testing.T) {
+	configPath := writeDoctorConfig(t)
+	writeDoctorObservationHistory(t, configPath, []solver.Observation{{
+		PlanID:         "legacyice/public_direct",
+		Event:          "path_committed",
+		PathID:         "legacyice:direct:public_direct:session/node-a/node-b",
+		ConnectionType: "direct",
+		LocalAddr:      "192.168.1.10:50000",
+		RemoteAddr:     "203.0.113.20:41000",
+		Details: map[string]string{
+			"path_role": "protected_direct",
+		},
+		Timestamp: time.Now(),
+	}})
+
+	result := runDoctor(context.Background(), &Options{ConfigPath: configPath}, doctorFlags{}, healthyDoctorProbes())
+	check := findDoctorCheck(result, "nat", "public direct evidence")
+	if check.Status != doctorOK || !strings.Contains(check.Message, "public direct protected path selected") || !strings.Contains(check.Message, "legacyice/public_direct") {
+		t.Fatalf("public direct evidence check = %#v, want protected direct ok", check)
+	}
+}
+
+func TestDoctorPublicDirectEvidenceWarnsForRemoteFilterNoCandidates(t *testing.T) {
+	configPath := writeDoctorConfig(t)
+	writeDoctorObservationHistory(t, configPath, []solver.Observation{{
+		PlanID: "legacyice/public_direct",
+		Event:  "remote_candidates_filtered",
+		Details: map[string]string{
+			"candidate_side":           "remote",
+			"candidate_total":          "2",
+			"candidate_kept":           "0",
+			"candidate_rejected":       "2",
+			"candidate_reject_reasons": "remote_cgnat_or_overlay_candidate=2",
+		},
+		Timestamp: time.Now(),
+	}})
+
+	result := runDoctor(context.Background(), &Options{ConfigPath: configPath}, doctorFlags{}, healthyDoctorProbes())
+	check := findDoctorCheck(result, "nat", "public direct evidence")
+	if check.Status != doctorWarn || !strings.Contains(check.Message, "remote has no usable public direct candidates") || !strings.Contains(check.Message, "remote_cgnat_or_overlay_candidate") {
+		t.Fatalf("public direct evidence check = %#v, want remote candidate warning", check)
+	}
+}
+
+func TestRuntimeStateKeyDefaultsToConfigDefault(t *testing.T) {
+	if got := runtimeStateKey(&Options{}); got != config.DefaultPath() {
+		t.Fatalf("runtimeStateKey(default) = %q, want %q", got, config.DefaultPath())
+	}
+	if got := runtimeStateKey(nil); got != config.DefaultPath() {
+		t.Fatalf("runtimeStateKey(nil) = %q, want %q", got, config.DefaultPath())
 	}
 }
 
@@ -434,6 +488,20 @@ func writeDoctorRuntimeState(t *testing.T, configPath string, peers []winkclient
 	}
 	if err := winkclient.WriteRuntimeState(configPath, state); err != nil {
 		t.Fatalf("write runtime state: %v", err)
+	}
+}
+
+func writeDoctorObservationHistory(t *testing.T, configPath string, observations []solver.Observation) {
+	t.Helper()
+	var buf strings.Builder
+	encoder := json.NewEncoder(&buf)
+	for _, obs := range observations {
+		if err := encoder.Encode(obs); err != nil {
+			t.Fatalf("encode observation: %v", err)
+		}
+	}
+	if err := os.WriteFile(observationStatePathFromKey(configPath), []byte(buf.String()), 0o644); err != nil {
+		t.Fatalf("write observations: %v", err)
 	}
 }
 

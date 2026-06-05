@@ -44,8 +44,8 @@ func runtimeStateKey(opts *Options) string {
 	if opts != nil && strings.TrimSpace(opts.StatePath) != "" {
 		return opts.StatePath
 	}
-	if opts == nil {
-		return ""
+	if opts == nil || strings.TrimSpace(opts.ConfigPath) == "" {
+		return config.DefaultPath()
 	}
 	return opts.ConfigPath
 }

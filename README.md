@@ -26,7 +26,7 @@ WinkYou = connectivity solver + secure WireGuard data plane
 - `connectivity.mode: relay_only` 会把生产 strategy 顺序切到 `relay_only` -> `legacy_ice_udp`
 - 旧的 `nat.force_relay: true` 仍兼容映射到 relay-only 行为
 - 旧 peer 空 capability 仍会隐式 fallback 到 `legacy_ice_udp`
-- `wink doctor` 已提供 config、coordinator、STUN、TURN、本地接口、strategy、tunnel、transport 的分层诊断；STUN 检查会尝试 binding probe 并显示本机映射地址
+- `wink doctor` 已提供 config、coordinator、STUN、TURN、本地接口、strategy、tunnel、transport 的分层诊断；STUN 检查会尝试 binding probe 并显示本机映射地址，`public direct evidence` 检查会读取 observation history，说明 `legacyice/public_direct` 是未尝试、无可用公网候选、ICE 检查失败，还是已证明 `protected_direct`
 - `wink up/down/status/peers/logs` 已形成长期运行 CLI 工作流；Linux systemd 和 Windows 启动项文档已补齐
 - v0.1 release workflow 已能构建 Windows client、Linux client、Linux coordinator、Linux relay 和 SHA256SUMS
 - NAT/ICE 已支持 candidate interface include/exclude 和 candidate CIDR include/exclude；`legacy_ice_udp` 现在会在普通 `direct_prefer` 后追加 `public_direct` 执行计划，用来排除私网、`100.64.0.0/10`、loopback、link-local 等 overlay/依赖不清的 candidate，再尝试独立公网 ICE direct；`wink doctor` 会展示过滤配置并检查 runtime candidate 是否命中排除 CIDR
@@ -155,7 +155,7 @@ nat:
 - `remote_candidates_filtered`：收到远端 offer/answer/candidate 后的过滤统计。
 - `candidate_total`、`candidate_kept`、`candidate_rejected`、`candidate_reject_reasons` 可用于判断是没有采到公网候选、候选被 `public_direct` 规则过滤，还是候选保留下来后 ICE 连通检查失败。
 
-`wink doctor` 也会对 `nat.stun_servers` 做一次 STUN binding probe。如果这里已经失败，`legacyice/public_direct` 很可能无法采集到 server-reflexive candidate；这时应先换成两端都可达的 STUN 服务、检查 UDP 出站和防火墙，或改用 TURN/`relay_only`。
+`wink doctor` 也会对 `nat.stun_servers` 做一次 STUN binding probe，并读取 observation history 输出 `public direct evidence`。如果 STUN 已经失败，`legacyice/public_direct` 很可能无法采集到 server-reflexive candidate；如果 doctor 显示 `candidate_kept=0`，则按本端 gather 或远端过滤结果继续排查。此时应先换成两端都可达的 STUN 服务、检查 UDP 出站和防火墙，或改用 TURN/`relay_only`。
 
 从当前版本起，`legacy_ice_udp` 默认会按顺序尝试：
 
