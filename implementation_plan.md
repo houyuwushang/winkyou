@@ -431,6 +431,7 @@ Phase 3A (Strategy Portfolio Foundation) 已完成。以下是我基于代码现
 - 已建立数据面后的 in-band peer control 消息模型已加入 `pkg/peercontrol`，覆盖 heartbeat、path health、endpoint update、capability refresh 和 re-ICE request 的校验与 JSON 编解码。
 - NAT/ICE 已新增 candidate interface include/exclude 和 candidate CIDR include/exclude 配置，并传入 Pion ICE agent；`wink doctor` 会展示过滤配置并检查 runtime candidate 是否命中 excluded CIDR。
 - coordinator client 已新增 heartbeat NotFound 恢复路径：当 coordinator 重启或持久化 store 恢复后发现当前 node 不存在时，client 会关闭旧 signal stream 并使用最近一次 register 请求重新注册。
+- 2026-06-05 起，`legacyice/public_direct` 的 Pion ICE 配置会在收到 STUN Binding Request 并形成公网 peer-reflexive 候选对时切换 selected pair；relay、私网、`100.64.0.0/10`、loopback、link-local、multicast 和 `198.18.0.0/15` 地址不会触发该切换。这是对“natpierce 能打通则 WinkYou 也应继续尝试公网 UDP NAT piercing”的最小策略补强，但仍需要两端部署新版本后做真实验证。
 
 2026-06-04 后续验证中，已能通过 SSH 密码登录 `chen-win` 并确认 `wink-coordinator` 进程可被单独停止。排查中先发现本机验证版 client 重启后数据面未重新达到 bound/handshake，原因是 chen-win coordinator 使用 memory store，重启后 `ListPeers` 为空，旧 client 不会自动重新注册。随后 chen-win coordinator scheduled task 已切换到 SQLite store，并按原 public key 顺序恢复 `inner-b=node-000001/10.88.0.1`、`local-a=node-000002/10.88.0.2`。
 

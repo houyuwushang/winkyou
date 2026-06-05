@@ -76,6 +76,7 @@ func newICEPionAgent(cfg ICEConfig) (ICEAgent, error) {
 		MaxBindingRequests:     maxBindingRequestsForConfig(cfg),
 		SrflxAcceptanceMinWait: acceptanceMinWaitForConfig(cfg),
 		PrflxAcceptanceMinWait: acceptanceMinWaitForConfig(cfg),
+		BindingRequestHandler:  bindingRequestHandlerForConfig(cfg),
 		InterfaceFilter:        buildCandidateInterfaceFilter(cfg),
 		IPFilter:               ipFilter,
 	})
@@ -442,6 +443,69 @@ func acceptanceMinWaitForConfig(cfg ICEConfig) *time.Duration {
 		return nil
 	}
 	return durationPtr(publicDirectAcceptanceMinWait)
+}
+
+func bindingRequestHandlerForConfig(cfg ICEConfig) func(*stun.Message, pionice.Candidate, pionice.Candidate, *pionice.CandidatePair) bool {
+	if cfg.relayOnly || cfg.ForceRelay || !cfg.PublicDirectCandidate {
+		return nil
+	}
+	return func(_ *stun.Message, local, remote pionice.Candidate, pair *pionice.CandidatePair) bool {
+		return shouldSwitchPublicDirectPair(local, remote, pair)
+	}
+}
+
+func shouldSwitchPublicDirectPair(local, remote pionice.Candidate, pair *pionice.CandidatePair) bool {
+	if pair == nil || local == nil || remote == nil {
+		return false
+	}
+	if local.Type() == pionice.CandidateTypeRelay || remote.Type() == pionice.CandidateTypeRelay {
+		return false
+	}
+	return isPublicDirectRemoteCandidate(remote)
+}
+
+func isPublicDirectRemoteCandidate(candidate pionice.Candidate) bool {
+	if candidate == nil {
+		return false
+	}
+	switch candidate.Type() {
+	case pionice.CandidateTypeHost, pionice.CandidateTypeServerReflexive, pionice.CandidateTypePeerReflexive:
+	default:
+		return false
+	}
+	ip := net.ParseIP(candidate.Address())
+	if ip == nil {
+		return false
+	}
+	return publicDirectCandidateIPReason(ip) == ""
+}
+
+func publicDirectCandidateIPReason(ip net.IP) string {
+	switch {
+	case ip == nil:
+		return "missing_candidate"
+	case ip.IsUnspecified():
+		return "unspecified_candidate"
+	case ip.IsLoopback():
+		return "loopback_candidate"
+	case ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast():
+		return "link_local_candidate"
+	case ip.IsMulticast():
+		return "multicast_candidate"
+	case ip.IsPrivate():
+		return "private_candidate"
+	case ipInCIDR(ip, "100.64.0.0/10"):
+		return "cgnat_or_overlay_candidate"
+	case ipInCIDR(ip, "198.18.0.0/15"):
+		return "benchmark_or_overlay_candidate"
+	default:
+		return ""
+	}
+}
+
+func ipInCIDR(ip net.IP, cidr string) bool {
+	_, network, err := net.ParseCIDR(cidr)
+	return err == nil && network.Contains(ip)
 }
 
 func nat1To1IPsForConfig(cfg ICEConfig) []string {

@@ -234,6 +234,72 @@ func TestPublicDirectCandidateConfigSkipsRelayAndTURN(t *testing.T) {
 	}
 }
 
+func TestPublicDirectBindingRequestHandlerSwitchesOnlyPublicPairs(t *testing.T) {
+	handler := bindingRequestHandlerForConfig(ICEConfig{PublicDirectCandidate: true})
+	if handler == nil {
+		t.Fatal("public direct binding request handler should be configured")
+	}
+	if handler := bindingRequestHandlerForConfig(ICEConfig{PublicDirectCandidate: true, ForceRelay: true}); handler != nil {
+		t.Fatal("force relay should not configure public direct binding request handler")
+	}
+	if handler := bindingRequestHandlerForConfig(ICEConfig{}); handler != nil {
+		t.Fatal("default config should not configure public direct binding request handler")
+	}
+
+	local := mustPionCandidate(t, Candidate{
+		Type:       CandidateTypeHost,
+		Address:    &net.UDPAddr{IP: net.IPv4(192, 168, 50, 10), Port: 40000},
+		Priority:   100,
+		Foundation: "local-host",
+	})
+	publicPeerReflexive := mustPionCandidate(t, Candidate{
+		Type:       CandidateTypePrflx,
+		Address:    &net.UDPAddr{IP: net.IPv4(117, 48, 146, 2), Port: 41000},
+		Priority:   200,
+		Foundation: "remote-prflx",
+	})
+	if !handler(nil, local, publicPeerReflexive, &pionice.CandidatePair{Local: local, Remote: publicPeerReflexive}) {
+		t.Fatal("public peer-reflexive remote candidate should switch selected public direct pair")
+	}
+
+	privatePeerReflexive := mustPionCandidate(t, Candidate{
+		Type:       CandidateTypePrflx,
+		Address:    &net.UDPAddr{IP: net.IPv4(10, 6, 22, 1), Port: 41000},
+		Priority:   200,
+		Foundation: "remote-private-prflx",
+	})
+	if handler(nil, local, privatePeerReflexive, &pionice.CandidatePair{Local: local, Remote: privatePeerReflexive}) {
+		t.Fatal("private peer-reflexive remote candidate should not switch public direct pair")
+	}
+
+	cgnatPeerReflexive := mustPionCandidate(t, Candidate{
+		Type:       CandidateTypePrflx,
+		Address:    &net.UDPAddr{IP: net.IPv4(100, 64, 12, 2), Port: 41000},
+		Priority:   200,
+		Foundation: "remote-cgnat-prflx",
+	})
+	if handler(nil, local, cgnatPeerReflexive, &pionice.CandidatePair{Local: local, Remote: cgnatPeerReflexive}) {
+		t.Fatal("CGNAT or overlay peer-reflexive remote candidate should not switch public direct pair")
+	}
+
+	relay := mustPionCandidate(t, Candidate{
+		Type:       CandidateTypeRelay,
+		Address:    &net.UDPAddr{IP: net.IPv4(117, 48, 146, 3), Port: 41000},
+		Priority:   200,
+		Foundation: "remote-relay",
+		RelatedAddr: &net.UDPAddr{
+			IP:   net.IPv4(192, 168, 50, 11),
+			Port: 50000,
+		},
+	})
+	if handler(nil, local, relay, &pionice.CandidatePair{Local: local, Remote: relay}) {
+		t.Fatal("relay remote candidate should not switch public direct pair")
+	}
+	if handler(nil, local, publicPeerReflexive, nil) {
+		t.Fatal("nil candidate pair should not switch public direct pair")
+	}
+}
+
 func TestNAT1To1ConfigHelpers(t *testing.T) {
 	cfg := ICEConfig{
 		NAT1To1IPs:           []string{"203.0.113.10/192.168.0.10"},
@@ -272,4 +338,13 @@ func TestNAT1To1ConfigRejectsInvalidCandidateType(t *testing.T) {
 	if err == nil {
 		t.Fatal("nat1To1CandidateTypeForConfig() error = nil, want invalid candidate type")
 	}
+}
+
+func mustPionCandidate(t *testing.T, candidate Candidate) pionice.Candidate {
+	t.Helper()
+	out, err := candidateToPion(candidate)
+	if err != nil {
+		t.Fatalf("candidateToPion(%+v) error = %v", candidate, err)
+	}
+	return out
 }

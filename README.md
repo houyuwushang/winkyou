@@ -160,10 +160,10 @@ nat:
 从当前版本起，`legacy_ice_udp` 默认会按顺序尝试：
 
 1. `legacyice/direct_prefer`：保留 ICE 默认行为，可能选中 NAT/overlay/100.64 direct-like path。
-2. `legacyice/public_direct`：只采集 host/server-reflexive direct candidate，跳过 TURN/relay 采集；信令里只发布公网 direct 候选，并过滤远端私网、`100.64.0.0/10`、loopback、link-local、benchmark/overlay 等 candidate。该 plan 会使用更积极的 ICE check interval、更多 binding requests，以及更短的 srflx/prflx 接受等待，在同一个 public-direct socket 上持续打洞到 `nat.connect_timeout`，以更接近 natpierce 这类持续 punch 的行为。
+2. `legacyice/public_direct`：只采集 host/server-reflexive direct candidate，跳过 TURN/relay 采集；信令里只发布公网 direct 候选，并过滤远端私网、`100.64.0.0/10`、loopback、link-local、benchmark/overlay 等 candidate。该 plan 会使用更积极的 ICE check interval、更多 binding requests，以及更短的 srflx/prflx 接受等待，在同一个 public-direct socket 上持续打洞到 `nat.connect_timeout`，以更接近 natpierce 这类持续 punch 的行为；当 ICE 过程中收到远端 STUN Binding Request 并形成公网 peer-reflexive 候选对时，public_direct 会切换到该公网候选对，但不会因 relay、私网、CGNAT 或 overlay 地址触发切换。
 3. `legacyice/relay_only`：强制 TURN relay fallback。
 
-这让 WinkYou 会主动尝试类似 natpierce 能打通的公网 UDP NAT piercing 路径；但如果双方 NAT 类型、运营商映射或防火墙不允许，`public_direct` 仍会失败并继续走后续 fallback。
+这让 WinkYou 会主动尝试类似 natpierce 能打通的公网 UDP NAT piercing 路径；如果 natpierce 在同一对设备间已经能直接打通，本项目不应把 WinkYou 的失败解释为“物理不可达”，而应继续看公网候选是否采集、是否被过滤、ICE 检查是否超时以及 selected pair 是否仍落在 overlay/100.64 路径上。但如果双方 NAT 类型、运营商映射或防火墙不允许，`public_direct` 仍会失败并继续走后续 fallback。
 历史 observation 如果显示 direct 失败且 relay 成功，legacy ICE 可以把 relay 排到更前面作为 primary 候选，但不会再因为普通 `direct_prefer` 失败而完全剪掉 `public_direct`。这保证 relay/overlay 能先保活的同时，仍给独立公网 direct standby 留一次执行机会。
 当 overlay/100.64 direct-like path 和 `public_direct` 都成功且基础分相同，solver 会优先选择无显式依赖的 protected direct，避免继续被先出现的 overlay path 抢占。
 `public_direct` 的 protected direct 判定只允许本地 RFC1918 host candidate 在匹配本次已发布公网 STUN/srflx candidate 的 related/base 地址时作为 NAT base；远端 candidate 仍必须是公网，且本地或远端 `100.64.0.0/10`、loopback、link-local、198.18/15 等地址仍会被视为依赖不清。
