@@ -205,6 +205,10 @@ func TestPublicDirectCandidateConfigSkipsRelayAndTURN(t *testing.T) {
 	if maxRequests == nil || *maxRequests != publicDirectMaxBindingRequests {
 		t.Fatalf("public direct max binding requests = %v, want %d", maxRequests, publicDirectMaxBindingRequests)
 	}
+	acceptanceWait := acceptanceMinWaitForConfig(ICEConfig{PublicDirectCandidate: true})
+	if acceptanceWait == nil || *acceptanceWait != publicDirectAcceptanceMinWait {
+		t.Fatalf("public direct acceptance wait = %v, want %v", acceptanceWait, publicDirectAcceptanceMinWait)
+	}
 
 	relayTypes := candidateTypesForConfig(ICEConfig{PublicDirectCandidate: true, ForceRelay: true})
 	if len(relayTypes) != 1 || relayTypes[0] != pionice.CandidateTypeRelay {
@@ -216,11 +220,17 @@ func TestPublicDirectCandidateConfigSkipsRelayAndTURN(t *testing.T) {
 	if maxRequests := maxBindingRequestsForConfig(ICEConfig{PublicDirectCandidate: true, ForceRelay: true}); maxRequests != nil {
 		t.Fatalf("force relay max binding requests = %v, want nil", maxRequests)
 	}
+	if acceptanceWait := acceptanceMinWaitForConfig(ICEConfig{PublicDirectCandidate: true, ForceRelay: true}); acceptanceWait != nil {
+		t.Fatalf("force relay acceptance wait = %v, want nil", acceptanceWait)
+	}
 	if checkInterval := checkIntervalForConfig(ICEConfig{}); checkInterval != nil {
 		t.Fatalf("default check interval = %v, want nil", checkInterval)
 	}
 	if maxRequests := maxBindingRequestsForConfig(ICEConfig{}); maxRequests != nil {
 		t.Fatalf("default max binding requests = %v, want nil", maxRequests)
+	}
+	if acceptanceWait := acceptanceMinWaitForConfig(ICEConfig{}); acceptanceWait != nil {
+		t.Fatalf("default acceptance wait = %v, want nil", acceptanceWait)
 	}
 }
 

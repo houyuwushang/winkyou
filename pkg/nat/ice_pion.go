@@ -16,6 +16,7 @@ import (
 const (
 	publicDirectCheckInterval      = 100 * time.Millisecond
 	publicDirectMaxBindingRequests = 25
+	publicDirectAcceptanceMinWait  = 100 * time.Millisecond
 )
 
 type icePionAgent struct {
@@ -73,6 +74,8 @@ func newICEPionAgent(cfg ICEConfig) (ICEAgent, error) {
 		KeepaliveInterval:      durationPtr(2 * time.Second),
 		CheckInterval:          checkIntervalForConfig(cfg),
 		MaxBindingRequests:     maxBindingRequestsForConfig(cfg),
+		SrflxAcceptanceMinWait: acceptanceMinWaitForConfig(cfg),
+		PrflxAcceptanceMinWait: acceptanceMinWaitForConfig(cfg),
 		InterfaceFilter:        buildCandidateInterfaceFilter(cfg),
 		IPFilter:               ipFilter,
 	})
@@ -432,6 +435,13 @@ func maxBindingRequestsForConfig(cfg ICEConfig) *uint16 {
 	}
 	value := uint16(publicDirectMaxBindingRequests)
 	return &value
+}
+
+func acceptanceMinWaitForConfig(cfg ICEConfig) *time.Duration {
+	if cfg.relayOnly || cfg.ForceRelay || !cfg.PublicDirectCandidate {
+		return nil
+	}
+	return durationPtr(publicDirectAcceptanceMinWait)
 }
 
 func nat1To1IPsForConfig(cfg ICEConfig) []string {

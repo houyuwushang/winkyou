@@ -160,7 +160,7 @@ nat:
 从当前版本起，`legacy_ice_udp` 默认会按顺序尝试：
 
 1. `legacyice/direct_prefer`：保留 ICE 默认行为，可能选中 NAT/overlay/100.64 direct-like path。
-2. `legacyice/public_direct`：只采集 host/server-reflexive direct candidate，跳过 TURN/relay 采集；信令里只发布公网 direct 候选，并过滤远端私网、`100.64.0.0/10`、loopback、link-local、benchmark/overlay 等 candidate。该 plan 会使用更积极的 ICE check interval 和更多 binding requests，在同一个 public-direct socket 上持续打洞到 `nat.connect_timeout`，以更接近 natpierce 这类持续 punch 的行为。
+2. `legacyice/public_direct`：只采集 host/server-reflexive direct candidate，跳过 TURN/relay 采集；信令里只发布公网 direct 候选，并过滤远端私网、`100.64.0.0/10`、loopback、link-local、benchmark/overlay 等 candidate。该 plan 会使用更积极的 ICE check interval、更多 binding requests，以及更短的 srflx/prflx 接受等待，在同一个 public-direct socket 上持续打洞到 `nat.connect_timeout`，以更接近 natpierce 这类持续 punch 的行为。
 3. `legacyice/relay_only`：强制 TURN relay fallback。
 
 这让 WinkYou 会主动尝试类似 natpierce 能打通的公网 UDP NAT piercing 路径；但如果双方 NAT 类型、运营商映射或防火墙不允许，`public_direct` 仍会失败并继续走后续 fallback。

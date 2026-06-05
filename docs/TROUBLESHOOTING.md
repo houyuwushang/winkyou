@@ -145,7 +145,7 @@ nat:
 legacyice/direct_prefer -> legacyice/public_direct -> legacyice/relay_only
 ```
 
-`direct_prefer` 可能选中 natpierce、Tailscale、Docker bridge 或其他 overlay candidate；`public_direct` 会跳过 TURN/relay candidate gathering，只采 host/server-reflexive direct candidate，才是用于验证双方是否能通过公网 UDP NAT piercing 形成独立 direct path 的 plan。`public_direct` 会用更短 ICE check interval 和更多 binding requests 在同一 public-direct socket 上打洞，直到 `nat.connect_timeout` 到期；如果仍失败，优先比较两端 STUN 映射、候选过滤和 natpierce 实际使用的公网端点。
+`direct_prefer` 可能选中 natpierce、Tailscale、Docker bridge 或其他 overlay candidate；`public_direct` 会跳过 TURN/relay candidate gathering，只采 host/server-reflexive direct candidate，才是用于验证双方是否能通过公网 UDP NAT piercing 形成独立 direct path 的 plan。`public_direct` 会用更短 ICE check interval、更多 binding requests 和更短 srflx/prflx 接受等待在同一 public-direct socket 上打洞，直到 `nat.connect_timeout` 到期；如果仍失败，优先比较两端 STUN 映射、候选过滤和 natpierce 实际使用的公网端点。
 
 如果 observation history 中已有 direct 失败和 relay 成功，legacy ICE 可以把 `relay_only` 排到前面，但 `public_direct` 不应仅因为 `direct_prefer` 失败而被剪掉。排障时如果只看到 `legacyice/relay_only`，没有看到 `legacyice/public_direct` 的 `candidate_planned` 或 `candidate_started`，应检查当前二进制是否为最新版本，或是否处于显式 `connectivity.mode: relay_only` / `nat.force_relay: true`。
 
