@@ -443,6 +443,7 @@ func TestDoctorAdvertisedRoutes(t *testing.T) {
 	writeDoctorRuntimeState(t, configPath, []winkclient.RuntimePeerStatus{{
 		NodeID:             "node-b",
 		Name:               "chen-win",
+		VirtualIP:          "10.77.0.2",
 		State:              winkclient.PeerStateConnected.String(),
 		DataState:          winkclient.PeerDataStateBound.String(),
 		AdvertisedRoutes:   []string{"10.7.0.0/24"},
@@ -463,6 +464,35 @@ func TestDoctorAdvertisedRoutes(t *testing.T) {
 	remote := findDoctorCheck(result, "routing", "peer advertised routes")
 	if remote.Status != doctorOK || !strings.Contains(remote.Message, "chen-win=10.7.0.0/24") {
 		t.Fatalf("peer advertised routes check = %#v, want active peer route summary", remote)
+	}
+	osRoute := findDoctorCheck(result, "routing", "os route table")
+	if osRoute.Status != doctorOK || !strings.Contains(osRoute.Message, "10.7.0.0/24 via 10.77.0.2") {
+		t.Fatalf("os route table check = %#v, want route via gateway", osRoute)
+	}
+}
+
+func TestDoctorAdvertisedRoutesFailWhenRouteTableIsWrong(t *testing.T) {
+	configPath := writeDoctorConfig(t)
+	probes := healthyDoctorProbes()
+	probes.RouteTable = func(_ context.Context, input doctorAdvertisedRouteProbeInput) doctorCheck {
+		return failCheck("routing", "os route table", input.Route+" next hop is 192.0.2.1, want "+input.PeerVirtualIP, "remove stale routes and reconnect the gateway peer")
+	}
+	writeDoctorRuntimeState(t, configPath, []winkclient.RuntimePeerStatus{{
+		NodeID:             "node-b",
+		Name:               "chen-win",
+		VirtualIP:          "10.77.0.2",
+		State:              winkclient.PeerStateConnected.String(),
+		DataState:          winkclient.PeerDataStateBound.String(),
+		AdvertisedRoutes:   []string{"10.7.0.0/24"},
+		LastHandshake:      time.Now(),
+		TransportTxPackets: 2,
+		TransportRxPackets: 3,
+	}})
+
+	result := runDoctor(context.Background(), &Options{ConfigPath: configPath}, doctorFlags{}, probes)
+	check := findDoctorCheck(result, "routing", "os route table")
+	if check.Status != doctorFail || !strings.Contains(check.Message, "want 10.77.0.2") {
+		t.Fatalf("os route table check = %#v, want stale route failure", check)
 	}
 }
 
@@ -491,6 +521,17 @@ func TestParseWindowsIPForwardingProbeOutput(t *testing.T) {
 	}
 }
 
+func TestParseRouteProbeNextHop(t *testing.T) {
+	nextHop, detail := parseRouteProbeNextHop("DestinationPrefix=10.7.0.0/24\nNextHop=10.77.0.2\n")
+	if nextHop != "10.77.0.2" || !strings.Contains(detail, "DestinationPrefix=10.7.0.0/24") {
+		t.Fatalf("parseRouteProbeNextHop() = nextHop=%q detail=%q, want parsed next hop and detail", nextHop, detail)
+	}
+	nextHop, detail = parseRouteProbeNextHop("DestinationPrefix=10.7.0.0/24\n")
+	if nextHop != "" || !strings.Contains(detail, "10.7.0.0/24") {
+		t.Fatalf("parseRouteProbeNextHop() missing hop = nextHop=%q detail=%q, want empty hop and detail", nextHop, detail)
+	}
+}
+
 func healthyDoctorProbes() doctorProbes {
 	return doctorProbes{
 		Coordinator: func(context.Context, *config.Config) doctorCheck {
@@ -507,6 +548,9 @@ func healthyDoctorProbes() doctorProbes {
 		},
 		IPForwarding: func(context.Context, *config.Config) doctorCheck {
 			return okCheck("routing", "ip forwarding", "fake IP forwarding ok")
+		},
+		RouteTable: func(_ context.Context, input doctorAdvertisedRouteProbeInput) doctorCheck {
+			return okCheck("routing", "os route table", input.Route+" via "+input.PeerVirtualIP+" for "+input.PeerName)
 		},
 	}
 }

@@ -72,6 +72,13 @@ type doctorProbes struct {
 	TURN           func(context.Context, *config.Config) doctorCheck
 	LocalInterface func(context.Context, *config.Config) doctorCheck
 	IPForwarding   func(context.Context, *config.Config) doctorCheck
+	RouteTable     func(context.Context, doctorAdvertisedRouteProbeInput) doctorCheck
+}
+
+type doctorAdvertisedRouteProbeInput struct {
+	PeerName      string
+	PeerVirtualIP string
+	Route         string
 }
 
 func newDoctorCmd(opts *Options) *cobra.Command {
@@ -158,7 +165,11 @@ func runDoctor(ctx context.Context, opts *Options, flags doctorFlags, probes doc
 	addCandidateFilterChecks(&result, cfg, state, stateErr)
 	addPublicDirectEvidenceChecks(&result, opts)
 	addTunnelChecks(&result, state, stateErr)
-	addAdvertisedRouteChecks(&result, cfg, state, stateErr)
+	routeTableProbe := probes.RouteTable
+	if routeTableProbe == nil {
+		routeTableProbe = defaultAdvertisedRouteTableProbe
+	}
+	addAdvertisedRouteChecks(ctx, &result, cfg, state, stateErr, routeTableProbe)
 	if len(normalizeStringList(cfg.Node.AdvertiseRoutes)) > 0 {
 		ipForwardingProbe := probes.IPForwarding
 		if ipForwardingProbe == nil {
@@ -782,7 +793,7 @@ func addTunnelChecks(result *doctorResult, state *winkclient.RuntimeState, state
 	}
 }
 
-func addAdvertisedRouteChecks(result *doctorResult, cfg *config.Config, state *winkclient.RuntimeState, stateErr error) {
+func addAdvertisedRouteChecks(ctx context.Context, result *doctorResult, cfg *config.Config, state *winkclient.RuntimeState, stateErr error, routeTableProbe func(context.Context, doctorAdvertisedRouteProbeInput) doctorCheck) {
 	localRoutes := normalizeStringList(nil)
 	if cfg != nil {
 		localRoutes = normalizeStringList(cfg.Node.AdvertiseRoutes)
@@ -803,13 +814,22 @@ func addAdvertisedRouteChecks(result *doctorResult, cfg *config.Config, state *w
 
 	connected := make([]string, 0, len(state.Peers))
 	disconnected := make([]string, 0, len(state.Peers))
+	routeTableInputs := make([]doctorAdvertisedRouteProbeInput, 0)
 	for _, peer := range state.Peers {
 		if len(peer.AdvertisedRoutes) == 0 {
 			continue
 		}
-		entry := fmt.Sprintf("%s=%s", firstNonEmpty(peer.Name, peer.NodeID), strings.Join(peer.AdvertisedRoutes, ","))
+		peerName := firstNonEmpty(peer.Name, peer.NodeID)
+		entry := fmt.Sprintf("%s=%s", peerName, strings.Join(peer.AdvertisedRoutes, ","))
 		if peer.State == winkclient.PeerStateConnected.String() || peer.DataState == winkclient.PeerDataStateAlive.String() || peer.DataState == winkclient.PeerDataStateBound.String() {
 			connected = append(connected, entry)
+			for _, route := range peer.AdvertisedRoutes {
+				routeTableInputs = append(routeTableInputs, doctorAdvertisedRouteProbeInput{
+					PeerName:      peerName,
+					PeerVirtualIP: peer.VirtualIP,
+					Route:         route,
+				})
+			}
 		} else {
 			disconnected = append(disconnected, entry)
 		}
@@ -820,9 +840,88 @@ func addAdvertisedRouteChecks(result *doctorResult, cfg *config.Config, state *w
 	if len(disconnected) > 0 {
 		result.add(warnCheck("routing", "peer advertised routes", "advertised route(s) from peers that are not bound: "+strings.Join(disconnected, "; "), "connect the gateway peer, then verify WireGuard AllowedIPs and OS route table"))
 	}
+	for _, input := range routeTableInputs {
+		if routeTableProbe != nil {
+			result.add(routeTableProbe(ctx, input))
+		}
+	}
 	if len(localRoutes) == 0 && len(connected) == 0 && len(disconnected) == 0 {
 		result.add(okCheck("routing", "peer advertised routes", "no peer backend routes observed"))
 	}
+}
+
+func defaultAdvertisedRouteTableProbe(ctx context.Context, input doctorAdvertisedRouteProbeInput) doctorCheck {
+	route := strings.TrimSpace(input.Route)
+	gateway := strings.TrimSpace(input.PeerVirtualIP)
+	if route == "" || gateway == "" {
+		return warnCheck("routing", "os route table", "cannot verify advertised route with empty route or gateway", "check wink peers --json for advertised_routes and virtual_ip")
+	}
+	switch runtime.GOOS {
+	case "windows":
+		probeCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+		defer cancel()
+		output, err := exec.CommandContext(probeCtx, "powershell.exe", "-NoProfile", "-NonInteractive", "-Command", windowsRouteTableProbeScript(route)).CombinedOutput()
+		if err != nil {
+			detail := strings.TrimSpace(string(output))
+			if detail == "" {
+				detail = err.Error()
+			} else {
+				detail += ": " + err.Error()
+			}
+			return failCheck("routing", "os route table", fmt.Sprintf("%s via %s is not installed: %s", route, gateway, detail), "reconnect the peer, run as Administrator, and check Windows route table permissions")
+		}
+		nextHop, detail := parseRouteProbeNextHop(string(output))
+		if nextHop == gateway {
+			return okCheck("routing", "os route table", fmt.Sprintf("%s via %s for %s", route, gateway, input.PeerName))
+		}
+		return failCheck("routing", "os route table", fmt.Sprintf("%s next hop is %s, want %s: %s", route, dashIfEmpty(nextHop), gateway, detail), "remove stale routes and reconnect the gateway peer")
+	case "linux":
+		probeCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+		defer cancel()
+		output, err := exec.CommandContext(probeCtx, "ip", "-o", "route", "show", route).CombinedOutput()
+		detail := strings.TrimSpace(string(output))
+		if err != nil {
+			if detail == "" {
+				detail = err.Error()
+			} else {
+				detail += ": " + err.Error()
+			}
+			return failCheck("routing", "os route table", fmt.Sprintf("%s via %s is not installed: %s", route, gateway, detail), "check ip route and reconnect the gateway peer")
+		}
+		if strings.Contains(detail, "via "+gateway) {
+			return okCheck("routing", "os route table", fmt.Sprintf("%s via %s for %s", route, gateway, input.PeerName))
+		}
+		return failCheck("routing", "os route table", fmt.Sprintf("%s route does not use %s: %s", route, gateway, dashIfEmpty(detail)), "remove stale routes and reconnect the gateway peer")
+	default:
+		return warnCheck("routing", "os route table", "route table check is not implemented for "+runtime.GOOS, "verify the OS route for "+route+" via "+gateway+" manually")
+	}
+}
+
+func windowsRouteTableProbeScript(route string) string {
+	return strings.Join([]string{
+		fmt.Sprintf("$destination = '%s'", strings.ReplaceAll(route, "'", "''")),
+		"$route = Get-NetRoute -DestinationPrefix $destination -ErrorAction SilentlyContinue | Sort-Object RouteMetric | Select-Object -First 1",
+		"if ($null -eq $route) { throw \"route not found: $destination\" }",
+		"Write-Output (\"DestinationPrefix={0}\" -f $route.DestinationPrefix)",
+		"Write-Output (\"NextHop={0}\" -f $route.NextHop)",
+	}, "; ")
+}
+
+func parseRouteProbeNextHop(output string) (string, string) {
+	lines := make([]string, 0)
+	nextHop := ""
+	for _, line := range strings.Split(output, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		lines = append(lines, line)
+		key, value, ok := strings.Cut(line, "=")
+		if ok && strings.EqualFold(strings.TrimSpace(key), "NextHop") {
+			nextHop = strings.TrimSpace(value)
+		}
+	}
+	return nextHop, strings.Join(lines, "; ")
 }
 
 func addTransportChecks(result *doctorResult, state *winkclient.RuntimeState, stateErr error) {

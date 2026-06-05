@@ -81,7 +81,7 @@ node:
 
 其他 peer 从 coordinator 收到该发布后，会把 `10.6.22.0/24` 加入 chen-win 这个 peer 的 WireGuard `AllowedIPs`，并在本机加一条经由 chen-win 虚拟 IP 的系统路由。这不是默认 peer relay，也不会自动替任何 peer 转发任意网段；只有被显式配置的后端 CIDR 才会发布。网关机器本身仍必须允许 IP forwarding/转发，并放行对应防火墙规则。后端主机还必须能把 WinkYou 虚拟网段回包送回该网关；如果后端网络不能加静态回程路由，就需要在网关上做 SNAT/masquerade。
 
-排查时，`wink peers` 的 `Routes` 行和 `wink peers --json` 的 `advertised_routes` 字段会显示远端 peer 发布的后端网段；`wink doctor` 会在 `routing` 层报告本节点正在发布的路由、已绑定 peer 的远端发布路由，并在配置了 `node.advertise_routes` 时检查当前操作系统的 IP forwarding 状态，同时提醒检查后端回程路由或 SNAT。
+排查时，`wink peers` 的 `Routes` 行和 `wink peers --json` 的 `advertised_routes` 字段会显示远端 peer 发布的后端网段；`wink doctor` 会在 `routing` 层报告本节点正在发布的路由、已绑定 peer 的远端发布路由，并检查本机操作系统路由表是否已经把远端后端网段指向对应 peer 的 WinkYou 虚拟 IP。配置了 `node.advertise_routes` 的网关 peer 还会检查当前操作系统的 IP forwarding 状态，同时提醒检查后端回程路由或 SNAT。
 
 默认 `auto` 模式会启用 protected-direct multipath：最多保留 primary + 一条 standby，并默认开启 shadow write，让 standby path 也持续收到数据包，从而维持 NAT/relay 状态。session 会执行预算内候选，而不是在第一个 direct 成功后立刻停止；legacy ICE 会把 selected pair 的 RTT 写入 path metrics，让低延迟 relay/其他 path 和高延迟 direct 能参与同一轮评分。这样当 `legacyice/direct_prefer` 选中了低延迟但依赖不清的 path，而 `legacyice/public_direct` 或后续 direct path 也成功时，client 会把它们组合成一个 `multipath` transport 绑定给 WireGuard。
 
