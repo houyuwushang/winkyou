@@ -336,3 +336,31 @@ func SelectBestOutcome(outcomes []CandidateOutcome) *CandidateOutcome {
 	}
 	return nil
 }
+
+// SelectBestOutcomeWithPolicy picks the highest-scoring outcome using
+// policy-aware scoring while preserving the dependency-aware tie breaker.
+func SelectBestOutcomeWithPolicy(outcomes []CandidateOutcome, policy PathPolicy) *CandidateOutcome {
+	if len(outcomes) == 0 {
+		return nil
+	}
+	if !policy.MultipathEnabled {
+		return SelectBestOutcome(outcomes)
+	}
+
+	var best *CandidateOutcome
+	bestScore := -1
+
+	for i := range outcomes {
+		outcome := &outcomes[i]
+		score := ScoreOutcomeWithPolicy(*outcome, policy)
+		if score > bestScore || (score == bestScore && best != nil && preferOutcomeTie(*outcome, *best)) {
+			bestScore = score
+			best = outcome
+		}
+	}
+
+	if best != nil && bestScore > 0 {
+		return best
+	}
+	return nil
+}

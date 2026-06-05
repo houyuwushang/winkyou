@@ -44,6 +44,39 @@ func TestBuildResultTransportFromOutcomesBuildsRelayPrimaryDirectStandby(t *test
 	}
 }
 
+func TestBuildResultTransportFromOutcomesExposesProtectedDirectPrimary(t *testing.T) {
+	directTransport := &fakeTransport{}
+	relayTransport := &fakeTransport{}
+	outcomes := []solver.CandidateOutcome{
+		successfulOutcome("direct/path", directTransport, solver.PathSummary{PathID: "direct/path", ConnectionType: "direct", Role: solver.PathRoleProtectedDirect}),
+		successfulOutcome("relay/path", relayTransport, solver.PathSummary{PathID: "relay/path", ConnectionType: "relay", Role: solver.PathRolePrimaryCandidate}),
+	}
+	best := &outcomes[0]
+
+	result, cleanups := buildResultTransportFromOutcomes(best, outcomes, solver.PathPolicy{MultipathEnabled: true, ProtectDirect: true, MaxPaths: 2})
+	if len(cleanups) != 0 {
+		t.Fatalf("cleanups = %d, want 0", len(cleanups))
+	}
+	provider, ok := result.Transport.(multipath.StatsProvider)
+	if !ok {
+		t.Fatalf("transport = %T, want multipath stats provider", result.Transport)
+	}
+	defer result.Transport.Close()
+	stats := provider.MultipathStats()
+	if stats.ActivePathID != "direct/path" || stats.ChildPathCount != 2 {
+		t.Fatalf("stats = %+v, want direct primary with 2 children", stats)
+	}
+	if result.Summary.PathID != "multipath:direct/path" {
+		t.Fatalf("summary path id = %q, want multipath:direct/path", result.Summary.PathID)
+	}
+	if result.Summary.Details["protected_direct_path_id"] != "direct/path" {
+		t.Fatalf("protected direct detail = %q, want direct/path", result.Summary.Details["protected_direct_path_id"])
+	}
+	if result.Summary.Details["standby_path_ids"] != "relay/path" {
+		t.Fatalf("standby path ids = %q, want relay/path", result.Summary.Details["standby_path_ids"])
+	}
+}
+
 func TestBuildResultTransportFromOutcomesKeepsSingleDirectPrimary(t *testing.T) {
 	directTransport := &fakeTransport{}
 	outcomes := []solver.CandidateOutcome{
@@ -183,8 +216,20 @@ func TestSessionBindUsesMultipathTransportWhenPolicyEnabled(t *testing.T) {
 	if _, ok := binder.boundTransport.(multipath.StatsProvider); !ok {
 		t.Fatalf("binder transport = %T, want multipath", binder.boundTransport)
 	}
-	assertMultipathObservation(t, session.Observations(), "path_selected")
-	assertMultipathObservation(t, session.Observations(), "path_committed")
+	if result.Summary.PathID != "multipath:direct/path" {
+		t.Fatalf("bound path id = %q, want multipath:direct/path", result.Summary.PathID)
+	}
+	if result.Summary.Details["primary_path_id"] != "direct/path" {
+		t.Fatalf("primary_path_id = %q, want direct/path", result.Summary.Details["primary_path_id"])
+	}
+	if result.Summary.Details["protected_direct_path_id"] != "direct/path" {
+		t.Fatalf("protected_direct_path_id = %q, want direct/path", result.Summary.Details["protected_direct_path_id"])
+	}
+	if result.Summary.Details["standby_path_ids"] != "relay/path" {
+		t.Fatalf("standby_path_ids = %q, want relay/path", result.Summary.Details["standby_path_ids"])
+	}
+	assertMultipathObservation(t, session.Observations(), "path_selected", "multipath:direct/path", "direct/path", "direct/path")
+	assertMultipathObservation(t, session.Observations(), "path_committed", "multipath:direct/path", "direct/path", "direct/path")
 }
 
 func TestSessionEvaluatesRelayAfterProtectedDirectForLowerLatencyPrimary(t *testing.T) {
@@ -277,22 +322,22 @@ func (b *recordingBinder) Bind(_ context.Context, _ string, transport transport.
 
 func (b *recordingBinder) Unbind(context.Context, string) error { return nil }
 
-func assertMultipathObservation(t *testing.T, observations []solver.Observation, event string) {
+func assertMultipathObservation(t *testing.T, observations []solver.Observation, event, pathID, primaryPathID, protectedDirectPathID string) {
 	t.Helper()
 	for _, obs := range observations {
-		if obs.Event != event || obs.PathID != "multipath:relay/path" {
+		if obs.Event != event || obs.PathID != pathID {
 			continue
 		}
 		if obs.Details["multipath"] != "true" {
 			t.Fatalf("%s multipath detail = %q, want true", event, obs.Details["multipath"])
 		}
-		if obs.Details["primary_path_id"] != "relay/path" {
-			t.Fatalf("%s primary_path_id = %q, want relay/path", event, obs.Details["primary_path_id"])
+		if obs.Details["primary_path_id"] != primaryPathID {
+			t.Fatalf("%s primary_path_id = %q, want %s", event, obs.Details["primary_path_id"], primaryPathID)
 		}
-		if obs.Details["protected_direct_path_id"] != "direct/path" {
-			t.Fatalf("%s protected_direct_path_id = %q, want direct/path", event, obs.Details["protected_direct_path_id"])
+		if obs.Details["protected_direct_path_id"] != protectedDirectPathID {
+			t.Fatalf("%s protected_direct_path_id = %q, want %s", event, obs.Details["protected_direct_path_id"], protectedDirectPathID)
 		}
 		return
 	}
-	t.Fatalf("observations = %#v, want %s for multipath:relay/path", observations, event)
+	t.Fatalf("observations = %#v, want %s for %s", observations, event, pathID)
 }

@@ -123,6 +123,36 @@ func TestSelectPrimaryOutcomeUsesPolicyScoring(t *testing.T) {
 	}
 }
 
+func TestSelectPrimaryOutcomePolicyTiePrefersProtectedDirect(t *testing.T) {
+	dependentTransport := &fakeTransport{}
+	protectedTransport := &fakeTransport{}
+	outcomes := []solver.CandidateOutcome{
+		successfulOutcome("overlay/path", dependentTransport, solver.PathSummary{
+			PathID:         "overlay/path",
+			ConnectionType: "direct",
+			Role:           solver.PathRolePrimaryCandidate,
+			Dependencies: []solver.PathDependency{{
+				Kind:   solver.PathDependencyUnknown,
+				Reason: "remote_cgnat_or_overlay_candidate",
+			}},
+		}),
+		successfulOutcome("public-direct/path", protectedTransport, solver.PathSummary{
+			PathID:         "public-direct/path",
+			ConnectionType: "direct",
+			Role:           solver.PathRoleProtectedDirect,
+		}),
+	}
+	policy := solver.PathPolicy{MultipathEnabled: true, ProtectDirect: true, MaxPaths: 2}
+
+	if dependentScore, protectedScore := solver.ScoreOutcomeWithPolicy(outcomes[0], policy), solver.ScoreOutcomeWithPolicy(outcomes[1], policy); dependentScore != protectedScore {
+		t.Fatalf("test setup expected equal scores, got dependent=%d protected=%d", dependentScore, protectedScore)
+	}
+	selected := selectPrimaryOutcome(outcomes, policy)
+	if selected == nil || selected.Result.Summary.PathID != "public-direct/path" {
+		t.Fatalf("selected primary = %#v, want protected direct path", selected)
+	}
+}
+
 func TestSelectPrimaryOutcomeKeepsOldScoringWithoutPolicy(t *testing.T) {
 	outcomes := []solver.CandidateOutcome{
 		successfulOutcome("relay/path", &fakeTransport{}, solver.PathSummary{PathID: "relay/path", ConnectionType: "relay"}),
