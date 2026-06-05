@@ -127,6 +127,10 @@ func (e *engine) legacyICEStrategyConfig() legacyice.Config {
 			candidatePortMin = req.CandidatePortMin
 			candidatePortMax = req.CandidatePortMax
 		}
+		candidateCIDRInclude := append([]string(nil), e.cfg.NAT.CandidateCIDRInclude...)
+		if len(req.CandidateCIDRInclude) > 0 {
+			candidateCIDRInclude = append([]string(nil), req.CandidateCIDRInclude...)
+		}
 		return e.nat.NewICEAgent(nat.ICEConfig{
 			GatherTimeout:             cfg.GatherTimeout,
 			CheckTimeout:              cfg.CheckTimeout,
@@ -138,7 +142,7 @@ func (e *engine) legacyICEStrategyConfig() legacyice.Config {
 			Controlling:               req.Controlling,
 			CandidateInterfaceInclude: append([]string(nil), e.cfg.NAT.CandidateInterfaceInclude...),
 			CandidateInterfaceExclude: append([]string(nil), e.cfg.NAT.CandidateInterfaceExclude...),
-			CandidateCIDRInclude:      append([]string(nil), e.cfg.NAT.CandidateCIDRInclude...),
+			CandidateCIDRInclude:      candidateCIDRInclude,
 			CandidateCIDRExclude:      append(append([]string(nil), e.cfg.NAT.CandidateCIDRExclude...), req.CandidateCIDRExclude...),
 			NAT1To1IPs:                append([]string(nil), e.cfg.NAT.NAT1To1IPs...),
 			NAT1To1CandidateType:      e.cfg.NAT.NAT1To1CandidateType,

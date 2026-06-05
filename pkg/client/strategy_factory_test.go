@@ -397,6 +397,7 @@ func TestLegacyICEStrategyConfigPropagatesCandidateFilters(t *testing.T) {
 		PublicDirectCandidate: true,
 		CandidatePortMin:      40000,
 		CandidatePortMax:      40000,
+		CandidateCIDRInclude:  []string{"192.168.1.20/32"},
 	}); err != nil {
 		t.Fatalf("NewICEAgent(public direct) error = %v", err)
 	}
@@ -405,6 +406,9 @@ func TestLegacyICEStrategyConfigPropagatesCandidateFilters(t *testing.T) {
 	}
 	if recorder.cfg.CandidatePortMin != 40000 || recorder.cfg.CandidatePortMax != 40000 {
 		t.Fatalf("public direct candidate port range = %d-%d, want hint override 40000-40000", recorder.cfg.CandidatePortMin, recorder.cfg.CandidatePortMax)
+	}
+	if len(recorder.cfg.CandidateCIDRInclude) != 1 || recorder.cfg.CandidateCIDRInclude[0] != "192.168.1.20/32" {
+		t.Fatalf("public direct candidate CIDR include = %#v, want mapped hint local base override", recorder.cfg.CandidateCIDRInclude)
 	}
 }
 

@@ -200,6 +200,7 @@ func (e *executor) ensureAgent(ctx context.Context) (nat.ICEAgent, error) {
 	req := AgentRequest{
 		Controlling:           e.input.Initiator,
 		ForceRelay:            e.execCfg.ForceRelay,
+		CandidateCIDRInclude:  publicEndpointHintLocalBaseCIDRs(e.execCfg.PublicEndpointHints),
 		CandidateCIDRExclude:  append([]string(nil), e.execCfg.CandidateCIDRExclude...),
 		PublicDirectCandidate: e.execCfg.PublicDirectCandidate,
 	}
@@ -756,6 +757,30 @@ func publicEndpointHintLocalPortRange(values []string) (uint16, uint16, bool) {
 		return 0, 0, false
 	}
 	return port, port, true
+}
+
+func publicEndpointHintLocalBaseCIDRs(values []string) []string {
+	seen := make(map[string]struct{}, len(values))
+	for _, raw := range values {
+		hint, err := parsePublicEndpointHint(raw)
+		if err != nil || !hint.local.IsValid() {
+			continue
+		}
+		ip := hint.local.Addr()
+		if !ip.Is4() {
+			continue
+		}
+		seen[ip.String()+"/32"] = struct{}{}
+	}
+	if len(seen) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(seen))
+	for cidr := range seen {
+		out = append(out, cidr)
+	}
+	sort.Strings(out)
+	return out
 }
 
 func publicEndpointHintPriority(index int) uint32 {

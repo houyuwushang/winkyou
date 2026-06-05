@@ -14,6 +14,7 @@ type AgentRequest struct {
 	ForceRelay            bool
 	CandidatePortMin      uint16
 	CandidatePortMax      uint16
+	CandidateCIDRInclude  []string
 	CandidateCIDRExclude  []string
 	PublicDirectCandidate bool
 }

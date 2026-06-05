@@ -3,6 +3,7 @@ package legacyice
 import (
 	"context"
 	"net"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -400,6 +401,9 @@ func TestPublicDirectAgentRequestUsesMappedHintLocalPort(t *testing.T) {
 	if got.CandidatePortMin != 40000 || got.CandidatePortMax != 40000 {
 		t.Fatalf("public direct candidate port range = %d-%d, want 40000-40000", got.CandidatePortMin, got.CandidatePortMax)
 	}
+	if len(got.CandidateCIDRInclude) != 1 || got.CandidateCIDRInclude[0] != "192.168.1.20/32" {
+		t.Fatalf("public direct candidate CIDR include = %#v, want mapped local base /32", got.CandidateCIDRInclude)
+	}
 }
 
 func TestPublicDirectAgentRequestSkipsAmbiguousMappedHintPorts(t *testing.T) {
@@ -439,6 +443,21 @@ func TestPublicDirectAgentRequestSkipsAmbiguousMappedHintPorts(t *testing.T) {
 	}
 	if got.CandidatePortMin != 0 || got.CandidatePortMax != 0 {
 		t.Fatalf("ambiguous public direct candidate port range = %d-%d, want no override", got.CandidatePortMin, got.CandidatePortMax)
+	}
+	if len(got.CandidateCIDRInclude) != 1 || got.CandidateCIDRInclude[0] != "192.168.1.20/32" {
+		t.Fatalf("ambiguous public direct candidate CIDR include = %#v, want mapped local base /32", got.CandidateCIDRInclude)
+	}
+}
+
+func TestPublicDirectAgentRequestIncludesMultipleMappedHintLocalBases(t *testing.T) {
+	got := publicEndpointHintLocalBaseCIDRs([]string{
+		"117.48.146.3:41001/192.168.1.21:40000",
+		"117.48.146.2:41000/192.168.1.20:40000",
+		"117.48.146.2:41000/192.168.1.20:40000",
+	})
+	want := []string{"192.168.1.20/32", "192.168.1.21/32"}
+	if !slices.Equal(got, want) {
+		t.Fatalf("public endpoint hint local base CIDRs = %#v, want %#v", got, want)
 	}
 }
 
