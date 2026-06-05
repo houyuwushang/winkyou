@@ -170,6 +170,7 @@ Get-Content <runtime-state-base>.observations.jsonl |
 - `remote_candidates_filtered` 的 `candidate_kept=0`：远端发来的候选没有可用于独立公网 direct 的地址，本端不会把它交给 ICE agent。该 plan 会记录 `candidate_failed`，但不应把整个 peer session 直接打失败。
 - 两边 `candidate_kept>0` 但随后 `candidate_failed`：候选已经交换，问题更可能在 UDP 映射不稳定、防火墙、端口范围、STUN/TURN 配置或 NAT 行为与 natpierce 使用的 socket/映射不一致。
 - `candidate_reject_reasons` 中出现 `*_cgnat_or_overlay_candidate`：当前路径仍可能依赖 natpierce、VPN/TAP 或类似 underlay，不能作为 `protected_direct` 证据。
+- 成功记录中 `remote_candidate_kind=prflx` 或 `public_direct_learned_pair=true`：说明 ICE 过程中通过对端 STUN Binding Request 学到了 peer-reflexive 候选对，更接近 natpierce 这类运行中打洞成功的证据。仍需同时确认 `path_role=protected_direct` 且 `path_dependencies` 为空。
 
 ## 6. Strategy Selection
 

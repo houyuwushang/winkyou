@@ -167,6 +167,7 @@ nat:
 历史 observation 如果显示 direct 失败且 relay 成功，legacy ICE 可以把 relay 排到更前面作为 primary 候选，但不会再因为普通 `direct_prefer` 失败而完全剪掉 `public_direct`。这保证 relay/overlay 能先保活的同时，仍给独立公网 direct standby 留一次执行机会。
 当 overlay/100.64 direct-like path 和 `public_direct` 都成功且基础分相同，solver 会优先选择无显式依赖的 protected direct，避免继续被先出现的 overlay path 抢占。
 `public_direct` 的 protected direct 判定只允许本地 RFC1918 host candidate 在匹配本次已发布公网 STUN/srflx candidate 的 related/base 地址时作为 NAT base；远端 candidate 仍必须是公网，且本地或远端 `100.64.0.0/10`、loopback、link-local、198.18/15 等地址仍会被视为依赖不清。
+真实排查时，`wink doctor` 的 `public direct evidence` 会显示 `remote_candidate_kind`、`peer_reflexive_pair` 和 `public_direct_learned_pair`。其中 `remote_candidate_kind=prflx` 或 `public_direct_learned_pair=true` 表示 ICE 过程中确实学到了 peer-reflexive 候选对，更接近 natpierce 这类运行中打洞成功的证据；但仍需同时满足 `path_role=protected_direct` 且没有 `path_dependencies`，才算证明了独立公网 direct standby。
 
 尚未完成：
 

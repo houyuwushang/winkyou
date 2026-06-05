@@ -430,7 +430,26 @@ func publicDirectObservationMessage(prefix string, obs *solver.Observation, path
 		if obs.RemoteAddr != "" {
 			parts = append(parts, "remote="+obs.RemoteAddr)
 		}
-		for _, key := range []string{"candidate_total", "candidate_kept", "candidate_rejected", "candidate_reject_reasons", "path_role", "path_dependencies"} {
+		if obs.LocalKind != "" {
+			parts = append(parts, "local_kind="+obs.LocalKind)
+		}
+		if obs.RemoteKind != "" {
+			parts = append(parts, "remote_kind="+obs.RemoteKind)
+		}
+		for _, key := range []string{
+			"candidate_total",
+			"candidate_kept",
+			"candidate_rejected",
+			"candidate_reject_reasons",
+			"path_role",
+			"path_dependencies",
+			"local_candidate_kind",
+			"remote_candidate_kind",
+			"peer_reflexive_pair",
+			"public_direct_learned_pair",
+			"public_direct_remote_learned",
+			"selected_pair_summary",
+		} {
 			if value := observationDetail(obs, key); value != "" {
 				parts = append(parts, key+"="+value)
 			}

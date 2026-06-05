@@ -202,14 +202,23 @@ func TestDoctorPublicDirectEvidenceOK(t *testing.T) {
 		LocalAddr:      "192.168.1.10:50000",
 		RemoteAddr:     "203.0.113.20:41000",
 		Details: map[string]string{
-			"path_role": "protected_direct",
+			"path_role":                  "protected_direct",
+			"local_candidate_kind":       "host",
+			"remote_candidate_kind":      "prflx",
+			"peer_reflexive_pair":        "true",
+			"public_direct_learned_pair": "true",
+			"selected_pair_summary":      "host:192.168.1.10:50000<->prflx:203.0.113.20:41000",
 		},
 		Timestamp: time.Now(),
 	}})
 
 	result := runDoctor(context.Background(), &Options{ConfigPath: configPath}, doctorFlags{}, healthyDoctorProbes())
 	check := findDoctorCheck(result, "nat", "public direct evidence")
-	if check.Status != doctorOK || !strings.Contains(check.Message, "public direct protected path selected") || !strings.Contains(check.Message, "legacyice/public_direct") {
+	if check.Status != doctorOK ||
+		!strings.Contains(check.Message, "public direct protected path selected") ||
+		!strings.Contains(check.Message, "legacyice/public_direct") ||
+		!strings.Contains(check.Message, "remote_candidate_kind=prflx") ||
+		!strings.Contains(check.Message, "public_direct_learned_pair=true") {
 		t.Fatalf("public direct evidence check = %#v, want protected direct ok", check)
 	}
 }

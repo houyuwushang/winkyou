@@ -138,6 +138,8 @@ Strong recent relay evidence may prefer or execute relay first, but it must not 
 
 For `legacyice/public_direct`, a local RFC1918 host candidate may be treated as the NAT base only when it matches the related/base address of a public STUN/server-reflexive candidate advertised by the same plan. Remote candidates must remain public, and local or remote `100.64.0.0/10`, loopback, link-local, multicast, benchmark/overlay, or relay candidates must not prove protected direct coverage.
 
+Successful public-direct observations and path summaries should expose selected-pair candidate kinds and whether a peer-reflexive candidate pair was learned during ICE checks. `remote_candidate_kind=prflx` or `public_direct_learned_pair=true` is useful evidence that runtime punching discovered a path, but it is still only protected-direct proof when the committed path has `path_role=protected_direct` and no `path_dependencies`.
+
 The connectivity policy layer controls production strategy priority:
 
 - `connectivity.mode=auto`: use configured strategy order, defaulting to `legacy_ice_udp` -> `relay_only`

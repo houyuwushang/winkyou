@@ -185,6 +185,32 @@ func TestSelectedPairMetricsExposeRTT(t *testing.T) {
 	}
 }
 
+func TestPublicDirectSelectedPairDetailsExposePeerReflexiveLearning(t *testing.T) {
+	pair := &nat.CandidatePair{
+		Local: &nat.Candidate{
+			Type:    nat.CandidateTypeHost,
+			Address: &net.UDPAddr{IP: net.IPv4(192, 168, 1, 20), Port: 40000},
+		},
+		Remote: &nat.Candidate{
+			Type:    nat.CandidateTypePrflx,
+			Address: &net.UDPAddr{IP: net.IPv4(117, 48, 146, 2), Port: 41000},
+		},
+	}
+	details := selectedPairDetails(pair, modePublicDirect)
+	if details["peer_reflexive_pair"] != "true" ||
+		details["remote_peer_reflexive"] != "true" ||
+		details["public_direct_learned_pair"] != "true" ||
+		details["public_direct_remote_learned"] != "true" {
+		t.Fatalf("selected pair details = %#v, want peer-reflexive public direct learning markers", details)
+	}
+	if details["local_candidate_kind"] != "host" || details["remote_candidate_kind"] != "prflx" {
+		t.Fatalf("selected pair candidate kinds = %#v, want host/prflx", details)
+	}
+	if !strings.Contains(details["selected_pair_summary"], "host:192.168.1.20:40000<->prflx:117.48.146.2:41000") {
+		t.Fatalf("selected pair summary = %q, want host<->prflx summary", details["selected_pair_summary"])
+	}
+}
+
 func TestPublicDirectSendOfferAdvertisesOnlyPublicCandidates(t *testing.T) {
 	hostCandidate := nat.Candidate{Type: nat.CandidateTypeHost, Address: &net.UDPAddr{IP: net.IPv4(10, 0, 0, 1), Port: 1001}}
 	overlayCandidate := nat.Candidate{Type: nat.CandidateTypeHost, Address: &net.UDPAddr{IP: net.IPv4(100, 102, 17, 35), Port: 1002}}

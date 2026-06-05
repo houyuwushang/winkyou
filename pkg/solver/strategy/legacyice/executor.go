@@ -324,12 +324,9 @@ func (e *executor) startConnect(sess solver.SessionIO) {
 		transport := e.releaseTransport(agent, conn, pathID)
 		role, dependencies := pathPolicyMetadata(connectionType, pair, e.execCfg.Mode, e.publicDirectLocalBaseSnapshot())
 		metrics := selectedPairMetrics(agent)
-		details := map[string]string{
-			"ice_state":        connectionStateString(agent),
-			"local_candidate":  formatCandidate(pair.Local),
-			"remote_candidate": formatCandidate(pair.Remote),
-			"plan_mode":        string(e.execCfg.Mode),
-		}
+		details := selectedPairDetails(pair, e.execCfg.Mode)
+		details["ice_state"] = connectionStateString(agent)
+		details["plan_mode"] = string(e.execCfg.Mode)
 		for key, value := range metrics {
 			details[key] = value
 		}
@@ -347,9 +344,9 @@ func (e *executor) startConnect(sess solver.SessionIO) {
 		}
 
 		e.report(sess, observationFromPair(e.plan.ID, "selected_pair", pathID, connectionType, pair, nil))
-		e.report(sess, observationFromPair(e.plan.ID, "candidate_succeeded", pathID, connectionType, pair, map[string]string{
-			"mode": string(e.execCfg.Mode),
-		}))
+		successDetails := selectedPairDetails(pair, e.execCfg.Mode)
+		successDetails["mode"] = string(e.execCfg.Mode)
+		e.report(sess, observationFromPair(e.plan.ID, "candidate_succeeded", pathID, connectionType, pair, successDetails))
 
 		select {
 		case e.resultCh <- result:
@@ -800,6 +797,38 @@ func formatCandidate(candidate *nat.Candidate) string {
 		return candidate.Type.String()
 	}
 	return fmt.Sprintf("%s:%s", candidate.Type.String(), candidate.Address.String())
+}
+
+func selectedPairDetails(pair *nat.CandidatePair, mode executionMode) map[string]string {
+	details := map[string]string{
+		"local_candidate":       formatCandidate(nilIfNoPair(pair, true)),
+		"remote_candidate":      formatCandidate(nilIfNoPair(pair, false)),
+		"local_candidate_kind":  candidateTypeString(nilIfNoPair(pair, true)),
+		"remote_candidate_kind": candidateTypeString(nilIfNoPair(pair, false)),
+		"peer_reflexive_pair":   fmt.Sprintf("%t", pairHasPeerReflexiveCandidate(pair)),
+		"remote_peer_reflexive": fmt.Sprintf("%t", candidateIsPeerReflexive(nilIfNoPair(pair, false))),
+		"selected_pair_summary": selectedPairSummary(pair),
+	}
+	if mode == modePublicDirect {
+		details["public_direct_learned_pair"] = details["peer_reflexive_pair"]
+		details["public_direct_remote_learned"] = details["remote_peer_reflexive"]
+	}
+	return details
+}
+
+func pairHasPeerReflexiveCandidate(pair *nat.CandidatePair) bool {
+	return candidateIsPeerReflexive(nilIfNoPair(pair, true)) || candidateIsPeerReflexive(nilIfNoPair(pair, false))
+}
+
+func candidateIsPeerReflexive(candidate *nat.Candidate) bool {
+	return candidate != nil && candidate.Type == nat.CandidateTypePrflx
+}
+
+func selectedPairSummary(pair *nat.CandidatePair) string {
+	if pair == nil {
+		return ""
+	}
+	return formatCandidate(pair.Local) + "<->" + formatCandidate(pair.Remote)
 }
 
 func remoteAddrFromPair(pair *nat.CandidatePair) net.Addr {
