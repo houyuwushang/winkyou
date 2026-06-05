@@ -331,6 +331,17 @@ func (a *icePionAgent) GetSelectedPair() (*CandidatePair, error) {
 	return converted, nil
 }
 
+func (a *icePionAgent) GetSelectedPairStats() (CandidatePairStats, bool) {
+	stats, ok := a.agent.GetSelectedCandidatePairStats()
+	if !ok {
+		return CandidatePairStats{}, false
+	}
+	return CandidatePairStats{
+		CurrentRoundTripTime: secondsDuration(stats.CurrentRoundTripTime),
+		TotalRoundTripTime:   secondsDuration(stats.TotalRoundTripTime),
+	}, true
+}
+
 func (a *icePionAgent) GetConnectionState() ConnectionState {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
@@ -427,6 +438,13 @@ func durationPtr(v time.Duration) *time.Duration {
 		return nil
 	}
 	return &v
+}
+
+func secondsDuration(seconds float64) time.Duration {
+	if seconds <= 0 {
+		return 0
+	}
+	return time.Duration(seconds * float64(time.Second))
 }
 
 func connectionStateFromPion(state pionice.ConnectionState) ConnectionState {

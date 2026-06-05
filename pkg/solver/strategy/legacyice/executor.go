@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"strconv"
 	"sync"
 	"time"
 
@@ -305,6 +306,16 @@ func (e *executor) startConnect(sess solver.SessionIO) {
 		pathID := e.pathID(connectionType)
 		transport := e.releaseTransport(agent, conn, pathID)
 		role, dependencies := pathPolicyMetadata(connectionType, pair, e.execCfg.Mode, e.publicDirectLocalBaseSnapshot())
+		metrics := selectedPairMetrics(agent)
+		details := map[string]string{
+			"ice_state":        connectionStateString(agent),
+			"local_candidate":  formatCandidate(pair.Local),
+			"remote_candidate": formatCandidate(pair.Remote),
+			"plan_mode":        string(e.execCfg.Mode),
+		}
+		for key, value := range metrics {
+			details[key] = value
+		}
 		result := solver.Result{
 			Transport: transport,
 			Summary: solver.PathSummary{
@@ -313,12 +324,8 @@ func (e *executor) startConnect(sess solver.SessionIO) {
 				RemoteAddr:     remoteAddrFromPair(pair),
 				Role:           role,
 				Dependencies:   dependencies,
-				Details: map[string]string{
-					"ice_state":        connectionStateString(agent),
-					"local_candidate":  formatCandidate(pair.Local),
-					"remote_candidate": formatCandidate(pair.Remote),
-					"plan_mode":        string(e.execCfg.Mode),
-				},
+				Metrics:        metrics,
+				Details:        details,
 			},
 		}
 
@@ -693,6 +700,26 @@ func connectionStateString(agent nat.ICEAgent) string {
 		}
 	}
 	return "connected"
+}
+
+func selectedPairMetrics(agent nat.ICEAgent) map[string]string {
+	statsProvider, ok := agent.(interface {
+		GetSelectedPairStats() (nat.CandidatePairStats, bool)
+	})
+	if !ok {
+		return nil
+	}
+	stats, ok := statsProvider.GetSelectedPairStats()
+	if !ok || stats.CurrentRoundTripTime <= 0 {
+		return nil
+	}
+	rttMS := stats.CurrentRoundTripTime.Milliseconds()
+	if rttMS <= 0 {
+		rttMS = 1
+	}
+	return map[string]string{
+		"rtt_ms": strconv.FormatInt(rttMS, 10),
+	}
 }
 
 func classifyObservationError(err error) string {

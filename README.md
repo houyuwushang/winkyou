@@ -69,7 +69,7 @@ connectivity:
     shadow_write: false
 ```
 
-默认 `auto` 模式会保守启用 protected-direct multipath：最多保留 primary + 一条 standby，不做 shadow write。这样当 `legacyice/direct_prefer` 选中了低延迟但依赖不清的 path，而 `legacyice/public_direct` 或后续 direct path 也成功时，client 会把它们组合成一个 `multipath` transport 绑定给 WireGuard。需要回退到旧单路径行为时，可以显式设置 `connectivity.multipath.enabled: false`。
+默认 `auto` 模式会保守启用 protected-direct multipath：最多保留 primary + 一条 standby，不做 shadow write。session 会执行预算内候选，而不是在第一个 direct 成功后立刻停止；legacy ICE 会把 selected pair 的 RTT 写入 path metrics，让低延迟 relay/其他 path 和高延迟 direct 能参与同一轮评分。这样当 `legacyice/direct_prefer` 选中了低延迟但依赖不清的 path，而 `legacyice/public_direct` 或后续 direct path 也成功时，client 会把它们组合成一个 `multipath` transport 绑定给 WireGuard。需要回退到旧单路径行为时，可以显式设置 `connectivity.multipath.enabled: false`。
 
 显式验证 `tcp_framed` alpha 路径时，需要同时启用 strategy 和配置可达 TCP 地址：
 

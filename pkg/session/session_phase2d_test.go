@@ -412,7 +412,7 @@ func TestSessionCandidateLoopIncludesPublicDirectPlan(t *testing.T) {
 	}
 }
 
-func TestSessionCandidateLoopStopsAfterProtectedDirectWhenPolicyEnabled(t *testing.T) {
+func TestSessionCandidateLoopContinuesAfterProtectedDirectWhenPolicyEnabled(t *testing.T) {
 	plans := []solver.Plan{
 		{ID: "legacyice/direct_prefer", Strategy: "legacy_ice_udp"},
 		{ID: "legacyice/public_direct", Strategy: "legacy_ice_udp"},
@@ -471,13 +471,13 @@ func TestSessionCandidateLoopStopsAfterProtectedDirectWhenPolicyEnabled(t *testi
 	}
 	waitForState(t, s, StateBound)
 
-	want := []string{"legacyice/direct_prefer"}
+	want := []string{"legacyice/direct_prefer", "legacyice/public_direct", "legacyice/relay_only"}
 	if !slices.Equal(strategy.executed, want) {
 		t.Fatalf("executed plans = %v, want %v", strategy.executed, want)
 	}
 }
 
-func TestSessionCandidateLoopKeepsTryingUntilProtectedDirectStandby(t *testing.T) {
+func TestSessionCandidateLoopKeepsTryingAfterProtectedDirectStandby(t *testing.T) {
 	plans := []solver.Plan{
 		{ID: "legacyice/direct_prefer", Strategy: "legacy_ice_udp"},
 		{ID: "legacyice/public_direct", Strategy: "legacy_ice_udp"},
@@ -539,7 +539,7 @@ func TestSessionCandidateLoopKeepsTryingUntilProtectedDirectStandby(t *testing.T
 	}
 	waitForState(t, s, StateBound)
 
-	want := []string{"legacyice/direct_prefer", "legacyice/public_direct"}
+	want := []string{"legacyice/direct_prefer", "legacyice/public_direct", "legacyice/relay_only"}
 	if !slices.Equal(strategy.executed, want) {
 		t.Fatalf("executed plans = %v, want %v", strategy.executed, want)
 	}

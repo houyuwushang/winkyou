@@ -15,6 +15,8 @@ type recordingICEAgent struct {
 	remoteCandidates []nat.Candidate
 	connectErr       error
 	connectCalled    chan struct{}
+	selectedStats    nat.CandidatePairStats
+	hasSelectedStats bool
 }
 
 func (a *recordingICEAgent) GatherCandidates(context.Context) ([]nat.Candidate, error) {
@@ -41,6 +43,10 @@ func (a *recordingICEAgent) Connect(context.Context) (nat.SelectedTransport, *na
 		close(a.connectCalled)
 	}
 	return nil, nil, a.connectErr
+}
+
+func (a *recordingICEAgent) GetSelectedPairStats() (nat.CandidatePairStats, bool) {
+	return a.selectedStats, a.hasSelectedStats
 }
 
 func (a *recordingICEAgent) Close() error { return nil }
@@ -157,6 +163,20 @@ func TestExecutorPathIDUsesPlanModeForPublicDirect(t *testing.T) {
 	publicExec := newExecutor(Config{}, input, solver.Plan{ID: planIDPublicDirect}, executorConfig{Mode: modePublicDirect})
 	if got := publicExec.pathID("direct"); got != "legacyice:direct:public_direct:session/node-a/node-b" {
 		t.Fatalf("public direct path id = %q, want mode-qualified format", got)
+	}
+}
+
+func TestSelectedPairMetricsExposeRTT(t *testing.T) {
+	agent := &recordingICEAgent{
+		selectedStats: nat.CandidatePairStats{
+			CurrentRoundTripTime: 42 * time.Millisecond,
+		},
+		hasSelectedStats: true,
+	}
+
+	metrics := selectedPairMetrics(agent)
+	if metrics["rtt_ms"] != "42" {
+		t.Fatalf("metrics = %#v, want rtt_ms=42", metrics)
 	}
 }
 

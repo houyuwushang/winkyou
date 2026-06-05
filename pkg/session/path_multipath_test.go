@@ -187,6 +187,85 @@ func TestSessionBindUsesMultipathTransportWhenPolicyEnabled(t *testing.T) {
 	assertMultipathObservation(t, session.Observations(), "path_committed")
 }
 
+func TestSessionEvaluatesRelayAfterProtectedDirectForLowerLatencyPrimary(t *testing.T) {
+	strategy := &executorFactoryStrategy{
+		name: "legacy_ice_udp",
+		plans: []solver.Plan{
+			{ID: "plan-direct", Strategy: "legacy_ice_udp"},
+			{ID: "plan-relay", Strategy: "legacy_ice_udp"},
+		},
+		executors: map[string]*scriptedExecutor{
+			"plan-direct": newScriptedExecutor(solver.Result{
+				Transport: &fakeTransport{},
+				Summary: solver.PathSummary{
+					PathID:         "direct/path",
+					ConnectionType: "direct",
+					Role:           solver.PathRoleProtectedDirect,
+					Metrics:        map[string]string{"rtt_ms": "400"},
+				},
+			}, nil),
+			"plan-relay": newScriptedExecutor(solver.Result{
+				Transport: &fakeTransport{},
+				Summary: solver.PathSummary{
+					PathID:         "relay/path",
+					ConnectionType: "relay",
+					Role:           solver.PathRolePrimaryCandidate,
+					Dependencies:   []solver.PathDependency{{Kind: solver.PathDependencyRelay, Reason: "turn_or_relay_candidate"}},
+					Metrics:        map[string]string{"rtt_ms": "1"},
+				},
+			}, nil),
+		},
+	}
+	binder := &recordingBinder{}
+	bound := make(chan solver.Result, 1)
+	session, err := New(Config{
+		SessionID:             "session/node-a/node-b",
+		LocalNodeID:           "node-a",
+		PeerID:                "node-b",
+		Initiator:             true,
+		Resolver:              &fakeResolver{local: rproto.Capability{Strategies: []string{"legacy_ice_udp"}}, strategy: strategy, selection: Selection{StrategyName: "legacy_ice_udp", Negotiated: true}},
+		Binder:                binder,
+		Sender:                &callbackSender{},
+		PathPolicy:            solver.PathPolicy{MultipathEnabled: true, ProtectDirect: true, MaxPaths: 2},
+		RunTimeout:            2 * time.Second,
+		CapabilityWaitTimeout: time.Millisecond,
+		Hooks: Hooks{
+			OnBound: func(result solver.Result) {
+				bound <- result
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	if err := session.HandleMessage(context.Background(), envelopeMessage(t, "session/node-a/node-b", "node-b", "node-a", rproto.MsgTypeCapability, 1, rproto.Capability{Strategies: []string{"legacy_ice_udp"}}, time.Now())); err != nil {
+		t.Fatalf("HandleMessage(capability) error = %v", err)
+	}
+	if err := session.Start(context.Background()); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	defer session.Close()
+
+	var result solver.Result
+	select {
+	case result = <-bound:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for bound result")
+	}
+	if _, ok := result.Transport.(multipath.StatsProvider); !ok {
+		t.Fatalf("bound result transport = %T, want multipath", result.Transport)
+	}
+	if result.Summary.Details["primary_path_id"] != "relay/path" {
+		t.Fatalf("primary_path_id = %q, want relay/path", result.Summary.Details["primary_path_id"])
+	}
+	if result.Summary.Details["protected_direct_path_id"] != "direct/path" {
+		t.Fatalf("protected_direct_path_id = %q, want direct/path", result.Summary.Details["protected_direct_path_id"])
+	}
+	if _, ok := binder.boundTransport.(multipath.StatsProvider); !ok {
+		t.Fatalf("binder transport = %T, want multipath", binder.boundTransport)
+	}
+}
+
 type recordingBinder struct {
 	boundTransport transport.PacketTransport
 }

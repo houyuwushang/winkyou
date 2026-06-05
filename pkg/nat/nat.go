@@ -118,6 +118,12 @@ type CandidatePair struct {
 	Remote *Candidate
 }
 
+// CandidatePairStats contains optional statistics for a selected ICE pair.
+type CandidatePairStats struct {
+	CurrentRoundTripTime time.Duration
+	TotalRoundTripTime   time.Duration
+}
+
 // ConnectionState represents the ICE connection state.
 type ConnectionState int
 

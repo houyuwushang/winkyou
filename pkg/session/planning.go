@@ -436,9 +436,6 @@ func (s *Session) executeCandidateLoop(ctx context.Context, strategy solver.Stra
 		})
 		outcome := s.executeCandidate(ctx, strategy, plan)
 		outcomes = append(outcomes, outcome)
-		if s.shouldStopCandidateLoop(outcomes) {
-			break
-		}
 	}
 
 	// Score all outcomes
@@ -451,28 +448,6 @@ func (s *Session) executeCandidateLoop(ctx context.Context, strategy solver.Stra
 	}
 
 	return outcomes
-}
-
-func (s *Session) shouldStopCandidateLoop(outcomes []solver.CandidateOutcome) bool {
-	if !s.shouldProtectDirectStandby() {
-		return false
-	}
-	successes := 0
-	hasProtectedDirect := false
-	lastSuccessfulProtectedDirect := false
-	for i := range outcomes {
-		if !isSuccessfulOutcome(outcomes[i]) {
-			continue
-		}
-		successes++
-		protected := solver.IsProtectedDirectPath(outcomes[i].Result.Summary)
-		hasProtectedDirect = hasProtectedDirect || protected
-		lastSuccessfulProtectedDirect = i == len(outcomes)-1 && protected
-	}
-	if !hasProtectedDirect {
-		return false
-	}
-	return successes >= 2 || lastSuccessfulProtectedDirect
 }
 
 func annotateResultPath(result solver.Result, plan solver.Plan) solver.Result {
