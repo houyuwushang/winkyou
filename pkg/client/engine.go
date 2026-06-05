@@ -47,14 +47,16 @@ type engine struct {
 	peerHandlers   []func(peer *PeerStatus, event PeerEvent)
 	peerMgr        *peerManager
 
-	privateKey tunnel.PrivateKey
-	netif      netif.NetworkInterface
-	tun        tunnel.Tunnel
-	nat        nat.NATTraversal
-	coord      coordclient.CoordinatorClient
-	pingConn   *net.UDPConn
-	inbandConn *net.UDPConn
-	inbandSeq  uint64
+	privateKey    tunnel.PrivateKey
+	netif         netif.NetworkInterface
+	tun           tunnel.Tunnel
+	nat           nat.NATTraversal
+	coord         coordclient.CoordinatorClient
+	pingConn      *net.UDPConn
+	inbandConn    *net.UDPConn
+	inbandSeq     uint64
+	inbandSignals map[string][]cachedInbandSignal
+	inbandSeen    map[string]time.Time
 
 	observationStore *solverstore.ObservationStore
 

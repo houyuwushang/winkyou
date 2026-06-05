@@ -16,9 +16,17 @@ const (
 	InbandControlPort     = PingPort + 1
 	inbandControlInterval = 5 * time.Second
 	inbandHealthWindow    = 3 * inbandControlInterval
+	inbandSignalReplayTTL = 20 * time.Second
+	inbandSignalSeenTTL   = 2 * time.Minute
+	maxInbandSignalReplay = 16
 )
 
 var errInbandSignalUnavailable = errors.New("client: in-band solver signal unavailable")
+
+type cachedInbandSignal struct {
+	Message   peercontrol.Message
+	ExpiresAt time.Time
+}
 
 func (e *engine) startInbandControl(bindIP net.IP) error {
 	conn, err := listenInbandUDP(bindIP)
@@ -160,6 +168,7 @@ func (e *engine) inbandMessagesForPeer(localNodeID string, peer *PeerStatus) []p
 		reICE.Seq = atomic.AddUint64(&e.inbandSeq, 1)
 		messages = append(messages, reICE)
 	}
+	messages = append(messages, e.cachedInbandSignalsForPeer(peer.NodeID, time.Now())...)
 	return messages
 }
 
@@ -219,6 +228,9 @@ func (e *engine) handleInbandControlMessage(msg peercontrol.Message) {
 		e.schedulePeerImprovementByID(msg.From)
 	}
 	if knownPeer && msg.SessionSignal != nil {
+		if e.markInbandMessageSeen(msg, time.Now()) {
+			return
+		}
 		if solverMsg, err := solverMessageFromPeerControlSignal(*msg.SessionSignal, seenAt); err == nil {
 			go e.handlePeerSolverMessage(msg.From, solverMsg)
 		}
@@ -252,6 +264,7 @@ func (e *engine) sendSolverMessageInband(ctx context.Context, peerID string, sol
 
 	msg := peercontrol.NewSessionSignal(localNodeID, peer.NodeID, signal)
 	msg.Seq = atomic.AddUint64(&e.inbandSeq, 1)
+	e.cacheInbandSignal(peerID, msg, time.Now())
 	raw, err := peercontrol.Marshal(msg)
 	if err != nil {
 		return err
@@ -259,6 +272,138 @@ func (e *engine) sendSolverMessageInband(ctx context.Context, peerID string, sol
 	addr := &net.UDPAddr{IP: append(net.IP(nil), peer.VirtualIP.To4()...), Port: InbandControlPort}
 	_, err = conn.WriteToUDP(raw, addr)
 	return err
+}
+
+func (e *engine) cacheInbandSignal(peerID string, msg peercontrol.Message, now time.Time) {
+	if e == nil || peerID == "" || msg.Type != peercontrol.TypeSessionSignal || msg.Seq == 0 {
+		return
+	}
+	if now.IsZero() {
+		now = time.Now()
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.inbandSignals == nil {
+		e.inbandSignals = map[string][]cachedInbandSignal{}
+	}
+	e.inbandSignals[peerID] = appendPrunedCachedInbandSignal(e.inbandSignals[peerID], cachedInbandSignal{
+		Message:   clonePeerControlMessage(msg),
+		ExpiresAt: now.Add(inbandSignalReplayTTL),
+	}, now)
+}
+
+func (e *engine) cachedInbandSignalsForPeer(peerID string, now time.Time) []peercontrol.Message {
+	if e == nil || peerID == "" {
+		return nil
+	}
+	if now.IsZero() {
+		now = time.Now()
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if len(e.inbandSignals) == 0 {
+		return nil
+	}
+	cached := pruneCachedInbandSignals(e.inbandSignals[peerID], now)
+	if len(cached) == 0 {
+		delete(e.inbandSignals, peerID)
+		return nil
+	}
+	e.inbandSignals[peerID] = cached
+	out := make([]peercontrol.Message, 0, len(cached))
+	for _, item := range cached {
+		out = append(out, clonePeerControlMessage(item.Message))
+	}
+	return out
+}
+
+func appendPrunedCachedInbandSignal(existing []cachedInbandSignal, next cachedInbandSignal, now time.Time) []cachedInbandSignal {
+	pruned := pruneCachedInbandSignals(existing, now)
+	pruned = append(pruned, next)
+	if len(pruned) <= maxInbandSignalReplay {
+		return pruned
+	}
+	return append([]cachedInbandSignal(nil), pruned[len(pruned)-maxInbandSignalReplay:]...)
+}
+
+func pruneCachedInbandSignals(values []cachedInbandSignal, now time.Time) []cachedInbandSignal {
+	if len(values) == 0 {
+		return nil
+	}
+	out := values[:0]
+	for _, item := range values {
+		if item.ExpiresAt.After(now) {
+			out = append(out, item)
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+func (e *engine) markInbandMessageSeen(msg peercontrol.Message, seenAt time.Time) bool {
+	if e == nil || msg.Seq == 0 {
+		return false
+	}
+	if seenAt.IsZero() {
+		seenAt = time.Now()
+	}
+	key := inbandSeenKey(msg)
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.inbandSeen == nil {
+		e.inbandSeen = map[string]time.Time{}
+	}
+	for cachedKey, expiresAt := range e.inbandSeen {
+		if !expiresAt.After(seenAt) {
+			delete(e.inbandSeen, cachedKey)
+		}
+	}
+	if _, ok := e.inbandSeen[key]; ok {
+		return true
+	}
+	e.inbandSeen[key] = seenAt.Add(inbandSignalSeenTTL)
+	return false
+}
+
+func inbandSeenKey(msg peercontrol.Message) string {
+	return fmt.Sprintf("%s|%s|%d", msg.From, msg.Type, msg.Seq)
+}
+
+func clonePeerControlMessage(msg peercontrol.Message) peercontrol.Message {
+	out := msg
+	if msg.Heartbeat != nil {
+		cp := *msg.Heartbeat
+		out.Heartbeat = &cp
+	}
+	if msg.PathHealth != nil {
+		cp := *msg.PathHealth
+		out.PathHealth = &cp
+	}
+	if msg.EndpointUpdate != nil {
+		cp := *msg.EndpointUpdate
+		out.EndpointUpdate = &cp
+	}
+	if msg.CapabilityRefresh != nil {
+		cp := *msg.CapabilityRefresh
+		if len(cp.Strategies) > 0 {
+			cp.Strategies = append([]string(nil), cp.Strategies...)
+		}
+		out.CapabilityRefresh = &cp
+	}
+	if msg.ReICERequest != nil {
+		cp := *msg.ReICERequest
+		out.ReICERequest = &cp
+	}
+	if msg.SessionSignal != nil {
+		cp := *msg.SessionSignal
+		if len(cp.Payload) > 0 {
+			cp.Payload = append([]byte(nil), cp.Payload...)
+		}
+		out.SessionSignal = &cp
+	}
+	return out
 }
 
 func peerInbandEligible(peer *PeerStatus) bool {

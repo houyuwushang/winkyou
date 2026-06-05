@@ -100,6 +100,75 @@ func TestInbandMessagesRequestReICEWhenProtectedDirectMissing(t *testing.T) {
 	}
 }
 
+func TestInbandMessagesReplayCachedSessionSignal(t *testing.T) {
+	now := time.Now().UTC()
+	eng := &engine{}
+	signal := peercontrol.NewSessionSignal("node-a", "node-b", peercontrol.SessionSignal{
+		Kind:      string(solver.MessageKindStrategy),
+		Namespace: "test.strategy",
+		Type:      "candidate",
+		Payload:   []byte("candidate-payload"),
+	})
+	signal.Seq = 42
+	signal.SentAt = now
+	eng.cacheInbandSignal("node-b", signal, now)
+
+	peer := &PeerStatus{
+		NodeID:    "node-b",
+		State:     PeerStateConnected,
+		DataState: PeerDataStateAlive,
+	}
+	messages := eng.inbandMessagesForPeer("node-a", peer)
+	var replay *peercontrol.Message
+	for i := range messages {
+		if messages[i].Type == peercontrol.TypeSessionSignal {
+			replay = &messages[i]
+			break
+		}
+	}
+	if replay == nil {
+		t.Fatalf("messages = %#v, want cached session_signal replay", messages)
+	}
+	if replay.Seq != 42 || replay.SessionSignal == nil {
+		t.Fatalf("replay = %#v, want seq 42 session signal", replay)
+	}
+	if replay.SessionSignal.Namespace != "test.strategy" || string(replay.SessionSignal.Payload) != "candidate-payload" {
+		t.Fatalf("replay session signal = %#v", replay.SessionSignal)
+	}
+
+	expired := eng.cachedInbandSignalsForPeer("node-b", now.Add(inbandSignalReplayTTL+time.Millisecond))
+	if len(expired) != 0 {
+		t.Fatalf("expired cached signals = %#v, want none", expired)
+	}
+}
+
+func TestInbandMessageSeenDeduplicatesSessionSignalReplay(t *testing.T) {
+	now := time.Unix(1_700_000_030, 0).UTC()
+	eng := &engine{}
+	msg := peercontrol.NewSessionSignal("node-b", "node-a", peercontrol.SessionSignal{
+		Kind:      string(solver.MessageKindStrategy),
+		Namespace: "test.strategy",
+		Type:      "offer",
+		Payload:   []byte("payload"),
+	})
+	msg.Seq = 7
+
+	if eng.markInbandMessageSeen(msg, now) {
+		t.Fatal("first signal should not be marked duplicate")
+	}
+	if !eng.markInbandMessageSeen(msg, now.Add(time.Second)) {
+		t.Fatal("replayed signal should be marked duplicate")
+	}
+	msg.Seq = 8
+	if eng.markInbandMessageSeen(msg, now.Add(2*time.Second)) {
+		t.Fatal("different sequence should not be marked duplicate")
+	}
+	msg.Seq = 7
+	if eng.markInbandMessageSeen(msg, now.Add(inbandSignalSeenTTL+time.Second)) {
+		t.Fatal("expired duplicate marker should allow sequence after TTL")
+	}
+}
+
 func TestHandleInbandControlMessageUpdatesPeerTimestamps(t *testing.T) {
 	eng := &engine{
 		status: EngineStatus{NodeID: "node-a"},
