@@ -180,8 +180,10 @@ func (e *executor) ensureAgent(ctx context.Context) (nat.ICEAgent, error) {
 		return nil, fmt.Errorf("legacyice: ice agent factory is nil")
 	}
 	agent, err := e.cfg.NewICEAgent(ctx, AgentRequest{
-		Controlling: e.input.Initiator,
-		ForceRelay:  e.execCfg.ForceRelay,
+		Controlling:           e.input.Initiator,
+		ForceRelay:            e.execCfg.ForceRelay,
+		CandidateCIDRExclude:  append([]string(nil), e.execCfg.CandidateCIDRExclude...),
+		PublicDirectCandidate: e.execCfg.PublicDirectCandidate,
 	})
 	if err != nil {
 		return nil, err
@@ -202,6 +204,10 @@ func (e *executor) sendOffer(ctx context.Context, sess solver.SessionIO) error {
 	candidates, err := agent.GatherCandidates(gatherCtx)
 	if err != nil {
 		return err
+	}
+	candidates = filterLocalCandidates(candidates, e.execCfg)
+	if len(candidates) == 0 {
+		return fmt.Errorf("legacyice: no usable local candidates for %s", e.execCfg.Mode)
 	}
 	ufrag, pwd, err := agent.GetLocalCredentials()
 	if err != nil {
@@ -236,6 +242,10 @@ func (e *executor) sendAnswer(ctx context.Context, sess solver.SessionIO) error 
 	candidates, err := agent.GatherCandidates(gatherCtx)
 	if err != nil {
 		return err
+	}
+	candidates = filterLocalCandidates(candidates, e.execCfg)
+	if len(candidates) == 0 {
+		return fmt.Errorf("legacyice: no usable local candidates for %s", e.execCfg.Mode)
 	}
 	ufrag, pwd, err := agent.GetLocalCredentials()
 	if err != nil {
@@ -289,7 +299,7 @@ func (e *executor) startConnect(sess solver.SessionIO) {
 		}
 
 		connectionType := connectionTypeFromPair(pair)
-		pathID := fmt.Sprintf("legacyice:%s:%s", connectionType, e.input.SessionID)
+		pathID := e.pathID(connectionType)
 		transport := e.releaseTransport(agent, conn, pathID)
 		role, dependencies := pathPolicyMetadata(connectionType, pair)
 		result := solver.Result{
@@ -319,6 +329,13 @@ func (e *executor) startConnect(sess solver.SessionIO) {
 		default:
 		}
 	}()
+}
+
+func (e *executor) pathID(connectionType string) string {
+	if e.execCfg.Mode == modePublicDirect {
+		return fmt.Sprintf("legacyice:%s:%s:%s", connectionType, e.execCfg.Mode, e.input.SessionID)
+	}
+	return fmt.Sprintf("legacyice:%s:%s", connectionType, e.input.SessionID)
 }
 
 func (e *executor) releaseTransport(agent nat.ICEAgent, conn net.Conn, pathID string) transport.PacketTransport {
@@ -484,6 +501,19 @@ func isCandidateIPInCIDR(ip net.IP, cidr string) bool {
 }
 
 func filterRemoteCandidates(candidates []nat.Candidate, execCfg executorConfig) []nat.Candidate {
+	if execCfg.Mode == modePublicDirect {
+		filtered := make([]nat.Candidate, 0, len(candidates))
+		for _, candidate := range candidates {
+			if candidate.Type == nat.CandidateTypeRelay {
+				continue
+			}
+			if candidateDependencyReason("remote", &candidate) != "" {
+				continue
+			}
+			filtered = append(filtered, candidate)
+		}
+		return filtered
+	}
 	if execCfg.Mode != modeRelayOnly {
 		return append([]nat.Candidate(nil), candidates...)
 	}
@@ -492,6 +522,23 @@ func filterRemoteCandidates(candidates []nat.Candidate, execCfg executorConfig) 
 		if candidate.Type == nat.CandidateTypeRelay {
 			filtered = append(filtered, candidate)
 		}
+	}
+	return filtered
+}
+
+func filterLocalCandidates(candidates []nat.Candidate, execCfg executorConfig) []nat.Candidate {
+	if execCfg.Mode != modePublicDirect {
+		return append([]nat.Candidate(nil), candidates...)
+	}
+	filtered := make([]nat.Candidate, 0, len(candidates))
+	for _, candidate := range candidates {
+		if candidate.Type == nat.CandidateTypeRelay {
+			continue
+		}
+		if candidateDependencyReason("local", &candidate) != "" {
+			continue
+		}
+		filtered = append(filtered, candidate)
 	}
 	return filtered
 }

@@ -13,7 +13,7 @@ func (s *Strategy) RefinePlans(ctx context.Context, input solver.SolveInput, pla
 	if evidence.strongRelayOnly() {
 		refined := make([]solver.Plan, 0, len(plans))
 		for _, plan := range plans {
-			if plan.ID == planIDDirectPrefer {
+			if isDirectPlanID(plan.ID) {
 				continue
 			}
 			refined = append(refined, plan)

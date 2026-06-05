@@ -10,8 +10,10 @@ import (
 )
 
 type AgentRequest struct {
-	Controlling bool
-	ForceRelay  bool
+	Controlling           bool
+	ForceRelay            bool
+	CandidateCIDRExclude  []string
+	PublicDirectCandidate bool
 }
 
 type ICEAgentFactory func(ctx context.Context, req AgentRequest) (nat.ICEAgent, error)
@@ -28,12 +30,26 @@ type executionMode string
 
 const (
 	modeDirectPrefer executionMode = "direct_prefer"
+	modePublicDirect executionMode = "public_direct"
 	modeRelayOnly    executionMode = "relay_only"
 )
 
 type executorConfig struct {
-	Mode       executionMode
-	ForceRelay bool
+	Mode                  executionMode
+	ForceRelay            bool
+	CandidateCIDRExclude  []string
+	PublicDirectCandidate bool
+}
+
+var publicDirectCandidateCIDRExcludes = []string{
+	"0.0.0.0/8",
+	"10.0.0.0/8",
+	"100.64.0.0/10",
+	"127.0.0.0/8",
+	"169.254.0.0/16",
+	"172.16.0.0/12",
+	"192.168.0.0/16",
+	"198.18.0.0/15",
 }
 
 func (c Config) withDefaults() Config {
@@ -51,12 +67,18 @@ func (c Config) withDefaults() Config {
 
 func executorConfigForPlan(plan solver.Plan, cfg Config) (executorConfig, error) {
 	switch plan.ID {
-	case "legacyice/direct_prefer":
+	case planIDDirectPrefer:
 		return executorConfig{
 			Mode:       modeDirectPrefer,
 			ForceRelay: cfg.ForceRelay,
 		}, nil
-	case "legacyice/relay_only":
+	case planIDPublicDirect:
+		return executorConfig{
+			Mode:                  modePublicDirect,
+			CandidateCIDRExclude:  append([]string(nil), publicDirectCandidateCIDRExcludes...),
+			PublicDirectCandidate: true,
+		}, nil
+	case planIDRelayOnly:
 		return executorConfig{
 			Mode:       modeRelayOnly,
 			ForceRelay: true,
@@ -67,6 +89,13 @@ func executorConfigForPlan(plan solver.Plan, cfg Config) (executorConfig, error)
 		}
 		if mode := plan.Metadata["mode"]; mode == string(modeDirectPrefer) {
 			return executorConfig{Mode: modeDirectPrefer, ForceRelay: cfg.ForceRelay}, nil
+		}
+		if mode := plan.Metadata["mode"]; mode == string(modePublicDirect) {
+			return executorConfig{
+				Mode:                  modePublicDirect,
+				CandidateCIDRExclude:  append([]string(nil), publicDirectCandidateCIDRExcludes...),
+				PublicDirectCandidate: true,
+			}, nil
 		}
 		return executorConfig{}, fmt.Errorf("legacyice: unsupported plan %q", plan.ID)
 	}

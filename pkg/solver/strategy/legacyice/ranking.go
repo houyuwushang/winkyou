@@ -9,13 +9,13 @@ import (
 func (s *Strategy) RankPlans(_ context.Context, input solver.RankInput, plans []solver.Plan) (solver.RankedPlans, error) {
 	ordered := append([]solver.Plan(nil), plans...)
 	evidence := summarizeRankEvidence(input)
-	hasDirect := hasPlan(plans, planIDDirectPrefer)
+	hasDirect := hasDirectPlan(plans)
 	hasRelay := hasPlan(plans, planIDRelayOnly)
 
 	switch {
 	case hasDirect && hasRelay && evidence.relayPreferred():
 		return solver.RankedPlans{
-			Plans:  reorderPlans(plans, planIDRelayOnly, planIDDirectPrefer),
+			Plans:  reorderPlans(plans, planIDRelayOnly, planIDDirectPrefer, planIDPublicDirect),
 			Reason: "recent_direct_failure_with_relay_success",
 		}, nil
 	case evidence.directSuccessful():
@@ -41,30 +41,26 @@ func isRelaySuccess(obs solver.Observation) bool {
 	return obs.Event == "path_selected" && obs.ConnectionType == "relay"
 }
 
-func reorderPlans(plans []solver.Plan, firstID, secondID string) []solver.Plan {
-	var (
-		first       solver.Plan
-		second      solver.Plan
-		foundFirst  bool
-		foundSecond bool
-	)
-	for _, plan := range plans {
-		switch plan.ID {
-		case firstID:
-			first = plan
-			foundFirst = true
-		case secondID:
-			second = plan
-			foundSecond = true
+func reorderPlans(plans []solver.Plan, orderedIDs ...string) []solver.Plan {
+	seen := make(map[string]struct{}, len(orderedIDs))
+	ordered := make([]solver.Plan, 0, len(plans))
+	found := false
+	for _, planID := range orderedIDs {
+		for _, plan := range plans {
+			if plan.ID != planID {
+				continue
+			}
+			ordered = append(ordered, plan)
+			seen[plan.ID] = struct{}{}
+			found = true
+			break
 		}
 	}
-	if !foundFirst || !foundSecond {
+	if !found {
 		return append([]solver.Plan(nil), plans...)
 	}
-	ordered := make([]solver.Plan, 0, len(plans))
-	ordered = append(ordered, first, second)
 	for _, plan := range plans {
-		if plan.ID == firstID || plan.ID == secondID {
+		if _, ok := seen[plan.ID]; ok {
 			continue
 		}
 		ordered = append(ordered, plan)
@@ -75,6 +71,15 @@ func reorderPlans(plans []solver.Plan, firstID, secondID string) []solver.Plan {
 func hasPlan(plans []solver.Plan, planID string) bool {
 	for _, plan := range plans {
 		if plan.ID == planID {
+			return true
+		}
+	}
+	return false
+}
+
+func hasDirectPlan(plans []solver.Plan) bool {
+	for _, plan := range plans {
+		if isDirectPlanID(plan.ID) {
 			return true
 		}
 	}

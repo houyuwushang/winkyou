@@ -395,7 +395,7 @@ func pathStrategy(summary solver.PathSummary) string {
 	switch {
 	case strings.HasPrefix(summary.PathID, "relayonly/"):
 		return "relay_only"
-	case strings.HasPrefix(summary.PathID, "legacyice/"):
+	case strings.HasPrefix(summary.PathID, "legacyice/"), strings.HasPrefix(summary.PathID, "legacyice:"):
 		return "legacy_ice_udp"
 	case strings.HasPrefix(summary.PathID, "tcpframed/"):
 		return "tcp_framed"

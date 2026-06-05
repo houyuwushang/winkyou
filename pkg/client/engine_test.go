@@ -142,6 +142,46 @@ func TestRuntimeStateRoundTrip(t *testing.T) {
 	}
 }
 
+func TestPathStrategyRecognizesLegacyICEPathIDs(t *testing.T) {
+	tests := []struct {
+		name    string
+		summary solver.PathSummary
+		want    string
+	}{
+		{
+			name: "legacy colon",
+			summary: solver.PathSummary{
+				PathID: "legacyice:direct:session/node-a/node-b",
+			},
+			want: "legacy_ice_udp",
+		},
+		{
+			name: "legacy public direct",
+			summary: solver.PathSummary{
+				PathID: "legacyice:direct:public_direct:session/node-a/node-b",
+			},
+			want: "legacy_ice_udp",
+		},
+		{
+			name: "details override",
+			summary: solver.PathSummary{
+				PathID: "legacyice:direct:session/node-a/node-b",
+				Details: map[string]string{
+					"strategy": "relay_only",
+				},
+			},
+			want: "relay_only",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := pathStrategy(tt.summary); got != tt.want {
+				t.Fatalf("pathStrategy() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestRuntimeStatePathAcceptsExplicitRuntimeFile(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "wink.runtime.json")
 	if got := RuntimeStatePath(path); got != path {

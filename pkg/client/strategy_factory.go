@@ -130,7 +130,7 @@ func (e *engine) legacyICEStrategyConfig() legacyice.Config {
 			CandidateInterfaceInclude: append([]string(nil), e.cfg.NAT.CandidateInterfaceInclude...),
 			CandidateInterfaceExclude: append([]string(nil), e.cfg.NAT.CandidateInterfaceExclude...),
 			CandidateCIDRInclude:      append([]string(nil), e.cfg.NAT.CandidateCIDRInclude...),
-			CandidateCIDRExclude:      append([]string(nil), e.cfg.NAT.CandidateCIDRExclude...),
+			CandidateCIDRExclude:      append(append([]string(nil), e.cfg.NAT.CandidateCIDRExclude...), req.CandidateCIDRExclude...),
 			ForceRelay:                req.ForceRelay,
 		})
 	}

@@ -124,6 +124,14 @@ Current real strategies:
 
 Production registration remains compatible by default: `legacy_ice_udp` first, then `relay_only`. `tcp_framed` is disabled by default and is registered only when `tcp_framed.enabled=true` and it appears in `connectivity.strategy_order`.
 
+`legacy_ice_udp` is still one production strategy name, but internally it may emit multiple execution plans:
+
+- `legacyice/direct_prefer`: use normal ICE behavior and allow ICE to choose the best non-relay or relay candidate pair.
+- `legacyice/public_direct`: exclude ambiguous local candidates and ignore ambiguous remote candidates, including private ranges, `100.64.0.0/10`, loopback, link-local, multicast, and benchmark/overlay ranges, then attempt a public direct ICE path.
+- `legacyice/relay_only`: force relay-only candidate gathering and candidate selection.
+
+`public_direct` exists to prove an independent public direct candidate instead of letting an existing overlay or CGN/100.64 candidate satisfy the generic ICE `direct` label. It is still best-effort NAT piercing: if STUN/public candidates are unavailable or the NAT/firewall blocks the mapping, it must fail normally and let later plans or strategies continue.
+
 The connectivity policy layer controls production strategy priority:
 
 - `connectivity.mode=auto`: use configured strategy order, defaulting to `legacy_ice_udp` -> `relay_only`
@@ -168,9 +176,9 @@ Coordinator-less operation has a strict boundary:
 
 The in-band control message model is frozen in `pkg/peercontrol` and documented in [`INBAND-PEER-CONTROL.md`](./INBAND-PEER-CONTROL.md). It is not yet wired into the long-running client network loop.
 
-NAT/ICE candidate filtering is owned by the NAT/legacy ICE boundary. Config supports candidate interface include/exclude and candidate CIDR include/exclude under `nat.*`; these filters are passed into the pion ICE agent. `pkg/session` and `pkg/solver` must remain unaware of interface or CIDR filtering details.
+NAT/ICE candidate filtering is owned by the NAT/legacy ICE boundary. Config supports candidate interface include/exclude and candidate CIDR include/exclude under `nat.*`; these filters are passed into the pion ICE agent. The `legacyice/public_direct` plan may add plan-local CIDR excludes on top of the user config and also filters remote candidates before handing them to the ICE agent. `pkg/session` and `pkg/solver` must remain unaware of interface or CIDR filtering details.
 
-ICE `connection_type=direct` is a direct-like transport result, not a guarantee that the path is independent from existing overlays or jump-host underlays. Strategy implementations must annotate `PathSummary.Role` and `PathSummary.Dependencies` conservatively. A path may be exposed as `protected_direct` only when it is direct-like and has no explicit relay, peer, or unknown dependency. Candidates in `100.64.0.0/10`, loopback, link-local, private/VPN-like, or otherwise ambiguous ranges must not be used as proof of protected direct coverage.
+ICE `connection_type=direct` is a direct-like transport result, not a guarantee that the path is independent from existing overlays or jump-host underlays. Strategy implementations must annotate `PathSummary.Role` and `PathSummary.Dependencies` conservatively. A path may be exposed as `protected_direct` only when it is direct-like and has no explicit relay, peer, or unknown dependency. Candidates in `100.64.0.0/10`, loopback, link-local, private/VPN-like, or otherwise ambiguous ranges must not be used as proof of protected direct coverage. `legacyice/public_direct` reduces this ambiguity by excluding those candidates before the attempt; successful path metadata still has to be derived from the actually selected ICE pair.
 
 ### Binder
 
@@ -240,7 +248,7 @@ Delivered:
 Delivered:
 
 - plan-scoped executor / candidate isolation
-- `legacyice/direct_prefer` and `legacyice/relay_only` as real execution variants
+- `legacyice/direct_prefer` and `legacyice/relay_only` as real execution variants; current code also includes `legacyice/public_direct` as a later direct execution variant for overlay-excluded public ICE attempts
 - observation emission integrated into real strategy execution
 - observation sink/store injection through session and client glue
 - remote observation visibility retained in session state
@@ -277,7 +285,7 @@ Required outcome:
 - `solver.SolveInput` becomes evidence-aware (capabilities, observations, probe results)
 - strategy `Plan(...)` receives evidence context and can adapt plan generation
 - new `PlanRefiner` interface allows strategies to prune plans based on evidence
-- `legacy_ice_udp` demonstrates real plan pruning (e.g., dropping `direct_prefer` under strong relay evidence)
+- `legacy_ice_udp` demonstrates real plan pruning (e.g., dropping direct execution plans under strong relay evidence)
 - Evidence that prunes candidate plans must be scoped to the current session/peer; unscoped history may inform hints/ranking but must not by itself remove viable plans.
 - probe result and observations flow through generic solver inputs, not strategy side-channels
 - probing becomes an explicit state machine phase
@@ -375,7 +383,7 @@ Constraints:
 - new coordinator transport or protobuf redesign
 - coordinator-less first bootstrap for arbitrary NATed peers
 - runtime wiring for the in-band peer control channel over an already established virtual network
-- real-network validation of ICE interface/CIDR filters after excluding overlay interfaces
+- real-network validation of `legacyice/public_direct` and ICE interface/CIDR filters after excluding overlay interfaces
 - GUI, daemon, no-admin, proxy, or userspace completion work
 
 ## Legacy Relationship

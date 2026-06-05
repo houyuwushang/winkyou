@@ -60,6 +60,17 @@ func TestExecutorConfigForPlanProducesDistinctModes(t *testing.T) {
 		t.Fatalf("direct config = %+v, want direct_prefer without force relay", direct)
 	}
 
+	publicDirect, err := executorConfigForPlan(solver.Plan{ID: "legacyice/public_direct", Metadata: map[string]string{"mode": "public_direct"}}, Config{})
+	if err != nil {
+		t.Fatalf("executorConfigForPlan(public_direct) error = %v", err)
+	}
+	if publicDirect.Mode != modePublicDirect || publicDirect.ForceRelay || !publicDirect.PublicDirectCandidate {
+		t.Fatalf("public direct config = %+v, want public_direct without force relay", publicDirect)
+	}
+	if !stringSliceContains(publicDirect.CandidateCIDRExclude, "100.64.0.0/10") {
+		t.Fatalf("public direct CIDR excludes = %#v, want 100.64.0.0/10", publicDirect.CandidateCIDRExclude)
+	}
+
 	relay, err := executorConfigForPlan(solver.Plan{ID: "legacyice/relay_only", Metadata: map[string]string{"mode": "relay_only"}}, Config{})
 	if err != nil {
 		t.Fatalf("executorConfigForPlan(relay) error = %v", err)
@@ -95,6 +106,14 @@ func TestStrategyNewExecutorUsesPlanSpecificAgentRequests(t *testing.T) {
 		t.Fatalf("ensureAgent(direct) error = %v", err)
 	}
 
+	publicDirectExec, err := strategy.NewExecutor(solver.Plan{ID: "legacyice/public_direct", Strategy: StrategyName, Metadata: map[string]string{"mode": "public_direct"}})
+	if err != nil {
+		t.Fatalf("NewExecutor(public_direct) error = %v", err)
+	}
+	if _, err := publicDirectExec.(*executor).ensureAgent(context.Background()); err != nil {
+		t.Fatalf("ensureAgent(public_direct) error = %v", err)
+	}
+
 	relayExec, err := strategy.NewExecutor(solver.Plan{ID: "legacyice/relay_only", Strategy: StrategyName, Metadata: map[string]string{"mode": "relay_only"}})
 	if err != nil {
 		t.Fatalf("NewExecutor(relay) error = %v", err)
@@ -103,21 +122,39 @@ func TestStrategyNewExecutorUsesPlanSpecificAgentRequests(t *testing.T) {
 		t.Fatalf("ensureAgent(relay) error = %v", err)
 	}
 
-	if len(requests) != 2 {
-		t.Fatalf("agent requests = %d, want 2", len(requests))
+	if len(requests) != 3 {
+		t.Fatalf("agent requests = %d, want 3", len(requests))
 	}
 	if requests[0].ForceRelay {
 		t.Fatalf("direct request = %+v, want ForceRelay=false", requests[0])
 	}
-	if !requests[1].ForceRelay {
-		t.Fatalf("relay request = %+v, want ForceRelay=true", requests[1])
+	if !requests[1].PublicDirectCandidate || !stringSliceContains(requests[1].CandidateCIDRExclude, "100.64.0.0/10") {
+		t.Fatalf("public direct request = %+v, want public direct candidate filter", requests[1])
+	}
+	if !requests[2].ForceRelay {
+		t.Fatalf("relay request = %+v, want ForceRelay=true", requests[2])
 	}
 }
 
-func TestRelayOnlyExecutorFiltersRemoteCandidates(t *testing.T) {
+func TestExecutorPathIDUsesPlanModeForPublicDirect(t *testing.T) {
+	input := solver.SolveInput{SessionID: "session/node-a/node-b"}
+	directExec := newExecutor(Config{}, input, solver.Plan{ID: planIDDirectPrefer}, executorConfig{Mode: modeDirectPrefer})
+	if got := directExec.pathID("direct"); got != "legacyice:direct:session/node-a/node-b" {
+		t.Fatalf("direct path id = %q, want legacy format", got)
+	}
+
+	publicExec := newExecutor(Config{}, input, solver.Plan{ID: planIDPublicDirect}, executorConfig{Mode: modePublicDirect})
+	if got := publicExec.pathID("direct"); got != "legacyice:direct:public_direct:session/node-a/node-b" {
+		t.Fatalf("public direct path id = %q, want mode-qualified format", got)
+	}
+}
+
+func TestExecutorFiltersRemoteCandidatesByPlanMode(t *testing.T) {
 	hostCandidate := nat.Candidate{Type: nat.CandidateTypeHost, Address: &net.UDPAddr{IP: net.IPv4(10, 0, 0, 1), Port: 1001}}
+	overlayCandidate := nat.Candidate{Type: nat.CandidateTypeHost, Address: &net.UDPAddr{IP: net.IPv4(100, 102, 17, 35), Port: 1002}}
+	publicCandidate := nat.Candidate{Type: nat.CandidateTypeSrflx, Address: &net.UDPAddr{IP: net.IPv4(117, 48, 146, 2), Port: 1003}}
 	relayCandidate := nat.Candidate{Type: nat.CandidateTypeRelay, Address: &net.UDPAddr{IP: net.IPv4(20, 0, 0, 1), Port: 2001}}
-	mixedCandidates := []nat.Candidate{hostCandidate, relayCandidate}
+	mixedCandidates := []nat.Candidate{hostCandidate, overlayCandidate, publicCandidate, relayCandidate}
 
 	newExecutorWithAgent := func(planID string, mode executionMode) (*executor, *recordingICEAgent) {
 		agent := &recordingICEAgent{
@@ -164,8 +201,40 @@ func TestRelayOnlyExecutorFiltersRemoteCandidates(t *testing.T) {
 		t.Fatalf("HandleMessage(direct) error = %v", err)
 	}
 	<-directAgent.connectCalled
-	if got := len(directAgent.remoteCandidates); got != 2 {
-		t.Fatalf("direct remote candidates = %d, want 2", got)
+	if got := len(directAgent.remoteCandidates); got != 4 {
+		t.Fatalf("direct remote candidates = %d, want 4", got)
+	}
+	if got := len(filterLocalCandidates(mixedCandidates, executorConfig{Mode: modeDirectPrefer})); got != 4 {
+		t.Fatalf("direct local candidates = %d, want 4", got)
+	}
+
+	publicDirectExec, publicDirectAgent := newExecutorWithAgent("legacyice/public_direct", modePublicDirect)
+	publicDirectPayload, err := marshalAnswerPayload(answerPayload{
+		SessionID: "session/node-a/node-b",
+		PlanID:    "legacyice/public_direct",
+		ICE: nat.ICESessionDescriptionPayload{
+			Ufrag:      "remote",
+			Pwd:        "remote-pwd",
+			Candidates: mixedCandidates,
+		},
+		SentAt: time.Now(),
+	})
+	if err != nil {
+		t.Fatalf("marshalAnswerPayload(public_direct) error = %v", err)
+	}
+	if err := publicDirectExec.HandleMessage(context.Background(), recordingSessionIO{}, NewMessage(MessageTypeAnswer, publicDirectPayload, time.Now())); err != nil {
+		t.Fatalf("HandleMessage(public_direct) error = %v", err)
+	}
+	<-publicDirectAgent.connectCalled
+	if got := len(publicDirectAgent.remoteCandidates); got != 1 {
+		t.Fatalf("public direct remote candidates = %d, want 1 public candidate", got)
+	}
+	if publicDirectAgent.remoteCandidates[0].Address.String() != publicCandidate.Address.String() {
+		t.Fatalf("public direct candidate = %v, want %v", publicDirectAgent.remoteCandidates[0].Address, publicCandidate.Address)
+	}
+	publicLocalCandidates := filterLocalCandidates(mixedCandidates, executorConfig{Mode: modePublicDirect})
+	if len(publicLocalCandidates) != 1 || publicLocalCandidates[0].Address.String() != publicCandidate.Address.String() {
+		t.Fatalf("public direct local candidates = %#v, want only %v", publicLocalCandidates, publicCandidate.Address)
 	}
 
 	relayExec, relayAgent := newExecutorWithAgent("legacyice/relay_only", modeRelayOnly)
@@ -192,4 +261,13 @@ func TestRelayOnlyExecutorFiltersRemoteCandidates(t *testing.T) {
 	if relayAgent.remoteCandidates[0].Type != nat.CandidateTypeRelay {
 		t.Fatalf("relay candidate type = %v, want %v", relayAgent.remoteCandidates[0].Type, nat.CandidateTypeRelay)
 	}
+}
+
+func stringSliceContains(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
 }

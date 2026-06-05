@@ -7,6 +7,7 @@ import (
 
 const (
 	planIDDirectPrefer = "legacyice/direct_prefer"
+	planIDPublicDirect = "legacyice/public_direct"
 	planIDRelayOnly    = "legacyice/relay_only"
 )
 
@@ -75,12 +76,12 @@ func collectRelevantObservationEvidence(input solver.SolveInput) []observationEv
 func (e *evidenceSummary) addObservation(evidence observationEvidence) {
 	obs := evidence.Observation
 	switch {
-	case obs.PlanID == planIDDirectPrefer && obs.Event == "candidate_failed":
+	case isDirectPlanID(obs.PlanID) && obs.Event == "candidate_failed":
 		e.DirectFailures++
 		if evidence.CanDrivePruning {
 			e.PruningDirectFailures++
 		}
-	case obs.PlanID == planIDDirectPrefer && isDirectSuccess(obs):
+	case isDirectPlanID(obs.PlanID) && isDirectSuccess(obs):
 		e.DirectSuccesses++
 		if evidence.CanDrivePruning {
 			e.PruningDirectSuccesses++
@@ -91,6 +92,10 @@ func (e *evidenceSummary) addObservation(evidence observationEvidence) {
 			e.PruningRelaySuccesses++
 		}
 	}
+}
+
+func isDirectPlanID(planID string) bool {
+	return planID == planIDDirectPrefer || planID == planIDPublicDirect
 }
 
 func (e *evidenceSummary) addProbeResult(result *solver.ProbeResultSummary) {

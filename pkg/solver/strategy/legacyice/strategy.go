@@ -35,7 +35,10 @@ func (s *Strategy) Plan(ctx context.Context, in solver.SolveInput) ([]solver.Pla
 	plans := s.basePlans()
 	evidence := summarizeSolveEvidence(in)
 	if evidence.strongRelayOnly() {
-		return annotatePlanEvidence([]solver.Plan{plans[1]}, evidence.hint()), nil
+		if plan, ok := findPlan(plans, planIDRelayOnly); ok {
+			return annotatePlanEvidence([]solver.Plan{plan}, evidence.hint()), nil
+		}
+		return nil, fmt.Errorf("legacyice: relay-only plan unavailable")
 	}
 
 	return annotatePlanEvidence(plans, evidence.hint()), nil
@@ -50,6 +53,15 @@ func (s *Strategy) basePlans() []solver.Plan {
 				"transport":   "ice_udp",
 				"mode":        string(modeDirectPrefer),
 				"description": "Prefer direct connection, allow relay fallback",
+			},
+		},
+		{
+			ID:       planIDPublicDirect,
+			Strategy: s.Name(),
+			Metadata: map[string]string{
+				"transport":   "ice_udp",
+				"mode":        string(modePublicDirect),
+				"description": "Try public direct candidates only",
 			},
 		},
 		{
@@ -76,6 +88,15 @@ func annotatePlanEvidence(plans []solver.Plan, hint string) []solver.Plan {
 		out = append(out, next)
 	}
 	return out
+}
+
+func findPlan(plans []solver.Plan, planID string) (solver.Plan, bool) {
+	for _, plan := range plans {
+		if plan.ID == planID {
+			return plan, true
+		}
+	}
+	return solver.Plan{}, false
 }
 
 func (s *Strategy) NewExecutor(plan solver.Plan) (solver.PlanExecutor, error) {

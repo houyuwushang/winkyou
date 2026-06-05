@@ -108,7 +108,7 @@ Xport Err
 - `Handshake: -` 且 `Conn Type: relay`：优先排查 coturn relay 端口范围
 - `Xport Tx` 增长但 `Xport Rx` 不增长：对端 client 可能未运行或 relay 回包失败
 - `State: connected` 但 ping 不通：检查双方虚拟 IP、系统防火墙和 ICMP 策略
-- 如果 `State: connected` 且 `Conn Type: direct`，但候选地址显示为 `100.64.0.0/10`、Tailscale、Docker bridge、其他 VPN/TAP 地址，这只能证明当前 path 不是 TURN relay；不能证明完全不借助已有 overlay。当前代码会把这类 direct-like path 标为带 dependency 的普通路径，不再把它暴露为 `protected_direct_path_id`。纯 NAT piercing 验证应使用 ICE interface include/exclude 或 candidate CIDR 过滤后重新测试。
+- 如果 `State: connected` 且 `Conn Type: direct`，但候选地址显示为 `100.64.0.0/10`、Tailscale、Docker bridge、其他 VPN/TAP 地址，这只能证明当前 path 不是 TURN relay；不能证明完全不借助已有 overlay。当前代码会把这类 direct-like path 标为带 dependency 的普通路径，不再把它暴露为 `protected_direct_path_id`。纯 NAT piercing 验证应优先查看 `legacyice/public_direct` 是否成功；它会排除私网、`100.64.0.0/10`、loopback、link-local、benchmark/overlay 等 candidate。如果该 plan 失败，说明当前环境下 WinkYou 尚未证明独立公网 direct path。
 当前可用过滤配置：
 
 ```yaml
@@ -122,6 +122,14 @@ nat:
 ```
 
 Windows 需要按真实接口名配置，例如 `Tailscale`、`vEthernet (WSL)` 或 Docker/Wintun 对应接口。过滤后重新启动两端 `wink up`，再用 `wink peers` 和 `wink doctor` 检查 selected candidate。
+
+默认 `legacy_ice_udp` 内部执行顺序为：
+
+```text
+legacyice/direct_prefer -> legacyice/public_direct -> legacyice/relay_only
+```
+
+`direct_prefer` 可能选中 natpierce、Tailscale、Docker bridge 或其他 overlay candidate；`public_direct` 才是用于验证双方是否能通过公网 UDP NAT piercing 形成独立 direct path 的 plan。
 
 ## 6. Strategy Selection
 

@@ -29,7 +29,7 @@ WinkYou = connectivity solver + secure WireGuard data plane
 - `wink doctor` 已提供 config、coordinator、TURN、本地接口、strategy、tunnel、transport 的分层诊断
 - `wink up/down/status/peers/logs` 已形成长期运行 CLI 工作流；Linux systemd 和 Windows 启动项文档已补齐
 - v0.1 release workflow 已能构建 Windows client、Linux client、Linux coordinator、Linux relay 和 SHA256SUMS
-- NAT/ICE 已支持 candidate interface include/exclude 和 candidate CIDR include/exclude；`wink doctor` 会展示过滤配置并检查 runtime candidate 是否命中排除 CIDR
+- NAT/ICE 已支持 candidate interface include/exclude 和 candidate CIDR include/exclude；`legacy_ice_udp` 现在会在普通 `direct_prefer` 后追加 `public_direct` 执行计划，用来排除私网、`100.64.0.0/10`、loopback、link-local 等 overlay/依赖不清的 candidate，再尝试独立公网 ICE direct；`wink doctor` 会展示过滤配置并检查 runtime candidate 是否命中排除 CIDR
 - 真实双节点验证已证明 `legacy_ice_udp` direct path 可以建立虚拟局域网；在已 bound 数据面上只停止 chen-win 的 coordinator 进程 15 秒后，`wink ping` 仍成功，说明基础 coordinator outage 已通过。但历史 selected pair 的 remote candidate 曾为 `100.102.17.35`，属于 `100.64.0.0/10`，这只能证明没有走 TURN relay，不能证明该 path 独立于 natpierce/chen-win underlay。client 已加第一层 peer-offline 保护、controlled-side retry、coordinator NotFound 重注册，并已在 runtime/`wink peers` 中暴露 control/data 状态和最近成功 path cache；`pkg/peercontrol` 消息模型已冻结，client 已接入最小 in-band heartbeat/path_health 循环，后续仍需覆盖更长时间 heartbeat/signaling failure 和 cached path 恢复；详见 [`docs/CONTROL-PLANE-RESILIENCE.md`](./docs/CONTROL-PLANE-RESILIENCE.md)
 
 当文档发生冲突时，以 [`docs/CONNECTIVITY-SOLVER-BASELINE.md`](./docs/CONNECTIVITY-SOLVER-BASELINE.md) 作为 session、solver、strategy 和 transport 边界的判断依据。部分历史架构文档已标记为 proposal/archive，不能覆盖 active baseline。
@@ -48,7 +48,7 @@ WinkYou = connectivity solver + secure WireGuard data plane
 
 当前真实 strategy：
 
-- `legacy_ice_udp`：兼容现有 ICE/UDP 路径，内部支持 `direct_prefer` 和 `relay_only` execution plan
+- `legacy_ice_udp`：兼容现有 ICE/UDP 路径，内部支持 `direct_prefer`、`public_direct` 和 `relay_only` execution plan
 - `relay_only`：第二个真实 strategy，是 `legacyice` 的 thin wrapper，强制 relay，并对外以 `relay_only` 出现在 capability、observation 和 path_commit 中
 - `tcp_framed`：alpha 非 UDP strategy，使用显式可达 TCP 地址和 `transport/framedstream` 适配器，不承诺 NAT TCP 打洞
 
@@ -132,6 +132,14 @@ nat:
 
 Windows 接口名应使用系统实际接口名称，例如 `Tailscale`、`vEthernet (WSL)` 或 Docker/Wintun 对应名称。`wink doctor` 会展示当前过滤配置，并在 runtime candidate 命中排除 CIDR 时报告失败。
 
+从当前版本起，`legacy_ice_udp` 默认会按顺序尝试：
+
+1. `legacyice/direct_prefer`：保留 ICE 默认行为，可能选中 NAT/overlay/100.64 direct-like path。
+2. `legacyice/public_direct`：排除私网、`100.64.0.0/10`、loopback、link-local、benchmark/overlay 等 candidate，只保留公网 direct 候选。
+3. `legacyice/relay_only`：强制 TURN relay fallback。
+
+这让 WinkYou 会主动尝试类似 natpierce 能打通的公网 UDP NAT piercing 路径；但如果双方 NAT 类型、运营商映射或防火墙不允许，`public_direct` 仍会失败并继续走后续 fallback。
+
 尚未完成：
 
 - no-admin mode
@@ -143,7 +151,7 @@ Windows 接口名应使用系统实际接口名称，例如 `Tailscale`、`vEthe
 - protected direct multipath：v0.2 freeze gate 已定义；后续重点是真实设备报告、protected direct standby 验证和 failover 边界收敛，见 [`docs/V0.2-MULTIPATH-FREEZE.md`](./docs/V0.2-MULTIPATH-FREEZE.md)
 - coordinator 断线后保持已 bound 数据面的完整控制面韧性：基础 kill-coordinator 验证已通过；peer-offline 误清理、controlled-side retry、coordinator NotFound 重注册和 runtime control/data/path cache 已先修；更长时间 heartbeat/signaling failure、cached path 恢复仍待完成
 - 已建立虚拟网后的 in-band peer control channel 已接入最小 heartbeat/path_health 运行时循环；后续仍需更长时间真实设备验证和恢复策略收敛
-- 真实环境下排除 Tailscale、Docker bridge、其他 VPN/TAP 后的纯 NAT piercing 验证
+- 真实环境下 `legacyice/public_direct` 排除 Tailscale、Docker bridge、其他 VPN/TAP 后的双端公网 NAT piercing 验证
 - GUI、移动端、原生 Windows service
 
 ## 架构边界

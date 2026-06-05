@@ -362,14 +362,20 @@ func TestLegacyICEStrategyConfigPropagatesCandidateFilters(t *testing.T) {
 	}
 
 	cfg := eng.legacyICEStrategyConfig()
-	if _, err := cfg.NewICEAgent(context.Background(), legacyice.AgentRequest{Controlling: true}); err != nil {
+	if _, err := cfg.NewICEAgent(context.Background(), legacyice.AgentRequest{
+		Controlling:          true,
+		CandidateCIDRExclude: []string{"198.18.0.0/15"},
+	}); err != nil {
 		t.Fatalf("NewICEAgent() error = %v", err)
 	}
 	got := recorder.cfg
 	if got.CandidateInterfaceInclude[0] != "Ethernet" || got.CandidateInterfaceExclude[0] != "tailscale0" {
 		t.Fatalf("interface filters = include=%#v exclude=%#v", got.CandidateInterfaceInclude, got.CandidateInterfaceExclude)
 	}
-	if got.CandidateCIDRInclude[0] != "192.168.0.0/16" || got.CandidateCIDRExclude[0] != "100.64.0.0/10" {
+	if got.CandidateCIDRInclude[0] != "192.168.0.0/16" ||
+		len(got.CandidateCIDRExclude) != 2 ||
+		got.CandidateCIDRExclude[0] != "100.64.0.0/10" ||
+		got.CandidateCIDRExclude[1] != "198.18.0.0/15" {
 		t.Fatalf("cidr filters = include=%#v exclude=%#v", got.CandidateCIDRInclude, got.CandidateCIDRExclude)
 	}
 }

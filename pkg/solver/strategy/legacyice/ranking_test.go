@@ -28,7 +28,7 @@ func TestStrategyRankPlansPrefersRelayAfterDirectFailures(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RankPlans() error = %v", err)
 	}
-	if !slices.Equal(planIDs(ranked.Plans), []string{"legacyice/relay_only", "legacyice/direct_prefer"}) {
+	if !slices.Equal(planIDs(ranked.Plans), []string{planIDRelayOnly, planIDDirectPrefer, planIDPublicDirect}) {
 		t.Fatalf("ranked plans = %v, want relay_only first", planIDs(ranked.Plans))
 	}
 	if ranked.Reason != "recent_direct_failure_with_relay_success" {
@@ -137,7 +137,7 @@ func TestStrategyRankPlansCanUseUnscopedRemoteEvidenceAsWeakHint(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RankPlans() error = %v", err)
 	}
-	if !slices.Equal(planIDs(ranked.Plans), []string{planIDRelayOnly, planIDDirectPrefer}) {
+	if !slices.Equal(planIDs(ranked.Plans), []string{planIDRelayOnly, planIDDirectPrefer, planIDPublicDirect}) {
 		t.Fatalf("ranked plans = %v, want weak relay hint to rank relay first", planIDs(ranked.Plans))
 	}
 	if ranked.Reason != "recent_direct_failure_with_relay_success" {
@@ -147,8 +147,9 @@ func TestStrategyRankPlansCanUseUnscopedRemoteEvidenceAsWeakHint(t *testing.T) {
 
 func defaultPlans() []solver.Plan {
 	return []solver.Plan{
-		{ID: "legacyice/direct_prefer", Strategy: StrategyName},
-		{ID: "legacyice/relay_only", Strategy: StrategyName},
+		{ID: planIDDirectPrefer, Strategy: StrategyName},
+		{ID: planIDPublicDirect, Strategy: StrategyName},
+		{ID: planIDRelayOnly, Strategy: StrategyName},
 	}
 }
 

@@ -24,8 +24,8 @@ func TestStrategyPlanKeepsDefaultWithoutStrongEvidence(t *testing.T) {
 		t.Fatalf("Plan() error = %v", err)
 	}
 
-	if !slices.Equal(planIDs(plans), []string{planIDDirectPrefer, planIDRelayOnly}) {
-		t.Fatalf("plans = %v, want conservative direct+relay fallback", planIDs(plans))
+	if !slices.Equal(planIDs(plans), planIDs(defaultPlans())) {
+		t.Fatalf("plans = %v, want conservative direct+public-direct+relay fallback", planIDs(plans))
 	}
 	if got := plans[0].Metadata["evidence_hint"]; got != "insufficient_evidence" {
 		t.Fatalf("direct plan evidence_hint = %q, want insufficient_evidence", got)
@@ -109,8 +109,8 @@ func TestStrategyPlanIgnoresRemoteRelayEvidenceFromOtherSessionForPruning(t *tes
 		t.Fatalf("Plan() error = %v", err)
 	}
 
-	if !slices.Equal(planIDs(plans), []string{planIDDirectPrefer, planIDRelayOnly}) {
-		t.Fatalf("plans = %v, want direct+relay when remote evidence is from another session", planIDs(plans))
+	if !slices.Equal(planIDs(plans), planIDs(defaultPlans())) {
+		t.Fatalf("plans = %v, want direct+public-direct+relay when remote evidence is from another session", planIDs(plans))
 	}
 	if got := plans[0].Metadata["evidence_hint"]; got != "insufficient_evidence" {
 		t.Fatalf("direct plan evidence_hint = %q, want insufficient_evidence", got)
@@ -134,8 +134,8 @@ func TestStrategyPlanIgnoresRemoteRelayEvidenceFromOtherPeerForPruning(t *testin
 		t.Fatalf("Plan() error = %v", err)
 	}
 
-	if !slices.Equal(planIDs(plans), []string{planIDDirectPrefer, planIDRelayOnly}) {
-		t.Fatalf("plans = %v, want direct+relay when remote evidence is from another peer", planIDs(plans))
+	if !slices.Equal(planIDs(plans), planIDs(defaultPlans())) {
+		t.Fatalf("plans = %v, want direct+public-direct+relay when remote evidence is from another peer", planIDs(plans))
 	}
 	if got := plans[0].Metadata["evidence_hint"]; got != "insufficient_evidence" {
 		t.Fatalf("direct plan evidence_hint = %q, want insufficient_evidence", got)
@@ -159,8 +159,8 @@ func TestStrategyPlanDoesNotPruneDirectFromUnscopedRemoteRelayEvidence(t *testin
 		t.Fatalf("Plan() error = %v", err)
 	}
 
-	if !slices.Equal(planIDs(plans), []string{planIDDirectPrefer, planIDRelayOnly}) {
-		t.Fatalf("plans = %v, want direct+relay when remote evidence is unscoped", planIDs(plans))
+	if !slices.Equal(planIDs(plans), planIDs(defaultPlans())) {
+		t.Fatalf("plans = %v, want direct+public-direct+relay when remote evidence is unscoped", planIDs(plans))
 	}
 	if got := plans[0].Metadata["evidence_hint"]; got == "strong_relay_only" {
 		t.Fatalf("direct plan evidence_hint = %q, want non-destructive hint", got)
@@ -183,8 +183,8 @@ func TestStrategyPlanKeepsDirectFirstAfterDirectSuccess(t *testing.T) {
 		t.Fatalf("Plan() error = %v", err)
 	}
 
-	if !slices.Equal(planIDs(plans), []string{planIDDirectPrefer, planIDRelayOnly}) {
-		t.Fatalf("plans = %v, want direct-first dual plan after direct success", planIDs(plans))
+	if !slices.Equal(planIDs(plans), planIDs(defaultPlans())) {
+		t.Fatalf("plans = %v, want direct-first plan order after direct success", planIDs(plans))
 	}
 	if got := plans[0].Metadata["evidence_hint"]; got != "direct_success" {
 		t.Fatalf("direct plan evidence_hint = %q, want direct_success", got)
