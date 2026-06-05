@@ -97,6 +97,8 @@ func (e *engine) connectivityStrategyOrder() []string {
 	}
 	if e.relayOnlyMode() {
 		order = preferRelayOnly(order)
+	} else if e.preferRelayForSymmetricNAT() {
+		order = preferRelayOnly(order)
 	}
 	return ensureLegacyFallback(order)
 }
@@ -104,6 +106,16 @@ func (e *engine) connectivityStrategyOrder() []string {
 func (e *engine) relayOnlyMode() bool {
 	mode := strings.ToLower(strings.TrimSpace(e.cfg.Connectivity.Mode))
 	return mode == relayonly.StrategyName || e.cfg.NAT.ForceRelay
+}
+
+func (e *engine) preferRelayForSymmetricNAT() bool {
+	if !strings.EqualFold(strings.TrimSpace(e.cfg.Connectivity.Mode), "auto") {
+		return false
+	}
+	e.mu.RLock()
+	natType := strings.TrimSpace(e.status.NATType)
+	e.mu.RUnlock()
+	return natType == nat.NATTypeSymmetric.String()
 }
 
 func (e *engine) legacyICEStrategyConfig() legacyice.Config {

@@ -177,6 +177,35 @@ func TestEngineStrategyResolverOrdersRelayOnlyFromScopedObservations(t *testing.
 	}
 }
 
+func TestEngineStrategyResolverPrefersRelayFirstForSymmetricNAT(t *testing.T) {
+	eng := &engine{cfg: config.Default()}
+	eng.status.NATType = nat.NATTypeSymmetric.String()
+	resolver := eng.newStrategyResolver()
+	ordered, ok := resolver.(sesspkg.OrderedStrategyResolver)
+	if !ok {
+		t.Fatalf("resolver %T does not implement OrderedStrategyResolver", resolver)
+	}
+
+	capability := resolver.LocalCapability()
+	if got, want := capability.Strategies, []string{relayonly.StrategyName, legacyice.StrategyName}; !slices.Equal(got, want) {
+		t.Fatalf("LocalCapability().Strategies = %#v, want %#v", got, want)
+	}
+
+	candidates, err := ordered.ResolveAll(sesspkg.ResolveInput{
+		SessionID:        "session/node-a/node-b",
+		LocalNodeID:      "node-a",
+		PeerID:           "node-b",
+		Initiator:        true,
+		RemoteCapability: rproto.Capability{Strategies: []string{legacyice.StrategyName, relayonly.StrategyName}},
+	})
+	if err != nil {
+		t.Fatalf("ResolveAll() error = %v", err)
+	}
+	if got, want := resolverCandidateNames(candidates), []string{relayonly.StrategyName, legacyice.StrategyName}; !slices.Equal(got, want) {
+		t.Fatalf("ResolveAll() candidates = %#v, want %#v", got, want)
+	}
+}
+
 func TestEngineStrategyResolverConnectivityRelayOnlyModePrefersRelayOnly(t *testing.T) {
 	cfg := config.Default()
 	cfg.Connectivity.Mode = relayonly.StrategyName
