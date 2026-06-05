@@ -249,25 +249,50 @@ func defaultSTUNProbe(ctx context.Context, cfg *config.Config) doctorCheck {
 		return warnCheck("nat", "stun", "no STUN server configured", "configure nat.stun_servers, configure UDP nat.turn_servers for coturn STUN binding, or use TURN/relay_only")
 	}
 
-	errs := make([]string, 0, len(servers))
-	for _, server := range servers {
-		server = strings.TrimSpace(server)
-		if server == "" {
-			continue
-		}
-		probeCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
-		result, err := nat.ProbeSTUN(probeCtx, server)
-		cancel()
-		if err != nil {
-			errs = append(errs, fmt.Sprintf("%s: %v", server, err))
-			continue
-		}
-		return okCheck("nat", "stun", fmt.Sprintf("mapped %s from local %s via %s", formatUDPAddr(result.MappedAddr), formatUDPAddr(result.LocalAddr), formatUDPAddr(result.ServerAddr)))
-	}
-	if len(errs) == 0 {
+	servers = normalizeStringList(servers)
+	if len(servers) == 0 {
 		return warnCheck("nat", "stun", "no usable STUN server configured", "remove empty nat.stun_servers entries or configure a reachable STUN/UDP TURN server")
 	}
-	return warnCheck("nat", "stun", "all STUN probes failed: "+strings.Join(errs, "; "), "configure a reachable STUN server near both peers, or use TURN/relay_only")
+	probeCtx, cancel := context.WithTimeout(ctx, stunMappingProbeTimeout(len(servers)))
+	report, err := nat.ProbeSTUNMapping(probeCtx, servers)
+	cancel()
+	if err != nil {
+		return warnCheck("nat", "stun", "all STUN probes failed: "+formatSTUNMappingReport(report), "configure a reachable STUN server near both peers, or use TURN/relay_only")
+	}
+	message := fmt.Sprintf("nat_type=%s %s", report.NATType.String(), formatSTUNMappingReport(report))
+	if report.NATType == nat.NATTypeSymmetric {
+		return warnCheck("nat", "stun", message, "public direct may fail with endpoint-dependent mappings; compare natpierce endpoints, configure stable public_endpoint_hints if available, or use relay_only fallback")
+	}
+	return okCheck("nat", "stun", message)
+}
+
+func stunMappingProbeTimeout(serverCount int) time.Duration {
+	if serverCount <= 0 {
+		return 2 * time.Second
+	}
+	timeout := time.Duration(serverCount) * 2 * time.Second
+	if timeout > 6*time.Second {
+		return 6 * time.Second
+	}
+	return timeout
+}
+
+func formatSTUNMappingReport(report nat.STUNMappingReport) string {
+	parts := make([]string, 0, len(report.Probes))
+	for _, probe := range report.Probes {
+		parts = append(parts, formatSTUNMappingProbe(probe))
+	}
+	if len(parts) == 0 {
+		return "no probe results"
+	}
+	return strings.Join(parts, "; ")
+}
+
+func formatSTUNMappingProbe(probe nat.STUNMappingProbe) string {
+	if strings.TrimSpace(probe.Error) != "" {
+		return fmt.Sprintf("%s error=%s", dashIfEmpty(probe.Server), probe.Error)
+	}
+	return fmt.Sprintf("%s mapped %s from local %s via %s", dashIfEmpty(probe.Server), formatUDPAddr(probe.MappedAddr), formatUDPAddr(probe.LocalAddr), formatUDPAddr(probe.ServerAddr))
 }
 
 func doctorNATTURNServers(servers []config.TURNServerConfig) []nat.TURNServer {

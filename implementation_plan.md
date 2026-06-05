@@ -433,6 +433,7 @@ Phase 3A (Strategy Portfolio Foundation) 已完成。以下是我基于代码现
 - coordinator client 已新增 heartbeat NotFound 恢复路径：当 coordinator 重启或持久化 store 恢复后发现当前 node 不存在时，client 会关闭旧 signal stream 并使用最近一次 register 请求重新注册。
 - 2026-06-05 起，`legacyice/public_direct` 的 Pion ICE 配置会在收到 STUN Binding Request 并形成公网 peer-reflexive 候选对时切换 selected pair；relay、私网、`100.64.0.0/10`、loopback、link-local、multicast 和 `198.18.0.0/15` 地址不会触发该切换。这是对“natpierce 能打通则 WinkYou 也应继续尝试公网 UDP NAT piercing”的最小策略补强，但仍需要两端部署新版本后做真实验证。
 - 2026-06-06 起，`legacyice/public_direct` 默认不在 natpierce、Tailscale、ZeroTier、Docker/vEthernet、Wintun/WinkYou 等疑似外部 overlay/虚拟接口上 gather candidate。普通 `direct_prefer` 仍可用这些路径先保活，但 `public_direct` 不再把外部 overlay 接口当作 protected-direct 证明来源。
+- 2026-06-06 起，`wink doctor` 的 STUN 检查会复用同一个本地 UDP socket 探测多个 public-direct STUN 来源，并报告 `nat_type` 与每个 mapped endpoint。如果同一 socket 到不同 STUN 目的地得到不同公网映射，会显示 `nat_type=symmetric`，用于解释为什么标准 STUN/srflx public-direct 可能无法复现 natpierce 的打洞路径。
 - 2026-06-05 起，client 在 peer 已 bound 但 path 不是 `protected_direct` 时，会保留现有数据面并后台继续尝试 protected-direct improvement；失败的临时 transport 会关闭，旧 path 不变，只有新结果明确为 `protected_direct` 时才替换 tunnel peer transport。
 
 2026-06-04 后续验证中，已能通过 SSH 密码登录 `chen-win` 并确认 `wink-coordinator` 进程可被单独停止。排查中先发现本机验证版 client 重启后数据面未重新达到 bound/handshake，原因是 chen-win coordinator 使用 memory store，重启后 `ListPeers` 为空，旧 client 不会自动重新注册。随后 chen-win coordinator scheduled task 已切换到 SQLite store，并按原 public key 顺序恢复 `inner-b=node-000001/10.88.0.1`、`local-a=node-000002/10.88.0.2`。

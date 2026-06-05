@@ -128,6 +128,32 @@ func TestDefaultSTUNProbeUsesUDPTURNAsPublicDirectHint(t *testing.T) {
 	}
 }
 
+func TestDefaultSTUNProbeWarnsOnUnstableMapping(t *testing.T) {
+	first := startDoctorFakeSTUNServer(t, net.IPv4(198, 51, 100, 44), 45678)
+	defer first.Close()
+	second := startDoctorFakeSTUNServer(t, net.IPv4(198, 51, 100, 44), 45679)
+	defer second.Close()
+
+	cfg := config.Default()
+	cfg.NAT.STUNServers = []string{first.LocalAddr().String(), second.LocalAddr().String()}
+	cfg.NAT.TURNServers = nil
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	check := defaultSTUNProbe(ctx, &cfg)
+	if check.Status != doctorWarn {
+		t.Fatalf("defaultSTUNProbe() = %#v, want warning for unstable mapping", check)
+	}
+	if !strings.Contains(check.Message, "nat_type=symmetric") ||
+		!strings.Contains(check.Message, "mapped 198.51.100.44:45678") ||
+		!strings.Contains(check.Message, "mapped 198.51.100.44:45679") {
+		t.Fatalf("defaultSTUNProbe() message = %q, want symmetric mapping details", check.Message)
+	}
+	if !strings.Contains(check.Suggestion, "public direct may fail") {
+		t.Fatalf("defaultSTUNProbe() suggestion = %q, want public-direct warning", check.Suggestion)
+	}
+}
+
 func TestDoctorTunnelPermissionFail(t *testing.T) {
 	configPath := writeDoctorConfig(t)
 	probes := healthyDoctorProbes()

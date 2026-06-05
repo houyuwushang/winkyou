@@ -26,7 +26,7 @@ WinkYou = connectivity solver + secure WireGuard data plane
 - `connectivity.mode: relay_only` 会把生产 strategy 顺序切到 `relay_only` -> `legacy_ice_udp`
 - 旧的 `nat.force_relay: true` 仍兼容映射到 relay-only 行为
 - 旧 peer 空 capability 仍会隐式 fallback 到 `legacy_ice_udp`
-- `wink doctor` 已提供 config、coordinator、STUN、TURN、本地接口、strategy、routing、tunnel、transport 的分层诊断；STUN 检查会尝试 binding probe 并显示本机映射地址，`public direct evidence` 检查会读取 observation history，说明 `legacyice/public_direct` 是未尝试、无可用公网候选、ICE 检查失败，还是已证明 `protected_direct`；`--route-target <ip>` 可以检查访问某个目标 IP 时当前操作系统实际选中的接口/本地地址/下一跳，并在命中 natpierce、Tailscale、Docker 等外部 overlay 接口时给出 warning
+- `wink doctor` 已提供 config、coordinator、STUN、TURN、本地接口、strategy、routing、tunnel、transport 的分层诊断；STUN 检查会用同一个本地 UDP socket 探测多个 public-direct STUN 来源，显示本机映射地址并提示映射是否稳定；`public direct evidence` 检查会读取 observation history，说明 `legacyice/public_direct` 是未尝试、无可用公网候选、ICE 检查失败，还是已证明 `protected_direct`；`--route-target <ip>` 可以检查访问某个目标 IP 时当前操作系统实际选中的接口/本地地址/下一跳，并在命中 natpierce、Tailscale、Docker 等外部 overlay 接口时给出 warning
 - `wink up/down/status/peers/logs` 已形成长期运行 CLI 工作流；Linux systemd 和 Windows 启动项文档已补齐
 - v0.1 release workflow 已能构建 Windows client、Linux client、Linux coordinator、Linux relay 和 SHA256SUMS
 - NAT/ICE 已支持 candidate interface include/exclude 和 candidate CIDR include/exclude；`legacy_ice_udp` 现在会在普通 `direct_prefer` 后追加 `public_direct` 执行计划，用来排除私网、`100.64.0.0/10`、loopback、link-local 等 overlay/依赖不清的 candidate，并默认避开 natpierce、Tailscale、Docker/vEthernet、Wintun/WinkYou 等外部 overlay/虚拟接口，再尝试独立公网 ICE direct；`wink doctor` 会展示过滤配置并检查 runtime candidate 是否命中排除 CIDR
@@ -184,7 +184,7 @@ nat:
 - `remote_candidates_filtered`：收到远端 offer/answer/candidate 后的过滤统计。
 - `candidate_total`、`candidate_kept`、`candidate_rejected`、`candidate_reject_reasons` 可用于判断是没有采到公网候选、候选被 `public_direct` 规则过滤，还是候选保留下来后 ICE 连通检查失败。`candidate_kept_samples` 会保留少量候选样本；带 local base 的 hint 会显示为 `srflx:公网ip:端口<-本地ip:端口`，便于和 natpierce 或路由器日志对比。
 
-`wink doctor` 也会对 public-direct 的有效 STUN 来源做一次 binding probe：包括 `nat.stun_servers`，以及从 UDP TURN URL 派生出的同 host/port STUN binding URL。自托管场景中，只配置 coturn 也能用同一个 UDP 入口检查 srflx 映射，但 `public_direct` 不会使用 TURN relay candidate。如果 STUN probe 已经失败，`legacyice/public_direct` 很可能无法采集到 server-reflexive candidate。如果 doctor 显示 `candidate_kept=0`，则按本端 gather 或远端过滤结果继续排查。此时应先换成两端都可达的 STUN/UDP TURN 服务、检查 UDP 出站和防火墙，或改用 TURN/`relay_only`。
+`wink doctor` 也会对 public-direct 的有效 STUN 来源做 binding probe：包括 `nat.stun_servers`，以及从 UDP TURN URL 派生出的同 host/port STUN binding URL。该检查会复用同一个本地 UDP socket 探测多个来源，并输出 `nat_type` 和每个来源看到的 mapped endpoint；如果显示 `nat_type=symmetric`，说明同一 socket 到不同 STUN 目的地的公网映射不一致，`public_direct` 可能需要稳定 `public_endpoint_hints`、更强 rendezvous/punch 机制，或继续使用 TURN/`relay_only` fallback。自托管场景中，只配置 coturn 也能用同一个 UDP 入口检查 srflx 映射，但 `public_direct` 不会使用 TURN relay candidate。如果 STUN probe 已经失败，`legacyice/public_direct` 很可能无法采集到 server-reflexive candidate。如果 doctor 显示 `candidate_kept=0`，则按本端 gather 或远端过滤结果继续排查。此时应先换成两端都可达的 STUN/UDP TURN 服务、检查 UDP 出站和防火墙，或改用 TURN/`relay_only`。
 
 从当前版本起，`legacy_ice_udp` 默认会按顺序尝试：
 

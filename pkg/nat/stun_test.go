@@ -161,6 +161,48 @@ func TestProbeSTUNLocalServer(t *testing.T) {
 	}
 }
 
+func TestProbeSTUNMappingDetectsSymmetricMapping(t *testing.T) {
+	s1 := startFakeSTUNServer(t, net.IPv4(203, 0, 113, 1), 10001)
+	defer s1.Close()
+	s2 := startFakeSTUNServer(t, net.IPv4(203, 0, 113, 1), 20002)
+	defer s2.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	report, err := ProbeSTUNMapping(ctx, []string{s1.LocalAddr().String(), s2.LocalAddr().String()})
+	if err != nil {
+		t.Fatalf("ProbeSTUNMapping() error: %v", err)
+	}
+	if report.NATType != NATTypeSymmetric {
+		t.Fatalf("NATType = %v, want symmetric", report.NATType)
+	}
+	if len(report.Probes) != 2 {
+		t.Fatalf("probe count = %d, want 2", len(report.Probes))
+	}
+	if report.Probes[0].LocalAddr == nil || report.Probes[1].LocalAddr == nil || report.Probes[0].LocalAddr.String() != report.Probes[1].LocalAddr.String() {
+		t.Fatalf("local socket not reused: %#v", report.Probes)
+	}
+}
+
+func TestProbeSTUNMappingKeepsConsistentMappingUnknown(t *testing.T) {
+	s1 := startFakeSTUNServer(t, net.IPv4(203, 0, 113, 1), 55555)
+	defer s1.Close()
+	s2 := startFakeSTUNServer(t, net.IPv4(203, 0, 113, 1), 55555)
+	defer s2.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	report, err := ProbeSTUNMapping(ctx, []string{s1.LocalAddr().String(), s2.LocalAddr().String()})
+	if err != nil {
+		t.Fatalf("ProbeSTUNMapping() error: %v", err)
+	}
+	if report.NATType != NATTypeUnknown {
+		t.Fatalf("NATType = %v, want unknown for consistent non-local mapping", report.NATType)
+	}
+}
+
 func TestStunBindTimeout(t *testing.T) {
 	// Server that never responds.
 	serverConn, err := net.ListenPacket("udp4", "127.0.0.1:0")
