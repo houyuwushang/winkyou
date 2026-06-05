@@ -1558,6 +1558,12 @@ func candidateFilterSummary(cfg *config.Config) string {
 	if len(cfg.NAT.PublicEndpointHints) > 0 {
 		parts = append(parts, "public_endpoint_hints="+strings.Join(cfg.NAT.PublicEndpointHints, ","))
 	}
+	if cfg.NAT.AutoPublicEndpointHints {
+		parts = append(parts, "auto_public_endpoint_hints=true")
+	}
+	if cfg.NAT.PublicEndpointHintPortWindow > 0 {
+		parts = append(parts, fmt.Sprintf("public_endpoint_hint_port_window=%d", cfg.NAT.PublicEndpointHintPortWindow))
+	}
 	if len(cfg.NAT.DirectTrustedCIDRs) > 0 {
 		parts = append(parts, "direct_trusted_cidrs="+strings.Join(cfg.NAT.DirectTrustedCIDRs, ","))
 	}
