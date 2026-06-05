@@ -291,7 +291,7 @@ func (t *Transport) shadowWrite(ctx context.Context, activeID string, pkt []byte
 		return
 	}
 	for _, state := range t.snapshotPaths() {
-		if state.path.ID == activeID || !isProtectedDirectPath(state.path) {
+		if state.path.ID == activeID {
 			continue
 		}
 		if err := t.writePath(ctx, state, pkt); err != nil {

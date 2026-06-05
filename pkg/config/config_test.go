@@ -128,6 +128,9 @@ func TestDefaultConnectivityPolicy(t *testing.T) {
 	if cfg.Connectivity.Multipath.MaxPaths != 2 {
 		t.Fatalf("default multipath.max_paths = %d, want 2", cfg.Connectivity.Multipath.MaxPaths)
 	}
+	if !cfg.Connectivity.Multipath.ShadowWrite {
+		t.Fatal("default multipath.shadow_write = false, want true")
+	}
 }
 
 func TestValidateRejectsUnknownConnectivityStrategy(t *testing.T) {

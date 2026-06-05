@@ -200,12 +200,14 @@ func TestCloseClosesAllChildren(t *testing.T) {
 	}
 }
 
-func TestShadowWriteCopiesToProtectedDirect(t *testing.T) {
+func TestShadowWriteCopiesToStandbyPaths(t *testing.T) {
 	primary := newFakePacketTransport("primary")
-	standby := newFakePacketTransport("standby")
+	directStandby := newFakePacketTransport("direct-standby")
+	relayStandby := newFakePacketTransport("relay-standby")
 	mp := newTestTransport(t, []Path{
 		testPath("primary", solver.PathRolePrimaryCandidate, primary, 100),
-		testPath("standby", solver.PathRoleProtectedDirect, standby, 10),
+		testPath("direct-standby", solver.PathRoleProtectedDirect, directStandby, 10),
+		testPath("relay-standby", solver.PathRoleStandby, relayStandby, 5),
 	}, solver.PathPolicy{ShadowWrite: true})
 	defer mp.Close()
 
@@ -215,8 +217,11 @@ func TestShadowWriteCopiesToProtectedDirect(t *testing.T) {
 	if got := primary.writeCount(); got != 1 {
 		t.Fatalf("primary writes = %d, want 1", got)
 	}
-	if got := standby.writeCount(); got != 1 {
-		t.Fatalf("standby writes = %d, want 1", got)
+	if got := directStandby.writeCount(); got != 1 {
+		t.Fatalf("direct standby writes = %d, want 1", got)
+	}
+	if got := relayStandby.writeCount(); got != 1 {
+		t.Fatalf("relay standby writes = %d, want 1", got)
 	}
 }
 

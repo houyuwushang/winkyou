@@ -70,6 +70,7 @@ func Default() Config {
 				Enabled:       true,
 				ProtectDirect: true,
 				MaxPaths:      defaultMultipathMaxPaths,
+				ShadowWrite:   true,
 			},
 		},
 		TCPFramed: TCPFramedConfig{

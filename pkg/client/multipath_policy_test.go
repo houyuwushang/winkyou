@@ -32,6 +32,9 @@ func TestEngineMultipathPathPolicyDefaultsProtectedDirect(t *testing.T) {
 	if !policy.ProtectDirect || policy.MaxPaths != 2 {
 		t.Fatalf("default policy = %+v, want protect_direct=true max_paths=2", policy)
 	}
+	if !policy.ShadowWrite {
+		t.Fatalf("default policy = %+v, want shadow_write=true", policy)
+	}
 }
 
 func TestEngineMultipathPathPolicyDisabledForRelayOnlyMode(t *testing.T) {

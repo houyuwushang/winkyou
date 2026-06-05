@@ -67,10 +67,10 @@ connectivity:
     enabled: true
     protect_direct: true
     max_paths: 2
-    shadow_write: false
+    shadow_write: true
 ```
 
-默认 `auto` 模式会保守启用 protected-direct multipath：最多保留 primary + 一条 standby，不做 shadow write。session 会执行预算内候选，而不是在第一个 direct 成功后立刻停止；legacy ICE 会把 selected pair 的 RTT 写入 path metrics，让低延迟 relay/其他 path 和高延迟 direct 能参与同一轮评分。这样当 `legacyice/direct_prefer` 选中了低延迟但依赖不清的 path，而 `legacyice/public_direct` 或后续 direct path 也成功时，client 会把它们组合成一个 `multipath` transport 绑定给 WireGuard。
+默认 `auto` 模式会启用 protected-direct multipath：最多保留 primary + 一条 standby，并默认开启 shadow write，让 standby path 也持续收到数据包，从而维持 NAT/relay 状态。session 会执行预算内候选，而不是在第一个 direct 成功后立刻停止；legacy ICE 会把 selected pair 的 RTT 写入 path metrics，让低延迟 relay/其他 path 和高延迟 direct 能参与同一轮评分。这样当 `legacyice/direct_prefer` 选中了低延迟但依赖不清的 path，而 `legacyice/public_direct` 或后续 direct path 也成功时，client 会把它们组合成一个 `multipath` transport 绑定给 WireGuard。
 
 如果初始绑定只拿到了 relay 或依赖不清的 direct-like path，client 不会把它当作最终状态停止。它会在保持现有 WireGuard 数据面的同时继续调度 protected-direct improvement；尝试失败时关闭临时 transport 并保留旧 path，尝试成功且 path summary 明确为 `protected_direct` 时再替换 tunnel peer 的 transport。需要回退到旧单路径行为时，可以显式设置 `connectivity.multipath.enabled: false`。
 

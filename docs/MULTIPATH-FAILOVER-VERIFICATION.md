@@ -30,7 +30,7 @@ connectivity:
     enabled: true
     protect_direct: true
     max_paths: 2
-    shadow_write: false
+    shadow_write: true
 ```
 
 The script checks these runtime conditions before it will continue:
