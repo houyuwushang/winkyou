@@ -47,6 +47,9 @@ type PathSummary struct {
 	ConnectionType string
 	RemoteAddr     net.Addr
 	Details        map[string]string
+	Role           PathRole
+	Dependencies   []PathDependency
+	Metrics        map[string]string
 }
 
 type Result struct {
