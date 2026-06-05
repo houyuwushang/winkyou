@@ -59,6 +59,55 @@ func TestStrategyRankPlansKeepsDirectFirstAfterDirectSuccess(t *testing.T) {
 	}
 }
 
+func TestStrategyRankPlansTreatsDirectPreferRelaySuccessAsRelayEvidence(t *testing.T) {
+	strategy := New(Config{})
+	plans := defaultPlans()
+
+	ranked, err := strategy.RankPlans(context.Background(), solver.RankInput{
+		LocalNodeID:      "node-a",
+		SessionID:        "session/node-a/node-b",
+		RemoteNodeID:     "node-b",
+		RemoteCapability: rproto.Capability{Strategies: []string{StrategyName}},
+		LocalObservations: []solver.Observation{
+			observationForRanking(planIDDirectPrefer, "candidate_failed", "", "node-b"),
+			observationForRanking(planIDDirectPrefer, "candidate_succeeded", "relay", "node-b"),
+		},
+	}, plans)
+	if err != nil {
+		t.Fatalf("RankPlans() error = %v", err)
+	}
+	if !slices.Equal(planIDs(ranked.Plans), []string{planIDRelayOnly, planIDDirectPrefer, planIDPublicDirect}) {
+		t.Fatalf("ranked plans = %v, want relay_only first after direct_prefer relay success", planIDs(ranked.Plans))
+	}
+	if ranked.Reason != "recent_direct_failure_with_relay_success" {
+		t.Fatalf("Reason = %q, want recent_direct_failure_with_relay_success", ranked.Reason)
+	}
+}
+
+func TestStrategyRankPlansKeepsDirectFirstAfterPublicDirectSuccess(t *testing.T) {
+	strategy := New(Config{})
+	plans := defaultPlans()
+
+	ranked, err := strategy.RankPlans(context.Background(), solver.RankInput{
+		LocalNodeID:  "node-a",
+		SessionID:    "session/node-a/node-b",
+		RemoteNodeID: "node-b",
+		LocalObservations: []solver.Observation{
+			observationForRanking(planIDPublicDirect, "candidate_succeeded", "direct", "node-b"),
+			observationForRanking(planIDRelayOnly, "candidate_succeeded", "relay", "node-b"),
+		},
+	}, plans)
+	if err != nil {
+		t.Fatalf("RankPlans() error = %v", err)
+	}
+	if !slices.Equal(planIDs(ranked.Plans), planIDs(plans)) {
+		t.Fatalf("ranked plans = %v, want default order after public direct success", planIDs(ranked.Plans))
+	}
+	if ranked.Reason != "recent_direct_success" {
+		t.Fatalf("Reason = %q, want recent_direct_success", ranked.Reason)
+	}
+}
+
 func TestStrategyRankPlansKeepsDefaultWithoutHistory(t *testing.T) {
 	strategy := New(Config{})
 	plans := defaultPlans()

@@ -81,12 +81,12 @@ func (e *evidenceSummary) addObservation(evidence observationEvidence) {
 		if evidence.CanDrivePruning {
 			e.PruningDirectFailures++
 		}
-	case isDirectPlanID(obs.PlanID) && isDirectSuccess(obs):
+	case isDirectSuccess(obs):
 		e.DirectSuccesses++
 		if evidence.CanDrivePruning {
 			e.PruningDirectSuccesses++
 		}
-	case obs.PlanID == planIDRelayOnly && isRelaySuccess(obs):
+	case isRelaySuccess(obs):
 		e.RelaySuccesses++
 		if evidence.CanDrivePruning {
 			e.PruningRelaySuccesses++

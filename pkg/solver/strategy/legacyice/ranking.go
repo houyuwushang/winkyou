@@ -2,6 +2,7 @@ package legacyice
 
 import (
 	"context"
+	"strings"
 
 	"winkyou/pkg/solver"
 )
@@ -28,17 +29,21 @@ func (s *Strategy) RankPlans(_ context.Context, input solver.RankInput, plans []
 }
 
 func isDirectSuccess(obs solver.Observation) bool {
-	if obs.Event == "candidate_succeeded" {
-		return true
+	switch obs.Event {
+	case "candidate_succeeded", "path_selected", "path_committed":
+		return strings.EqualFold(obs.ConnectionType, "direct")
+	default:
+		return false
 	}
-	return obs.Event == "path_selected" && obs.ConnectionType == "direct"
 }
 
 func isRelaySuccess(obs solver.Observation) bool {
-	if obs.Event == "candidate_succeeded" {
-		return true
+	switch obs.Event {
+	case "candidate_succeeded", "path_selected", "path_committed":
+		return strings.EqualFold(obs.ConnectionType, "relay")
+	default:
+		return false
 	}
-	return obs.Event == "path_selected" && obs.ConnectionType == "relay"
 }
 
 func reorderPlans(plans []solver.Plan, orderedIDs ...string) []solver.Plan {

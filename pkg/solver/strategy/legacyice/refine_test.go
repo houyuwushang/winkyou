@@ -136,6 +136,36 @@ func TestStrategyRefinePlansKeepsPlansWithoutStrongEvidence(t *testing.T) {
 	}
 }
 
+func TestStrategyRefinePlansTreatsDirectPreferRelaySuccessAsRelayEvidence(t *testing.T) {
+	strategy := New(Config{})
+	plans := defaultPlans()
+
+	refined, err := strategy.RefinePlans(context.Background(), solver.SolveInput{
+		LocalNodeID:  "node-a",
+		SessionID:    "session/node-a/node-b",
+		RemoteNodeID: "node-b",
+		LocalObservations: []solver.Observation{
+			observationForRanking(planIDDirectPrefer, "candidate_failed", "", "node-b"),
+			observationForRanking(planIDDirectPrefer, "candidate_failed", "", "node-b"),
+			observationForRanking(planIDDirectPrefer, "candidate_succeeded", "relay", "node-b"),
+		},
+		LastProbeResult: &solver.ProbeResultSummary{
+			ScriptType: pmodel.ScriptTypePreflight,
+			Success:    false,
+			FinishedAt: time.Now(),
+		},
+	}, plans)
+	if err != nil {
+		t.Fatalf("RefinePlans() error = %v", err)
+	}
+	if !slices.Equal(planIDs(refined.Plans), []string{planIDPublicDirect, planIDRelayOnly}) {
+		t.Fatalf("refined plans = %v, want public_direct + relay_only after relay success from direct_prefer", planIDs(refined.Plans))
+	}
+	if refined.Reason != "strong_relay_evidence_prune_direct_prefer" {
+		t.Fatalf("Reason = %q, want strong_relay_evidence_prune_direct_prefer", refined.Reason)
+	}
+}
+
 func TestStrategyBuildPreflightProbeReturnsStrategyAuthoredScript(t *testing.T) {
 	strategy := New(Config{})
 
