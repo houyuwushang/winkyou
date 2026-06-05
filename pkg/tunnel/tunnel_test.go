@@ -280,6 +280,39 @@ func TestReplacePeerUpdatesExistingPeer(t *testing.T) {
 	}
 }
 
+func TestUpdatePeerAllowedIPs(t *testing.T) {
+	tun, _ := New(Config{})
+	updater, ok := tun.(PeerAllowedIPsUpdater)
+	if !ok {
+		t.Fatal("tunnel should support UpdatePeerAllowedIPs")
+	}
+	pk := makeTestKey(24)
+
+	if err := tun.AddPeer(&PeerConfig{
+		PublicKey:  pk,
+		AllowedIPs: []net.IPNet{{IP: net.IPv4(10, 0, 0, 2), Mask: net.CIDRMask(32, 32)}},
+	}); err != nil {
+		t.Fatalf("AddPeer() error: %v", err)
+	}
+	_ = drainEvent(t, tun)
+
+	allowedIPs := []net.IPNet{
+		{IP: net.IPv4(10, 0, 0, 2), Mask: net.CIDRMask(32, 32)},
+		{IP: net.IPv4(10, 6, 22, 0), Mask: net.CIDRMask(24, 32)},
+	}
+	if err := updater.UpdatePeerAllowedIPs(pk, allowedIPs); err != nil {
+		t.Fatalf("UpdatePeerAllowedIPs() error: %v", err)
+	}
+
+	peers := tun.GetPeers()
+	if len(peers) != 1 {
+		t.Fatalf("GetPeers() length = %d, want 1", len(peers))
+	}
+	if len(peers[0].AllowedIPs) != 2 || peers[0].AllowedIPs[1].String() != "10.6.22.0/24" {
+		t.Fatalf("AllowedIPs = %#v, want updated backend route", peers[0].AllowedIPs)
+	}
+}
+
 // --- RemovePeer ---
 
 func TestRemovePeer(t *testing.T) {

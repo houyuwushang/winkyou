@@ -341,17 +341,14 @@ func (e *engine) BindingPeer(ctx context.Context, peerID string) (*sesspkg.Bindi
 	if err != nil {
 		return nil, err
 	}
-	_, allowedIP, err := parsePeerAllowedIP(peer.VirtualIP)
-	if err != nil {
-		return nil, err
-	}
-
 	keepalive := 10 * time.Second
 	if relayBootstrap && session != nil && !session.initiator {
 		keepalive = 0
 	}
-	allowedIPs := []net.IPNet{*allowedIP}
-	allowedIPs = append(allowedIPs, cloneIPNets(peer.AdvertisedRoutes)...)
+	allowedIPs, err := allowedIPsForPeer(peer)
+	if err != nil {
+		return nil, err
+	}
 	return &sesspkg.BindingPeer{
 		PublicKey:  publicKey,
 		AllowedIPs: allowedIPs,

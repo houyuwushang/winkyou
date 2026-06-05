@@ -403,7 +403,9 @@ func (e *engine) upsertPeer(peer *coordclient.PeerInfo, event PeerEvent) {
 	e.mu.Lock()
 	updated := toPeerStatus(peer)
 	current, ok := e.peers[updated.NodeID]
+	var routeSync *peerAdvertisedRouteSync
 	if ok {
+		oldSnapshot := clonePeerStatus(current)
 		now := time.Now()
 		coordinatorOnline := peer.Online
 		dataPlaneHealthy := peerDataPlaneHealthyAt(current, now)
@@ -472,6 +474,12 @@ func (e *engine) upsertPeer(peer *coordclient.PeerInfo, event PeerEvent) {
 		if updated.Endpoint == nil {
 			updated.Endpoint = netutil.CloneUDPAddr(current.Endpoint)
 		}
+		if shouldReconcilePeerAdvertisedRoutes(oldSnapshot, updated) {
+			routeSync = &peerAdvertisedRouteSync{
+				oldPeer: oldSnapshot,
+				newPeer: clonePeerStatus(updated),
+			}
+		}
 	}
 	e.peers[updated.NodeID] = updated
 	snapshot := clonePeerStatus(updated)
@@ -481,6 +489,9 @@ func (e *engine) upsertPeer(peer *coordclient.PeerInfo, event PeerEvent) {
 
 	for _, handler := range handlers {
 		handler(snapshot, event)
+	}
+	if routeSync != nil {
+		e.reconcilePeerAdvertisedRoutes(routeSync)
 	}
 	e.persistState()
 }

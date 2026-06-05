@@ -146,6 +146,23 @@ func (m *memTunnel) UpdatePeerEndpoint(publicKey PublicKey, endpoint *net.UDPAdd
 	return nil
 }
 
+func (m *memTunnel) UpdatePeerAllowedIPs(publicKey PublicKey, allowedIPs []net.IPNet) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	ps, exists := m.peers[publicKey]
+	if !exists {
+		return fmt.Errorf("tunnel: peer %s not found", publicKey)
+	}
+	ps.AllowedIPs = cloneIPNets(allowedIPs)
+	m.emitLocked(TunnelEvent{
+		Type:      EventPeerEndpointChanged,
+		PeerKey:   publicKey,
+		Timestamp: time.Now(),
+	})
+	return nil
+}
+
 // GetPeers returns a deep-copied, deterministically sorted snapshot.
 func (m *memTunnel) GetPeers() []*PeerStatus {
 	m.mu.RLock()
@@ -233,13 +250,25 @@ func clonePeerStatus(ps *PeerStatus) *PeerStatus {
 		copy(cp.Endpoint.IP, ps.Endpoint.IP)
 	}
 	for _, ipn := range ps.AllowedIPs {
-		n := net.IPNet{
-			IP:   make(net.IP, len(ipn.IP)),
-			Mask: make(net.IPMask, len(ipn.Mask)),
-		}
-		copy(n.IP, ipn.IP)
-		copy(n.Mask, ipn.Mask)
-		cp.AllowedIPs = append(cp.AllowedIPs, n)
+		cp.AllowedIPs = append(cp.AllowedIPs, cloneIPNet(ipn))
 	}
 	return cp
+}
+
+func cloneIPNets(values []net.IPNet) []net.IPNet {
+	if len(values) == 0 {
+		return nil
+	}
+	out := make([]net.IPNet, 0, len(values))
+	for _, value := range values {
+		out = append(out, cloneIPNet(value))
+	}
+	return out
+}
+
+func cloneIPNet(value net.IPNet) net.IPNet {
+	return net.IPNet{
+		IP:   append(net.IP(nil), value.IP...),
+		Mask: append(net.IPMask(nil), value.Mask...),
+	}
 }

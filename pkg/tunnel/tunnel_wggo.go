@@ -305,6 +305,31 @@ func (w *wggoTunnel) UpdatePeerEndpoint(publicKey PublicKey, endpoint *net.UDPAd
 	return nil
 }
 
+func (w *wggoTunnel) UpdatePeerAllowedIPs(publicKey PublicKey, allowedIPs []net.IPNet) error {
+	w.mu.RLock()
+	if !w.started || w.device == nil {
+		w.mu.RUnlock()
+		return errors.New("tunnel: not started")
+	}
+	ps, exists := w.peers[publicKey]
+	if !exists {
+		w.mu.RUnlock()
+		return fmt.Errorf("tunnel: peer %s not found", publicKey)
+	}
+	device := w.device
+	w.mu.RUnlock()
+
+	if err := device.IpcSet(buildUpdateAllowedIPsIPC(publicKey, allowedIPs)); err != nil {
+		return fmt.Errorf("tunnel: update allowed IPs for %s: %w", publicKey, err)
+	}
+
+	w.mu.Lock()
+	ps.AllowedIPs = cloneIPNets(allowedIPs)
+	w.emitLocked(TunnelEvent{Type: EventPeerEndpointChanged, PeerKey: publicKey, Timestamp: w.now()})
+	w.mu.Unlock()
+	return nil
+}
+
 func (w *wggoTunnel) GetPeers() []*PeerStatus {
 	w.refreshPeerStats()
 
@@ -1165,6 +1190,21 @@ func buildRemovePeerIPC(publicKey PublicKey) string {
 
 func buildUpdateEndpointIPC(publicKey PublicKey, endpoint string) string {
 	return fmt.Sprintf("public_key=%s\nendpoint=%s\n\n", encodeKeyHex(publicKey[:]), endpoint)
+}
+
+func buildUpdateAllowedIPsIPC(publicKey PublicKey, allowedIPs []net.IPNet) string {
+	var builder strings.Builder
+	builder.WriteString("public_key=")
+	builder.WriteString(encodeKeyHex(publicKey[:]))
+	builder.WriteByte('\n')
+	builder.WriteString("replace_allowed_ips=true\n")
+	for _, ipn := range allowedIPs {
+		builder.WriteString("allowed_ip=")
+		builder.WriteString(ipn.String())
+		builder.WriteByte('\n')
+	}
+	builder.WriteByte('\n')
+	return builder.String()
 }
 
 func peerConfigToStatus(peer *PeerConfig) *PeerStatus {

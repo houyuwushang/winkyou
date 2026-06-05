@@ -119,6 +119,12 @@ type Tunnel interface {
 	Events() <-chan TunnelEvent
 }
 
+// PeerAllowedIPsUpdater is implemented by tunnels that can update a peer's
+// AllowedIPs without replacing the selected packet transport.
+type PeerAllowedIPsUpdater interface {
+	UpdatePeerAllowedIPs(publicKey PublicKey, allowedIPs []net.IPNet) error
+}
+
 // New creates a Tunnel backed by the given config.
 // Memory backend is retained for unit tests and unprivileged test runs.
 func New(cfg Config) (Tunnel, error) {

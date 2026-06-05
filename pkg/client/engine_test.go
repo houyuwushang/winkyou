@@ -764,6 +764,52 @@ func TestApplyPeerAdvertisedRoutes(t *testing.T) {
 	}
 }
 
+func TestUpsertPeerReconcilesAdvertisedRouteChanges(t *testing.T) {
+	pub := mustTestPublicKey(t)
+	_, oldRoute, err := net.ParseCIDR("10.6.22.0/24")
+	if err != nil {
+		t.Fatalf("ParseCIDR(old) error = %v", err)
+	}
+	ni := &routeTrackingNetif{}
+	tun := &routeAllowedIPTunnel{}
+	eng := &engine{
+		cfg:   config.Default(),
+		log:   logger.Nop(),
+		netif: ni,
+		tun:   tun,
+		peers: map[string]*PeerStatus{
+			"node-2": {
+				NodeID:           "node-2",
+				Name:             "chen-win",
+				PublicKey:        pub.String(),
+				VirtualIP:        net.ParseIP("10.77.0.2"),
+				State:            PeerStateConnected,
+				DataState:        PeerDataStateBound,
+				AdvertisedRoutes: []net.IPNet{*oldRoute},
+			},
+		},
+	}
+
+	eng.upsertPeer(&coordclient.PeerInfo{
+		NodeID:    "node-2",
+		Name:      "chen-win",
+		PublicKey: pub.String(),
+		VirtualIP: "10.77.0.2",
+		Online:    true,
+		Endpoints: []string{"route:10.7.0.0/24"},
+	}, PeerEventUpsert)
+
+	if len(ni.removed) != 1 || ni.removed[0] != "10.6.22.0/24" {
+		t.Fatalf("removed routes = %#v, want old advertised route removed", ni.removed)
+	}
+	if len(ni.added) != 1 || ni.added[0] != "10.7.0.0/24 via 10.77.0.2" {
+		t.Fatalf("added routes = %#v, want new advertised route via peer virtual IP", ni.added)
+	}
+	if len(tun.allowedIPs) != 2 || tun.allowedIPs[0] != "10.77.0.2/32" || tun.allowedIPs[1] != "10.7.0.0/24" {
+		t.Fatalf("tunnel allowed IPs = %#v, want peer /32 plus new advertised route", tun.allowedIPs)
+	}
+}
+
 func TestSchedulePeerRetryUsesCapturedRunContext(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	session := &peerSession{initiator: true}
@@ -906,6 +952,32 @@ func (r *routeTrackingNetif) AddRoute(dst *net.IPNet, gateway net.IP) error {
 }
 func (r *routeTrackingNetif) RemoveRoute(dst *net.IPNet) error {
 	r.removed = append(r.removed, dst.String())
+	return nil
+}
+
+type routeAllowedIPTunnel struct {
+	allowedIPs []string
+}
+
+func (r *routeAllowedIPTunnel) Start() error { return nil }
+func (r *routeAllowedIPTunnel) Stop() error  { return nil }
+func (r *routeAllowedIPTunnel) AddPeer(*tunnel.PeerConfig) error {
+	return nil
+}
+func (r *routeAllowedIPTunnel) RemovePeer(tunnel.PublicKey) error { return nil }
+func (r *routeAllowedIPTunnel) UpdatePeerEndpoint(tunnel.PublicKey, *net.UDPAddr) error {
+	return nil
+}
+func (r *routeAllowedIPTunnel) UpdatePeerAllowedIPs(_ tunnel.PublicKey, allowedIPs []net.IPNet) error {
+	r.allowedIPs = r.allowedIPs[:0]
+	for _, allowedIP := range allowedIPs {
+		r.allowedIPs = append(r.allowedIPs, allowedIP.String())
+	}
+	return nil
+}
+func (r *routeAllowedIPTunnel) GetPeers() []*tunnel.PeerStatus { return nil }
+func (r *routeAllowedIPTunnel) GetStats() *tunnel.TunnelStats  { return &tunnel.TunnelStats{} }
+func (r *routeAllowedIPTunnel) Events() <-chan tunnel.TunnelEvent {
 	return nil
 }
 
