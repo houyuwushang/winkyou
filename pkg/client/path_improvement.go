@@ -30,8 +30,7 @@ func shouldRequestInbandReICE(policy solver.PathPolicy, peer *PeerStatus) bool {
 	if peer.LastPathRole == string(solver.PathRoleProtectedDirect) && len(peer.LastPathDependencies) == 0 {
 		return false
 	}
-	return peer.State == PeerStateConnected &&
-		(peer.DataState == PeerDataStateAlive || peer.DataState == PeerDataStateBound)
+	return peerInbandEligible(peer)
 }
 
 func (e *engine) schedulePeerImprovementByID(nodeID string) {

@@ -407,7 +407,7 @@ func clonePeerControlMessage(msg peercontrol.Message) peercontrol.Message {
 }
 
 func peerInbandEligible(peer *PeerStatus) bool {
-	if peer.State != PeerStateConnected {
+	if peer == nil || peer.State == PeerStateDisconnected || peer.TransportLastError != "" {
 		return false
 	}
 	return peer.DataState == PeerDataStateAlive || peer.DataState == PeerDataStateBound

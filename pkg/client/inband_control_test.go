@@ -100,6 +100,35 @@ func TestInbandMessagesRequestReICEWhenProtectedDirectMissing(t *testing.T) {
 	}
 }
 
+func TestInbandMessagesAllowBoundConnectingPeer(t *testing.T) {
+	cfg := config.Default()
+	eng := &engine{cfg: cfg}
+	peer := &PeerStatus{
+		NodeID:               "node-b",
+		State:                PeerStateConnecting,
+		ControlState:         PeerControlStateConnected,
+		DataState:            PeerDataStateBound,
+		ActivePathID:         "relay/path",
+		LastPathID:           "relay/path",
+		LastPathRole:         string(solver.PathRolePrimaryCandidate),
+		LastPathDependencies: []string{"relay:turn_or_relay_candidate"},
+		ConnectionType:       ConnectionTypeRelay,
+	}
+
+	messages := eng.inbandMessagesForPeer("node-a", peer)
+	if len(messages) != 3 {
+		t.Fatalf("len(messages) = %d, want heartbeat + path_health + re-ice", len(messages))
+	}
+	if messages[0].Type != peercontrol.TypeHeartbeat || messages[1].Type != peercontrol.TypePathHealth || messages[2].Type != peercontrol.TypeReICERequest {
+		t.Fatalf("messages = %#v, want heartbeat/path_health/re-ice", messages)
+	}
+
+	peer.State = PeerStateDisconnected
+	if peerInbandEligible(peer) {
+		t.Fatal("disconnected peer should not be in-band eligible")
+	}
+}
+
 func TestInbandMessagesReplayCachedSessionSignal(t *testing.T) {
 	now := time.Now().UTC()
 	eng := &engine{}
