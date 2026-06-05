@@ -66,10 +66,8 @@ func (s *Session) selectAndExecuteProtectedDirect(ctx context.Context, candidate
 	)
 
 	for i, candidate := range candidates {
-		if primaryKey != "" {
-			if hasProtectedDirectOutcome(allOutcomes, s.cfg.PathPolicy) || !strategyMayProduceDirect(candidate.Name) {
-				continue
-			}
+		if primaryKey != "" && protectedDirectSearchComplete(allOutcomes, candidates[i:], s.cfg.PathPolicy) {
+			break
 		}
 		if err := s.setSelectedStrategyCandidate(candidate); err != nil {
 			return err
@@ -111,12 +109,12 @@ func (s *Session) selectAndExecuteProtectedDirect(ctx context.Context, candidate
 		allOutcomes = append(allOutcomes, outcomes...)
 		if primaryKey == "" {
 			primaryKey = outcomeKey(*best)
-			if solver.IsProtectedDirectPath(best.Result.Summary) || !hasRemainingDirectCandidate(candidates[i+1:]) {
+			if protectedDirectSearchComplete(allOutcomes, candidates[i+1:], s.cfg.PathPolicy) {
 				break
 			}
 			continue
 		}
-		if hasProtectedDirectOutcome(allOutcomes, s.cfg.PathPolicy) || !hasRemainingDirectCandidate(candidates[i+1:]) {
+		if protectedDirectSearchComplete(allOutcomes, candidates[i+1:], s.cfg.PathPolicy) {
 			break
 		}
 	}
@@ -423,6 +421,29 @@ func hasProtectedDirectOutcome(outcomes []solver.CandidateOutcome, policy solver
 	return selectProtectedDirectOutcome(outcomes, policy) != nil
 }
 
+func protectedDirectSearchComplete(outcomes []solver.CandidateOutcome, remaining []StrategyCandidate, policy solver.PathPolicy) bool {
+	if len(outcomes) == 0 {
+		return false
+	}
+	if successfulOutcomeCount(outcomes) < desiredMultipathPathCount(policy) && len(remaining) > 0 {
+		return false
+	}
+	if !hasProtectedDirectOutcome(outcomes, policy) && hasRemainingDirectCandidate(remaining) {
+		return false
+	}
+	return true
+}
+
+func desiredMultipathPathCount(policy solver.PathPolicy) int {
+	if !policy.MultipathEnabled {
+		return 1
+	}
+	if policy.MaxPaths <= 0 {
+		return 1
+	}
+	return policy.MaxPaths
+}
+
 func findOutcomeByKey(outcomes []solver.CandidateOutcome, key string) *solver.CandidateOutcome {
 	for i := range outcomes {
 		if outcomeKey(outcomes[i]) == key {
@@ -480,9 +501,19 @@ func noProtectedDirectOutcomeError(outcomes []solver.CandidateOutcome) error {
 }
 
 func countSuccessfulOutcomes(outcomes []solver.CandidateOutcome) int {
+	return successfulOutcomeCount(outcomes)
+}
+
+func successfulOutcomeCount(outcomes []solver.CandidateOutcome) int {
 	count := 0
+	seen := make(map[string]struct{}, len(outcomes))
 	for i := range outcomes {
 		if outcomes[i].Result != nil && outcomes[i].Result.Transport != nil {
+			key := outcomeKey(outcomes[i])
+			if _, ok := seen[key]; ok {
+				continue
+			}
+			seen[key] = struct{}{}
 			count++
 		}
 	}

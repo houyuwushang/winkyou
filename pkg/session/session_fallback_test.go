@@ -248,6 +248,151 @@ func TestSessionMultipathReevaluatesPrimaryAfterProtectedDirect(t *testing.T) {
 	}
 }
 
+func TestSessionMultipathContinuesAfterProtectedDirectToFillPathBudget(t *testing.T) {
+	directTransport := &fakeTransport{}
+	relayTransport := &fakeTransport{}
+	direct := &successfulFallbackStrategy{
+		name:           legacyice.StrategyName,
+		transport:      directTransport,
+		pathID:         "direct/path",
+		connectionType: "direct",
+		role:           solver.PathRoleProtectedDirect,
+	}
+	relay := &successfulFallbackStrategy{
+		name:           relayonly.StrategyName,
+		transport:      relayTransport,
+		pathID:         "relay/path",
+		connectionType: "relay",
+		role:           solver.PathRolePrimaryCandidate,
+		dependencies: []solver.PathDependency{{
+			Kind:   solver.PathDependencyRelay,
+			Reason: "turn_or_relay_candidate",
+		}},
+	}
+	resolver := &orderedFallbackResolver{
+		local: rproto.Capability{Strategies: []string{direct.name, relay.name}},
+		candidates: []StrategyCandidate{
+			{Name: direct.name, Strategy: direct, Selection: Selection{StrategyName: direct.name, Negotiated: true}},
+			{Name: relay.name, Strategy: relay, Selection: Selection{StrategyName: relay.name, Negotiated: true}},
+		},
+	}
+	binder := &recordingBinder{}
+
+	s, err := New(Config{
+		SessionID:             "session/node-a/node-b",
+		LocalNodeID:           "node-a",
+		PeerID:                "node-b",
+		Initiator:             true,
+		Resolver:              resolver,
+		Sender:                &fakeSender{},
+		Binder:                binder,
+		RunTimeout:            3 * time.Second,
+		CapabilityWaitTimeout: time.Second,
+		PathPolicy:            solver.PathPolicy{MultipathEnabled: true, ProtectDirect: true, MaxPaths: 2},
+	})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	if err := s.Start(context.Background()); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	if err := s.HandleMessage(context.Background(), envelopeMessage(t, "session/node-a/node-b", "node-b", "node-a", rproto.MsgTypeCapability, 1, rproto.Capability{Strategies: []string{direct.name, relay.name}}, time.Now())); err != nil {
+		t.Fatalf("HandleMessage(capability) error = %v", err)
+	}
+	waitForState(t, s, StateBound)
+
+	if direct.execCount() != 1 || relay.execCount() != 1 {
+		t.Fatalf("exec counts = direct:%d relay:%d, want 1/1", direct.execCount(), relay.execCount())
+	}
+	provider, ok := binder.boundTransport.(multipath.StatsProvider)
+	if !ok {
+		t.Fatalf("bound transport = %T, want multipath stats provider", binder.boundTransport)
+	}
+	stats := provider.MultipathStats()
+	if stats.ChildPathCount != 2 || stats.ProtectedDirectPathID != "direct/path" {
+		t.Fatalf("multipath stats = %#v, want two paths with direct protected standby", stats)
+	}
+}
+
+func TestSessionMultipathCanSelectLaterRelayPrimaryAndRetainProtectedDirect(t *testing.T) {
+	directTransport := &fakeTransport{}
+	relayTransport := &fakeTransport{}
+	direct := &successfulFallbackStrategy{
+		name:           legacyice.StrategyName,
+		transport:      directTransport,
+		pathID:         "direct/path",
+		connectionType: "direct",
+		role:           solver.PathRoleProtectedDirect,
+		metrics:        map[string]string{"rtt_ms": "500"},
+	}
+	relay := &successfulFallbackStrategy{
+		name:           relayonly.StrategyName,
+		transport:      relayTransport,
+		pathID:         "relay/path",
+		connectionType: "relay",
+		role:           solver.PathRolePrimaryCandidate,
+		metrics:        map[string]string{"rtt_ms": "5"},
+		dependencies: []solver.PathDependency{{
+			Kind:   solver.PathDependencyRelay,
+			Reason: "turn_or_relay_candidate",
+		}},
+	}
+	resolver := &orderedFallbackResolver{
+		local: rproto.Capability{Strategies: []string{direct.name, relay.name}},
+		candidates: []StrategyCandidate{
+			{Name: direct.name, Strategy: direct, Selection: Selection{StrategyName: direct.name, Negotiated: true}},
+			{Name: relay.name, Strategy: relay, Selection: Selection{StrategyName: relay.name, Negotiated: true}},
+		},
+	}
+	binder := &recordingBinder{}
+
+	s, err := New(Config{
+		SessionID:             "session/node-a/node-b",
+		LocalNodeID:           "node-a",
+		PeerID:                "node-b",
+		Initiator:             true,
+		Resolver:              resolver,
+		Sender:                &fakeSender{},
+		Binder:                binder,
+		RunTimeout:            3 * time.Second,
+		CapabilityWaitTimeout: time.Second,
+		PathPolicy: solver.PathPolicy{
+			MultipathEnabled:      true,
+			ProtectDirect:         true,
+			MaxPaths:              2,
+			DependencyPenalty:     0,
+			DirectProtectionBonus: 0,
+		},
+	})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	if err := s.Start(context.Background()); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	if err := s.HandleMessage(context.Background(), envelopeMessage(t, "session/node-a/node-b", "node-b", "node-a", rproto.MsgTypeCapability, 1, rproto.Capability{Strategies: []string{direct.name, relay.name}}, time.Now())); err != nil {
+		t.Fatalf("HandleMessage(capability) error = %v", err)
+	}
+	waitForState(t, s, StateBound)
+
+	if direct.execCount() != 1 || relay.execCount() != 1 {
+		t.Fatalf("exec counts = direct:%d relay:%d, want 1/1", direct.execCount(), relay.execCount())
+	}
+	provider, ok := binder.boundTransport.(multipath.StatsProvider)
+	if !ok {
+		t.Fatalf("bound transport = %T, want multipath stats provider", binder.boundTransport)
+	}
+	stats := provider.MultipathStats()
+	if stats.PrimaryPathID != "relay/path" || stats.ProtectedDirectPathID != "direct/path" || stats.ActivePathID != "relay/path" {
+		t.Fatalf("multipath stats = %#v, want relay primary with direct protected standby", stats)
+	}
+	if got := s.Snapshot().SelectedStrategy; got != relayonly.StrategyName {
+		t.Fatalf("SelectedStrategy = %q, want relay_only", got)
+	}
+}
+
 func TestSessionMultipathDirectStandbyFailureDoesNotBlockPrimary(t *testing.T) {
 	relayTransport := &fakeTransport{}
 	relay := &successfulFallbackStrategy{
@@ -529,6 +674,7 @@ type successfulFallbackStrategy struct {
 	connectionType string
 	role           solver.PathRole
 	dependencies   []solver.PathDependency
+	metrics        map[string]string
 
 	mu    sync.Mutex
 	execs int
@@ -560,6 +706,7 @@ func (s *successfulFallbackStrategy) Execute(context.Context, solver.SessionIO, 
 			RemoteAddr:     s.transport.RemoteAddr(),
 			Role:           s.role,
 			Dependencies:   append([]solver.PathDependency(nil), s.dependencies...),
+			Metrics:        cloneStringMap(s.metrics),
 		},
 	}, nil
 }

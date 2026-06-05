@@ -273,6 +273,8 @@ connectivity:
 
 `connectivity.mode: relay_only` 和 `nat.force_relay: true` 会让生产路径保持单路径 relay 语义，即使配置里写了 `connectivity.multipath.enabled: true`，client 也不会同时保留 direct standby。要验证“relay primary + direct/P2P standby”，保持 `connectivity.mode: auto`，只把 `connectivity.strategy_order` 调成 `relay_only`、`legacy_ice_udp`，并确认 `connectivity.multipath.enabled: true`。`wink doctor` 的 `multipath/policy` 检查会提示 relay-only policy 导致的单路径状态。
 
+如果 `wink peers --json` 只有一条 path，但本轮明明还有后续 strategy 可用，先确认两端二进制已包含 protected-direct 调度修复：session 应在 `connectivity.multipath.max_paths` 预算未填满时继续执行后续 strategy，而不是在第一条 protected/direct outcome 成功后立刻停止。仍只有单路径时，再看 observation 中是否有后续 strategy 的 `candidate_planned` / `strategy_failed`，用于区分“没有执行”与“执行后失败”。
+
 `tcp_framed` 仍是 alpha，仅用于显式可达 TCP 地址测试：
 
 ```yaml
