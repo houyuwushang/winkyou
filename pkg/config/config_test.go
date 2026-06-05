@@ -59,11 +59,11 @@ func TestLoadValidFile(t *testing.T) {
 	if len(cfg.NAT.NAT1To1IPs) != 1 || cfg.NAT.NAT1To1IPs[0] != "203.0.113.10/192.168.0.10" {
 		t.Fatalf("nat1to1 ips = %#v, want explicit external/local mapping", cfg.NAT.NAT1To1IPs)
 	}
-	if cfg.NAT.AutoPublicEndpointHints {
-		t.Fatal("auto_public_endpoint_hints = true, want default sample false")
+	if !cfg.NAT.AutoPublicEndpointHints {
+		t.Fatal("auto_public_endpoint_hints = false, want sample true")
 	}
-	if cfg.NAT.PublicEndpointHintPortWindow != 0 {
-		t.Fatalf("public_endpoint_hint_port_window = %d, want default sample 0", cfg.NAT.PublicEndpointHintPortWindow)
+	if cfg.NAT.PublicEndpointHintPortWindow != 2 {
+		t.Fatalf("public_endpoint_hint_port_window = %d, want sample 2", cfg.NAT.PublicEndpointHintPortWindow)
 	}
 	if len(cfg.NAT.DirectTrustedCIDRs) != 1 || cfg.NAT.DirectTrustedCIDRs[0] != "100.64.0.0/10" {
 		t.Fatalf("direct trusted CIDRs = %#v, want 100.64.0.0/10", cfg.NAT.DirectTrustedCIDRs)
@@ -84,6 +84,12 @@ func TestLoadUsesDefaultsWhenFileMissing(t *testing.T) {
 	}
 	if cfg.NetIf.Backend != "auto" {
 		t.Fatalf("expected default backend auto, got %q", cfg.NetIf.Backend)
+	}
+	if !cfg.NAT.AutoPublicEndpointHints {
+		t.Fatal("expected default auto_public_endpoint_hints true")
+	}
+	if cfg.NAT.PublicEndpointHintPortWindow != 2 {
+		t.Fatalf("expected default public_endpoint_hint_port_window 2, got %d", cfg.NAT.PublicEndpointHintPortWindow)
 	}
 }
 

@@ -541,7 +541,7 @@ func TestLegacyICEStrategyConfigMergesRuntimePublicEndpointHints(t *testing.T) {
 	}
 }
 
-func TestRuntimePublicEndpointHintsFromReportRequiresOptIn(t *testing.T) {
+func TestRuntimePublicEndpointHintsFromReportUsesDefaultAndAllowsOptOut(t *testing.T) {
 	report := nat.STUNMappingReport{
 		NATType: nat.NATTypeUnknown,
 		Probes: []nat.STUNMappingProbe{{
@@ -550,18 +550,24 @@ func TestRuntimePublicEndpointHintsFromReportRequiresOptIn(t *testing.T) {
 			ServerAddr: &net.UDPAddr{IP: net.IPv4(198, 51, 100, 1), Port: 3478},
 		}},
 	}
-	if got := runtimePublicEndpointHintsFromReport(config.NATConfig{}, report); len(got) != 0 {
+	cfg := config.Default().NAT
+	if got := runtimePublicEndpointHintsFromReport(cfg, report); len(got) != 1 || got[0] != "198.51.100.44:45678/192.168.1.20:40000" {
+		t.Fatalf("runtimePublicEndpointHintsFromReport(default) = %#v, want stable hint", got)
+	}
+
+	cfg.AutoPublicEndpointHints = false
+	if got := runtimePublicEndpointHintsFromReport(cfg, report); len(got) != 0 {
 		t.Fatalf("runtimePublicEndpointHintsFromReport(auto disabled) = %#v, want none", got)
 	}
 
-	cfg := config.NATConfig{AutoPublicEndpointHints: true}
+	cfg.AutoPublicEndpointHints = true
 	if got := runtimePublicEndpointHintsFromReport(cfg, report); len(got) != 1 || got[0] != "198.51.100.44:45678/192.168.1.20:40000" {
 		t.Fatalf("runtimePublicEndpointHintsFromReport(stable) = %#v, want stable hint", got)
 	}
 
 	report.NATType = nat.NATTypeSymmetric
 	if got := runtimePublicEndpointHintsFromReport(cfg, report); len(got) != 1 || got[0] != "198.51.100.44:45678/192.168.1.20:40000" {
-		t.Fatalf("runtimePublicEndpointHintsFromReport(symmetric opt-in) = %#v, want best-effort hint", got)
+		t.Fatalf("runtimePublicEndpointHintsFromReport(symmetric) = %#v, want best-effort hint", got)
 	}
 }
 

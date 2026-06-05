@@ -22,6 +22,8 @@ const (
 	defaultNATCheckTimeout       = 12 * time.Second
 	defaultNATRetryInterval      = 2 * time.Second
 	defaultNATRetryMaxInterval   = 10 * time.Second
+	defaultNATAutoEndpointHints  = true
+	defaultNATEndpointPortWindow = 2
 	defaultConnectivityMode      = "auto"
 	defaultMultipathMaxPaths     = 2
 	defaultDependencyPenalty     = 50
@@ -55,11 +57,13 @@ func Default() Config {
 			ListenPort: defaultWireGuardPort,
 		},
 		NAT: NATConfig{
-			GatherTimeout:    defaultNATGatherTimeout,
-			ConnectTimeout:   defaultNATConnectTimeout,
-			CheckTimeout:     defaultNATCheckTimeout,
-			RetryInterval:    defaultNATRetryInterval,
-			RetryMaxInterval: defaultNATRetryMaxInterval,
+			GatherTimeout:                defaultNATGatherTimeout,
+			ConnectTimeout:               defaultNATConnectTimeout,
+			CheckTimeout:                 defaultNATCheckTimeout,
+			RetryInterval:                defaultNATRetryInterval,
+			RetryMaxInterval:             defaultNATRetryMaxInterval,
+			AutoPublicEndpointHints:      defaultNATAutoEndpointHints,
+			PublicEndpointHintPortWindow: defaultNATEndpointPortWindow,
 			STUNServers: []string{
 				"stun:stun.l.google.com:19302",
 				"stun:stun.cloudflare.com:3478",

@@ -172,20 +172,20 @@ nat:
     - "203.0.113.10/192.168.0.10"
   public_endpoint_hints:
     - "117.48.146.2:41000/192.168.1.20:40000"
-  # 默认关闭。开启后会把启动时 STUN 观测到的公网 endpoint
-  # 自动合入 legacyice/public_direct 的 public_endpoint_hints。
-  auto_public_endpoint_hints: false
-  # 默认 0。显式打开时，会围绕每个 public endpoint hint 的公网端口
-  # 追加 ±N 的小窗口候选，用于复现 natpierce/路由器日志里看到的端口漂移。
-  public_endpoint_hint_port_window: 0
+  # 默认开启。启动时 STUN 观测到的公网 endpoint 会自动合入
+  # legacyice/public_direct 的 public_endpoint_hints。
+  auto_public_endpoint_hints: true
+  # 默认 2。围绕每个 public endpoint hint 的公网端口追加 ±N 的小窗口候选，
+  # 用于复现 natpierce/路由器日志里看到的可预测端口漂移。
+  public_endpoint_hint_port_window: 2
   # 仅在确认该非公网 CIDR 是独立可达 underlay 时配置。
   # direct_trusted_cidrs:
   #   - "100.64.0.0/10"
 ```
 
-`nat1to1_ips` 使用 Pion ICE 的 `external/local` 语义，适合公网 IP 映射和本地 ICE 端口范围稳定的场景。`public_endpoint_hints` 直接表达本机已知的公网 UDP `ip:port`，也可以写成 `公网ip:公网端口/本地ip:本地端口` 绑定到具体本地 UDP base；它只会作为 `legacyice/public_direct` 额外 srflx 候选发布。当 mapped hint 带本地 base 时，`legacyice/public_direct` 会把本次 ICE agent 限制到这些本地 IP；如果只有一个唯一的本地 base 端口，也会精确绑定该端口，以便复现 natpierce 或路由器日志里观察到的同一 UDP 映射。`public_endpoint_hint_port_window` 默认关闭；设置为小值时，`public_direct` 会围绕每个公网 hint 追加相邻公网端口候选，例如 `41000` 和窗口 `2` 会尝试 `41000,40999,41001,40998,41002`。该配置适合拿 natpierce 或路由器日志里的公网端点和端口漂移做验证。普通家宽或运营商 NAT 如果每个 UDP socket 都分配不可预测公网端口，仍应依赖 STUN/peer-reflexive learning，或走 TURN/relay fallback。
+`nat1to1_ips` 使用 Pion ICE 的 `external/local` 语义，适合公网 IP 映射和本地 ICE 端口范围稳定的场景。`public_endpoint_hints` 直接表达本机已知的公网 UDP `ip:port`，也可以写成 `公网ip:公网端口/本地ip:本地端口` 绑定到具体本地 UDP base；它只会作为 `legacyice/public_direct` 额外 srflx 候选发布。当 mapped hint 带本地 base 时，`legacyice/public_direct` 会把本次 ICE agent 限制到这些本地 IP；如果只有一个唯一的本地 base 端口，也会精确绑定该端口，以便复现 natpierce 或路由器日志里观察到的同一 UDP 映射。`public_endpoint_hint_port_window` 默认是 `2`；`public_direct` 会围绕每个公网 hint 追加相邻公网端口候选，例如 `41000` 和窗口 `2` 会尝试 `41000,40999,41001,40998,41002`。该配置适合拿 natpierce 或路由器日志里的公网端点和可预测端口漂移做验证。普通家宽或运营商 NAT 如果每个 UDP socket 都分配不可预测公网端口，仍应依赖 STUN/peer-reflexive learning，或走 TURN/relay fallback。
 
-`auto_public_endpoint_hints` 是显式 opt-in：启动时 NAT detection 会把运行时观测到的公网 endpoint hint 与手工 `public_endpoint_hints` 合并后交给 `legacyice/public_direct`。如果检测结果是 `nat_type=symmetric`，这些 endpoint-dependent 映射仍只是 best-effort 候选：同一 UDP socket 到 STUN 服务器的端口不一定等于到 peer 的端口。此时可以结合 natpierce/路由器日志先用很小的 `public_endpoint_hint_port_window` 试探相邻端口，同时继续看 `legacyice/public_direct` 是否学到 `peer_reflexive_pair` / `public_direct_learned_pair`。
+`auto_public_endpoint_hints` 默认开启：启动时 NAT detection 会把运行时观测到的公网 endpoint hint 与手工 `public_endpoint_hints` 合并后交给 `legacyice/public_direct`。如果检测结果是 `nat_type=symmetric`，这些 endpoint-dependent 映射仍只是 best-effort 候选：同一 UDP socket 到 STUN 服务器的端口不一定等于到 peer 的端口。默认的小窗口端口试探会让 WinkYou 更接近 natpierce 这类持续 punch 行为，但仍必须继续看 `legacyice/public_direct` 是否学到 `peer_reflexive_pair` / `public_direct_learned_pair`，以及最终 path 是否是 `protected_direct`。需要保守排查时，可以显式设为 `auto_public_endpoint_hints: false` 或把 `public_endpoint_hint_port_window` 设为 `0`。
 
 如果另一个打洞工具已经证明某个非公网地址段确实是两端可达的 underlay，例如受控测试中的运营商 CGNAT 段，可以显式配置 `nat.direct_trusted_cidrs`。该字段会让 `legacyice/direct_prefer` 和 `legacyice/public_direct` 在 path dependency 判定中信任这些 CIDR，并让 `public_direct` 接受这些 CIDR 内的候选和 mapped hint。旧的 `nat.public_direct_trusted_cidrs` 仍兼容，并会与 `direct_trusted_cidrs` 合并使用。默认仍拒绝 `100.64.0.0/10`、私网、loopback、link-local 和 benchmark/overlay 地址。不要把 natpierce、Tailscale、Docker 或其他虚拟 overlay 的接口网段随意加入 trusted CIDR，否则会把依赖不清的 path 误标成 protected direct；只有在你确认该 CIDR 是 WinkYou 自己可直接打到的 underlay，而不是外部 overlay 提供的虚拟路由时才应配置。`wink doctor` 会检查 `direct_trusted_cidrs` 是否命中本机上疑似 natpierce、Tailscale、Docker、Wintun 或 WinkYou 的虚拟接口，并给出 warning。
 
