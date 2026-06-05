@@ -260,6 +260,7 @@ connectivity:
 ```
 
 默认 multipath scoring 会对 relay/依赖路径扣分，对 `unknown` 依赖加倍扣分，并给真正的 `protected_direct` 加保护分。结果是：低 RTT relay 仍可成为 primary；但没有 RTT 证据时，`100.64.0.0/10`、VPN/TAP、natpierce 等依赖不清的 direct-like path 不应仅因为 `Conn Type: direct` 就压过明确的 relay fallback。
+`wink peers` 和 `wink peers --json` 会显示 `last_failover_why`。如果看到 `active_path_rx_silence:<path>`，说明 multipath 因 active path 长时间没有收到包而切到了 standby；如果没有该字段，说明尚未触发 failover，或当前版本/运行时状态还没有记录原因。
 
 强制验证 relay：
 

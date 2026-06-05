@@ -105,6 +105,7 @@ func TestPeersWithRuntimeState(t *testing.T) {
 				StandbyPathIDs:         []string{"direct/path"},
 				ActivePathID:           "direct/path",
 				LastFailoverAt:         time.Date(2026, 4, 10, 12, 1, 0, 0, time.UTC),
+				LastFailoverWhy:        "active_path_rx_silence:relay/path",
 				LastInbandHeartbeatAt:  time.Date(2026, 4, 10, 12, 2, 0, 0, time.UTC),
 				LastInbandPathHealthAt: time.Date(2026, 4, 10, 12, 3, 0, 0, time.UTC),
 				LastSeen:               time.Date(2026, 4, 10, 12, 0, 0, 0, time.UTC),
@@ -182,6 +183,9 @@ func TestPeersWithRuntimeState(t *testing.T) {
 	if !strings.Contains(output, "Children:   id=relay/path,role=primary_candidate") {
 		t.Errorf("output should contain child path details, got: %s", output)
 	}
+	if !strings.Contains(output, "Failover:   2026-04-10T12:01:00Z (active_path_rx_silence:relay/path)") {
+		t.Errorf("output should contain failover reason, got: %s", output)
+	}
 
 	// Clean up for next subtest.
 	os.Remove(winkclient.RuntimeStatePath(configPath))
@@ -218,6 +222,7 @@ func TestPeersWithRuntimeStateJSON(t *testing.T) {
 				ProtectedDirectPathID:  "direct/path",
 				StandbyPathIDs:         []string{"direct/path"},
 				ActivePathID:           "relay/path",
+				LastFailoverWhy:        "active_path_rx_silence:direct/path",
 				LastInbandHeartbeatAt:  time.Date(2026, 4, 10, 12, 2, 0, 0, time.UTC),
 				LastInbandPathHealthAt: time.Date(2026, 4, 10, 12, 3, 0, 0, time.UTC),
 				TxBytes:                5000,
@@ -271,6 +276,9 @@ func TestPeersWithRuntimeStateJSON(t *testing.T) {
 	}
 	if !result[0].MultipathEnabled || result[0].ProtectedDirectPathID != "direct/path" {
 		t.Errorf("multipath fields = %#v", result[0])
+	}
+	if result[0].LastFailoverWhy != "active_path_rx_silence:direct/path" {
+		t.Errorf("LastFailoverWhy = %q, want active path silence reason", result[0].LastFailoverWhy)
 	}
 	if result[0].LastInbandHeartbeatAt.IsZero() || result[0].LastInbandPathHealthAt.IsZero() {
 		t.Errorf("in-band fields = %#v", result[0])

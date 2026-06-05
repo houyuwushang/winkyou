@@ -71,6 +71,7 @@ type PeerStatus struct {
 	StandbyPathIDs        []string
 	ActivePathID          string
 	LastFailoverAt        time.Time
+	LastFailoverWhy       string
 }
 
 // TunnelStats holds aggregate tunnel statistics.

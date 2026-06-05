@@ -368,6 +368,7 @@ func TestPeerTransportBindExposesMultipathStatus(t *testing.T) {
 			ActivePathID:          "direct/path",
 			ChildPathCount:        2,
 			LastFailoverAt:        failoverAt,
+			LastFailoverWhy:       "active_path_rx_silence:relay/path",
 			Paths: []multipath.PathStats{{
 				ID:      "direct/path",
 				Role:    solver.PathRoleProtectedDirect,
@@ -389,6 +390,9 @@ func TestPeerTransportBindExposesMultipathStatus(t *testing.T) {
 	}
 	if !status.lastFailoverAt.Equal(failoverAt) {
 		t.Fatalf("last failover = %v, want %v", status.lastFailoverAt, failoverAt)
+	}
+	if status.lastFailoverWhy != "active_path_rx_silence:relay/path" {
+		t.Fatalf("last failover why = %q, want active path silence reason", status.lastFailoverWhy)
 	}
 }
 

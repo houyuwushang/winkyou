@@ -582,6 +582,7 @@ type multipathStatus struct {
 	standbyPathIDs        []string
 	activePathID          string
 	lastFailoverAt        time.Time
+	lastFailoverWhy       string
 }
 
 type noOpBind struct {
@@ -1039,6 +1040,7 @@ func (t *boundTransport) multipathStatus() (multipathStatus, bool) {
 		standbyPathIDs:        append([]string(nil), stats.StandbyPathIDs...),
 		activePathID:          stats.ActivePathID,
 		lastFailoverAt:        stats.LastFailoverAt,
+		lastFailoverWhy:       stats.LastFailoverWhy,
 	}, true
 }
 
@@ -1052,6 +1054,7 @@ func applyMultipathStatus(peer *PeerStatus, status multipathStatus) {
 	peer.StandbyPathIDs = append([]string(nil), status.standbyPathIDs...)
 	peer.ActivePathID = status.activePathID
 	peer.LastFailoverAt = status.lastFailoverAt
+	peer.LastFailoverWhy = status.lastFailoverWhy
 }
 
 func clearMultipathStatus(peer *PeerStatus) {
@@ -1064,6 +1067,7 @@ func clearMultipathStatus(peer *PeerStatus) {
 	peer.StandbyPathIDs = nil
 	peer.ActivePathID = ""
 	peer.LastFailoverAt = time.Time{}
+	peer.LastFailoverWhy = ""
 }
 
 func readDeviceSnapshot(device *wgdevice.Device, bind *peerTransportBind) (*deviceSnapshot, error) {

@@ -71,6 +71,7 @@ type RuntimePeerStatus struct {
 	StandbyPathIDs         []string          `json:"standby_path_ids,omitempty"`
 	ActivePathID           string            `json:"active_path_id,omitempty"`
 	LastFailoverAt         time.Time         `json:"last_failover_at,omitempty"`
+	LastFailoverWhy        string            `json:"last_failover_why,omitempty"`
 	LastInbandHeartbeatAt  time.Time         `json:"last_inband_heartbeat_at,omitempty"`
 	LastInbandPathHealthAt time.Time         `json:"last_inband_path_health_at,omitempty"`
 	LastPathID             string            `json:"last_path_id,omitempty"`
@@ -207,6 +208,7 @@ func newRuntimeStateSnapshot(status *EngineStatus, peers []*PeerStatus) *Runtime
 			StandbyPathIDs:         append([]string(nil), peer.StandbyPathIDs...),
 			ActivePathID:           peer.ActivePathID,
 			LastFailoverAt:         peer.LastFailoverAt,
+			LastFailoverWhy:        peer.LastFailoverWhy,
 			LastInbandHeartbeatAt:  peer.LastInbandHeartbeatAt,
 			LastInbandPathHealthAt: peer.LastInbandPathHealthAt,
 			LastPathID:             peer.LastPathID,

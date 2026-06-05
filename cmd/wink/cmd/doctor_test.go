@@ -555,6 +555,18 @@ func TestDoctorMultipathForceRelayWarnsSinglePath(t *testing.T) {
 	}
 }
 
+func TestDoctorMultipathPolicyReportsActiveSilenceTimeout(t *testing.T) {
+	configPath := writeDoctorConfigWithMultipath(t)
+
+	result := runDoctor(context.Background(), &Options{ConfigPath: configPath}, doctorFlags{}, healthyDoctorProbes())
+	check := findDoctorCheck(result, "multipath", "policy")
+	if check.Status != doctorOK ||
+		!strings.Contains(check.Message, "active_path_silence_timeout=15s") ||
+		!strings.Contains(check.Message, "shadow_write=true") {
+		t.Fatalf("multipath policy check = %#v, want active silence timeout", check)
+	}
+}
+
 func TestDoctorMultipathEnabledWithoutProtectedDirectWarns(t *testing.T) {
 	configPath := writeDoctorConfigWithMultipath(t)
 	writeDoctorRuntimeState(t, configPath, []winkclient.RuntimePeerStatus{{

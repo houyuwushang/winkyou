@@ -107,6 +107,7 @@ func TestRuntimeStateRoundTrip(t *testing.T) {
 			StandbyPathIDs:         []string{"direct/path"},
 			ActivePathID:           "relay/path",
 			LastFailoverAt:         now.Add(6 * time.Second),
+			LastFailoverWhy:        "active_path_rx_silence:direct/path",
 			LastInbandHeartbeatAt:  now.Add(7 * time.Second),
 			LastInbandPathHealthAt: now.Add(8 * time.Second),
 		}},
@@ -147,6 +148,9 @@ func TestRuntimeStateRoundTrip(t *testing.T) {
 	}
 	if !loaded.Peers[0].MultipathEnabled || loaded.Peers[0].PrimaryPathID != "relay/path" || loaded.Peers[0].ProtectedDirectPathID != "direct/path" {
 		t.Fatalf("loaded multipath fields = %#v", loaded.Peers[0])
+	}
+	if loaded.Peers[0].LastFailoverWhy != "active_path_rx_silence:direct/path" {
+		t.Fatalf("loaded failover reason = %q, want active path silence reason", loaded.Peers[0].LastFailoverWhy)
 	}
 	if len(loaded.Peers[0].StandbyPathIDs) != 1 || loaded.Peers[0].StandbyPathIDs[0] != "direct/path" {
 		t.Fatalf("loaded standby path ids = %#v, want [direct/path]", loaded.Peers[0].StandbyPathIDs)
@@ -297,6 +301,7 @@ func TestUpdateStatusCountersSyncsTunnelPeerState(t *testing.T) {
 			StandbyPathIDs:        []string{"direct/path"},
 			ActivePathID:          "direct/path",
 			LastFailoverAt:        time.Unix(1_700_000_006, 0),
+			LastFailoverWhy:       "write_error:relay/path",
 		}}},
 	}
 
@@ -329,6 +334,9 @@ func TestUpdateStatusCountersSyncsTunnelPeerState(t *testing.T) {
 	}
 	if !peer.MultipathEnabled || peer.PrimaryPathID != "relay/path" || peer.ProtectedDirectPathID != "direct/path" || peer.ActivePathID != "direct/path" {
 		t.Fatalf("peer multipath fields = %#v", peer)
+	}
+	if peer.LastFailoverWhy != "write_error:relay/path" {
+		t.Fatalf("peer failover reason = %q, want write_error:relay/path", peer.LastFailoverWhy)
 	}
 	if len(peer.StandbyPathIDs) != 1 || peer.StandbyPathIDs[0] != "direct/path" {
 		t.Fatalf("peer standby path ids = %#v, want [direct/path]", peer.StandbyPathIDs)

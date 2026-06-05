@@ -438,6 +438,7 @@ func (e *engine) upsertPeer(peer *coordclient.PeerInfo, event PeerEvent) {
 		updated.StandbyPathIDs = append([]string(nil), current.StandbyPathIDs...)
 		updated.ActivePathID = current.ActivePathID
 		updated.LastFailoverAt = current.LastFailoverAt
+		updated.LastFailoverWhy = current.LastFailoverWhy
 		updated.LastInbandHeartbeatAt = current.LastInbandHeartbeatAt
 		updated.LastInbandPathHealthAt = current.LastInbandPathHealthAt
 		updated.LastPathID = current.LastPathID
@@ -578,6 +579,7 @@ func (e *engine) syncTunnelPeerStateLocked() {
 		peer.StandbyPathIDs = append([]string(nil), tunnelPeer.StandbyPathIDs...)
 		peer.ActivePathID = tunnelPeer.ActivePathID
 		peer.LastFailoverAt = tunnelPeer.LastFailoverAt
+		peer.LastFailoverWhy = tunnelPeer.LastFailoverWhy
 		if tunnelPeer.TransportLastError != "" {
 			peer.DataState = PeerDataStateFailed
 		}

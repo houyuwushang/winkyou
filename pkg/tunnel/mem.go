@@ -241,6 +241,7 @@ func clonePeerStatus(ps *PeerStatus) *PeerStatus {
 		StandbyPathIDs:        append([]string(nil), ps.StandbyPathIDs...),
 		ActivePathID:          ps.ActivePathID,
 		LastFailoverAt:        ps.LastFailoverAt,
+		LastFailoverWhy:       ps.LastFailoverWhy,
 	}
 	if ps.Endpoint != nil {
 		cp.Endpoint = &net.UDPAddr{

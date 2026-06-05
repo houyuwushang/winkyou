@@ -74,7 +74,11 @@ func newPeersCmd(opts *Options) *cobra.Command {
 						cmd.Printf("  Children:   %s\n", p.LastPathDetails["child_paths"])
 					}
 					if !p.LastFailoverAt.IsZero() {
-						cmd.Printf("  Failover:   %s\n", p.LastFailoverAt.Format(time.RFC3339))
+						failover := p.LastFailoverAt.Format(time.RFC3339)
+						if p.LastFailoverWhy != "" {
+							failover += " (" + p.LastFailoverWhy + ")"
+						}
+						cmd.Printf("  Failover:   %s\n", failover)
 					} else {
 						cmd.Printf("  Failover:   -\n")
 					}

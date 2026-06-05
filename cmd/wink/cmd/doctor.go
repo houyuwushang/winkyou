@@ -1475,6 +1475,8 @@ func addMultipathChecks(result *doctorResult, cfg *config.Config, state *winkcli
 		result.add(warnCheck("multipath", "policy", "relay-only policy keeps sessions single-path even though multipath is enabled in config", "use connectivity.mode=auto with strategy_order relay_only,legacy_ice_udp for relay primary plus protected direct standby; remove nat.force_relay"))
 		return
 	}
+	mp := cfg.Connectivity.Multipath
+	result.add(okCheck("multipath", "policy", fmt.Sprintf("enabled protect_direct=%t max_paths=%d shadow_write=%t active_path_silence_timeout=%s", mp.ProtectDirect, mp.MaxPaths, mp.ShadowWrite, formatMultipathSilenceTimeout(mp.ActivePathSilenceTimeout))))
 	if stateErr != nil || state == nil || len(state.Peers) == 0 {
 		result.add(warnCheck("multipath", "runtime state", "multipath is enabled but no runtime peer state is available", "start wink up and connect a peer"))
 		return
@@ -1518,6 +1520,13 @@ func relayOnlyPolicyDisablesMultipath(cfg *config.Config) bool {
 		return false
 	}
 	return cfg.NAT.ForceRelay || strings.EqualFold(strings.TrimSpace(cfg.Connectivity.Mode), "relay_only")
+}
+
+func formatMultipathSilenceTimeout(timeout time.Duration) string {
+	if timeout <= 0 {
+		return "disabled"
+	}
+	return timeout.String()
 }
 
 func runtimeTimeFreshAt(ts, now time.Time, window time.Duration) bool {
