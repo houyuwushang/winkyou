@@ -467,6 +467,12 @@ func (e *executor) reportCandidateFilter(sess solver.SessionIO, event, side, mes
 	details := summary.details()
 	details["mode"] = string(e.execCfg.Mode)
 	details["candidate_side"] = side
+	if e.execCfg.Mode == modePublicDirect && side == "local" && len(e.execCfg.PublicEndpointHints) > 0 {
+		details["public_endpoint_hint_count"] = strconv.Itoa(len(e.execCfg.PublicEndpointHints))
+		if e.execCfg.PublicEndpointHintPortWindow > 0 {
+			details["public_endpoint_hint_port_window"] = strconv.Itoa(publicEndpointHintPortWindow(e.execCfg.PublicEndpointHintPortWindow))
+		}
+	}
 	if messageType != "" {
 		details["message_type"] = messageType
 	}

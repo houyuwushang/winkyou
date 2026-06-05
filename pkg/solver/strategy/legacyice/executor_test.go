@@ -370,6 +370,9 @@ func TestPublicDirectAdvertisesConfiguredPublicEndpointHints(t *testing.T) {
 	if obs == nil || !strings.Contains(obs.Details["candidate_kept_samples"], "srflx:117.48.146.2:41000<-192.168.1.20:40000") {
 		t.Fatalf("observations = %#v, want kept public endpoint hint sample", io.observations)
 	}
+	if obs.Details["public_endpoint_hint_count"] != "1" {
+		t.Fatalf("candidate_gathered public endpoint hint count = %#v, want 1", obs.Details)
+	}
 }
 
 func TestPublicDirectExpandsPublicEndpointHintPortWindow(t *testing.T) {
@@ -400,6 +403,33 @@ func TestPublicDirectExpandsPublicEndpointHintPortWindow(t *testing.T) {
 	}
 	if !slices.Equal(got, want) {
 		t.Fatalf("expanded hint candidates = %#v, want %#v", got, want)
+	}
+}
+
+func TestPublicDirectCandidateObservationReportsEndpointHintPortWindow(t *testing.T) {
+	exec := newExecutor(Config{}, solver.SolveInput{}, solver.Plan{
+		ID:       planIDPublicDirect,
+		Strategy: StrategyName,
+	}, executorConfig{
+		Mode:                         modePublicDirect,
+		PublicEndpointHints:          []string{"117.48.146.2:41000/192.168.1.20:40000"},
+		PublicEndpointHintPortWindow: 2,
+	})
+	summary := newCandidateFilterSummary()
+	summary.record(nat.Candidate{
+		Type:    nat.CandidateTypeSrflx,
+		Address: &net.UDPAddr{IP: net.IPv4(117, 48, 146, 2), Port: 41000},
+	}, true, "")
+	io := &capturingSessionIO{}
+
+	exec.reportCandidateFilter(io, "candidate_gathered", "local", MessageTypeOffer, summary)
+
+	obs := findObservation(io.observations, "candidate_gathered")
+	if obs == nil {
+		t.Fatalf("observations = %#v, want candidate_gathered", io.observations)
+	}
+	if obs.Details["public_endpoint_hint_count"] != "1" || obs.Details["public_endpoint_hint_port_window"] != "2" {
+		t.Fatalf("candidate_gathered details = %#v, want endpoint hint count/window", obs.Details)
 	}
 }
 

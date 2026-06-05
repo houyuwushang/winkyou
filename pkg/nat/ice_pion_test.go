@@ -347,6 +347,21 @@ func TestPublicDirectMaxBindingRequestsScaleWithConnectTimeout(t *testing.T) {
 	}
 }
 
+func TestCandidateToPionServerReflexiveAllowsMissingRelatedAddr(t *testing.T) {
+	candidate, err := candidateToPion(Candidate{
+		Type:       CandidateTypeSrflx,
+		Address:    &net.UDPAddr{IP: net.IPv4(117, 48, 146, 2), Port: 41000},
+		Priority:   100,
+		Foundation: "public-hint-1",
+	})
+	if err != nil {
+		t.Fatalf("candidateToPion(srflx without related addr) error = %v", err)
+	}
+	if candidate == nil {
+		t.Fatal("candidateToPion(srflx without related addr) = nil")
+	}
+}
+
 func TestPublicDirectFailedTimeoutUsesConnectTimeout(t *testing.T) {
 	cfg := ICEConfig{
 		PublicDirectCandidate: true,

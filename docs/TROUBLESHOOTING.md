@@ -194,6 +194,7 @@ Get-Content <runtime-state-base>.observations.jsonl |
 - `candidate_gathered` 的 `candidate_total>0` 但 `candidate_kept=0`：本端 gather 到的 direct candidate 全部被 public-direct 规则排除，常见原因是只采到了私网、`100.64.0.0/10` 或 overlay candidate。该 plan 会失败并继续后续 fallback。
 - `remote_candidates_filtered` 的 `candidate_kept=0`：远端发来的候选没有可用于独立公网 direct 的地址，本端不会把它交给 ICE agent。该 plan 会记录 `candidate_failed`，但不应把整个 peer session 直接打失败。
 - `candidate_kept_samples` 和 `candidate_rejected_samples`：少量候选样本。用这些字段直接对比 natpierce 日志里的公网 endpoint；带 local base 的 hint 会显示为 `srflx:公网ip:端口<-本地ip:端口`。如果 WinkYou 只看到 `host:100.64...` 或私网样本，说明它还没有采到同级别的公网 srflx/prflx 候选。
+- `public_endpoint_hint_count` 和 `public_endpoint_hint_port_window`：只会出现在带 `public_endpoint_hints` 的本地 `candidate_gathered` observation 中。看到这些字段才能确认本轮 `legacyice/public_direct` 确实带着 endpoint hint 和端口窗口参与了 ICE 检查；如果配置里开了窗口但 observation 没有这些字段，优先确认两端二进制和实际使用的 config。
 - 两边 `candidate_kept>0` 但随后 `candidate_failed`：候选已经交换，问题更可能在 UDP 映射不稳定、防火墙、端口范围、STUN/TURN 配置或 NAT 行为与 natpierce 使用的 socket/映射不一致。
 - `candidate_reject_reasons` 中出现 `*_cgnat_or_overlay_candidate`：当前路径仍可能依赖 natpierce、VPN/TAP 或类似 underlay，不能作为 `protected_direct` 证据。
 - 成功记录中 `remote_candidate_kind=prflx` 或 `public_direct_learned_pair=true`：说明 ICE 过程中通过对端 STUN Binding Request 学到了 peer-reflexive 候选对，更接近 natpierce 这类运行中打洞成功的证据。仍需同时确认 `path_role=protected_direct` 且 `path_dependencies` 为空。
