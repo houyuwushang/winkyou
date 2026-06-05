@@ -143,9 +143,15 @@ func (s *Session) executeSelectedStrategy(ctx context.Context, strategy solver.S
 	annotatedResult := annotateResultPath(*best.Result, best.Plan)
 	best.Result = &annotatedResult
 	retained := retainSuccessfulOutcomes(outcomes, best, s.cfg.PathPolicy)
-	s.setRetainedOutcomes(retained)
+	boundResult, _ := buildResultTransportFromOutcomes(best, outcomes, s.cfg.PathPolicy)
+	best.Result = &boundResult
+	if isMultipathResult(boundResult) {
+		s.setRetainedOutcomes(nil)
+	} else {
+		s.setRetainedOutcomes(retained)
+	}
 	s.lastPlan = best.Plan
-	s.lastRes = annotatedResult
+	s.lastRes = boundResult
 	s.emitObservation(ctx, solver.Observation{
 		Strategy:       best.Plan.Strategy,
 		PlanID:         best.Plan.ID,

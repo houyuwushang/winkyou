@@ -74,6 +74,13 @@ func pathSummaryObservationDetails(summary solver.PathSummary, details map[strin
 	} else {
 		details = cloneStringMap(details)
 	}
+	if len(summary.Details) > 0 {
+		merged := cloneStringMap(summary.Details)
+		for key, value := range details {
+			merged[key] = value
+		}
+		details = merged
+	}
 	if summary.Role != "" {
 		details["path_role"] = string(summary.Role)
 	}
