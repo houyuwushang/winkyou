@@ -1,11 +1,14 @@
 package client
 
 import (
+	"context"
 	"net"
 	"testing"
 	"time"
 
+	"winkyou/pkg/config"
 	"winkyou/pkg/peercontrol"
+	"winkyou/pkg/solver"
 )
 
 func TestInbandMessagesForPeer(t *testing.T) {
@@ -63,6 +66,40 @@ func TestInbandMessagesForPeer(t *testing.T) {
 	}
 }
 
+func TestInbandMessagesRequestReICEWhenProtectedDirectMissing(t *testing.T) {
+	cfg := config.Default()
+	eng := &engine{cfg: cfg}
+	peer := &PeerStatus{
+		NodeID:               "node-b",
+		State:                PeerStateConnected,
+		ControlState:         PeerControlStateConnected,
+		DataState:            PeerDataStateAlive,
+		ActivePathID:         "relay/path",
+		LastPathID:           "relay/path",
+		LastPathRole:         string(solver.PathRolePrimaryCandidate),
+		LastPathDependencies: []string{"relay:turn_or_relay_candidate"},
+		ConnectionType:       ConnectionTypeRelay,
+	}
+
+	messages := eng.inbandMessagesForPeer("node-a", peer)
+	if len(messages) != 3 {
+		t.Fatalf("len(messages) = %d, want 3", len(messages))
+	}
+	reICE := messages[2]
+	if reICE.Type != peercontrol.TypeReICERequest || reICE.ReICERequest == nil {
+		t.Fatalf("re-ice message = %#v", reICE)
+	}
+	if reICE.ReICERequest.PathID != "relay/path" || reICE.ReICERequest.Reason != "protected_direct_unavailable" {
+		t.Fatalf("re-ice payload = %#v", reICE.ReICERequest)
+	}
+
+	peer.ProtectedDirectPathID = "direct/path"
+	messages = eng.inbandMessagesForPeer("node-a", peer)
+	if len(messages) != 2 {
+		t.Fatalf("len(messages) with protected direct = %d, want 2", len(messages))
+	}
+}
+
 func TestHandleInbandControlMessageUpdatesPeerTimestamps(t *testing.T) {
 	eng := &engine{
 		status: EngineStatus{NodeID: "node-a"},
@@ -97,6 +134,58 @@ func TestHandleInbandControlMessageUpdatesPeerTimestamps(t *testing.T) {
 	}
 	if eng.peers["node-b"].DataState != PeerDataStateAlive {
 		t.Fatalf("data state = %s, want alive after in-band path_health", eng.peers["node-b"].DataState)
+	}
+}
+
+func TestHandleInbandReICERequestSchedulesImprovement(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	cfg := config.Default()
+	cfg.NAT.RetryInterval = time.Minute
+	cfg.NAT.RetryMaxInterval = time.Minute
+	session := &peerSession{
+		nodeID: "node-b",
+		bound:  true,
+		lastPath: solver.PathSummary{
+			PathID:         "relay/path",
+			ConnectionType: "relay",
+			Role:           solver.PathRolePrimaryCandidate,
+			Dependencies: []solver.PathDependency{{
+				Kind:   solver.PathDependencyRelay,
+				Reason: "turn_or_relay_candidate",
+			}},
+		},
+	}
+	eng := &engine{
+		cfg:    cfg,
+		runCtx: ctx,
+		status: EngineStatus{NodeID: "node-a"},
+		peers: map[string]*PeerStatus{
+			"node-b": {
+				NodeID:    "node-b",
+				State:     PeerStateConnected,
+				DataState: PeerDataStateAlive,
+			},
+		},
+		peerMgr: &peerManager{sessions: map[string]*peerSession{
+			"node-b": session,
+		}},
+	}
+
+	msg := peercontrol.NewReICERequest("node-b", "node-a", peercontrol.ReICERequest{
+		PathID: "relay/path",
+		Reason: "protected_direct_unavailable",
+	})
+	eng.handleInbandControlMessage(msg)
+
+	session.connectMu.Lock()
+	defer session.connectMu.Unlock()
+	if !session.improvePending {
+		t.Fatal("re-ice request should schedule protected-direct improvement")
+	}
+	if session.improveDelay != time.Minute {
+		t.Fatalf("improve delay = %v, want %v", session.improveDelay, time.Minute)
 	}
 }
 

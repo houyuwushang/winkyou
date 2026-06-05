@@ -20,6 +20,30 @@ func shouldImproveBoundPath(policy solver.PathPolicy, summary solver.PathSummary
 	return true
 }
 
+func shouldRequestInbandReICE(policy solver.PathPolicy, peer *PeerStatus) bool {
+	if peer == nil || !policy.MultipathEnabled || !policy.ProtectDirect {
+		return false
+	}
+	if peer.ProtectedDirectPathID != "" {
+		return false
+	}
+	if peer.LastPathRole == string(solver.PathRoleProtectedDirect) && len(peer.LastPathDependencies) == 0 {
+		return false
+	}
+	return peer.State == PeerStateConnected &&
+		(peer.DataState == PeerDataStateAlive || peer.DataState == PeerDataStateBound)
+}
+
+func (e *engine) schedulePeerImprovementByID(nodeID string) {
+	e.mu.RLock()
+	var session *peerSession
+	if e.peerMgr != nil {
+		session = e.peerMgr.sessions[nodeID]
+	}
+	e.mu.RUnlock()
+	e.schedulePeerImprovement(nodeID, session)
+}
+
 func (e *engine) schedulePeerImprovement(nodeID string, session *peerSession) {
 	runCtx, ok := e.runContext()
 	if session == nil || !ok || !shouldImproveBoundPath(e.multipathPathPolicy(), sessionLastPath(session)) {

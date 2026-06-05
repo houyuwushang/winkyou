@@ -20,14 +20,14 @@ client runtime 也已经新增基础可观测字段：
 
 client 还修复了一个真实验证中暴露的恢复问题：当本端不是 deterministic initiator 时，之前 `startPeerConnect` 和 peer session retry 会直接返回，导致高 node id 一侧在远端 stale session 或远端未重新发起时长期停在 `data_state=connecting/failed`。现在 controlled side 也会启动 session 并按 `nat.retry_interval` 重试；`initiator` 仍只作为 session/strategy 角色输入，不再作为 client 层是否允许恢复连接的门槛。
 
-client 还新增了 bound 后的 protected-direct improvement：如果当前已 bound 的 path 是 relay 或带 dependency 的 direct-like path，client 会保留现有 WireGuard 数据面，同时调度 session 继续尝试能证明独立性的 protected direct。失败的临时 transport 会被关闭，旧 path 保持不变；只有后续结果明确为 `protected_direct` 时，binder 才会替换 tunnel peer transport。
+client 还新增了 bound 后的 protected-direct improvement：如果当前已 bound 的 path 是 relay 或带 dependency 的 direct-like path，client 会保留现有 WireGuard 数据面，同时调度 session 继续尝试能证明独立性的 protected direct。失败的临时 transport 会被关闭，旧 path 保持不变；只有后续结果明确为 `protected_direct` 时，binder 才会替换 tunnel peer transport。已建立虚拟网内的 `re_ice_request` 也会触发同一条 improvement 调度路径。
 
 这仍只是控制面韧性的早期补强，还不能说明“所有控制面故障下都一定保持连接”。仍待完成和验证：
 
 - 扩展真实双节点环境验证，覆盖更长时间 coordinator 进程退出、heartbeat failure 和 signaling stream failure，而不是断开 natpierce/跳板网络。
 - coordinator heartbeat 或 signaling stream 失败时，不主动拆除已 bound 的 data plane。
 - 使用最近成功 path/cache 做恢复或重试；当前已完成状态展示、缓存，以及 bound 后 protected-direct improvement，但还没有完成无外部信令的 cached path 恢复。
-- 已建立虚拟网后的 in-band peer control channel 运行时接入；消息模型和 JSON 编解码已冻结在 `pkg/peercontrol`。
+- 已建立虚拟网后的 in-band peer control channel 已接入 heartbeat/path_health 和最小 re-ICE request；完整 endpoint/capability/observation 交换和 full ICE session signaling 仍待实现。
 
 ## 已验证现象
 
@@ -174,7 +174,7 @@ coordinator bootstrap
 
 ### P1: in-band control channel
 
-状态：消息模型、校验和 JSON 编解码已加入 `pkg/peercontrol`；client 网络循环尚未接入。
+状态：消息模型、校验和 JSON 编解码已加入 `pkg/peercontrol`；client 网络循环已接入 heartbeat、path_health 和最小 `re_ice_request`。当前 `re_ice_request` 只调度已有 peer session 的 protected-direct improvement，完整 ICE offer/answer 仍走现有 rendezvous/session sender。
 
 已建立虚拟网后，可以在 `10.88.0.0/24` 内增加轻量 peer control channel，承载：
 
@@ -192,7 +192,7 @@ coordinator bootstrap
 - 不替代首次 coordinator/rendezvous bootstrap。
 - 不改变 `transport.PacketTransport` 接口。
 - 不把 NAT/ICE 细节塞回 `pkg/session`。
-- 先承载 heartbeat/path health/capability refresh，再考虑 re-ICE 或 strategy re-selection。
+- 已承载 heartbeat/path health 和最小 re-ICE request；后续再接 endpoint update、capability refresh、observation exchange 或完整 strategy message transport。
 
 ### P1: 纯 NAT piercing 验证需要候选接口控制
 

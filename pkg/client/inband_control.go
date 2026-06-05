@@ -146,7 +146,16 @@ func (e *engine) inbandMessagesForPeer(localNodeID string, peer *PeerStatus) []p
 		LastError:          peer.TransportLastError,
 	})
 	pathHealth.Seq = atomic.AddUint64(&e.inbandSeq, 1)
-	return []peercontrol.Message{heartbeat, pathHealth}
+	messages := []peercontrol.Message{heartbeat, pathHealth}
+	if shouldRequestInbandReICE(e.multipathPathPolicy(), peer) {
+		reICE := peercontrol.NewReICERequest(localNodeID, peer.NodeID, peercontrol.ReICERequest{
+			PathID: lastPathID,
+			Reason: "protected_direct_unavailable",
+		})
+		reICE.Seq = atomic.AddUint64(&e.inbandSeq, 1)
+		messages = append(messages, reICE)
+	}
+	return messages
 }
 
 func (e *engine) handleInbandControlPacket(raw []byte) error {
@@ -190,12 +199,18 @@ func (e *engine) handleInbandControlMessage(msg peercontrol.Message) {
 			}
 			changed = true
 		}
+		if msg.ReICERequest != nil {
+			changed = true
+		}
 		if changed {
 			peer.LastSeen = seenAt
 			e.applyPeerHealthStateLocked(seenAt)
 		}
 	}
 	e.mu.Unlock()
+	if msg.ReICERequest != nil {
+		e.schedulePeerImprovementByID(msg.From)
+	}
 	if changed {
 		e.persistState()
 	}
