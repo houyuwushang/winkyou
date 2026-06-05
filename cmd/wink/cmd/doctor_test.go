@@ -180,6 +180,9 @@ func TestDefaultSTUNProbeWarnsOnUnstableMapping(t *testing.T) {
 	if !strings.Contains(check.Suggestion, "public direct may fail") {
 		t.Fatalf("defaultSTUNProbe() suggestion = %q, want public-direct warning", check.Suggestion)
 	}
+	if !strings.Contains(check.Suggestion, "auto_public_endpoint_hints") || !strings.Contains(check.Suggestion, "public_endpoint_hint_port_window") {
+		t.Fatalf("defaultSTUNProbe() suggestion = %q, want best-effort hint guidance", check.Suggestion)
+	}
 	if !strings.Contains(check.Suggestion, "public_endpoint_hint_candidates=198.51.100.44:45678,198.51.100.44:45679") {
 		t.Fatalf("defaultSTUNProbe() suggestion = %q, want observed endpoint candidates", check.Suggestion)
 	}

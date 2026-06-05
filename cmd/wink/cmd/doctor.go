@@ -266,7 +266,7 @@ func defaultSTUNProbe(ctx context.Context, cfg *config.Config) doctorCheck {
 	message := fmt.Sprintf("nat_type=%s %s", report.NATType.String(), formatSTUNMappingReport(report))
 	hintSuggestion := publicEndpointHintSuggestion(report)
 	if report.NATType == nat.NATTypeSymmetric {
-		suggestion := "public direct may fail with endpoint-dependent mappings; compare natpierce endpoints, configure stable public_endpoint_hints if available, or use relay_only fallback"
+		suggestion := "public direct may fail with endpoint-dependent mappings; compare natpierce endpoints, use auto_public_endpoint_hints plus a small public_endpoint_hint_port_window for best-effort probing, configure proven public_endpoint_hints if available, or use relay_only fallback"
 		if hintSuggestion != "" {
 			suggestion += "; " + hintSuggestion
 		}
@@ -312,7 +312,7 @@ func publicEndpointHintSuggestion(report nat.STUNMappingReport) string {
 		return ""
 	}
 	if report.NATType == nat.NATTypeSymmetric {
-		return "observed public_endpoint_hint_candidates=" + strings.Join(hints, ",") + " for comparison only; endpoint-dependent mappings may not match the peer path"
+		return "observed public_endpoint_hint_candidates=" + strings.Join(hints, ",") + " for comparison or explicit best-effort use; endpoint-dependent mappings may not match the peer path"
 	}
 	return "observed public endpoint hint candidate: nat.public_endpoint_hints=[" + quoteCSV(hints) + "]; verify this endpoint stays stable for the WinkYou ICE socket before relying on it"
 }
