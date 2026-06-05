@@ -10,10 +10,11 @@ WinkYou = connectivity solver + secure WireGuard data plane
 
 ## 当前状态
 
-当前代码已经完成 Phase 3B code health、Phase 4A `relay_only` 冻结，并开始进入非 UDP PacketTransport alpha 验证和 v0.1 运维闭环。
+当前代码已经完成 Phase 3B code health、Phase 4A `relay_only` 冻结，并开始进入 protected direct multipath 目标定义、非 UDP PacketTransport alpha 验证和 v0.1 运维闭环。
 
 - 活跃架构权威：[`docs/CONNECTIVITY-SOLVER-BASELINE.md`](./docs/CONNECTIVITY-SOLVER-BASELINE.md)
 - v0.1 freeze gate：[`docs/V0.1-FREEZE.md`](./docs/V0.1-FREEZE.md)
+- Protected direct multipath 目标：[`docs/MULTIPATH-PROTECTED-DIRECT.md`](./docs/MULTIPATH-PROTECTED-DIRECT.md)
 - Phase 2D 已冻结：`phase2d-freeze-2026-04-24`
 - Phase 3A strategy portfolio foundation 已落地
 - Phase 3B code health 已完成，包括 CI 质量门、session 机械拆分、状态转换校验、resolver 统一、context 边界修复和若干小型清理
@@ -128,6 +129,7 @@ Windows 接口名应使用系统实际接口名称，例如 `Tailscale`、`vEthe
 - 自研 Wink Protocol 数据平面
 - `tcp_framed` 仍是 alpha，不做 NAT TCP 打洞承诺
 - 高级 learning/scoring 闭环
+- protected direct multipath：下一步需要让 primary path 按质量选择，同时尽量保留 direct/P2P path 作为 protected standby，并在 primary 失败时 fail over
 - coordinator 断线后保持已 bound 数据面的完整控制面韧性：基础 kill-coordinator 验证已通过；peer-offline 误清理、controlled-side retry、coordinator NotFound 重注册和 runtime control/data/path cache 已先修；更长时间 heartbeat/signaling failure、cached path 恢复仍待完成
 - 已建立虚拟网后的 in-band peer control channel 运行时接入；消息模型已在 `pkg/peercontrol` 冻结，但还没有接入 client 网络循环
 - 真实环境下排除 Tailscale、Docker bridge、其他 VPN/TAP 后的纯 NAT piercing 验证
@@ -157,6 +159,7 @@ Windows 接口名应使用系统实际接口名称，例如 `Tailscale`、`vEthe
 - [`docs/SELFHOST-QUICKSTART.md`](./docs/SELFHOST-QUICKSTART.md)：自托管快速部署
 - [`docs/LONG-RUNNING-CLIENT.md`](./docs/LONG-RUNNING-CLIENT.md)：长期运行客户端、日志和 service/startup 工作流
 - [`docs/CONTROL-PLANE-RESILIENCE.md`](./docs/CONTROL-PLANE-RESILIENCE.md)：真实部署中暴露的控制面断线、P2P 保持和候选接口过滤 TODO
+- [`docs/MULTIPATH-PROTECTED-DIRECT.md`](./docs/MULTIPATH-PROTECTED-DIRECT.md)：protected direct multipath 当前阶段目标
 - [`docs/INBAND-PEER-CONTROL.md`](./docs/INBAND-PEER-CONTROL.md)：已建立数据面后的 peer control 消息模型和边界
 - [`docs/TROUBLESHOOTING.md`](./docs/TROUBLESHOOTING.md)：分层排障指南
 - [`docs/RELEASE.md`](./docs/RELEASE.md)：release 构建、校验和发布流程
