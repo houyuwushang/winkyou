@@ -153,9 +153,9 @@ func (s *Session) executeSelectedStrategy(ctx context.Context, strategy solver.S
 		LocalAddr:      addrString(best.Result.Transport.LocalAddr()),
 		RemoteAddr:     addrString(best.Result.Summary.RemoteAddr),
 		Reason:         best.SelectionReason,
-		Details: map[string]string{
+		Details: pathSummaryObservationDetails(best.Result.Summary, map[string]string{
 			"score": fmt.Sprintf("%d", best.Score),
-		},
+		}),
 	})
 
 	// Clean up non-selected transports
@@ -207,6 +207,7 @@ func (s *Session) executeSelectedStrategy(ctx context.Context, strategy solver.S
 		ConnectionType: best.Result.Summary.ConnectionType,
 		LocalAddr:      addrString(best.Result.Transport.LocalAddr()),
 		RemoteAddr:     addrString(best.Result.Summary.RemoteAddr),
+		Details:        pathSummaryObservationDetails(best.Result.Summary, nil),
 	})
 
 	s.transition(StateBound)

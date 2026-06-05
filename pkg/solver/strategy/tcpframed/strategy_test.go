@@ -2,6 +2,7 @@ package tcpframed
 
 import (
 	"context"
+	"net"
 	"testing"
 	"time"
 
@@ -35,6 +36,29 @@ func TestNewExecutorRejectsUnsupportedPlan(t *testing.T) {
 	strategy := New(Config{})
 	if _, err := strategy.NewExecutor(solver.Plan{ID: "tcpframed/other", Strategy: StrategyName}); err == nil {
 		t.Fatal("NewExecutor() error = nil, want unsupported plan error")
+	}
+}
+
+func TestResultForConnAnnotatesPathPolicyMetadata(t *testing.T) {
+	left, right := net.Pipe()
+	defer left.Close()
+	defer right.Close()
+
+	exec := &executor{input: solver.SolveInput{SessionID: "session/node-a/node-b"}}
+	result := exec.resultForConn(left, "dialer")
+	summary := result.Summary
+
+	if summary.Role != solver.PathRolePrimaryCandidate {
+		t.Fatalf("role = %q, want %q", summary.Role, solver.PathRolePrimaryCandidate)
+	}
+	if len(summary.Dependencies) != 1 || summary.Dependencies[0].Kind != solver.PathDependencyUnknown {
+		t.Fatalf("dependencies = %#v, want unknown dependency", summary.Dependencies)
+	}
+	if got := summary.Metrics["transport"]; got != StrategyName {
+		t.Fatalf("transport metric = %q, want %q", got, StrategyName)
+	}
+	if !solver.IsDirectPath(summary) {
+		t.Fatal("IsDirectPath(summary) = false, want true for tcp_framed direct-like result")
 	}
 }
 

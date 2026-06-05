@@ -68,6 +68,47 @@ func annotateObservationDetails(details map[string]string, sessionID, localNodeI
 	return details
 }
 
+func pathSummaryObservationDetails(summary solver.PathSummary, details map[string]string) map[string]string {
+	if details == nil {
+		details = map[string]string{}
+	} else {
+		details = cloneStringMap(details)
+	}
+	if summary.Role != "" {
+		details["path_role"] = string(summary.Role)
+	}
+	if len(summary.Dependencies) > 0 {
+		kinds := make([]string, 0, len(summary.Dependencies))
+		values := make([]string, 0, len(summary.Dependencies))
+		for _, dependency := range summary.Dependencies {
+			if dependency.Kind == "" {
+				continue
+			}
+			kind := string(dependency.Kind)
+			kinds = append(kinds, kind)
+			value := kind
+			if dependency.NodeID != "" {
+				value += ":" + dependency.NodeID
+			}
+			if dependency.Reason != "" {
+				value += ":" + dependency.Reason
+			}
+			values = append(values, value)
+		}
+		if len(kinds) > 0 {
+			details["path_dependency_kinds"] = strings.Join(kinds, ",")
+			details["path_dependencies"] = strings.Join(values, ",")
+		}
+	}
+	for key, value := range summary.Metrics {
+		if key == "" {
+			continue
+		}
+		details["path_metric_"+key] = value
+	}
+	return details
+}
+
 func parseIntParam(s string) int {
 	if s == "" {
 		return 0

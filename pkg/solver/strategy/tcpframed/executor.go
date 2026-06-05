@@ -244,6 +244,14 @@ func (e *executor) resultForConn(conn net.Conn, role string) solver.Result {
 			PathID:         pathID,
 			ConnectionType: "direct",
 			RemoteAddr:     conn.RemoteAddr(),
+			Role:           solver.PathRolePrimaryCandidate,
+			Dependencies: []solver.PathDependency{{
+				Kind:   solver.PathDependencyUnknown,
+				Reason: "explicit_tcp_address",
+			}},
+			Metrics: map[string]string{
+				"transport": StrategyName,
+			},
 			Details: map[string]string{
 				"transport": StrategyName,
 				"role":      role,

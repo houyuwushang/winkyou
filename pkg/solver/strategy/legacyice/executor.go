@@ -291,12 +291,15 @@ func (e *executor) startConnect(sess solver.SessionIO) {
 		connectionType := connectionTypeFromPair(pair)
 		pathID := fmt.Sprintf("legacyice:%s:%s", connectionType, e.input.SessionID)
 		transport := e.releaseTransport(agent, conn, pathID)
+		role, dependencies := pathPolicyMetadata(connectionType)
 		result := solver.Result{
 			Transport: transport,
 			Summary: solver.PathSummary{
 				PathID:         pathID,
 				ConnectionType: connectionType,
 				RemoteAddr:     remoteAddrFromPair(pair),
+				Role:           role,
+				Dependencies:   dependencies,
 				Details: map[string]string{
 					"ice_state":        connectionStateString(agent),
 					"local_candidate":  formatCandidate(pair.Local),
@@ -410,6 +413,16 @@ func connectionTypeFromPair(pair *nat.CandidatePair) string {
 		return "relay"
 	}
 	return "direct"
+}
+
+func pathPolicyMetadata(connectionType string) (solver.PathRole, []solver.PathDependency) {
+	if connectionType == "relay" {
+		return solver.PathRolePrimaryCandidate, []solver.PathDependency{{
+			Kind:   solver.PathDependencyRelay,
+			Reason: "turn_or_relay_candidate",
+		}}
+	}
+	return solver.PathRoleProtectedDirect, nil
 }
 
 func filterRemoteCandidates(candidates []nat.Candidate, execCfg executorConfig) []nat.Candidate {
