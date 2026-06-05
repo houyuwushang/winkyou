@@ -1207,9 +1207,57 @@ func routeTargetCheck(route doctorRouteTargetProbeResult) doctorCheck {
 	}
 	message := target + " uses " + routeTargetRouteSummary(route)
 	if isLikelyExternalOverlayInterface(route.InterfaceAlias) {
-		return warnCheck("routing", "target route", message, "this target currently routes through an external overlay; to prove WinkYou carries it, advertise the backend route through a WinkYou peer and verify the route points to that peer virtual IP")
+		return warnCheck("routing", "target route", message, routeTargetOverlaySuggestion(route))
 	}
 	return okCheck("routing", "target route", message)
+}
+
+func routeTargetOverlaySuggestion(route doctorRouteTargetProbeResult) string {
+	parts := []string{"this target currently routes through an external overlay"}
+	configParts := make([]string, 0, 2)
+	if iface := strings.TrimSpace(route.InterfaceAlias); iface != "" {
+		configParts = append(configParts, "nat.candidate_interface_include=["+iface+"]")
+	}
+	if cidrs := routeTargetCandidateCIDRIncludes(route); len(cidrs) > 0 {
+		configParts = append(configParts, "nat.candidate_cidr_include=["+strings.Join(cidrs, ",")+"]")
+	}
+	if len(configParts) > 0 {
+		parts = append(parts, "for controlled public-direct reproduction, add "+strings.Join(configParts, " and "))
+	}
+	parts = append(parts, "only add nat.direct_trusted_cidrs after proving this is an independent underlay")
+	parts = append(parts, "to prove WinkYou carries the backend, advertise the backend route through a WinkYou peer and verify the route points to that peer virtual IP")
+	return strings.Join(parts, "; ")
+}
+
+func routeTargetCandidateCIDRIncludes(route doctorRouteTargetProbeResult) []string {
+	seen := map[string]struct{}{}
+	out := make([]string, 0, 2)
+	for _, raw := range []string{route.LocalAddress, route.Target} {
+		cidr := ipHostCIDR(raw)
+		if cidr == "" {
+			continue
+		}
+		if _, ok := seen[cidr]; ok {
+			continue
+		}
+		seen[cidr] = struct{}{}
+		out = append(out, cidr)
+	}
+	return out
+}
+
+func ipHostCIDR(raw string) string {
+	ip := net.ParseIP(strings.TrimSpace(raw))
+	if ip == nil {
+		return ""
+	}
+	if ip4 := ip.To4(); ip4 != nil {
+		return ip4.String() + "/32"
+	}
+	if ip16 := ip.To16(); ip16 != nil {
+		return ip16.String() + "/128"
+	}
+	return ""
 }
 
 func routeTargetRouteSummary(route doctorRouteTargetProbeResult) string {
