@@ -775,6 +775,54 @@ func TestPublicDirectAgentRequestSkipsAmbiguousMappedHintPorts(t *testing.T) {
 	}
 }
 
+func TestPublicDirectSplitHintPlanConstrainsMappedHintPort(t *testing.T) {
+	agent := &recordingICEAgent{
+		connectErr:    context.Canceled,
+		connectCalled: make(chan struct{}),
+	}
+	var got AgentRequest
+	plan := solver.Plan{
+		ID:       "legacyice/public_direct_hint_2",
+		Strategy: StrategyName,
+		Metadata: map[string]string{
+			"mode":                          string(modePublicDirect),
+			planMetadataPublicEndpointHints: "117.48.146.3:41001/192.168.1.20:40001",
+		},
+	}
+	execCfg, err := executorConfigForPlan(plan, Config{
+		PublicEndpointHints: []string{
+			"117.48.146.2:41000/192.168.1.20:40000",
+			"117.48.146.3:41001/192.168.1.20:40001",
+		},
+	})
+	if err != nil {
+		t.Fatalf("executorConfigForPlan(split hint) error = %v", err)
+	}
+	exec := newExecutor(Config{
+		NewICEAgent: func(ctx context.Context, req AgentRequest) (nat.ICEAgent, error) {
+			_ = ctx
+			got = req
+			return agent, nil
+		},
+	}, solver.SolveInput{
+		SessionID: "session/node-a/node-b",
+		Initiator: true,
+	}, plan, execCfg)
+
+	if _, err := exec.ensureAgent(context.Background()); err != nil {
+		t.Fatalf("ensureAgent(split public direct hint port) error = %v", err)
+	}
+	if got.CandidatePortMin != 40001 || got.CandidatePortMax != 40001 {
+		t.Fatalf("split hint candidate port range = %d-%d, want 40001-40001", got.CandidatePortMin, got.CandidatePortMax)
+	}
+	if len(got.CandidateCIDRInclude) != 1 || got.CandidateCIDRInclude[0] != "192.168.1.20/32" {
+		t.Fatalf("split hint candidate CIDR include = %#v, want mapped local base /32", got.CandidateCIDRInclude)
+	}
+	if len(execCfg.PublicEndpointHints) != 1 || execCfg.PublicEndpointHints[0] != "117.48.146.3:41001/192.168.1.20:40001" {
+		t.Fatalf("split hint executor hints = %#v, want only selected hint", execCfg.PublicEndpointHints)
+	}
+}
+
 func TestPublicDirectAgentRequestIncludesMultipleMappedHintLocalBases(t *testing.T) {
 	got := publicEndpointHintLocalBaseCIDRs([]string{
 		"117.48.146.3:41001/192.168.1.21:40000",

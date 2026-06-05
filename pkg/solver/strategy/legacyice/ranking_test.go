@@ -52,6 +52,40 @@ func TestStrategyRankPlansPrefersPublicDirectWithEndpointHints(t *testing.T) {
 	}
 }
 
+func TestStrategyRankPlansPrefersSplitPublicDirectEndpointHints(t *testing.T) {
+	strategy := New(Config{
+		PublicEndpointHints: []string{
+			"203.0.113.10:41000/192.168.1.20:40000",
+			"203.0.113.11:41001/192.168.1.20:40001",
+		},
+	})
+	plans, err := strategy.Plan(context.Background(), solver.SolveInput{
+		SessionID:    "session/node-a/node-b",
+		RemoteNodeID: "node-b",
+	})
+	if err != nil {
+		t.Fatalf("Plan() error = %v", err)
+	}
+
+	ranked, err := strategy.RankPlans(context.Background(), solver.RankInput{}, plans)
+	if err != nil {
+		t.Fatalf("RankPlans() error = %v", err)
+	}
+
+	want := []string{
+		"legacyice/public_direct_hint_1",
+		"legacyice/public_direct_hint_2",
+		planIDDirectPrefer,
+		planIDRelayOnly,
+	}
+	if !slices.Equal(planIDs(ranked.Plans), want) {
+		t.Fatalf("ranked plans = %v, want split public-direct hints first %v", planIDs(ranked.Plans), want)
+	}
+	if ranked.Reason != "public_endpoint_hints_first" {
+		t.Fatalf("Reason = %q, want public_endpoint_hints_first", ranked.Reason)
+	}
+}
+
 func TestStrategyRankPlansKeepsPublicDirectAheadOfDirectPreferAfterRelayHint(t *testing.T) {
 	strategy := New(Config{PublicEndpointHints: []string{"203.0.113.10:41000/192.168.1.20:40000"}})
 	plans := defaultPlans()

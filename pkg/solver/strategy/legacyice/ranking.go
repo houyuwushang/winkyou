@@ -27,7 +27,7 @@ func (s *Strategy) RankPlans(_ context.Context, input solver.RankInput, plans []
 		}, nil
 	case evidence.directSuccessful():
 		return solver.RankedPlans{Plans: ordered, Reason: "recent_direct_success"}, nil
-	case hasDirect && hasPlan(plans, planIDPublicDirect) && hasPublicEndpointHints:
+	case hasDirect && hasPublicDirectPlan(plans) && hasPublicEndpointHints:
 		return solver.RankedPlans{
 			Plans:  reorderPlans(plans, planIDPublicDirect, planIDDirectPrefer, planIDRelayOnly),
 			Reason: "public_endpoint_hints_first",
@@ -63,13 +63,15 @@ func reorderPlans(plans []solver.Plan, orderedIDs ...string) []solver.Plan {
 	found := false
 	for _, planID := range orderedIDs {
 		for _, plan := range plans {
-			if plan.ID != planID {
+			if !planMatchesOrderedID(plan.ID, planID) {
+				continue
+			}
+			if _, ok := seen[plan.ID]; ok {
 				continue
 			}
 			ordered = append(ordered, plan)
 			seen[plan.ID] = struct{}{}
 			found = true
-			break
 		}
 	}
 	if !found {
@@ -84,9 +86,25 @@ func reorderPlans(plans []solver.Plan, orderedIDs ...string) []solver.Plan {
 	return ordered
 }
 
+func planMatchesOrderedID(planID, orderedID string) bool {
+	if orderedID == planIDPublicDirect {
+		return isPublicDirectPlanID(planID)
+	}
+	return planID == orderedID
+}
+
 func hasPlan(plans []solver.Plan, planID string) bool {
 	for _, plan := range plans {
 		if plan.ID == planID {
+			return true
+		}
+	}
+	return false
+}
+
+func hasPublicDirectPlan(plans []solver.Plan) bool {
+	for _, plan := range plans {
+		if isPublicDirectPlanID(plan.ID) {
 			return true
 		}
 	}

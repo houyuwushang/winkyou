@@ -3,6 +3,7 @@ package legacyice
 import (
 	"context"
 	"fmt"
+	"sort"
 	"sync"
 
 	"winkyou/pkg/solver"
@@ -55,16 +56,8 @@ func (s *Strategy) basePlans() []solver.Plan {
 				"description": "Prefer direct connection, allow relay fallback",
 			},
 		},
-		{
-			ID:       planIDPublicDirect,
-			Strategy: s.Name(),
-			Metadata: map[string]string{
-				"transport":   "ice_udp",
-				"mode":        string(modePublicDirect),
-				"description": "Try public direct candidates only",
-			},
-		},
 	}
+	plans = append(plans, s.publicDirectPlans()...)
 	if !s.cfg.RelayDisabled || s.cfg.ForceRelay {
 		plans = append(plans, solver.Plan{
 			ID:       planIDRelayOnly,
@@ -77,6 +70,86 @@ func (s *Strategy) basePlans() []solver.Plan {
 		})
 	}
 	return plans
+}
+
+func (s *Strategy) publicDirectPlans() []solver.Plan {
+	groups, unspecific, split := splitPublicEndpointHintsByLocalBasePort(s.cfg.PublicEndpointHints)
+	if !split {
+		return []solver.Plan{newPublicDirectPlan(s.Name(), planIDPublicDirect, nil, "Try public direct candidates only")}
+	}
+
+	plans := make([]solver.Plan, 0, len(groups)+1)
+	for i, group := range groups {
+		planID := fmt.Sprintf("%s_hint_%d", planIDPublicDirect, i+1)
+		description := fmt.Sprintf("Try public direct endpoint hint group %d", i+1)
+		plans = append(plans, newPublicDirectPlan(s.Name(), planID, group.hints, description))
+	}
+	if len(unspecific) > 0 {
+		plans = append(plans, newPublicDirectPlan(s.Name(), planIDPublicDirect, unspecific, "Try public direct candidates without local base"))
+	}
+	return plans
+}
+
+func newPublicDirectPlan(strategyName, planID string, hints []string, description string) solver.Plan {
+	metadata := map[string]string{
+		"transport":   "ice_udp",
+		"mode":        string(modePublicDirect),
+		"description": description,
+	}
+	if len(hints) > 0 {
+		metadata[planMetadataPublicEndpointHints] = joinPublicEndpointHintsMetadata(hints)
+	}
+	return solver.Plan{
+		ID:       planID,
+		Strategy: strategyName,
+		Metadata: metadata,
+	}
+}
+
+type endpointHintPlanGroup struct {
+	port  uint16
+	hints []string
+}
+
+func splitPublicEndpointHintsByLocalBasePort(values []string) ([]endpointHintPlanGroup, []string, bool) {
+	byPort := make(map[uint16][]string)
+	var unspecific []string
+	for _, raw := range values {
+		value := normalizePublicEndpointHintValue(raw)
+		if value == "" {
+			continue
+		}
+		hint, err := parsePublicEndpointHint(value)
+		if err != nil {
+			return nil, nil, false
+		}
+		if !hint.local.IsValid() {
+			unspecific = append(unspecific, value)
+			continue
+		}
+		port := uint16(hint.local.Port())
+		byPort[port] = append(byPort[port], value)
+	}
+	if len(byPort) <= 1 {
+		return nil, nil, false
+	}
+
+	ports := make([]int, 0, len(byPort))
+	for port := range byPort {
+		ports = append(ports, int(port))
+	}
+	sort.Ints(ports)
+
+	groups := make([]endpointHintPlanGroup, 0, len(ports))
+	for _, port := range ports {
+		hints := append([]string(nil), byPort[uint16(port)]...)
+		sort.Strings(hints)
+		groups = append(groups, endpointHintPlanGroup{
+			port:  uint16(port),
+			hints: hints,
+		})
+	}
+	return groups, unspecific, true
 }
 
 func annotatePlanEvidence(plans []solver.Plan, hint string) []solver.Plan {

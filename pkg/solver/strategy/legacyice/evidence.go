@@ -1,6 +1,8 @@
 package legacyice
 
 import (
+	"strings"
+
 	pmodel "winkyou/pkg/probe/model"
 	"winkyou/pkg/solver"
 )
@@ -95,7 +97,11 @@ func (e *evidenceSummary) addObservation(evidence observationEvidence) {
 }
 
 func isDirectPlanID(planID string) bool {
-	return planID == planIDDirectPrefer || planID == planIDPublicDirect
+	return planID == planIDDirectPrefer || isPublicDirectPlanID(planID)
+}
+
+func isPublicDirectPlanID(planID string) bool {
+	return planID == planIDPublicDirect || strings.HasPrefix(planID, planIDPublicDirect+"_hint_")
 }
 
 func (e *evidenceSummary) addProbeResult(result *solver.ProbeResultSummary) {
