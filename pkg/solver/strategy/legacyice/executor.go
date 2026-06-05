@@ -39,6 +39,8 @@ type executor struct {
 	failOnce        sync.Once
 }
 
+const publicDirectHintGatherTimeout = time.Second
+
 func newExecutor(cfg Config, input solver.SolveInput, plan solver.Plan, execCfg executorConfig) *executor {
 	lifecycleCtx, lifecycleCancel := context.WithCancel(context.Background())
 	return &executor{
@@ -225,7 +227,7 @@ func (e *executor) sendOffer(ctx context.Context, sess solver.SessionIO) error {
 		return err
 	}
 
-	gatherCtx, cancel := context.WithTimeout(ctx, e.cfg.GatherTimeout)
+	gatherCtx, cancel := context.WithTimeout(ctx, e.gatherTimeout())
 	defer cancel()
 
 	candidates, err := agent.GatherCandidates(gatherCtx)
@@ -269,7 +271,7 @@ func (e *executor) sendAnswer(ctx context.Context, sess solver.SessionIO) error 
 		return err
 	}
 
-	gatherCtx, cancel := context.WithTimeout(ctx, e.cfg.GatherTimeout)
+	gatherCtx, cancel := context.WithTimeout(ctx, e.gatherTimeout())
 	defer cancel()
 
 	candidates, err := agent.GatherCandidates(gatherCtx)
@@ -378,6 +380,21 @@ func (e *executor) pathID(connectionType string) string {
 		return fmt.Sprintf("legacyice:%s:%s:%s", connectionType, e.execCfg.Mode, e.input.SessionID)
 	}
 	return fmt.Sprintf("legacyice:%s:%s", connectionType, e.input.SessionID)
+}
+
+func (e *executor) gatherTimeout() time.Duration {
+	timeout := e.cfg.GatherTimeout
+	if timeout <= 0 {
+		timeout = 10 * time.Second
+	}
+	if e.publicDirectHintFastGatherEnabled() && timeout > publicDirectHintGatherTimeout {
+		return publicDirectHintGatherTimeout
+	}
+	return timeout
+}
+
+func (e *executor) publicDirectHintFastGatherEnabled() bool {
+	return e.execCfg.Mode == modePublicDirect && len(e.execCfg.PublicEndpointHints) > 0
 }
 
 func (e *executor) rememberPublicDirectLocalBases(candidates []nat.Candidate) {
@@ -496,6 +513,10 @@ func (e *executor) reportCandidateFilter(sess solver.SessionIO, event, side, mes
 		details["public_endpoint_hint_count"] = strconv.Itoa(len(e.execCfg.PublicEndpointHints))
 		if e.execCfg.PublicEndpointHintPortWindow > 0 {
 			details["public_endpoint_hint_port_window"] = strconv.Itoa(publicEndpointHintPortWindow(e.execCfg.PublicEndpointHintPortWindow))
+		}
+		if e.publicDirectHintFastGatherEnabled() {
+			details["public_endpoint_hint_fast_gather"] = "true"
+			details["gather_timeout_ms"] = strconv.FormatInt(e.gatherTimeout().Milliseconds(), 10)
 		}
 	}
 	if messageType != "" {

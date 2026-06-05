@@ -13,15 +13,18 @@ import (
 )
 
 type recordingICEAgent struct {
-	gathered         []nat.Candidate
-	remoteCandidates []nat.Candidate
-	connectErr       error
-	connectCalled    chan struct{}
-	selectedStats    nat.CandidatePairStats
-	hasSelectedStats bool
+	gathered          []nat.Candidate
+	remoteCandidates  []nat.Candidate
+	connectErr        error
+	connectCalled     chan struct{}
+	selectedStats     nat.CandidatePairStats
+	hasSelectedStats  bool
+	gatherDeadline    time.Time
+	gatherHasDeadline bool
 }
 
-func (a *recordingICEAgent) GatherCandidates(context.Context) ([]nat.Candidate, error) {
+func (a *recordingICEAgent) GatherCandidates(ctx context.Context) ([]nat.Candidate, error) {
+	a.gatherDeadline, a.gatherHasDeadline = ctx.Deadline()
 	return append([]nat.Candidate(nil), a.gathered...), nil
 }
 
@@ -309,7 +312,7 @@ func TestPublicDirectAdvertisesConfiguredPublicEndpointHints(t *testing.T) {
 			}
 			return agent, nil
 		},
-		GatherTimeout:       100 * time.Millisecond,
+		GatherTimeout:       10 * time.Second,
 		ConnectTimeout:      100 * time.Millisecond,
 		PublicEndpointHints: []string{publicEndpointHint},
 	}, solver.SolveInput{
@@ -330,6 +333,12 @@ func TestPublicDirectAdvertisesConfiguredPublicEndpointHints(t *testing.T) {
 	io := &capturingSessionIO{}
 	if err := exec.sendOffer(context.Background(), io); err != nil {
 		t.Fatalf("sendOffer(public endpoint hint) error = %v", err)
+	}
+	if !agent.gatherHasDeadline {
+		t.Fatal("GatherCandidates context has no deadline")
+	}
+	if remaining := time.Until(agent.gatherDeadline); remaining <= 0 || remaining > 2*time.Second {
+		t.Fatalf("GatherCandidates deadline remaining = %v, want short public endpoint hint gather timeout", remaining)
 	}
 	if len(io.messages) != 1 {
 		t.Fatalf("sent messages = %d, want 1", len(io.messages))
@@ -372,6 +381,34 @@ func TestPublicDirectAdvertisesConfiguredPublicEndpointHints(t *testing.T) {
 	}
 	if obs.Details["public_endpoint_hint_count"] != "1" {
 		t.Fatalf("candidate_gathered public endpoint hint count = %#v, want 1", obs.Details)
+	}
+	if obs.Details["public_endpoint_hint_fast_gather"] != "true" || obs.Details["gather_timeout_ms"] != "1000" {
+		t.Fatalf("candidate_gathered fast gather details = %#v, want fast gather timeout", obs.Details)
+	}
+}
+
+func TestPublicDirectGatherTimeoutOnlyShortensWithEndpointHints(t *testing.T) {
+	withHint := newExecutor(Config{GatherTimeout: 10 * time.Second}, solver.SolveInput{}, solver.Plan{ID: planIDPublicDirect}, executorConfig{
+		Mode:                modePublicDirect,
+		PublicEndpointHints: []string{"117.48.146.2:41000/192.168.1.20:40000"},
+	})
+	if got := withHint.gatherTimeout(); got != publicDirectHintGatherTimeout {
+		t.Fatalf("gatherTimeout(with hint) = %v, want %v", got, publicDirectHintGatherTimeout)
+	}
+
+	withoutHint := newExecutor(Config{GatherTimeout: 10 * time.Second}, solver.SolveInput{}, solver.Plan{ID: planIDPublicDirect}, executorConfig{
+		Mode: modePublicDirect,
+	})
+	if got := withoutHint.gatherTimeout(); got != 10*time.Second {
+		t.Fatalf("gatherTimeout(without hint) = %v, want configured timeout", got)
+	}
+
+	shortConfigured := newExecutor(Config{GatherTimeout: 100 * time.Millisecond}, solver.SolveInput{}, solver.Plan{ID: planIDPublicDirect}, executorConfig{
+		Mode:                modePublicDirect,
+		PublicEndpointHints: []string{"117.48.146.2:41000/192.168.1.20:40000"},
+	})
+	if got := shortConfigured.gatherTimeout(); got != 100*time.Millisecond {
+		t.Fatalf("gatherTimeout(short configured) = %v, want configured timeout", got)
 	}
 }
 

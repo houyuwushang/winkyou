@@ -439,6 +439,7 @@ Phase 3A (Strategy Portfolio Foundation) 已完成。以下是我基于代码现
 - 2026-06-06 起，新增 `nat.public_endpoint_hint_port_window`，默认 `2`、最大 `512`。该字段只在 `legacyice/public_direct` 边界围绕每个公网 endpoint hint 追加有限相邻端口候选，用于复现 natpierce/路由器日志中可预测的端口漂移；`pkg/session` 和 `pkg/solver` 不感知该 NAT 细节。
 - 2026-06-06 起，启动 STUN 观测生成的 runtime `public_endpoint_hints` 与手工 hint 使用同一 trust 语义：默认拒绝 CGN/overlay/benchmark 等非公网端点；配置 `nat.direct_trusted_cidrs` 或兼容的 `nat.public_direct_trusted_cidrs` 后，才允许这些已验证 underlay 自动进入 `legacyice/public_direct`。
 - 2026-06-06 起，`legacyice/public_direct` 的 `candidate_failed` observation 会附带最近本端/远端候选过滤摘要、hint 数量和 ICE 状态，避免真实环境只看到 timeout 而无法判断是本端未发布候选、远端候选被过滤，还是 ICE check 阶段失败。
+- 2026-06-06 起，当 `legacyice/public_direct` 已有手工或运行时 endpoint hint 时，会使用较短 gather deadline 先拿到本地 socket 并尽快交换 hinted candidate，避免慢 STUN gather 消耗 natpierce 类映射的可用窗口；无 hint 时仍使用正常 gather timeout。
 - 2026-06-06 起，生产 resolver 在 `connectivity.mode=auto`、本机检测为 `nat_type=symmetric` 且配置了 TURN 时，会优先尝试 `relay_only`，再保留 `legacy_ice_udp`。没有 TURN 时仍保持 `legacy_ice_udp` 优先，避免把不可用的 relay-only 放在 public-direct 打洞之前。这不会设置 `ForceRelay`，因此 legacy 内部的 `public_direct` 仍可作为后续 fallback/improvement 继续争取独立路径。
 - 2026-06-06 起，生产 `legacy_ice_udp` 配置在无 TURN 且非显式 relay-only 模式下会禁用内部 `legacyice/relay_only` plan。这样旧 observation 中的 relay success 不会把当前不可用的 relay plan 排到 `public_direct` 前面，避免无 TURN 环境浪费 candidate budget。
 - 2026-06-06 起，`wink doctor` 会在 strategy 层输出 `legacy_ice_udp` 内部 plan order，用于确认无 TURN 环境是否实际执行 `legacyice/direct_prefer -> legacyice/public_direct`，而不是先等待不可用的 relay plan。
