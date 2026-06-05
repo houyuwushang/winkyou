@@ -193,8 +193,11 @@ func TestPublicDirectCandidateConfigSkipsRelayAndTURN(t *testing.T) {
 	if err != nil {
 		t.Fatalf("buildPionURLs(public direct) error = %v", err)
 	}
-	if len(urls) != 1 || urls[0].Scheme != stun.SchemeTypeSTUN {
-		t.Fatalf("public direct URLs = %+v, want only STUN URL", urls)
+	if len(urls) != 2 || urls[0].Scheme != stun.SchemeTypeSTUN || urls[1].Scheme != stun.SchemeTypeSTUN {
+		t.Fatalf("public direct URLs = %+v, want STUN URLs only", urls)
+	}
+	if urls[1].Host != "turn.example.com" || urls[1].Port != 3478 || urls[1].Username != "" || urls[1].Password != "" {
+		t.Fatalf("public direct derived TURN-as-STUN URL = %+v, want unauthenticated STUN binding URL", urls[1])
 	}
 
 	checkInterval := checkIntervalForConfig(ICEConfig{PublicDirectCandidate: true})
@@ -231,6 +234,32 @@ func TestPublicDirectCandidateConfigSkipsRelayAndTURN(t *testing.T) {
 	}
 	if acceptanceWait := acceptanceMinWaitForConfig(ICEConfig{}); acceptanceWait != nil {
 		t.Fatalf("default acceptance wait = %v, want nil", acceptanceWait)
+	}
+}
+
+func TestPublicDirectDerivesOnlyUDPTURNAsSTUN(t *testing.T) {
+	udpURI, err := publicDirectSTUNURLFromTURN(TURNServer{URL: "turn.example.com:3478", Username: "user", Password: "pass"})
+	if err != nil {
+		t.Fatalf("publicDirectSTUNURLFromTURN(udp) error = %v", err)
+	}
+	if udpURI == nil || udpURI.String() != "stun:turn.example.com:3478" {
+		t.Fatalf("udp TURN derived URI = %+v, want stun:turn.example.com:3478", udpURI)
+	}
+
+	tcpURI, err := publicDirectSTUNURLFromTURN(TURNServer{URL: "turn:turn.example.com:3478?transport=tcp"})
+	if err != nil {
+		t.Fatalf("publicDirectSTUNURLFromTURN(tcp) error = %v", err)
+	}
+	if tcpURI != nil {
+		t.Fatalf("tcp TURN derived URI = %+v, want nil", tcpURI)
+	}
+
+	secureURI, err := publicDirectSTUNURLFromTURN(TURNServer{URL: "turns:turn.example.com:5349?transport=tcp"})
+	if err != nil {
+		t.Fatalf("publicDirectSTUNURLFromTURN(tls) error = %v", err)
+	}
+	if secureURI != nil {
+		t.Fatalf("secure TURN derived URI = %+v, want nil", secureURI)
 	}
 }
 

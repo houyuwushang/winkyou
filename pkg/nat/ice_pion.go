@@ -380,7 +380,17 @@ func buildPionURLs(cfg ICEConfig) ([]*stun.URI, error) {
 		urls = append(urls, uri)
 	}
 
-	if !cfg.PublicDirectCandidate {
+	if cfg.PublicDirectCandidate {
+		for _, turnServer := range cfg.TURNServers {
+			uri, err := publicDirectSTUNURLFromTURN(turnServer)
+			if err != nil {
+				return nil, err
+			}
+			if uri != nil {
+				urls = append(urls, uri)
+			}
+		}
+	} else {
 		for _, turnServer := range cfg.TURNServers {
 			raw := strings.TrimSpace(turnServer.URL)
 			if raw == "" {
@@ -402,6 +412,32 @@ func buildPionURLs(cfg ICEConfig) ([]*stun.URI, error) {
 		}
 	}
 	return urls, nil
+}
+
+func publicDirectSTUNURLFromTURN(turnServer TURNServer) (*stun.URI, error) {
+	raw := strings.TrimSpace(turnServer.URL)
+	if raw == "" {
+		return nil, nil
+	}
+	if !hasURLScheme(raw) {
+		raw = "turn:" + raw
+	}
+	if !strings.Contains(raw, "?transport=") {
+		raw += "?transport=udp"
+	}
+	uri, err := stun.ParseURI(raw)
+	if err != nil {
+		return nil, fmt.Errorf("nat: parse turn server %q: %w", raw, err)
+	}
+	if uri.Scheme != stun.SchemeTypeTURN || uri.Proto != stun.ProtoTypeUDP {
+		return nil, nil
+	}
+	return &stun.URI{
+		Scheme: stun.SchemeTypeSTUN,
+		Host:   uri.Host,
+		Port:   uri.Port,
+		Proto:  stun.ProtoTypeUDP,
+	}, nil
 }
 
 func candidateTypesForConfig(cfg ICEConfig) []pionice.CandidateType {
