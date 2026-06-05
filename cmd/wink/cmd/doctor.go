@@ -506,7 +506,7 @@ func (e publicDirectEvidence) check(path string) doctorCheck {
 		return warnCheck("nat", "public direct evidence", publicDirectObservationMessage("public direct selected but not proven protected", obs, path), "check selected candidate addresses; dependent direct-like paths may still rely on an overlay or middle node")
 	}
 	if e.Success != nil {
-		return okCheck("nat", "public direct evidence", publicDirectObservationMessage("public direct ICE candidate succeeded", e.Success, path))
+		return warnCheck("nat", "public direct evidence", publicDirectObservationMessage("public direct ICE candidate succeeded but was not committed as protected direct", e.Success, path), "verify path_selected/path_committed has path_role=protected_direct and empty path_dependencies before treating this as an independent direct path")
 	}
 	if e.RemoteFilter != nil && observationCandidateKept(e.RemoteFilter) == 0 {
 		return warnCheck("nat", "public direct evidence", publicDirectObservationMessage("remote has no usable public direct candidates", e.RemoteFilter, path), "check the remote peer STUN result, candidate filters, UDP firewall, and whether it only exposes private/100.64/overlay candidates")

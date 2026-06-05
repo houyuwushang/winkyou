@@ -272,6 +272,31 @@ func TestDoctorPublicDirectEvidenceOK(t *testing.T) {
 	}
 }
 
+func TestDoctorPublicDirectEvidenceWarnsForUncommittedCandidateSuccess(t *testing.T) {
+	configPath := writeDoctorConfig(t)
+	writeDoctorObservationHistory(t, configPath, []solver.Observation{{
+		PlanID:         "legacyice/public_direct",
+		Event:          "candidate_succeeded",
+		PathID:         "legacyice:direct:public_direct:session/node-a/node-b",
+		ConnectionType: "direct",
+		LocalAddr:      "192.168.1.10:50000",
+		RemoteAddr:     "203.0.113.20:41000",
+		Details: map[string]string{
+			"remote_candidate_kind":      "prflx",
+			"public_direct_learned_pair": "true",
+		},
+		Timestamp: time.Now(),
+	}})
+
+	result := runDoctor(context.Background(), &Options{ConfigPath: configPath}, doctorFlags{}, healthyDoctorProbes())
+	check := findDoctorCheck(result, "nat", "public direct evidence")
+	if check.Status != doctorWarn ||
+		!strings.Contains(check.Message, "not committed as protected direct") ||
+		!strings.Contains(check.Suggestion, "path_role=protected_direct") {
+		t.Fatalf("public direct evidence check = %#v, want uncommitted candidate warning", check)
+	}
+}
+
 func TestDoctorPublicDirectEvidenceWarnsForRemoteFilterNoCandidates(t *testing.T) {
 	configPath := writeDoctorConfig(t)
 	writeDoctorObservationHistory(t, configPath, []solver.Observation{{
