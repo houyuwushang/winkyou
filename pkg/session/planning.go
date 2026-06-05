@@ -119,7 +119,7 @@ func (s *Session) executeSelectedStrategy(ctx context.Context, strategy solver.S
 	outcomes := s.executeCandidateLoop(ctx, strategy, plans, budget)
 
 	// Select best outcome
-	best := solver.SelectBestOutcome(outcomes)
+	best := selectPrimaryOutcome(outcomes, s.cfg.PathPolicy)
 	if best == nil {
 		var lastErr error
 		for i := range outcomes {
@@ -142,6 +142,8 @@ func (s *Session) executeSelectedStrategy(ctx context.Context, strategy solver.S
 	best.SelectionReason = "highest_score"
 	annotatedResult := annotateResultPath(*best.Result, best.Plan)
 	best.Result = &annotatedResult
+	retained := retainSuccessfulOutcomes(outcomes, best, s.cfg.PathPolicy)
+	s.setRetainedOutcomes(retained)
 	s.lastPlan = best.Plan
 	s.lastRes = annotatedResult
 	s.emitObservation(ctx, solver.Observation{
@@ -158,12 +160,8 @@ func (s *Session) executeSelectedStrategy(ctx context.Context, strategy solver.S
 		}),
 	})
 
-	// Clean up non-selected transports
-	for i := range outcomes {
-		if !outcomes[i].Selected && outcomes[i].Result != nil && outcomes[i].Result.Transport != nil {
-			s.ignoreCleanupError(s.runCleanup(outcomes[i].Result.Transport.Close))
-		}
-	}
+	// Clean up transports not needed for the selected path or retained policy paths.
+	s.closeUnusedOutcomes(outcomes, best, retained)
 
 	s.transition(StateBinding)
 
@@ -173,6 +171,7 @@ func (s *Session) executeSelectedStrategy(ctx context.Context, strategy solver.S
 		err := s.cfg.Binder.Bind(bindCtx, s.cfg.PeerID, best.Result.Transport)
 		cancel()
 		if err != nil {
+			s.closeRetainedOutcomes()
 			s.ignoreCleanupError(s.runCleanup(best.Result.Transport.Close))
 			return err
 		}
@@ -195,6 +194,7 @@ func (s *Session) executeSelectedStrategy(ctx context.Context, strategy solver.S
 				return s.cfg.Binder.Unbind(cleanupCtx, s.cfg.PeerID)
 			}))
 		}
+		s.closeRetainedOutcomes()
 		s.ignoreCleanupError(s.runCleanup(best.Result.Transport.Close))
 		s.lastRes.Transport = nil
 		return err

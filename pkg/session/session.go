@@ -50,6 +50,7 @@ type Session struct {
 
 	lastPlan solver.Plan
 	lastRes  solver.Result
+	retained []solver.CandidateOutcome
 
 	obsMu        sync.Mutex
 	observations []solver.Observation

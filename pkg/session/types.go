@@ -91,6 +91,7 @@ type Config struct {
 	ProbeRunner           ProbeRunner
 	ObservationSink       solver.ObservationSink
 	ObservationHistory    solver.ObservationHistory
+	PathPolicy            solver.PathPolicy
 	Hooks                 Hooks
 	RunTimeout            time.Duration
 	CapabilityWaitTimeout time.Duration

@@ -99,6 +99,7 @@ func (s *Session) Close() error {
 		s.lastRes.Transport = nil
 		s.ignoreCleanupError(s.runCleanup(transport.Close))
 	}
+	s.closeRetainedOutcomes()
 	if strategy := s.currentStrategy(); strategy != nil {
 		return s.runCleanup(strategy.Close)
 	}
