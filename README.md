@@ -135,7 +135,7 @@ Windows 接口名应使用系统实际接口名称，例如 `Tailscale`、`vEthe
 从当前版本起，`legacy_ice_udp` 默认会按顺序尝试：
 
 1. `legacyice/direct_prefer`：保留 ICE 默认行为，可能选中 NAT/overlay/100.64 direct-like path。
-2. `legacyice/public_direct`：排除私网、`100.64.0.0/10`、loopback、link-local、benchmark/overlay 等 candidate，只保留公网 direct 候选。
+2. `legacyice/public_direct`：正常采集 ICE candidate，但只在信令里发布公网 direct 候选，并过滤远端私网、`100.64.0.0/10`、loopback、link-local、benchmark/overlay 等 candidate。
 3. `legacyice/relay_only`：强制 TURN relay fallback。
 
 这让 WinkYou 会主动尝试类似 natpierce 能打通的公网 UDP NAT piercing 路径；但如果双方 NAT 类型、运营商映射或防火墙不允许，`public_direct` 仍会失败并继续走后续 fallback。

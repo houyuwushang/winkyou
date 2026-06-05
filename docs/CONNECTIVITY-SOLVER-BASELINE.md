@@ -127,7 +127,7 @@ Production registration remains compatible by default: `legacy_ice_udp` first, t
 `legacy_ice_udp` is still one production strategy name, but internally it may emit multiple execution plans:
 
 - `legacyice/direct_prefer`: use normal ICE behavior and allow ICE to choose the best non-relay or relay candidate pair.
-- `legacyice/public_direct`: exclude ambiguous local candidates and ignore ambiguous remote candidates, including private ranges, `100.64.0.0/10`, loopback, link-local, multicast, and benchmark/overlay ranges, then attempt a public direct ICE path.
+- `legacyice/public_direct`: gather normal ICE candidates, then advertise only public direct candidates and ignore ambiguous remote candidates, including private ranges, `100.64.0.0/10`, loopback, link-local, multicast, and benchmark/overlay ranges, before attempting a public direct ICE path.
 - `legacyice/relay_only`: force relay-only candidate gathering and candidate selection.
 
 `public_direct` exists to prove an independent public direct candidate instead of letting an existing overlay or CGN/100.64 candidate satisfy the generic ICE `direct` label. It is still best-effort NAT piercing: if STUN/public candidates are unavailable or the NAT/firewall blocks the mapping, it must fail normally and let later plans or strategies continue.
@@ -176,7 +176,7 @@ Coordinator-less operation has a strict boundary:
 
 The in-band control message model is frozen in `pkg/peercontrol` and documented in [`INBAND-PEER-CONTROL.md`](./INBAND-PEER-CONTROL.md). It is not yet wired into the long-running client network loop.
 
-NAT/ICE candidate filtering is owned by the NAT/legacy ICE boundary. Config supports candidate interface include/exclude and candidate CIDR include/exclude under `nat.*`; these filters are passed into the pion ICE agent. The `legacyice/public_direct` plan may add plan-local CIDR excludes on top of the user config and also filters remote candidates before handing them to the ICE agent. `pkg/session` and `pkg/solver` must remain unaware of interface or CIDR filtering details.
+NAT/ICE candidate filtering is owned by the NAT/legacy ICE boundary. Config supports candidate interface include/exclude and candidate CIDR include/exclude under `nat.*`; these user filters are passed into the pion ICE agent. The `legacyice/public_direct` plan does not add its own agent-level CIDR excludes, because that can prevent STUN server-reflexive candidate gathering on common private local interfaces. Instead, it filters the local candidates it advertises and filters remote candidates before handing them to the ICE agent. `pkg/session` and `pkg/solver` must remain unaware of interface or CIDR filtering details.
 
 ICE `connection_type=direct` is a direct-like transport result, not a guarantee that the path is independent from existing overlays or jump-host underlays. Strategy implementations must annotate `PathSummary.Role` and `PathSummary.Dependencies` conservatively. A path may be exposed as `protected_direct` only when it is direct-like and has no explicit relay, peer, or unknown dependency. Candidates in `100.64.0.0/10`, loopback, link-local, private/VPN-like, or otherwise ambiguous ranges must not be used as proof of protected direct coverage. `legacyice/public_direct` reduces this ambiguity by excluding those candidates before the attempt; successful path metadata still has to be derived from the actually selected ICE pair.
 

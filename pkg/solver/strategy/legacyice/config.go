@@ -41,17 +41,6 @@ type executorConfig struct {
 	PublicDirectCandidate bool
 }
 
-var publicDirectCandidateCIDRExcludes = []string{
-	"0.0.0.0/8",
-	"10.0.0.0/8",
-	"100.64.0.0/10",
-	"127.0.0.0/8",
-	"169.254.0.0/16",
-	"172.16.0.0/12",
-	"192.168.0.0/16",
-	"198.18.0.0/15",
-}
-
 func (c Config) withDefaults() Config {
 	if c.GatherTimeout <= 0 {
 		c.GatherTimeout = 10 * time.Second
@@ -75,7 +64,6 @@ func executorConfigForPlan(plan solver.Plan, cfg Config) (executorConfig, error)
 	case planIDPublicDirect:
 		return executorConfig{
 			Mode:                  modePublicDirect,
-			CandidateCIDRExclude:  append([]string(nil), publicDirectCandidateCIDRExcludes...),
 			PublicDirectCandidate: true,
 		}, nil
 	case planIDRelayOnly:
@@ -93,7 +81,6 @@ func executorConfigForPlan(plan solver.Plan, cfg Config) (executorConfig, error)
 		if mode := plan.Metadata["mode"]; mode == string(modePublicDirect) {
 			return executorConfig{
 				Mode:                  modePublicDirect,
-				CandidateCIDRExclude:  append([]string(nil), publicDirectCandidateCIDRExcludes...),
 				PublicDirectCandidate: true,
 			}, nil
 		}

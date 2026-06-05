@@ -3,6 +3,7 @@ package session
 import (
 	"context"
 	"encoding/json"
+	"slices"
 	"testing"
 	"time"
 
@@ -86,6 +87,35 @@ type evidencePlanningStrategy struct {
 	fakeStrategy
 	planInput solver.SolveInput
 }
+
+type orderedLegacyPlanStrategy struct {
+	plans     []solver.Plan
+	transport *fakeTransport
+	executed  []string
+}
+
+func (s *orderedLegacyPlanStrategy) Name() string { return "legacy_ice_udp" }
+
+func (s *orderedLegacyPlanStrategy) Plan(context.Context, solver.SolveInput) ([]solver.Plan, error) {
+	return append([]solver.Plan(nil), s.plans...), nil
+}
+
+func (s *orderedLegacyPlanStrategy) Execute(_ context.Context, _ solver.SessionIO, plan solver.Plan) (solver.Result, error) {
+	s.executed = append(s.executed, plan.ID)
+	if plan.ID != "legacyice/relay_only" {
+		return solver.Result{}, context.Canceled
+	}
+	return solver.Result{
+		Transport: s.transport,
+		Summary: solver.PathSummary{
+			PathID:         "relay/path",
+			ConnectionType: "relay",
+			RemoteAddr:     s.transport.RemoteAddr(),
+		},
+	}, nil
+}
+
+func (s *orderedLegacyPlanStrategy) Close() error { return nil }
 
 func (e *evidencePlanningStrategy) Plan(ctx context.Context, in solver.SolveInput) ([]solver.Plan, error) {
 	_ = ctx
@@ -326,6 +356,47 @@ func TestSessionLetsEvidenceShapePlanGenerationBeforeRefine(t *testing.T) {
 	}
 	if len(snapshot.LastPlanOrder) != 1 || snapshot.LastPlanOrder[0] != "legacyice/relay_only" {
 		t.Fatalf("LastPlanOrder = %v, want relay_only candidate loop order", snapshot.LastPlanOrder)
+	}
+}
+
+func TestSessionCandidateLoopIncludesPublicDirectPlan(t *testing.T) {
+	transport := &fakeTransport{}
+	plans := []solver.Plan{
+		{ID: "legacyice/direct_prefer", Strategy: "legacy_ice_udp"},
+		{ID: "legacyice/public_direct", Strategy: "legacy_ice_udp"},
+		{ID: "legacyice/relay_only", Strategy: "legacy_ice_udp"},
+	}
+	strategy := &orderedLegacyPlanStrategy{plans: plans, transport: transport}
+	sender := &fakeSender{}
+
+	s, err := New(Config{
+		SessionID:             "session/node-a/node-b",
+		LocalNodeID:           "node-a",
+		PeerID:                "node-b",
+		Initiator:             true,
+		Resolver:              &fakeResolver{local: rproto.Capability{Strategies: []string{"legacy_ice_udp"}}, strategy: strategy, selection: Selection{StrategyName: "legacy_ice_udp", Negotiated: true}},
+		Sender:                sender,
+		RunTimeout:            3 * time.Second,
+		CapabilityWaitTimeout: time.Second,
+	})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	if err := s.Start(context.Background()); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	if err := s.HandleMessage(context.Background(), envelopeMessage(t, "session/node-a/node-b", "node-b", "node-a", rproto.MsgTypeCapability, 1, rproto.Capability{Strategies: []string{"legacy_ice_udp"}}, time.Now())); err != nil {
+		t.Fatalf("HandleMessage(capability) error = %v", err)
+	}
+	waitForState(t, s, StateBound)
+
+	want := []string{"legacyice/direct_prefer", "legacyice/public_direct", "legacyice/relay_only"}
+	if !slices.Equal(strategy.executed, want) {
+		t.Fatalf("executed plans = %v, want %v", strategy.executed, want)
+	}
+	snapshot := s.Snapshot()
+	if !slices.Equal(snapshot.LastPlanOrder, want) {
+		t.Fatalf("LastPlanOrder = %v, want %v", snapshot.LastPlanOrder, want)
 	}
 }
 

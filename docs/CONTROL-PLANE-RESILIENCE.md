@@ -100,7 +100,7 @@ client 还修复了一个真实验证中暴露的恢复问题：当本端不是 
 
 另一个已修正的代码层风险是 path metadata 误标注：过去 `legacy_ice_udp` 只要选中的 ICE pair 不是 relay candidate，就会把 path 标记为 `protected_direct`。现在 `100.64.0.0/10`、loopback、link-local、私网等非公网 candidate 会被标记为带 `unknown` dependency 的 direct-like path，不再作为 protected direct standby 对外承诺。它仍可作为普通 standby 保留，但 `protected_direct_path_id` 不会指向这类依赖不清的 path。
 
-进一步的策略层修正是新增 `legacyice/public_direct` 执行计划。它在普通 `legacyice/direct_prefer` 之后、`legacyice/relay_only` 之前运行，会对本地 ICE agent 追加私网、`100.64.0.0/10`、loopback、link-local、benchmark/overlay 等 CIDR 排除，并在收到远端候选后过滤同类 ambiguous candidate。这样如果 natpierce 类工具能通过公网 UDP NAT piercing 建链，WinkYou 也会显式尝试一条不依赖 overlay/100.64 candidate 的公网 direct 路径；如果双方 NAT 或防火墙不允许，该 plan 会正常失败并继续进入 relay fallback。
+进一步的策略层修正是新增 `legacyice/public_direct` 执行计划。它在普通 `legacyice/direct_prefer` 之后、`legacyice/relay_only` 之前运行。为避免误杀 STUN server-reflexive 采集，它不会默认把私网/`100.64.0.0/10` 排除追加到 Pion ICE agent；而是在发送 offer/answer 前过滤本地候选，并在收到远端候选后过滤同类 ambiguous candidate，包括私网、`100.64.0.0/10`、loopback、link-local、benchmark/overlay 等。这样如果 natpierce 类工具能通过公网 UDP NAT piercing 建链，WinkYou 也会显式尝试一条不依赖 overlay/100.64 candidate 的公网 direct 路径；如果双方 NAT 或防火墙不允许，该 plan 会正常失败并继续进入 relay fallback。
 
 ## 当前限制
 

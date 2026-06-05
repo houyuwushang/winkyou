@@ -51,6 +51,17 @@ func (recordingSessionIO) Send(context.Context, solver.Message) error { return n
 
 func (recordingSessionIO) ReportObservation(context.Context, solver.Observation) error { return nil }
 
+type capturingSessionIO struct {
+	messages []solver.Message
+}
+
+func (c *capturingSessionIO) Send(_ context.Context, msg solver.Message) error {
+	c.messages = append(c.messages, msg)
+	return nil
+}
+
+func (c *capturingSessionIO) ReportObservation(context.Context, solver.Observation) error { return nil }
+
 func TestExecutorConfigForPlanProducesDistinctModes(t *testing.T) {
 	direct, err := executorConfigForPlan(solver.Plan{ID: "legacyice/direct_prefer", Metadata: map[string]string{"mode": "direct_prefer"}}, Config{})
 	if err != nil {
@@ -67,8 +78,8 @@ func TestExecutorConfigForPlanProducesDistinctModes(t *testing.T) {
 	if publicDirect.Mode != modePublicDirect || publicDirect.ForceRelay || !publicDirect.PublicDirectCandidate {
 		t.Fatalf("public direct config = %+v, want public_direct without force relay", publicDirect)
 	}
-	if !stringSliceContains(publicDirect.CandidateCIDRExclude, "100.64.0.0/10") {
-		t.Fatalf("public direct CIDR excludes = %#v, want 100.64.0.0/10", publicDirect.CandidateCIDRExclude)
+	if len(publicDirect.CandidateCIDRExclude) != 0 {
+		t.Fatalf("public direct CIDR excludes = %#v, want no agent-level excludes", publicDirect.CandidateCIDRExclude)
 	}
 
 	relay, err := executorConfigForPlan(solver.Plan{ID: "legacyice/relay_only", Metadata: map[string]string{"mode": "relay_only"}}, Config{})
@@ -128,8 +139,8 @@ func TestStrategyNewExecutorUsesPlanSpecificAgentRequests(t *testing.T) {
 	if requests[0].ForceRelay {
 		t.Fatalf("direct request = %+v, want ForceRelay=false", requests[0])
 	}
-	if !requests[1].PublicDirectCandidate || !stringSliceContains(requests[1].CandidateCIDRExclude, "100.64.0.0/10") {
-		t.Fatalf("public direct request = %+v, want public direct candidate filter", requests[1])
+	if !requests[1].PublicDirectCandidate || len(requests[1].CandidateCIDRExclude) != 0 {
+		t.Fatalf("public direct request = %+v, want public direct without agent-level CIDR filters", requests[1])
 	}
 	if !requests[2].ForceRelay {
 		t.Fatalf("relay request = %+v, want ForceRelay=true", requests[2])
@@ -146,6 +157,59 @@ func TestExecutorPathIDUsesPlanModeForPublicDirect(t *testing.T) {
 	publicExec := newExecutor(Config{}, input, solver.Plan{ID: planIDPublicDirect}, executorConfig{Mode: modePublicDirect})
 	if got := publicExec.pathID("direct"); got != "legacyice:direct:public_direct:session/node-a/node-b" {
 		t.Fatalf("public direct path id = %q, want mode-qualified format", got)
+	}
+}
+
+func TestPublicDirectSendOfferAdvertisesOnlyPublicCandidates(t *testing.T) {
+	hostCandidate := nat.Candidate{Type: nat.CandidateTypeHost, Address: &net.UDPAddr{IP: net.IPv4(10, 0, 0, 1), Port: 1001}}
+	overlayCandidate := nat.Candidate{Type: nat.CandidateTypeHost, Address: &net.UDPAddr{IP: net.IPv4(100, 102, 17, 35), Port: 1002}}
+	publicCandidate := nat.Candidate{Type: nat.CandidateTypeSrflx, Address: &net.UDPAddr{IP: net.IPv4(117, 48, 146, 2), Port: 1003}}
+	relayCandidate := nat.Candidate{Type: nat.CandidateTypeRelay, Address: &net.UDPAddr{IP: net.IPv4(20, 0, 0, 1), Port: 2001}}
+	agent := &recordingICEAgent{
+		gathered:      []nat.Candidate{hostCandidate, overlayCandidate, publicCandidate, relayCandidate},
+		connectErr:    context.Canceled,
+		connectCalled: make(chan struct{}),
+	}
+	exec := newExecutor(Config{
+		NewICEAgent: func(ctx context.Context, req AgentRequest) (nat.ICEAgent, error) {
+			_ = ctx
+			if !req.PublicDirectCandidate {
+				t.Fatalf("agent request = %+v, want public direct marker", req)
+			}
+			if len(req.CandidateCIDRExclude) != 0 {
+				t.Fatalf("agent request CIDR excludes = %#v, want none for srflx gathering", req.CandidateCIDRExclude)
+			}
+			return agent, nil
+		},
+		GatherTimeout:  100 * time.Millisecond,
+		ConnectTimeout: 100 * time.Millisecond,
+	}, solver.SolveInput{
+		SessionID:    "session/node-a/node-b",
+		LocalNodeID:  "node-a",
+		RemoteNodeID: "node-b",
+		Initiator:    true,
+	}, solver.Plan{
+		ID:       planIDPublicDirect,
+		Strategy: StrategyName,
+		Metadata: map[string]string{"mode": string(modePublicDirect)},
+	}, executorConfig{Mode: modePublicDirect, PublicDirectCandidate: true})
+
+	io := &capturingSessionIO{}
+	if err := exec.sendOffer(context.Background(), io); err != nil {
+		t.Fatalf("sendOffer(public_direct) error = %v", err)
+	}
+	if len(io.messages) != 1 {
+		t.Fatalf("sent messages = %d, want 1", len(io.messages))
+	}
+	offer, err := unmarshalOfferPayload(io.messages[0].Payload)
+	if err != nil {
+		t.Fatalf("unmarshal offer error = %v", err)
+	}
+	if len(offer.ICE.Candidates) != 1 {
+		t.Fatalf("offer candidates = %#v, want only public srflx candidate", offer.ICE.Candidates)
+	}
+	if offer.ICE.Candidates[0].Address.String() != publicCandidate.Address.String() {
+		t.Fatalf("offer candidate = %v, want %v", offer.ICE.Candidates[0].Address, publicCandidate.Address)
 	}
 }
 
