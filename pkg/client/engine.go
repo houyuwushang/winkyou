@@ -53,6 +53,8 @@ type engine struct {
 	nat        nat.NATTraversal
 	coord      coordclient.CoordinatorClient
 	pingConn   *net.UDPConn
+	inbandConn *net.UDPConn
+	inbandSeq  uint64
 
 	observationStore *solverstore.ObservationStore
 
@@ -230,6 +232,9 @@ func (e *engine) Start(ctx context.Context) (err error) {
 			return err
 		}
 	}
+	if err := e.startInbandControl(virtualIP); err != nil {
+		e.log.Warn("in-band peer control disabled", logger.Error(err))
+	}
 
 	if err := e.refreshPeers(ctx); err != nil {
 		e.log.Warn("initial peer refresh failed", logger.Error(err))
@@ -292,6 +297,10 @@ func (e *engine) Stop() error {
 	if e.pingConn != nil {
 		e.logCleanupError("close ping responder", e.pingConn.Close())
 		e.pingConn = nil
+	}
+	if e.inbandConn != nil {
+		e.logCleanupError("close in-band peer control", e.inbandConn.Close())
+		e.inbandConn = nil
 	}
 
 	e.wg.Wait()
@@ -404,6 +413,14 @@ func (e *engine) upsertPeer(peer *coordclient.PeerInfo, event PeerEvent) {
 		updated.TransportRxPackets = current.TransportRxPackets
 		updated.TransportRxBytes = current.TransportRxBytes
 		updated.TransportLastError = current.TransportLastError
+		updated.MultipathEnabled = current.MultipathEnabled
+		updated.PrimaryPathID = current.PrimaryPathID
+		updated.ProtectedDirectPathID = current.ProtectedDirectPathID
+		updated.StandbyPathIDs = append([]string(nil), current.StandbyPathIDs...)
+		updated.ActivePathID = current.ActivePathID
+		updated.LastFailoverAt = current.LastFailoverAt
+		updated.LastInbandHeartbeatAt = current.LastInbandHeartbeatAt
+		updated.LastInbandPathHealthAt = current.LastInbandPathHealthAt
 		updated.LastPathID = current.LastPathID
 		updated.LastPathStrategy = current.LastPathStrategy
 		updated.LastPathEndpoint = current.LastPathEndpoint
@@ -614,6 +631,10 @@ func (e *engine) cleanupResources() {
 	if e.pingConn != nil {
 		e.logCleanupError("close ping responder", e.pingConn.Close())
 		e.pingConn = nil
+	}
+	if e.inbandConn != nil {
+		e.logCleanupError("close in-band peer control", e.inbandConn.Close())
+		e.inbandConn = nil
 	}
 	if e.netif != nil {
 		e.logCleanupError("close network interface", e.netif.Close())

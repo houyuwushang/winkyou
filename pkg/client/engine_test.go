@@ -85,23 +85,25 @@ func TestRuntimeStateRoundTrip(t *testing.T) {
 			Uptime:      "5s",
 		},
 		Peers: []RuntimePeerStatus{{
-			NodeID:                "node-2",
-			Name:                  "beta",
-			State:                 PeerStateConnecting.String(),
-			ControlState:          PeerControlStateConnected.String(),
-			DataState:             PeerDataStateBound.String(),
-			LastHandshake:         now.Add(3 * time.Second),
-			LastPathID:            "relayonly/turn_relay",
-			LastPathStrategy:      "relay_only",
-			LastPathEndpoint:      "203.0.113.10:50000",
-			LastPathConnType:      ConnectionTypeRelay.String(),
-			LastPathUpdatedAt:     now.Add(4 * time.Second),
-			MultipathEnabled:      true,
-			PrimaryPathID:         "relay/path",
-			ProtectedDirectPathID: "direct/path",
-			StandbyPathIDs:        []string{"direct/path"},
-			ActivePathID:          "relay/path",
-			LastFailoverAt:        now.Add(6 * time.Second),
+			NodeID:                 "node-2",
+			Name:                   "beta",
+			State:                  PeerStateConnecting.String(),
+			ControlState:           PeerControlStateConnected.String(),
+			DataState:              PeerDataStateBound.String(),
+			LastHandshake:          now.Add(3 * time.Second),
+			LastPathID:             "relayonly/turn_relay",
+			LastPathStrategy:       "relay_only",
+			LastPathEndpoint:       "203.0.113.10:50000",
+			LastPathConnType:       ConnectionTypeRelay.String(),
+			LastPathUpdatedAt:      now.Add(4 * time.Second),
+			MultipathEnabled:       true,
+			PrimaryPathID:          "relay/path",
+			ProtectedDirectPathID:  "direct/path",
+			StandbyPathIDs:         []string{"direct/path"},
+			ActivePathID:           "relay/path",
+			LastFailoverAt:         now.Add(6 * time.Second),
+			LastInbandHeartbeatAt:  now.Add(7 * time.Second),
+			LastInbandPathHealthAt: now.Add(8 * time.Second),
 		}},
 	}
 
@@ -134,6 +136,9 @@ func TestRuntimeStateRoundTrip(t *testing.T) {
 	}
 	if len(loaded.Peers[0].StandbyPathIDs) != 1 || loaded.Peers[0].StandbyPathIDs[0] != "direct/path" {
 		t.Fatalf("loaded standby path ids = %#v, want [direct/path]", loaded.Peers[0].StandbyPathIDs)
+	}
+	if !loaded.Peers[0].LastInbandHeartbeatAt.Equal(now.Add(7*time.Second)) || !loaded.Peers[0].LastInbandPathHealthAt.Equal(now.Add(8*time.Second)) {
+		t.Fatalf("loaded in-band timestamps = heartbeat=%v path_health=%v", loaded.Peers[0].LastInbandHeartbeatAt, loaded.Peers[0].LastInbandPathHealthAt)
 	}
 }
 
