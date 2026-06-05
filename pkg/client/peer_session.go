@@ -361,17 +361,27 @@ func (s peerMessageSender) Send(ctx context.Context, peerID string, msg solver.M
 	if s.engine == nil {
 		return ErrEngineNotStarted
 	}
+	inbandErr := s.engine.sendSolverMessageInband(ctx, peerID, msg)
 	s.engine.mu.RLock()
 	coord := s.engine.coord
 	s.engine.mu.RUnlock()
 	if coord == nil {
+		if inbandErr == nil {
+			return nil
+		}
 		return ErrEngineNotStarted
 	}
 	signalType, payload, err := outboundSignalForSolverMessage(msg)
 	if err != nil {
 		return err
 	}
-	return coord.SendSignal(ctx, peerID, signalType, payload)
+	if err := coord.SendSignal(ctx, peerID, signalType, payload); err != nil {
+		if inbandErr == nil {
+			return nil
+		}
+		return err
+	}
+	return nil
 }
 
 func peerSessionState(s *peerSession) sesspkg.State {

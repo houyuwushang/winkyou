@@ -6,6 +6,7 @@ import (
 	"time"
 
 	coordclient "winkyou/pkg/coordinator/client"
+	"winkyou/pkg/peercontrol"
 	rendezvousclient "winkyou/pkg/rendezvous/client"
 	rproto "winkyou/pkg/rendezvous/proto"
 	"winkyou/pkg/solver"
@@ -53,6 +54,59 @@ func outboundSignalForSolverMessage(msg solver.Message) (coordclient.SignalType,
 	default:
 		return coordclient.SIGNAL_UNSPECIFIED, nil, fmt.Errorf("client: unsupported solver message kind %q", msg.Kind)
 	}
+}
+
+func peerControlSignalForSolverMessage(msg solver.Message) (peercontrol.SessionSignal, error) {
+	switch msg.Kind {
+	case solver.MessageKindEnvelope:
+		if msg.Namespace != sessionEnvelopeNamespace {
+			return peercontrol.SessionSignal{}, fmt.Errorf("client: unsupported envelope namespace %q", msg.Namespace)
+		}
+		if _, err := rproto.UnmarshalEnvelope(msg.Payload); err != nil {
+			return peercontrol.SessionSignal{}, err
+		}
+	case solver.MessageKindStrategy:
+		if msg.Namespace == "" {
+			return peercontrol.SessionSignal{}, fmt.Errorf("client: strategy message namespace is required")
+		}
+		if msg.Type == "" {
+			return peercontrol.SessionSignal{}, fmt.Errorf("client: strategy message type is required")
+		}
+	default:
+		return peercontrol.SessionSignal{}, fmt.Errorf("client: unsupported solver message kind %q", msg.Kind)
+	}
+	return peercontrol.SessionSignal{
+		Kind:      string(msg.Kind),
+		Namespace: msg.Namespace,
+		Type:      msg.Type,
+		Payload:   append([]byte(nil), msg.Payload...),
+	}, nil
+}
+
+func solverMessageFromPeerControlSignal(signal peercontrol.SessionSignal, receivedAt time.Time) (solver.Message, error) {
+	msg := solver.Message{
+		Kind:       solver.MessageKind(signal.Kind),
+		Namespace:  signal.Namespace,
+		Type:       signal.Type,
+		Payload:    append([]byte(nil), signal.Payload...),
+		ReceivedAt: receivedAt,
+	}
+	switch msg.Kind {
+	case solver.MessageKindEnvelope:
+		if msg.Namespace != sessionEnvelopeNamespace {
+			return solver.Message{}, fmt.Errorf("client: unsupported envelope namespace %q", msg.Namespace)
+		}
+		if _, err := rproto.UnmarshalEnvelope(msg.Payload); err != nil {
+			return solver.Message{}, err
+		}
+	case solver.MessageKindStrategy:
+		if msg.Namespace == "" || msg.Type == "" {
+			return solver.Message{}, fmt.Errorf("client: strategy message namespace and type are required")
+		}
+	default:
+		return solver.Message{}, fmt.Errorf("client: unsupported solver message kind %q", msg.Kind)
+	}
+	return msg, nil
 }
 
 func inboundSolverMessageFromSignal(signal *coordclient.SignalNotification) (solver.Message, bool, error) {

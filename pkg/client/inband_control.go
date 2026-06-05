@@ -1,12 +1,15 @@
 package client
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"net"
 	"sync/atomic"
 	"time"
 
 	"winkyou/pkg/peercontrol"
+	"winkyou/pkg/solver"
 )
 
 const (
@@ -14,6 +17,8 @@ const (
 	inbandControlInterval = 5 * time.Second
 	inbandHealthWindow    = 3 * inbandControlInterval
 )
+
+var errInbandSignalUnavailable = errors.New("client: in-band solver signal unavailable")
 
 func (e *engine) startInbandControl(bindIP net.IP) error {
 	conn, err := listenInbandUDP(bindIP)
@@ -178,9 +183,11 @@ func (e *engine) handleInbandControlMessage(msg peercontrol.Message) {
 	}
 
 	changed := false
+	knownPeer := false
 	e.mu.Lock()
 	peer := e.peers[msg.From]
 	if peer != nil {
+		knownPeer = true
 		if msg.Heartbeat != nil {
 			peer.LastInbandHeartbeatAt = seenAt
 			if peer.ControlState == "" || peer.ControlState == PeerControlStateDisconnected {
@@ -208,12 +215,50 @@ func (e *engine) handleInbandControlMessage(msg peercontrol.Message) {
 		}
 	}
 	e.mu.Unlock()
-	if msg.ReICERequest != nil {
+	if knownPeer && msg.ReICERequest != nil {
 		e.schedulePeerImprovementByID(msg.From)
+	}
+	if knownPeer && msg.SessionSignal != nil {
+		if solverMsg, err := solverMessageFromPeerControlSignal(*msg.SessionSignal, seenAt); err == nil {
+			go e.handlePeerSolverMessage(msg.From, solverMsg)
+		}
 	}
 	if changed {
 		e.persistState()
 	}
+}
+
+func (e *engine) sendSolverMessageInband(ctx context.Context, peerID string, solverMsg solver.Message) error {
+	if ctx != nil {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
+	}
+	signal, err := peerControlSignalForSolverMessage(solverMsg)
+	if err != nil {
+		return err
+	}
+
+	e.mu.RLock()
+	conn := e.inbandConn
+	localNodeID := e.status.NodeID
+	peer := clonePeerStatus(e.peers[peerID])
+	e.mu.RUnlock()
+	if conn == nil || localNodeID == "" || peer == nil || !peerInbandEligible(peer) || peer.VirtualIP.To4() == nil {
+		return errInbandSignalUnavailable
+	}
+
+	msg := peercontrol.NewSessionSignal(localNodeID, peer.NodeID, signal)
+	msg.Seq = atomic.AddUint64(&e.inbandSeq, 1)
+	raw, err := peercontrol.Marshal(msg)
+	if err != nil {
+		return err
+	}
+	addr := &net.UDPAddr{IP: append(net.IP(nil), peer.VirtualIP.To4()...), Port: InbandControlPort}
+	_, err = conn.WriteToUDP(raw, addr)
+	return err
 }
 
 func peerInbandEligible(peer *PeerStatus) bool {

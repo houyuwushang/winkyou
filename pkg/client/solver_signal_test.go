@@ -164,3 +164,48 @@ func TestGenericStrategySignalAdapterRoundTrip(t *testing.T) {
 		t.Fatalf("ReceivedAt = %s, want %s", inbound.ReceivedAt, now)
 	}
 }
+
+func TestPeerControlSignalAdapterRoundTrip(t *testing.T) {
+	now := time.Unix(1_700_000_010, 0).UTC()
+	tests := []solver.Message{
+		tcpframed.NewMessage(tcpframed.MessageTypeOffer, []byte(`{"session_id":"session/node-a/node-b"}`), now),
+	}
+
+	envelopePayload, err := rproto.MarshalEnvelope(rproto.SessionEnvelope{
+		SessionID: "session/node-a/node-b",
+		FromNode:  "node-a",
+		ToNode:    "node-b",
+		MsgType:   rproto.MsgTypeCapability,
+		Seq:       7,
+		Payload:   rproto.MustPayload(rproto.Capability{Strategies: []string{"legacy_ice_udp"}}),
+	})
+	if err != nil {
+		t.Fatalf("MarshalEnvelope() error = %v", err)
+	}
+	tests = append(tests, solver.Message{
+		Kind:      solver.MessageKindEnvelope,
+		Namespace: sessionEnvelopeNamespace,
+		Type:      rproto.MsgTypeCapability,
+		Payload:   envelopePayload,
+	})
+
+	for _, msg := range tests {
+		signal, err := peerControlSignalForSolverMessage(msg)
+		if err != nil {
+			t.Fatalf("peerControlSignalForSolverMessage(%s/%s) error = %v", msg.Namespace, msg.Type, err)
+		}
+		got, err := solverMessageFromPeerControlSignal(signal, now)
+		if err != nil {
+			t.Fatalf("solverMessageFromPeerControlSignal(%s/%s) error = %v", signal.Namespace, signal.Type, err)
+		}
+		if got.Kind != msg.Kind || got.Namespace != msg.Namespace || got.Type != msg.Type {
+			t.Fatalf("round trip metadata = %+v, want kind=%s namespace=%s type=%s", got, msg.Kind, msg.Namespace, msg.Type)
+		}
+		if string(got.Payload) != string(msg.Payload) {
+			t.Fatalf("round trip payload mismatch for %s/%s", msg.Namespace, msg.Type)
+		}
+		if !got.ReceivedAt.Equal(now) {
+			t.Fatalf("ReceivedAt = %s, want %s", got.ReceivedAt, now)
+		}
+	}
+}

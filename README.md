@@ -33,7 +33,7 @@ WinkYou = connectivity solver + secure WireGuard data plane
 - `auto` 模式默认启用保守 protected-direct multipath：最多保留 primary + 一条 standby，relay-only/force-relay 仍保持单路径
 - 如果已 bound 的 path 不是 `protected_direct`，client 会保留现有数据面并在后台继续尝试保护直连；只有后续结果明确为 `protected_direct` 时，才会替换 tunnel peer 的 transport
 - runtime/`wink peers --json` 会暴露最近 path 的 plan、role、dependency 和 child path 摘要；验证真实直连时应以 `last_path_role=protected_direct` 且 `last_path_dependencies` 为空作为证据，而不是只看 `connection_type=direct`
-- 真实双节点验证已证明 `legacy_ice_udp` direct path 可以建立虚拟局域网；在已 bound 数据面上只停止 chen-win 的 coordinator 进程 15 秒后，`wink ping` 仍成功，说明基础 coordinator outage 已通过。但历史 selected pair 的 remote candidate 曾为 `100.102.17.35`，属于 `100.64.0.0/10`，这只能证明没有走 TURN relay，不能证明该 path 独立于 natpierce/chen-win underlay。client 已加第一层 peer-offline 保护、controlled-side retry、coordinator NotFound 重注册，并已在 runtime/`wink peers` 中暴露 control/data 状态和最近成功 path cache；`pkg/peercontrol` 消息模型已冻结，client 已接入最小 in-band heartbeat/path_health 循环，`re_ice_request` 会触发 protected-direct improvement，后续仍需覆盖更长时间 heartbeat/signaling failure、完整 in-band ICE signaling 和 cached path 恢复；详见 [`docs/CONTROL-PLANE-RESILIENCE.md`](./docs/CONTROL-PLANE-RESILIENCE.md)
+- 真实双节点验证已证明 `legacy_ice_udp` direct path 可以建立虚拟局域网；在已 bound 数据面上只停止 chen-win 的 coordinator 进程 15 秒后，`wink ping` 仍成功，说明基础 coordinator outage 已通过。但历史 selected pair 的 remote candidate 曾为 `100.102.17.35`，属于 `100.64.0.0/10`，这只能证明没有走 TURN relay，不能证明该 path 独立于 natpierce/chen-win underlay。client 已加第一层 peer-offline 保护、controlled-side retry、coordinator NotFound 重注册，并已在 runtime/`wink peers` 中暴露 control/data 状态和最近成功 path cache；`pkg/peercontrol` 消息模型已冻结，client 已接入最小 in-band heartbeat/path_health 循环，`re_ice_request` 会触发 protected-direct improvement，`session_signal` 会在已建立虚拟网内冗余发送现有 session/strategy 信令，后续仍需覆盖更长时间 heartbeat/signaling failure、in-band 信令可靠性和 cached path 恢复；详见 [`docs/CONTROL-PLANE-RESILIENCE.md`](./docs/CONTROL-PLANE-RESILIENCE.md)
 
 当文档发生冲突时，以 [`docs/CONNECTIVITY-SOLVER-BASELINE.md`](./docs/CONNECTIVITY-SOLVER-BASELINE.md) 作为 session、solver、strategy 和 transport 边界的判断依据。部分历史架构文档已标记为 proposal/archive，不能覆盖 active baseline。
 
@@ -182,7 +182,7 @@ nat:
 - 高级 learning/scoring 闭环
 - protected direct multipath：v0.2 freeze gate 已定义；代码已支持初始多路径绑定和 bound 后 protected-direct improvement，后续重点是真实设备报告、保护直连成功后的 failover 边界收敛，见 [`docs/V0.2-MULTIPATH-FREEZE.md`](./docs/V0.2-MULTIPATH-FREEZE.md)
 - coordinator 断线后保持已 bound 数据面的完整控制面韧性：基础 kill-coordinator 验证已通过；peer-offline 误清理、controlled-side retry、coordinator NotFound 重注册和 runtime control/data/path cache 已先修；更长时间 heartbeat/signaling failure、cached path 恢复仍待完成
-- 已建立虚拟网后的 in-band peer control channel 已接入最小 heartbeat/path_health 和 re-ICE request 运行时循环；后续仍需更长时间真实设备验证、完整 in-band ICE signaling 和恢复策略收敛
+- 已建立虚拟网后的 in-band peer control channel 已接入最小 heartbeat/path_health、re-ICE request 和 session_signal 运行时循环；后续仍需更长时间真实设备验证、in-band 信令可靠性和恢复策略收敛
 - 真实环境下 `legacyice/public_direct` 排除 Tailscale、Docker bridge、其他 VPN/TAP 后的双端公网 NAT piercing 验证
 - GUI、移动端、原生 Windows service
 

@@ -113,3 +113,31 @@ func TestPathHealthRoundTrip(t *testing.T) {
 		t.Fatalf("last handshake = %v, want %v", got.PathHealth.LastHandshake, lastHandshake)
 	}
 }
+
+func TestSessionSignalRoundTrip(t *testing.T) {
+	msg := NewSessionSignal("node-a", "node-b", SessionSignal{
+		Kind:      "strategy_message",
+		Namespace: "legacyice",
+		Type:      "offer",
+		Payload:   []byte("payload"),
+	})
+	msg.Seq = 11
+
+	raw, err := Marshal(msg)
+	if err != nil {
+		t.Fatalf("Marshal() error = %v", err)
+	}
+	got, err := Unmarshal(raw)
+	if err != nil {
+		t.Fatalf("Unmarshal() error = %v", err)
+	}
+	if got.Type != TypeSessionSignal || got.SessionSignal == nil {
+		t.Fatalf("message = %#v, want session signal", got)
+	}
+	if got.SessionSignal.Kind != "strategy_message" || got.SessionSignal.Namespace != "legacyice" || got.SessionSignal.Type != "offer" {
+		t.Fatalf("session signal metadata = %#v", got.SessionSignal)
+	}
+	if string(got.SessionSignal.Payload) != "payload" {
+		t.Fatalf("payload = %q, want payload", got.SessionSignal.Payload)
+	}
+}

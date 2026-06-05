@@ -240,3 +240,64 @@ func TestSendInbandControlSnapshotWritesHeartbeatAndPathHealth(t *testing.T) {
 		t.Fatalf("received message types = %#v", got)
 	}
 }
+
+func TestPeerMessageSenderFallsBackToInbandSignal(t *testing.T) {
+	receiver, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: InbandControlPort})
+	if err != nil {
+		t.Skipf("in-band control port unavailable: %v", err)
+	}
+	defer receiver.Close()
+
+	sender, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 0})
+	if err != nil {
+		t.Fatalf("ListenUDP sender error = %v", err)
+	}
+	defer sender.Close()
+
+	eng := &engine{
+		status:     EngineStatus{NodeID: "node-a"},
+		inbandConn: sender,
+		peers: map[string]*PeerStatus{
+			"node-b": {
+				NodeID:    "node-b",
+				VirtualIP: net.ParseIP("127.0.0.1"),
+				State:     PeerStateConnected,
+				DataState: PeerDataStateAlive,
+			},
+		},
+	}
+	msg := solver.Message{
+		Kind:      solver.MessageKindStrategy,
+		Namespace: "test.strategy",
+		Type:      "offer",
+		Payload:   []byte("payload"),
+	}
+	if err := (peerMessageSender{engine: eng}).Send(context.Background(), "node-b", msg); err != nil {
+		t.Fatalf("Send() error = %v", err)
+	}
+
+	buffer := make([]byte, 8192)
+	if err := receiver.SetReadDeadline(time.Now().Add(time.Second)); err != nil {
+		t.Fatalf("SetReadDeadline() error = %v", err)
+	}
+	n, _, err := receiver.ReadFromUDP(buffer)
+	if err != nil {
+		t.Fatalf("ReadFromUDP() error = %v", err)
+	}
+	got, err := peercontrol.Unmarshal(buffer[:n])
+	if err != nil {
+		t.Fatalf("Unmarshal() error = %v", err)
+	}
+	if got.Type != peercontrol.TypeSessionSignal || got.SessionSignal == nil {
+		t.Fatalf("message = %#v, want session signal", got)
+	}
+	if got.From != "node-a" || got.To != "node-b" {
+		t.Fatalf("message route = %s -> %s, want node-a -> node-b", got.From, got.To)
+	}
+	if got.SessionSignal.Kind != string(solver.MessageKindStrategy) || got.SessionSignal.Namespace != "test.strategy" || got.SessionSignal.Type != "offer" {
+		t.Fatalf("session signal = %#v", got.SessionSignal)
+	}
+	if string(got.SessionSignal.Payload) != "payload" {
+		t.Fatalf("payload = %q, want payload", got.SessionSignal.Payload)
+	}
+}
