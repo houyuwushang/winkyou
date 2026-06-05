@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"strings"
 	"sync"
 	"time"
 
@@ -24,6 +25,12 @@ type Path struct {
 
 type StatsProvider interface {
 	MultipathStats() Stats
+}
+
+type HealthController interface {
+	MarkPathUnhealthy(pathID string, reason string)
+	MarkPathHealthy(pathID string)
+	ActivePathID() string
 }
 
 type Stats struct {
@@ -131,6 +138,9 @@ func (t *Transport) ReadPacket(ctx context.Context, dst []byte) (int, transport.
 		if result.meta.ReceivedAt.IsZero() {
 			result.meta.ReceivedAt = time.Now()
 		}
+		if t.shouldPromoteReadPath(result.pathID) {
+			t.promote(result.pathID, "read_from_standby")
+		}
 		return result.n, result.meta, nil
 	case <-ctx.Done():
 		return 0, transport.PacketMeta{}, ctx.Err()
@@ -151,16 +161,20 @@ func (t *Transport) WritePacket(ctx context.Context, pkt []byte) error {
 		t.markPathUnhealthy(active.path.ID, err.Error())
 	}
 
-	standby := t.selectStandby(active.path.ID)
-	if standby == nil {
-		return fmt.Errorf("multipath: active path %q failed and no standby path is healthy", active.path.ID)
+	failedPathIDs := []string{active.path.ID}
+	for {
+		standby := t.selectStandby(failedPathIDs...)
+		if standby == nil {
+			return fmt.Errorf("multipath: all paths failed or unhealthy; failed paths: %s", strings.Join(failedPathIDs, ","))
+		}
+		if err := t.writePath(ctx, standby, pkt); err != nil {
+			t.markPathUnhealthy(standby.path.ID, err.Error())
+			failedPathIDs = append(failedPathIDs, standby.path.ID)
+			continue
+		}
+		t.promote(standby.path.ID, "write_error:"+active.path.ID)
+		return nil
 	}
-	if err := t.writePath(ctx, standby, pkt); err != nil {
-		t.markPathUnhealthy(standby.path.ID, err.Error())
-		return fmt.Errorf("multipath: active path %q and standby path %q failed: %w", active.path.ID, standby.path.ID, err)
-	}
-	t.promote(standby.path.ID, "write_error:"+active.path.ID)
-	return nil
 }
 
 func (t *Transport) LocalAddr() net.Addr {
@@ -224,6 +238,20 @@ func (t *Transport) MultipathStats() Stats {
 	return stats
 }
 
+func (t *Transport) MarkPathUnhealthy(pathID string, reason string) {
+	t.markPathUnhealthy(pathID, reason)
+}
+
+func (t *Transport) MarkPathHealthy(pathID string) {
+	t.markPathHealthy(pathID)
+}
+
+func (t *Transport) ActivePathID() string {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	return t.activeID
+}
+
 func (t *Transport) readLoop(state *pathState) {
 	for {
 		buf := make([]byte, maxPacketSize)
@@ -234,6 +262,8 @@ func (t *Transport) readLoop(state *pathState) {
 		}
 		packet := append([]byte(nil), buf[:n]...)
 		t.mu.Lock()
+		state.healthy = true
+		state.lastError = ""
 		state.rxPackets++
 		t.mu.Unlock()
 		select {
@@ -249,6 +279,8 @@ func (t *Transport) writePath(ctx context.Context, state *pathState, pkt []byte)
 		return err
 	}
 	t.mu.Lock()
+	state.healthy = true
+	state.lastError = ""
 	state.txPackets++
 	t.mu.Unlock()
 	return nil
@@ -289,12 +321,16 @@ func (t *Transport) snapshotPaths() []*pathState {
 	return append([]*pathState(nil), t.paths...)
 }
 
-func (t *Transport) selectStandby(excludeID string) *pathState {
+func (t *Transport) selectStandby(excludeIDs ...string) *pathState {
 	t.mu.RLock()
 	defer t.mu.RUnlock()
+	excluded := make(map[string]struct{}, len(excludeIDs))
+	for _, id := range excludeIDs {
+		excluded[id] = struct{}{}
+	}
 	var best *pathState
 	for _, state := range t.paths {
-		if state.path.ID == excludeID || !state.healthy {
+		if _, ok := excluded[state.path.ID]; ok || !state.healthy {
 			continue
 		}
 		if best == nil {
@@ -312,6 +348,29 @@ func (t *Transport) selectStandby(excludeID string) *pathState {
 	return best
 }
 
+func (t *Transport) shouldPromoteReadPath(pathID string) bool {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	if pathID == "" || pathID == t.activeID {
+		return false
+	}
+	incoming := t.pathByIDLocked(pathID)
+	if incoming == nil || !incoming.healthy {
+		return false
+	}
+	primary := t.pathByIDLocked(t.primaryID)
+	return primary != nil && !primary.healthy
+}
+
+func (t *Transport) pathByIDLocked(pathID string) *pathState {
+	for _, state := range t.paths {
+		if state.path.ID == pathID {
+			return state
+		}
+	}
+	return nil
+}
+
 func (t *Transport) markPathUnhealthy(pathID, reason string) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -322,6 +381,19 @@ func (t *Transport) markPathUnhealthy(pathID, reason string) {
 		state.healthy = false
 		state.errorCount++
 		state.lastError = reason
+		return
+	}
+}
+
+func (t *Transport) markPathHealthy(pathID string) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	for _, state := range t.paths {
+		if state.path.ID != pathID {
+			continue
+		}
+		state.healthy = true
+		state.lastError = ""
 		return
 	}
 }

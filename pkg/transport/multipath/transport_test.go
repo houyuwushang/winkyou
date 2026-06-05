@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -64,6 +65,29 @@ func TestWriteFallsBackToStandby(t *testing.T) {
 	}
 }
 
+func TestWriteFailsOverToProtectedDirectAfterPrimaryClose(t *testing.T) {
+	primary := newFakePacketTransport("primary")
+	direct := newFakePacketTransport("direct")
+	mp := newTestTransport(t, []Path{
+		testPath("relay", solver.PathRolePrimaryCandidate, primary, 100),
+		testPath("direct", solver.PathRoleProtectedDirect, direct, 10),
+	}, solver.PathPolicy{})
+	defer mp.Close()
+
+	if err := primary.Close(); err != nil {
+		t.Fatalf("primary Close() error = %v", err)
+	}
+	if err := mp.WritePacket(context.Background(), []byte("failover")); err != nil {
+		t.Fatalf("WritePacket() error = %v", err)
+	}
+	if got := direct.writeCount(); got != 1 {
+		t.Fatalf("direct writes = %d, want 1", got)
+	}
+	if active := mp.ActivePathID(); active != "direct" {
+		t.Fatalf("active path = %q, want direct", active)
+	}
+}
+
 func TestReadFanInReturnsStandbyPacket(t *testing.T) {
 	primary := newFakePacketTransport("primary")
 	standby := newFakePacketTransport("standby")
@@ -86,6 +110,74 @@ func TestReadFanInReturnsStandbyPacket(t *testing.T) {
 	}
 	if meta.PathID != "standby" {
 		t.Fatalf("ReadPacket() path id = %q, want standby", meta.PathID)
+	}
+}
+
+func TestReadFromStandbyPromotesWhenPrimaryUnhealthy(t *testing.T) {
+	primary := newFakePacketTransport("primary")
+	standby := newFakePacketTransport("standby")
+	mp := newTestTransport(t, []Path{
+		testPath("primary", solver.PathRolePrimaryCandidate, primary, 100),
+		testPath("standby", solver.PathRoleProtectedDirect, standby, 10),
+	}, solver.PathPolicy{})
+	defer mp.Close()
+
+	var controller HealthController = mp
+	controller.MarkPathUnhealthy("primary", "health_stale")
+	standby.deliver([]byte("standby-alive"))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	buf := make([]byte, 64)
+	if _, _, err := mp.ReadPacket(ctx, buf); err != nil {
+		t.Fatalf("ReadPacket() error = %v", err)
+	}
+	if active := controller.ActivePathID(); active != "standby" {
+		t.Fatalf("active path = %q, want standby", active)
+	}
+	stats := mp.MultipathStats()
+	if stats.LastFailoverWhy != "read_from_standby" {
+		t.Fatalf("last failover reason = %q, want read_from_standby", stats.LastFailoverWhy)
+	}
+}
+
+func TestWriteReturnsClearErrorWhenAllPathsFail(t *testing.T) {
+	primary := newFakePacketTransport("primary")
+	standby := newFakePacketTransport("standby")
+	primary.writeErr = errors.New("primary down")
+	standby.writeErr = errors.New("standby down")
+	mp := newTestTransport(t, []Path{
+		testPath("primary", solver.PathRolePrimaryCandidate, primary, 100),
+		testPath("standby", solver.PathRoleProtectedDirect, standby, 10),
+	}, solver.PathPolicy{})
+	defer mp.Close()
+
+	err := mp.WritePacket(context.Background(), []byte("hello"))
+	if err == nil {
+		t.Fatal("WritePacket() error = nil, want all paths failed")
+	}
+	if !strings.Contains(err.Error(), "all paths failed") || !strings.Contains(err.Error(), "primary,standby") {
+		t.Fatalf("WritePacket() error = %q, want clear failed paths", err)
+	}
+}
+
+func TestHealthControllerMarksPathHealthy(t *testing.T) {
+	primary := newFakePacketTransport("primary")
+	standby := newFakePacketTransport("standby")
+	mp := newTestTransport(t, []Path{
+		testPath("primary", solver.PathRolePrimaryCandidate, primary, 100),
+		testPath("standby", solver.PathRoleProtectedDirect, standby, 10),
+	}, solver.PathPolicy{})
+	defer mp.Close()
+
+	var controller HealthController = mp
+	controller.MarkPathUnhealthy("primary", "manual")
+	if stat := findPathStats(t, mp.MultipathStats(), "primary"); stat.Healthy || stat.LastError != "manual" {
+		t.Fatalf("primary stats after unhealthy = %#v", stat)
+	}
+	controller.MarkPathHealthy("primary")
+	if stat := findPathStats(t, mp.MultipathStats(), "primary"); !stat.Healthy || stat.LastError != "" {
+		t.Fatalf("primary stats after healthy = %#v", stat)
 	}
 }
 
@@ -135,6 +227,17 @@ func newTestTransport(t *testing.T, paths []Path, policy solver.PathPolicy) *Tra
 		t.Fatalf("New() error = %v", err)
 	}
 	return mp
+}
+
+func findPathStats(t *testing.T, stats Stats, pathID string) PathStats {
+	t.Helper()
+	for _, stat := range stats.Paths {
+		if stat.ID == pathID {
+			return stat
+		}
+	}
+	t.Fatalf("path stats for %q not found in %#v", pathID, stats.Paths)
+	return PathStats{}
 }
 
 func testPath(id string, role solver.PathRole, child transport.PacketTransport, priority int) Path {
