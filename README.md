@@ -149,6 +149,12 @@ nat:
 
 `nat1to1_ips` 使用 Pion ICE 的 `external/local` 语义；只有外部 IP/端口映射稳定时才适合使用。普通家宽或运营商 NAT 如果每个 UDP socket 都分配不同公网端口，仍应依赖 STUN 采集到的 server-reflexive candidate，或走 TURN/relay fallback。
 
+用于排查真实 NAT piercing 时，legacy ICE 会把候选采集和过滤结果写入 observation history。客户端运行状态文件同目录下会生成 `<runtime-state-base>.observations.jsonl`，其中：
+
+- `candidate_gathered`：本端 gather 后准备发布的 candidate 统计。
+- `remote_candidates_filtered`：收到远端 offer/answer/candidate 后的过滤统计。
+- `candidate_total`、`candidate_kept`、`candidate_rejected`、`candidate_reject_reasons` 可用于判断是没有采到公网候选、候选被 `public_direct` 规则过滤，还是候选保留下来后 ICE 连通检查失败。
+
 从当前版本起，`legacy_ice_udp` 默认会按顺序尝试：
 
 1. `legacyice/direct_prefer`：保留 ICE 默认行为，可能选中 NAT/overlay/100.64 direct-like path。

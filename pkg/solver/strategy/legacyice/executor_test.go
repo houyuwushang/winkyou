@@ -3,6 +3,7 @@ package legacyice
 import (
 	"context"
 	"net"
+	"strings"
 	"testing"
 	"time"
 
@@ -58,7 +59,8 @@ func (recordingSessionIO) Send(context.Context, solver.Message) error { return n
 func (recordingSessionIO) ReportObservation(context.Context, solver.Observation) error { return nil }
 
 type capturingSessionIO struct {
-	messages []solver.Message
+	messages     []solver.Message
+	observations []solver.Observation
 }
 
 func (c *capturingSessionIO) Send(_ context.Context, msg solver.Message) error {
@@ -66,7 +68,10 @@ func (c *capturingSessionIO) Send(_ context.Context, msg solver.Message) error {
 	return nil
 }
 
-func (c *capturingSessionIO) ReportObservation(context.Context, solver.Observation) error { return nil }
+func (c *capturingSessionIO) ReportObservation(_ context.Context, obs solver.Observation) error {
+	c.observations = append(c.observations, obs)
+	return nil
+}
 
 func TestExecutorConfigForPlanProducesDistinctModes(t *testing.T) {
 	direct, err := executorConfigForPlan(solver.Plan{ID: "legacyice/direct_prefer", Metadata: map[string]string{"mode": "direct_prefer"}}, Config{})
@@ -231,6 +236,22 @@ func TestPublicDirectSendOfferAdvertisesOnlyPublicCandidates(t *testing.T) {
 	if offer.ICE.Candidates[0].Address.String() != publicCandidate.Address.String() {
 		t.Fatalf("offer candidate = %v, want %v", offer.ICE.Candidates[0].Address, publicCandidate.Address)
 	}
+	obs := findObservation(io.observations, "candidate_gathered")
+	if obs == nil {
+		t.Fatalf("candidate_gathered observation not reported: %#v", io.observations)
+	}
+	if obs.Details["mode"] != string(modePublicDirect) || obs.Details["message_type"] != MessageTypeOffer {
+		t.Fatalf("candidate_gathered details = %#v, want public direct offer", obs.Details)
+	}
+	if obs.Details["candidate_total"] != "4" || obs.Details["candidate_kept"] != "1" || obs.Details["candidate_rejected"] != "3" {
+		t.Fatalf("candidate_gathered counts = %#v, want total=4 kept=1 rejected=3", obs.Details)
+	}
+	reasons := obs.Details["candidate_reject_reasons"]
+	for _, want := range []string{"local_private_candidate=1", "local_cgnat_or_overlay_candidate=1", "local_relay_candidate=1"} {
+		if !strings.Contains(reasons, want) {
+			t.Fatalf("candidate_gathered reject reasons = %q, want %q", reasons, want)
+		}
+	}
 }
 
 func TestExecutorFiltersRemoteCandidatesByPlanMode(t *testing.T) {
@@ -306,7 +327,8 @@ func TestExecutorFiltersRemoteCandidatesByPlanMode(t *testing.T) {
 	if err != nil {
 		t.Fatalf("marshalAnswerPayload(public_direct) error = %v", err)
 	}
-	if err := publicDirectExec.HandleMessage(context.Background(), recordingSessionIO{}, NewMessage(MessageTypeAnswer, publicDirectPayload, time.Now())); err != nil {
+	publicDirectIO := &capturingSessionIO{}
+	if err := publicDirectExec.HandleMessage(context.Background(), publicDirectIO, NewMessage(MessageTypeAnswer, publicDirectPayload, time.Now())); err != nil {
 		t.Fatalf("HandleMessage(public_direct) error = %v", err)
 	}
 	<-publicDirectAgent.connectCalled
@@ -319,6 +341,22 @@ func TestExecutorFiltersRemoteCandidatesByPlanMode(t *testing.T) {
 	publicLocalCandidates := filterLocalCandidates(mixedCandidates, executorConfig{Mode: modePublicDirect})
 	if len(publicLocalCandidates) != 1 || publicLocalCandidates[0].Address.String() != publicCandidate.Address.String() {
 		t.Fatalf("public direct local candidates = %#v, want only %v", publicLocalCandidates, publicCandidate.Address)
+	}
+	obs := findObservation(publicDirectIO.observations, "remote_candidates_filtered")
+	if obs == nil {
+		t.Fatalf("remote_candidates_filtered observation not reported: %#v", publicDirectIO.observations)
+	}
+	if obs.Details["mode"] != string(modePublicDirect) || obs.Details["message_type"] != MessageTypeAnswer {
+		t.Fatalf("remote_candidates_filtered details = %#v, want public direct answer", obs.Details)
+	}
+	if obs.Details["candidate_total"] != "4" || obs.Details["candidate_kept"] != "1" || obs.Details["candidate_rejected"] != "3" {
+		t.Fatalf("remote_candidates_filtered counts = %#v, want total=4 kept=1 rejected=3", obs.Details)
+	}
+	remoteReasons := obs.Details["candidate_reject_reasons"]
+	for _, want := range []string{"remote_private_candidate=1", "remote_cgnat_or_overlay_candidate=1", "remote_relay_candidate=1"} {
+		if !strings.Contains(remoteReasons, want) {
+			t.Fatalf("remote_candidates_filtered reject reasons = %q, want %q", remoteReasons, want)
+		}
 	}
 
 	relayExec, relayAgent := newExecutorWithAgent("legacyice/relay_only", modeRelayOnly)
@@ -354,4 +392,13 @@ func stringSliceContains(values []string, want string) bool {
 		}
 	}
 	return false
+}
+
+func findObservation(observations []solver.Observation, event string) *solver.Observation {
+	for i := range observations {
+		if observations[i].Event == event {
+			return &observations[i]
+		}
+	}
+	return nil
 }

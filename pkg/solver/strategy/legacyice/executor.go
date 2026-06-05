@@ -5,7 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"sort"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -105,7 +107,9 @@ func (e *executor) HandleMessage(ctx context.Context, sess solver.SessionIO, msg
 		if err := agent.SetRemoteCredentials(offer.ICE.Ufrag, offer.ICE.Pwd); err != nil {
 			return err
 		}
-		if err := agent.SetRemoteCandidates(filterRemoteCandidates(offer.ICE.Candidates, e.execCfg)); err != nil {
+		candidates, summary := filterRemoteCandidatesWithSummary(offer.ICE.Candidates, e.execCfg)
+		e.reportCandidateFilter(sess, "remote_candidates_filtered", "remote", MessageTypeOffer, summary)
+		if err := agent.SetRemoteCandidates(candidates); err != nil {
 			return err
 		}
 		if err := e.sendAnswer(ctx, sess); err != nil {
@@ -124,7 +128,9 @@ func (e *executor) HandleMessage(ctx context.Context, sess solver.SessionIO, msg
 		if err := agent.SetRemoteCredentials(answer.ICE.Ufrag, answer.ICE.Pwd); err != nil {
 			return err
 		}
-		if err := agent.SetRemoteCandidates(filterRemoteCandidates(answer.ICE.Candidates, e.execCfg)); err != nil {
+		candidates, summary := filterRemoteCandidatesWithSummary(answer.ICE.Candidates, e.execCfg)
+		e.reportCandidateFilter(sess, "remote_candidates_filtered", "remote", MessageTypeAnswer, summary)
+		if err := agent.SetRemoteCandidates(candidates); err != nil {
 			return err
 		}
 		e.startConnect(sess)
@@ -137,7 +143,8 @@ func (e *executor) HandleMessage(ctx context.Context, sess solver.SessionIO, msg
 		if candidate.PlanID != "" && candidate.PlanID != e.plan.ID {
 			return nil
 		}
-		filtered := filterRemoteCandidates([]nat.Candidate{candidate.ICE.Candidate}, e.execCfg)
+		filtered, summary := filterRemoteCandidatesWithSummary([]nat.Candidate{candidate.ICE.Candidate}, e.execCfg)
+		e.reportCandidateFilter(sess, "remote_candidates_filtered", "remote", MessageTypeCandidate, summary)
 		if len(filtered) == 0 {
 			return nil
 		}
@@ -208,7 +215,8 @@ func (e *executor) sendOffer(ctx context.Context, sess solver.SessionIO) error {
 		return err
 	}
 	e.rememberPublicDirectLocalBases(candidates)
-	candidates = filterLocalCandidates(candidates, e.execCfg)
+	candidates, summary := filterLocalCandidatesWithSummary(candidates, e.execCfg)
+	e.reportCandidateFilter(sess, "candidate_gathered", "local", MessageTypeOffer, summary)
 	if len(candidates) == 0 {
 		return fmt.Errorf("legacyice: no usable local candidates for %s", e.execCfg.Mode)
 	}
@@ -247,7 +255,8 @@ func (e *executor) sendAnswer(ctx context.Context, sess solver.SessionIO) error 
 		return err
 	}
 	e.rememberPublicDirectLocalBases(candidates)
-	candidates = filterLocalCandidates(candidates, e.execCfg)
+	candidates, summary := filterLocalCandidatesWithSummary(candidates, e.execCfg)
+	e.reportCandidateFilter(sess, "candidate_gathered", "local", MessageTypeAnswer, summary)
 	if len(candidates) == 0 {
 		return fmt.Errorf("legacyice: no usable local candidates for %s", e.execCfg.Mode)
 	}
@@ -412,6 +421,22 @@ func (e *executor) reportFailure(sess solver.SessionIO, err error) {
 			},
 			Timestamp: time.Now(),
 		})
+	})
+}
+
+func (e *executor) reportCandidateFilter(sess solver.SessionIO, event, side, messageType string, summary candidateFilterSummary) {
+	details := summary.details()
+	details["mode"] = string(e.execCfg.Mode)
+	details["candidate_side"] = side
+	if messageType != "" {
+		details["message_type"] = messageType
+	}
+	e.report(sess, solver.Observation{
+		Strategy:  e.strategyName(),
+		PlanID:    e.plan.ID,
+		Event:     event,
+		Details:   details,
+		Timestamp: time.Now(),
 	})
 }
 
@@ -581,46 +606,131 @@ func isCandidateIPInCIDR(ip net.IP, cidr string) bool {
 }
 
 func filterRemoteCandidates(candidates []nat.Candidate, execCfg executorConfig) []nat.Candidate {
-	if execCfg.Mode == modePublicDirect {
-		filtered := make([]nat.Candidate, 0, len(candidates))
-		for _, candidate := range candidates {
-			if candidate.Type == nat.CandidateTypeRelay {
-				continue
-			}
-			if candidateDependencyReason("remote", &candidate) != "" {
-				continue
-			}
-			filtered = append(filtered, candidate)
-		}
-		return filtered
-	}
-	if execCfg.Mode != modeRelayOnly {
-		return append([]nat.Candidate(nil), candidates...)
-	}
-	filtered := make([]nat.Candidate, 0, len(candidates))
-	for _, candidate := range candidates {
-		if candidate.Type == nat.CandidateTypeRelay {
-			filtered = append(filtered, candidate)
-		}
-	}
+	filtered, _ := filterRemoteCandidatesWithSummary(candidates, execCfg)
 	return filtered
 }
 
-func filterLocalCandidates(candidates []nat.Candidate, execCfg executorConfig) []nat.Candidate {
-	if execCfg.Mode != modePublicDirect {
-		return append([]nat.Candidate(nil), candidates...)
-	}
+func filterRemoteCandidatesWithSummary(candidates []nat.Candidate, execCfg executorConfig) ([]nat.Candidate, candidateFilterSummary) {
+	summary := newCandidateFilterSummary()
 	filtered := make([]nat.Candidate, 0, len(candidates))
 	for _, candidate := range candidates {
-		if candidate.Type == nat.CandidateTypeRelay {
-			continue
+		reason := remoteCandidateRejectReason(candidate, execCfg)
+		kept := reason == ""
+		summary.record(candidate, kept, reason)
+		if kept {
+			filtered = append(filtered, candidate)
 		}
-		if candidateDependencyReason("local", &candidate) != "" {
-			continue
-		}
-		filtered = append(filtered, candidate)
 	}
+	return filtered, summary
+}
+
+func filterLocalCandidates(candidates []nat.Candidate, execCfg executorConfig) []nat.Candidate {
+	filtered, _ := filterLocalCandidatesWithSummary(candidates, execCfg)
 	return filtered
+}
+
+func filterLocalCandidatesWithSummary(candidates []nat.Candidate, execCfg executorConfig) ([]nat.Candidate, candidateFilterSummary) {
+	summary := newCandidateFilterSummary()
+	filtered := make([]nat.Candidate, 0, len(candidates))
+	for _, candidate := range candidates {
+		reason := localCandidateRejectReason(candidate, execCfg)
+		kept := reason == ""
+		summary.record(candidate, kept, reason)
+		if kept {
+			filtered = append(filtered, candidate)
+		}
+	}
+	return filtered, summary
+}
+
+func remoteCandidateRejectReason(candidate nat.Candidate, execCfg executorConfig) string {
+	switch execCfg.Mode {
+	case modePublicDirect:
+		if candidate.Type == nat.CandidateTypeRelay {
+			return "remote_relay_candidate"
+		}
+		return candidateDependencyReason("remote", &candidate)
+	case modeRelayOnly:
+		if candidate.Type != nat.CandidateTypeRelay {
+			return "remote_non_relay_candidate"
+		}
+	}
+	return ""
+}
+
+func localCandidateRejectReason(candidate nat.Candidate, execCfg executorConfig) string {
+	if execCfg.Mode != modePublicDirect {
+		return ""
+	}
+	if candidate.Type == nat.CandidateTypeRelay {
+		return "local_relay_candidate"
+	}
+	return candidateDependencyReason("local", &candidate)
+}
+
+type candidateFilterSummary struct {
+	Total           int
+	Kept            int
+	Types           map[string]int
+	KeptTypes       map[string]int
+	RejectedReasons map[string]int
+}
+
+func newCandidateFilterSummary() candidateFilterSummary {
+	return candidateFilterSummary{
+		Types:           map[string]int{},
+		KeptTypes:       map[string]int{},
+		RejectedReasons: map[string]int{},
+	}
+}
+
+func (s *candidateFilterSummary) record(candidate nat.Candidate, kept bool, reason string) {
+	s.Total++
+	candidateType := candidate.Type.String()
+	s.Types[candidateType]++
+	if kept {
+		s.Kept++
+		s.KeptTypes[candidateType]++
+		return
+	}
+	if reason == "" {
+		reason = "filtered"
+	}
+	s.RejectedReasons[reason]++
+}
+
+func (s candidateFilterSummary) details() map[string]string {
+	details := map[string]string{
+		"candidate_total":    strconv.Itoa(s.Total),
+		"candidate_kept":     strconv.Itoa(s.Kept),
+		"candidate_rejected": strconv.Itoa(s.Total - s.Kept),
+	}
+	if types := formatCountMap(s.Types); types != "" {
+		details["candidate_types"] = types
+	}
+	if keptTypes := formatCountMap(s.KeptTypes); keptTypes != "" {
+		details["candidate_kept_types"] = keptTypes
+	}
+	if reasons := formatCountMap(s.RejectedReasons); reasons != "" {
+		details["candidate_reject_reasons"] = reasons
+	}
+	return details
+}
+
+func formatCountMap(values map[string]int) string {
+	if len(values) == 0 {
+		return ""
+	}
+	keys := make([]string, 0, len(values))
+	for key := range values {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	parts := make([]string, 0, len(keys))
+	for _, key := range keys {
+		parts = append(parts, key+"="+strconv.Itoa(values[key]))
+	}
+	return strings.Join(parts, ",")
 }
 
 func observationFromPair(planID, event, pathID, connectionType string, pair *nat.CandidatePair, details map[string]string) solver.Observation {
