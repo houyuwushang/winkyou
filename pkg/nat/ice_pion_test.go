@@ -400,6 +400,26 @@ func TestPublicDirectBindingRequestHandlerSwitchesOnlyPublicPairs(t *testing.T) 
 		t.Fatal("public peer-reflexive remote candidate should switch selected public direct pair")
 	}
 
+	cgnatLocal := mustPionCandidate(t, Candidate{
+		Type:       CandidateTypeHost,
+		Address:    &net.UDPAddr{IP: net.IPv4(100, 102, 17, 35), Port: 40000},
+		Priority:   100,
+		Foundation: "local-cgnat",
+	})
+	if handler(nil, cgnatLocal, publicPeerReflexive, &pionice.CandidatePair{Local: cgnatLocal, Remote: publicPeerReflexive}) {
+		t.Fatal("CGNAT or overlay local candidate should not switch public direct pair")
+	}
+
+	benchmarkLocal := mustPionCandidate(t, Candidate{
+		Type:       CandidateTypeHost,
+		Address:    &net.UDPAddr{IP: net.IPv4(198, 18, 0, 1), Port: 40000},
+		Priority:   100,
+		Foundation: "local-benchmark",
+	})
+	if handler(nil, benchmarkLocal, publicPeerReflexive, &pionice.CandidatePair{Local: benchmarkLocal, Remote: publicPeerReflexive}) {
+		t.Fatal("benchmark or overlay local candidate should not switch public direct pair")
+	}
+
 	privatePeerReflexive := mustPionCandidate(t, Candidate{
 		Type:       CandidateTypePrflx,
 		Address:    &net.UDPAddr{IP: net.IPv4(10, 6, 22, 1), Port: 41000},

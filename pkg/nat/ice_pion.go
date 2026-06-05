@@ -545,10 +545,26 @@ func shouldSwitchPublicDirectPair(local, remote pionice.Candidate, pair *pionice
 	if pair == nil || local == nil || remote == nil {
 		return false
 	}
-	if local.Type() == pionice.CandidateTypeRelay || remote.Type() == pionice.CandidateTypeRelay {
+	return isPublicDirectLocalCandidate(local) && isPublicDirectRemoteCandidate(remote)
+}
+
+func isPublicDirectLocalCandidate(candidate pionice.Candidate) bool {
+	if candidate == nil {
 		return false
 	}
-	return isPublicDirectRemoteCandidate(remote)
+	switch candidate.Type() {
+	case pionice.CandidateTypeHost, pionice.CandidateTypeServerReflexive, pionice.CandidateTypePeerReflexive:
+	default:
+		return false
+	}
+	ip := net.ParseIP(candidate.Address())
+	if ip == nil {
+		return false
+	}
+	if candidate.Type() == pionice.CandidateTypeHost && ip.IsPrivate() {
+		return true
+	}
+	return publicDirectCandidateIPReason(ip) == ""
 }
 
 func isPublicDirectRemoteCandidate(candidate pionice.Candidate) bool {
