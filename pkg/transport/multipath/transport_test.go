@@ -141,6 +141,43 @@ func TestReadFromStandbyPromotesWhenPrimaryUnhealthy(t *testing.T) {
 	}
 }
 
+func TestWriteFailsOverFromStaleActivePath(t *testing.T) {
+	primary := newFakePacketTransport("primary")
+	standby := newFakePacketTransport("standby")
+	mp := newTestTransport(t, []Path{
+		testPath("primary", solver.PathRolePrimaryCandidate, primary, 100),
+		testPath("standby", solver.PathRoleProtectedDirect, standby, 10),
+	}, solver.PathPolicy{ActivePathSilenceTimeout: 10 * time.Millisecond})
+	defer mp.Close()
+
+	primary.deliver([]byte("primary-alive"))
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	buf := make([]byte, 64)
+	if _, _, err := mp.ReadPacket(ctx, buf); err != nil {
+		t.Fatalf("ReadPacket() error = %v", err)
+	}
+
+	time.Sleep(20 * time.Millisecond)
+	if err := mp.WritePacket(context.Background(), []byte("after-silence")); err != nil {
+		t.Fatalf("WritePacket() error = %v", err)
+	}
+	if got := primary.writeCount(); got != 0 {
+		t.Fatalf("primary writes = %d, want 0 after stale failover", got)
+	}
+	if got := standby.writeCount(); got != 1 {
+		t.Fatalf("standby writes = %d, want 1 after stale failover", got)
+	}
+	stats := mp.MultipathStats()
+	if stats.ActivePathID != "standby" || stats.LastFailoverWhy != "active_path_rx_silence:primary" {
+		t.Fatalf("multipath stats = %#v, want standby after active silence", stats)
+	}
+	primaryStats := findPathStats(t, stats, "primary")
+	if primaryStats.Healthy || primaryStats.LastError != "active_path_rx_silence" {
+		t.Fatalf("primary stats = %#v, want stale unhealthy", primaryStats)
+	}
+}
+
 func TestWriteReturnsClearErrorWhenAllPathsFail(t *testing.T) {
 	primary := newFakePacketTransport("primary")
 	standby := newFakePacketTransport("standby")

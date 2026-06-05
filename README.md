@@ -71,6 +71,7 @@ connectivity:
     shadow_write: true
     dependency_penalty: 50
     direct_protection_bonus: 100
+    active_path_silence_timeout: 15s
 ```
 
 如果某个 WinkYou peer 还负责转发它后面的后端网段，例如 `inner-gw` 所在的 `10.6.22.0/24` 不是一个直接注册到 coordinator 的 WinkYou 节点，而是 chen-win 后面的虚拟局域网，需要在网关 peer 上显式发布路由：

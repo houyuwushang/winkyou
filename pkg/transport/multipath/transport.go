@@ -55,15 +55,16 @@ type PathStats struct {
 }
 
 type Transport struct {
-	mu        sync.RWMutex
-	paths     []*pathState
-	activeID  string
-	primaryID string
-	policy    solver.PathPolicy
-	readCh    chan readResult
-	closeCh   chan struct{}
-	closeOnce sync.Once
-	closed    bool
+	mu                       sync.RWMutex
+	paths                    []*pathState
+	activeID                 string
+	primaryID                string
+	policy                   solver.PathPolicy
+	readCh                   chan readResult
+	closeCh                  chan struct{}
+	closeOnce                sync.Once
+	closed                   bool
+	activePathSilenceTimeout time.Duration
 
 	lastFailoverAt  time.Time
 	lastFailoverWhy string
@@ -76,6 +77,7 @@ type pathState struct {
 	rxPackets  int64
 	errorCount int64
 	lastError  string
+	lastRxAt   time.Time
 }
 
 type readResult struct {
@@ -91,10 +93,11 @@ func New(paths []Path, policy solver.PathPolicy) (*Transport, error) {
 		return nil, errors.New("multipath: at least one path is required")
 	}
 	t := &Transport{
-		paths:   make([]*pathState, 0, len(paths)),
-		policy:  policy,
-		readCh:  make(chan readResult, len(paths)),
-		closeCh: make(chan struct{}),
+		paths:                    make([]*pathState, 0, len(paths)),
+		policy:                   policy,
+		readCh:                   make(chan readResult, len(paths)),
+		closeCh:                  make(chan struct{}),
+		activePathSilenceTimeout: policy.ActivePathSilenceTimeout,
 	}
 	for i, path := range paths {
 		if path.Transport == nil {
@@ -150,6 +153,7 @@ func (t *Transport) ReadPacket(ctx context.Context, dst []byte) (int, transport.
 }
 
 func (t *Transport) WritePacket(ctx context.Context, pkt []byte) error {
+	t.failoverStaleActivePath(time.Now())
 	active := t.activePath()
 	if active == nil {
 		return errors.New("multipath: no active path")
@@ -265,6 +269,11 @@ func (t *Transport) readLoop(state *pathState) {
 		state.healthy = true
 		state.lastError = ""
 		state.rxPackets++
+		if meta.ReceivedAt.IsZero() {
+			state.lastRxAt = time.Now()
+		} else {
+			state.lastRxAt = meta.ReceivedAt
+		}
 		t.mu.Unlock()
 		select {
 		case <-t.closeCh:
@@ -377,6 +386,55 @@ func (t *Transport) pathByIDLocked(pathID string) *pathState {
 		}
 	}
 	return nil
+}
+
+func (t *Transport) failoverStaleActivePath(now time.Time) {
+	timeout := t.activePathSilenceTimeout
+	if timeout <= 0 {
+		return
+	}
+
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	active := t.pathByIDLocked(t.activeID)
+	if active == nil || active.lastRxAt.IsZero() || now.Sub(active.lastRxAt) < timeout {
+		return
+	}
+	standby := t.bestStandbyLocked(active.path.ID)
+	if standby == nil {
+		return
+	}
+	active.healthy = false
+	active.errorCount++
+	active.lastError = "active_path_rx_silence"
+	t.activeID = standby.path.ID
+	t.lastFailoverAt = now
+	t.lastFailoverWhy = "active_path_rx_silence:" + active.path.ID
+}
+
+func (t *Transport) bestStandbyLocked(excludeIDs ...string) *pathState {
+	excluded := make(map[string]struct{}, len(excludeIDs))
+	for _, id := range excludeIDs {
+		excluded[id] = struct{}{}
+	}
+	var best *pathState
+	for _, state := range t.paths {
+		if _, ok := excluded[state.path.ID]; ok || !state.healthy {
+			continue
+		}
+		if best == nil {
+			best = state
+			continue
+		}
+		if isProtectedDirectPath(state.path) && !isProtectedDirectPath(best.path) {
+			best = state
+			continue
+		}
+		if state.path.Role == best.path.Role && state.path.Priority > best.path.Priority {
+			best = state
+		}
+	}
+	return best
 }
 
 func (t *Transport) markPathUnhealthy(pathID, reason string) {

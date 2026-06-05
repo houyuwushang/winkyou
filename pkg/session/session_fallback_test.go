@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -312,6 +313,113 @@ func TestSessionMultipathContinuesAfterProtectedDirectToFillPathBudget(t *testin
 	stats := provider.MultipathStats()
 	if stats.ChildPathCount != 2 || stats.ProtectedDirectPathID != "direct/path" {
 		t.Fatalf("multipath stats = %#v, want two paths with direct protected standby", stats)
+	}
+}
+
+func TestSessionMultipathKeepsRelayWithDependentDirect(t *testing.T) {
+	dependentTransport := &fakeTransport{}
+	relayTransport := &fakeTransport{}
+	dependentDirect := &successfulFallbackStrategy{
+		name:           legacyice.StrategyName,
+		transport:      dependentTransport,
+		pathID:         "overlay/direct",
+		connectionType: "direct",
+		role:           solver.PathRolePrimaryCandidate,
+		dependencies: []solver.PathDependency{{
+			Kind:   solver.PathDependencyUnknown,
+			Reason: "remote_cgnat_or_overlay_candidate",
+		}},
+	}
+	relay := &successfulFallbackStrategy{
+		name:           relayonly.StrategyName,
+		transport:      relayTransport,
+		pathID:         "relay/path",
+		connectionType: "relay",
+		role:           solver.PathRolePrimaryCandidate,
+		dependencies: []solver.PathDependency{{
+			Kind:   solver.PathDependencyRelay,
+			Reason: "turn_or_relay_candidate",
+		}},
+	}
+	resolver := &orderedFallbackResolver{
+		local: rproto.Capability{Strategies: []string{dependentDirect.name, relay.name}},
+		candidates: []StrategyCandidate{
+			{Name: dependentDirect.name, Strategy: dependentDirect, Selection: Selection{StrategyName: dependentDirect.name, Negotiated: true}},
+			{Name: relay.name, Strategy: relay, Selection: Selection{StrategyName: relay.name, Negotiated: true}},
+		},
+	}
+	binder := &recordingBinder{}
+	sender := &fakeSender{}
+
+	s, err := New(Config{
+		SessionID:             "session/node-a/node-b",
+		LocalNodeID:           "node-a",
+		PeerID:                "node-b",
+		Initiator:             true,
+		Resolver:              resolver,
+		Sender:                sender,
+		Binder:                binder,
+		RunTimeout:            3 * time.Second,
+		CapabilityWaitTimeout: time.Second,
+		PathPolicy: solver.PathPolicy{
+			MultipathEnabled:      true,
+			ProtectDirect:         true,
+			MaxPaths:              2,
+			DependencyPenalty:     50,
+			DirectProtectionBonus: 100,
+		},
+	})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	if err := s.Start(context.Background()); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	if err := s.HandleMessage(context.Background(), envelopeMessage(t, "session/node-a/node-b", "node-b", "node-a", rproto.MsgTypeCapability, 1, rproto.Capability{Strategies: []string{dependentDirect.name, relay.name}}, time.Now())); err != nil {
+		t.Fatalf("HandleMessage(capability) error = %v", err)
+	}
+	waitForState(t, s, StateBound)
+
+	if dependentDirect.execCount() != 1 || relay.execCount() != 1 {
+		t.Fatalf("exec counts = dependent:%d relay:%d, want 1/1", dependentDirect.execCount(), relay.execCount())
+	}
+	provider, ok := binder.boundTransport.(multipath.StatsProvider)
+	if !ok {
+		t.Fatalf("bound transport = %T, want multipath stats provider", binder.boundTransport)
+	}
+	stats := provider.MultipathStats()
+	if stats.ChildPathCount != 2 {
+		t.Fatalf("multipath stats = %#v, want two child paths", stats)
+	}
+	if stats.PrimaryPathID != "relay/path" || stats.ActivePathID != "relay/path" {
+		t.Fatalf("multipath stats = %#v, want relay primary for dependent direct", stats)
+	}
+	if stats.ProtectedDirectPathID != "" {
+		t.Fatalf("ProtectedDirectPathID = %q, want empty for dependent direct", stats.ProtectedDirectPathID)
+	}
+	if !multipathStatsHasPath(stats, "overlay/direct") || !multipathStatsHasPath(stats, "relay/path") {
+		t.Fatalf("multipath stats = %#v, want relay and dependent direct paths", stats)
+	}
+	if dependentTransport.closed || relayTransport.closed {
+		t.Fatalf("transports closed before session close: dependent=%v relay=%v", dependentTransport.closed, relayTransport.closed)
+	}
+
+	pathCommitMsg := waitForEnvelopeMessage(t, sender.Messages, rproto.MsgTypePathCommit)
+	envelope, err := rproto.UnmarshalEnvelope(pathCommitMsg.Payload)
+	if err != nil {
+		t.Fatalf("UnmarshalEnvelope(path_commit) error = %v", err)
+	}
+	pathCommit := mustDecodePathCommit(t, envelope.Payload)
+	if pathCommit.Strategy != relayonly.StrategyName || pathCommit.PathID != "multipath:relay/path" {
+		t.Fatalf("path_commit = %#v, want relay_only multipath primary", pathCommit)
+	}
+	if !hasMultipathChildDependency(s.Observations(), "overlay/direct", solver.PathDependencyUnknown) {
+		t.Fatalf("observations = %#v, want dependent direct child path dependency", s.Observations())
+	}
+
+	if err := s.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
 	}
 }
 
@@ -742,6 +850,30 @@ func (s *messageHandlingFallbackStrategy) handledCount() int {
 func hasObservation(observations []solver.Observation, strategy, event string) bool {
 	for _, obs := range observations {
 		if obs.Strategy == strategy && obs.Event == event {
+			return true
+		}
+	}
+	return false
+}
+
+func multipathStatsHasPath(stats multipath.Stats, pathID string) bool {
+	for _, path := range stats.Paths {
+		if path.ID == pathID {
+			return true
+		}
+	}
+	return false
+}
+
+func hasMultipathChildDependency(observations []solver.Observation, pathID string, kind solver.PathDependencyKind) bool {
+	needle := "id=" + pathID
+	dependency := "deps=" + string(kind)
+	for _, obs := range observations {
+		if obs.Event != "path_committed" || obs.Details == nil || obs.Details["multipath"] != "true" {
+			continue
+		}
+		childPaths := obs.Details["child_paths"]
+		if strings.Contains(childPaths, needle) && strings.Contains(childPaths, dependency) {
 			return true
 		}
 	}

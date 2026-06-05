@@ -92,6 +92,7 @@ func setDefaults(v *viper.Viper, cfg Config) {
 	v.SetDefault("connectivity.multipath.shadow_write", cfg.Connectivity.Multipath.ShadowWrite)
 	v.SetDefault("connectivity.multipath.dependency_penalty", cfg.Connectivity.Multipath.DependencyPenalty)
 	v.SetDefault("connectivity.multipath.direct_protection_bonus", cfg.Connectivity.Multipath.DirectProtectionBonus)
+	v.SetDefault("connectivity.multipath.active_path_silence_timeout", cfg.Connectivity.Multipath.ActivePathSilenceTimeout)
 
 	v.SetDefault("tcp_framed.enabled", cfg.TCPFramed.Enabled)
 	v.SetDefault("tcp_framed.listen_addr", cfg.TCPFramed.ListenAddr)

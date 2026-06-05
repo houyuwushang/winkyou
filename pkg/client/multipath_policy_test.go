@@ -2,6 +2,7 @@ package client
 
 import (
 	"testing"
+	"time"
 
 	"winkyou/pkg/config"
 )
@@ -14,13 +15,14 @@ func TestEngineMultipathPathPolicyFromConfig(t *testing.T) {
 	cfg.Connectivity.Multipath.ShadowWrite = true
 	cfg.Connectivity.Multipath.DependencyPenalty = 50
 	cfg.Connectivity.Multipath.DirectProtectionBonus = 100
+	cfg.Connectivity.Multipath.ActivePathSilenceTimeout = 7 * time.Second
 
 	policy := (&engine{cfg: cfg}).multipathPathPolicy()
 	if !policy.MultipathEnabled || !policy.ProtectDirect || !policy.ShadowWrite {
 		t.Fatalf("policy booleans = %+v, want enabled protect_direct shadow_write", policy)
 	}
-	if policy.MaxPaths != 3 || policy.DependencyPenalty != 50 || policy.DirectProtectionBonus != 100 {
-		t.Fatalf("policy values = %+v, want max_paths=3 dependency_penalty=50 direct_bonus=100", policy)
+	if policy.MaxPaths != 3 || policy.DependencyPenalty != 50 || policy.DirectProtectionBonus != 100 || policy.ActivePathSilenceTimeout != 7*time.Second {
+		t.Fatalf("policy values = %+v, want max_paths=3 dependency_penalty=50 direct_bonus=100 active_silence=7s", policy)
 	}
 }
 
@@ -37,6 +39,9 @@ func TestEngineMultipathPathPolicyDefaultsProtectedDirect(t *testing.T) {
 	}
 	if policy.DependencyPenalty != 50 || policy.DirectProtectionBonus != 100 {
 		t.Fatalf("default policy = %+v, want dependency_penalty=50 direct_bonus=100", policy)
+	}
+	if policy.ActivePathSilenceTimeout != 15*time.Second {
+		t.Fatalf("default policy = %+v, want active_path_silence_timeout=15s", policy)
 	}
 }
 

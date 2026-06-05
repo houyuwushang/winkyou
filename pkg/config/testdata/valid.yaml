@@ -61,6 +61,7 @@ connectivity:
     shadow_write: false
     dependency_penalty: 50
     direct_protection_bonus: 100
+    active_path_silence_timeout: 7s
 
 tcp_framed:
   enabled: true

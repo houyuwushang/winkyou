@@ -1,6 +1,9 @@
 package solver
 
-import "strings"
+import (
+	"strings"
+	"time"
+)
 
 type PathRole string
 
@@ -22,12 +25,13 @@ const (
 )
 
 type PathPolicy struct {
-	MultipathEnabled      bool
-	ProtectDirect         bool
-	MaxPaths              int
-	ShadowWrite           bool
-	DependencyPenalty     int
-	DirectProtectionBonus int
+	MultipathEnabled         bool
+	ProtectDirect            bool
+	MaxPaths                 int
+	ShadowWrite              bool
+	DependencyPenalty        int
+	DirectProtectionBonus    int
+	ActivePathSilenceTimeout time.Duration
 }
 
 type PathDependency struct {

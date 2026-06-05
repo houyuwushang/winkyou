@@ -166,12 +166,13 @@ func (e *engine) multipathPathPolicy() solver.PathPolicy {
 		cfg.Enabled = false
 	}
 	return solver.PathPolicy{
-		MultipathEnabled:      cfg.Enabled,
-		ProtectDirect:         cfg.ProtectDirect,
-		MaxPaths:              cfg.MaxPaths,
-		ShadowWrite:           cfg.ShadowWrite,
-		DependencyPenalty:     cfg.DependencyPenalty,
-		DirectProtectionBonus: cfg.DirectProtectionBonus,
+		MultipathEnabled:         cfg.Enabled,
+		ProtectDirect:            cfg.ProtectDirect,
+		MaxPaths:                 cfg.MaxPaths,
+		ShadowWrite:              cfg.ShadowWrite,
+		DependencyPenalty:        cfg.DependencyPenalty,
+		DirectProtectionBonus:    cfg.DirectProtectionBonus,
+		ActivePathSilenceTimeout: cfg.ActivePathSilenceTimeout,
 	}
 }
 

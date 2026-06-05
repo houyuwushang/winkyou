@@ -28,6 +28,7 @@ const (
 	defaultMultipathMaxPaths     = 2
 	defaultDependencyPenalty     = 50
 	defaultDirectProtectionBonus = 100
+	defaultActivePathSilence     = 15 * time.Second
 	defaultTCPFramedListenAddr   = "0.0.0.0:0"
 	defaultTCPFramedDialTime     = 5 * time.Second
 )
@@ -73,12 +74,13 @@ func Default() Config {
 			Mode:          defaultConnectivityMode,
 			StrategyOrder: append([]string(nil), defaultConnectivityStrategyOrder...),
 			Multipath: MultipathConfig{
-				Enabled:               true,
-				ProtectDirect:         true,
-				MaxPaths:              defaultMultipathMaxPaths,
-				ShadowWrite:           true,
-				DependencyPenalty:     defaultDependencyPenalty,
-				DirectProtectionBonus: defaultDirectProtectionBonus,
+				Enabled:                  true,
+				ProtectDirect:            true,
+				MaxPaths:                 defaultMultipathMaxPaths,
+				ShadowWrite:              true,
+				DependencyPenalty:        defaultDependencyPenalty,
+				DirectProtectionBonus:    defaultDirectProtectionBonus,
+				ActivePathSilenceTimeout: defaultActivePathSilence,
 			},
 		},
 		TCPFramed: TCPFramedConfig{

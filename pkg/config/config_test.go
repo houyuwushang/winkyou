@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"winkyou/pkg/config"
 )
@@ -37,6 +38,9 @@ func TestLoadValidFile(t *testing.T) {
 	}
 	if cfg.Connectivity.Multipath.DependencyPenalty != 50 || cfg.Connectivity.Multipath.DirectProtectionBonus != 100 {
 		t.Fatalf("multipath scoring config = %#v, want dependency_penalty=50 direct_protection_bonus=100", cfg.Connectivity.Multipath)
+	}
+	if cfg.Connectivity.Multipath.ActivePathSilenceTimeout != 7*time.Second {
+		t.Fatalf("multipath active_path_silence_timeout = %s, want 7s", cfg.Connectivity.Multipath.ActivePathSilenceTimeout)
 	}
 	if !cfg.TCPFramed.Enabled || cfg.TCPFramed.ListenAddr != "127.0.0.1:0" || cfg.TCPFramed.AdvertiseAddr != "127.0.0.1:12345" {
 		t.Fatalf("tcp_framed config = %#v, want enabled loopback config", cfg.TCPFramed)
@@ -171,6 +175,9 @@ func TestDefaultConnectivityPolicy(t *testing.T) {
 	}
 	if cfg.Connectivity.Multipath.DirectProtectionBonus != 100 {
 		t.Fatalf("default multipath.direct_protection_bonus = %d, want 100", cfg.Connectivity.Multipath.DirectProtectionBonus)
+	}
+	if cfg.Connectivity.Multipath.ActivePathSilenceTimeout != 15*time.Second {
+		t.Fatalf("default multipath.active_path_silence_timeout = %s, want 15s", cfg.Connectivity.Multipath.ActivePathSilenceTimeout)
 	}
 }
 
@@ -339,6 +346,19 @@ func TestValidateRejectsEnabledMultipathWithoutPaths(t *testing.T) {
 	}
 	if got := err.Error(); got != "connectivity.multipath.max_paths must be greater than zero when connectivity.multipath.enabled=true" {
 		t.Fatalf("Validate() error = %q, want multipath max_paths error", got)
+	}
+}
+
+func TestValidateRejectsNegativeMultipathSilenceTimeout(t *testing.T) {
+	cfg := config.Default()
+	cfg.Connectivity.Multipath.ActivePathSilenceTimeout = -time.Second
+
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("expected validation error, got nil")
+	}
+	if got := err.Error(); got != "connectivity.multipath.active_path_silence_timeout must be greater than or equal to zero" {
+		t.Fatalf("Validate() error = %q, want multipath silence timeout error", got)
 	}
 }
 

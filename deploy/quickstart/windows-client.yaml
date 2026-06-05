@@ -19,6 +19,20 @@ wireguard:
   private_key: HRf0y2reEig31qZc/Vs1Xo+Ehx4PKMmxyLwAj84s83Q=
   listen_port: 0
 
+connectivity:
+  mode: auto
+  strategy_order:
+    - legacy_ice_udp
+    - relay_only
+  multipath:
+    enabled: true
+    protect_direct: true
+    max_paths: 2
+    shadow_write: true
+    dependency_penalty: 50
+    direct_protection_bonus: 100
+    active_path_silence_timeout: 15s
+
 nat:
   gather_timeout: 10s
   connect_timeout: 25s

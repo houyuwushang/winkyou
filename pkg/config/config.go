@@ -78,12 +78,13 @@ type ConnectivityConfig struct {
 }
 
 type MultipathConfig struct {
-	Enabled               bool `mapstructure:"enabled" yaml:"enabled"`
-	ProtectDirect         bool `mapstructure:"protect_direct" yaml:"protect_direct"`
-	MaxPaths              int  `mapstructure:"max_paths" yaml:"max_paths"`
-	ShadowWrite           bool `mapstructure:"shadow_write" yaml:"shadow_write"`
-	DependencyPenalty     int  `mapstructure:"dependency_penalty" yaml:"dependency_penalty"`
-	DirectProtectionBonus int  `mapstructure:"direct_protection_bonus" yaml:"direct_protection_bonus"`
+	Enabled                  bool          `mapstructure:"enabled" yaml:"enabled"`
+	ProtectDirect            bool          `mapstructure:"protect_direct" yaml:"protect_direct"`
+	MaxPaths                 int           `mapstructure:"max_paths" yaml:"max_paths"`
+	ShadowWrite              bool          `mapstructure:"shadow_write" yaml:"shadow_write"`
+	DependencyPenalty        int           `mapstructure:"dependency_penalty" yaml:"dependency_penalty"`
+	DirectProtectionBonus    int           `mapstructure:"direct_protection_bonus" yaml:"direct_protection_bonus"`
+	ActivePathSilenceTimeout time.Duration `mapstructure:"active_path_silence_timeout" yaml:"active_path_silence_timeout"`
 }
 
 type TCPFramedConfig struct {
