@@ -14,6 +14,7 @@ import (
 
 	winkclient "winkyou/pkg/client"
 	"winkyou/pkg/config"
+	"winkyou/pkg/nat"
 	"winkyou/pkg/solver"
 )
 
@@ -150,6 +151,9 @@ func TestDefaultSTUNProbeUsesUDPTURNAsPublicDirectHint(t *testing.T) {
 	if !strings.Contains(check.Message, "mapped 198.51.100.44:45678") {
 		t.Fatalf("defaultSTUNProbe() message = %q, want mapped address", check.Message)
 	}
+	if !strings.Contains(check.Suggestion, `nat.public_endpoint_hints=["198.51.100.44:45678"]`) {
+		t.Fatalf("defaultSTUNProbe() suggestion = %q, want public endpoint hint", check.Suggestion)
+	}
 }
 
 func TestDefaultSTUNProbeWarnsOnUnstableMapping(t *testing.T) {
@@ -175,6 +179,37 @@ func TestDefaultSTUNProbeWarnsOnUnstableMapping(t *testing.T) {
 	}
 	if !strings.Contains(check.Suggestion, "public direct may fail") {
 		t.Fatalf("defaultSTUNProbe() suggestion = %q, want public-direct warning", check.Suggestion)
+	}
+	if !strings.Contains(check.Suggestion, "public_endpoint_hint_candidates=198.51.100.44:45678,198.51.100.44:45679") {
+		t.Fatalf("defaultSTUNProbe() suggestion = %q, want observed endpoint candidates", check.Suggestion)
+	}
+}
+
+func TestObservedPublicEndpointHintsIncludeUsableLocalBase(t *testing.T) {
+	hints := observedPublicEndpointHints(nat.STUNMappingReport{
+		NATType: nat.NATTypeUnknown,
+		Probes: []nat.STUNMappingProbe{{
+			LocalAddr:  &net.UDPAddr{IP: net.ParseIP("192.168.1.20"), Port: 50000},
+			MappedAddr: &net.UDPAddr{IP: net.ParseIP("117.48.146.2"), Port: 41000},
+			ServerAddr: &net.UDPAddr{IP: net.ParseIP("8.8.8.8"), Port: 19302},
+		}},
+	})
+	if len(hints) != 1 || hints[0] != "117.48.146.2:41000/192.168.1.20:50000" {
+		t.Fatalf("observedPublicEndpointHints() = %#v, want mapped public/local hint", hints)
+	}
+}
+
+func TestObservedPublicEndpointHintsSkipOverlayLocalBase(t *testing.T) {
+	hints := observedPublicEndpointHints(nat.STUNMappingReport{
+		NATType: nat.NATTypeUnknown,
+		Probes: []nat.STUNMappingProbe{{
+			LocalAddr:  &net.UDPAddr{IP: net.ParseIP("100.102.17.35"), Port: 50000},
+			MappedAddr: &net.UDPAddr{IP: net.ParseIP("117.48.146.2"), Port: 41000},
+			ServerAddr: &net.UDPAddr{IP: net.ParseIP("8.8.8.8"), Port: 19302},
+		}},
+	})
+	if len(hints) != 1 || hints[0] != "117.48.146.2:41000" {
+		t.Fatalf("observedPublicEndpointHints() = %#v, want public-only hint when local base is overlay-like", hints)
 	}
 }
 

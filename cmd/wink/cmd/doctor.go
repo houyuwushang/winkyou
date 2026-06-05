@@ -264,10 +264,17 @@ func defaultSTUNProbe(ctx context.Context, cfg *config.Config) doctorCheck {
 		return warnCheck("nat", "stun", "all STUN probes failed: "+formatSTUNMappingReport(report), "configure a reachable STUN server near both peers, or use TURN/relay_only")
 	}
 	message := fmt.Sprintf("nat_type=%s %s", report.NATType.String(), formatSTUNMappingReport(report))
+	hintSuggestion := publicEndpointHintSuggestion(report)
 	if report.NATType == nat.NATTypeSymmetric {
-		return warnCheck("nat", "stun", message, "public direct may fail with endpoint-dependent mappings; compare natpierce endpoints, configure stable public_endpoint_hints if available, or use relay_only fallback")
+		suggestion := "public direct may fail with endpoint-dependent mappings; compare natpierce endpoints, configure stable public_endpoint_hints if available, or use relay_only fallback"
+		if hintSuggestion != "" {
+			suggestion += "; " + hintSuggestion
+		}
+		return warnCheck("nat", "stun", message, suggestion)
 	}
-	return okCheck("nat", "stun", message)
+	check := okCheck("nat", "stun", message)
+	check.Suggestion = hintSuggestion
+	return check
 }
 
 func stunMappingProbeTimeout(serverCount int) time.Duration {
@@ -297,6 +304,114 @@ func formatSTUNMappingProbe(probe nat.STUNMappingProbe) string {
 		return fmt.Sprintf("%s error=%s", dashIfEmpty(probe.Server), probe.Error)
 	}
 	return fmt.Sprintf("%s mapped %s from local %s via %s", dashIfEmpty(probe.Server), formatUDPAddr(probe.MappedAddr), formatUDPAddr(probe.LocalAddr), formatUDPAddr(probe.ServerAddr))
+}
+
+func publicEndpointHintSuggestion(report nat.STUNMappingReport) string {
+	hints := observedPublicEndpointHints(report)
+	if len(hints) == 0 {
+		return ""
+	}
+	if report.NATType == nat.NATTypeSymmetric {
+		return "observed public_endpoint_hint_candidates=" + strings.Join(hints, ",") + " for comparison only; endpoint-dependent mappings may not match the peer path"
+	}
+	return "observed public endpoint hint candidate: nat.public_endpoint_hints=[" + quoteCSV(hints) + "]; verify this endpoint stays stable for the WinkYou ICE socket before relying on it"
+}
+
+func observedPublicEndpointHints(report nat.STUNMappingReport) []string {
+	seen := make(map[string]struct{}, len(report.Probes))
+	hints := make([]string, 0, len(report.Probes))
+	for _, probe := range report.Probes {
+		if probe.MappedAddr == nil || probe.MappedAddr.IP == nil || probe.MappedAddr.Port <= 0 {
+			continue
+		}
+		if !usablePublicEndpointHintIP(probe.MappedAddr.IP) {
+			continue
+		}
+		hint := probe.MappedAddr.String()
+		if local := usablePublicEndpointHintLocalAddr(probe); local != nil {
+			hint += "/" + local.String()
+		}
+		if _, ok := seen[hint]; ok {
+			continue
+		}
+		seen[hint] = struct{}{}
+		hints = append(hints, hint)
+	}
+	slices.Sort(hints)
+	return hints
+}
+
+func usablePublicEndpointHintLocalAddr(probe nat.STUNMappingProbe) *net.UDPAddr {
+	if usableEndpointHintLocalAddr(probe.LocalAddr) {
+		return probe.LocalAddr
+	}
+	if probe.LocalAddr == nil || probe.LocalAddr.Port <= 0 || probe.ServerAddr == nil {
+		return nil
+	}
+	if probe.LocalAddr.IP != nil && !probe.LocalAddr.IP.IsUnspecified() {
+		return nil
+	}
+	ip := localIPForUDPRoute(probe.ServerAddr)
+	if !usableEndpointHintLocalIP(ip) {
+		return nil
+	}
+	return &net.UDPAddr{IP: ip, Port: probe.LocalAddr.Port}
+}
+
+func usableEndpointHintLocalAddr(addr *net.UDPAddr) bool {
+	return addr != nil && addr.Port > 0 && usableEndpointHintLocalIP(addr.IP)
+}
+
+func usablePublicEndpointHintIP(ip net.IP) bool {
+	return ip != nil &&
+		!ip.IsUnspecified() &&
+		!ip.IsLoopback() &&
+		!ip.IsLinkLocalUnicast() &&
+		!ip.IsLinkLocalMulticast() &&
+		!ip.IsMulticast() &&
+		!ip.IsPrivate() &&
+		!ipInCIDRString(ip, "100.64.0.0/10") &&
+		!ipInCIDRString(ip, "198.18.0.0/15")
+}
+
+func usableEndpointHintLocalIP(ip net.IP) bool {
+	return ip != nil &&
+		!ip.IsUnspecified() &&
+		!ip.IsLoopback() &&
+		!ip.IsLinkLocalUnicast() &&
+		!ip.IsLinkLocalMulticast() &&
+		!ip.IsMulticast() &&
+		!ipInCIDRString(ip, "100.64.0.0/10") &&
+		!ipInCIDRString(ip, "198.18.0.0/15")
+}
+
+func localIPForUDPRoute(remote *net.UDPAddr) net.IP {
+	if remote == nil {
+		return nil
+	}
+	conn, err := net.DialUDP("udp4", nil, remote)
+	if err != nil {
+		return nil
+	}
+	defer conn.Close()
+	local, ok := conn.LocalAddr().(*net.UDPAddr)
+	if !ok || local == nil {
+		return nil
+	}
+	return append(net.IP(nil), local.IP...)
+}
+
+func ipInCIDRString(ip net.IP, cidr string) bool {
+	_, network, err := net.ParseCIDR(cidr)
+	return err == nil && network.Contains(ip)
+}
+
+func quoteCSV(values []string) string {
+	quoted := make([]string, 0, len(values))
+	for _, value := range values {
+		quoted = append(quoted, strconv.Quote(value))
+	}
+	return strings.Join(quoted, ",")
 }
 
 func doctorNATTURNServers(servers []config.TURNServerConfig) []nat.TURNServer {
