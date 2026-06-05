@@ -78,6 +78,7 @@ func setDefaults(v *viper.Viper, cfg Config) {
 	v.SetDefault("nat.nat1to1_ips", cfg.NAT.NAT1To1IPs)
 	v.SetDefault("nat.nat1to1_candidate_type", cfg.NAT.NAT1To1CandidateType)
 	v.SetDefault("nat.public_endpoint_hints", cfg.NAT.PublicEndpointHints)
+	v.SetDefault("nat.public_direct_trusted_cidrs", cfg.NAT.PublicDirectTrustedCIDRs)
 
 	v.SetDefault("connectivity.mode", cfg.Connectivity.Mode)
 	v.SetDefault("connectivity.strategy_order", cfg.Connectivity.StrategyOrder)

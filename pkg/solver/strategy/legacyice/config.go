@@ -10,24 +10,26 @@ import (
 )
 
 type AgentRequest struct {
-	Controlling           bool
-	ForceRelay            bool
-	CandidatePortMin      uint16
-	CandidatePortMax      uint16
-	CandidateCIDRInclude  []string
-	CandidateCIDRExclude  []string
-	PublicDirectCandidate bool
+	Controlling              bool
+	ForceRelay               bool
+	CandidatePortMin         uint16
+	CandidatePortMax         uint16
+	CandidateCIDRInclude     []string
+	CandidateCIDRExclude     []string
+	PublicDirectTrustedCIDRs []string
+	PublicDirectCandidate    bool
 }
 
 type ICEAgentFactory func(ctx context.Context, req AgentRequest) (nat.ICEAgent, error)
 
 type Config struct {
-	NewICEAgent         ICEAgentFactory
-	GatherTimeout       time.Duration
-	ConnectTimeout      time.Duration
-	CheckTimeout        time.Duration
-	ForceRelay          bool
-	PublicEndpointHints []string
+	NewICEAgent              ICEAgentFactory
+	GatherTimeout            time.Duration
+	ConnectTimeout           time.Duration
+	CheckTimeout             time.Duration
+	ForceRelay               bool
+	PublicEndpointHints      []string
+	PublicDirectTrustedCIDRs []string
 }
 
 type executionMode string
@@ -39,11 +41,12 @@ const (
 )
 
 type executorConfig struct {
-	Mode                  executionMode
-	ForceRelay            bool
-	CandidateCIDRExclude  []string
-	PublicDirectCandidate bool
-	PublicEndpointHints   []string
+	Mode                     executionMode
+	ForceRelay               bool
+	CandidateCIDRExclude     []string
+	PublicDirectCandidate    bool
+	PublicEndpointHints      []string
+	PublicDirectTrustedCIDRs []string
 }
 
 func (c Config) withDefaults() Config {
@@ -68,9 +71,10 @@ func executorConfigForPlan(plan solver.Plan, cfg Config) (executorConfig, error)
 		}, nil
 	case planIDPublicDirect:
 		return executorConfig{
-			Mode:                  modePublicDirect,
-			PublicDirectCandidate: true,
-			PublicEndpointHints:   append([]string(nil), cfg.PublicEndpointHints...),
+			Mode:                     modePublicDirect,
+			PublicDirectCandidate:    true,
+			PublicEndpointHints:      append([]string(nil), cfg.PublicEndpointHints...),
+			PublicDirectTrustedCIDRs: append([]string(nil), cfg.PublicDirectTrustedCIDRs...),
 		}, nil
 	case planIDRelayOnly:
 		return executorConfig{
@@ -86,9 +90,10 @@ func executorConfigForPlan(plan solver.Plan, cfg Config) (executorConfig, error)
 		}
 		if mode := plan.Metadata["mode"]; mode == string(modePublicDirect) {
 			return executorConfig{
-				Mode:                  modePublicDirect,
-				PublicDirectCandidate: true,
-				PublicEndpointHints:   append([]string(nil), cfg.PublicEndpointHints...),
+				Mode:                     modePublicDirect,
+				PublicDirectCandidate:    true,
+				PublicEndpointHints:      append([]string(nil), cfg.PublicEndpointHints...),
+				PublicDirectTrustedCIDRs: append([]string(nil), cfg.PublicDirectTrustedCIDRs...),
 			}, nil
 		}
 		return executorConfig{}, fmt.Errorf("legacyice: unsupported plan %q", plan.ID)

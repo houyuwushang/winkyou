@@ -537,18 +537,18 @@ func bindingRequestHandlerForConfig(cfg ICEConfig) func(*stun.Message, pionice.C
 		return nil
 	}
 	return func(_ *stun.Message, local, remote pionice.Candidate, pair *pionice.CandidatePair) bool {
-		return shouldSwitchPublicDirectPair(local, remote, pair)
+		return shouldSwitchPublicDirectPair(local, remote, pair, cfg.PublicDirectTrustedCIDRs)
 	}
 }
 
-func shouldSwitchPublicDirectPair(local, remote pionice.Candidate, pair *pionice.CandidatePair) bool {
+func shouldSwitchPublicDirectPair(local, remote pionice.Candidate, pair *pionice.CandidatePair, trustedCIDRs []string) bool {
 	if pair == nil || local == nil || remote == nil {
 		return false
 	}
-	return isPublicDirectLocalCandidate(local) && isPublicDirectRemoteCandidate(remote)
+	return isPublicDirectLocalCandidate(local, trustedCIDRs) && isPublicDirectRemoteCandidate(remote, trustedCIDRs)
 }
 
-func isPublicDirectLocalCandidate(candidate pionice.Candidate) bool {
+func isPublicDirectLocalCandidate(candidate pionice.Candidate, trustedCIDRs []string) bool {
 	if candidate == nil {
 		return false
 	}
@@ -564,10 +564,10 @@ func isPublicDirectLocalCandidate(candidate pionice.Candidate) bool {
 	if candidate.Type() == pionice.CandidateTypeHost && ip.IsPrivate() {
 		return true
 	}
-	return publicDirectCandidateIPReason(ip) == ""
+	return publicDirectCandidateIPReason(ip, trustedCIDRs) == ""
 }
 
-func isPublicDirectRemoteCandidate(candidate pionice.Candidate) bool {
+func isPublicDirectRemoteCandidate(candidate pionice.Candidate, trustedCIDRs []string) bool {
 	if candidate == nil {
 		return false
 	}
@@ -580,10 +580,10 @@ func isPublicDirectRemoteCandidate(candidate pionice.Candidate) bool {
 	if ip == nil {
 		return false
 	}
-	return publicDirectCandidateIPReason(ip) == ""
+	return publicDirectCandidateIPReason(ip, trustedCIDRs) == ""
 }
 
-func publicDirectCandidateIPReason(ip net.IP) string {
+func publicDirectCandidateIPReason(ip net.IP, trustedCIDRs []string) string {
 	switch {
 	case ip == nil:
 		return "missing_candidate"
@@ -595,6 +595,8 @@ func publicDirectCandidateIPReason(ip net.IP) string {
 		return "link_local_candidate"
 	case ip.IsMulticast():
 		return "multicast_candidate"
+	case ipInAnyCIDR(ip, trustedCIDRs):
+		return ""
 	case ip.IsPrivate():
 		return "private_candidate"
 	case ipInCIDR(ip, "100.64.0.0/10"):
@@ -604,6 +606,19 @@ func publicDirectCandidateIPReason(ip net.IP) string {
 	default:
 		return ""
 	}
+}
+
+func ipInAnyCIDR(ip net.IP, cidrs []string) bool {
+	if ip == nil || len(cidrs) == 0 {
+		return false
+	}
+	for _, cidr := range cidrs {
+		_, network, err := net.ParseCIDR(strings.TrimSpace(cidr))
+		if err == nil && network.Contains(ip) {
+			return true
+		}
+	}
+	return false
 }
 
 func ipInCIDR(ip net.IP, cidr string) bool {

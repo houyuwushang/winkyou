@@ -108,13 +108,16 @@ func (c *Config) Validate() error {
 	if err := validateCIDRList("nat.candidate_cidr_exclude", c.NAT.CandidateCIDRExclude); err != nil {
 		return err
 	}
+	if err := validateCIDRList("nat.public_direct_trusted_cidrs", c.NAT.PublicDirectTrustedCIDRs); err != nil {
+		return err
+	}
 	if err := validateNAT1To1CandidateType(c.NAT.NAT1To1CandidateType); err != nil {
 		return err
 	}
 	if err := validateNAT1To1IPs("nat.nat1to1_ips", c.NAT.NAT1To1IPs); err != nil {
 		return err
 	}
-	if err := validatePublicEndpointHints("nat.public_endpoint_hints", c.NAT.PublicEndpointHints); err != nil {
+	if err := validatePublicEndpointHints("nat.public_endpoint_hints", c.NAT.PublicEndpointHints, c.NAT.PublicDirectTrustedCIDRs); err != nil {
 		return err
 	}
 
@@ -217,18 +220,40 @@ func validateNAT1To1IPs(field string, values []string) error {
 	return nil
 }
 
-func validatePublicEndpointHints(field string, values []string) error {
+func validatePublicEndpointHints(field string, values []string, trustedCIDRs []string) error {
+	trusted, err := parseNetipPrefixes("nat.public_direct_trusted_cidrs", trustedCIDRs)
+	if err != nil {
+		return err
+	}
 	for i, value := range values {
 		value = strings.TrimSpace(value)
 		if value == "" {
 			return fmt.Errorf("%s[%d] must not be empty", field, i)
 		}
 		public, local, err := parsePublicEndpointHint(value)
-		if err != nil || !isPublicEndpointHintAddress(public.Addr()) || (local.IsValid() && !isPublicEndpointHintLocalAddress(local.Addr())) {
+		if err != nil ||
+			!isPublicEndpointHintAddress(public.Addr(), trusted) ||
+			(local.IsValid() && !isPublicEndpointHintLocalAddress(local.Addr(), trusted)) {
 			return fmt.Errorf("invalid %s[%d]: %q", field, i, value)
 		}
 	}
 	return nil
+}
+
+func parseNetipPrefixes(field string, values []string) ([]netip.Prefix, error) {
+	prefixes := make([]netip.Prefix, 0, len(values))
+	for i, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		prefix, err := netip.ParsePrefix(value)
+		if err != nil {
+			return nil, fmt.Errorf("invalid %s[%d]: %q", field, i, value)
+		}
+		prefixes = append(prefixes, prefix)
+	}
+	return prefixes, nil
 }
 
 func parsePublicEndpointHint(value string) (netip.AddrPort, netip.AddrPort, error) {
@@ -258,13 +283,18 @@ func parseEndpointHintAddrPort(value string) (netip.AddrPort, error) {
 	return endpoint, nil
 }
 
-func isPublicEndpointHintAddress(addr netip.Addr) bool {
+func isPublicEndpointHintAddress(addr netip.Addr, trusted []netip.Prefix) bool {
 	if !addr.IsValid() ||
 		addr.IsUnspecified() ||
 		addr.IsLoopback() ||
-		addr.IsPrivate() ||
 		addr.IsLinkLocalUnicast() ||
 		addr.IsMulticast() {
+		return false
+	}
+	if addrInPrefixes(addr, trusted) {
+		return true
+	}
+	if addr.IsPrivate() {
 		return false
 	}
 	cgnat := netip.MustParsePrefix("100.64.0.0/10")
@@ -272,7 +302,7 @@ func isPublicEndpointHintAddress(addr netip.Addr) bool {
 	return !cgnat.Contains(addr) && !benchmark.Contains(addr)
 }
 
-func isPublicEndpointHintLocalAddress(addr netip.Addr) bool {
+func isPublicEndpointHintLocalAddress(addr netip.Addr, trusted []netip.Prefix) bool {
 	if !addr.IsValid() ||
 		addr.IsUnspecified() ||
 		addr.IsLoopback() ||
@@ -280,7 +310,19 @@ func isPublicEndpointHintLocalAddress(addr netip.Addr) bool {
 		addr.IsMulticast() {
 		return false
 	}
+	if addrInPrefixes(addr, trusted) {
+		return true
+	}
 	cgnat := netip.MustParsePrefix("100.64.0.0/10")
 	benchmark := netip.MustParsePrefix("198.18.0.0/15")
 	return !cgnat.Contains(addr) && !benchmark.Contains(addr)
+}
+
+func addrInPrefixes(addr netip.Addr, prefixes []netip.Prefix) bool {
+	for _, prefix := range prefixes {
+		if prefix.Contains(addr) {
+			return true
+		}
+	}
+	return false
 }

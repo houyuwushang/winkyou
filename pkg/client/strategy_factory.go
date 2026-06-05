@@ -108,11 +108,12 @@ func (e *engine) relayOnlyMode() bool {
 
 func (e *engine) legacyICEStrategyConfig() legacyice.Config {
 	cfg := legacyice.Config{
-		GatherTimeout:       e.iceGatherTimeout(),
-		ConnectTimeout:      e.iceConnectTimeout(),
-		CheckTimeout:        e.iceCheckTimeout(),
-		ForceRelay:          e.relayOnlyMode(),
-		PublicEndpointHints: append([]string(nil), e.cfg.NAT.PublicEndpointHints...),
+		GatherTimeout:            e.iceGatherTimeout(),
+		ConnectTimeout:           e.iceConnectTimeout(),
+		CheckTimeout:             e.iceCheckTimeout(),
+		ForceRelay:               e.relayOnlyMode(),
+		PublicEndpointHints:      append([]string(nil), e.cfg.NAT.PublicEndpointHints...),
+		PublicDirectTrustedCIDRs: append([]string(nil), e.cfg.NAT.PublicDirectTrustedCIDRs...),
 	}
 	cfg.NewICEAgent = func(ctx context.Context, req legacyice.AgentRequest) (nat.ICEAgent, error) {
 		if ctx == nil {
@@ -131,6 +132,10 @@ func (e *engine) legacyICEStrategyConfig() legacyice.Config {
 		if len(req.CandidateCIDRInclude) > 0 {
 			candidateCIDRInclude = append([]string(nil), req.CandidateCIDRInclude...)
 		}
+		publicDirectTrustedCIDRs := append([]string(nil), e.cfg.NAT.PublicDirectTrustedCIDRs...)
+		if len(req.PublicDirectTrustedCIDRs) > 0 {
+			publicDirectTrustedCIDRs = append([]string(nil), req.PublicDirectTrustedCIDRs...)
+		}
 		return e.nat.NewICEAgent(nat.ICEConfig{
 			GatherTimeout:             cfg.GatherTimeout,
 			CheckTimeout:              cfg.CheckTimeout,
@@ -146,6 +151,7 @@ func (e *engine) legacyICEStrategyConfig() legacyice.Config {
 			CandidateCIDRExclude:      append(append([]string(nil), e.cfg.NAT.CandidateCIDRExclude...), req.CandidateCIDRExclude...),
 			NAT1To1IPs:                append([]string(nil), e.cfg.NAT.NAT1To1IPs...),
 			NAT1To1CandidateType:      e.cfg.NAT.NAT1To1CandidateType,
+			PublicDirectTrustedCIDRs:  publicDirectTrustedCIDRs,
 			PublicDirectCandidate:     req.PublicDirectCandidate,
 			ForceRelay:                req.ForceRelay,
 		})

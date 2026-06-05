@@ -39,6 +39,8 @@ nat:
   nat1to1_candidate_type: srflx
   nat1to1_ips:
     - "203.0.113.10/192.168.0.10"
+  public_direct_trusted_cidrs:
+    - "100.64.0.0/10"
 
 connectivity:
   mode: auto

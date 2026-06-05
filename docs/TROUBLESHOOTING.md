@@ -140,6 +140,8 @@ nat:
 
 这只适用于公网 IP/端口映射稳定的场景。`nat1to1_ips` 表示公网 IP 映射，`public_endpoint_hints` 表示本机已知的公网 UDP `ip:port`，也可以写成 `公网ip:公网端口/本地ip:本地端口` 绑定到具体本地 UDP base；它只会作为 `legacyice/public_direct` 的额外 srflx 候选发布。当 mapped hint 带本地 base 时，`legacyice/public_direct` 会让本次 ICE agent 只在这些本地 IP 上 gather；如果只有一个唯一的本地 base 端口，也会尝试绑定该端口，从而让公网 hint 指向 WinkYou 正在监听的 socket。若运营商 NAT 会为每个 UDP socket 动态改写端口，过期的 `public_endpoint_hints` 不能保证复现 natpierce 的成功路径；应查看 `legacyice/public_direct` 是否采集到了 server-reflexive candidate，或使用 TURN/`relay_only` fallback。
 
+如果 natpierce 或路由器日志证明两端使用的是一个非公网但确实可达的 underlay 地址段，可以在两端显式加入 `nat.public_direct_trusted_cidrs`，例如 `100.64.0.0/10`。这会让 `legacyice/public_direct` 接受该 CIDR 内的候选和 mapped hint，并允许 ICE 过程中学到的 peer-reflexive pair 切换到该地址段。不要把虚拟 overlay、Tailscale、Docker、Wintun peer 网段或只是“看起来能 ping”的跳板地址加入 trusted CIDR；否则 `protected_direct` 证据会失真。默认配置仍会拒绝这些地址段。
+
 先运行 `wink --config <config.yaml> doctor` 看 `stun` 检查。该检查会使用 public-direct 的有效 STUN 来源：显式 `nat.stun_servers`，以及从 UDP TURN URL 派生出的同 host/port STUN binding URL。如果 STUN probe 失败，说明当前 STUN/UDP TURN 入口没能返回公网映射地址，`legacyice/public_direct` 大概率没有足够的公网候选可用。此时优先换成两端都可访问的 STUN/UDP TURN 服务，确认 UDP 出站没有被拦截；如果无法保证公网 UDP NAT piercing，就使用 TURN/`relay_only` 作为保活路径。
 
 `wink doctor` 还会检查 mapped `public_endpoint_hints` 的本地 base IP 是否存在于本机接口上。如果这里出现 `public endpoint hint local base` warning，说明 hint 的本地部分很可能写成了虚拟局域网 peer 地址、旧地址或另一台机器的地址；`legacyice/public_direct` 会按这个 base 限制本地 gather，因此必须改成本机真实出口网卡 IP。

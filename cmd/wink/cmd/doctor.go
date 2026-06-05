@@ -872,6 +872,9 @@ func candidateFilterSummary(cfg *config.Config) string {
 	if len(cfg.NAT.PublicEndpointHints) > 0 {
 		parts = append(parts, "public_endpoint_hints="+strings.Join(cfg.NAT.PublicEndpointHints, ","))
 	}
+	if len(cfg.NAT.PublicDirectTrustedCIDRs) > 0 {
+		parts = append(parts, "public_direct_trusted_cidrs="+strings.Join(cfg.NAT.PublicDirectTrustedCIDRs, ","))
+	}
 	return strings.Join(parts, " ")
 }
 

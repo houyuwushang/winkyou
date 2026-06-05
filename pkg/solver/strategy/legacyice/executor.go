@@ -198,11 +198,12 @@ func (e *executor) ensureAgent(ctx context.Context) (nat.ICEAgent, error) {
 		return nil, fmt.Errorf("legacyice: ice agent factory is nil")
 	}
 	req := AgentRequest{
-		Controlling:           e.input.Initiator,
-		ForceRelay:            e.execCfg.ForceRelay,
-		CandidateCIDRInclude:  publicEndpointHintLocalBaseCIDRs(e.execCfg.PublicEndpointHints),
-		CandidateCIDRExclude:  append([]string(nil), e.execCfg.CandidateCIDRExclude...),
-		PublicDirectCandidate: e.execCfg.PublicDirectCandidate,
+		Controlling:              e.input.Initiator,
+		ForceRelay:               e.execCfg.ForceRelay,
+		CandidateCIDRInclude:     publicEndpointHintLocalBaseCIDRs(e.execCfg.PublicEndpointHints),
+		CandidateCIDRExclude:     append([]string(nil), e.execCfg.CandidateCIDRExclude...),
+		PublicDirectTrustedCIDRs: append([]string(nil), e.execCfg.PublicDirectTrustedCIDRs...),
+		PublicDirectCandidate:    e.execCfg.PublicDirectCandidate,
 	}
 	if minPort, maxPort, ok := publicEndpointHintLocalPortRange(e.execCfg.PublicEndpointHints); ok {
 		req.CandidatePortMin = minPort
@@ -337,7 +338,7 @@ func (e *executor) startConnect(sess solver.SessionIO) {
 		connectionType := connectionTypeFromPair(pair)
 		pathID := e.pathID(connectionType)
 		transport := e.releaseTransport(agent, conn, pathID)
-		role, dependencies := pathPolicyMetadata(connectionType, pair, e.execCfg.Mode, e.publicDirectLocalBaseSnapshot())
+		role, dependencies := pathPolicyMetadata(connectionType, pair, e.execCfg.Mode, e.publicDirectLocalBaseSnapshot(), e.execCfg.PublicDirectTrustedCIDRs)
 		metrics := selectedPairMetrics(agent)
 		details := selectedPairDetails(pair, e.execCfg.Mode)
 		details["ice_state"] = connectionStateString(agent)
@@ -533,14 +534,14 @@ func connectionTypeFromPair(pair *nat.CandidatePair) string {
 	return "direct"
 }
 
-func pathPolicyMetadata(connectionType string, pair *nat.CandidatePair, mode executionMode, publicDirectLocalBases map[string]struct{}) (solver.PathRole, []solver.PathDependency) {
+func pathPolicyMetadata(connectionType string, pair *nat.CandidatePair, mode executionMode, publicDirectLocalBases map[string]struct{}, publicDirectTrustedCIDRs []string) (solver.PathRole, []solver.PathDependency) {
 	if connectionType == "relay" {
 		return solver.PathRolePrimaryCandidate, []solver.PathDependency{{
 			Kind:   solver.PathDependencyRelay,
 			Reason: "turn_or_relay_candidate",
 		}}
 	}
-	if reason := candidatePairDependencyReason(pair, mode, publicDirectLocalBases); reason != "" {
+	if reason := candidatePairDependencyReason(pair, mode, publicDirectLocalBases, publicDirectTrustedCIDRs); reason != "" {
 		return solver.PathRolePrimaryCandidate, []solver.PathDependency{{
 			Kind:   solver.PathDependencyUnknown,
 			Reason: reason,
@@ -549,12 +550,12 @@ func pathPolicyMetadata(connectionType string, pair *nat.CandidatePair, mode exe
 	return solver.PathRoleProtectedDirect, nil
 }
 
-func candidatePairDependencyReason(pair *nat.CandidatePair, mode executionMode, publicDirectLocalBases map[string]struct{}) string {
+func candidatePairDependencyReason(pair *nat.CandidatePair, mode executionMode, publicDirectLocalBases map[string]struct{}, publicDirectTrustedCIDRs []string) string {
 	if pair == nil {
 		return "selected_pair_unavailable"
 	}
 	if mode == modePublicDirect {
-		return publicDirectCandidatePairDependencyReason(pair, publicDirectLocalBases)
+		return publicDirectCandidatePairDependencyReason(pair, publicDirectLocalBases, publicDirectTrustedCIDRs)
 	}
 	if reason := candidateDependencyReason("local", pair.Local); reason != "" {
 		return reason
@@ -565,17 +566,17 @@ func candidatePairDependencyReason(pair *nat.CandidatePair, mode executionMode, 
 	return ""
 }
 
-func publicDirectCandidatePairDependencyReason(pair *nat.CandidatePair, localBases map[string]struct{}) string {
-	if reason := publicDirectLocalCandidateDependencyReason(pair.Local, localBases); reason != "" {
+func publicDirectCandidatePairDependencyReason(pair *nat.CandidatePair, localBases map[string]struct{}, trustedCIDRs []string) string {
+	if reason := publicDirectLocalCandidateDependencyReason(pair.Local, localBases, trustedCIDRs); reason != "" {
 		return reason
 	}
-	if reason := candidateDependencyReason("remote", pair.Remote); reason != "" {
+	if reason := candidateDependencyReasonWithTrustedCIDRs("remote", pair.Remote, trustedCIDRs); reason != "" {
 		return reason
 	}
 	return ""
 }
 
-func publicDirectLocalCandidateDependencyReason(candidate *nat.Candidate, localBases map[string]struct{}) string {
+func publicDirectLocalCandidateDependencyReason(candidate *nat.Candidate, localBases map[string]struct{}, trustedCIDRs []string) string {
 	if candidate == nil || candidate.Address == nil || candidate.Address.IP == nil {
 		return "local_candidate_unavailable"
 	}
@@ -584,6 +585,9 @@ func publicDirectLocalCandidateDependencyReason(candidate *nat.Candidate, localB
 	}
 	ip := candidate.Address.IP
 	if ip.IsPrivate() && candidate.Type == nat.CandidateTypeHost && hasIP(localBases, ip) {
+		return ""
+	}
+	if candidateIPInCIDRs(ip, trustedCIDRs) {
 		return ""
 	}
 	if reason := nonPublicCandidateIPReason(ip); reason != "" {
@@ -601,16 +605,36 @@ func hasIP(values map[string]struct{}, ip net.IP) bool {
 }
 
 func candidateDependencyReason(side string, candidate *nat.Candidate) string {
+	return candidateDependencyReasonWithTrustedCIDRs(side, candidate, nil)
+}
+
+func candidateDependencyReasonWithTrustedCIDRs(side string, candidate *nat.Candidate, trustedCIDRs []string) string {
 	if candidate == nil || candidate.Address == nil || candidate.Address.IP == nil {
 		return side + "_candidate_unavailable"
 	}
 	if candidate.Type == nat.CandidateTypeRelay {
 		return ""
 	}
+	if candidateIPInCIDRs(candidate.Address.IP, trustedCIDRs) {
+		return ""
+	}
 	if reason := nonPublicCandidateIPReason(candidate.Address.IP); reason != "" {
 		return side + "_" + reason
 	}
 	return ""
+}
+
+func candidateIPInCIDRs(ip net.IP, cidrs []string) bool {
+	if ip == nil || len(cidrs) == 0 {
+		return false
+	}
+	for _, cidr := range cidrs {
+		_, network, err := net.ParseCIDR(strings.TrimSpace(cidr))
+		if err == nil && network.Contains(ip) {
+			return true
+		}
+	}
+	return false
 }
 
 func nonPublicCandidateIPReason(ip net.IP) string {
@@ -654,7 +678,7 @@ func appendPublicEndpointHintCandidates(candidates []nat.Candidate, execCfg exec
 		seen[candidateAddressKey(candidate)] = struct{}{}
 	}
 	for i, raw := range execCfg.PublicEndpointHints {
-		candidate, err := publicEndpointHintCandidate(raw, i)
+		candidate, err := publicEndpointHintCandidate(raw, i, execCfg.PublicDirectTrustedCIDRs)
 		if err != nil {
 			return nil, err
 		}
@@ -668,13 +692,13 @@ func appendPublicEndpointHintCandidates(candidates []nat.Candidate, execCfg exec
 	return out, nil
 }
 
-func publicEndpointHintCandidate(raw string, index int) (nat.Candidate, error) {
+func publicEndpointHintCandidate(raw string, index int, trustedCIDRs []string) (nat.Candidate, error) {
 	hint, err := parsePublicEndpointHint(raw)
 	if err != nil {
 		return nat.Candidate{}, err
 	}
 	ip := net.IP(append([]byte(nil), hint.public.Addr().AsSlice()...))
-	if reason := nonPublicCandidateIPReason(ip); reason != "" {
+	if reason := nonPublicCandidateIPReason(ip); reason != "" && !candidateIPInCIDRs(ip, trustedCIDRs) {
 		return nat.Candidate{}, fmt.Errorf("legacyice: invalid public endpoint hint %q: %s", raw, reason)
 	}
 	candidate := nat.Candidate{
@@ -685,9 +709,35 @@ func publicEndpointHintCandidate(raw string, index int) (nat.Candidate, error) {
 	}
 	if hint.local.IsValid() {
 		localIP := net.IP(append([]byte(nil), hint.local.Addr().AsSlice()...))
+		if reason := publicEndpointHintLocalBaseRejectReason(localIP, trustedCIDRs); reason != "" {
+			return nat.Candidate{}, fmt.Errorf("legacyice: invalid public endpoint hint local base %q: %s", raw, reason)
+		}
 		candidate.RelatedAddr = &net.UDPAddr{IP: localIP, Port: int(hint.local.Port())}
 	}
 	return candidate, nil
+}
+
+func publicEndpointHintLocalBaseRejectReason(ip net.IP, trustedCIDRs []string) string {
+	switch {
+	case ip == nil:
+		return "missing_candidate"
+	case ip.IsUnspecified():
+		return "unspecified_candidate"
+	case ip.IsLoopback():
+		return "loopback_candidate"
+	case ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast():
+		return "link_local_candidate"
+	case ip.IsMulticast():
+		return "multicast_candidate"
+	case candidateIPInCIDRs(ip, trustedCIDRs):
+		return ""
+	case isCandidateIPInCIDR(ip, "100.64.0.0/10"):
+		return "cgnat_or_overlay_candidate"
+	case isCandidateIPInCIDR(ip, "198.18.0.0/15"):
+		return "benchmark_or_overlay_candidate"
+	default:
+		return ""
+	}
 }
 
 type publicEndpointHint struct {
@@ -841,7 +891,7 @@ func remoteCandidateRejectReason(candidate nat.Candidate, execCfg executorConfig
 		if candidate.Type == nat.CandidateTypeRelay {
 			return "remote_relay_candidate"
 		}
-		return candidateDependencyReason("remote", &candidate)
+		return candidateDependencyReasonWithTrustedCIDRs("remote", &candidate, execCfg.PublicDirectTrustedCIDRs)
 	case modeRelayOnly:
 		if candidate.Type != nat.CandidateTypeRelay {
 			return "remote_non_relay_candidate"
@@ -857,7 +907,7 @@ func localCandidateRejectReason(candidate nat.Candidate, execCfg executorConfig)
 	if candidate.Type == nat.CandidateTypeRelay {
 		return "local_relay_candidate"
 	}
-	return candidateDependencyReason("local", &candidate)
+	return candidateDependencyReasonWithTrustedCIDRs("local", &candidate, execCfg.PublicDirectTrustedCIDRs)
 }
 
 type candidateFilterSummary struct {

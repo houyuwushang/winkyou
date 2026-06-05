@@ -355,11 +355,11 @@ func TestPublicDirectAdvertisesConfiguredPublicEndpointHints(t *testing.T) {
 	if _, ok := bases["192.168.1.21"]; ok {
 		t.Fatalf("public direct local bases = %#v, want only explicitly mapped local base", bases)
 	}
-	role, deps := pathPolicyMetadata("direct", candidatePairWithTypes(nat.CandidateTypeHost, "192.168.1.20", nat.CandidateTypePrflx, "117.48.146.3"), modePublicDirect, bases)
+	role, deps := pathPolicyMetadata("direct", candidatePairWithTypes(nat.CandidateTypeHost, "192.168.1.20", nat.CandidateTypePrflx, "117.48.146.3"), modePublicDirect, bases, nil)
 	if role != solver.PathRoleProtectedDirect || len(deps) != 0 {
 		t.Fatalf("path policy with public endpoint hint base = role %q deps %#v, want protected direct", role, deps)
 	}
-	role, deps = pathPolicyMetadata("direct", candidatePairWithTypes(nat.CandidateTypeHost, "192.168.1.21", nat.CandidateTypePrflx, "117.48.146.3"), modePublicDirect, bases)
+	role, deps = pathPolicyMetadata("direct", candidatePairWithTypes(nat.CandidateTypeHost, "192.168.1.21", nat.CandidateTypePrflx, "117.48.146.3"), modePublicDirect, bases, nil)
 	if role != solver.PathRolePrimaryCandidate || len(deps) != 1 || deps[0].Reason != "local_private_candidate" {
 		t.Fatalf("path policy with unmapped private base = role %q deps %#v, want dependent direct", role, deps)
 	}
@@ -403,6 +403,61 @@ func TestPublicDirectAgentRequestUsesMappedHintLocalPort(t *testing.T) {
 	}
 	if len(got.CandidateCIDRInclude) != 1 || got.CandidateCIDRInclude[0] != "192.168.1.20/32" {
 		t.Fatalf("public direct candidate CIDR include = %#v, want mapped local base /32", got.CandidateCIDRInclude)
+	}
+}
+
+func TestPublicDirectTrustedCIDRAllowsEndpointHint(t *testing.T) {
+	const hint = "100.102.17.35:41000/100.102.17.36:40000"
+	if _, err := publicEndpointHintCandidate(hint, 0, nil); err == nil {
+		t.Fatal("publicEndpointHintCandidate() error = nil, want default rejection for 100.64/10")
+	}
+	candidate, err := publicEndpointHintCandidate(hint, 0, []string{"100.64.0.0/10"})
+	if err != nil {
+		t.Fatalf("publicEndpointHintCandidate(trusted) error = %v", err)
+	}
+	if candidate.Type != nat.CandidateTypeSrflx || candidate.Address.String() != "100.102.17.35:41000" {
+		t.Fatalf("trusted hint candidate = %#v, want srflx 100.102.17.35:41000", candidate)
+	}
+	if candidate.RelatedAddr == nil || candidate.RelatedAddr.String() != "100.102.17.36:40000" {
+		t.Fatalf("trusted hint related addr = %#v, want 100.102.17.36:40000", candidate.RelatedAddr)
+	}
+
+	if _, err := publicEndpointHintCandidate("117.48.146.2:41000/100.102.17.36:40000", 0, nil); err == nil {
+		t.Fatal("publicEndpointHintCandidate() error = nil, want default rejection for 100.64/10 local base")
+	}
+}
+
+func TestPublicDirectAgentRequestPropagatesTrustedCIDRs(t *testing.T) {
+	agent := &recordingICEAgent{
+		connectErr:    context.Canceled,
+		connectCalled: make(chan struct{}),
+	}
+	var got AgentRequest
+	exec := newExecutor(Config{
+		NewICEAgent: func(ctx context.Context, req AgentRequest) (nat.ICEAgent, error) {
+			_ = ctx
+			got = req
+			return agent, nil
+		},
+		PublicDirectTrustedCIDRs: []string{"100.64.0.0/10"},
+	}, solver.SolveInput{
+		SessionID: "session/node-a/node-b",
+		Initiator: true,
+	}, solver.Plan{
+		ID:       planIDPublicDirect,
+		Strategy: StrategyName,
+		Metadata: map[string]string{"mode": string(modePublicDirect)},
+	}, executorConfig{
+		Mode:                     modePublicDirect,
+		PublicDirectCandidate:    true,
+		PublicDirectTrustedCIDRs: []string{"100.64.0.0/10"},
+	})
+
+	if _, err := exec.ensureAgent(context.Background()); err != nil {
+		t.Fatalf("ensureAgent(public direct trusted cidr) error = %v", err)
+	}
+	if len(got.PublicDirectTrustedCIDRs) != 1 || got.PublicDirectTrustedCIDRs[0] != "100.64.0.0/10" {
+		t.Fatalf("trusted CIDRs = %#v, want 100.64.0.0/10", got.PublicDirectTrustedCIDRs)
 	}
 }
 

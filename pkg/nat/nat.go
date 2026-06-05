@@ -41,6 +41,7 @@ type ICEConfig struct {
 	CandidateCIDRExclude      []string
 	NAT1To1IPs                []string
 	NAT1To1CandidateType      string
+	PublicDirectTrustedCIDRs  []string
 
 	// PublicDirectCandidate limits gathering to host/server-reflexive direct
 	// candidates. It is used by stricter direct probes that must not wait on or

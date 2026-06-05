@@ -409,6 +409,22 @@ func TestPublicDirectBindingRequestHandlerSwitchesOnlyPublicPairs(t *testing.T) 
 	if handler(nil, cgnatLocal, publicPeerReflexive, &pionice.CandidatePair{Local: cgnatLocal, Remote: publicPeerReflexive}) {
 		t.Fatal("CGNAT or overlay local candidate should not switch public direct pair")
 	}
+	trustedCGNATHandler := bindingRequestHandlerForConfig(ICEConfig{
+		PublicDirectCandidate:    true,
+		PublicDirectTrustedCIDRs: []string{"100.64.0.0/10"},
+	})
+	if trustedCGNATHandler == nil {
+		t.Fatal("trusted public direct binding request handler should be configured")
+	}
+	trustedCGNATRemote := mustPionCandidate(t, Candidate{
+		Type:       CandidateTypePrflx,
+		Address:    &net.UDPAddr{IP: net.IPv4(100, 102, 17, 36), Port: 41000},
+		Priority:   200,
+		Foundation: "remote-trusted-cgnat",
+	})
+	if !trustedCGNATHandler(nil, cgnatLocal, trustedCGNATRemote, &pionice.CandidatePair{Local: cgnatLocal, Remote: trustedCGNATRemote}) {
+		t.Fatal("trusted CGNAT public-direct candidates should switch selected pair")
+	}
 
 	benchmarkLocal := mustPionCandidate(t, Candidate{
 		Type:       CandidateTypeHost,

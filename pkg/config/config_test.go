@@ -56,6 +56,9 @@ func TestLoadValidFile(t *testing.T) {
 	if len(cfg.NAT.NAT1To1IPs) != 1 || cfg.NAT.NAT1To1IPs[0] != "203.0.113.10/192.168.0.10" {
 		t.Fatalf("nat1to1 ips = %#v, want explicit external/local mapping", cfg.NAT.NAT1To1IPs)
 	}
+	if len(cfg.NAT.PublicDirectTrustedCIDRs) != 1 || cfg.NAT.PublicDirectTrustedCIDRs[0] != "100.64.0.0/10" {
+		t.Fatalf("public direct trusted CIDRs = %#v, want 100.64.0.0/10", cfg.NAT.PublicDirectTrustedCIDRs)
+	}
 }
 
 func TestLoadUsesDefaultsWhenFileMissing(t *testing.T) {
@@ -146,6 +149,7 @@ func TestValidateCandidateFilters(t *testing.T) {
 	cfg.NAT.CandidateInterfaceExclude = []string{"tailscale0"}
 	cfg.NAT.CandidateCIDRInclude = []string{"192.168.0.0/16"}
 	cfg.NAT.CandidateCIDRExclude = []string{"100.64.0.0/10"}
+	cfg.NAT.PublicDirectTrustedCIDRs = []string{"100.64.0.0/10"}
 
 	if err := cfg.Validate(); err != nil {
 		t.Fatalf("Validate() error = %v", err)
@@ -158,6 +162,16 @@ func TestValidateCandidateFilters(t *testing.T) {
 	}
 	if got := err.Error(); got != `invalid nat.candidate_cidr_exclude[0]: "not-a-cidr"` {
 		t.Fatalf("Validate() error = %q, want invalid CIDR", got)
+	}
+
+	cfg = config.Default()
+	cfg.NAT.PublicDirectTrustedCIDRs = []string{"not-a-cidr"}
+	err = cfg.Validate()
+	if err == nil {
+		t.Fatal("Validate() should reject invalid public direct trusted CIDR")
+	}
+	if got := err.Error(); got != `invalid nat.public_direct_trusted_cidrs[0]: "not-a-cidr"` {
+		t.Fatalf("Validate() error = %q, want invalid public direct trusted CIDR", got)
 	}
 }
 
@@ -230,6 +244,13 @@ func TestValidateNATPublicCandidateHints(t *testing.T) {
 	}
 	if got := err.Error(); got != `invalid nat.public_endpoint_hints[0]: "117.48.146.2:41000/100.102.17.35:40000"` {
 		t.Fatalf("Validate() error = %q, want invalid public endpoint hint local base", got)
+	}
+
+	cfg = config.Default()
+	cfg.NAT.PublicDirectTrustedCIDRs = []string{"100.64.0.0/10"}
+	cfg.NAT.PublicEndpointHints = []string{"100.102.17.35:41000/100.102.17.36:40000"}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("Validate() trusted public endpoint hint error = %v", err)
 	}
 }
 
