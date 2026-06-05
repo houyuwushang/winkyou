@@ -9,6 +9,7 @@ import (
 	"net/netip"
 	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"slices"
@@ -70,6 +71,7 @@ type doctorProbes struct {
 	STUN           func(context.Context, *config.Config) doctorCheck
 	TURN           func(context.Context, *config.Config) doctorCheck
 	LocalInterface func(context.Context, *config.Config) doctorCheck
+	IPForwarding   func(context.Context, *config.Config) doctorCheck
 }
 
 func newDoctorCmd(opts *Options) *cobra.Command {
@@ -157,6 +159,13 @@ func runDoctor(ctx context.Context, opts *Options, flags doctorFlags, probes doc
 	addPublicDirectEvidenceChecks(&result, opts)
 	addTunnelChecks(&result, state, stateErr)
 	addAdvertisedRouteChecks(&result, cfg, state, stateErr)
+	if len(normalizeStringList(cfg.Node.AdvertiseRoutes)) > 0 {
+		ipForwardingProbe := probes.IPForwarding
+		if ipForwardingProbe == nil {
+			ipForwardingProbe = defaultIPForwardingProbe
+		}
+		result.add(ipForwardingProbe(ctx, cfg))
+	}
 	addTransportChecks(&result, state, stateErr)
 	addInbandHealthChecks(&result, state, stateErr)
 	addMultipathChecks(&result, cfg, state, stateErr)
@@ -286,6 +295,91 @@ func defaultLocalInterfaceProbe(ctx context.Context, cfg *config.Config) doctorC
 		}
 	}
 	return okCheck("local_interface", "backend", "backend configured: "+cfg.NetIf.Backend)
+}
+
+func defaultIPForwardingProbe(ctx context.Context, cfg *config.Config) doctorCheck {
+	routes := normalizeStringList(cfg.Node.AdvertiseRoutes)
+	if len(routes) == 0 {
+		return okCheck("routing", "ip forwarding", "not required")
+	}
+	switch runtime.GOOS {
+	case "linux":
+		raw, err := os.ReadFile("/proc/sys/net/ipv4/ip_forward")
+		if err != nil {
+			return warnCheck("routing", "ip forwarding", "cannot read /proc/sys/net/ipv4/ip_forward: "+err.Error(), "verify sysctl net.ipv4.ip_forward=1 on the gateway peer")
+		}
+		if strings.TrimSpace(string(raw)) == "1" {
+			return okCheck("routing", "ip forwarding", "Linux IPv4 forwarding is enabled")
+		}
+		return failCheck("routing", "ip forwarding", "Linux IPv4 forwarding is disabled", "enable sysctl net.ipv4.ip_forward=1 and allow forwarding in the firewall")
+	case "windows":
+		probeCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+		defer cancel()
+		output, err := exec.CommandContext(probeCtx, "powershell.exe", "-NoProfile", "-NonInteractive", "-Command", windowsIPForwardingProbeScript()).CombinedOutput()
+		if err != nil {
+			detail := strings.TrimSpace(string(output))
+			if detail == "" {
+				detail = err.Error()
+			} else {
+				detail += ": " + err.Error()
+			}
+			return warnCheck("routing", "ip forwarding", "cannot query Windows IP forwarding: "+detail, "run wink doctor from PowerShell and verify Windows IP forwarding on the gateway peer")
+		}
+		enabled, detail := parseWindowsIPForwardingProbeOutput(string(output))
+		if enabled {
+			return okCheck("routing", "ip forwarding", "Windows IP forwarding appears enabled: "+detail)
+		}
+		return failCheck("routing", "ip forwarding", "Windows IP forwarding appears disabled: "+detail, "enable routing on the gateway peer and allow forwarding in Windows Firewall")
+	case "darwin":
+		probeCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+		defer cancel()
+		output, err := exec.CommandContext(probeCtx, "sysctl", "-n", "net.inet.ip.forwarding").CombinedOutput()
+		if err != nil {
+			return warnCheck("routing", "ip forwarding", "cannot query macOS forwarding: "+strings.TrimSpace(string(output)), "verify net.inet.ip.forwarding=1 on the gateway peer")
+		}
+		if strings.TrimSpace(string(output)) == "1" {
+			return okCheck("routing", "ip forwarding", "macOS IPv4 forwarding is enabled")
+		}
+		return failCheck("routing", "ip forwarding", "macOS IPv4 forwarding is disabled", "enable net.inet.ip.forwarding=1 and allow forwarding in the firewall")
+	default:
+		return warnCheck("routing", "ip forwarding", "IP forwarding check is not implemented for "+runtime.GOOS, "verify OS packet forwarding manually on the gateway peer")
+	}
+}
+
+func windowsIPForwardingProbeScript() string {
+	return strings.Join([]string{
+		"$ip = (Get-ItemProperty -Path 'HKLM:\\SYSTEM\\CurrentControlSet\\Services\\Tcpip\\Parameters' -Name IPEnableRouter -ErrorAction SilentlyContinue).IPEnableRouter",
+		"$enabled = @(Get-NetIPInterface -AddressFamily IPv4 -ErrorAction SilentlyContinue | Where-Object { $_.Forwarding -eq 'Enabled' } | ForEach-Object { $_.InterfaceAlias })",
+		"Write-Output (\"IPEnableRouter={0}\" -f $ip)",
+		"Write-Output (\"ForwardingEnabled={0}\" -f ($enabled -join ','))",
+	}, "; ")
+}
+
+func parseWindowsIPForwardingProbeOutput(output string) (bool, string) {
+	lines := make([]string, 0)
+	enabled := false
+	for _, line := range strings.Split(output, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		lines = append(lines, line)
+		if strings.EqualFold(line, "IPEnableRouter=1") {
+			enabled = true
+			continue
+		}
+		if strings.HasPrefix(strings.ToLower(line), "forwardingenabled=") {
+			_, value, _ := strings.Cut(line, "=")
+			value = strings.TrimSpace(value)
+			if value != "" && !strings.EqualFold(value, "<nil>") {
+				enabled = true
+			}
+		}
+	}
+	if len(lines) == 0 {
+		return false, "no probe output"
+	}
+	return enabled, strings.Join(lines, "; ")
 }
 
 func addStrategyChecks(result *doctorResult, cfg *config.Config, flags doctorFlags) {

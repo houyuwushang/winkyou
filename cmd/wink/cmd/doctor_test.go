@@ -439,6 +439,7 @@ func TestDoctorInbandHealthMissingWarns(t *testing.T) {
 
 func TestDoctorAdvertisedRoutes(t *testing.T) {
 	configPath := writeDoctorConfigWithNodeExtra(t, "  advertise_routes:\n    - 10.6.22.0/24\n")
+	probes := healthyDoctorProbes()
 	writeDoctorRuntimeState(t, configPath, []winkclient.RuntimePeerStatus{{
 		NodeID:             "node-b",
 		Name:               "chen-win",
@@ -450,7 +451,7 @@ func TestDoctorAdvertisedRoutes(t *testing.T) {
 		TransportRxPackets: 3,
 	}})
 
-	result := runDoctor(context.Background(), &Options{ConfigPath: configPath}, doctorFlags{}, healthyDoctorProbes())
+	result := runDoctor(context.Background(), &Options{ConfigPath: configPath}, doctorFlags{}, probes)
 	local := findDoctorCheck(result, "routing", "advertised routes")
 	if local.Status != doctorOK || !strings.Contains(local.Message, "10.6.22.0/24") {
 		t.Fatalf("advertised routes check = %#v, want local route summary", local)
@@ -458,6 +459,31 @@ func TestDoctorAdvertisedRoutes(t *testing.T) {
 	remote := findDoctorCheck(result, "routing", "peer advertised routes")
 	if remote.Status != doctorOK || !strings.Contains(remote.Message, "chen-win=10.7.0.0/24") {
 		t.Fatalf("peer advertised routes check = %#v, want active peer route summary", remote)
+	}
+}
+
+func TestDoctorAdvertisedRoutesRequireIPForwarding(t *testing.T) {
+	configPath := writeDoctorConfigWithNodeExtra(t, "  advertise_routes:\n    - 10.6.22.0/24\n")
+	probes := healthyDoctorProbes()
+	probes.IPForwarding = func(context.Context, *config.Config) doctorCheck {
+		return failCheck("routing", "ip forwarding", "Windows IP forwarding appears disabled", "enable routing on the gateway peer")
+	}
+
+	result := runDoctor(context.Background(), &Options{ConfigPath: configPath}, doctorFlags{}, probes)
+	check := findDoctorCheck(result, "routing", "ip forwarding")
+	if check.Status != doctorFail || !strings.Contains(check.Message, "disabled") {
+		t.Fatalf("ip forwarding check = %#v, want disabled failure", check)
+	}
+}
+
+func TestParseWindowsIPForwardingProbeOutput(t *testing.T) {
+	enabled, detail := parseWindowsIPForwardingProbeOutput("IPEnableRouter=0\nForwardingEnabled=Ethernet,WinkYou\n")
+	if !enabled || !strings.Contains(detail, "Ethernet,WinkYou") {
+		t.Fatalf("parse enabled output = enabled=%v detail=%q, want enabled", enabled, detail)
+	}
+	enabled, detail = parseWindowsIPForwardingProbeOutput("IPEnableRouter=0\nForwardingEnabled=\n")
+	if enabled || !strings.Contains(detail, "IPEnableRouter=0") {
+		t.Fatalf("parse disabled output = enabled=%v detail=%q, want disabled", enabled, detail)
 	}
 }
 
@@ -474,6 +500,9 @@ func healthyDoctorProbes() doctorProbes {
 		},
 		LocalInterface: func(context.Context, *config.Config) doctorCheck {
 			return okCheck("local_interface", "backend", "fake interface ok")
+		},
+		IPForwarding: func(context.Context, *config.Config) doctorCheck {
+			return okCheck("routing", "ip forwarding", "fake IP forwarding ok")
 		},
 	}
 }
