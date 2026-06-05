@@ -456,6 +456,10 @@ func TestDoctorAdvertisedRoutes(t *testing.T) {
 	if local.Status != doctorOK || !strings.Contains(local.Message, "10.6.22.0/24") {
 		t.Fatalf("advertised routes check = %#v, want local route summary", local)
 	}
+	returnPath := findDoctorCheck(result, "routing", "backend return path")
+	if returnPath.Status != doctorWarn || !strings.Contains(returnPath.Suggestion, "SNAT") {
+		t.Fatalf("backend return path check = %#v, want SNAT/return-route warning", returnPath)
+	}
 	remote := findDoctorCheck(result, "routing", "peer advertised routes")
 	if remote.Status != doctorOK || !strings.Contains(remote.Message, "chen-win=10.7.0.0/24") {
 		t.Fatalf("peer advertised routes check = %#v, want active peer route summary", remote)

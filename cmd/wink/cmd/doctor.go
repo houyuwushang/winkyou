@@ -789,6 +789,7 @@ func addAdvertisedRouteChecks(result *doctorResult, cfg *config.Config, state *w
 	}
 	if len(localRoutes) > 0 {
 		result.add(okCheck("routing", "advertised routes", "publishing backend route(s): "+strings.Join(localRoutes, ",")))
+		result.add(warnCheck("routing", "backend return path", "return path for advertised backend route(s) is not verified: "+strings.Join(localRoutes, ","), "ensure backend hosts route the WinkYou virtual CIDR back through this gateway, or configure gateway SNAT/masquerade"))
 	} else {
 		result.add(okCheck("routing", "advertised routes", "no local backend routes configured"))
 	}
