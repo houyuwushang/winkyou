@@ -34,11 +34,11 @@ func (s *Strategy) Plan(ctx context.Context, in solver.SolveInput) ([]solver.Pla
 
 	plans := s.basePlans()
 	evidence := summarizeSolveEvidence(in)
-	if evidence.strongRelayOnly() {
-		if plan, ok := findPlan(plans, planIDRelayOnly); ok {
-			return annotatePlanEvidence([]solver.Plan{plan}, evidence.hint()), nil
+	if evidence.strongRelayEvidence() {
+		plans = pruneDirectPreferPlan(plans)
+		if len(plans) == 0 {
+			return nil, fmt.Errorf("legacyice: no plans available after relay evidence pruning")
 		}
-		return nil, fmt.Errorf("legacyice: relay-only plan unavailable")
 	}
 
 	return annotatePlanEvidence(plans, evidence.hint()), nil
@@ -90,13 +90,15 @@ func annotatePlanEvidence(plans []solver.Plan, hint string) []solver.Plan {
 	return out
 }
 
-func findPlan(plans []solver.Plan, planID string) (solver.Plan, bool) {
+func pruneDirectPreferPlan(plans []solver.Plan) []solver.Plan {
+	out := make([]solver.Plan, 0, len(plans))
 	for _, plan := range plans {
-		if plan.ID == planID {
-			return plan, true
+		if plan.ID == planIDDirectPrefer {
+			continue
 		}
+		out = append(out, plan)
 	}
-	return solver.Plan{}, false
+	return out
 }
 
 func (s *Strategy) NewExecutor(plan solver.Plan) (solver.PlanExecutor, error) {

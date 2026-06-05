@@ -10,7 +10,7 @@ import (
 	"winkyou/pkg/solver"
 )
 
-func TestStrategyRefinePlansPrunesDirectUnderStrongRelayEvidence(t *testing.T) {
+func TestStrategyRefinePlansKeepsPublicDirectUnderStrongRelayEvidence(t *testing.T) {
 	strategy := New(Config{})
 	plans := defaultPlans()
 
@@ -32,11 +32,28 @@ func TestStrategyRefinePlansPrunesDirectUnderStrongRelayEvidence(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RefinePlans() error = %v", err)
 	}
-	if !slices.Equal(planIDs(refined.Plans), []string{"legacyice/relay_only"}) {
-		t.Fatalf("refined plans = %v, want relay_only only", planIDs(refined.Plans))
+	if !slices.Equal(planIDs(refined.Plans), []string{"legacyice/public_direct", "legacyice/relay_only"}) {
+		t.Fatalf("refined plans = %v, want public_direct + relay_only", planIDs(refined.Plans))
 	}
-	if refined.Reason != "strong_relay_evidence_prune_direct" {
-		t.Fatalf("Reason = %q, want strong_relay_evidence_prune_direct", refined.Reason)
+	if refined.Reason != "strong_relay_evidence_prune_direct_prefer" {
+		t.Fatalf("Reason = %q, want strong_relay_evidence_prune_direct_prefer", refined.Reason)
+	}
+
+	ranked, err := strategy.RankPlans(context.Background(), solver.RankInput{
+		LocalNodeID:  "node-a",
+		SessionID:    "session/node-a/node-b",
+		RemoteNodeID: "node-b",
+		LocalObservations: []solver.Observation{
+			observationForRanking("legacyice/direct_prefer", "candidate_failed", "", "node-b"),
+			observationForRanking("legacyice/direct_prefer", "candidate_failed", "", "node-b"),
+			observationForRanking("legacyice/relay_only", "candidate_succeeded", "relay", "node-b"),
+		},
+	}, refined.Plans)
+	if err != nil {
+		t.Fatalf("RankPlans() error = %v", err)
+	}
+	if !slices.Equal(planIDs(ranked.Plans), []string{"legacyice/relay_only", "legacyice/public_direct"}) {
+		t.Fatalf("ranked plans = %v, want relay_only then public_direct", planIDs(ranked.Plans))
 	}
 }
 
@@ -152,8 +169,8 @@ func TestStrategyBuildPreflightProbeReturnsStrategyAuthoredScript(t *testing.T) 
 	if report["session_id"] != "session/node-a/node-b" || report["remote_node_id"] != "node-b" {
 		t.Fatalf("probe report params = %#v, want session and remote node details", report)
 	}
-	if report["evidence_hint"] != "strong_relay_only" {
-		t.Fatalf("evidence_hint = %q, want strong_relay_only", report["evidence_hint"])
+	if report["evidence_hint"] != "strong_relay_preferred" {
+		t.Fatalf("evidence_hint = %q, want strong_relay_preferred", report["evidence_hint"])
 	}
 	if report["direct_failures"] != "2" || report["relay_successes"] != "1" {
 		t.Fatalf("probe evidence counters = %#v, want direct_failures=2 relay_successes=1", report)

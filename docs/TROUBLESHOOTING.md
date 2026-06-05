@@ -145,6 +145,8 @@ legacyice/direct_prefer -> legacyice/public_direct -> legacyice/relay_only
 
 `direct_prefer` 可能选中 natpierce、Tailscale、Docker bridge 或其他 overlay candidate；`public_direct` 才是用于验证双方是否能通过公网 UDP NAT piercing 形成独立 direct path 的 plan。
 
+如果 observation history 中已有 direct 失败和 relay 成功，legacy ICE 可以把 `relay_only` 排到前面，但 `public_direct` 不应仅因为 `direct_prefer` 失败而被剪掉。排障时如果只看到 `legacyice/relay_only`，没有看到 `legacyice/public_direct` 的 `candidate_planned` 或 `candidate_started`，应检查当前二进制是否为最新版本，或是否处于显式 `connectivity.mode: relay_only` / `nat.force_relay: true`。
+
 如果 natpierce 能从本机直达 `inner-gw`，但 WinkYou 不能建立 `protected_direct`，不要先判断为“物理不可达”。先查看 observation history。客户端运行状态文件同目录下会有 `<runtime-state-base>.observations.jsonl`，可在 Windows 上先用：
 
 ```powershell

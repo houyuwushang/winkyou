@@ -10,18 +10,12 @@ func (s *Strategy) RefinePlans(ctx context.Context, input solver.SolveInput, pla
 	_ = ctx
 
 	evidence := summarizeSolveEvidence(input)
-	if evidence.strongRelayOnly() {
-		refined := make([]solver.Plan, 0, len(plans))
-		for _, plan := range plans {
-			if isDirectPlanID(plan.ID) {
-				continue
-			}
-			refined = append(refined, plan)
-		}
+	if evidence.strongRelayEvidence() {
+		refined := pruneDirectPreferPlan(plans)
 		if len(refined) < len(plans) {
 			return solver.RefinedPlans{
 				Plans:  refined,
-				Reason: "strong_relay_evidence_prune_direct",
+				Reason: "strong_relay_evidence_prune_direct_prefer",
 			}, nil
 		}
 	}

@@ -32,7 +32,7 @@ func TestStrategyPlanKeepsDefaultWithoutStrongEvidence(t *testing.T) {
 	}
 }
 
-func TestStrategyPlanPrunesDirectUnderStrongRelayEvidence(t *testing.T) {
+func TestStrategyPlanKeepsPublicDirectUnderStrongRelayEvidence(t *testing.T) {
 	strategy := New(Config{})
 
 	plans, err := strategy.Plan(context.Background(), solver.SolveInput{
@@ -54,15 +54,15 @@ func TestStrategyPlanPrunesDirectUnderStrongRelayEvidence(t *testing.T) {
 		t.Fatalf("Plan() error = %v", err)
 	}
 
-	if !slices.Equal(planIDs(plans), []string{planIDRelayOnly}) {
-		t.Fatalf("plans = %v, want relay_only only under strong relay evidence", planIDs(plans))
+	if !slices.Equal(planIDs(plans), []string{planIDPublicDirect, planIDRelayOnly}) {
+		t.Fatalf("plans = %v, want public_direct + relay_only under strong relay evidence", planIDs(plans))
 	}
-	if got := plans[0].Metadata["evidence_hint"]; got != "strong_relay_only" {
-		t.Fatalf("relay plan evidence_hint = %q, want strong_relay_only", got)
+	if got := plans[0].Metadata["evidence_hint"]; got != "strong_relay_preferred" {
+		t.Fatalf("public_direct plan evidence_hint = %q, want strong_relay_preferred", got)
 	}
 }
 
-func TestStrategyPlanPrunesDirectUnderScopedRemoteRelayEvidence(t *testing.T) {
+func TestStrategyPlanKeepsPublicDirectUnderScopedRemoteRelayEvidence(t *testing.T) {
 	strategy := New(Config{})
 
 	plans, err := strategy.Plan(context.Background(), solver.SolveInput{
@@ -84,11 +84,11 @@ func TestStrategyPlanPrunesDirectUnderScopedRemoteRelayEvidence(t *testing.T) {
 		t.Fatalf("Plan() error = %v", err)
 	}
 
-	if !slices.Equal(planIDs(plans), []string{planIDRelayOnly}) {
-		t.Fatalf("plans = %v, want relay_only only under scoped remote relay evidence", planIDs(plans))
+	if !slices.Equal(planIDs(plans), []string{planIDPublicDirect, planIDRelayOnly}) {
+		t.Fatalf("plans = %v, want public_direct + relay_only under scoped remote relay evidence", planIDs(plans))
 	}
-	if got := plans[0].Metadata["evidence_hint"]; got != "strong_relay_only" {
-		t.Fatalf("relay plan evidence_hint = %q, want strong_relay_only", got)
+	if got := plans[0].Metadata["evidence_hint"]; got != "strong_relay_preferred" {
+		t.Fatalf("public_direct plan evidence_hint = %q, want strong_relay_preferred", got)
 	}
 }
 
@@ -162,7 +162,7 @@ func TestStrategyPlanDoesNotPruneDirectFromUnscopedRemoteRelayEvidence(t *testin
 	if !slices.Equal(planIDs(plans), planIDs(defaultPlans())) {
 		t.Fatalf("plans = %v, want direct+public-direct+relay when remote evidence is unscoped", planIDs(plans))
 	}
-	if got := plans[0].Metadata["evidence_hint"]; got == "strong_relay_only" {
+	if got := plans[0].Metadata["evidence_hint"]; got == "strong_relay_preferred" {
 		t.Fatalf("direct plan evidence_hint = %q, want non-destructive hint", got)
 	}
 }

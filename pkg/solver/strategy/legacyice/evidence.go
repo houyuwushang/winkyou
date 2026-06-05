@@ -109,7 +109,7 @@ func (e *evidenceSummary) addProbeResult(result *solver.ProbeResultSummary) {
 	e.PreflightFailure = true
 }
 
-func (e evidenceSummary) strongRelayOnly() bool {
+func (e evidenceSummary) strongRelayEvidence() bool {
 	return e.PruningDirectFailures >= 2 &&
 		e.PruningRelaySuccesses > 0 &&
 		!e.PreflightSuccess &&
@@ -126,8 +126,8 @@ func (e evidenceSummary) directSuccessful() bool {
 
 func (e evidenceSummary) hint() string {
 	switch {
-	case e.strongRelayOnly():
-		return "strong_relay_only"
+	case e.strongRelayEvidence():
+		return "strong_relay_preferred"
 	case e.relayPreferred():
 		return "relay_preferred"
 	case e.directSuccessful():
