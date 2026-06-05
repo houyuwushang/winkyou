@@ -242,6 +242,34 @@ func TestPublicEndpointHintLocalBaseCheckWarnsForMissingBase(t *testing.T) {
 	}
 }
 
+func TestDirectTrustedCIDRWarnsForVirtualInterface(t *testing.T) {
+	check := directTrustedCIDRLocalInterfaceCheck(
+		[]string{"10.6.22.0/24"},
+		[]doctorLocalInterfaceAddr{{
+			Name: "natpierce",
+			IP:   net.ParseIP("10.6.22.3"),
+		}},
+	)
+	if check == nil || check.Status != doctorWarn ||
+		!strings.Contains(check.Message, "natpierce=10.6.22.3") ||
+		!strings.Contains(check.Suggestion, "real underlay") {
+		t.Fatalf("directTrustedCIDRLocalInterfaceCheck() = %#v, want virtual interface warning", check)
+	}
+}
+
+func TestDirectTrustedCIDROKForPhysicalInterface(t *testing.T) {
+	check := directTrustedCIDRLocalInterfaceCheck(
+		[]string{"100.64.0.0/10"},
+		[]doctorLocalInterfaceAddr{{
+			Name: "Ethernet",
+			IP:   net.ParseIP("100.102.17.35"),
+		}},
+	)
+	if check == nil || check.Status != doctorOK || !strings.Contains(check.Message, "Ethernet=100.102.17.35") {
+		t.Fatalf("directTrustedCIDRLocalInterfaceCheck() = %#v, want physical interface ok", check)
+	}
+}
+
 func TestDoctorPublicDirectEvidenceOK(t *testing.T) {
 	configPath := writeDoctorConfig(t)
 	writeDoctorObservationHistory(t, configPath, []solver.Observation{{

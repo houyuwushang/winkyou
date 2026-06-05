@@ -427,10 +427,16 @@ func addCandidateFilterChecks(result *doctorResult, cfg *config.Config, state *w
 		if check := publicEndpointHintLocalBaseCheck(cfg.NAT.PublicEndpointHints, doctorLocalInterfaceIPs()); check != nil {
 			result.add(*check)
 		}
+		if check := directTrustedCIDRLocalInterfaceCheck(cfg.NAT.DirectTrustedCIDRs, doctorLocalInterfaceAddrs()); check != nil {
+			result.add(*check)
+		}
 		return
 	}
 	result.add(okCheck("nat", "candidate filters", filterSummary))
 	if check := publicEndpointHintLocalBaseCheck(cfg.NAT.PublicEndpointHints, doctorLocalInterfaceIPs()); check != nil {
+		result.add(*check)
+	}
+	if check := directTrustedCIDRLocalInterfaceCheck(cfg.NAT.DirectTrustedCIDRs, doctorLocalInterfaceAddrs()); check != nil {
 		result.add(*check)
 	}
 	if stateErr != nil || state == nil {
@@ -462,24 +468,64 @@ func addCandidateFilterChecks(result *doctorResult, cfg *config.Config, state *w
 }
 
 func doctorLocalInterfaceIPs() []net.IP {
+	localAddrs := doctorLocalInterfaceAddrs()
+	ips := make([]net.IP, 0, len(localAddrs))
+	for _, addr := range localAddrs {
+		if addr.IP != nil {
+			ips = append(ips, addr.IP)
+		}
+	}
+	return ips
+}
+
+type doctorLocalInterfaceAddr struct {
+	Name string
+	IP   net.IP
+}
+
+func doctorLocalInterfaceAddrs() []doctorLocalInterfaceAddr {
+	ifaces, err := net.Interfaces()
+	if err == nil {
+		out := make([]doctorLocalInterfaceAddr, 0)
+		for _, iface := range ifaces {
+			addrs, addrErr := iface.Addrs()
+			if addrErr != nil {
+				continue
+			}
+			for _, addr := range addrs {
+				if ip := doctorIPFromAddr(addr); ip != nil {
+					out = append(out, doctorLocalInterfaceAddr{
+						Name: iface.Name,
+						IP:   append(net.IP(nil), ip...),
+					})
+				}
+			}
+		}
+		return out
+	}
+
 	addrs, err := net.InterfaceAddrs()
 	if err != nil {
 		return nil
 	}
-	ips := make([]net.IP, 0, len(addrs))
+	out := make([]doctorLocalInterfaceAddr, 0, len(addrs))
 	for _, addr := range addrs {
-		switch value := addr.(type) {
-		case *net.IPNet:
-			if value.IP != nil {
-				ips = append(ips, value.IP)
-			}
-		case *net.IPAddr:
-			if value.IP != nil {
-				ips = append(ips, value.IP)
-			}
+		if ip := doctorIPFromAddr(addr); ip != nil {
+			out = append(out, doctorLocalInterfaceAddr{IP: append(net.IP(nil), ip...)})
 		}
 	}
-	return ips
+	return out
+}
+
+func doctorIPFromAddr(addr net.Addr) net.IP {
+	switch value := addr.(type) {
+	case *net.IPNet:
+		return value.IP
+	case *net.IPAddr:
+		return value.IP
+	default:
+		return nil
+	}
 }
 
 func publicEndpointHintLocalBaseCheck(values []string, localIPs []net.IP) *doctorCheck {
@@ -512,6 +558,69 @@ func publicEndpointHintLocalBaseCheck(values []string, localIPs []net.IP) *docto
 		return checkPtr(warnCheck("nat", "public endpoint hint local base", "mapped public_endpoint_hints reference local base not present on this host: "+strings.Join(missing, ","), "set each mapped hint local base to a real underlay interface IP, not a virtual LAN peer address"))
 	}
 	return checkPtr(okCheck("nat", "public endpoint hint local base", "mapped public_endpoint_hints local bases are present: "+strings.Join(present, ",")))
+}
+
+func directTrustedCIDRLocalInterfaceCheck(values []string, localAddrs []doctorLocalInterfaceAddr) *doctorCheck {
+	values = normalizeStringList(values)
+	if len(values) == 0 {
+		return nil
+	}
+	prefixes, err := parseDoctorCIDRs(values)
+	if err != nil {
+		return checkPtr(warnCheck("nat", "direct trusted cidrs", "cannot parse nat.direct_trusted_cidrs: "+err.Error(), "fix nat.direct_trusted_cidrs before trusting non-public direct candidates"))
+	}
+
+	suspicious := make([]string, 0)
+	matched := make([]string, 0)
+	for _, local := range localAddrs {
+		if local.IP == nil || local.IP.To4() == nil {
+			continue
+		}
+		for _, prefix := range prefixes {
+			if prefix == nil || !prefix.Contains(local.IP) {
+				continue
+			}
+			entry := dashIfEmpty(local.Name) + "=" + local.IP.String()
+			if isLikelyVirtualUnderlayInterface(local.Name) {
+				suspicious = append(suspicious, entry)
+			} else {
+				matched = append(matched, entry)
+			}
+		}
+	}
+	if len(suspicious) > 0 {
+		return checkPtr(warnCheck("nat", "direct trusted cidrs", "nat.direct_trusted_cidrs matches likely virtual/overlay interface(s): "+strings.Join(suspicious, ","), "only trust real underlay CIDRs; do not trust natpierce, Tailscale, Docker, Wintun, or WinkYou virtual peer networks as protected direct evidence"))
+	}
+	if len(matched) > 0 {
+		return checkPtr(okCheck("nat", "direct trusted cidrs", "trusted direct CIDR matches local interface(s): "+strings.Join(matched, ",")))
+	}
+	return checkPtr(okCheck("nat", "direct trusted cidrs", "trusted direct CIDR configured without local virtual-interface match"))
+}
+
+func isLikelyVirtualUnderlayInterface(name string) bool {
+	name = strings.ToLower(strings.TrimSpace(name))
+	if name == "" {
+		return false
+	}
+	for _, token := range []string{
+		"natpierce",
+		"tailscale",
+		"zerotier",
+		"hamachi",
+		"wireguard",
+		"wintun",
+		"wink",
+		"docker",
+		"vethernet",
+		"virtualbox",
+		"vmware",
+		"loopback",
+	} {
+		if strings.Contains(name, token) {
+			return true
+		}
+	}
+	return false
 }
 
 func publicEndpointHintLocalBases(values []string) []netip.Addr {
