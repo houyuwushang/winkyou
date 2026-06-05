@@ -143,6 +143,8 @@ The connectivity policy layer controls production strategy priority:
 - `connectivity.strategy_order`: optional priority list for known production strategies
 - `tcp_framed.enabled=true`: allows the `tcp_framed` alpha strategy to be advertised and selected when listed in strategy order
 
+Protected-direct multipath is enabled by default in `auto` mode with conservative settings: at most two child paths, direct protection on, and shadow writes off. This preserves the `transport.PacketTransport` boundary while letting the client keep a lower-dependency direct standby when both the primary path and a public/direct path are established. `relay_only` mode and legacy `nat.force_relay=true` keep single-path binding because there is no direct standby to protect. Operators can explicitly set `connectivity.multipath.enabled=false` to restore the older single-path binding behavior.
+
 The existing `nat.force_relay` setting remains a compatibility entry and maps to relay-only behavior. Legacy fallback remains available for old peers with empty capability, and the legacy ICE path must still force relay candidate gathering in relay-only mode.
 
 Future strategies may include QUIC, proxy-friendly, or other transports, but the solver core should not encode those details directly.

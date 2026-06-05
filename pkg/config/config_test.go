@@ -107,8 +107,8 @@ func TestDefaultConnectivityPolicy(t *testing.T) {
 	if cfg.TCPFramed.ListenAddr != "0.0.0.0:0" {
 		t.Fatalf("default tcp_framed.listen_addr = %q, want 0.0.0.0:0", cfg.TCPFramed.ListenAddr)
 	}
-	if cfg.Connectivity.Multipath.Enabled {
-		t.Fatal("default multipath.enabled = true, want false")
+	if !cfg.Connectivity.Multipath.Enabled {
+		t.Fatal("default multipath.enabled = false, want true")
 	}
 	if !cfg.Connectivity.Multipath.ProtectDirect {
 		t.Fatal("default multipath.protect_direct = false, want true")

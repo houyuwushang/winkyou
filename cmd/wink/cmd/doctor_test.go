@@ -165,7 +165,7 @@ func TestDoctorCandidateFilterAllowsRuntimeCandidate(t *testing.T) {
 }
 
 func TestDoctorMultipathDisabledSuggestsEnable(t *testing.T) {
-	configPath := writeDoctorConfig(t)
+	configPath := writeDoctorConfigWithMultipathDisabled(t)
 
 	result := runDoctor(context.Background(), &Options{ConfigPath: configPath}, doctorFlags{}, healthyDoctorProbes())
 	check := findDoctorCheck(result, "multipath", "policy")
@@ -305,6 +305,38 @@ connectivity:
   strategy_order:
     - legacy_ice_udp
     - relay_only
+`
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(path, []byte(strings.TrimSpace(body)+"\n"), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	return path
+}
+
+func writeDoctorConfigWithMultipathDisabled(t *testing.T) string {
+	t.Helper()
+	body := `
+node:
+  name: node-a
+coordinator:
+  url: grpc://127.0.0.1:50051
+  auth_key: test-auth
+netif:
+  backend: tun
+wireguard:
+  private_key: test-private-key
+nat:
+  turn_servers:
+    - url: turn:127.0.0.1:3478?transport=udp
+      username: wink
+      password: secret
+connectivity:
+  mode: auto
+  strategy_order:
+    - legacy_ice_udp
+    - relay_only
+  multipath:
+    enabled: false
 `
 	path := filepath.Join(t.TempDir(), "config.yaml")
 	if err := os.WriteFile(path, []byte(strings.TrimSpace(body)+"\n"), 0o644); err != nil {

@@ -91,6 +91,8 @@ type evidencePlanningStrategy struct {
 type orderedLegacyPlanStrategy struct {
 	plans     []solver.Plan
 	transport *fakeTransport
+	results   map[string]solver.Result
+	errors    map[string]error
 	executed  []string
 }
 
@@ -102,6 +104,16 @@ func (s *orderedLegacyPlanStrategy) Plan(context.Context, solver.SolveInput) ([]
 
 func (s *orderedLegacyPlanStrategy) Execute(_ context.Context, _ solver.SessionIO, plan solver.Plan) (solver.Result, error) {
 	s.executed = append(s.executed, plan.ID)
+	if s.results != nil {
+		if result, ok := s.results[plan.ID]; ok {
+			return result, nil
+		}
+	}
+	if s.errors != nil {
+		if err, ok := s.errors[plan.ID]; ok {
+			return solver.Result{}, err
+		}
+	}
 	if plan.ID != "legacyice/relay_only" {
 		return solver.Result{}, context.Canceled
 	}
@@ -397,6 +409,139 @@ func TestSessionCandidateLoopIncludesPublicDirectPlan(t *testing.T) {
 	snapshot := s.Snapshot()
 	if !slices.Equal(snapshot.LastPlanOrder, want) {
 		t.Fatalf("LastPlanOrder = %v, want %v", snapshot.LastPlanOrder, want)
+	}
+}
+
+func TestSessionCandidateLoopStopsAfterProtectedDirectWhenPolicyEnabled(t *testing.T) {
+	plans := []solver.Plan{
+		{ID: "legacyice/direct_prefer", Strategy: "legacy_ice_udp"},
+		{ID: "legacyice/public_direct", Strategy: "legacy_ice_udp"},
+		{ID: "legacyice/relay_only", Strategy: "legacy_ice_udp"},
+	}
+	strategy := &orderedLegacyPlanStrategy{
+		plans:     plans,
+		transport: &fakeTransport{},
+		results: map[string]solver.Result{
+			"legacyice/direct_prefer": {
+				Transport: &fakeTransport{},
+				Summary: solver.PathSummary{
+					PathID:         "direct/path",
+					ConnectionType: "direct",
+					Role:           solver.PathRoleProtectedDirect,
+				},
+			},
+			"legacyice/public_direct": {
+				Transport: &fakeTransport{},
+				Summary: solver.PathSummary{
+					PathID:         "public/direct",
+					ConnectionType: "direct",
+					Role:           solver.PathRoleProtectedDirect,
+				},
+			},
+			"legacyice/relay_only": {
+				Transport: &fakeTransport{},
+				Summary: solver.PathSummary{
+					PathID:         "relay/path",
+					ConnectionType: "relay",
+				},
+			},
+		},
+	}
+	sender := &fakeSender{}
+
+	s, err := New(Config{
+		SessionID:             "session/node-a/node-b",
+		LocalNodeID:           "node-a",
+		PeerID:                "node-b",
+		Initiator:             true,
+		Resolver:              &fakeResolver{local: rproto.Capability{Strategies: []string{"legacy_ice_udp"}}, strategy: strategy, selection: Selection{StrategyName: "legacy_ice_udp", Negotiated: true}},
+		Sender:                sender,
+		PathPolicy:            solver.PathPolicy{MultipathEnabled: true, ProtectDirect: true, MaxPaths: 2},
+		RunTimeout:            3 * time.Second,
+		CapabilityWaitTimeout: time.Second,
+	})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	if err := s.Start(context.Background()); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	if err := s.HandleMessage(context.Background(), envelopeMessage(t, "session/node-a/node-b", "node-b", "node-a", rproto.MsgTypeCapability, 1, rproto.Capability{Strategies: []string{"legacy_ice_udp"}}, time.Now())); err != nil {
+		t.Fatalf("HandleMessage(capability) error = %v", err)
+	}
+	waitForState(t, s, StateBound)
+
+	want := []string{"legacyice/direct_prefer"}
+	if !slices.Equal(strategy.executed, want) {
+		t.Fatalf("executed plans = %v, want %v", strategy.executed, want)
+	}
+}
+
+func TestSessionCandidateLoopKeepsTryingUntilProtectedDirectStandby(t *testing.T) {
+	plans := []solver.Plan{
+		{ID: "legacyice/direct_prefer", Strategy: "legacy_ice_udp"},
+		{ID: "legacyice/public_direct", Strategy: "legacy_ice_udp"},
+		{ID: "legacyice/relay_only", Strategy: "legacy_ice_udp"},
+	}
+	strategy := &orderedLegacyPlanStrategy{
+		plans:     plans,
+		transport: &fakeTransport{},
+		results: map[string]solver.Result{
+			"legacyice/direct_prefer": {
+				Transport: &fakeTransport{},
+				Summary: solver.PathSummary{
+					PathID:         "overlay/direct",
+					ConnectionType: "direct",
+					Dependencies: []solver.PathDependency{{
+						Kind:   solver.PathDependencyUnknown,
+						Reason: "remote_cgnat_or_overlay_candidate",
+					}},
+				},
+			},
+			"legacyice/public_direct": {
+				Transport: &fakeTransport{},
+				Summary: solver.PathSummary{
+					PathID:         "public/direct",
+					ConnectionType: "direct",
+					Role:           solver.PathRoleProtectedDirect,
+				},
+			},
+			"legacyice/relay_only": {
+				Transport: &fakeTransport{},
+				Summary: solver.PathSummary{
+					PathID:         "relay/path",
+					ConnectionType: "relay",
+				},
+			},
+		},
+	}
+	sender := &fakeSender{}
+
+	s, err := New(Config{
+		SessionID:             "session/node-a/node-b",
+		LocalNodeID:           "node-a",
+		PeerID:                "node-b",
+		Initiator:             true,
+		Resolver:              &fakeResolver{local: rproto.Capability{Strategies: []string{"legacy_ice_udp"}}, strategy: strategy, selection: Selection{StrategyName: "legacy_ice_udp", Negotiated: true}},
+		Sender:                sender,
+		PathPolicy:            solver.PathPolicy{MultipathEnabled: true, ProtectDirect: true, MaxPaths: 2},
+		RunTimeout:            3 * time.Second,
+		CapabilityWaitTimeout: time.Second,
+	})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	if err := s.Start(context.Background()); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	if err := s.HandleMessage(context.Background(), envelopeMessage(t, "session/node-a/node-b", "node-b", "node-a", rproto.MsgTypeCapability, 1, rproto.Capability{Strategies: []string{"legacy_ice_udp"}}, time.Now())); err != nil {
+		t.Fatalf("HandleMessage(capability) error = %v", err)
+	}
+	waitForState(t, s, StateBound)
+
+	want := []string{"legacyice/direct_prefer", "legacyice/public_direct"}
+	if !slices.Equal(strategy.executed, want) {
+		t.Fatalf("executed plans = %v, want %v", strategy.executed, want)
 	}
 }
 

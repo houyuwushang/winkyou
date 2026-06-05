@@ -24,12 +24,32 @@ func TestEngineMultipathPathPolicyFromConfig(t *testing.T) {
 	}
 }
 
-func TestEngineMultipathPathPolicyDefaultsDisabled(t *testing.T) {
+func TestEngineMultipathPathPolicyDefaultsProtectedDirect(t *testing.T) {
 	policy := (&engine{cfg: config.Default()}).multipathPathPolicy()
-	if policy.MultipathEnabled {
-		t.Fatal("MultipathEnabled = true, want false by default")
+	if !policy.MultipathEnabled {
+		t.Fatal("MultipathEnabled = false, want true by default")
 	}
 	if !policy.ProtectDirect || policy.MaxPaths != 2 {
 		t.Fatalf("default policy = %+v, want protect_direct=true max_paths=2", policy)
+	}
+}
+
+func TestEngineMultipathPathPolicyDisabledForRelayOnlyMode(t *testing.T) {
+	cfg := config.Default()
+	cfg.Connectivity.Mode = "relay_only"
+
+	policy := (&engine{cfg: cfg}).multipathPathPolicy()
+	if policy.MultipathEnabled {
+		t.Fatal("MultipathEnabled = true, want false for relay_only mode")
+	}
+}
+
+func TestEngineMultipathPathPolicyDisabledForForceRelay(t *testing.T) {
+	cfg := config.Default()
+	cfg.NAT.ForceRelay = true
+
+	policy := (&engine{cfg: cfg}).multipathPathPolicy()
+	if policy.MultipathEnabled {
+		t.Fatal("MultipathEnabled = true, want false for nat.force_relay")
 	}
 }

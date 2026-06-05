@@ -67,7 +67,7 @@ func Default() Config {
 			Mode:          defaultConnectivityMode,
 			StrategyOrder: append([]string(nil), defaultConnectivityStrategyOrder...),
 			Multipath: MultipathConfig{
-				Enabled:       false,
+				Enabled:       true,
 				ProtectDirect: true,
 				MaxPaths:      defaultMultipathMaxPaths,
 			},

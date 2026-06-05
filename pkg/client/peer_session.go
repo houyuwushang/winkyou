@@ -159,6 +159,9 @@ func (e *engine) newPeerRunner(s *peerSession) (*sesspkg.Session, error) {
 
 func (e *engine) multipathPathPolicy() solver.PathPolicy {
 	cfg := e.cfg.Connectivity.Multipath
+	if e.cfg.NAT.ForceRelay || strings.EqualFold(strings.TrimSpace(e.cfg.Connectivity.Mode), "relay_only") {
+		cfg.Enabled = false
+	}
 	return solver.PathPolicy{
 		MultipathEnabled:      cfg.Enabled,
 		ProtectDirect:         cfg.ProtectDirect,
