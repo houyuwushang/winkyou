@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"slices"
 	"strings"
 )
 
@@ -126,6 +127,96 @@ func successfulSTUNMappingProbeCount(probes []STUNMappingProbe) int {
 		}
 	}
 	return count
+}
+
+// PublicEndpointHintsFromSTUNMapping formats usable public endpoint hints from
+// a STUN mapping report. It is deliberately conservative: mapped addresses must
+// be public IPv4 endpoints, and local bases are included only when they look
+// like real underlay addresses instead of overlay or loopback interfaces.
+func PublicEndpointHintsFromSTUNMapping(report STUNMappingReport) []string {
+	seen := make(map[string]struct{}, len(report.Probes))
+	hints := make([]string, 0, len(report.Probes))
+	for _, probe := range report.Probes {
+		if probe.MappedAddr == nil || probe.MappedAddr.IP == nil || probe.MappedAddr.Port <= 0 {
+			continue
+		}
+		if !usablePublicEndpointHintIP(probe.MappedAddr.IP) {
+			continue
+		}
+		hint := probe.MappedAddr.String()
+		if local := usablePublicEndpointHintLocalAddr(probe); local != nil {
+			hint += "/" + local.String()
+		}
+		if _, ok := seen[hint]; ok {
+			continue
+		}
+		seen[hint] = struct{}{}
+		hints = append(hints, hint)
+	}
+	slices.Sort(hints)
+	return hints
+}
+
+func usablePublicEndpointHintLocalAddr(probe STUNMappingProbe) *net.UDPAddr {
+	if usableEndpointHintLocalAddr(probe.LocalAddr) {
+		return cloneUDPAddr(probe.LocalAddr)
+	}
+	if probe.LocalAddr == nil || probe.LocalAddr.Port <= 0 || probe.ServerAddr == nil {
+		return nil
+	}
+	if probe.LocalAddr.IP != nil && !probe.LocalAddr.IP.IsUnspecified() {
+		return nil
+	}
+	ip := localIPForUDPRoute(probe.ServerAddr)
+	if !usableEndpointHintLocalIP(ip) {
+		return nil
+	}
+	return &net.UDPAddr{IP: ip, Port: probe.LocalAddr.Port}
+}
+
+func usableEndpointHintLocalAddr(addr *net.UDPAddr) bool {
+	return addr != nil && addr.Port > 0 && usableEndpointHintLocalIP(addr.IP)
+}
+
+func usablePublicEndpointHintIP(ip net.IP) bool {
+	return ip != nil &&
+		ip.To4() != nil &&
+		!ip.IsUnspecified() &&
+		!ip.IsLoopback() &&
+		!ip.IsLinkLocalUnicast() &&
+		!ip.IsLinkLocalMulticast() &&
+		!ip.IsMulticast() &&
+		!ip.IsPrivate() &&
+		!ipInCIDR(ip, "100.64.0.0/10") &&
+		!ipInCIDR(ip, "198.18.0.0/15")
+}
+
+func usableEndpointHintLocalIP(ip net.IP) bool {
+	return ip != nil &&
+		ip.To4() != nil &&
+		!ip.IsUnspecified() &&
+		!ip.IsLoopback() &&
+		!ip.IsLinkLocalUnicast() &&
+		!ip.IsLinkLocalMulticast() &&
+		!ip.IsMulticast() &&
+		!ipInCIDR(ip, "100.64.0.0/10") &&
+		!ipInCIDR(ip, "198.18.0.0/15")
+}
+
+func localIPForUDPRoute(remote *net.UDPAddr) net.IP {
+	if remote == nil {
+		return nil
+	}
+	conn, err := net.DialUDP("udp4", nil, remote)
+	if err != nil {
+		return nil
+	}
+	defer conn.Close()
+	local, ok := conn.LocalAddr().(*net.UDPAddr)
+	if !ok || local == nil {
+		return nil
+	}
+	return append(net.IP(nil), local.IP...)
 }
 
 func cloneUDPAddr(addr *net.UDPAddr) *net.UDPAddr {

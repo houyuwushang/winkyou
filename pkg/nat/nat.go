@@ -188,6 +188,7 @@ type ICEAgent interface {
 // NATTraversal is the top-level NAT traversal facility.
 type NATTraversal interface {
 	DetectNATType(ctx context.Context) (NATType, error)
+	DetectSTUNMapping(ctx context.Context) (STUNMappingReport, error)
 	NewICEAgent(cfg ICEConfig) (ICEAgent, error)
 }
 

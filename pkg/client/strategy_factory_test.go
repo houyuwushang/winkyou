@@ -516,12 +516,61 @@ func TestLegacyICEStrategyConfigPropagatesCandidateFilters(t *testing.T) {
 	}
 }
 
+func TestLegacyICEStrategyConfigMergesRuntimePublicEndpointHints(t *testing.T) {
+	cfg := config.Default()
+	cfg.NAT.PublicEndpointHints = []string{"117.48.146.2:41000/192.168.1.20:40000"}
+	eng := &engine{
+		cfg: cfg,
+		runtimePublicEndpointHints: []string{
+			"117.48.146.2:41000/192.168.1.20:40000",
+			"117.48.146.3:41001/192.168.1.20:40001",
+		},
+	}
+
+	legacyCfg := eng.legacyICEStrategyConfig()
+	want := []string{
+		"117.48.146.2:41000/192.168.1.20:40000",
+		"117.48.146.3:41001/192.168.1.20:40001",
+	}
+	if !slices.Equal(legacyCfg.PublicEndpointHints, want) {
+		t.Fatalf("PublicEndpointHints = %#v, want %#v", legacyCfg.PublicEndpointHints, want)
+	}
+}
+
+func TestRuntimePublicEndpointHintsFromReportRequiresOptInAndStableMapping(t *testing.T) {
+	report := nat.STUNMappingReport{
+		NATType: nat.NATTypeUnknown,
+		Probes: []nat.STUNMappingProbe{{
+			LocalAddr:  &net.UDPAddr{IP: net.IPv4(192, 168, 1, 20), Port: 40000},
+			MappedAddr: &net.UDPAddr{IP: net.IPv4(198, 51, 100, 44), Port: 45678},
+			ServerAddr: &net.UDPAddr{IP: net.IPv4(198, 51, 100, 1), Port: 3478},
+		}},
+	}
+	if got := runtimePublicEndpointHintsFromReport(config.NATConfig{}, report); len(got) != 0 {
+		t.Fatalf("runtimePublicEndpointHintsFromReport(auto disabled) = %#v, want none", got)
+	}
+
+	cfg := config.NATConfig{AutoPublicEndpointHints: true}
+	if got := runtimePublicEndpointHintsFromReport(cfg, report); len(got) != 1 || got[0] != "198.51.100.44:45678/192.168.1.20:40000" {
+		t.Fatalf("runtimePublicEndpointHintsFromReport(stable) = %#v, want stable hint", got)
+	}
+
+	report.NATType = nat.NATTypeSymmetric
+	if got := runtimePublicEndpointHintsFromReport(cfg, report); len(got) != 0 {
+		t.Fatalf("runtimePublicEndpointHintsFromReport(symmetric) = %#v, want none", got)
+	}
+}
+
 type recordingNATTraversal struct {
 	cfg nat.ICEConfig
 }
 
 func (r *recordingNATTraversal) DetectNATType(context.Context) (nat.NATType, error) {
 	return nat.NATTypeUnknown, nil
+}
+
+func (r *recordingNATTraversal) DetectSTUNMapping(context.Context) (nat.STUNMappingReport, error) {
+	return nat.STUNMappingReport{NATType: nat.NATTypeUnknown}, nil
 }
 
 func (r *recordingNATTraversal) NewICEAgent(cfg nat.ICEConfig) (nat.ICEAgent, error) {

@@ -203,6 +203,34 @@ func TestProbeSTUNMappingKeepsConsistentMappingUnknown(t *testing.T) {
 	}
 }
 
+func TestPublicEndpointHintsFromSTUNMappingIncludesUsableLocalBase(t *testing.T) {
+	hints := PublicEndpointHintsFromSTUNMapping(STUNMappingReport{
+		NATType: NATTypeUnknown,
+		Probes: []STUNMappingProbe{{
+			LocalAddr:  &net.UDPAddr{IP: net.IPv4(192, 168, 1, 20), Port: 40000},
+			MappedAddr: &net.UDPAddr{IP: net.IPv4(198, 51, 100, 44), Port: 45678},
+			ServerAddr: &net.UDPAddr{IP: net.IPv4(198, 51, 100, 1), Port: 3478},
+		}},
+	})
+	if len(hints) != 1 || hints[0] != "198.51.100.44:45678/192.168.1.20:40000" {
+		t.Fatalf("PublicEndpointHintsFromSTUNMapping() = %#v, want mapped public/local hint", hints)
+	}
+}
+
+func TestPublicEndpointHintsFromSTUNMappingSkipsOverlayLocalBase(t *testing.T) {
+	hints := PublicEndpointHintsFromSTUNMapping(STUNMappingReport{
+		NATType: NATTypeUnknown,
+		Probes: []STUNMappingProbe{{
+			LocalAddr:  &net.UDPAddr{IP: net.IPv4(100, 102, 17, 35), Port: 40000},
+			MappedAddr: &net.UDPAddr{IP: net.IPv4(198, 51, 100, 44), Port: 45678},
+			ServerAddr: &net.UDPAddr{IP: net.IPv4(198, 51, 100, 1), Port: 3478},
+		}},
+	})
+	if len(hints) != 1 || hints[0] != "198.51.100.44:45678" {
+		t.Fatalf("PublicEndpointHintsFromSTUNMapping() = %#v, want public-only hint", hints)
+	}
+}
+
 func TestStunBindTimeout(t *testing.T) {
 	// Server that never responds.
 	serverConn, err := net.ListenPacket("udp4", "127.0.0.1:0")

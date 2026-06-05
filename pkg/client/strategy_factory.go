@@ -138,7 +138,7 @@ func (e *engine) legacyICEStrategyConfig() legacyice.Config {
 		CheckTimeout:             e.iceCheckTimeout(),
 		ForceRelay:               e.relayOnlyMode(),
 		RelayDisabled:            e.disableLegacyRelayPlan(),
-		PublicEndpointHints:      append([]string(nil), e.cfg.NAT.PublicEndpointHints...),
+		PublicEndpointHints:      e.publicEndpointHints(),
 		DirectTrustedCIDRs:       append([]string(nil), e.cfg.NAT.DirectTrustedCIDRs...),
 		PublicDirectTrustedCIDRs: append([]string(nil), e.cfg.NAT.PublicDirectTrustedCIDRs...),
 	}
@@ -184,6 +184,23 @@ func (e *engine) legacyICEStrategyConfig() legacyice.Config {
 		})
 	}
 	return cfg
+}
+
+func (e *engine) publicEndpointHints() []string {
+	e.mu.RLock()
+	runtimeHints := append([]string(nil), e.runtimePublicEndpointHints...)
+	e.mu.RUnlock()
+	return mergeStrategyTrustedCIDRs(e.cfg.NAT.PublicEndpointHints, runtimeHints)
+}
+
+func runtimePublicEndpointHintsFromReport(cfg config.NATConfig, report nat.STUNMappingReport) []string {
+	if !cfg.AutoPublicEndpointHints {
+		return nil
+	}
+	if report.NATType == nat.NATTypeSymmetric {
+		return nil
+	}
+	return nat.PublicEndpointHintsFromSTUNMapping(report)
 }
 
 func (e *engine) disableLegacyRelayPlan() bool {

@@ -435,6 +435,7 @@ Phase 3A (Strategy Portfolio Foundation) 已完成。以下是我基于代码现
 - 2026-06-06 起，`legacyice/public_direct` 默认不在 natpierce、Tailscale、ZeroTier、Docker/vEthernet、Wintun/WinkYou 等疑似外部 overlay/虚拟接口上 gather candidate。普通 `direct_prefer` 仍可用这些路径先保活，但 `public_direct` 不再把外部 overlay 接口当作 protected-direct 证明来源。
 - 2026-06-06 起，`wink doctor` 的 STUN 检查会复用同一个本地 UDP socket 探测多个 public-direct STUN 来源，并报告 `nat_type` 与每个 mapped endpoint。如果同一 socket 到不同 STUN 目的地得到不同公网映射，会显示 `nat_type=symmetric`，用于解释为什么标准 STUN/srflx public-direct 可能无法复现 natpierce 的打洞路径。
 - 2026-06-06 起，`wink doctor` 会把 STUN 观测到的公网映射整理成 `nat.public_endpoint_hints` 候选。稳定映射可作为配置候选；symmetric/endpoint-dependent 映射只作为与 natpierce 实际公网端点对比的证据，不应自动视为稳定 hint。
+- 2026-06-06 起，新增 `nat.auto_public_endpoint_hints` 显式开关。开启后，client 启动时会把非 symmetric 的稳定 STUN 映射合入 `legacyice/public_direct` 的 runtime `public_endpoint_hints`；symmetric 映射仍只作为诊断和 natpierce 对比证据，不自动作为生产候选。
 - 2026-06-06 起，生产 resolver 在 `connectivity.mode=auto`、本机检测为 `nat_type=symmetric` 且配置了 TURN 时，会优先尝试 `relay_only`，再保留 `legacy_ice_udp`。没有 TURN 时仍保持 `legacy_ice_udp` 优先，避免把不可用的 relay-only 放在 public-direct 打洞之前。这不会设置 `ForceRelay`，因此 legacy 内部的 `public_direct` 仍可作为后续 fallback/improvement 继续争取独立路径。
 - 2026-06-06 起，生产 `legacy_ice_udp` 配置在无 TURN 且非显式 relay-only 模式下会禁用内部 `legacyice/relay_only` plan。这样旧 observation 中的 relay success 不会把当前不可用的 relay plan 排到 `public_direct` 前面，避免无 TURN 环境浪费 candidate budget。
 - 2026-06-06 起，`wink doctor` 会在 strategy 层输出 `legacy_ice_udp` 内部 plan order，用于确认无 TURN 环境是否实际执行 `legacyice/direct_prefer -> legacyice/public_direct`，而不是先等待不可用的 relay plan。

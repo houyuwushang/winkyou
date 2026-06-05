@@ -59,6 +59,9 @@ func TestLoadValidFile(t *testing.T) {
 	if len(cfg.NAT.NAT1To1IPs) != 1 || cfg.NAT.NAT1To1IPs[0] != "203.0.113.10/192.168.0.10" {
 		t.Fatalf("nat1to1 ips = %#v, want explicit external/local mapping", cfg.NAT.NAT1To1IPs)
 	}
+	if cfg.NAT.AutoPublicEndpointHints {
+		t.Fatal("auto_public_endpoint_hints = true, want default sample false")
+	}
 	if len(cfg.NAT.DirectTrustedCIDRs) != 1 || cfg.NAT.DirectTrustedCIDRs[0] != "100.64.0.0/10" {
 		t.Fatalf("direct trusted CIDRs = %#v, want 100.64.0.0/10", cfg.NAT.DirectTrustedCIDRs)
 	}

@@ -58,7 +58,8 @@ type engine struct {
 	inbandSignals map[string][]cachedInbandSignal
 	inbandSeen    map[string]time.Time
 
-	observationStore *solverstore.ObservationStore
+	observationStore           *solverstore.ObservationStore
+	runtimePublicEndpointHints []string
 
 	runCtx    context.Context
 	runCancel context.CancelFunc
@@ -203,10 +204,15 @@ func (e *engine) Start(ctx context.Context) (err error) {
 	e.initPeerManager()
 
 	natType := nat.NATTypeUnknown
+	var runtimePublicEndpointHints []string
 	detectCtx, cancelDetect := context.WithTimeout(ctx, 3*time.Second)
 	defer cancelDetect()
-	if detected, detectErr := e.nat.DetectNATType(detectCtx); detectErr == nil {
-		natType = detected
+	if report, detectErr := e.nat.DetectSTUNMapping(detectCtx); detectErr == nil {
+		natType = report.NATType
+		runtimePublicEndpointHints = runtimePublicEndpointHintsFromReport(e.cfg.NAT, report)
+		if len(runtimePublicEndpointHints) > 0 {
+			e.log.Info("using runtime public endpoint hints from stable STUN mapping", logger.String("hints", strings.Join(runtimePublicEndpointHints, ",")))
+		}
 	} else {
 		e.log.Warn("nat detection failed", logger.Error(detectErr))
 	}
@@ -220,6 +226,7 @@ func (e *engine) Start(ctx context.Context) (err error) {
 	e.status.CoordinatorURL = e.cfg.Coordinator.URL
 	e.status.NATType = natType.String()
 	e.status.StartedAt = time.Now()
+	e.runtimePublicEndpointHints = append([]string(nil), runtimePublicEndpointHints...)
 	e.mu.Unlock()
 
 	runCtx, runCancel := context.WithCancel(context.Background())

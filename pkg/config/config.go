@@ -65,6 +65,7 @@ type NATConfig struct {
 	NAT1To1IPs                []string           `mapstructure:"nat1to1_ips" yaml:"nat1to1_ips"`
 	NAT1To1CandidateType      string             `mapstructure:"nat1to1_candidate_type" yaml:"nat1to1_candidate_type"`
 	PublicEndpointHints       []string           `mapstructure:"public_endpoint_hints" yaml:"public_endpoint_hints"`
+	AutoPublicEndpointHints   bool               `mapstructure:"auto_public_endpoint_hints" yaml:"auto_public_endpoint_hints"`
 	DirectTrustedCIDRs        []string           `mapstructure:"direct_trusted_cidrs" yaml:"direct_trusted_cidrs"`
 	PublicDirectTrustedCIDRs  []string           `mapstructure:"public_direct_trusted_cidrs" yaml:"public_direct_trusted_cidrs"`
 }

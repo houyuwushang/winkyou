@@ -27,6 +27,11 @@ func (n *natTraversalImpl) DetectNATType(ctx context.Context) (NATType, error) {
 	return report.NATType, nil
 }
 
+// DetectSTUNMapping probes STUN servers and returns the complete mapping report.
+func (n *natTraversalImpl) DetectSTUNMapping(ctx context.Context) (STUNMappingReport, error) {
+	return ProbeSTUNMapping(ctx, n.cfg.STUNServers)
+}
+
 // NewICEAgent creates a real pion/ice-backed ICE agent.
 func (n *natTraversalImpl) NewICEAgent(cfg ICEConfig) (ICEAgent, error) {
 	if cfg.GatherTimeout == 0 {

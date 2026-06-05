@@ -146,6 +146,15 @@ nat:
 
 当 STUN 映射看起来稳定时，doctor 会在 suggestion 中给出 `nat.public_endpoint_hints=[...]` 候选；如果能推断本机真实出口地址，会写成 `公网ip:公网端口/本地ip:本地端口`。如果显示 `nat_type=symmetric`，doctor 只会把这些端点标成 `public_endpoint_hint_candidates` 供对比 natpierce，不应直接当作稳定配置。实际填入配置前，应确认该公网端点和 natpierce 或路由器日志里的可用路径一致，并且本地 base IP 是物理/underlay 出口而不是 natpierce、Tailscale、Docker 或 Wintun 虚拟接口。
 
+如果要让生产 client 自动复用稳定 STUN 观测，可以显式开启：
+
+```yaml
+nat:
+  auto_public_endpoint_hints: true
+```
+
+该开关默认关闭。开启后，启动时 NAT detection 如果看到非 symmetric 的稳定公网映射，会把这些运行时 hint 合入 `legacyice/public_direct`。如果 doctor 显示 `nat_type=symmetric`，生产路径仍不会自动使用这些映射；这不是说 natpierce 的直连不可能，而是说明 WinkYou 还不能把“到 STUN 服务器的映射”安全等同于“到 inner-gw peer 的映射”。这种情况应继续看 `legacyice/public_direct` 是否学到 `peer_reflexive_pair` / `public_direct_learned_pair`，或手工配置已确认稳定的 natpierce/路由器端点。
+
 无 TURN 的 `auto` 模式还会禁用 `legacy_ice_udp` 内部的 `legacyice/relay_only` plan。这样即使 observation history 里有旧的 relay success，当前会话也不会先等待不可用的 relay plan，而是把预算留给 `direct_prefer` 和 `public_direct`。显式 `connectivity.mode: relay_only` 或 `nat.force_relay: true` 仍会保留 relay-only 行为，用于检查 TURN 配置或强制 relay。
 
 `wink doctor` 的 `strategy/legacy plans` 检查会直接显示当前 legacy 内部执行顺序。无 TURN auto 模式应看到 `legacyice/direct_prefer -> legacyice/public_direct (relay plan disabled: no TURN configured)`；如果看到 `legacyice/relay_only` 排在里面，说明当前配置已经启用了 TURN 或显式 relay-only/force-relay。
