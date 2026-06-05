@@ -5,6 +5,7 @@ import (
 	"strings"
 	"time"
 
+	"winkyou/pkg/config"
 	"winkyou/pkg/nat"
 	rproto "winkyou/pkg/rendezvous/proto"
 	sesspkg "winkyou/pkg/session"
@@ -112,10 +113,22 @@ func (e *engine) preferRelayForSymmetricNAT() bool {
 	if !strings.EqualFold(strings.TrimSpace(e.cfg.Connectivity.Mode), "auto") {
 		return false
 	}
+	if !hasTURNServers(e.cfg.NAT.TURNServers) {
+		return false
+	}
 	e.mu.RLock()
 	natType := strings.TrimSpace(e.status.NATType)
 	e.mu.RUnlock()
 	return natType == nat.NATTypeSymmetric.String()
+}
+
+func hasTURNServers(servers []config.TURNServerConfig) bool {
+	for _, server := range servers {
+		if strings.TrimSpace(server.URL) != "" {
+			return true
+		}
+	}
+	return false
 }
 
 func (e *engine) legacyICEStrategyConfig() legacyice.Config {

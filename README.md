@@ -24,7 +24,7 @@ WinkYou = connectivity solver + secure WireGuard data plane
 - 当前生产注册顺序保持兼容：`legacy_ice_udp` -> `relay_only`
 - `tcp_framed` 默认禁用，只有显式 `tcp_framed.enabled: true` 且加入 `connectivity.strategy_order` 时才会注册
 - `connectivity.mode: relay_only` 会把生产 strategy 顺序切到 `relay_only` -> `legacy_ice_udp`
-- `connectivity.mode: auto` 下如果本机 NAT 检测为 `symmetric`，生产 resolver 会临时把顺序调为 `relay_only` -> `legacy_ice_udp`，先用 relay 保活，再让 legacy/public-direct 继续尝试独立路径
+- `connectivity.mode: auto` 下如果本机 NAT 检测为 `symmetric` 且已配置 TURN，生产 resolver 会临时把顺序调为 `relay_only` -> `legacy_ice_udp`，先用 relay 保活，再让 legacy/public-direct 继续尝试独立路径；如果没有 TURN，仍保持 `legacy_ice_udp` 优先，让 `direct_prefer/public_direct` 先尝试打洞
 - 旧的 `nat.force_relay: true` 仍兼容映射到 relay-only 行为
 - 旧 peer 空 capability 仍会隐式 fallback 到 `legacy_ice_udp`
 - `wink doctor` 已提供 config、coordinator、STUN、TURN、本地接口、strategy、routing、tunnel、transport 的分层诊断；STUN 检查会用同一个本地 UDP socket 探测多个 public-direct STUN 来源，显示本机映射地址并提示映射是否稳定；`public direct evidence` 检查会读取 observation history，说明 `legacyice/public_direct` 是未尝试、无可用公网候选、ICE 检查失败，还是已证明 `protected_direct`；`--route-target <ip>` 可以检查访问某个目标 IP 时当前操作系统实际选中的接口/本地地址/下一跳，并在命中 natpierce、Tailscale、Docker 等外部 overlay 接口时给出 warning
@@ -88,7 +88,7 @@ node:
 
 默认 `auto` 模式会启用 protected-direct multipath：最多保留 primary + 一条 standby，并默认开启 shadow write，让 standby path 也持续收到数据包，从而维持 NAT/relay 状态。session 会执行预算内候选，而不是在第一个 direct 成功后立刻停止；legacy ICE 会把 selected pair 的 RTT 写入 path metrics，让低延迟 relay/其他 path 和高延迟 direct 能参与同一轮评分。默认 scoring 会惩罚 relay/依赖路径，并对 `unknown` 依赖加倍惩罚，同时给真正的 `protected_direct` 加保护分。这样当 `legacyice/direct_prefer` 选中了低延迟但依赖不清的 path，而 `legacyice/public_direct` 或后续 direct path 也成功时，client 会把它们组合成一个 `multipath` transport 绑定给 WireGuard；如果没有 RTT 证据，依赖不清的 direct-like path 不应仅因为看起来是 direct 就压过明确可用的 relay。
 
-如果启动时 NAT detection 得到 `symmetric`，`auto` 模式会把 production strategy 顺序临时调成 `relay_only`、`legacy_ice_udp`。这不会设置 `nat.force_relay`，也不会禁用 `legacyice/public_direct`；它只是避免在 endpoint-dependent 映射环境下先把用户流量绑到高失败概率 direct path，后续仍会继续尝试 protected-direct improvement。
+如果启动时 NAT detection 得到 `symmetric` 且配置了 TURN，`auto` 模式会把 production strategy 顺序临时调成 `relay_only`、`legacy_ice_udp`。这不会设置 `nat.force_relay`，也不会禁用 `legacyice/public_direct`；它只是避免在 endpoint-dependent 映射环境下先把用户流量绑到高失败概率 direct path，后续仍会继续尝试 protected-direct improvement。如果没有 TURN，`relay_only` 本身不可用，生产顺序会保持 `legacy_ice_udp` 在前，继续优先尝试 `direct_prefer/public_direct`。
 
 如果初始绑定只拿到了 relay 或依赖不清的 direct-like path，client 不会把它当作最终状态停止。它会在保持现有 WireGuard 数据面的同时继续调度 protected-direct improvement；尝试失败时关闭临时 transport 并保留旧 path，尝试成功且 path summary 明确为 `protected_direct` 时再替换 tunnel peer 的 transport。需要回退到旧单路径行为时，可以显式设置 `connectivity.multipath.enabled: false`。
 
