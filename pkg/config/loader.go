@@ -49,6 +49,7 @@ func Load(path string) (*Config, error) {
 
 func setDefaults(v *viper.Viper, cfg Config) {
 	v.SetDefault("node.name", cfg.Node.Name)
+	v.SetDefault("node.advertise_routes", cfg.Node.AdvertiseRoutes)
 	v.SetDefault("log.level", cfg.Log.Level)
 	v.SetDefault("log.format", cfg.Log.Format)
 	v.SetDefault("log.output", cfg.Log.Output)

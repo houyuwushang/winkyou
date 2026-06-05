@@ -84,6 +84,30 @@ func TestGetPeerByNodeID(t *testing.T) {
 	}
 }
 
+func TestRegisterAdvertisedRouteEndpoints(t *testing.T) {
+	clock := &fakeClock{now: time.Unix(1700000000, 0)}
+	srv := newTestServer(t, clock, 5*time.Second)
+
+	reg, err := srv.Register(context.Background(), &client.RegisterRequest{
+		PublicKey: "pub-route",
+		Name:      "route-node",
+		Metadata: map[string]string{
+			client.MetadataEndpointsKey: "route:10.6.22.0/24, route:10.7.0.0/16",
+		},
+	})
+	if err != nil {
+		t.Fatalf("Register() error = %v", err)
+	}
+
+	peer, err := srv.GetPeer(context.Background(), &client.GetPeerRequest{NodeID: reg.NodeID})
+	if err != nil {
+		t.Fatalf("GetPeer() error = %v", err)
+	}
+	if len(peer.Endpoints) != 2 || peer.Endpoints[0] != "route:10.6.22.0/24" || peer.Endpoints[1] != "route:10.7.0.0/16" {
+		t.Fatalf("peer endpoints = %#v, want advertised route endpoints", peer.Endpoints)
+	}
+}
+
 func TestForwardSignalDropsOfflineNode(t *testing.T) {
 	clock := &fakeClock{now: time.Unix(1700000000, 0)}
 	srv := newTestServer(t, clock, 2*time.Second)

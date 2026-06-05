@@ -23,6 +23,10 @@ func (c *Config) Validate() error {
 		return errors.New("config is nil")
 	}
 
+	if err := validateCIDRList("node.advertise_routes", c.Node.AdvertiseRoutes); err != nil {
+		return err
+	}
+
 	if err := requireOneOf("log.level", c.Log.Level, validLogLevels); err != nil {
 		return err
 	}

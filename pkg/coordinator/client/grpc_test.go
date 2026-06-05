@@ -41,6 +41,9 @@ func TestGRPCClientRegisterListGetAndSignal(t *testing.T) {
 	betaResp, err := beta.Register(context.Background(), &client.RegisterRequest{
 		PublicKey: "beta-pub",
 		Name:      "beta",
+		Metadata: map[string]string{
+			client.MetadataEndpointsKey: "route:10.6.22.0/24",
+		},
 	})
 	if err != nil {
 		t.Fatalf("beta Register() error = %v", err)
@@ -60,6 +63,9 @@ func TestGRPCClientRegisterListGetAndSignal(t *testing.T) {
 	}
 	if peer.Name != "beta" {
 		t.Fatalf("peer.Name = %q, want beta", peer.Name)
+	}
+	if len(peer.Endpoints) != 1 || peer.Endpoints[0] != "route:10.6.22.0/24" {
+		t.Fatalf("peer.Endpoints = %#v, want advertised route endpoint", peer.Endpoints)
 	}
 
 	signalCh := make(chan *client.SignalNotification, 1)

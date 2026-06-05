@@ -47,6 +47,7 @@ type RuntimePeerStatus struct {
 	Name                   string            `json:"name"`
 	VirtualIP              string            `json:"virtual_ip"`
 	PublicKey              string            `json:"public_key"`
+	AdvertisedRoutes       []string          `json:"advertised_routes,omitempty"`
 	State                  string            `json:"state"`
 	ControlState           string            `json:"control_state"`
 	DataState              string            `json:"data_state"`
@@ -182,6 +183,7 @@ func newRuntimeStateSnapshot(status *EngineStatus, peers []*PeerStatus) *Runtime
 			Name:                   peer.Name,
 			VirtualIP:              ipString(peer.VirtualIP),
 			PublicKey:              peer.PublicKey,
+			AdvertisedRoutes:       ipNetStrings(peer.AdvertisedRoutes),
 			State:                  peer.State.String(),
 			ControlState:           peer.ControlState.String(),
 			DataState:              peer.DataState.String(),
@@ -227,6 +229,17 @@ func ipString(ip net.IP) string {
 		return ""
 	}
 	return ip.String()
+}
+
+func ipNetStrings(values []net.IPNet) []string {
+	if len(values) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(values))
+	for i := range values {
+		out = append(out, values[i].String())
+	}
+	return out
 }
 
 func cidrString(prefix *net.IPNet) string {

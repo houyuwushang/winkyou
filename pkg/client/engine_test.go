@@ -87,6 +87,7 @@ func TestRuntimeStateRoundTrip(t *testing.T) {
 		Peers: []RuntimePeerStatus{{
 			NodeID:                 "node-2",
 			Name:                   "beta",
+			AdvertisedRoutes:       []string{"10.6.22.0/24"},
 			State:                  PeerStateConnecting.String(),
 			ControlState:           PeerControlStateConnected.String(),
 			DataState:              PeerDataStateBound.String(),
@@ -131,6 +132,9 @@ func TestRuntimeStateRoundTrip(t *testing.T) {
 	}
 	if loaded.Peers[0].ControlState != PeerControlStateConnected.String() || loaded.Peers[0].DataState != PeerDataStateBound.String() {
 		t.Fatalf("loaded peer states = control=%q data=%q", loaded.Peers[0].ControlState, loaded.Peers[0].DataState)
+	}
+	if len(loaded.Peers[0].AdvertisedRoutes) != 1 || loaded.Peers[0].AdvertisedRoutes[0] != "10.6.22.0/24" {
+		t.Fatalf("loaded advertised routes = %#v, want 10.6.22.0/24", loaded.Peers[0].AdvertisedRoutes)
 	}
 	if loaded.Peers[0].LastPathStrategy != "relay_only" || loaded.Peers[0].LastPathEndpoint != "203.0.113.10:50000" {
 		t.Fatalf("loaded path cache = %#v", loaded.Peers[0])
@@ -227,6 +231,42 @@ func TestRuntimeStatePathAcceptsExplicitRuntimeFile(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "wink.runtime.json")
 	if got := RuntimeStatePath(path); got != path {
 		t.Fatalf("RuntimeStatePath(%q) = %q, want exact path", path, got)
+	}
+}
+
+func TestRegistrationMetadataPublishesAdvertisedRoutes(t *testing.T) {
+	eng := &engine{cfg: config.Default()}
+	eng.cfg.NetIf.Backend = "tun"
+	eng.cfg.Node.Name = "alpha"
+	eng.cfg.Node.AdvertiseRoutes = []string{"10.6.22.0/24", "bad-route"}
+
+	metadata := eng.registrationMetadata()
+	if metadata["backend"] != "tun" || metadata["node_name"] != "alpha" {
+		t.Fatalf("registration metadata = %#v, want backend and node_name", metadata)
+	}
+	if got := metadata[coordclient.MetadataEndpointsKey]; got != "route:10.6.22.0/24" {
+		t.Fatalf("registration endpoints metadata = %q, want route:10.6.22.0/24", got)
+	}
+}
+
+func TestToPeerStatusParsesAdvertisedRoutes(t *testing.T) {
+	peer := toPeerStatus(&coordclient.PeerInfo{
+		NodeID:    "node-2",
+		Name:      "beta",
+		PublicKey: mustTestPublicKey(t).String(),
+		VirtualIP: "10.77.0.2",
+		Endpoints: []string{
+			"route:10.6.22.0/24",
+			"203.0.113.10:51820",
+			"route:10.6.22.0/24",
+			"route:not-a-cidr",
+		},
+	})
+	if peer.Endpoint == nil || peer.Endpoint.String() != "203.0.113.10:51820" {
+		t.Fatalf("peer endpoint = %+v, want UDP endpoint", peer.Endpoint)
+	}
+	if len(peer.AdvertisedRoutes) != 1 || peer.AdvertisedRoutes[0].String() != "10.6.22.0/24" {
+		t.Fatalf("peer advertised routes = %#v, want 10.6.22.0/24", peer.AdvertisedRoutes)
 	}
 }
 
@@ -668,6 +708,62 @@ func TestBindingPeerRelayBootstrapKeepaliveUsesInitiatorOnly(t *testing.T) {
 	})
 }
 
+func TestBindingPeerIncludesAdvertisedRoutes(t *testing.T) {
+	pub := mustTestPublicKey(t)
+	_, route, err := net.ParseCIDR("10.6.22.0/24")
+	if err != nil {
+		t.Fatalf("ParseCIDR() error = %v", err)
+	}
+	eng := &engine{
+		cfg: config.Default(),
+		peers: map[string]*PeerStatus{
+			"node-2": {
+				NodeID:           "node-2",
+				PublicKey:        pub.String(),
+				VirtualIP:        net.ParseIP("10.77.0.2"),
+				AdvertisedRoutes: []net.IPNet{*route},
+			},
+		},
+	}
+
+	bindingPeer, err := eng.BindingPeer(context.Background(), "node-2")
+	if err != nil {
+		t.Fatalf("BindingPeer() error = %v", err)
+	}
+	if len(bindingPeer.AllowedIPs) != 2 {
+		t.Fatalf("allowed IPs = %#v, want peer /32 + advertised route", bindingPeer.AllowedIPs)
+	}
+	if bindingPeer.AllowedIPs[0].String() != "10.77.0.2/32" || bindingPeer.AllowedIPs[1].String() != "10.6.22.0/24" {
+		t.Fatalf("allowed IPs = %#v, want 10.77.0.2/32 and 10.6.22.0/24", bindingPeer.AllowedIPs)
+	}
+}
+
+func TestApplyPeerAdvertisedRoutes(t *testing.T) {
+	_, route, err := net.ParseCIDR("10.6.22.0/24")
+	if err != nil {
+		t.Fatalf("ParseCIDR() error = %v", err)
+	}
+	ni := &routeTrackingNetif{}
+	eng := &engine{
+		log:   logger.Nop(),
+		netif: ni,
+	}
+
+	eng.applyPeerAdvertisedRoutes(&PeerStatus{
+		VirtualIP:        net.ParseIP("10.77.0.2"),
+		AdvertisedRoutes: []net.IPNet{*route},
+	})
+
+	if len(ni.added) != 1 || ni.added[0] != "10.6.22.0/24 via 10.77.0.2" {
+		t.Fatalf("added routes = %#v, want advertised route via peer virtual IP", ni.added)
+	}
+
+	removePeerAdvertisedRoutes(ni, []net.IPNet{*route}, logger.Nop())
+	if len(ni.removed) != 1 || ni.removed[0] != "10.6.22.0/24" {
+		t.Fatalf("removed routes = %#v, want advertised route removed", ni.removed)
+	}
+}
+
 func TestSchedulePeerRetryUsesCapturedRunContext(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	session := &peerSession{initiator: true}
@@ -790,6 +886,27 @@ func (f fakeTunnelForEngineTest) Events() <-chan tunnel.TunnelEvent {
 		return make(chan tunnel.TunnelEvent)
 	}
 	return f.events
+}
+
+type routeTrackingNetif struct {
+	added   []string
+	removed []string
+}
+
+func (r *routeTrackingNetif) Name() string                   { return "wink0" }
+func (r *routeTrackingNetif) Type() string                   { return "tun" }
+func (r *routeTrackingNetif) MTU() int                       { return 1280 }
+func (r *routeTrackingNetif) Read([]byte) (int, error)       { return 0, nil }
+func (r *routeTrackingNetif) Write(buf []byte) (int, error)  { return len(buf), nil }
+func (r *routeTrackingNetif) Close() error                   { return nil }
+func (r *routeTrackingNetif) SetIP(net.IP, net.IPMask) error { return nil }
+func (r *routeTrackingNetif) AddRoute(dst *net.IPNet, gateway net.IP) error {
+	r.added = append(r.added, dst.String()+" via "+gateway.String())
+	return nil
+}
+func (r *routeTrackingNetif) RemoveRoute(dst *net.IPNet) error {
+	r.removed = append(r.removed, dst.String())
+	return nil
 }
 
 func waitForRuntimeState(path string, predicate func(state *RuntimeState) bool) (*RuntimeState, error) {

@@ -17,6 +17,9 @@ func TestLoadValidFile(t *testing.T) {
 	if cfg.Node.Name != "my-node" {
 		t.Fatalf("expected node name my-node, got %q", cfg.Node.Name)
 	}
+	if len(cfg.Node.AdvertiseRoutes) != 1 || cfg.Node.AdvertiseRoutes[0] != "10.6.22.0/24" {
+		t.Fatalf("node advertise routes = %#v, want 10.6.22.0/24", cfg.Node.AdvertiseRoutes)
+	}
 	if cfg.Log.Level != "warn" {
 		t.Fatalf("expected log level warn, got %q", cfg.Log.Level)
 	}
@@ -102,6 +105,23 @@ func TestValidateInvalidConfig(t *testing.T) {
 	err := cfg.Validate()
 	if err == nil {
 		t.Fatal("expected validation error, got nil")
+	}
+}
+
+func TestValidateNodeAdvertiseRoutes(t *testing.T) {
+	cfg := config.Default()
+	cfg.Node.AdvertiseRoutes = []string{"10.6.22.0/24"}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("Validate() error = %v", err)
+	}
+
+	cfg.Node.AdvertiseRoutes = []string{"inner-gw"}
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("Validate() should reject invalid advertised route")
+	}
+	if got := err.Error(); got != `invalid node.advertise_routes[0]: "inner-gw"` {
+		t.Fatalf("Validate() error = %q, want invalid advertised route", got)
 	}
 }
 

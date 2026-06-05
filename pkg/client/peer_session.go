@@ -288,6 +288,7 @@ func (e *engine) handlePeerSessionBound(nodeID string, s *peerSession, result so
 		handler(snapshot, PeerEventUpsert)
 	}
 	e.persistState()
+	e.applyPeerAdvertisedRoutes(snapshot)
 	if shouldImproveBoundPath(e.multipathPathPolicy(), result.Summary) {
 		e.schedulePeerImprovement(nodeID, s)
 	}
@@ -349,9 +350,11 @@ func (e *engine) BindingPeer(ctx context.Context, peerID string) (*sesspkg.Bindi
 	if relayBootstrap && session != nil && !session.initiator {
 		keepalive = 0
 	}
+	allowedIPs := []net.IPNet{*allowedIP}
+	allowedIPs = append(allowedIPs, cloneIPNets(peer.AdvertisedRoutes)...)
 	return &sesspkg.BindingPeer{
 		PublicKey:  publicKey,
-		AllowedIPs: []net.IPNet{*allowedIP},
+		AllowedIPs: allowedIPs,
 		Endpoint:   netutil.CloneUDPAddr(peer.Endpoint),
 		Keepalive:  keepalive,
 	}, nil

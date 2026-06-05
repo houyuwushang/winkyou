@@ -68,6 +68,7 @@ type PeerStatus struct {
 	Name                   string
 	VirtualIP              net.IP
 	PublicKey              string
+	AdvertisedRoutes       []net.IPNet
 	State                  PeerState
 	ControlState           PeerControlState
 	DataState              PeerDataState

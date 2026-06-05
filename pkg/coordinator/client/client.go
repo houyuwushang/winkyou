@@ -39,6 +39,8 @@ type RegisterRequest struct {
 	Metadata  map[string]string
 }
 
+const MetadataEndpointsKey = "endpoints"
+
 type RegisterResponse struct {
 	NodeID      string
 	VirtualIP   string

@@ -164,10 +164,7 @@ func (e *engine) Start(ctx context.Context) (err error) {
 		PublicKey: privateKey.PublicKey().String(),
 		Name:      e.cfg.Node.Name,
 		AuthKey:   e.cfg.Coordinator.AuthKey,
-		Metadata: map[string]string{
-			"backend":   e.cfg.NetIf.Backend,
-			"node_name": e.cfg.Node.Name,
-		},
+		Metadata:  e.registrationMetadata(),
 	})
 	if err != nil {
 		return err
@@ -713,6 +710,17 @@ func (e *engine) currentNodeID() string {
 	return e.status.NodeID
 }
 
+func (e *engine) registrationMetadata() map[string]string {
+	metadata := map[string]string{
+		"backend":   e.cfg.NetIf.Backend,
+		"node_name": e.cfg.Node.Name,
+	}
+	if endpoints := advertisedRouteEndpoints(e.cfg.Node.AdvertiseRoutes); len(endpoints) > 0 {
+		metadata[coordclient.MetadataEndpointsKey] = strings.Join(endpoints, ",")
+	}
+	return metadata
+}
+
 func (e *engine) runContext() (context.Context, bool) {
 	if e == nil {
 		return nil, false
@@ -725,24 +733,29 @@ func (e *engine) runContext() (context.Context, bool) {
 
 func toPeerStatus(peer *coordclient.PeerInfo) *PeerStatus {
 	status := &PeerStatus{
-		NodeID:         peer.NodeID,
-		Name:           peer.Name,
-		PublicKey:      peer.PublicKey,
-		VirtualIP:      net.ParseIP(peer.VirtualIP),
-		LastSeen:       unixOrZero(peer.LastSeen),
-		State:          PeerStateDisconnected,
-		ControlState:   PeerControlStateDisconnected,
-		DataState:      PeerDataStateStale,
-		ConnectionType: ConnectionTypeDirect,
+		NodeID:           peer.NodeID,
+		Name:             peer.Name,
+		PublicKey:        peer.PublicKey,
+		VirtualIP:        net.ParseIP(peer.VirtualIP),
+		AdvertisedRoutes: parseAdvertisedRouteEndpoints(peer.Endpoints),
+		LastSeen:         unixOrZero(peer.LastSeen),
+		State:            PeerStateDisconnected,
+		ControlState:     PeerControlStateDisconnected,
+		DataState:        PeerDataStateStale,
+		ConnectionType:   ConnectionTypeDirect,
 	}
 	if peer.Online {
 		status.State = PeerStateConnecting
 		status.ControlState = PeerControlStateConnected
 		status.DataState = PeerDataStateConnecting
 	}
-	if len(peer.Endpoints) > 0 {
-		if endpoint, err := net.ResolveUDPAddr("udp", peer.Endpoints[0]); err == nil {
+	for _, raw := range peer.Endpoints {
+		if strings.HasPrefix(strings.TrimSpace(raw), "route:") {
+			continue
+		}
+		if endpoint, err := net.ResolveUDPAddr("udp", raw); err == nil {
 			status.Endpoint = endpoint
+			break
 		}
 	}
 	return status
@@ -776,10 +789,45 @@ func clonePeerStatus(peer *PeerStatus) *PeerStatus {
 	out := *peer
 	out.VirtualIP = append(net.IP(nil), peer.VirtualIP...)
 	out.Endpoint = netutil.CloneUDPAddr(peer.Endpoint)
+	out.AdvertisedRoutes = cloneIPNets(peer.AdvertisedRoutes)
 	out.StandbyPathIDs = append([]string(nil), peer.StandbyPathIDs...)
 	out.LastPathDependencies = append([]string(nil), peer.LastPathDependencies...)
 	out.LastPathDetails = cloneStringMap(peer.LastPathDetails)
 	return &out
+}
+
+func advertisedRouteEndpoints(routes []string) []string {
+	out := make([]string, 0, len(routes))
+	for _, route := range routes {
+		_, prefix, err := net.ParseCIDR(strings.TrimSpace(route))
+		if err != nil || prefix == nil {
+			continue
+		}
+		out = append(out, "route:"+prefix.String())
+	}
+	return out
+}
+
+func parseAdvertisedRouteEndpoints(endpoints []string) []net.IPNet {
+	out := make([]net.IPNet, 0, len(endpoints))
+	seen := map[string]struct{}{}
+	for _, endpoint := range endpoints {
+		value := strings.TrimSpace(endpoint)
+		if !strings.HasPrefix(value, "route:") {
+			continue
+		}
+		_, prefix, err := net.ParseCIDR(strings.TrimSpace(strings.TrimPrefix(value, "route:")))
+		if err != nil || prefix == nil {
+			continue
+		}
+		key := prefix.String()
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, *cloneIPNet(prefix))
+	}
+	return out
 }
 
 func cloneStringMap(in map[string]string) map[string]string {

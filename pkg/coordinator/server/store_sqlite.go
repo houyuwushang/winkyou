@@ -133,6 +133,7 @@ func (s *SQLiteStore) Register(req *client.RegisterRequest, expectedAuthKey stri
 	if node != nil {
 		node.Name = req.Name
 		node.Metadata = cloneMap(req.Metadata)
+		node.Endpoints = endpointsFromMetadata(req.Metadata)
 		node.LastSeen = now
 		node.ExpiresAt = now.Add(s.leaseTTL)
 		node.ChangedAt = now
@@ -154,7 +155,7 @@ func (s *SQLiteStore) Register(req *client.RegisterRequest, expectedAuthKey stri
 	if err != nil {
 		return nil, err
 	}
-	node = &Node{NodeID: fmt.Sprintf("node-%06d", nextID), Name: req.Name, PublicKey: req.PublicKey, Metadata: cloneMap(req.Metadata), VirtualIP: virtualIP.String(), Online: true, LastSeen: now, ExpiresAt: now.Add(s.leaseTTL), ChangedAt: now}
+	node = &Node{NodeID: fmt.Sprintf("node-%06d", nextID), Name: req.Name, PublicKey: req.PublicKey, Metadata: cloneMap(req.Metadata), Endpoints: endpointsFromMetadata(req.Metadata), VirtualIP: virtualIP.String(), Online: true, LastSeen: now, ExpiresAt: now.Add(s.leaseTTL), ChangedAt: now}
 	if err := s.upsertNodeTx(tx, node); err != nil {
 		return nil, err
 	}

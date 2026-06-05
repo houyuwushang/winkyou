@@ -1,6 +1,7 @@
 package client
 
 import (
+	"net"
 	"time"
 
 	coordclient "winkyou/pkg/coordinator/client"
@@ -77,7 +78,9 @@ func (e *engine) handleSignal(signal *coordclient.SignalNotification) {
 
 func (e *engine) cleanupPeer(nodeID string) {
 	e.mu.Lock()
+	var advertisedRoutes []net.IPNet
 	if p := e.peers[nodeID]; p != nil {
+		advertisedRoutes = cloneIPNets(p.AdvertisedRoutes)
 		p.State = PeerStateDisconnected
 		p.ControlState = PeerControlStateDisconnected
 		p.DataState = PeerDataStateFailed
@@ -97,7 +100,9 @@ func (e *engine) cleanupPeer(nodeID string) {
 	e.mu.RLock()
 	peer := e.peers[nodeID]
 	tun := e.tun
+	ni := e.netif
 	e.mu.RUnlock()
+	removePeerAdvertisedRoutes(ni, advertisedRoutes, e.log)
 	if peer != nil {
 		if pub, err := tunnel.ParsePublicKey(peer.PublicKey); err == nil && tun != nil {
 			e.logCleanupError("remove tunnel peer", tun.RemovePeer(pub), logger.String("node_id", nodeID))

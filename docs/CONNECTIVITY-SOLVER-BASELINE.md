@@ -153,6 +153,8 @@ If the initial bound path is relay or a direct-like path with dependencies, the 
 
 Runtime state must expose the latest path plan, role, dependencies, and child path summary. A direct-like ICE result is only evidence of protected direct when `last_path_role=protected_direct` and no `last_path_dependencies` are present; `connection_type=direct` alone is not sufficient.
 
+Client runtime may publish explicit backend routes for operator-managed gateway peers through coordinator metadata using `route:<cidr>` endpoint entries derived from `node.advertise_routes`. Other peers may bind those published CIDRs into the gateway peer's WireGuard `AllowedIPs` and add local routes via the gateway peer virtual IP. This is a narrow routing feature for known backend networks, such as an `inner-gw` subnet behind a WinkYou peer; it is not automatic peer relay, does not move path selection into `pkg/tunnel`, and does not make the solver aware of route ownership. The gateway host remains responsible for OS IP forwarding and firewall policy.
+
 The existing `nat.force_relay` setting remains a compatibility entry and maps to relay-only behavior. Legacy fallback remains available for old peers with empty capability, and the legacy ICE path must still force relay candidate gathering in relay-only mode.
 
 Future strategies may include QUIC, proxy-friendly, or other transports, but the solver core should not encode those details directly.

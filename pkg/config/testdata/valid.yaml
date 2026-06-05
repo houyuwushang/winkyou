@@ -1,5 +1,7 @@
 node:
   name: "my-node"
+  advertise_routes:
+    - "10.6.22.0/24"
 
 log:
   level: "warn"

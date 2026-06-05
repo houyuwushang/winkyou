@@ -1,6 +1,9 @@
 package server
 
 import (
+	"net"
+	"strings"
+
 	"winkyou/pkg/coordinator/client"
 )
 
@@ -43,6 +46,28 @@ func cloneSlice(in []string) []string {
 	}
 	out := make([]string, len(in))
 	copy(out, in)
+	return out
+}
+
+func endpointsFromMetadata(metadata map[string]string) []string {
+	raw := strings.TrimSpace(metadata[client.MetadataEndpointsKey])
+	if raw == "" {
+		return nil
+	}
+	fields := strings.FieldsFunc(raw, func(r rune) bool {
+		return r == ',' || r == ';' || r == '\n' || r == '\r' || r == '\t'
+	})
+	out := make([]string, 0, len(fields))
+	for _, field := range fields {
+		value := strings.TrimSpace(field)
+		if !strings.HasPrefix(value, "route:") {
+			continue
+		}
+		_, prefix, err := net.ParseCIDR(strings.TrimSpace(strings.TrimPrefix(value, "route:")))
+		if err == nil && prefix != nil {
+			out = append(out, "route:"+prefix.String())
+		}
+	}
 	return out
 }
 

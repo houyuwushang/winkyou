@@ -14,7 +14,8 @@ type Config struct {
 }
 
 type NodeConfig struct {
-	Name string `mapstructure:"name" yaml:"name"`
+	Name            string   `mapstructure:"name" yaml:"name"`
+	AdvertiseRoutes []string `mapstructure:"advertise_routes" yaml:"advertise_routes"`
 }
 
 type LogConfig struct {
