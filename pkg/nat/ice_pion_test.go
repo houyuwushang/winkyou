@@ -234,6 +234,31 @@ func TestPublicDirectCandidateConfigSkipsRelayAndTURN(t *testing.T) {
 	}
 }
 
+func TestPublicDirectFailedTimeoutUsesConnectTimeout(t *testing.T) {
+	cfg := ICEConfig{
+		PublicDirectCandidate: true,
+		CheckTimeout:          12 * time.Second,
+		ConnectTimeout:        25 * time.Second,
+	}
+	if got := failedTimeoutForConfig(cfg); got != 25*time.Second {
+		t.Fatalf("public direct failed timeout = %v, want connect timeout", got)
+	}
+
+	cfg.CheckTimeout = 40 * time.Second
+	if got := failedTimeoutForConfig(cfg); got != 40*time.Second {
+		t.Fatalf("public direct failed timeout = %v, want larger check timeout", got)
+	}
+
+	cfg.ForceRelay = true
+	if got := failedTimeoutForConfig(cfg); got != 40*time.Second {
+		t.Fatalf("force relay failed timeout = %v, want configured check timeout", got)
+	}
+
+	if got := failedTimeoutForConfig(ICEConfig{CheckTimeout: 12 * time.Second, ConnectTimeout: 25 * time.Second}); got != 12*time.Second {
+		t.Fatalf("default failed timeout = %v, want configured check timeout", got)
+	}
+}
+
 func TestPublicDirectBindingRequestHandlerSwitchesOnlyPublicPairs(t *testing.T) {
 	handler := bindingRequestHandlerForConfig(ICEConfig{PublicDirectCandidate: true})
 	if handler == nil {

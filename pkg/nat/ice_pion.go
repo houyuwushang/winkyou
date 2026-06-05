@@ -51,10 +51,7 @@ func newICEPionAgent(cfg ICEConfig) (ICEAgent, error) {
 		return nil, err
 	}
 
-	failedTimeout := cfg.CheckTimeout
-	if failedTimeout <= 0 {
-		failedTimeout = 10 * time.Second
-	}
+	failedTimeout := failedTimeoutForConfig(cfg)
 	disconnectedTimeout := failedTimeout / 2
 	if disconnectedTimeout <= 0 {
 		disconnectedTimeout = 5 * time.Second
@@ -443,6 +440,24 @@ func acceptanceMinWaitForConfig(cfg ICEConfig) *time.Duration {
 		return nil
 	}
 	return durationPtr(publicDirectAcceptanceMinWait)
+}
+
+func failedTimeoutForConfig(cfg ICEConfig) time.Duration {
+	failedTimeout := cfg.CheckTimeout
+	if failedTimeout <= 0 {
+		failedTimeout = 10 * time.Second
+	}
+	if cfg.relayOnly || cfg.ForceRelay || !cfg.PublicDirectCandidate {
+		return failedTimeout
+	}
+	connectTimeout := cfg.ConnectTimeout
+	if connectTimeout <= 0 {
+		connectTimeout = 30 * time.Second
+	}
+	if failedTimeout < connectTimeout {
+		return connectTimeout
+	}
+	return failedTimeout
 }
 
 func bindingRequestHandlerForConfig(cfg ICEConfig) func(*stun.Message, pionice.Candidate, pionice.Candidate, *pionice.CandidatePair) bool {
