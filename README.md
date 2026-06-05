@@ -154,6 +154,8 @@ nat:
 
 `nat1to1_ips` 使用 Pion ICE 的 `external/local` 语义，适合公网 IP 映射和本地 ICE 端口范围稳定的场景。`public_endpoint_hints` 直接表达本机已知的公网 UDP `ip:port`，也可以写成 `公网ip:公网端口/本地ip:本地端口` 绑定到具体本地 UDP base；它只会作为 `legacyice/public_direct` 额外 srflx 候选发布。该配置适合拿 natpierce 或路由器日志里的稳定公网端点做验证。普通家宽或运营商 NAT 如果每个 UDP socket 都分配不同公网端口，仍应依赖 STUN 采集到的 server-reflexive candidate，或走 TURN/relay fallback。
 
+当 `legacyice/public_direct` 的 STUN gather 超时但本地 UDP candidate 已经建立时，NAT 层会返回已知本地候选，让上层继续追加 `public_endpoint_hints` 并尽快交换候选开始打洞。这不会把私网 host candidate 当作公网候选发布；最终信令里能否出现可用候选，仍由 `public_direct` 的公网过滤规则决定。
+
 用于排查真实 NAT piercing 时，legacy ICE 会把候选采集和过滤结果写入 observation history。客户端运行状态文件同目录下会生成 `<runtime-state-base>.observations.jsonl`，其中：
 
 - `candidate_gathered`：本端 gather 后准备发布的 candidate 统计。

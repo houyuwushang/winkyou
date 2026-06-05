@@ -238,6 +238,42 @@ func TestPublicDirectCandidateConfigSkipsRelayAndTURN(t *testing.T) {
 	}
 }
 
+func TestPublicDirectGatherCandidatesReturnsPartialCandidatesOnTimeout(t *testing.T) {
+	stunSink, err := net.ListenPacket("udp4", "127.0.0.1:0")
+	if err != nil {
+		t.Skipf("listen UDP sink: %v", err)
+	}
+	defer stunSink.Close()
+
+	nt, _ := NewNATTraversal(nil)
+	agent, err := nt.NewICEAgent(ICEConfig{
+		PublicDirectCandidate: true,
+		STUNServers:           []string{"stun:" + stunSink.LocalAddr().String()},
+		GatherTimeout:         50 * time.Millisecond,
+		ConnectTimeout:        time.Second,
+	})
+	if err != nil {
+		t.Fatalf("NewICEAgent(public direct) error: %v", err)
+	}
+	defer agent.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+
+	candidates, err := agent.GatherCandidates(ctx)
+	if err != nil {
+		t.Fatalf("GatherCandidates(public direct partial timeout) error = %v", err)
+	}
+	if len(candidates) == 0 {
+		t.Fatal("GatherCandidates(public direct partial timeout) returned no candidates")
+	}
+	if !slices.ContainsFunc(candidates, func(candidate Candidate) bool {
+		return candidate.Type == CandidateTypeHost
+	}) {
+		t.Fatalf("GatherCandidates(public direct partial timeout) = %#v, want a host candidate", candidates)
+	}
+}
+
 func TestPublicDirectDerivesOnlyUDPTURNAsSTUN(t *testing.T) {
 	udpURI, err := publicDirectSTUNURLFromTURN(TURNServer{URL: "turn.example.com:3478", Username: "user", Password: "pass"})
 	if err != nil {

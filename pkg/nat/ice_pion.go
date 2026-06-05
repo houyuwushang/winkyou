@@ -171,15 +171,24 @@ func (a *icePionAgent) GatherCandidates(ctx context.Context) ([]Candidate, error
 
 	select {
 	case <-gatherCtx.Done():
+		if a.cfg.PublicDirectCandidate {
+			localCandidates, err := a.localCandidatesFromAgent()
+			if err == nil && len(localCandidates) > 0 {
+				// Public-direct may rely on operator-supplied endpoint hints.
+				// If an external STUN probe is slow, returning already-bound
+				// host candidates lets the strategy append hints and start
+				// punching instead of failing before candidate exchange.
+				return cloneCandidates(localCandidates), nil
+			}
+			if err != nil {
+				return nil, fmt.Errorf("nat: gather candidates timeout: %w (partial candidates unavailable: %v)", gatherCtx.Err(), err)
+			}
+		}
 		return nil, fmt.Errorf("nat: gather candidates timeout: %w", gatherCtx.Err())
 	case <-done:
 	}
 
-	pionCandidates, err := a.agent.GetLocalCandidates()
-	if err != nil {
-		return nil, fmt.Errorf("nat: get local candidates: %w", err)
-	}
-	localCandidates, err := candidatesFromPion(pionCandidates)
+	localCandidates, err := a.localCandidatesFromAgent()
 	if err != nil {
 		return nil, err
 	}
@@ -189,6 +198,18 @@ func (a *icePionAgent) GatherCandidates(ctx context.Context) ([]Candidate, error
 	a.mu.Unlock()
 
 	return cloneCandidates(localCandidates), nil
+}
+
+func (a *icePionAgent) localCandidatesFromAgent() ([]Candidate, error) {
+	pionCandidates, err := a.agent.GetLocalCandidates()
+	if err != nil {
+		return nil, fmt.Errorf("nat: get local candidates: %w", err)
+	}
+	localCandidates, err := candidatesFromPion(pionCandidates)
+	if err != nil {
+		return nil, err
+	}
+	return localCandidates, nil
 }
 
 func (a *icePionAgent) GetLocalCredentials() (string, string, error) {
