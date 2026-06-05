@@ -303,6 +303,43 @@ func TestSelectBestOutcome(t *testing.T) {
 	}
 }
 
+func TestSelectBestOutcomePrefersProtectedDirectTie(t *testing.T) {
+	dependentDirect := CandidateOutcome{
+		Plan: Plan{ID: "legacyice/direct_prefer"},
+		Result: &Result{
+			Transport: &mockTransport{},
+			Summary: PathSummary{
+				PathID:         "legacyice:direct:session/node-a/node-b",
+				ConnectionType: "direct",
+				Role:           PathRolePrimaryCandidate,
+				Dependencies: []PathDependency{{
+					Kind:   PathDependencyUnknown,
+					Reason: "remote_cgnat_or_overlay_candidate",
+				}},
+			},
+		},
+	}
+	protectedDirect := CandidateOutcome{
+		Plan: Plan{ID: "legacyice/public_direct"},
+		Result: &Result{
+			Transport: &mockTransport{},
+			Summary: PathSummary{
+				PathID:         "legacyice:direct:public_direct:session/node-a/node-b",
+				ConnectionType: "direct",
+				Role:           PathRoleProtectedDirect,
+			},
+		},
+	}
+
+	if ScoreOutcome(dependentDirect) != ScoreOutcome(protectedDirect) {
+		t.Fatalf("test setup expected equal base scores, got dependent=%d protected=%d", ScoreOutcome(dependentDirect), ScoreOutcome(protectedDirect))
+	}
+	best := SelectBestOutcome([]CandidateOutcome{dependentDirect, protectedDirect})
+	if best == nil || best.Plan.ID != "legacyice/public_direct" {
+		t.Fatalf("SelectBestOutcome() = %#v, want public_direct protected path", best)
+	}
+}
+
 func TestDefaultBudget(t *testing.T) {
 	budget := DefaultBudget()
 	if budget.MaxCandidates <= 0 {

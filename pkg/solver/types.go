@@ -216,7 +216,8 @@ func DefaultBudget() ExecutionBudget {
 // Higher score is better. Generic scoring rules:
 // - Success > Failure
 // - Direct > Relay (when both succeed)
-// - First success wins ties
+// - Less-dependent protected direct wins equal-score ties
+// - First success wins remaining ties
 func ScoreOutcome(outcome CandidateOutcome) int {
 	if outcome.Err != nil {
 		return 0
@@ -264,6 +265,31 @@ func ScoreOutcomeWithPolicy(outcome CandidateOutcome, policy PathPolicy) int {
 	return score
 }
 
+func preferOutcomeTie(candidate, incumbent CandidateOutcome) bool {
+	candidateRank := outcomeTieRank(candidate)
+	incumbentRank := outcomeTieRank(incumbent)
+	return candidateRank > incumbentRank
+}
+
+func outcomeTieRank(outcome CandidateOutcome) int {
+	if outcome.Result == nil {
+		return 0
+	}
+	summary := outcome.Result.Summary
+	switch {
+	case IsProtectedDirectPath(summary):
+		return 4
+	case IsDirectPath(summary) && !HasExplicitDependency(summary):
+		return 3
+	case IsDirectPath(summary):
+		return 2
+	case !HasExplicitDependency(summary):
+		return 1
+	default:
+		return 0
+	}
+}
+
 func pathLatencyBonus(summary PathSummary) (int, bool) {
 	if summary.Metrics == nil {
 		return 0, false
@@ -299,7 +325,7 @@ func SelectBestOutcome(outcomes []CandidateOutcome) *CandidateOutcome {
 	for i := range outcomes {
 		outcome := &outcomes[i]
 		score := ScoreOutcome(*outcome)
-		if score > bestScore {
+		if score > bestScore || (score == bestScore && best != nil && preferOutcomeTie(*outcome, *best)) {
 			bestScore = score
 			best = outcome
 		}

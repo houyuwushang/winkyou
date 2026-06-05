@@ -139,6 +139,7 @@ Windows 接口名应使用系统实际接口名称，例如 `Tailscale`、`vEthe
 3. `legacyice/relay_only`：强制 TURN relay fallback。
 
 这让 WinkYou 会主动尝试类似 natpierce 能打通的公网 UDP NAT piercing 路径；但如果双方 NAT 类型、运营商映射或防火墙不允许，`public_direct` 仍会失败并继续走后续 fallback。
+当 overlay/100.64 direct-like path 和 `public_direct` 都成功且基础分相同，solver 会优先选择无显式依赖的 protected direct，避免继续被先出现的 overlay path 抢占。
 
 尚未完成：
 

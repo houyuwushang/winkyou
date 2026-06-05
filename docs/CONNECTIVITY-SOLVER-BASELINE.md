@@ -132,6 +132,8 @@ Production registration remains compatible by default: `legacy_ice_udp` first, t
 
 `public_direct` exists to prove an independent public direct candidate instead of letting an existing overlay or CGN/100.64 candidate satisfy the generic ICE `direct` label. It is still best-effort NAT piercing: if STUN/public candidates are unavailable or the NAT/firewall blocks the mapping, it must fail normally and let later plans or strategies continue.
 
+When a dependent direct-like path and an independent protected direct path have the same base score, generic solver selection must prefer the less-dependent protected direct path. This prevents `legacyice/direct_prefer` overlay success from masking a later successful `legacyice/public_direct` attempt.
+
 The connectivity policy layer controls production strategy priority:
 
 - `connectivity.mode=auto`: use configured strategy order, defaulting to `legacy_ice_udp` -> `relay_only`
