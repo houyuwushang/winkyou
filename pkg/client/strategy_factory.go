@@ -137,6 +137,7 @@ func (e *engine) legacyICEStrategyConfig() legacyice.Config {
 		ConnectTimeout:           e.iceConnectTimeout(),
 		CheckTimeout:             e.iceCheckTimeout(),
 		ForceRelay:               e.relayOnlyMode(),
+		RelayDisabled:            e.disableLegacyRelayPlan(),
 		PublicEndpointHints:      append([]string(nil), e.cfg.NAT.PublicEndpointHints...),
 		DirectTrustedCIDRs:       append([]string(nil), e.cfg.NAT.DirectTrustedCIDRs...),
 		PublicDirectTrustedCIDRs: append([]string(nil), e.cfg.NAT.PublicDirectTrustedCIDRs...),
@@ -183,6 +184,10 @@ func (e *engine) legacyICEStrategyConfig() legacyice.Config {
 		})
 	}
 	return cfg
+}
+
+func (e *engine) disableLegacyRelayPlan() bool {
+	return !e.relayOnlyMode() && !hasTURNServers(e.cfg.NAT.TURNServers)
 }
 
 func mergeStrategyTrustedCIDRs(lists ...[]string) []string {

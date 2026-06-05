@@ -36,6 +36,34 @@ func TestStrategyRankPlansPrefersRelayAfterDirectFailures(t *testing.T) {
 	}
 }
 
+func TestStrategyRankPlansKeepsDirectFirstWhenRelayDisabled(t *testing.T) {
+	strategy := New(Config{RelayDisabled: true})
+	plans := []solver.Plan{
+		{ID: planIDDirectPrefer, Strategy: StrategyName},
+		{ID: planIDPublicDirect, Strategy: StrategyName},
+	}
+
+	ranked, err := strategy.RankPlans(context.Background(), solver.RankInput{
+		LocalNodeID:      "node-a",
+		SessionID:        "session/node-a/node-b",
+		RemoteNodeID:     "node-b",
+		RemoteCapability: rproto.Capability{Strategies: []string{StrategyName}},
+		LocalObservations: []solver.Observation{
+			observationForRanking("legacyice/direct_prefer", "candidate_failed", "", "node-b"),
+			observationForRanking("legacyice/relay_only", "candidate_succeeded", "relay", "node-b"),
+		},
+	}, plans)
+	if err != nil {
+		t.Fatalf("RankPlans() error = %v", err)
+	}
+	if !slices.Equal(planIDs(ranked.Plans), planIDs(plans)) {
+		t.Fatalf("ranked plans = %v, want direct/public-direct order when relay is disabled", planIDs(ranked.Plans))
+	}
+	if ranked.Reason != "no_relevant_history" {
+		t.Fatalf("Reason = %q, want no_relevant_history", ranked.Reason)
+	}
+}
+
 func TestStrategyRankPlansKeepsDirectFirstAfterDirectSuccess(t *testing.T) {
 	strategy := New(Config{})
 	plans := defaultPlans()

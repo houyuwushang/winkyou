@@ -407,6 +407,37 @@ func TestLegacyICEStrategyConfigConnectivityRelayOnlyForcesRelay(t *testing.T) {
 	}
 }
 
+func TestLegacyICEStrategyConfigDisablesRelayPlanWithoutTURN(t *testing.T) {
+	eng := &engine{cfg: config.Default()}
+
+	cfg := eng.legacyICEStrategyConfig()
+	if !cfg.RelayDisabled {
+		t.Fatal("legacyICEStrategyConfig().RelayDisabled = false, want true without TURN in auto mode")
+	}
+}
+
+func TestLegacyICEStrategyConfigKeepsRelayPlanWithTURN(t *testing.T) {
+	cfg := config.Default()
+	cfg.NAT.TURNServers = []config.TURNServerConfig{{URL: "turn:relay.example.com:3478"}}
+	eng := &engine{cfg: cfg}
+
+	legacyCfg := eng.legacyICEStrategyConfig()
+	if legacyCfg.RelayDisabled {
+		t.Fatal("legacyICEStrategyConfig().RelayDisabled = true, want false when TURN is configured")
+	}
+}
+
+func TestLegacyICEStrategyConfigKeepsRelayPlanForExplicitRelayOnly(t *testing.T) {
+	cfg := config.Default()
+	cfg.Connectivity.Mode = relayonly.StrategyName
+	eng := &engine{cfg: cfg}
+
+	legacyCfg := eng.legacyICEStrategyConfig()
+	if legacyCfg.RelayDisabled {
+		t.Fatal("legacyICEStrategyConfig().RelayDisabled = true, want false for explicit relay-only mode")
+	}
+}
+
 func TestLegacyICEStrategyConfigPropagatesCandidateFilters(t *testing.T) {
 	recorder := &recordingNATTraversal{}
 	eng := &engine{

@@ -34,7 +34,7 @@ func (s *Strategy) Plan(ctx context.Context, in solver.SolveInput) ([]solver.Pla
 
 	plans := s.basePlans()
 	evidence := summarizeSolveEvidence(in)
-	if evidence.strongRelayEvidence() {
+	if !s.cfg.RelayDisabled && evidence.strongRelayEvidence() {
 		plans = pruneDirectPreferPlan(plans)
 		if len(plans) == 0 {
 			return nil, fmt.Errorf("legacyice: no plans available after relay evidence pruning")
@@ -45,7 +45,7 @@ func (s *Strategy) Plan(ctx context.Context, in solver.SolveInput) ([]solver.Pla
 }
 
 func (s *Strategy) basePlans() []solver.Plan {
-	return []solver.Plan{
+	plans := []solver.Plan{
 		{
 			ID:       planIDDirectPrefer,
 			Strategy: s.Name(),
@@ -64,7 +64,9 @@ func (s *Strategy) basePlans() []solver.Plan {
 				"description": "Try public direct candidates only",
 			},
 		},
-		{
+	}
+	if !s.cfg.RelayDisabled || s.cfg.ForceRelay {
+		plans = append(plans, solver.Plan{
 			ID:       planIDRelayOnly,
 			Strategy: s.Name(),
 			Metadata: map[string]string{
@@ -72,8 +74,9 @@ func (s *Strategy) basePlans() []solver.Plan {
 				"mode":        string(modeRelayOnly),
 				"description": "Force relay-only connection",
 			},
-		},
+		})
 	}
+	return plans
 }
 
 func annotatePlanEvidence(plans []solver.Plan, hint string) []solver.Plan {

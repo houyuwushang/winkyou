@@ -10,7 +10,7 @@ func (s *Strategy) RefinePlans(ctx context.Context, input solver.SolveInput, pla
 	_ = ctx
 
 	evidence := summarizeSolveEvidence(input)
-	if evidence.strongRelayEvidence() {
+	if !s.cfg.RelayDisabled && evidence.strongRelayEvidence() {
 		refined := pruneDirectPreferPlan(plans)
 		if len(refined) < len(plans) {
 			return solver.RefinedPlans{

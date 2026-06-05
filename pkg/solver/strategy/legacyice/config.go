@@ -28,6 +28,7 @@ type Config struct {
 	ConnectTimeout           time.Duration
 	CheckTimeout             time.Duration
 	ForceRelay               bool
+	RelayDisabled            bool
 	PublicEndpointHints      []string
 	DirectTrustedCIDRs       []string
 	PublicDirectTrustedCIDRs []string

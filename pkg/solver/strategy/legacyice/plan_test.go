@@ -32,6 +32,22 @@ func TestStrategyPlanKeepsDefaultWithoutStrongEvidence(t *testing.T) {
 	}
 }
 
+func TestStrategyPlanOmitsRelayWhenRelayDisabled(t *testing.T) {
+	strategy := New(Config{RelayDisabled: true})
+
+	plans, err := strategy.Plan(context.Background(), solver.SolveInput{
+		SessionID:    "session/node-a/node-b",
+		RemoteNodeID: "node-b",
+	})
+	if err != nil {
+		t.Fatalf("Plan() error = %v", err)
+	}
+
+	if !slices.Equal(planIDs(plans), []string{planIDDirectPrefer, planIDPublicDirect}) {
+		t.Fatalf("plans = %v, want direct_prefer + public_direct", planIDs(plans))
+	}
+}
+
 func TestStrategyPlanKeepsPublicDirectUnderStrongRelayEvidence(t *testing.T) {
 	strategy := New(Config{})
 

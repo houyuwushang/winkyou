@@ -90,6 +90,8 @@ node:
 
 如果启动时 NAT detection 得到 `symmetric` 且配置了 TURN，`auto` 模式会把 production strategy 顺序临时调成 `relay_only`、`legacy_ice_udp`。这不会设置 `nat.force_relay`，也不会禁用 `legacyice/public_direct`；它只是避免在 endpoint-dependent 映射环境下先把用户流量绑到高失败概率 direct path，后续仍会继续尝试 protected-direct improvement。如果没有 TURN，`relay_only` 本身不可用，生产顺序会保持 `legacy_ice_udp` 在前，继续优先尝试 `direct_prefer/public_direct`。
 
+在没有 TURN 且没有显式 `connectivity.mode: relay_only` / `nat.force_relay: true` 时，`legacy_ice_udp` 内部也不会把 `legacyice/relay_only` plan 插到 `public_direct` 前面；历史 relay success 只会在 relay 真的可用时影响排序。这避免无 TURN 环境先等待一个必然不可用的 relay plan，给 direct/public-direct 打洞留下完整预算。
+
 如果初始绑定只拿到了 relay 或依赖不清的 direct-like path，client 不会把它当作最终状态停止。它会在保持现有 WireGuard 数据面的同时继续调度 protected-direct improvement；尝试失败时关闭临时 transport 并保留旧 path，尝试成功且 path summary 明确为 `protected_direct` 时再替换 tunnel peer 的 transport。需要回退到旧单路径行为时，可以显式设置 `connectivity.multipath.enabled: false`。
 
 显式验证 `tcp_framed` alpha 路径时，需要同时启用 strategy 和配置可达 TCP 地址：

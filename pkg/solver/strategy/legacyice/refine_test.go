@@ -57,6 +57,36 @@ func TestStrategyRefinePlansKeepsPublicDirectUnderStrongRelayEvidence(t *testing
 	}
 }
 
+func TestStrategyRefinePlansKeepsDirectWhenRelayDisabled(t *testing.T) {
+	strategy := New(Config{RelayDisabled: true})
+	plans := defaultPlans()
+
+	refined, err := strategy.RefinePlans(context.Background(), solver.SolveInput{
+		LocalNodeID:  "node-a",
+		SessionID:    "session/node-a/node-b",
+		RemoteNodeID: "node-b",
+		LocalObservations: []solver.Observation{
+			observationForRanking("legacyice/direct_prefer", "candidate_failed", "", "node-b"),
+			observationForRanking("legacyice/direct_prefer", "candidate_failed", "", "node-b"),
+			observationForRanking("legacyice/relay_only", "candidate_succeeded", "relay", "node-b"),
+		},
+		LastProbeResult: &solver.ProbeResultSummary{
+			ScriptType: pmodel.ScriptTypePreflight,
+			Success:    false,
+			FinishedAt: time.Now(),
+		},
+	}, plans)
+	if err != nil {
+		t.Fatalf("RefinePlans() error = %v", err)
+	}
+	if !slices.Equal(planIDs(refined.Plans), planIDs(plans)) {
+		t.Fatalf("refined plans = %v, want default order when relay is disabled", planIDs(refined.Plans))
+	}
+	if refined.Reason != "no_refinement" {
+		t.Fatalf("Reason = %q, want no_refinement", refined.Reason)
+	}
+}
+
 func TestStrategyRefinePlansKeepsDirectWhenRemoteEvidenceIsStaleOrUnscoped(t *testing.T) {
 	strategy := New(Config{})
 	plans := defaultPlans()

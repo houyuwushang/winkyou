@@ -14,7 +14,7 @@ func (s *Strategy) RankPlans(_ context.Context, input solver.RankInput, plans []
 	hasRelay := hasPlan(plans, planIDRelayOnly)
 
 	switch {
-	case hasDirect && hasRelay && evidence.relayPreferred():
+	case !s.cfg.RelayDisabled && hasDirect && hasRelay && evidence.relayPreferred():
 		return solver.RankedPlans{
 			Plans:  reorderPlans(plans, planIDRelayOnly, planIDDirectPrefer, planIDPublicDirect),
 			Reason: "recent_direct_failure_with_relay_success",
