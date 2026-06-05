@@ -412,6 +412,18 @@ func TestSessionCandidateLoopIncludesPublicDirectPlan(t *testing.T) {
 	}
 }
 
+func TestSessionCandidateBudgetCoversEachLegacyPlanTimeout(t *testing.T) {
+	s := &Session{cfg: Config{RunTimeout: 47 * time.Second}}
+	budget := s.candidateExecutionBudget(3)
+	want := 141 * time.Second
+	if budget.TimeBudget < want {
+		t.Fatalf("candidate budget = %v, want at least %v to cover direct_prefer/public_direct/relay_only", budget.TimeBudget, want)
+	}
+	if budget.MaxCandidates != 3 {
+		t.Fatalf("MaxCandidates = %d, want 3", budget.MaxCandidates)
+	}
+}
+
 func TestSessionCandidateLoopContinuesAfterProtectedDirectWhenPolicyEnabled(t *testing.T) {
 	plans := []solver.Plan{
 		{ID: "legacyice/direct_prefer", Strategy: "legacy_ice_udp"},

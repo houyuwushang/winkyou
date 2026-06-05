@@ -263,12 +263,29 @@ func (s *Session) executeStrategyOutcomes(ctx context.Context, strategy solver.S
 		}
 	}
 
-	// Execute candidate loop with budget
-	budget := solver.DefaultBudget()
+	budget := s.candidateExecutionBudget(len(plans))
 	outcomes := s.executeCandidateLoop(ctx, strategy, plans, budget)
 	s.discardPendingStrategyMessages()
 
 	return outcomes, nil
+}
+
+func (s *Session) candidateExecutionBudget(planCount int) solver.ExecutionBudget {
+	budget := solver.DefaultBudget()
+	if planCount <= 0 {
+		return budget
+	}
+	maxCandidates := budget.MaxCandidates
+	if maxCandidates <= 0 || maxCandidates > planCount {
+		maxCandidates = planCount
+	}
+	if timeout := s.executionTimeout(); timeout > 0 && maxCandidates > 0 {
+		minBudget := timeout * time.Duration(maxCandidates)
+		if budget.TimeBudget < minBudget {
+			budget.TimeBudget = minBudget
+		}
+	}
+	return budget
 }
 
 func (s *Session) bindOutcomeSet(ctx context.Context, outcomes []solver.CandidateOutcome, best *solver.CandidateOutcome) error {
