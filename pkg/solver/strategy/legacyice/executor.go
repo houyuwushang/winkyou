@@ -763,7 +763,7 @@ func appendPublicEndpointHintCandidates(candidates []nat.Candidate, execCfg exec
 		seen[candidateAddressKey(candidate)] = struct{}{}
 	}
 	for i, raw := range execCfg.PublicEndpointHints {
-		candidates, err := publicEndpointHintCandidates(raw, i, portWindow, mergeTrustedCIDRs(execCfg.DirectTrustedCIDRs, execCfg.PublicDirectTrustedCIDRs))
+		candidates, err := publicEndpointHintCandidates(raw, i, portWindow, publicDirectCandidateAllowedCIDRs(execCfg))
 		if err != nil {
 			return nil, err
 		}

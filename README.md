@@ -163,7 +163,7 @@ Windows 接口名应使用系统实际接口名称，例如 `Tailscale`、`vEthe
 
 `legacyice/public_direct` 默认还会自动跳过 natpierce、Tailscale、Docker、Wintun/WinkYou 等疑似 overlay/虚拟接口，避免把已有外部通道误判成 WinkYou 自己的 protected direct。需要复现“natpierce 能通”的同类路径时，可以显式配置 `nat.candidate_interface_include` 把具体接口加入本轮测试；显式 `candidate_interface_exclude` 仍然优先。这个开关只表示你允许 WinkYou 在该接口上采集候选，不等于已经证明断开 natpierce 后仍可独立保活；若要把非公网地址当作 protected-direct 证据，还必须配合已验证的 `nat.direct_trusted_cidrs`。
 
-同理，`nat.candidate_cidr_include` 现在会让 `legacyice/public_direct` 接受该 CIDR 内的 host/peer-reflexive 候选参与连接尝试，适合受控复现 natpierce 或路由器日志中看到的非公网 underlay。它会与 mapped `public_endpoint_hints` 的本地 base `/32` 合并使用，因此公网 endpoint hint 和受控 underlay CIDR 可以在同一轮 public-direct 尝试中共存。它不会自动把路径标为 `protected_direct`；未进入 `nat.direct_trusted_cidrs` 的非公网候选仍会在 path summary 中保留 dependency。
+同理，`nat.candidate_cidr_include` 现在会让 `legacyice/public_direct` 接受该 CIDR 内的 host/peer-reflexive 候选参与连接尝试，适合受控复现 natpierce 或路由器日志中看到的非公网 underlay。它也允许该 CIDR 内的非公网 `public_endpoint_hints` 参与尝试，并会与 mapped hint 的本地 base `/32` 合并使用，因此公网 endpoint hint 和受控 underlay CIDR 可以在同一轮 public-direct 尝试中共存。它不会自动把路径标为 `protected_direct`；未进入 `nat.direct_trusted_cidrs` 的非公网候选仍会在 path summary 中保留 dependency。
 
 如果两端有可确认的公网 1:1 映射或固定 UDP 端口映射，可以把公网候选提示交给 ICE agent，减少只依赖默认 STUN 采集的误判：
 

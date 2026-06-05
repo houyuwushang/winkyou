@@ -638,6 +638,40 @@ func TestPublicDirectTrustedCIDRAllowsEndpointHint(t *testing.T) {
 	}
 }
 
+func TestPublicDirectCandidateCIDRIncludeAllowsEndpointHintWithoutTrustingPath(t *testing.T) {
+	const hint = "10.6.22.1:41000/10.6.22.3:40000"
+	if _, err := appendPublicEndpointHintCandidates(nil, executorConfig{
+		Mode:                modePublicDirect,
+		PublicEndpointHints: []string{hint},
+	}); err == nil {
+		t.Fatal("appendPublicEndpointHintCandidates() error = nil, want default rejection for private hint")
+	}
+
+	candidates, err := appendPublicEndpointHintCandidates(nil, executorConfig{
+		Mode:                 modePublicDirect,
+		PublicEndpointHints:  []string{hint},
+		CandidateCIDRInclude: []string{"10.6.22.1/32", "10.6.22.3/32"},
+	})
+	if err != nil {
+		t.Fatalf("appendPublicEndpointHintCandidates(included) error = %v", err)
+	}
+	if len(candidates) != 1 || candidates[0].Address.String() != "10.6.22.1:41000" {
+		t.Fatalf("included endpoint hint candidates = %#v, want 10.6.22.1:41000", candidates)
+	}
+	if candidates[0].RelatedAddr == nil || candidates[0].RelatedAddr.String() != "10.6.22.3:40000" {
+		t.Fatalf("included endpoint hint related addr = %#v, want 10.6.22.3:40000", candidates[0].RelatedAddr)
+	}
+
+	local := nat.Candidate{Type: nat.CandidateTypeHost, Address: &net.UDPAddr{IP: net.IPv4(10, 6, 22, 3), Port: 40000}}
+	role, deps := pathPolicyMetadata("direct", &nat.CandidatePair{Local: &local, Remote: &candidates[0]}, modePublicDirect, nil, nil)
+	if role != solver.PathRolePrimaryCandidate {
+		t.Fatalf("role = %q, want dependent primary candidate without direct trust", role)
+	}
+	if len(deps) == 0 || deps[0].Kind != solver.PathDependencyUnknown {
+		t.Fatalf("dependencies = %#v, want unknown dependency without direct trust", deps)
+	}
+}
+
 func TestPublicDirectCandidateCIDRIncludeAllowsNonPublicCandidatesWithoutTrustingPath(t *testing.T) {
 	execCfg := executorConfig{
 		Mode:                 modePublicDirect,
