@@ -187,6 +187,8 @@ nat:
 
 `auto_public_endpoint_hints` 默认开启：启动时 NAT detection 会把运行时观测到的公网 endpoint hint 与手工 `public_endpoint_hints` 合并后交给 `legacyice/public_direct`。如果检测结果是 `nat_type=symmetric`，这些 endpoint-dependent 映射仍只是 best-effort 候选：同一 UDP socket 到 STUN 服务器的端口不一定等于到 peer 的端口。默认的小窗口端口试探会让 WinkYou 更接近 natpierce 这类持续 punch 行为，但仍必须继续看 `legacyice/public_direct` 是否学到 `peer_reflexive_pair` / `public_direct_learned_pair`，以及最终 path 是否是 `protected_direct`。需要保守排查时，可以显式设为 `auto_public_endpoint_hints: false` 或把 `public_endpoint_hint_port_window` 设为 `0`。
 
+当本轮 `legacyice/public_direct` 已经带有手工或运行时 endpoint hint 时，legacy ICE 会把 `public_direct` 排到普通 `direct_prefer` 前面，让 hint 对应的公网 UDP 打洞先拿到执行窗口；如果历史 observation 显示 relay 更可靠，仍可以先用 relay 保活，但 `public_direct` 会排在 `direct_prefer` 前继续争取 protected-direct standby。
+
 如果另一个打洞工具已经证明某个非公网地址段确实是两端可达的 underlay，例如受控测试中的运营商 CGNAT 段，可以显式配置 `nat.direct_trusted_cidrs`。该字段会让 `legacyice/direct_prefer` 和 `legacyice/public_direct` 在 path dependency 判定中信任这些 CIDR，并让 `public_direct` 接受这些 CIDR 内的候选和 mapped hint。旧的 `nat.public_direct_trusted_cidrs` 仍兼容，并会与 `direct_trusted_cidrs` 合并使用。默认仍拒绝 `100.64.0.0/10`、私网、loopback、link-local 和 benchmark/overlay 地址。不要把 natpierce、Tailscale、Docker 或其他虚拟 overlay 的接口网段随意加入 trusted CIDR，否则会把依赖不清的 path 误标成 protected direct；只有在你确认该 CIDR 是 WinkYou 自己可直接打到的 underlay，而不是外部 overlay 提供的虚拟路由时才应配置。`wink doctor` 会检查 `direct_trusted_cidrs` 是否命中本机上疑似 natpierce、Tailscale、Docker、Wintun 或 WinkYou 的虚拟接口，并给出 warning。
 
 当 `legacyice/public_direct` 的 STUN gather 超时但本地 UDP candidate 已经建立时，NAT 层会返回已知本地候选，让上层继续追加 `public_endpoint_hints` 并尽快交换候选开始打洞。这不会把私网 host candidate 当作公网候选发布；最终信令里能否出现可用候选，仍由 `public_direct` 的公网过滤规则决定。
@@ -199,13 +201,13 @@ nat:
 
 `wink doctor` 也会对 public-direct 的有效 STUN 来源做 binding probe：包括 `nat.stun_servers`，以及从 UDP TURN URL 派生出的同 host/port STUN binding URL。该检查会复用同一个本地 UDP socket 探测多个来源，并输出 `nat_type` 和每个来源看到的 mapped endpoint；如果显示 `nat_type=symmetric`，说明同一 socket 到不同 STUN 目的地的公网映射不一致，`public_direct` 可能需要稳定 `public_endpoint_hints`、更强 rendezvous/punch 机制，或继续使用 TURN/`relay_only` fallback。自托管场景中，只配置 coturn 也能用同一个 UDP 入口检查 srflx 映射，但 `public_direct` 不会使用 TURN relay candidate。如果 STUN probe 已经失败，`legacyice/public_direct` 很可能无法采集到 server-reflexive candidate。如果 doctor 显示 `candidate_kept=0`，则按本端 gather 或远端过滤结果继续排查。此时应先换成两端都可达的 STUN/UDP TURN 服务、检查 UDP 出站和防火墙，或改用 TURN/`relay_only`。
 
-从当前版本起，`legacy_ice_udp` 默认会按顺序尝试：
+从当前版本起，`legacy_ice_udp` 在没有 endpoint hint 时默认会按顺序尝试：
 
 1. `legacyice/direct_prefer`：保留 ICE 默认行为，可能选中 NAT/overlay/100.64 direct-like path。
 2. `legacyice/public_direct`：只采集 host/server-reflexive direct candidate，跳过 TURN/relay 采集；UDP TURN URL 会被当作同 host/port 的 STUN binding URL 使用，以便只配置 coturn 的自托管部署也能采集 srflx candidate。信令里只发布公网 direct 候选，并过滤远端私网、`100.64.0.0/10`、loopback、link-local、benchmark/overlay 等 candidate。该 plan 默认不在 natpierce、Tailscale、Docker/vEthernet、Wintun/WinkYou 等疑似外部 overlay/虚拟接口上 gather candidate，避免把外部 overlay 路径误证明为 WinkYou 自己的 protected direct。该 plan 会使用更积极的 ICE check interval、按 `nat.connect_timeout` 放大的 binding request 预算，以及更短的 srflx/prflx 接受等待，在同一个 public-direct socket 上持续打洞，以更接近 natpierce 这类持续 punch 的行为；session 的 candidate execution budget 会按每个 plan 的 execution timeout 和候选数量扩展，避免 `direct_prefer` 耗时后跳过 `public_direct` 或后续 relay fallback；当 ICE 过程中收到远端 STUN Binding Request 并形成公网 peer-reflexive 候选对时，public_direct 只会在本地为公网或 RFC1918 NAT base、远端为公网时切换到该候选对，不会因本地或远端 `100.64.0.0/10`、overlay、relay、loopback、link-local 或 benchmark 地址触发切换。
 3. `legacyice/relay_only`：强制 TURN relay fallback。
 
-这让 WinkYou 会主动尝试类似 natpierce 能打通的公网 UDP NAT piercing 路径；如果 natpierce 在同一对设备间已经能直接打通，本项目不应把 WinkYou 的失败解释为“物理不可达”，而应继续看公网候选是否采集、是否被过滤、ICE 检查是否超时以及 selected pair 是否仍落在 overlay/100.64 路径上。但如果双方 NAT 类型、运营商映射或防火墙不允许，`public_direct` 仍会失败并继续走后续 fallback。
+如果 `nat.auto_public_endpoint_hints` 或手工 `nat.public_endpoint_hints` 为本轮提供了公网 endpoint hint，`public_direct` 会排到 `direct_prefer` 前面，避免普通 direct-like ICE 先耗尽候选执行窗口。这样 WinkYou 会主动尝试类似 natpierce 能打通的公网 UDP NAT piercing 路径；如果 natpierce 在同一对设备间已经能直接打通，本项目不应把 WinkYou 的失败解释为“物理不可达”，而应继续看公网候选是否采集、是否被过滤、ICE 检查是否超时以及 selected pair 是否仍落在 overlay/100.64 路径上。但如果双方 NAT 类型、运营商映射或防火墙不允许，`public_direct` 仍会失败并继续走后续 fallback。
 历史 observation 如果显示 direct 失败且 relay 成功，legacy ICE 可以把 relay 排到更前面作为 primary 候选，但不会再因为普通 `direct_prefer` 失败而完全剪掉 `public_direct`。这保证 relay/overlay 能先保活的同时，仍给独立公网 direct standby 留一次执行机会。
 当 overlay/100.64 direct-like path 和 `public_direct` 都成功且基础分相同，solver 会优先选择无显式依赖的 protected direct，避免继续被先出现的 overlay path 抢占。
 `public_direct` 的 protected direct 判定只允许本地 RFC1918 host candidate 在匹配本次已发布公网 STUN/srflx candidate 的 related/base 地址时作为 NAT base；远端 candidate 仍必须是公网，且本地或远端 `100.64.0.0/10`、loopback、link-local、198.18/15 等地址仍会被视为依赖不清。

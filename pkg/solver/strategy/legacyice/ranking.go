@@ -12,8 +12,14 @@ func (s *Strategy) RankPlans(_ context.Context, input solver.RankInput, plans []
 	evidence := summarizeRankEvidence(input)
 	hasDirect := hasDirectPlan(plans)
 	hasRelay := hasPlan(plans, planIDRelayOnly)
+	hasPublicEndpointHints := len(s.cfg.PublicEndpointHints) > 0
 
 	switch {
+	case !s.cfg.RelayDisabled && hasDirect && hasRelay && evidence.relayPreferred() && hasPublicEndpointHints:
+		return solver.RankedPlans{
+			Plans:  reorderPlans(plans, planIDRelayOnly, planIDPublicDirect, planIDDirectPrefer),
+			Reason: "recent_relay_success_with_public_endpoint_hints",
+		}, nil
 	case !s.cfg.RelayDisabled && hasDirect && hasRelay && evidence.relayPreferred():
 		return solver.RankedPlans{
 			Plans:  reorderPlans(plans, planIDRelayOnly, planIDDirectPrefer, planIDPublicDirect),
@@ -21,6 +27,11 @@ func (s *Strategy) RankPlans(_ context.Context, input solver.RankInput, plans []
 		}, nil
 	case evidence.directSuccessful():
 		return solver.RankedPlans{Plans: ordered, Reason: "recent_direct_success"}, nil
+	case hasDirect && hasPlan(plans, planIDPublicDirect) && hasPublicEndpointHints:
+		return solver.RankedPlans{
+			Plans:  reorderPlans(plans, planIDPublicDirect, planIDDirectPrefer, planIDRelayOnly),
+			Reason: "public_endpoint_hints_first",
+		}, nil
 	case evidence.PreflightSuccess:
 		return solver.RankedPlans{Plans: ordered, Reason: "preflight_ok_default"}, nil
 	default:

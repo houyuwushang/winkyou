@@ -36,6 +36,47 @@ func TestStrategyRankPlansPrefersRelayAfterDirectFailures(t *testing.T) {
 	}
 }
 
+func TestStrategyRankPlansPrefersPublicDirectWithEndpointHints(t *testing.T) {
+	strategy := New(Config{PublicEndpointHints: []string{"203.0.113.10:41000/192.168.1.20:40000"}})
+	plans := defaultPlans()
+
+	ranked, err := strategy.RankPlans(context.Background(), solver.RankInput{}, plans)
+	if err != nil {
+		t.Fatalf("RankPlans() error = %v", err)
+	}
+	if !slices.Equal(planIDs(ranked.Plans), []string{planIDPublicDirect, planIDDirectPrefer, planIDRelayOnly}) {
+		t.Fatalf("ranked plans = %v, want public_direct first with endpoint hints", planIDs(ranked.Plans))
+	}
+	if ranked.Reason != "public_endpoint_hints_first" {
+		t.Fatalf("Reason = %q, want public_endpoint_hints_first", ranked.Reason)
+	}
+}
+
+func TestStrategyRankPlansKeepsPublicDirectAheadOfDirectPreferAfterRelayHint(t *testing.T) {
+	strategy := New(Config{PublicEndpointHints: []string{"203.0.113.10:41000/192.168.1.20:40000"}})
+	plans := defaultPlans()
+
+	ranked, err := strategy.RankPlans(context.Background(), solver.RankInput{
+		LocalNodeID:      "node-a",
+		SessionID:        "session/node-a/node-b",
+		RemoteNodeID:     "node-b",
+		RemoteCapability: rproto.Capability{Strategies: []string{StrategyName}},
+		LocalObservations: []solver.Observation{
+			observationForRanking(planIDDirectPrefer, "candidate_failed", "", "node-b"),
+			observationForRanking(planIDRelayOnly, "candidate_succeeded", "relay", "node-b"),
+		},
+	}, plans)
+	if err != nil {
+		t.Fatalf("RankPlans() error = %v", err)
+	}
+	if !slices.Equal(planIDs(ranked.Plans), []string{planIDRelayOnly, planIDPublicDirect, planIDDirectPrefer}) {
+		t.Fatalf("ranked plans = %v, want relay_only then public_direct with endpoint hints", planIDs(ranked.Plans))
+	}
+	if ranked.Reason != "recent_relay_success_with_public_endpoint_hints" {
+		t.Fatalf("Reason = %q, want recent_relay_success_with_public_endpoint_hints", ranked.Reason)
+	}
+}
+
 func TestStrategyRankPlansKeepsDirectFirstWhenRelayDisabled(t *testing.T) {
 	strategy := New(Config{RelayDisabled: true})
 	plans := []solver.Plan{

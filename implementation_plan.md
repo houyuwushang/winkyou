@@ -440,6 +440,7 @@ Phase 3A (Strategy Portfolio Foundation) 已完成。以下是我基于代码现
 - 2026-06-06 起，生产 resolver 在 `connectivity.mode=auto`、本机检测为 `nat_type=symmetric` 且配置了 TURN 时，会优先尝试 `relay_only`，再保留 `legacy_ice_udp`。没有 TURN 时仍保持 `legacy_ice_udp` 优先，避免把不可用的 relay-only 放在 public-direct 打洞之前。这不会设置 `ForceRelay`，因此 legacy 内部的 `public_direct` 仍可作为后续 fallback/improvement 继续争取独立路径。
 - 2026-06-06 起，生产 `legacy_ice_udp` 配置在无 TURN 且非显式 relay-only 模式下会禁用内部 `legacyice/relay_only` plan。这样旧 observation 中的 relay success 不会把当前不可用的 relay plan 排到 `public_direct` 前面，避免无 TURN 环境浪费 candidate budget。
 - 2026-06-06 起，`wink doctor` 会在 strategy 层输出 `legacy_ice_udp` 内部 plan order，用于确认无 TURN 环境是否实际执行 `legacyice/direct_prefer -> legacyice/public_direct`，而不是先等待不可用的 relay plan。
+- 2026-06-06 起，当手工或运行时 `public_endpoint_hints` 存在时，`legacyice/public_direct` 会排到普通 `legacyice/direct_prefer` 前面，避免 natpierce/路由器/STUN 观测到的 UDP 映射在真正打洞前过期；若 relay evidence 更强，relay 仍可先保活，但 hinted `public_direct` 会排在 `direct_prefer` 前继续争取 protected-direct standby。
 - 2026-06-05 起，client 在 peer 已 bound 但 path 不是 `protected_direct` 时，会保留现有数据面并后台继续尝试 protected-direct improvement；失败的临时 transport 会关闭，旧 path 不变，只有新结果明确为 `protected_direct` 时才替换 tunnel peer transport。
 
 2026-06-04 后续验证中，已能通过 SSH 密码登录 `chen-win` 并确认 `wink-coordinator` 进程可被单独停止。排查中先发现本机验证版 client 重启后数据面未重新达到 bound/handshake，原因是 chen-win coordinator 使用 memory store，重启后 `ListPeers` 为空，旧 client 不会自动重新注册。随后 chen-win coordinator scheduled task 已切换到 SQLite store，并按原 public key 顺序恢复 `inner-b=node-000001/10.88.0.1`、`local-a=node-000002/10.88.0.2`。

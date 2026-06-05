@@ -158,17 +158,19 @@ nat:
 
 无 TURN 的 `auto` 模式还会禁用 `legacy_ice_udp` 内部的 `legacyice/relay_only` plan。这样即使 observation history 里有旧的 relay success，当前会话也不会先等待不可用的 relay plan，而是把预算留给 `direct_prefer` 和 `public_direct`。显式 `connectivity.mode: relay_only` 或 `nat.force_relay: true` 仍会保留 relay-only 行为，用于检查 TURN 配置或强制 relay。
 
-`wink doctor` 的 `strategy/legacy plans` 检查会直接显示当前 legacy 内部执行顺序。无 TURN auto 模式应看到 `legacyice/direct_prefer -> legacyice/public_direct (relay plan disabled: no TURN configured)`；如果看到 `legacyice/relay_only` 排在里面，说明当前配置已经启用了 TURN 或显式 relay-only/force-relay。
+`wink doctor` 的 `strategy/legacy plans` 检查会直接显示当前 legacy 内部执行顺序。无 TURN auto 模式如果没有 endpoint hint，应看到 `legacyice/direct_prefer -> legacyice/public_direct (relay plan disabled: no TURN configured)`；如果启动时 STUN 或手工配置提供了 `public_endpoint_hints`，应看到 `legacyice/public_direct -> legacyice/direct_prefer`。如果看到 `legacyice/relay_only` 排在里面，说明当前配置已经启用了 TURN 或显式 relay-only/force-relay。
 
 `wink doctor` 还会检查 mapped `public_endpoint_hints` 的本地 base IP 是否存在于本机接口上。如果这里出现 `public endpoint hint local base` warning，说明 hint 的本地部分很可能写成了虚拟局域网 peer 地址、旧地址或另一台机器的地址；`legacyice/public_direct` 会按这个 base 限制本地 gather，因此必须改成本机真实出口网卡 IP。
 
-默认 `legacy_ice_udp` 内部执行顺序为：
+没有 endpoint hint 时，默认 `legacy_ice_udp` 内部执行顺序为：
 
 ```text
 legacyice/direct_prefer -> legacyice/public_direct -> legacyice/relay_only
 ```
 
 `direct_prefer` 可能选中 natpierce、Tailscale、Docker bridge 或其他 overlay candidate；`public_direct` 会跳过 TURN/relay candidate gathering，只采 host/server-reflexive direct candidate，才是用于验证双方是否能通过公网 UDP NAT piercing 形成独立 direct path 的 plan。为避免把外部 overlay 误证明成 WinkYou 自己的 protected direct，`public_direct` 默认会排除 natpierce、Tailscale、ZeroTier、Docker/vEthernet、Wintun/WinkYou 等疑似 overlay/虚拟接口。`public_direct` 会用更短 ICE check interval、按 `nat.connect_timeout` 放大的 binding request 预算、更短 srflx/prflx 接受等待，并确保 ICE failed-check timeout 不短于 `nat.connect_timeout`，在同一 public-direct socket 上持续打洞到连接超时；session 的 candidate execution budget 会按每个候选的 execution timeout 扩展，避免前面的 plan 耗时后跳过 `public_direct` 或 relay fallback。如果仍失败，优先比较两端 STUN 映射、候选过滤和 natpierce 实际使用的公网端点。
+
+当 `nat.auto_public_endpoint_hints` 或手工 `nat.public_endpoint_hints` 为本轮提供了公网 endpoint hint，legacy ICE 会优先执行 `legacyice/public_direct`。这是为了把 natpierce/路由器日志或启动 STUN 观测到的 UDP 映射尽早用于双方打洞；如果先跑普通 `direct_prefer`，映射可能在 `public_direct` 开始前已经过期。
 
 如果 public-direct STUN gather 超时，但 Pion agent 已经准备好本地 UDP candidate，WinkYou 会继续返回这批本地候选，让 `public_endpoint_hints` 能尽快追加进 offer/answer 并开始 ICE checks。这个行为只解决“慢 STUN 卡住候选交换”的问题；如果 hint 过期、两端 NAT 映射和 natpierce 使用的 socket 不一致，或远端公网候选被过滤，仍会失败并进入后续 fallback。
 
