@@ -42,6 +42,11 @@ type ICEConfig struct {
 	NAT1To1IPs                []string
 	NAT1To1CandidateType      string
 
+	// PublicDirectCandidate limits gathering to host/server-reflexive direct
+	// candidates. It is used by stricter direct probes that must not wait on or
+	// advertise TURN relay candidates.
+	PublicDirectCandidate bool
+
 	// ForceRelay forces relay-only candidate gathering (test/debug only).
 	ForceRelay bool
 

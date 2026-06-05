@@ -8,6 +8,7 @@ import (
 	"time"
 
 	pionice "github.com/pion/ice/v2"
+	"github.com/pion/stun"
 )
 
 func TestICEAgentsConnectAndSelectedPair(t *testing.T) {
@@ -169,6 +170,36 @@ func TestICEPayloadRoundTripAndRelayCandidates(t *testing.T) {
 	relayTypes := candidateTypesForConfig(ICEConfig{relayOnly: true})
 	if len(relayTypes) != 1 || relayTypes[0] != pionice.CandidateTypeRelay {
 		t.Fatalf("relay candidate types = %+v", relayTypes)
+	}
+}
+
+func TestPublicDirectCandidateConfigSkipsRelayAndTURN(t *testing.T) {
+	publicTypes := candidateTypesForConfig(ICEConfig{PublicDirectCandidate: true})
+	if len(publicTypes) != 2 ||
+		publicTypes[0] != pionice.CandidateTypeHost ||
+		publicTypes[1] != pionice.CandidateTypeServerReflexive {
+		t.Fatalf("public direct candidate types = %+v, want host and server reflexive", publicTypes)
+	}
+
+	urls, err := buildPionURLs(ICEConfig{
+		PublicDirectCandidate: true,
+		STUNServers:           []string{"stun:stun.example.com:3478"},
+		TURNServers: []TURNServer{{
+			URL:      "turn:turn.example.com:3478?transport=udp",
+			Username: "wink",
+			Password: "secret",
+		}},
+	})
+	if err != nil {
+		t.Fatalf("buildPionURLs(public direct) error = %v", err)
+	}
+	if len(urls) != 1 || urls[0].Scheme != stun.SchemeTypeSTUN {
+		t.Fatalf("public direct URLs = %+v, want only STUN URL", urls)
+	}
+
+	relayTypes := candidateTypesForConfig(ICEConfig{PublicDirectCandidate: true, ForceRelay: true})
+	if len(relayTypes) != 1 || relayTypes[0] != pionice.CandidateTypeRelay {
+		t.Fatalf("force relay candidate types = %+v, want relay override", relayTypes)
 	}
 }
 

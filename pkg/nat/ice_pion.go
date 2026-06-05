@@ -371,24 +371,26 @@ func buildPionURLs(cfg ICEConfig) ([]*stun.URI, error) {
 		urls = append(urls, uri)
 	}
 
-	for _, turnServer := range cfg.TURNServers {
-		raw := strings.TrimSpace(turnServer.URL)
-		if raw == "" {
-			continue
+	if !cfg.PublicDirectCandidate {
+		for _, turnServer := range cfg.TURNServers {
+			raw := strings.TrimSpace(turnServer.URL)
+			if raw == "" {
+				continue
+			}
+			if !hasURLScheme(raw) {
+				raw = "turn:" + raw
+			}
+			if !strings.Contains(raw, "?transport=") {
+				raw += "?transport=udp"
+			}
+			uri, err := stun.ParseURI(raw)
+			if err != nil {
+				return nil, fmt.Errorf("nat: parse turn server %q: %w", raw, err)
+			}
+			uri.Username = turnServer.Username
+			uri.Password = turnServer.Password
+			urls = append(urls, uri)
 		}
-		if !hasURLScheme(raw) {
-			raw = "turn:" + raw
-		}
-		if !strings.Contains(raw, "?transport=") {
-			raw += "?transport=udp"
-		}
-		uri, err := stun.ParseURI(raw)
-		if err != nil {
-			return nil, fmt.Errorf("nat: parse turn server %q: %w", raw, err)
-		}
-		uri.Username = turnServer.Username
-		uri.Password = turnServer.Password
-		urls = append(urls, uri)
 	}
 	return urls, nil
 }
@@ -396,6 +398,12 @@ func buildPionURLs(cfg ICEConfig) ([]*stun.URI, error) {
 func candidateTypesForConfig(cfg ICEConfig) []pionice.CandidateType {
 	if cfg.relayOnly || cfg.ForceRelay {
 		return []pionice.CandidateType{pionice.CandidateTypeRelay}
+	}
+	if cfg.PublicDirectCandidate {
+		return []pionice.CandidateType{
+			pionice.CandidateTypeHost,
+			pionice.CandidateTypeServerReflexive,
+		}
 	}
 	return []pionice.CandidateType{
 		pionice.CandidateTypeHost,

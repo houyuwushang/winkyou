@@ -145,7 +145,7 @@ nat:
 legacyice/direct_prefer -> legacyice/public_direct -> legacyice/relay_only
 ```
 
-`direct_prefer` 可能选中 natpierce、Tailscale、Docker bridge 或其他 overlay candidate；`public_direct` 才是用于验证双方是否能通过公网 UDP NAT piercing 形成独立 direct path 的 plan。
+`direct_prefer` 可能选中 natpierce、Tailscale、Docker bridge 或其他 overlay candidate；`public_direct` 会跳过 TURN/relay candidate gathering，只采 host/server-reflexive direct candidate，才是用于验证双方是否能通过公网 UDP NAT piercing 形成独立 direct path 的 plan。
 
 如果 observation history 中已有 direct 失败和 relay 成功，legacy ICE 可以把 `relay_only` 排到前面，但 `public_direct` 不应仅因为 `direct_prefer` 失败而被剪掉。排障时如果只看到 `legacyice/relay_only`，没有看到 `legacyice/public_direct` 的 `candidate_planned` 或 `candidate_started`，应检查当前二进制是否为最新版本，或是否处于显式 `connectivity.mode: relay_only` / `nat.force_relay: true`。
 
@@ -160,7 +160,7 @@ Get-Content <runtime-state-base>.observations.jsonl |
 
 重点看 `PlanID=legacyice/public_direct` 或 details 中 `mode=public_direct` 的记录：
 
-- `candidate_gathered` 的 `candidate_total>0` 但 `candidate_kept=0`：本端 gather 到的 candidate 全部被 public-direct 规则排除，常见原因是只采到了私网、`100.64.0.0/10`、overlay 或 relay candidate。该 plan 会失败并继续后续 fallback。
+- `candidate_gathered` 的 `candidate_total>0` 但 `candidate_kept=0`：本端 gather 到的 direct candidate 全部被 public-direct 规则排除，常见原因是只采到了私网、`100.64.0.0/10` 或 overlay candidate。该 plan 会失败并继续后续 fallback。
 - `remote_candidates_filtered` 的 `candidate_kept=0`：远端发来的候选没有可用于独立公网 direct 的地址，本端不会把它交给 ICE agent。该 plan 会记录 `candidate_failed`，但不应把整个 peer session 直接打失败。
 - 两边 `candidate_kept>0` 但随后 `candidate_failed`：候选已经交换，问题更可能在 UDP 映射不稳定、防火墙、端口范围、STUN/TURN 配置或 NAT 行为与 natpierce 使用的 socket/映射不一致。
 - `candidate_reject_reasons` 中出现 `*_cgnat_or_overlay_candidate`：当前路径仍可能依赖 natpierce、VPN/TAP 或类似 underlay，不能作为 `protected_direct` 证据。

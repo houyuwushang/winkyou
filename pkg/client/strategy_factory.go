@@ -135,6 +135,7 @@ func (e *engine) legacyICEStrategyConfig() legacyice.Config {
 			CandidateCIDRExclude:      append(append([]string(nil), e.cfg.NAT.CandidateCIDRExclude...), req.CandidateCIDRExclude...),
 			NAT1To1IPs:                append([]string(nil), e.cfg.NAT.NAT1To1IPs...),
 			NAT1To1CandidateType:      e.cfg.NAT.NAT1To1CandidateType,
+			PublicDirectCandidate:     req.PublicDirectCandidate,
 			ForceRelay:                req.ForceRelay,
 		})
 	}
