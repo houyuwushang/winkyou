@@ -10,6 +10,9 @@ import (
 
 	rproto "winkyou/pkg/rendezvous/proto"
 	"winkyou/pkg/solver"
+	"winkyou/pkg/solver/strategy/legacyice"
+	"winkyou/pkg/solver/strategy/relayonly"
+	"winkyou/pkg/transport/multipath"
 )
 
 func TestSessionOrderedStrategyFallbackBindsSecondStrategy(t *testing.T) {
@@ -179,6 +182,126 @@ func TestSessionFallbackDiscardsPendingStrategyMessagesBeforeNextStrategy(t *tes
 	}
 }
 
+func TestSessionMultipathProtectDirectContinuesAfterRelayPrimary(t *testing.T) {
+	relayTransport := &fakeTransport{}
+	directTransport := &fakeTransport{}
+	relay := &successfulFallbackStrategy{
+		name:           relayonly.StrategyName,
+		transport:      relayTransport,
+		pathID:         "relay/path",
+		connectionType: "relay",
+		role:           solver.PathRolePrimaryCandidate,
+	}
+	direct := &successfulFallbackStrategy{
+		name:           legacyice.StrategyName,
+		transport:      directTransport,
+		pathID:         "direct/path",
+		connectionType: "direct",
+		role:           solver.PathRoleProtectedDirect,
+	}
+	resolver := &orderedFallbackResolver{
+		local: rproto.Capability{Strategies: []string{relay.name, direct.name}},
+		candidates: []StrategyCandidate{
+			{Name: relay.name, Strategy: relay, Selection: Selection{StrategyName: relay.name, Negotiated: true}},
+			{Name: direct.name, Strategy: direct, Selection: Selection{StrategyName: direct.name, Negotiated: true}},
+		},
+	}
+	binder := &recordingBinder{}
+
+	s, err := New(Config{
+		SessionID:             "session/node-a/node-b",
+		LocalNodeID:           "node-a",
+		PeerID:                "node-b",
+		Initiator:             true,
+		Resolver:              resolver,
+		Sender:                &fakeSender{},
+		Binder:                binder,
+		RunTimeout:            3 * time.Second,
+		CapabilityWaitTimeout: time.Second,
+		PathPolicy:            solver.PathPolicy{MultipathEnabled: true, ProtectDirect: true, MaxPaths: 2},
+	})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	if err := s.Start(context.Background()); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	if err := s.HandleMessage(context.Background(), envelopeMessage(t, "session/node-a/node-b", "node-b", "node-a", rproto.MsgTypeCapability, 1, rproto.Capability{Strategies: []string{relay.name, direct.name}}, time.Now())); err != nil {
+		t.Fatalf("HandleMessage(capability) error = %v", err)
+	}
+	waitForState(t, s, StateBound)
+
+	if relay.execCount() != 1 || direct.execCount() != 1 {
+		t.Fatalf("exec counts = relay:%d direct:%d, want 1/1", relay.execCount(), direct.execCount())
+	}
+	provider, ok := binder.boundTransport.(multipath.StatsProvider)
+	if !ok {
+		t.Fatalf("bound transport = %T, want multipath stats provider", binder.boundTransport)
+	}
+	stats := provider.MultipathStats()
+	if stats.PrimaryPathID != "relay/path" || stats.ProtectedDirectPathID != "direct/path" || stats.ActivePathID != "relay/path" {
+		t.Fatalf("multipath stats = %#v", stats)
+	}
+	if got := s.Snapshot().SelectedStrategy; got != relayonly.StrategyName {
+		t.Fatalf("SelectedStrategy = %q, want relay primary", got)
+	}
+}
+
+func TestSessionMultipathDirectStandbyFailureDoesNotBlockPrimary(t *testing.T) {
+	relayTransport := &fakeTransport{}
+	relay := &successfulFallbackStrategy{
+		name:           relayonly.StrategyName,
+		transport:      relayTransport,
+		pathID:         "relay/path",
+		connectionType: "relay",
+		role:           solver.PathRolePrimaryCandidate,
+	}
+	direct := &failingFallbackStrategy{name: legacyice.StrategyName, err: errors.New("direct unavailable")}
+	resolver := &orderedFallbackResolver{
+		local: rproto.Capability{Strategies: []string{relay.name, direct.name}},
+		candidates: []StrategyCandidate{
+			{Name: relay.name, Strategy: relay, Selection: Selection{StrategyName: relay.name, Negotiated: true}},
+			{Name: direct.name, Strategy: direct, Selection: Selection{StrategyName: direct.name, Negotiated: true}},
+		},
+	}
+	binder := &recordingBinder{}
+
+	s, err := New(Config{
+		SessionID:             "session/node-a/node-b",
+		LocalNodeID:           "node-a",
+		PeerID:                "node-b",
+		Initiator:             true,
+		Resolver:              resolver,
+		Sender:                &fakeSender{},
+		Binder:                binder,
+		RunTimeout:            3 * time.Second,
+		CapabilityWaitTimeout: time.Second,
+		PathPolicy:            solver.PathPolicy{MultipathEnabled: true, ProtectDirect: true, MaxPaths: 2},
+	})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	if err := s.Start(context.Background()); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	if err := s.HandleMessage(context.Background(), envelopeMessage(t, "session/node-a/node-b", "node-b", "node-a", rproto.MsgTypeCapability, 1, rproto.Capability{Strategies: []string{relay.name, direct.name}}, time.Now())); err != nil {
+		t.Fatalf("HandleMessage(capability) error = %v", err)
+	}
+	waitForState(t, s, StateBound)
+
+	if relay.execCount() != 1 || direct.execCount() != 1 {
+		t.Fatalf("exec counts = relay:%d direct:%d, want 1/1", relay.execCount(), direct.execCount())
+	}
+	if binder.boundTransport != relayTransport {
+		t.Fatalf("bound transport = %T, want relay primary transport", binder.boundTransport)
+	}
+	if !hasObservation(s.Observations(), legacyice.StrategyName, "protected_direct_attempt_failed") {
+		t.Fatalf("observations = %#v, want protected_direct_attempt_failed", s.Observations())
+	}
+}
+
 type orderedFallbackResolver struct {
 	local      rproto.Capability
 	candidates []StrategyCandidate
@@ -247,8 +370,11 @@ func (s *failingFallbackStrategy) closeCount() int {
 }
 
 type successfulFallbackStrategy struct {
-	name      string
-	transport *fakeTransport
+	name           string
+	transport      *fakeTransport
+	pathID         string
+	connectionType string
+	role           solver.PathRole
 
 	mu    sync.Mutex
 	execs int
@@ -264,12 +390,21 @@ func (s *successfulFallbackStrategy) Execute(context.Context, solver.SessionIO, 
 	s.mu.Lock()
 	s.execs++
 	s.mu.Unlock()
+	pathID := s.pathID
+	if pathID == "" {
+		pathID = s.name + "/path"
+	}
+	connectionType := s.connectionType
+	if connectionType == "" {
+		connectionType = "relay"
+	}
 	return solver.Result{
 		Transport: s.transport,
 		Summary: solver.PathSummary{
-			PathID:         s.name + "/path",
-			ConnectionType: "relay",
+			PathID:         pathID,
+			ConnectionType: connectionType,
 			RemoteAddr:     s.transport.RemoteAddr(),
+			Role:           s.role,
 		},
 	}, nil
 }

@@ -8,6 +8,8 @@ import (
 
 	pmodel "winkyou/pkg/probe/model"
 	"winkyou/pkg/solver"
+	"winkyou/pkg/solver/strategy/legacyice"
+	"winkyou/pkg/solver/strategy/tcpframed"
 )
 
 func (s *Session) selectAndExecute(ctx context.Context) error {
@@ -16,6 +18,9 @@ func (s *Session) selectAndExecute(ctx context.Context) error {
 		return err
 	}
 	s.recordStrategyOrder(ctx, candidates)
+	if s.shouldProtectDirectStandby() {
+		return s.selectAndExecuteProtectedDirect(ctx, candidates)
+	}
 
 	var lastErr error
 	for i, candidate := range candidates {
@@ -53,7 +58,98 @@ func (s *Session) selectAndExecute(ctx context.Context) error {
 	return nil
 }
 
+func (s *Session) selectAndExecuteProtectedDirect(ctx context.Context, candidates []StrategyCandidate) error {
+	var (
+		allOutcomes      []solver.CandidateOutcome
+		lastErr          error
+		primaryKey       string
+		primaryCandidate *StrategyCandidate
+	)
+
+	for i, candidate := range candidates {
+		if primaryKey != "" {
+			if hasProtectedDirectOutcome(allOutcomes, s.cfg.PathPolicy) || !strategyMayProduceDirect(candidate.Name) {
+				continue
+			}
+		}
+		if err := s.setSelectedStrategyCandidate(candidate); err != nil {
+			return err
+		}
+		outcomes, err := s.executeStrategyOutcomes(ctx, candidate.Strategy)
+		if err != nil {
+			lastErr = err
+			s.recordStrategyFailure(ctx, candidate.Name, err, i, len(candidates))
+			if primaryKey != "" {
+				s.recordProtectedDirectAttemptFailure(ctx, candidate.Name, err, primaryKey)
+			}
+			s.discardPendingStrategyMessages()
+			s.clearSelectedStrategy()
+			s.ignoreCleanupError(s.runCleanup(candidate.Strategy.Close))
+			if ctx != nil && ctx.Err() != nil {
+				return err
+			}
+			continue
+		}
+
+		best := selectPrimaryOutcome(outcomes, s.cfg.PathPolicy)
+		if best == nil {
+			err := noSuccessfulOutcomeError(outcomes)
+			lastErr = err
+			s.closeOutcomeTransports(outcomes)
+			s.recordStrategyFailure(ctx, candidate.Name, err, i, len(candidates))
+			if primaryKey != "" {
+				s.recordProtectedDirectAttemptFailure(ctx, candidate.Name, err, primaryKey)
+			}
+			s.discardPendingStrategyMessages()
+			s.clearSelectedStrategy()
+			s.ignoreCleanupError(s.runCleanup(candidate.Strategy.Close))
+			if ctx != nil && ctx.Err() != nil {
+				return err
+			}
+			continue
+		}
+
+		allOutcomes = append(allOutcomes, outcomes...)
+		if primaryKey == "" {
+			primaryKey = outcomeKey(*best)
+			copied := candidate
+			primaryCandidate = &copied
+			if solver.IsDirectPath(best.Result.Summary) || !hasRemainingDirectCandidate(candidates[i+1:]) {
+				break
+			}
+			continue
+		}
+		if hasProtectedDirectOutcome(allOutcomes, s.cfg.PathPolicy) || !hasRemainingDirectCandidate(candidates[i+1:]) {
+			break
+		}
+	}
+
+	if primaryKey != "" {
+		best := findOutcomeByKey(allOutcomes, primaryKey)
+		if primaryCandidate != nil {
+			if err := s.setSelectedStrategyCandidate(*primaryCandidate); err != nil {
+				return err
+			}
+		}
+		return s.bindOutcomeSet(ctx, allOutcomes, best)
+	}
+	if lastErr != nil {
+		s.fail(lastErr)
+		return nil
+	}
+	s.fail(fmt.Errorf("session: no strategy candidates available"))
+	return nil
+}
+
 func (s *Session) executeSelectedStrategy(ctx context.Context, strategy solver.Strategy) error {
+	outcomes, err := s.executeStrategyOutcomes(ctx, strategy)
+	if err != nil {
+		return err
+	}
+	return s.bindOutcomeSet(ctx, outcomes, nil)
+}
+
+func (s *Session) executeStrategyOutcomes(ctx context.Context, strategy solver.Strategy) ([]solver.CandidateOutcome, error) {
 	if err := s.runStrategyPreflightProbe(ctx, strategy); err != nil {
 		s.emitObservation(ctx, solver.Observation{
 			Strategy:   strategy.Name(),
@@ -71,10 +167,10 @@ func (s *Session) executeSelectedStrategy(ctx context.Context, strategy solver.S
 	solveInput := s.buildSolveInput()
 	plans, err := strategy.Plan(ctx, solveInput)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if len(plans) == 0 {
-		return fmt.Errorf("session: strategy %s returned no plans", strategy.Name())
+		return nil, fmt.Errorf("session: strategy %s returned no plans", strategy.Name())
 	}
 
 	plansBefore := planIDs(plans)
@@ -93,7 +189,7 @@ func (s *Session) executeSelectedStrategy(ctx context.Context, strategy solver.S
 	}
 
 	if len(plans) == 0 {
-		return fmt.Errorf("session: all plans pruned after refinement")
+		return nil, fmt.Errorf("session: all plans pruned after refinement")
 	}
 
 	plans, orderReason := s.rankPlans(ctx, strategy, plans)
@@ -110,7 +206,7 @@ func (s *Session) executeSelectedStrategy(ctx context.Context, strategy solver.S
 	if _, usesExecutors := strategy.(solver.ExecutorFactory); !usesExecutors {
 		handler, _ := strategy.(solver.MessageHandler)
 		if err := s.flushPendingStrategyMessages(ctx, handler); err != nil {
-			return err
+			return nil, err
 		}
 	}
 
@@ -118,8 +214,14 @@ func (s *Session) executeSelectedStrategy(ctx context.Context, strategy solver.S
 	budget := solver.DefaultBudget()
 	outcomes := s.executeCandidateLoop(ctx, strategy, plans, budget)
 
+	return outcomes, nil
+}
+
+func (s *Session) bindOutcomeSet(ctx context.Context, outcomes []solver.CandidateOutcome, best *solver.CandidateOutcome) error {
 	// Select best outcome
-	best := selectPrimaryOutcome(outcomes, s.cfg.PathPolicy)
+	if best == nil {
+		best = selectPrimaryOutcome(outcomes, s.cfg.PathPolicy)
+	}
 	if best == nil {
 		var lastErr error
 		for i := range outcomes {
@@ -134,7 +236,7 @@ func (s *Session) executeSelectedStrategy(ctx context.Context, strategy solver.S
 		if lastErr != nil {
 			return lastErr
 		}
-		return fmt.Errorf("session: no successful candidate from %d plans", len(plans))
+		return fmt.Errorf("session: no successful candidate from %d plans", len(outcomes))
 	}
 
 	// Mark selected
@@ -221,6 +323,88 @@ func (s *Session) executeSelectedStrategy(ctx context.Context, strategy solver.S
 		s.cfg.Hooks.OnBound(*best.Result)
 	}
 	return nil
+}
+
+func (s *Session) shouldProtectDirectStandby() bool {
+	policy := s.cfg.PathPolicy
+	return policy.MultipathEnabled && policy.ProtectDirect
+}
+
+func strategyMayProduceDirect(name string) bool {
+	switch strings.TrimSpace(name) {
+	case legacyice.StrategyName, tcpframed.StrategyName:
+		return true
+	default:
+		return false
+	}
+}
+
+func hasRemainingDirectCandidate(candidates []StrategyCandidate) bool {
+	for _, candidate := range candidates {
+		if strategyMayProduceDirect(candidate.Name) {
+			return true
+		}
+	}
+	return false
+}
+
+func hasProtectedDirectOutcome(outcomes []solver.CandidateOutcome, policy solver.PathPolicy) bool {
+	return selectProtectedDirectOutcome(outcomes, policy) != nil
+}
+
+func findOutcomeByKey(outcomes []solver.CandidateOutcome, key string) *solver.CandidateOutcome {
+	for i := range outcomes {
+		if outcomeKey(outcomes[i]) == key {
+			return &outcomes[i]
+		}
+	}
+	return nil
+}
+
+func noSuccessfulOutcomeError(outcomes []solver.CandidateOutcome) error {
+	var lastErr error
+	for i := range outcomes {
+		if outcomes[i].Err != nil {
+			lastErr = outcomes[i].Err
+		}
+	}
+	if lastErr != nil {
+		return lastErr
+	}
+	return fmt.Errorf("session: no successful candidate from %d plans", len(outcomes))
+}
+
+func (s *Session) closeOutcomeTransports(outcomes []solver.CandidateOutcome) {
+	for i := range outcomes {
+		if outcomes[i].Result != nil && outcomes[i].Result.Transport != nil {
+			s.ignoreCleanupError(s.runCleanup(outcomes[i].Result.Transport.Close))
+		}
+	}
+}
+
+func (s *Session) recordStrategyFailure(ctx context.Context, strategyName string, err error, index, total int) {
+	s.emitObservation(ctx, solver.Observation{
+		Strategy:   strategyName,
+		Event:      "strategy_failed",
+		ErrorClass: classifyError(err),
+		Reason:     err.Error(),
+		Details: map[string]string{
+			"candidate_index": fmt.Sprintf("%d", index),
+			"candidate_total": fmt.Sprintf("%d", total),
+		},
+	})
+}
+
+func (s *Session) recordProtectedDirectAttemptFailure(ctx context.Context, strategyName string, err error, primaryPathID string) {
+	s.emitObservation(ctx, solver.Observation{
+		Strategy:   strategyName,
+		Event:      "protected_direct_attempt_failed",
+		ErrorClass: classifyError(err),
+		Reason:     err.Error(),
+		Details: map[string]string{
+			"primary_path_id": primaryPathID,
+		},
+	})
 }
 
 func (s *Session) executeCandidateLoop(ctx context.Context, strategy solver.Strategy, plans []solver.Plan, budget solver.ExecutionBudget) []solver.CandidateOutcome {
