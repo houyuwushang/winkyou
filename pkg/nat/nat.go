@@ -30,6 +30,8 @@ type ICEConfig struct {
 	GatherTimeout             time.Duration // default: 5s
 	CheckTimeout              time.Duration // default: 10s
 	ConnectTimeout            time.Duration // default: 30s
+	CandidatePortMin          uint16
+	CandidatePortMax          uint16
 	STUNServers               []string
 	TURNServers               []TURNServer
 	Controlling               bool
@@ -37,6 +39,8 @@ type ICEConfig struct {
 	CandidateInterfaceExclude []string
 	CandidateCIDRInclude      []string
 	CandidateCIDRExclude      []string
+	NAT1To1IPs                []string
+	NAT1To1CandidateType      string
 
 	// ForceRelay forces relay-only candidate gathering (test/debug only).
 	ForceRelay bool

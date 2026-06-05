@@ -78,6 +78,18 @@ func (c *Config) Validate() error {
 	if c.NAT.RetryMaxInterval < c.NAT.RetryInterval {
 		return errors.New("nat.retry_max_interval must be greater than or equal to nat.retry_interval")
 	}
+	if c.NAT.CandidatePortMin < 0 || c.NAT.CandidatePortMin > 65535 {
+		return errors.New("nat.candidate_port_min must be between 0 and 65535")
+	}
+	if c.NAT.CandidatePortMax < 0 || c.NAT.CandidatePortMax > 65535 {
+		return errors.New("nat.candidate_port_max must be between 0 and 65535")
+	}
+	if (c.NAT.CandidatePortMin == 0) != (c.NAT.CandidatePortMax == 0) {
+		return errors.New("nat.candidate_port_min and nat.candidate_port_max must be set together")
+	}
+	if c.NAT.CandidatePortMin > 0 && c.NAT.CandidatePortMax > 0 && c.NAT.CandidatePortMax < c.NAT.CandidatePortMin {
+		return errors.New("nat.candidate_port_max must be greater than or equal to nat.candidate_port_min")
+	}
 	for i, server := range c.NAT.TURNServers {
 		if strings.TrimSpace(server.URL) == "" {
 			return fmt.Errorf("nat.turn_servers[%d].url must not be empty", i)
@@ -93,6 +105,12 @@ func (c *Config) Validate() error {
 		return err
 	}
 	if err := validateCIDRList("nat.candidate_cidr_exclude", c.NAT.CandidateCIDRExclude); err != nil {
+		return err
+	}
+	if err := validateNAT1To1CandidateType(c.NAT.NAT1To1CandidateType); err != nil {
+		return err
+	}
+	if err := validateNAT1To1IPs("nat.nat1to1_ips", c.NAT.NAT1To1IPs); err != nil {
 		return err
 	}
 
@@ -155,6 +173,41 @@ func validateCIDRList(field string, values []string) error {
 		}
 		if _, _, err := net.ParseCIDR(strings.TrimSpace(value)); err != nil {
 			return fmt.Errorf("invalid %s[%d]: %q", field, i, value)
+		}
+	}
+	return nil
+}
+
+func validateNAT1To1CandidateType(value string) error {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "", "host", "srflx", "server_reflexive", "server-reflexive":
+		return nil
+	default:
+		return fmt.Errorf("invalid nat.nat1to1_candidate_type: %q", value)
+	}
+}
+
+func validateNAT1To1IPs(field string, values []string) error {
+	for i, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			return fmt.Errorf("%s[%d] must not be empty", field, i)
+		}
+		parts := strings.Split(value, "/")
+		if len(parts) == 0 || len(parts) > 2 {
+			return fmt.Errorf("invalid %s[%d]: %q", field, i, value)
+		}
+		for _, part := range parts {
+			if net.ParseIP(strings.TrimSpace(part)) == nil {
+				return fmt.Errorf("invalid %s[%d]: %q", field, i, value)
+			}
+		}
+		if len(parts) == 2 {
+			externalIsV4 := net.ParseIP(strings.TrimSpace(parts[0])).To4() != nil
+			localIsV4 := net.ParseIP(strings.TrimSpace(parts[1])).To4() != nil
+			if externalIsV4 != localIsV4 {
+				return fmt.Errorf("invalid %s[%d]: %q", field, i, value)
+			}
 		}
 	}
 	return nil

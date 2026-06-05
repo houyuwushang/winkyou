@@ -26,6 +26,8 @@ nat:
     - url: "turn:relay.example.com:3478"
       username: "wink"
       password: "secret"
+  candidate_port_min: 40000
+  candidate_port_max: 40100
   candidate_interface_include:
     - "Ethernet"
   candidate_interface_exclude:
@@ -34,6 +36,9 @@ nat:
     - "192.168.0.0/16"
   candidate_cidr_exclude:
     - "100.64.0.0/10"
+  nat1to1_candidate_type: srflx
+  nat1to1_ips:
+    - "203.0.113.10/192.168.0.10"
 
 connectivity:
   mode: auto

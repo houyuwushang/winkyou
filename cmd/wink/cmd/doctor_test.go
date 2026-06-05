@@ -164,6 +164,19 @@ func TestDoctorCandidateFilterAllowsRuntimeCandidate(t *testing.T) {
 	}
 }
 
+func TestDoctorCandidateFilterSummaryIncludesPublicCandidateHints(t *testing.T) {
+	configPath := writeDoctorConfigWithNATExtra(t, "  candidate_port_min: 40000\n  candidate_port_max: 40100\n  nat1to1_candidate_type: srflx\n  nat1to1_ips:\n    - 203.0.113.10/192.168.0.10\n")
+
+	result := runDoctor(context.Background(), &Options{ConfigPath: configPath}, doctorFlags{}, healthyDoctorProbes())
+	check := findDoctorCheck(result, "nat", "candidate filters")
+	if check.Status != doctorOK ||
+		!strings.Contains(check.Message, "port_range=40000-40100") ||
+		!strings.Contains(check.Message, "nat1to1_candidate_type=srflx") ||
+		!strings.Contains(check.Message, "nat1to1_ips=203.0.113.10/192.168.0.10") {
+		t.Fatalf("candidate filters check = %#v, want public candidate hint summary", check)
+	}
+}
+
 func TestDoctorMultipathDisabledSuggestsEnable(t *testing.T) {
 	configPath := writeDoctorConfigWithMultipathDisabled(t)
 

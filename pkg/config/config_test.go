@@ -47,6 +47,15 @@ func TestLoadValidFile(t *testing.T) {
 	if len(cfg.NAT.CandidateCIDRExclude) != 1 || cfg.NAT.CandidateCIDRExclude[0] != "100.64.0.0/10" {
 		t.Fatalf("candidate cidr exclude = %#v, want 100.64.0.0/10", cfg.NAT.CandidateCIDRExclude)
 	}
+	if cfg.NAT.CandidatePortMin != 40000 || cfg.NAT.CandidatePortMax != 40100 {
+		t.Fatalf("candidate port range = %d-%d, want 40000-40100", cfg.NAT.CandidatePortMin, cfg.NAT.CandidatePortMax)
+	}
+	if cfg.NAT.NAT1To1CandidateType != "srflx" {
+		t.Fatalf("nat1to1 candidate type = %q, want srflx", cfg.NAT.NAT1To1CandidateType)
+	}
+	if len(cfg.NAT.NAT1To1IPs) != 1 || cfg.NAT.NAT1To1IPs[0] != "203.0.113.10/192.168.0.10" {
+		t.Fatalf("nat1to1 ips = %#v, want explicit external/local mapping", cfg.NAT.NAT1To1IPs)
+	}
 }
 
 func TestLoadUsesDefaultsWhenFileMissing(t *testing.T) {
@@ -149,6 +158,57 @@ func TestValidateCandidateFilters(t *testing.T) {
 	}
 	if got := err.Error(); got != `invalid nat.candidate_cidr_exclude[0]: "not-a-cidr"` {
 		t.Fatalf("Validate() error = %q, want invalid CIDR", got)
+	}
+}
+
+func TestValidateNATPublicCandidateHints(t *testing.T) {
+	cfg := config.Default()
+	cfg.NAT.CandidatePortMin = 40000
+	cfg.NAT.CandidatePortMax = 40100
+	cfg.NAT.NAT1To1CandidateType = "srflx"
+	cfg.NAT.NAT1To1IPs = []string{"203.0.113.10/192.168.0.10"}
+
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("Validate() error = %v", err)
+	}
+
+	cfg.NAT.CandidatePortMax = 39999
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("Validate() should reject invalid candidate port range")
+	}
+	if got := err.Error(); got != "nat.candidate_port_max must be greater than or equal to nat.candidate_port_min" {
+		t.Fatalf("Validate() error = %q, want invalid port range", got)
+	}
+
+	cfg = config.Default()
+	cfg.NAT.CandidatePortMin = 40000
+	err = cfg.Validate()
+	if err == nil {
+		t.Fatal("Validate() should reject partial candidate port range")
+	}
+	if got := err.Error(); got != "nat.candidate_port_min and nat.candidate_port_max must be set together" {
+		t.Fatalf("Validate() error = %q, want partial port range", got)
+	}
+
+	cfg = config.Default()
+	cfg.NAT.NAT1To1CandidateType = "relay"
+	err = cfg.Validate()
+	if err == nil {
+		t.Fatal("Validate() should reject invalid nat1to1 candidate type")
+	}
+	if got := err.Error(); got != `invalid nat.nat1to1_candidate_type: "relay"` {
+		t.Fatalf("Validate() error = %q, want invalid candidate type", got)
+	}
+
+	cfg = config.Default()
+	cfg.NAT.NAT1To1IPs = []string{"203.0.113.10/not-an-ip"}
+	err = cfg.Validate()
+	if err == nil {
+		t.Fatal("Validate() should reject invalid nat1to1 IP mapping")
+	}
+	if got := err.Error(); got != `invalid nat.nat1to1_ips[0]: "203.0.113.10/not-an-ip"` {
+		t.Fatalf("Validate() error = %q, want invalid nat1to1 mapping", got)
 	}
 }
 

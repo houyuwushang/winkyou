@@ -40,6 +40,10 @@ func newICEPionAgent(cfg ICEConfig) (ICEAgent, error) {
 	if err != nil {
 		return nil, err
 	}
+	nat1To1CandidateType, err := nat1To1CandidateTypeForConfig(cfg)
+	if err != nil {
+		return nil, err
+	}
 
 	failedTimeout := cfg.CheckTimeout
 	if failedTimeout <= 0 {
@@ -51,15 +55,19 @@ func newICEPionAgent(cfg ICEConfig) (ICEAgent, error) {
 	}
 
 	agent, err := pionice.NewAgent(&pionice.AgentConfig{
-		Urls:                urls,
-		NetworkTypes:        []pionice.NetworkType{pionice.NetworkTypeUDP4},
-		CandidateTypes:      candidateTypesForConfig(cfg),
-		MulticastDNSMode:    pionice.MulticastDNSModeDisabled,
-		DisconnectedTimeout: &disconnectedTimeout,
-		FailedTimeout:       &failedTimeout,
-		KeepaliveInterval:   durationPtr(2 * time.Second),
-		InterfaceFilter:     buildCandidateInterfaceFilter(cfg),
-		IPFilter:            ipFilter,
+		Urls:                   urls,
+		PortMin:                cfg.CandidatePortMin,
+		PortMax:                cfg.CandidatePortMax,
+		NetworkTypes:           []pionice.NetworkType{pionice.NetworkTypeUDP4},
+		CandidateTypes:         candidateTypesForConfig(cfg),
+		NAT1To1IPs:             nat1To1IPsForConfig(cfg),
+		NAT1To1IPCandidateType: nat1To1CandidateType,
+		MulticastDNSMode:       pionice.MulticastDNSModeDisabled,
+		DisconnectedTimeout:    &disconnectedTimeout,
+		FailedTimeout:          &failedTimeout,
+		KeepaliveInterval:      durationPtr(2 * time.Second),
+		InterfaceFilter:        buildCandidateInterfaceFilter(cfg),
+		IPFilter:               ipFilter,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("nat: create pion ice agent: %w", err)
@@ -382,6 +390,27 @@ func candidateTypesForConfig(cfg ICEConfig) []pionice.CandidateType {
 		pionice.CandidateTypeHost,
 		pionice.CandidateTypeServerReflexive,
 		pionice.CandidateTypeRelay,
+	}
+}
+
+func nat1To1IPsForConfig(cfg ICEConfig) []string {
+	if cfg.relayOnly || cfg.ForceRelay || len(cfg.NAT1To1IPs) == 0 {
+		return nil
+	}
+	return append([]string(nil), cfg.NAT1To1IPs...)
+}
+
+func nat1To1CandidateTypeForConfig(cfg ICEConfig) (pionice.CandidateType, error) {
+	if cfg.relayOnly || cfg.ForceRelay || len(cfg.NAT1To1IPs) == 0 {
+		return pionice.CandidateTypeUnspecified, nil
+	}
+	switch strings.ToLower(strings.TrimSpace(cfg.NAT1To1CandidateType)) {
+	case "", "host":
+		return pionice.CandidateTypeHost, nil
+	case "srflx", "server_reflexive", "server-reflexive":
+		return pionice.CandidateTypeServerReflexive, nil
+	default:
+		return pionice.CandidateTypeUnspecified, fmt.Errorf("nat: invalid nat1to1 candidate type: %q", cfg.NAT1To1CandidateType)
 	}
 }
 

@@ -136,6 +136,19 @@ nat:
 
 Windows 接口名应使用系统实际接口名称，例如 `Tailscale`、`vEthernet (WSL)` 或 Docker/Wintun 对应名称。`wink doctor` 会展示当前过滤配置，并在 runtime candidate 命中排除 CIDR 时报告失败。
 
+如果两端有可确认的公网 1:1 映射或固定 UDP 端口映射，可以把公网候选提示交给 ICE agent，减少只依赖默认 STUN 采集的误判：
+
+```yaml
+nat:
+  candidate_port_min: 40000
+  candidate_port_max: 40100
+  nat1to1_candidate_type: srflx
+  nat1to1_ips:
+    - "203.0.113.10/192.168.0.10"
+```
+
+`nat1to1_ips` 使用 Pion ICE 的 `external/local` 语义；只有外部 IP/端口映射稳定时才适合使用。普通家宽或运营商 NAT 如果每个 UDP socket 都分配不同公网端口，仍应依赖 STUN 采集到的 server-reflexive candidate，或走 TURN/relay fallback。
+
 从当前版本起，`legacy_ice_udp` 默认会按顺序尝试：
 
 1. `legacyice/direct_prefer`：保留 ICE 默认行为，可能选中 NAT/overlay/100.64 direct-like path。

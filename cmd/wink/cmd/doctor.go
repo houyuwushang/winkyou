@@ -485,7 +485,10 @@ func candidateFilterSummary(cfg *config.Config) string {
 	if cfg == nil {
 		return ""
 	}
-	parts := make([]string, 0, 4)
+	parts := make([]string, 0, 7)
+	if cfg.NAT.CandidatePortMin > 0 || cfg.NAT.CandidatePortMax > 0 {
+		parts = append(parts, fmt.Sprintf("port_range=%d-%d", cfg.NAT.CandidatePortMin, cfg.NAT.CandidatePortMax))
+	}
 	if len(cfg.NAT.CandidateInterfaceInclude) > 0 {
 		parts = append(parts, "interface_include="+strings.Join(cfg.NAT.CandidateInterfaceInclude, ","))
 	}
@@ -497,6 +500,12 @@ func candidateFilterSummary(cfg *config.Config) string {
 	}
 	if len(cfg.NAT.CandidateCIDRExclude) > 0 {
 		parts = append(parts, "cidr_exclude="+strings.Join(cfg.NAT.CandidateCIDRExclude, ","))
+	}
+	if strings.TrimSpace(cfg.NAT.NAT1To1CandidateType) != "" {
+		parts = append(parts, "nat1to1_candidate_type="+strings.TrimSpace(cfg.NAT.NAT1To1CandidateType))
+	}
+	if len(cfg.NAT.NAT1To1IPs) > 0 {
+		parts = append(parts, "nat1to1_ips="+strings.Join(cfg.NAT.NAT1To1IPs, ","))
 	}
 	return strings.Join(parts, " ")
 }

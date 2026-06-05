@@ -353,10 +353,14 @@ func TestLegacyICEStrategyConfigPropagatesCandidateFilters(t *testing.T) {
 		nat: recorder,
 		cfg: config.Config{
 			NAT: config.NATConfig{
+				CandidatePortMin:          40000,
+				CandidatePortMax:          40100,
 				CandidateInterfaceInclude: []string{"Ethernet"},
 				CandidateInterfaceExclude: []string{"tailscale0"},
 				CandidateCIDRInclude:      []string{"192.168.0.0/16"},
 				CandidateCIDRExclude:      []string{"100.64.0.0/10"},
+				NAT1To1IPs:                []string{"203.0.113.10/192.168.0.10"},
+				NAT1To1CandidateType:      "srflx",
 			},
 		},
 	}
@@ -372,11 +376,17 @@ func TestLegacyICEStrategyConfigPropagatesCandidateFilters(t *testing.T) {
 	if got.CandidateInterfaceInclude[0] != "Ethernet" || got.CandidateInterfaceExclude[0] != "tailscale0" {
 		t.Fatalf("interface filters = include=%#v exclude=%#v", got.CandidateInterfaceInclude, got.CandidateInterfaceExclude)
 	}
+	if got.CandidatePortMin != 40000 || got.CandidatePortMax != 40100 {
+		t.Fatalf("candidate port range = %d-%d, want 40000-40100", got.CandidatePortMin, got.CandidatePortMax)
+	}
 	if got.CandidateCIDRInclude[0] != "192.168.0.0/16" ||
 		len(got.CandidateCIDRExclude) != 2 ||
 		got.CandidateCIDRExclude[0] != "100.64.0.0/10" ||
 		got.CandidateCIDRExclude[1] != "198.18.0.0/15" {
 		t.Fatalf("cidr filters = include=%#v exclude=%#v", got.CandidateCIDRInclude, got.CandidateCIDRExclude)
+	}
+	if len(got.NAT1To1IPs) != 1 || got.NAT1To1IPs[0] != "203.0.113.10/192.168.0.10" || got.NAT1To1CandidateType != "srflx" {
+		t.Fatalf("nat1to1 hints = ips=%#v type=%q, want configured hints", got.NAT1To1IPs, got.NAT1To1CandidateType)
 	}
 }
 

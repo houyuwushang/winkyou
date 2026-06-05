@@ -171,3 +171,43 @@ func TestICEPayloadRoundTripAndRelayCandidates(t *testing.T) {
 		t.Fatalf("relay candidate types = %+v", relayTypes)
 	}
 }
+
+func TestNAT1To1ConfigHelpers(t *testing.T) {
+	cfg := ICEConfig{
+		NAT1To1IPs:           []string{"203.0.113.10/192.168.0.10"},
+		NAT1To1CandidateType: "srflx",
+	}
+	gotType, err := nat1To1CandidateTypeForConfig(cfg)
+	if err != nil {
+		t.Fatalf("nat1To1CandidateTypeForConfig() error = %v", err)
+	}
+	if gotType != pionice.CandidateTypeServerReflexive {
+		t.Fatalf("nat1To1 candidate type = %v, want server reflexive", gotType)
+	}
+	gotIPs := nat1To1IPsForConfig(cfg)
+	if len(gotIPs) != 1 || gotIPs[0] != "203.0.113.10/192.168.0.10" {
+		t.Fatalf("nat1To1 IPs = %#v, want configured mapping", gotIPs)
+	}
+
+	cfg.ForceRelay = true
+	gotType, err = nat1To1CandidateTypeForConfig(cfg)
+	if err != nil {
+		t.Fatalf("nat1To1CandidateTypeForConfig(force relay) error = %v", err)
+	}
+	if gotType != pionice.CandidateTypeUnspecified {
+		t.Fatalf("force relay nat1To1 candidate type = %v, want unspecified", gotType)
+	}
+	if gotIPs := nat1To1IPsForConfig(cfg); gotIPs != nil {
+		t.Fatalf("force relay nat1To1 IPs = %#v, want nil", gotIPs)
+	}
+}
+
+func TestNAT1To1ConfigRejectsInvalidCandidateType(t *testing.T) {
+	_, err := nat1To1CandidateTypeForConfig(ICEConfig{
+		NAT1To1IPs:           []string{"203.0.113.10"},
+		NAT1To1CandidateType: "relay",
+	})
+	if err == nil {
+		t.Fatal("nat1To1CandidateTypeForConfig() error = nil, want invalid candidate type")
+	}
+}

@@ -124,6 +124,19 @@ nat:
 
 Windows 需要按真实接口名配置，例如 `Tailscale`、`vEthernet (WSL)` 或 Docker/Wintun 对应接口。过滤后重新启动两端 `wink up`，再用 `wink peers` 和 `wink doctor` 检查 selected candidate。
 
+如果 natpierce 或路由器日志能证明两端存在稳定公网映射，可以显式配置 ICE 公网候选提示：
+
+```yaml
+nat:
+  candidate_port_min: 40000
+  candidate_port_max: 40100
+  nat1to1_candidate_type: srflx
+  nat1to1_ips:
+    - "203.0.113.10/192.168.0.10"
+```
+
+这只适用于公网 IP/端口映射稳定的场景。若运营商 NAT 会为每个 UDP socket 动态改写端口，`nat1to1_ips` 不能保证复现 natpierce 的成功路径；应查看 `legacyice/public_direct` 是否采集到了 server-reflexive candidate，或使用 TURN/`relay_only` fallback。
+
 默认 `legacy_ice_udp` 内部执行顺序为：
 
 ```text

@@ -52,6 +52,8 @@ type NATConfig struct {
 	CheckTimeout              time.Duration      `mapstructure:"check_timeout" yaml:"check_timeout"`
 	RetryInterval             time.Duration      `mapstructure:"retry_interval" yaml:"retry_interval"`
 	RetryMaxInterval          time.Duration      `mapstructure:"retry_max_interval" yaml:"retry_max_interval"`
+	CandidatePortMin          int                `mapstructure:"candidate_port_min" yaml:"candidate_port_min"`
+	CandidatePortMax          int                `mapstructure:"candidate_port_max" yaml:"candidate_port_max"`
 	STUNServers               []string           `mapstructure:"stun_servers" yaml:"stun_servers"`
 	TURNServers               []TURNServerConfig `mapstructure:"turn_servers" yaml:"turn_servers"`
 	ForceRelay                bool               `mapstructure:"force_relay" yaml:"force_relay"`
@@ -59,6 +61,8 @@ type NATConfig struct {
 	CandidateInterfaceExclude []string           `mapstructure:"candidate_interface_exclude" yaml:"candidate_interface_exclude"`
 	CandidateCIDRInclude      []string           `mapstructure:"candidate_cidr_include" yaml:"candidate_cidr_include"`
 	CandidateCIDRExclude      []string           `mapstructure:"candidate_cidr_exclude" yaml:"candidate_cidr_exclude"`
+	NAT1To1IPs                []string           `mapstructure:"nat1to1_ips" yaml:"nat1to1_ips"`
+	NAT1To1CandidateType      string             `mapstructure:"nat1to1_candidate_type" yaml:"nat1to1_candidate_type"`
 }
 
 type ConnectivityConfig struct {

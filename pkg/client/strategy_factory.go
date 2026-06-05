@@ -124,6 +124,8 @@ func (e *engine) legacyICEStrategyConfig() legacyice.Config {
 			GatherTimeout:             cfg.GatherTimeout,
 			CheckTimeout:              cfg.CheckTimeout,
 			ConnectTimeout:            cfg.ConnectTimeout,
+			CandidatePortMin:          candidatePortValue(e.cfg.NAT.CandidatePortMin),
+			CandidatePortMax:          candidatePortValue(e.cfg.NAT.CandidatePortMax),
 			STUNServers:               e.cfg.NAT.STUNServers,
 			TURNServers:               toNATTURNServers(e.cfg.NAT.TURNServers),
 			Controlling:               req.Controlling,
@@ -131,6 +133,8 @@ func (e *engine) legacyICEStrategyConfig() legacyice.Config {
 			CandidateInterfaceExclude: append([]string(nil), e.cfg.NAT.CandidateInterfaceExclude...),
 			CandidateCIDRInclude:      append([]string(nil), e.cfg.NAT.CandidateCIDRInclude...),
 			CandidateCIDRExclude:      append(append([]string(nil), e.cfg.NAT.CandidateCIDRExclude...), req.CandidateCIDRExclude...),
+			NAT1To1IPs:                append([]string(nil), e.cfg.NAT.NAT1To1IPs...),
+			NAT1To1CandidateType:      e.cfg.NAT.NAT1To1CandidateType,
 			ForceRelay:                req.ForceRelay,
 		})
 	}
@@ -173,6 +177,13 @@ func ensureLegacyFallback(order []string) []string {
 		next = append(next, legacyice.StrategyName)
 	}
 	return next
+}
+
+func candidatePortValue(port int) uint16 {
+	if port <= 0 || port > 65535 {
+		return 0
+	}
+	return uint16(port)
 }
 
 func (e *engine) legacyICERunTimeout() time.Duration {
