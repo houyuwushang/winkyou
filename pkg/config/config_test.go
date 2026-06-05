@@ -154,6 +154,12 @@ func TestDefaultConnectivityPolicy(t *testing.T) {
 	if !cfg.Connectivity.Multipath.ShadowWrite {
 		t.Fatal("default multipath.shadow_write = false, want true")
 	}
+	if cfg.Connectivity.Multipath.DependencyPenalty != 50 {
+		t.Fatalf("default multipath.dependency_penalty = %d, want 50", cfg.Connectivity.Multipath.DependencyPenalty)
+	}
+	if cfg.Connectivity.Multipath.DirectProtectionBonus != 100 {
+		t.Fatalf("default multipath.direct_protection_bonus = %d, want 100", cfg.Connectivity.Multipath.DirectProtectionBonus)
+	}
 }
 
 func TestValidateRejectsUnknownConnectivityStrategy(t *testing.T) {

@@ -236,6 +236,46 @@ func TestScoreOutcomeWithPolicyDoesNotBonusDependentDirectLikePath(t *testing.T)
 	}
 }
 
+func TestScoreOutcomeWithPolicyPenalizesUnknownDirectBelowRelay(t *testing.T) {
+	policy := PathPolicy{
+		MultipathEnabled:      true,
+		ProtectDirect:         true,
+		DependencyPenalty:     50,
+		DirectProtectionBonus: 100,
+	}
+	relay := CandidateOutcome{
+		Result: &Result{
+			Transport: &mockTransport{},
+			Summary: PathSummary{
+				PathID:         "relay/path",
+				ConnectionType: "relay",
+				Dependencies:   []PathDependency{{Kind: PathDependencyRelay, Reason: "turn_or_relay_candidate"}},
+			},
+		},
+	}
+	unknownDirect := CandidateOutcome{
+		Result: &Result{
+			Transport: &mockTransport{},
+			Summary: PathSummary{
+				PathID:         "overlay/direct",
+				ConnectionType: "direct",
+				Role:           PathRolePrimaryCandidate,
+				Dependencies: []PathDependency{{
+					Kind:   PathDependencyUnknown,
+					Reason: "remote_cgnat_or_overlay_candidate",
+				}},
+			},
+		},
+	}
+	if relayScore, unknownScore := ScoreOutcomeWithPolicy(relay, policy), ScoreOutcomeWithPolicy(unknownDirect, policy); relayScore <= unknownScore {
+		t.Fatalf("policy scores relay=%d unknown_direct=%d, want relay above unknown-dependent direct without latency evidence", relayScore, unknownScore)
+	}
+	best := SelectBestOutcomeWithPolicy([]CandidateOutcome{unknownDirect, relay}, policy)
+	if best == nil || best.Result.Summary.PathID != "relay/path" {
+		t.Fatalf("SelectBestOutcomeWithPolicy() = %#v, want relay over unknown-dependent direct", best)
+	}
+}
+
 func TestSelectBestOutcome(t *testing.T) {
 	directOutcome := CandidateOutcome{
 		Plan: Plan{ID: "direct"},

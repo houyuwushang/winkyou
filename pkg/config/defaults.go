@@ -8,24 +8,26 @@ import (
 )
 
 const (
-	defaultLogLevel            = "info"
-	defaultLogFormat           = "text"
-	defaultLogOutput           = "stderr"
-	defaultCoordinatorURL      = ""
-	defaultCoordinatorAuth     = ""
-	defaultNetIfBackend        = "auto"
-	defaultNetIfMTU            = 1280
-	defaultWireGuardPort       = 51820
-	defaultCoordinatorDelay    = 10 * time.Second
-	defaultNATGatherTimeout    = 10 * time.Second
-	defaultNATConnectTimeout   = 25 * time.Second
-	defaultNATCheckTimeout     = 12 * time.Second
-	defaultNATRetryInterval    = 2 * time.Second
-	defaultNATRetryMaxInterval = 10 * time.Second
-	defaultConnectivityMode    = "auto"
-	defaultMultipathMaxPaths   = 2
-	defaultTCPFramedListenAddr = "0.0.0.0:0"
-	defaultTCPFramedDialTime   = 5 * time.Second
+	defaultLogLevel              = "info"
+	defaultLogFormat             = "text"
+	defaultLogOutput             = "stderr"
+	defaultCoordinatorURL        = ""
+	defaultCoordinatorAuth       = ""
+	defaultNetIfBackend          = "auto"
+	defaultNetIfMTU              = 1280
+	defaultWireGuardPort         = 51820
+	defaultCoordinatorDelay      = 10 * time.Second
+	defaultNATGatherTimeout      = 10 * time.Second
+	defaultNATConnectTimeout     = 25 * time.Second
+	defaultNATCheckTimeout       = 12 * time.Second
+	defaultNATRetryInterval      = 2 * time.Second
+	defaultNATRetryMaxInterval   = 10 * time.Second
+	defaultConnectivityMode      = "auto"
+	defaultMultipathMaxPaths     = 2
+	defaultDependencyPenalty     = 50
+	defaultDirectProtectionBonus = 100
+	defaultTCPFramedListenAddr   = "0.0.0.0:0"
+	defaultTCPFramedDialTime     = 5 * time.Second
 )
 
 var defaultConnectivityStrategyOrder = []string{"legacy_ice_udp", "relay_only"}
@@ -67,10 +69,12 @@ func Default() Config {
 			Mode:          defaultConnectivityMode,
 			StrategyOrder: append([]string(nil), defaultConnectivityStrategyOrder...),
 			Multipath: MultipathConfig{
-				Enabled:       true,
-				ProtectDirect: true,
-				MaxPaths:      defaultMultipathMaxPaths,
-				ShadowWrite:   true,
+				Enabled:               true,
+				ProtectDirect:         true,
+				MaxPaths:              defaultMultipathMaxPaths,
+				ShadowWrite:           true,
+				DependencyPenalty:     defaultDependencyPenalty,
+				DirectProtectionBonus: defaultDirectProtectionBonus,
 			},
 		},
 		TCPFramed: TCPFramedConfig{

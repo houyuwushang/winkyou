@@ -253,8 +253,8 @@ func ScoreOutcomeWithPolicy(outcome CandidateOutcome, policy PathPolicy) int {
 	if latencyBonus, ok := pathLatencyBonus(summary); ok {
 		score += latencyBonus
 	}
-	if policy.DependencyPenalty > 0 && (IsRelayPath(summary) || HasExplicitDependency(summary)) {
-		score -= policy.DependencyPenalty
+	if policy.DependencyPenalty > 0 {
+		score -= pathDependencyPenalty(summary, policy.DependencyPenalty)
 	}
 	if policy.ProtectDirect && policy.DirectProtectionBonus > 0 && IsProtectedDirectPath(summary) {
 		score += policy.DirectProtectionBonus
@@ -263,6 +263,20 @@ func ScoreOutcomeWithPolicy(outcome CandidateOutcome, policy PathPolicy) int {
 		return 1
 	}
 	return score
+}
+
+func pathDependencyPenalty(summary PathSummary, basePenalty int) int {
+	if basePenalty <= 0 {
+		return 0
+	}
+	penalty := 0
+	if IsRelayPath(summary) || HasExplicitDependency(summary) {
+		penalty = basePenalty
+	}
+	if HasDependency(summary, PathDependencyUnknown) {
+		penalty += basePenalty
+	}
+	return penalty
 }
 
 func preferOutcomeTie(candidate, incumbent CandidateOutcome) bool {

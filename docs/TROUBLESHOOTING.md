@@ -215,7 +215,16 @@ connectivity:
   strategy_order:
     - legacy_ice_udp
     - relay_only
+  multipath:
+    enabled: true
+    protect_direct: true
+    max_paths: 2
+    shadow_write: true
+    dependency_penalty: 50
+    direct_protection_bonus: 100
 ```
+
+默认 multipath scoring 会对 relay/依赖路径扣分，对 `unknown` 依赖加倍扣分，并给真正的 `protected_direct` 加保护分。结果是：低 RTT relay 仍可成为 primary；但没有 RTT 证据时，`100.64.0.0/10`、VPN/TAP、natpierce 等依赖不清的 direct-like path 不应仅因为 `Conn Type: direct` 就压过明确的 relay fallback。
 
 强制验证 relay：
 

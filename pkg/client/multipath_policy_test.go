@@ -35,6 +35,9 @@ func TestEngineMultipathPathPolicyDefaultsProtectedDirect(t *testing.T) {
 	if !policy.ShadowWrite {
 		t.Fatalf("default policy = %+v, want shadow_write=true", policy)
 	}
+	if policy.DependencyPenalty != 50 || policy.DirectProtectionBonus != 100 {
+		t.Fatalf("default policy = %+v, want dependency_penalty=50 direct_bonus=100", policy)
+	}
 }
 
 func TestEngineMultipathPathPolicyDisabledForRelayOnlyMode(t *testing.T) {
