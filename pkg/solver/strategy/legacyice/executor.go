@@ -688,6 +688,8 @@ type candidateFilterSummary struct {
 	Types           map[string]int
 	KeptTypes       map[string]int
 	RejectedReasons map[string]int
+	KeptSamples     []string
+	RejectedSamples []string
 }
 
 func newCandidateFilterSummary() candidateFilterSummary {
@@ -698,6 +700,8 @@ func newCandidateFilterSummary() candidateFilterSummary {
 	}
 }
 
+const maxCandidateFilterSamples = 4
+
 func (s *candidateFilterSummary) record(candidate nat.Candidate, kept bool, reason string) {
 	s.Total++
 	candidateType := candidate.Type.String()
@@ -705,12 +709,18 @@ func (s *candidateFilterSummary) record(candidate nat.Candidate, kept bool, reas
 	if kept {
 		s.Kept++
 		s.KeptTypes[candidateType]++
+		if len(s.KeptSamples) < maxCandidateFilterSamples {
+			s.KeptSamples = append(s.KeptSamples, formatCandidate(&candidate))
+		}
 		return
 	}
 	if reason == "" {
 		reason = "filtered"
 	}
 	s.RejectedReasons[reason]++
+	if len(s.RejectedSamples) < maxCandidateFilterSamples {
+		s.RejectedSamples = append(s.RejectedSamples, formatCandidate(&candidate)+"("+reason+")")
+	}
 }
 
 func (s candidateFilterSummary) details() map[string]string {
@@ -727,6 +737,12 @@ func (s candidateFilterSummary) details() map[string]string {
 	}
 	if reasons := formatCountMap(s.RejectedReasons); reasons != "" {
 		details["candidate_reject_reasons"] = reasons
+	}
+	if len(s.KeptSamples) > 0 {
+		details["candidate_kept_samples"] = strings.Join(s.KeptSamples, ";")
+	}
+	if len(s.RejectedSamples) > 0 {
+		details["candidate_rejected_samples"] = strings.Join(s.RejectedSamples, ";")
 	}
 	return details
 }

@@ -254,18 +254,22 @@ func TestDoctorPublicDirectEvidenceWarnsForRemoteFilterNoCandidates(t *testing.T
 		PlanID: "legacyice/public_direct",
 		Event:  "remote_candidates_filtered",
 		Details: map[string]string{
-			"candidate_side":           "remote",
-			"candidate_total":          "2",
-			"candidate_kept":           "0",
-			"candidate_rejected":       "2",
-			"candidate_reject_reasons": "remote_cgnat_or_overlay_candidate=2",
+			"candidate_side":             "remote",
+			"candidate_total":            "2",
+			"candidate_kept":             "0",
+			"candidate_rejected":         "2",
+			"candidate_reject_reasons":   "remote_cgnat_or_overlay_candidate=2",
+			"candidate_rejected_samples": "host:100.102.17.35:41000(remote_cgnat_or_overlay_candidate);host:100.88.1.9:41001(remote_cgnat_or_overlay_candidate)",
 		},
 		Timestamp: time.Now(),
 	}})
 
 	result := runDoctor(context.Background(), &Options{ConfigPath: configPath}, doctorFlags{}, healthyDoctorProbes())
 	check := findDoctorCheck(result, "nat", "public direct evidence")
-	if check.Status != doctorWarn || !strings.Contains(check.Message, "remote has no usable public direct candidates") || !strings.Contains(check.Message, "remote_cgnat_or_overlay_candidate") {
+	if check.Status != doctorWarn ||
+		!strings.Contains(check.Message, "remote has no usable public direct candidates") ||
+		!strings.Contains(check.Message, "remote_cgnat_or_overlay_candidate") ||
+		!strings.Contains(check.Message, "host:100.102.17.35:41000") {
 		t.Fatalf("public direct evidence check = %#v, want remote candidate warning", check)
 	}
 }

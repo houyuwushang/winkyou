@@ -272,6 +272,14 @@ func TestPublicDirectSendOfferAdvertisesOnlyPublicCandidates(t *testing.T) {
 	if obs.Details["candidate_total"] != "4" || obs.Details["candidate_kept"] != "1" || obs.Details["candidate_rejected"] != "3" {
 		t.Fatalf("candidate_gathered counts = %#v, want total=4 kept=1 rejected=3", obs.Details)
 	}
+	if !strings.Contains(obs.Details["candidate_kept_samples"], "srflx:117.48.146.2:1003") {
+		t.Fatalf("candidate_gathered kept samples = %q, want public srflx sample", obs.Details["candidate_kept_samples"])
+	}
+	for _, want := range []string{"host:10.0.0.1:1001(local_private_candidate)", "host:100.102.17.35:1002(local_cgnat_or_overlay_candidate)", "relay:20.0.0.1:2001(local_relay_candidate)"} {
+		if !strings.Contains(obs.Details["candidate_rejected_samples"], want) {
+			t.Fatalf("candidate_gathered rejected samples = %q, want %q", obs.Details["candidate_rejected_samples"], want)
+		}
+	}
 	reasons := obs.Details["candidate_reject_reasons"]
 	for _, want := range []string{"local_private_candidate=1", "local_cgnat_or_overlay_candidate=1", "local_relay_candidate=1"} {
 		if !strings.Contains(reasons, want) {
@@ -377,6 +385,14 @@ func TestExecutorFiltersRemoteCandidatesByPlanMode(t *testing.T) {
 	}
 	if obs.Details["candidate_total"] != "4" || obs.Details["candidate_kept"] != "1" || obs.Details["candidate_rejected"] != "3" {
 		t.Fatalf("remote_candidates_filtered counts = %#v, want total=4 kept=1 rejected=3", obs.Details)
+	}
+	if !strings.Contains(obs.Details["candidate_kept_samples"], "srflx:117.48.146.2:1003") {
+		t.Fatalf("remote_candidates_filtered kept samples = %q, want public srflx sample", obs.Details["candidate_kept_samples"])
+	}
+	for _, want := range []string{"host:10.0.0.1:1001(remote_private_candidate)", "host:100.102.17.35:1002(remote_cgnat_or_overlay_candidate)", "relay:20.0.0.1:2001(remote_relay_candidate)"} {
+		if !strings.Contains(obs.Details["candidate_rejected_samples"], want) {
+			t.Fatalf("remote_candidates_filtered rejected samples = %q, want %q", obs.Details["candidate_rejected_samples"], want)
+		}
 	}
 	remoteReasons := obs.Details["candidate_reject_reasons"]
 	for _, want := range []string{"remote_private_candidate=1", "remote_cgnat_or_overlay_candidate=1", "remote_relay_candidate=1"} {

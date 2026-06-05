@@ -463,6 +463,8 @@ func publicDirectObservationMessage(prefix string, obs *solver.Observation, path
 			"candidate_kept",
 			"candidate_rejected",
 			"candidate_reject_reasons",
+			"candidate_kept_samples",
+			"candidate_rejected_samples",
 			"path_role",
 			"path_dependencies",
 			"local_candidate_kind",
