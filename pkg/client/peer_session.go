@@ -133,6 +133,7 @@ func (e *engine) newPeerRunner(s *peerSession) (*sesspkg.Session, error) {
 		ProbeRunner:           e.probeRunner(),
 		ObservationSink:       observationSink,
 		ObservationHistory:    observationHistory,
+		PathPolicy:            e.multipathPathPolicy(),
 		RunTimeout:            e.legacyICERunTimeout(),
 		CapabilityWaitTimeout: e.capabilityWaitTimeout(),
 		PreflightProbeTimeout: 500 * time.Millisecond,
@@ -148,6 +149,18 @@ func (e *engine) newPeerRunner(s *peerSession) (*sesspkg.Session, error) {
 			},
 		},
 	})
+}
+
+func (e *engine) multipathPathPolicy() solver.PathPolicy {
+	cfg := e.cfg.Connectivity.Multipath
+	return solver.PathPolicy{
+		MultipathEnabled:      cfg.Enabled,
+		ProtectDirect:         cfg.ProtectDirect,
+		MaxPaths:              cfg.MaxPaths,
+		ShadowWrite:           cfg.ShadowWrite,
+		DependencyPenalty:     cfg.DependencyPenalty,
+		DirectProtectionBonus: cfg.DirectProtectionBonus,
+	}
 }
 
 func (e *engine) handlePeerSolverMessage(nodeID string, msg solver.Message) {

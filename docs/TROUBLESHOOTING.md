@@ -14,6 +14,7 @@ wink --config node-a.yaml status
 
 - `invalid coordinator.url`：确认使用 `grpc://host:50051`
 - `invalid connectivity.strategy_order`：只使用当前实现的 strategy 名称，例如 `legacy_ice_udp`、`relay_only`、`tcp_framed`
+- `connectivity.multipath.max_paths must be greater than zero`：只有显式启用 `connectivity.multipath.enabled: true` 时会触发；把 `max_paths` 设置为至少 `1`，真实 protected direct 验证建议使用 `2`
 - WireGuard 私钥错误：重新运行 `wink genkey`，把 private key 写入 `wireguard.private_key`
 
 ## 2. Coordinator
@@ -142,6 +143,11 @@ connectivity:
   strategy_order:
     - relay_only
     - legacy_ice_udp
+  multipath:
+    enabled: true
+    protect_direct: true
+    max_paths: 2
+    shadow_write: false
 ```
 
 `tcp_framed` 仍是 alpha，仅用于显式可达 TCP 地址测试：

@@ -117,6 +117,9 @@ func (c *Config) Validate() error {
 		}
 		seenStrategies[name] = struct{}{}
 	}
+	if c.Connectivity.Multipath.Enabled && c.Connectivity.Multipath.MaxPaths <= 0 {
+		return errors.New("connectivity.multipath.max_paths must be greater than zero when connectivity.multipath.enabled=true")
+	}
 	if c.TCPFramed.Enabled {
 		if strings.TrimSpace(c.TCPFramed.ListenAddr) == "" {
 			return errors.New("tcp_framed.listen_addr must not be empty when tcp_framed.enabled=true")

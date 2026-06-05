@@ -29,6 +29,12 @@ func TestLoadValidFile(t *testing.T) {
 	if len(cfg.Connectivity.StrategyOrder) != 3 || cfg.Connectivity.StrategyOrder[0] != "legacy_ice_udp" || cfg.Connectivity.StrategyOrder[1] != "relay_only" || cfg.Connectivity.StrategyOrder[2] != "tcp_framed" {
 		t.Fatalf("connectivity strategy order = %#v, want legacy_ice_udp, relay_only, tcp_framed", cfg.Connectivity.StrategyOrder)
 	}
+	if !cfg.Connectivity.Multipath.Enabled || !cfg.Connectivity.Multipath.ProtectDirect || cfg.Connectivity.Multipath.MaxPaths != 3 {
+		t.Fatalf("multipath config = %#v, want enabled protect_direct max_paths=3", cfg.Connectivity.Multipath)
+	}
+	if cfg.Connectivity.Multipath.DependencyPenalty != 50 || cfg.Connectivity.Multipath.DirectProtectionBonus != 100 {
+		t.Fatalf("multipath scoring config = %#v, want dependency_penalty=50 direct_protection_bonus=100", cfg.Connectivity.Multipath)
+	}
 	if !cfg.TCPFramed.Enabled || cfg.TCPFramed.ListenAddr != "127.0.0.1:0" || cfg.TCPFramed.AdvertiseAddr != "127.0.0.1:12345" {
 		t.Fatalf("tcp_framed config = %#v, want enabled loopback config", cfg.TCPFramed)
 	}
@@ -101,6 +107,15 @@ func TestDefaultConnectivityPolicy(t *testing.T) {
 	if cfg.TCPFramed.ListenAddr != "0.0.0.0:0" {
 		t.Fatalf("default tcp_framed.listen_addr = %q, want 0.0.0.0:0", cfg.TCPFramed.ListenAddr)
 	}
+	if cfg.Connectivity.Multipath.Enabled {
+		t.Fatal("default multipath.enabled = true, want false")
+	}
+	if !cfg.Connectivity.Multipath.ProtectDirect {
+		t.Fatal("default multipath.protect_direct = false, want true")
+	}
+	if cfg.Connectivity.Multipath.MaxPaths != 2 {
+		t.Fatalf("default multipath.max_paths = %d, want 2", cfg.Connectivity.Multipath.MaxPaths)
+	}
 }
 
 func TestValidateRejectsUnknownConnectivityStrategy(t *testing.T) {
@@ -134,6 +149,20 @@ func TestValidateCandidateFilters(t *testing.T) {
 	}
 	if got := err.Error(); got != `invalid nat.candidate_cidr_exclude[0]: "not-a-cidr"` {
 		t.Fatalf("Validate() error = %q, want invalid CIDR", got)
+	}
+}
+
+func TestValidateRejectsEnabledMultipathWithoutPaths(t *testing.T) {
+	cfg := config.Default()
+	cfg.Connectivity.Multipath.Enabled = true
+	cfg.Connectivity.Multipath.MaxPaths = 0
+
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("expected validation error, got nil")
+	}
+	if got := err.Error(); got != "connectivity.multipath.max_paths must be greater than zero when connectivity.multipath.enabled=true" {
+		t.Fatalf("Validate() error = %q, want multipath max_paths error", got)
 	}
 }
 

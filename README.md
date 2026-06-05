@@ -59,6 +59,11 @@ connectivity:
   strategy_order:
     - legacy_ice_udp
     - relay_only
+  multipath:
+    enabled: false
+    protect_direct: true
+    max_paths: 2
+    shadow_write: false
 ```
 
 显式验证 `tcp_framed` alpha 路径时，需要同时启用 strategy 和配置可达 TCP 地址：
@@ -86,6 +91,11 @@ connectivity:
   strategy_order:
     - relay_only
     - legacy_ice_udp
+  multipath:
+    enabled: true
+    protect_direct: true
+    max_paths: 2
+    shadow_write: false
 
 nat:
   turn_servers:

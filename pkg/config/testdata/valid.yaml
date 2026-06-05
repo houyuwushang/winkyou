@@ -41,6 +41,13 @@ connectivity:
     - legacy_ice_udp
     - relay_only
     - tcp_framed
+  multipath:
+    enabled: true
+    protect_direct: true
+    max_paths: 3
+    shadow_write: false
+    dependency_penalty: 50
+    direct_protection_bonus: 100
 
 tcp_framed:
   enabled: true

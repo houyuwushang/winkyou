@@ -23,6 +23,7 @@ const (
 	defaultNATRetryInterval    = 2 * time.Second
 	defaultNATRetryMaxInterval = 10 * time.Second
 	defaultConnectivityMode    = "auto"
+	defaultMultipathMaxPaths   = 2
 	defaultTCPFramedListenAddr = "0.0.0.0:0"
 	defaultTCPFramedDialTime   = 5 * time.Second
 )
@@ -65,6 +66,11 @@ func Default() Config {
 		Connectivity: ConnectivityConfig{
 			Mode:          defaultConnectivityMode,
 			StrategyOrder: append([]string(nil), defaultConnectivityStrategyOrder...),
+			Multipath: MultipathConfig{
+				Enabled:       false,
+				ProtectDirect: true,
+				MaxPaths:      defaultMultipathMaxPaths,
+			},
 		},
 		TCPFramed: TCPFramedConfig{
 			Enabled:     false,
