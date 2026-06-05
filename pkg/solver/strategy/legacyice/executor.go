@@ -109,6 +109,10 @@ func (e *executor) HandleMessage(ctx context.Context, sess solver.SessionIO, msg
 		}
 		candidates, summary := filterRemoteCandidatesWithSummary(offer.ICE.Candidates, e.execCfg)
 		e.reportCandidateFilter(sess, "remote_candidates_filtered", "remote", MessageTypeOffer, summary)
+		if len(candidates) == 0 {
+			e.failRemoteCandidates(sess, MessageTypeOffer)
+			return nil
+		}
 		if err := agent.SetRemoteCandidates(candidates); err != nil {
 			return err
 		}
@@ -130,6 +134,10 @@ func (e *executor) HandleMessage(ctx context.Context, sess solver.SessionIO, msg
 		}
 		candidates, summary := filterRemoteCandidatesWithSummary(answer.ICE.Candidates, e.execCfg)
 		e.reportCandidateFilter(sess, "remote_candidates_filtered", "remote", MessageTypeAnswer, summary)
+		if len(candidates) == 0 {
+			e.failRemoteCandidates(sess, MessageTypeAnswer)
+			return nil
+		}
 		if err := agent.SetRemoteCandidates(candidates); err != nil {
 			return err
 		}
@@ -422,6 +430,15 @@ func (e *executor) reportFailure(sess solver.SessionIO, err error) {
 			Timestamp: time.Now(),
 		})
 	})
+}
+
+func (e *executor) failRemoteCandidates(sess solver.SessionIO, messageType string) {
+	err := fmt.Errorf("legacyice: no usable remote candidates for %s in %s", e.execCfg.Mode, messageType)
+	e.reportFailure(sess, err)
+	select {
+	case e.errCh <- err:
+	default:
+	}
 }
 
 func (e *executor) reportCandidateFilter(sess solver.SessionIO, event, side, messageType string, summary candidateFilterSummary) {

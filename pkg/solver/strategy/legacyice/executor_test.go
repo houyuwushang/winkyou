@@ -385,6 +385,49 @@ func TestExecutorFiltersRemoteCandidatesByPlanMode(t *testing.T) {
 	}
 }
 
+func TestPublicDirectEmptyRemoteCandidatesFailsPlanWithoutBubbling(t *testing.T) {
+	hostCandidate := nat.Candidate{Type: nat.CandidateTypeHost, Address: &net.UDPAddr{IP: net.IPv4(10, 0, 0, 1), Port: 1001}}
+	overlayCandidate := nat.Candidate{Type: nat.CandidateTypeHost, Address: &net.UDPAddr{IP: net.IPv4(100, 102, 17, 35), Port: 1002}}
+	relayCandidate := nat.Candidate{Type: nat.CandidateTypeRelay, Address: &net.UDPAddr{IP: net.IPv4(20, 0, 0, 1), Port: 2001}}
+
+	exec, agent := newExecutorWithRecordingAgent(planIDPublicDirect, modePublicDirect, nil)
+	payload, err := marshalAnswerPayload(answerPayload{
+		SessionID: "session/node-a/node-b",
+		PlanID:    planIDPublicDirect,
+		ICE: nat.ICESessionDescriptionPayload{
+			Ufrag:      "remote",
+			Pwd:        "remote-pwd",
+			Candidates: []nat.Candidate{hostCandidate, overlayCandidate, relayCandidate},
+		},
+		SentAt: time.Now(),
+	})
+	if err != nil {
+		t.Fatalf("marshalAnswerPayload(public_direct) error = %v", err)
+	}
+
+	io := &capturingSessionIO{}
+	if err := exec.HandleMessage(context.Background(), io, NewMessage(MessageTypeAnswer, payload, time.Now())); err != nil {
+		t.Fatalf("HandleMessage(public_direct) error = %v, want nil so session can continue fallback", err)
+	}
+	if len(agent.remoteCandidates) != 0 {
+		t.Fatalf("remote candidates = %#v, want none after public direct filtering", agent.remoteCandidates)
+	}
+	select {
+	case err := <-exec.errCh:
+		if err == nil || !strings.Contains(err.Error(), "no usable remote candidates") {
+			t.Fatalf("executor err = %v, want no usable remote candidates", err)
+		}
+	default:
+		t.Fatal("executor errCh did not receive plan failure")
+	}
+	if obs := findObservation(io.observations, "remote_candidates_filtered"); obs == nil || obs.Details["candidate_kept"] != "0" {
+		t.Fatalf("observations = %#v, want remote_candidates_filtered kept=0", io.observations)
+	}
+	if obs := findObservation(io.observations, "candidate_failed"); obs == nil || !strings.Contains(obs.Reason, "no usable remote candidates") {
+		t.Fatalf("observations = %#v, want candidate_failed no usable remote candidates", io.observations)
+	}
+}
+
 func stringSliceContains(values []string, want string) bool {
 	for _, value := range values {
 		if value == want {
@@ -392,6 +435,33 @@ func stringSliceContains(values []string, want string) bool {
 		}
 	}
 	return false
+}
+
+func newExecutorWithRecordingAgent(planID string, mode executionMode, gathered []nat.Candidate) (*executor, *recordingICEAgent) {
+	agent := &recordingICEAgent{
+		gathered:      append([]nat.Candidate(nil), gathered...),
+		connectErr:    context.Canceled,
+		connectCalled: make(chan struct{}),
+	}
+	exec := newExecutor(Config{
+		NewICEAgent: func(ctx context.Context, req AgentRequest) (nat.ICEAgent, error) {
+			_ = ctx
+			_ = req
+			return agent, nil
+		},
+		GatherTimeout:  100 * time.Millisecond,
+		ConnectTimeout: 100 * time.Millisecond,
+	}, solver.SolveInput{
+		SessionID:    "session/node-a/node-b",
+		LocalNodeID:  "node-a",
+		RemoteNodeID: "node-b",
+		Initiator:    true,
+	}, solver.Plan{
+		ID:       planID,
+		Strategy: StrategyName,
+		Metadata: map[string]string{"mode": string(mode)},
+	}, executorConfig{Mode: mode, ForceRelay: mode == modeRelayOnly, PublicDirectCandidate: mode == modePublicDirect})
+	return exec, agent
 }
 
 func findObservation(observations []solver.Observation, event string) *solver.Observation {
