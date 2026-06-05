@@ -218,6 +218,28 @@ func TestDoctorCandidateFilterSummaryIncludesPublicCandidateHints(t *testing.T) 
 	}
 }
 
+func TestPublicEndpointHintLocalBaseCheckOK(t *testing.T) {
+	check := publicEndpointHintLocalBaseCheck(
+		[]string{"117.48.146.2:41000/192.168.1.20:40000"},
+		[]net.IP{net.ParseIP("192.168.1.20")},
+	)
+	if check == nil || check.Status != doctorOK || !strings.Contains(check.Message, "192.168.1.20") {
+		t.Fatalf("publicEndpointHintLocalBaseCheck() = %#v, want ok for local base", check)
+	}
+}
+
+func TestPublicEndpointHintLocalBaseCheckWarnsForMissingBase(t *testing.T) {
+	check := publicEndpointHintLocalBaseCheck(
+		[]string{"117.48.146.2:41000/192.168.1.20:40000"},
+		[]net.IP{net.ParseIP("192.168.1.21")},
+	)
+	if check == nil || check.Status != doctorWarn ||
+		!strings.Contains(check.Message, "192.168.1.20") ||
+		!strings.Contains(check.Suggestion, "real underlay interface IP") {
+		t.Fatalf("publicEndpointHintLocalBaseCheck() = %#v, want missing local base warning", check)
+	}
+}
+
 func TestDoctorPublicDirectEvidenceOK(t *testing.T) {
 	configPath := writeDoctorConfig(t)
 	writeDoctorObservationHistory(t, configPath, []solver.Observation{{

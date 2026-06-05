@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/netip"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -317,9 +318,15 @@ func addCandidateFilterChecks(result *doctorResult, cfg *config.Config, state *w
 	filterSummary := candidateFilterSummary(cfg)
 	if filterSummary == "" {
 		result.add(okCheck("nat", "candidate filters", "no candidate filters configured"))
+		if check := publicEndpointHintLocalBaseCheck(cfg.NAT.PublicEndpointHints, doctorLocalInterfaceIPs()); check != nil {
+			result.add(*check)
+		}
 		return
 	}
 	result.add(okCheck("nat", "candidate filters", filterSummary))
+	if check := publicEndpointHintLocalBaseCheck(cfg.NAT.PublicEndpointHints, doctorLocalInterfaceIPs()); check != nil {
+		result.add(*check)
+	}
 	if stateErr != nil || state == nil {
 		return
 	}
@@ -346,6 +353,91 @@ func addCandidateFilterChecks(result *doctorResult, cfg *config.Config, state *w
 		}
 	}
 	result.add(okCheck("nat", "candidate selected", "runtime candidates satisfy configured CIDR filters"))
+}
+
+func doctorLocalInterfaceIPs() []net.IP {
+	addrs, err := net.InterfaceAddrs()
+	if err != nil {
+		return nil
+	}
+	ips := make([]net.IP, 0, len(addrs))
+	for _, addr := range addrs {
+		switch value := addr.(type) {
+		case *net.IPNet:
+			if value.IP != nil {
+				ips = append(ips, value.IP)
+			}
+		case *net.IPAddr:
+			if value.IP != nil {
+				ips = append(ips, value.IP)
+			}
+		}
+	}
+	return ips
+}
+
+func publicEndpointHintLocalBaseCheck(values []string, localIPs []net.IP) *doctorCheck {
+	bases := publicEndpointHintLocalBases(values)
+	if len(bases) == 0 {
+		return nil
+	}
+	local := make(map[string]struct{}, len(localIPs))
+	for _, ip := range localIPs {
+		if ip == nil {
+			continue
+		}
+		if v4 := ip.To4(); v4 != nil {
+			local[net.IP(v4).String()] = struct{}{}
+			continue
+		}
+		local[ip.String()] = struct{}{}
+	}
+	missing := make([]string, 0, len(bases))
+	present := make([]string, 0, len(bases))
+	for _, base := range bases {
+		raw := base.String()
+		if _, ok := local[raw]; ok {
+			present = append(present, raw)
+			continue
+		}
+		missing = append(missing, raw)
+	}
+	if len(missing) > 0 {
+		return checkPtr(warnCheck("nat", "public endpoint hint local base", "mapped public_endpoint_hints reference local base not present on this host: "+strings.Join(missing, ","), "set each mapped hint local base to a real underlay interface IP, not a virtual LAN peer address"))
+	}
+	return checkPtr(okCheck("nat", "public endpoint hint local base", "mapped public_endpoint_hints local bases are present: "+strings.Join(present, ",")))
+}
+
+func publicEndpointHintLocalBases(values []string) []netip.Addr {
+	seen := map[string]netip.Addr{}
+	for _, raw := range values {
+		_, localRaw, ok := strings.Cut(strings.TrimSpace(raw), "/")
+		if !ok {
+			continue
+		}
+		local, err := netip.ParseAddrPort(strings.TrimSpace(localRaw))
+		if err != nil || !local.Addr().IsValid() {
+			continue
+		}
+		seen[local.Addr().String()] = local.Addr()
+	}
+	if len(seen) == 0 {
+		return nil
+	}
+	keys := make([]string, 0, len(seen))
+	for key := range seen {
+		keys = append(keys, key)
+	}
+	slices.Sort(keys)
+	out := make([]netip.Addr, 0, len(keys))
+	for _, key := range keys {
+		out = append(out, seen[key])
+	}
+	return out
+}
+
+func checkPtr(check doctorCheck) *doctorCheck {
+	return &check
 }
 
 func addPublicDirectEvidenceChecks(result *doctorResult, opts *Options) {

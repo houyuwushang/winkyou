@@ -142,6 +142,8 @@ nat:
 
 先运行 `wink --config <config.yaml> doctor` 看 `stun` 检查。该检查会使用 public-direct 的有效 STUN 来源：显式 `nat.stun_servers`，以及从 UDP TURN URL 派生出的同 host/port STUN binding URL。如果 STUN probe 失败，说明当前 STUN/UDP TURN 入口没能返回公网映射地址，`legacyice/public_direct` 大概率没有足够的公网候选可用。此时优先换成两端都可访问的 STUN/UDP TURN 服务，确认 UDP 出站没有被拦截；如果无法保证公网 UDP NAT piercing，就使用 TURN/`relay_only` 作为保活路径。
 
+`wink doctor` 还会检查 mapped `public_endpoint_hints` 的本地 base IP 是否存在于本机接口上。如果这里出现 `public endpoint hint local base` warning，说明 hint 的本地部分很可能写成了虚拟局域网 peer 地址、旧地址或另一台机器的地址；`legacyice/public_direct` 会按这个 base 限制本地 gather，因此必须改成本机真实出口网卡 IP。
+
 默认 `legacy_ice_udp` 内部执行顺序为：
 
 ```text
