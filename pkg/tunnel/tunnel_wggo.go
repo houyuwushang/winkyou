@@ -18,6 +18,7 @@ import (
 	wgdevice "golang.zx2c4.com/wireguard/device"
 	wgtun "golang.zx2c4.com/wireguard/tun"
 	"winkyou/pkg/transport"
+	"winkyou/pkg/transport/multipath"
 )
 
 const (
@@ -349,6 +350,7 @@ func (w *wggoTunnel) refreshPeerStatsLocked() {
 			cur.TransportRxPackets = 0
 			cur.TransportRxBytes = 0
 			cur.TransportLastError = ""
+			clearMultipathStatus(cur)
 			continue
 		}
 		cur.TransportTxPackets = stats.txPackets
@@ -356,6 +358,11 @@ func (w *wggoTunnel) refreshPeerStatsLocked() {
 		cur.TransportRxPackets = stats.rxPackets
 		cur.TransportRxBytes = stats.rxBytes
 		cur.TransportLastError = stats.lastError
+		if multipathStatus, ok := w.bind.TransportMultipathStatus(key); ok {
+			applyMultipathStatus(cur, multipathStatus)
+		} else {
+			clearMultipathStatus(cur)
+		}
 	}
 }
 
@@ -489,6 +496,15 @@ type transportCounters struct {
 	rxPackets uint64
 	rxBytes   uint64
 	lastError string
+}
+
+type multipathStatus struct {
+	enabled               bool
+	primaryPathID         string
+	protectedDirectPathID string
+	standbyPathIDs        []string
+	activePathID          string
+	lastFailoverAt        time.Time
 }
 
 type noOpBind struct {
@@ -673,6 +689,16 @@ func (b *peerTransportBind) TransportStats(publicKey PublicKey) (transportCounte
 		return transportCounters{}, false
 	}
 	return transport.snapshot(), true
+}
+
+func (b *peerTransportBind) TransportMultipathStatus(publicKey PublicKey) (multipathStatus, bool) {
+	b.mu.RLock()
+	transport := b.transports[publicKey]
+	b.mu.RUnlock()
+	if transport == nil {
+		return multipathStatus{}, false
+	}
+	return transport.multipathStatus()
 }
 
 func (b *peerTransportBind) ResolveEndpoint(endpoint string) *net.UDPAddr {
@@ -918,6 +944,49 @@ func (t *boundTransport) snapshot() transportCounters {
 	t.statsMu.RLock()
 	defer t.statsMu.RUnlock()
 	return t.stats
+}
+
+func (t *boundTransport) multipathStatus() (multipathStatus, bool) {
+	if t == nil || t.conn == nil {
+		return multipathStatus{}, false
+	}
+	provider, ok := t.conn.(multipath.StatsProvider)
+	if !ok {
+		return multipathStatus{}, false
+	}
+	stats := provider.MultipathStats()
+	return multipathStatus{
+		enabled:               true,
+		primaryPathID:         stats.PrimaryPathID,
+		protectedDirectPathID: stats.ProtectedDirectPathID,
+		standbyPathIDs:        append([]string(nil), stats.StandbyPathIDs...),
+		activePathID:          stats.ActivePathID,
+		lastFailoverAt:        stats.LastFailoverAt,
+	}, true
+}
+
+func applyMultipathStatus(peer *PeerStatus, status multipathStatus) {
+	if peer == nil {
+		return
+	}
+	peer.MultipathEnabled = status.enabled
+	peer.PrimaryPathID = status.primaryPathID
+	peer.ProtectedDirectPathID = status.protectedDirectPathID
+	peer.StandbyPathIDs = append([]string(nil), status.standbyPathIDs...)
+	peer.ActivePathID = status.activePathID
+	peer.LastFailoverAt = status.lastFailoverAt
+}
+
+func clearMultipathStatus(peer *PeerStatus) {
+	if peer == nil {
+		return
+	}
+	peer.MultipathEnabled = false
+	peer.PrimaryPathID = ""
+	peer.ProtectedDirectPathID = ""
+	peer.StandbyPathIDs = nil
+	peer.ActivePathID = ""
+	peer.LastFailoverAt = time.Time{}
 }
 
 func readDeviceSnapshot(device *wgdevice.Device, bind *peerTransportBind) (*deviceSnapshot, error) {

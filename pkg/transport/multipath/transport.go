@@ -27,11 +27,14 @@ type StatsProvider interface {
 }
 
 type Stats struct {
-	ActivePathID    string
-	ChildPathCount  int
-	Paths           []PathStats
-	LastFailoverAt  time.Time
-	LastFailoverWhy string
+	ActivePathID          string
+	PrimaryPathID         string
+	ChildPathCount        int
+	ProtectedDirectPathID string
+	StandbyPathIDs        []string
+	Paths                 []PathStats
+	LastFailoverAt        time.Time
+	LastFailoverWhy       string
 }
 
 type PathStats struct {
@@ -48,6 +51,7 @@ type Transport struct {
 	mu        sync.RWMutex
 	paths     []*pathState
 	activeID  string
+	primaryID string
 	policy    solver.PathPolicy
 	readCh    chan readResult
 	closeCh   chan struct{}
@@ -107,6 +111,7 @@ func New(paths []Path, policy solver.PathPolicy) (*Transport, error) {
 	for _, state := range t.paths {
 		go t.readLoop(state)
 	}
+	t.primaryID = t.activeID
 	return t, nil
 }
 
@@ -193,12 +198,19 @@ func (t *Transport) MultipathStats() Stats {
 	defer t.mu.RUnlock()
 	stats := Stats{
 		ActivePathID:    t.activeID,
+		PrimaryPathID:   t.primaryID,
 		ChildPathCount:  len(t.paths),
 		LastFailoverAt:  t.lastFailoverAt,
 		LastFailoverWhy: t.lastFailoverWhy,
 		Paths:           make([]PathStats, 0, len(t.paths)),
 	}
 	for _, state := range t.paths {
+		if state.path.ID != t.primaryID {
+			stats.StandbyPathIDs = append(stats.StandbyPathIDs, state.path.ID)
+		}
+		if stats.ProtectedDirectPathID == "" && state.path.Role == solver.PathRoleProtectedDirect {
+			stats.ProtectedDirectPathID = state.path.ID
+		}
 		stats.Paths = append(stats.Paths, PathStats{
 			ID:         state.path.ID,
 			Role:       state.path.Role,

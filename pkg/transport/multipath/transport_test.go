@@ -30,6 +30,13 @@ func TestWriteUsesPrimaryPath(t *testing.T) {
 	if got := standby.writeCount(); got != 0 {
 		t.Fatalf("standby writes = %d, want 0", got)
 	}
+	stats := mp.MultipathStats()
+	if stats.PrimaryPathID != "primary" || stats.ProtectedDirectPathID != "standby" || stats.ActivePathID != "primary" {
+		t.Fatalf("path ids = primary:%q protected:%q active:%q, want primary/standby/primary", stats.PrimaryPathID, stats.ProtectedDirectPathID, stats.ActivePathID)
+	}
+	if len(stats.StandbyPathIDs) != 1 || stats.StandbyPathIDs[0] != "standby" {
+		t.Fatalf("standby path ids = %#v, want [standby]", stats.StandbyPathIDs)
+	}
 }
 
 func TestWriteFallsBackToStandby(t *testing.T) {

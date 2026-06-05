@@ -514,6 +514,12 @@ func (e *engine) syncTunnelPeerStateLocked() {
 		peer.TransportRxPackets = tunnelPeer.TransportRxPackets
 		peer.TransportRxBytes = tunnelPeer.TransportRxBytes
 		peer.TransportLastError = tunnelPeer.TransportLastError
+		peer.MultipathEnabled = tunnelPeer.MultipathEnabled
+		peer.PrimaryPathID = tunnelPeer.PrimaryPathID
+		peer.ProtectedDirectPathID = tunnelPeer.ProtectedDirectPathID
+		peer.StandbyPathIDs = append([]string(nil), tunnelPeer.StandbyPathIDs...)
+		peer.ActivePathID = tunnelPeer.ActivePathID
+		peer.LastFailoverAt = tunnelPeer.LastFailoverAt
 		if tunnelPeer.TransportLastError != "" {
 			peer.DataState = PeerDataStateFailed
 		}
@@ -694,6 +700,7 @@ func clonePeerStatus(peer *PeerStatus) *PeerStatus {
 	out := *peer
 	out.VirtualIP = append(net.IP(nil), peer.VirtualIP...)
 	out.Endpoint = netutil.CloneUDPAddr(peer.Endpoint)
+	out.StandbyPathIDs = append([]string(nil), peer.StandbyPathIDs...)
 	return &out
 }
 

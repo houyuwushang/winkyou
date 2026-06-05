@@ -3,6 +3,7 @@ package cmd
 import (
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -57,6 +58,18 @@ func newPeersCmd(opts *Options) *cobra.Command {
 				cmd.Printf("  Path ID:    %s\n", dashIfEmpty(p.LastPathID))
 				cmd.Printf("  Path Strat: %s\n", dashIfEmpty(p.LastPathStrategy))
 				cmd.Printf("  Path Endpt: %s\n", dashIfEmpty(p.LastPathEndpoint))
+				cmd.Printf("  Multipath:  %s\n", formatBoolEnabled(p.MultipathEnabled))
+				if p.MultipathEnabled {
+					cmd.Printf("  Primary:    %s\n", dashIfEmpty(p.PrimaryPathID))
+					cmd.Printf("  Protected:  %s\n", dashIfEmpty(p.ProtectedDirectPathID))
+					cmd.Printf("  Standby:    %s\n", dashIfEmpty(strings.Join(p.StandbyPathIDs, ",")))
+					cmd.Printf("  Active:     %s\n", dashIfEmpty(p.ActivePathID))
+					if !p.LastFailoverAt.IsZero() {
+						cmd.Printf("  Failover:   %s\n", p.LastFailoverAt.Format(time.RFC3339))
+					} else {
+						cmd.Printf("  Failover:   -\n")
+					}
+				}
 				cmd.Printf("  ICE State:  %s\n", dashIfEmpty(p.ICEState))
 				cmd.Printf("  Local Cand: %s\n", dashIfEmpty(p.LocalCandidate))
 				cmd.Printf("  Remote Cand: %s\n", dashIfEmpty(p.RemoteCandidate))
@@ -83,6 +96,13 @@ func newPeersCmd(opts *Options) *cobra.Command {
 
 	cmd.Flags().BoolVar(&asJSON, "json", false, "output peers as json")
 	return cmd
+}
+
+func formatBoolEnabled(enabled bool) string {
+	if enabled {
+		return "enabled"
+	}
+	return "disabled"
 }
 
 func formatBytes(b uint64) string {

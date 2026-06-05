@@ -85,17 +85,23 @@ func TestRuntimeStateRoundTrip(t *testing.T) {
 			Uptime:      "5s",
 		},
 		Peers: []RuntimePeerStatus{{
-			NodeID:            "node-2",
-			Name:              "beta",
-			State:             PeerStateConnecting.String(),
-			ControlState:      PeerControlStateConnected.String(),
-			DataState:         PeerDataStateBound.String(),
-			LastHandshake:     now.Add(3 * time.Second),
-			LastPathID:        "relayonly/turn_relay",
-			LastPathStrategy:  "relay_only",
-			LastPathEndpoint:  "203.0.113.10:50000",
-			LastPathConnType:  ConnectionTypeRelay.String(),
-			LastPathUpdatedAt: now.Add(4 * time.Second),
+			NodeID:                "node-2",
+			Name:                  "beta",
+			State:                 PeerStateConnecting.String(),
+			ControlState:          PeerControlStateConnected.String(),
+			DataState:             PeerDataStateBound.String(),
+			LastHandshake:         now.Add(3 * time.Second),
+			LastPathID:            "relayonly/turn_relay",
+			LastPathStrategy:      "relay_only",
+			LastPathEndpoint:      "203.0.113.10:50000",
+			LastPathConnType:      ConnectionTypeRelay.String(),
+			LastPathUpdatedAt:     now.Add(4 * time.Second),
+			MultipathEnabled:      true,
+			PrimaryPathID:         "relay/path",
+			ProtectedDirectPathID: "direct/path",
+			StandbyPathIDs:        []string{"direct/path"},
+			ActivePathID:          "relay/path",
+			LastFailoverAt:        now.Add(6 * time.Second),
 		}},
 	}
 
@@ -123,6 +129,12 @@ func TestRuntimeStateRoundTrip(t *testing.T) {
 	if loaded.Peers[0].LastPathStrategy != "relay_only" || loaded.Peers[0].LastPathEndpoint != "203.0.113.10:50000" {
 		t.Fatalf("loaded path cache = %#v", loaded.Peers[0])
 	}
+	if !loaded.Peers[0].MultipathEnabled || loaded.Peers[0].PrimaryPathID != "relay/path" || loaded.Peers[0].ProtectedDirectPathID != "direct/path" {
+		t.Fatalf("loaded multipath fields = %#v", loaded.Peers[0])
+	}
+	if len(loaded.Peers[0].StandbyPathIDs) != 1 || loaded.Peers[0].StandbyPathIDs[0] != "direct/path" {
+		t.Fatalf("loaded standby path ids = %#v, want [direct/path]", loaded.Peers[0].StandbyPathIDs)
+	}
 }
 
 func TestRuntimeStatePathAcceptsExplicitRuntimeFile(t *testing.T) {
@@ -143,16 +155,22 @@ func TestUpdateStatusCountersSyncsTunnelPeerState(t *testing.T) {
 			},
 		},
 		tun: fakeTunnelForEngineTest{peers: []*tunnel.PeerStatus{{
-			PublicKey:          pub,
-			Endpoint:           &net.UDPAddr{IP: net.ParseIP("203.0.113.10"), Port: 51820},
-			LastHandshake:      time.Unix(1_700_000_005, 0),
-			TxBytes:            64,
-			RxBytes:            128,
-			TransportTxPackets: 3,
-			TransportTxBytes:   96,
-			TransportRxPackets: 4,
-			TransportRxBytes:   144,
-			TransportLastError: "write: broken pipe",
+			PublicKey:             pub,
+			Endpoint:              &net.UDPAddr{IP: net.ParseIP("203.0.113.10"), Port: 51820},
+			LastHandshake:         time.Unix(1_700_000_005, 0),
+			TxBytes:               64,
+			RxBytes:               128,
+			TransportTxPackets:    3,
+			TransportTxBytes:      96,
+			TransportRxPackets:    4,
+			TransportRxBytes:      144,
+			TransportLastError:    "write: broken pipe",
+			MultipathEnabled:      true,
+			PrimaryPathID:         "relay/path",
+			ProtectedDirectPathID: "direct/path",
+			StandbyPathIDs:        []string{"direct/path"},
+			ActivePathID:          "direct/path",
+			LastFailoverAt:        time.Unix(1_700_000_006, 0),
 		}}},
 	}
 
@@ -182,6 +200,12 @@ func TestUpdateStatusCountersSyncsTunnelPeerState(t *testing.T) {
 	}
 	if peer.TransportLastError != "write: broken pipe" {
 		t.Fatalf("peer transport error = %q, want write: broken pipe", peer.TransportLastError)
+	}
+	if !peer.MultipathEnabled || peer.PrimaryPathID != "relay/path" || peer.ProtectedDirectPathID != "direct/path" || peer.ActivePathID != "direct/path" {
+		t.Fatalf("peer multipath fields = %#v", peer)
+	}
+	if len(peer.StandbyPathIDs) != 1 || peer.StandbyPathIDs[0] != "direct/path" {
+		t.Fatalf("peer standby path ids = %#v, want [direct/path]", peer.StandbyPathIDs)
 	}
 }
 

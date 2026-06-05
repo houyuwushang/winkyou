@@ -50,18 +50,24 @@ func AddrMetaFromAddr(addr net.Addr) AddrMeta {
 
 // PeerStatus represents the current state of a peer.
 type PeerStatus struct {
-	PublicKey          PublicKey
-	Endpoint           *net.UDPAddr
-	EndpointMeta       AddrMeta
-	LastHandshake      time.Time
-	TxBytes            uint64
-	RxBytes            uint64
-	AllowedIPs         []net.IPNet
-	TransportTxPackets uint64
-	TransportTxBytes   uint64
-	TransportRxPackets uint64
-	TransportRxBytes   uint64
-	TransportLastError string
+	PublicKey             PublicKey
+	Endpoint              *net.UDPAddr
+	EndpointMeta          AddrMeta
+	LastHandshake         time.Time
+	TxBytes               uint64
+	RxBytes               uint64
+	AllowedIPs            []net.IPNet
+	TransportTxPackets    uint64
+	TransportTxBytes      uint64
+	TransportRxPackets    uint64
+	TransportRxBytes      uint64
+	TransportLastError    string
+	MultipathEnabled      bool
+	PrimaryPathID         string
+	ProtectedDirectPathID string
+	StandbyPathIDs        []string
+	ActivePathID          string
+	LastFailoverAt        time.Time
 }
 
 // TunnelStats holds aggregate tunnel statistics.

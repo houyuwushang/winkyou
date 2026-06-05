@@ -139,6 +139,7 @@ func runDoctor(ctx context.Context, opts *Options, flags doctorFlags, probes doc
 	addCandidateFilterChecks(&result, cfg, state, stateErr)
 	addTunnelChecks(&result, state, stateErr)
 	addTransportChecks(&result, state, stateErr)
+	addMultipathChecks(&result, cfg, state, stateErr)
 
 	result.finish()
 	return result
@@ -343,6 +344,41 @@ func addTransportChecks(result *doctorResult, state *winkclient.RuntimeState, st
 		return
 	}
 	result.add(okCheck("transport", "packet counters", fmt.Sprintf("tx=%d rx=%d packets", totalTx, totalRx)))
+}
+
+func addMultipathChecks(result *doctorResult, cfg *config.Config, state *winkclient.RuntimeState, stateErr error) {
+	if cfg == nil || !cfg.Connectivity.Multipath.Enabled {
+		result.add(warnCheck("multipath", "policy", "multipath is disabled", "set connectivity.multipath.enabled=true and keep connectivity.multipath.protect_direct=true"))
+		return
+	}
+	if stateErr != nil || state == nil || len(state.Peers) == 0 {
+		result.add(warnCheck("multipath", "runtime state", "multipath is enabled but no runtime peer state is available", "start wink up and connect a peer"))
+		return
+	}
+
+	multipathPeers := 0
+	protectedPeers := 0
+	activeDetails := make([]string, 0, len(state.Peers))
+	for _, peer := range state.Peers {
+		if !peer.MultipathEnabled {
+			continue
+		}
+		multipathPeers++
+		if peer.ProtectedDirectPathID == "" {
+			continue
+		}
+		protectedPeers++
+		activeDetails = append(activeDetails, fmt.Sprintf("%s primary=%s protected_direct=%s active=%s", firstNonEmpty(peer.Name, peer.NodeID), dashIfEmpty(peer.PrimaryPathID), peer.ProtectedDirectPathID, dashIfEmpty(peer.ActivePathID)))
+	}
+	if multipathPeers == 0 {
+		result.add(warnCheck("multipath", "runtime state", "multipath is enabled but no peer is using a multipath transport", "connect a peer with multiple successful paths or check strategy_order"))
+		return
+	}
+	if protectedPeers == 0 {
+		result.add(warnCheck("multipath", "protected direct", "multipath is enabled but protected direct standby is unavailable", "check direct/P2P reachability; current paths may depend on a coordinator, relay, or middle node"))
+		return
+	}
+	result.add(okCheck("multipath", "protected direct", strings.Join(activeDetails, "; ")))
 }
 
 func printDoctorResult(cmd *cobra.Command, result doctorResult) {

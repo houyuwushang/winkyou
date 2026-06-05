@@ -164,6 +164,60 @@ func TestDoctorCandidateFilterAllowsRuntimeCandidate(t *testing.T) {
 	}
 }
 
+func TestDoctorMultipathDisabledSuggestsEnable(t *testing.T) {
+	configPath := writeDoctorConfig(t)
+
+	result := runDoctor(context.Background(), &Options{ConfigPath: configPath}, doctorFlags{}, healthyDoctorProbes())
+	check := findDoctorCheck(result, "multipath", "policy")
+	if check.Status != doctorWarn || !strings.Contains(check.Suggestion, "connectivity.multipath.enabled=true") {
+		t.Fatalf("multipath disabled check = %#v, want enable suggestion", check)
+	}
+}
+
+func TestDoctorMultipathEnabledWithoutProtectedDirectWarns(t *testing.T) {
+	configPath := writeDoctorConfigWithMultipath(t)
+	writeDoctorRuntimeState(t, configPath, []winkclient.RuntimePeerStatus{{
+		NodeID:             "node-b",
+		Name:               "node-b",
+		State:              winkclient.PeerStateConnected.String(),
+		MultipathEnabled:   true,
+		PrimaryPathID:      "relay/path",
+		ActivePathID:       "relay/path",
+		LastHandshake:      time.Now(),
+		TransportTxPackets: 2,
+		TransportRxPackets: 3,
+	}})
+
+	result := runDoctor(context.Background(), &Options{ConfigPath: configPath}, doctorFlags{}, healthyDoctorProbes())
+	check := findDoctorCheck(result, "multipath", "protected direct")
+	if check.Status != doctorWarn || !strings.Contains(check.Message, "protected direct standby is unavailable") {
+		t.Fatalf("multipath protected direct check = %#v, want standby unavailable warning", check)
+	}
+}
+
+func TestDoctorMultipathProtectedDirectOK(t *testing.T) {
+	configPath := writeDoctorConfigWithMultipath(t)
+	writeDoctorRuntimeState(t, configPath, []winkclient.RuntimePeerStatus{{
+		NodeID:                "node-b",
+		Name:                  "node-b",
+		State:                 winkclient.PeerStateConnected.String(),
+		MultipathEnabled:      true,
+		PrimaryPathID:         "relay/path",
+		ProtectedDirectPathID: "direct/path",
+		StandbyPathIDs:        []string{"direct/path"},
+		ActivePathID:          "relay/path",
+		LastHandshake:         time.Now(),
+		TransportTxPackets:    2,
+		TransportRxPackets:    3,
+	}})
+
+	result := runDoctor(context.Background(), &Options{ConfigPath: configPath}, doctorFlags{}, healthyDoctorProbes())
+	check := findDoctorCheck(result, "multipath", "protected direct")
+	if check.Status != doctorOK || !strings.Contains(check.Message, "protected_direct=direct/path") {
+		t.Fatalf("multipath protected direct check = %#v, want ok with protected path", check)
+	}
+}
+
 func healthyDoctorProbes() doctorProbes {
 	return doctorProbes{
 		Coordinator: func(context.Context, *config.Config) doctorCheck {
@@ -205,6 +259,40 @@ connectivity:
   strategy_order:
     - legacy_ice_udp
     - relay_only
+`
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(path, []byte(strings.TrimSpace(body)+"\n"), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	return path
+}
+
+func writeDoctorConfigWithMultipath(t *testing.T) string {
+	t.Helper()
+	body := `
+node:
+  name: node-a
+coordinator:
+  url: grpc://127.0.0.1:50051
+  auth_key: test-auth
+netif:
+  backend: tun
+wireguard:
+  private_key: test-private-key
+nat:
+  turn_servers:
+    - url: turn:127.0.0.1:3478?transport=udp
+      username: wink
+      password: secret
+connectivity:
+  mode: auto
+  strategy_order:
+    - relay_only
+    - legacy_ice_udp
+  multipath:
+    enabled: true
+    protect_direct: true
+    max_paths: 2
 `
 	path := filepath.Join(t.TempDir(), "config.yaml")
 	if err := os.WriteFile(path, []byte(strings.TrimSpace(body)+"\n"), 0o644); err != nil {

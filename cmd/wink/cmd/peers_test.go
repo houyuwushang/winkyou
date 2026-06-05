@@ -72,29 +72,35 @@ func TestPeersWithRuntimeState(t *testing.T) {
 		},
 		Peers: []winkclient.RuntimePeerStatus{
 			{
-				NodeID:             "node-abc",
-				Name:               "alice",
-				VirtualIP:          "10.100.0.2",
-				PublicKey:          "AAAA",
-				State:              "connected",
-				ControlState:       "connected",
-				DataState:          "alive",
-				Endpoint:           "1.2.3.4:51820",
-				ConnectionType:     "direct",
-				LastPathID:         "legacyice/direct_prefer",
-				LastPathStrategy:   "legacy_ice_udp",
-				LastPathEndpoint:   "1.2.3.4:51820",
-				TxBytes:            1024,
-				RxBytes:            2048,
-				ICEState:           "connected",
-				LocalCandidate:     "relay:203.0.113.10:50000",
-				RemoteCandidate:    "host:10.0.0.2:51820",
-				TransportTxPackets: 7,
-				TransportTxBytes:   700,
-				TransportRxPackets: 8,
-				TransportRxBytes:   800,
-				TransportLastError: "read: broken pipe",
-				LastSeen:           time.Date(2026, 4, 10, 12, 0, 0, 0, time.UTC),
+				NodeID:                "node-abc",
+				Name:                  "alice",
+				VirtualIP:             "10.100.0.2",
+				PublicKey:             "AAAA",
+				State:                 "connected",
+				ControlState:          "connected",
+				DataState:             "alive",
+				Endpoint:              "1.2.3.4:51820",
+				ConnectionType:        "direct",
+				LastPathID:            "legacyice/direct_prefer",
+				LastPathStrategy:      "legacy_ice_udp",
+				LastPathEndpoint:      "1.2.3.4:51820",
+				TxBytes:               1024,
+				RxBytes:               2048,
+				ICEState:              "connected",
+				LocalCandidate:        "relay:203.0.113.10:50000",
+				RemoteCandidate:       "host:10.0.0.2:51820",
+				TransportTxPackets:    7,
+				TransportTxBytes:      700,
+				TransportRxPackets:    8,
+				TransportRxBytes:      800,
+				TransportLastError:    "read: broken pipe",
+				MultipathEnabled:      true,
+				PrimaryPathID:         "relay/path",
+				ProtectedDirectPathID: "direct/path",
+				StandbyPathIDs:        []string{"direct/path"},
+				ActivePathID:          "direct/path",
+				LastFailoverAt:        time.Date(2026, 4, 10, 12, 1, 0, 0, time.UTC),
+				LastSeen:              time.Date(2026, 4, 10, 12, 0, 0, 0, time.UTC),
 			},
 			{
 				NodeID:    "node-def",
@@ -154,6 +160,9 @@ func TestPeersWithRuntimeState(t *testing.T) {
 	if !strings.Contains(output, "read: broken pipe") {
 		t.Errorf("output should contain transport error, got: %s", output)
 	}
+	if !strings.Contains(output, "Multipath:  enabled") || !strings.Contains(output, "Protected:  direct/path") || !strings.Contains(output, "Active:     direct/path") {
+		t.Errorf("output should contain multipath state, got: %s", output)
+	}
 
 	// Clean up for next subtest.
 	os.Remove(winkclient.RuntimeStatePath(configPath))
@@ -173,16 +182,21 @@ func TestPeersWithRuntimeStateJSON(t *testing.T) {
 		},
 		Peers: []winkclient.RuntimePeerStatus{
 			{
-				NodeID:           "node-abc",
-				Name:             "alice",
-				VirtualIP:        "10.100.0.2",
-				State:            "connected",
-				ControlState:     "connected",
-				DataState:        "alive",
-				LastPathID:       "relayonly/turn_relay",
-				LastPathStrategy: "relay_only",
-				TxBytes:          5000,
-				RxBytes:          6000,
+				NodeID:                "node-abc",
+				Name:                  "alice",
+				VirtualIP:             "10.100.0.2",
+				State:                 "connected",
+				ControlState:          "connected",
+				DataState:             "alive",
+				LastPathID:            "relayonly/turn_relay",
+				LastPathStrategy:      "relay_only",
+				MultipathEnabled:      true,
+				PrimaryPathID:         "relay/path",
+				ProtectedDirectPathID: "direct/path",
+				StandbyPathIDs:        []string{"direct/path"},
+				ActivePathID:          "relay/path",
+				TxBytes:               5000,
+				RxBytes:               6000,
 			},
 		},
 	}
@@ -223,6 +237,9 @@ func TestPeersWithRuntimeStateJSON(t *testing.T) {
 	}
 	if result[0].LastPathStrategy != "relay_only" {
 		t.Errorf("LastPathStrategy = %q, want relay_only", result[0].LastPathStrategy)
+	}
+	if !result[0].MultipathEnabled || result[0].ProtectedDirectPathID != "direct/path" {
+		t.Errorf("multipath fields = %#v", result[0])
 	}
 }
 

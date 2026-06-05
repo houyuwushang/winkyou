@@ -64,33 +64,39 @@ func (s EngineState) String() string {
 }
 
 type PeerStatus struct {
-	NodeID             string
-	Name               string
-	VirtualIP          net.IP
-	PublicKey          string
-	State              PeerState
-	ControlState       PeerControlState
-	DataState          PeerDataState
-	Endpoint           *net.UDPAddr
-	Latency            time.Duration
-	LastSeen           time.Time
-	LastHandshake      time.Time
-	TxBytes            uint64
-	RxBytes            uint64
-	ConnectionType     ConnectionType
-	ICEState           string
-	LocalCandidate     string
-	RemoteCandidate    string
-	TransportTxPackets uint64
-	TransportTxBytes   uint64
-	TransportRxPackets uint64
-	TransportRxBytes   uint64
-	TransportLastError string
-	LastPathID         string
-	LastPathStrategy   string
-	LastPathEndpoint   string
-	LastPathConnType   string
-	LastPathUpdatedAt  time.Time
+	NodeID                string
+	Name                  string
+	VirtualIP             net.IP
+	PublicKey             string
+	State                 PeerState
+	ControlState          PeerControlState
+	DataState             PeerDataState
+	Endpoint              *net.UDPAddr
+	Latency               time.Duration
+	LastSeen              time.Time
+	LastHandshake         time.Time
+	TxBytes               uint64
+	RxBytes               uint64
+	ConnectionType        ConnectionType
+	ICEState              string
+	LocalCandidate        string
+	RemoteCandidate       string
+	TransportTxPackets    uint64
+	TransportTxBytes      uint64
+	TransportRxPackets    uint64
+	TransportRxBytes      uint64
+	TransportLastError    string
+	MultipathEnabled      bool
+	PrimaryPathID         string
+	ProtectedDirectPathID string
+	StandbyPathIDs        []string
+	ActivePathID          string
+	LastFailoverAt        time.Time
+	LastPathID            string
+	LastPathStrategy      string
+	LastPathEndpoint      string
+	LastPathConnType      string
+	LastPathUpdatedAt     time.Time
 }
 
 type PeerEvent int

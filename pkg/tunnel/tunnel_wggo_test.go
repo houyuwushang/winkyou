@@ -11,8 +11,11 @@ import (
 	"time"
 
 	wgconn "golang.zx2c4.com/wireguard/conn"
+	"winkyou/pkg/solver"
+	"winkyou/pkg/transport"
 	"winkyou/pkg/transport/framedstream"
 	"winkyou/pkg/transport/iceadapter"
+	"winkyou/pkg/transport/multipath"
 )
 
 type trackedConn struct {
@@ -350,6 +353,45 @@ func TestPeerTransportBindRecordsTransportError(t *testing.T) {
 	}
 }
 
+func TestPeerTransportBindExposesMultipathStatus(t *testing.T) {
+	bind := newPeerTransportBind()
+	defer bind.Shutdown()
+
+	publicKey := makeTestKey(89)
+	failoverAt := time.Unix(1_700_000_123, 0)
+	_, err := bind.AttachTransport(publicKey, &staticMultipathTransport{
+		closedCh: make(chan struct{}),
+		stats: multipath.Stats{
+			PrimaryPathID:         "relay/path",
+			ProtectedDirectPathID: "direct/path",
+			StandbyPathIDs:        []string{"direct/path"},
+			ActivePathID:          "direct/path",
+			ChildPathCount:        2,
+			LastFailoverAt:        failoverAt,
+			Paths: []multipath.PathStats{{
+				ID:      "direct/path",
+				Role:    solver.PathRoleProtectedDirect,
+				Healthy: true,
+			}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("AttachTransport() error = %v", err)
+	}
+	defer bind.DetachTransport(publicKey)
+
+	status, ok := bind.TransportMultipathStatus(publicKey)
+	if !ok {
+		t.Fatal("TransportMultipathStatus() missing, want multipath status")
+	}
+	if !status.enabled || status.primaryPathID != "relay/path" || status.protectedDirectPathID != "direct/path" || status.activePathID != "direct/path" {
+		t.Fatalf("multipath status = %#v", status)
+	}
+	if !status.lastFailoverAt.Equal(failoverAt) {
+		t.Fatalf("last failover = %v, want %v", status.lastFailoverAt, failoverAt)
+	}
+}
+
 func TestParseDeviceSnapshotTransportEndpointAndStats(t *testing.T) {
 	bind := newPeerTransportBind()
 	defer bind.Shutdown()
@@ -420,6 +462,44 @@ func mustPrivateKey(t *testing.T) PrivateKey {
 		t.Fatalf("GeneratePrivateKey() error: %v", err)
 	}
 	return k
+}
+
+type staticMultipathTransport struct {
+	stats     multipath.Stats
+	closedCh  chan struct{}
+	closeOnce sync.Once
+}
+
+func (s *staticMultipathTransport) ReadPacket(ctx context.Context, _ []byte) (int, transport.PacketMeta, error) {
+	select {
+	case <-ctx.Done():
+		return 0, transport.PacketMeta{}, ctx.Err()
+	case <-s.closedCh:
+		return 0, transport.PacketMeta{}, net.ErrClosed
+	}
+}
+
+func (s *staticMultipathTransport) WritePacket(context.Context, []byte) error {
+	return nil
+}
+
+func (s *staticMultipathTransport) LocalAddr() net.Addr {
+	return &net.UDPAddr{IP: net.IPv4(10, 0, 0, 1), Port: 1000}
+}
+
+func (s *staticMultipathTransport) RemoteAddr() net.Addr {
+	return &net.UDPAddr{IP: net.IPv4(10, 0, 0, 2), Port: 2000}
+}
+
+func (s *staticMultipathTransport) Close() error {
+	s.closeOnce.Do(func() {
+		close(s.closedCh)
+	})
+	return nil
+}
+
+func (s *staticMultipathTransport) MultipathStats() multipath.Stats {
+	return s.stats
 }
 
 func TestMain(m *testing.M) {
