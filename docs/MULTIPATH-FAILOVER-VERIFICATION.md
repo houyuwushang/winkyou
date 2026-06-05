@@ -53,6 +53,9 @@ python scripts/verify-multipath-failover.py \
 ```
 
 The command prints a JSON report with the runtime path IDs and ping results.
+The report includes `pre_fault_path_state` and `post_fault_path_state` so the
+operator can see whether `active_path_id`, `last_failover_at`, or
+`last_failover_why` changed.
 
 ## Fault Actions
 
@@ -90,6 +93,22 @@ The primary-host action has no built-in default because pausing a host or link i
 environment-specific and may be disruptive. The operator must provide the exact
 command.
 
+When the fault is expected to break the current active path, add
+`--require-failover`:
+
+```bash
+python scripts/verify-multipath-failover.py \
+  --pause-primary-host \
+  --confirm-fault \
+  --require-failover \
+  --primary-host chen-win \
+  --pause-primary-command "<operator supplied command>"
+```
+
+With this flag, the script fails unless the post-fault runtime state shows an
+active path change, a new `last_failover_at`, or a changed
+`last_failover_why`, such as `active_path_rx_silence:<path>`.
+
 ## Expected Result
 
 The JSON report should show:
@@ -98,7 +117,10 @@ The JSON report should show:
 - fault action was skipped in dry-run mode, or explicitly executed with confirmation;
 - all post-fault `wink ping` probes succeeded;
 - `primary_path_id`, `protected_direct_path_id`, `active_path_id`, and
-  `standby_path_ids` were captured from runtime state.
+  `standby_path_ids` were captured from runtime state;
+- if `--require-failover` was used, post-fault runtime state shows failover
+  evidence through `active_path_id`, `last_failover_at`, or
+  `last_failover_why`.
 
 If the script reports that protected direct is unavailable, run:
 

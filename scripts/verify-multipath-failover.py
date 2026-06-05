@@ -85,6 +85,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--post-ping-interval", type=float, default=2.0)
     parser.add_argument("--command-timeout", type=int, default=30)
     parser.add_argument("--confirm-fault", action="store_true", help="required before any destructive fault action runs")
+    parser.add_argument("--require-failover", action="store_true", help="after a confirmed fault, require active path or failover reason to change")
     parser.add_argument("--output", default="", help="optional path for the JSON report")
 
     group = parser.add_mutually_exclusive_group()
@@ -106,18 +107,14 @@ def check_preconditions(args: argparse.Namespace, report: dict[str, Any]) -> dic
     peers = load_peers(args)
     add_step(report, "load_peers", True, f"{len(peers)} peer(s)", {"peer_count": len(peers)})
     peer = find_multipath_peer(peers)
+    path_state = peer_path_state(peer)
+    report["pre_fault_path_state"] = path_state
     add_step(
         report,
         "multipath_precondition",
         True,
         "protected direct standby is present",
-        {
-            "peer": peer_label(peer),
-            "primary_path_id": peer.get("primary_path_id", ""),
-            "protected_direct_path_id": peer.get("protected_direct_path_id", ""),
-            "active_path_id": peer.get("active_path_id", ""),
-            "standby_path_ids": peer.get("standby_path_ids", []),
-        },
+        {"peer": peer_label(peer), **path_state},
     )
     return peer
 
@@ -167,6 +164,48 @@ def run_post_fault_pings(args: argparse.Namespace, peer: dict[str, Any], report:
     add_step(report, "post_fault_pings", ok_count == args.post_ping_count, f"{ok_count}/{args.post_ping_count} ping(s) passed", {"results": results})
     if ok_count != args.post_ping_count:
         raise RuntimeError("one or more post-fault wink ping probes failed")
+    post_peer = capture_post_fault_state(args, peer, report)
+    validate_failover_requirement(args, peer, post_peer, report)
+
+
+def capture_post_fault_state(args: argparse.Namespace, pre_peer: dict[str, Any], report: dict[str, Any]) -> dict[str, Any]:
+    peers = load_peers(args)
+    peer = find_same_peer(peers, pre_peer)
+    path_state = peer_path_state(peer)
+    report["post_fault_path_state"] = path_state
+    add_step(report, "post_fault_path_state", True, "captured runtime path state after fault", {"peer": peer_label(peer), **path_state})
+    return peer
+
+
+def validate_failover_requirement(args: argparse.Namespace, pre_peer: dict[str, Any], post_peer: dict[str, Any], report: dict[str, Any]) -> None:
+    if selected_fault_action(args) == "dry-run":
+        add_step(report, "failover_requirement", True, "dry-run; failover not required")
+        return
+    if not args.require_failover:
+        add_step(report, "failover_requirement", True, "not required; pass --require-failover to enforce active path movement")
+        return
+
+    pre_state = peer_path_state(pre_peer)
+    post_state = peer_path_state(post_peer)
+    active_changed = post_state["active_path_id"] and post_state["active_path_id"] != pre_state["active_path_id"]
+    failover_changed = bool(post_state["last_failover_at"]) and post_state["last_failover_at"] != pre_state["last_failover_at"]
+    reason_changed = bool(post_state["last_failover_why"]) and post_state["last_failover_why"] != pre_state["last_failover_why"]
+    ok = active_changed or failover_changed or reason_changed
+    add_step(
+        report,
+        "failover_requirement",
+        ok,
+        "failover evidence found" if ok else "no active path or failover reason changed",
+        {
+            "active_changed": active_changed,
+            "failover_changed": failover_changed,
+            "reason_changed": reason_changed,
+            "pre": pre_state,
+            "post": post_state,
+        },
+    )
+    if not ok:
+        raise RuntimeError("post-fault runtime state did not show multipath failover")
 
 
 def load_peers(args: argparse.Namespace) -> list[dict[str, Any]]:
@@ -198,6 +237,40 @@ def find_multipath_peer(peers: list[dict[str, Any]]) -> dict[str, Any]:
             continue
         return peer
     raise RuntimeError("no connected peer with data_state=alive, multipath_enabled=true, and protected_direct_path_id found")
+
+
+def find_same_peer(peers: list[dict[str, Any]], target: dict[str, Any]) -> dict[str, Any]:
+    for key in ("node_id", "name", "virtual_ip"):
+        value = str(target.get(key, "")).strip()
+        if not value:
+            continue
+        for peer in peers:
+            if str(peer.get(key, "")).strip() == value:
+                return peer
+    raise RuntimeError("post-fault peer state not found for " + peer_label(target))
+
+
+def peer_path_state(peer: dict[str, Any]) -> dict[str, Any]:
+    details = peer.get("last_path_details") if isinstance(peer.get("last_path_details"), dict) else {}
+    return {
+        "primary_path_id": str(peer.get("primary_path_id", "") or ""),
+        "protected_direct_path_id": str(peer.get("protected_direct_path_id", "") or ""),
+        "active_path_id": str(peer.get("active_path_id", "") or ""),
+        "standby_path_ids": peer.get("standby_path_ids", []) if isinstance(peer.get("standby_path_ids"), list) else [],
+        "last_failover_at": clean_runtime_time(str(peer.get("last_failover_at", "") or "")),
+        "last_failover_why": str(peer.get("last_failover_why", "") or ""),
+        "last_path_id": str(peer.get("last_path_id", "") or ""),
+        "last_path_role": str(peer.get("last_path_role", "") or ""),
+        "last_path_dependencies": peer.get("last_path_dependencies", []) if isinstance(peer.get("last_path_dependencies"), list) else [],
+        "child_paths": str(details.get("child_paths", "") or ""),
+    }
+
+
+def clean_runtime_time(value: str) -> str:
+    value = value.strip()
+    if not value or value.startswith("0001-01-01"):
+        return ""
+    return value
 
 
 def run_wink_ping(args: argparse.Namespace, peer: dict[str, Any]) -> subprocess.CompletedProcess[str]:
