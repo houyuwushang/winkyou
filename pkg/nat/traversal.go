@@ -20,7 +20,11 @@ type natTraversalImpl struct {
 //   - Two STUN servers return different mapped IP or port -> NATTypeSymmetric
 //   - Otherwise -> NATTypeUnknown (we don't guess cone subtypes yet)
 func (n *natTraversalImpl) DetectNATType(ctx context.Context) (NATType, error) {
-	report, err := ProbeSTUNMapping(ctx, n.cfg.STUNServers)
+	servers, err := detectSTUNMappingServers(n.cfg)
+	if err != nil {
+		return NATTypeUnknown, err
+	}
+	report, err := ProbeSTUNMapping(ctx, servers)
 	if err != nil {
 		return NATTypeUnknown, err
 	}
@@ -29,7 +33,11 @@ func (n *natTraversalImpl) DetectNATType(ctx context.Context) (NATType, error) {
 
 // DetectSTUNMapping probes STUN servers and returns the complete mapping report.
 func (n *natTraversalImpl) DetectSTUNMapping(ctx context.Context) (STUNMappingReport, error) {
-	return ProbeSTUNMapping(ctx, n.cfg.STUNServers)
+	servers, err := detectSTUNMappingServers(n.cfg)
+	if err != nil {
+		return STUNMappingReport{NATType: NATTypeUnknown}, err
+	}
+	return ProbeSTUNMapping(ctx, servers)
 }
 
 // NewICEAgent creates a real pion/ice-backed ICE agent.
@@ -50,6 +58,13 @@ func (n *natTraversalImpl) NewICEAgent(cfg ICEConfig) (ICEAgent, error) {
 		cfg.TURNServers = n.cfg.TURNServers
 	}
 	return newICEPionAgent(cfg)
+}
+
+func detectSTUNMappingServers(cfg Config) ([]string, error) {
+	return PublicDirectSTUNServerURLs(ICEConfig{
+		STUNServers: cfg.STUNServers,
+		TURNServers: cfg.TURNServers,
+	})
 }
 
 // isLocalAddress checks whether ip matches any local interface address.

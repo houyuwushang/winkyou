@@ -203,6 +203,32 @@ func TestProbeSTUNMappingKeepsConsistentMappingUnknown(t *testing.T) {
 	}
 }
 
+func TestDetectSTUNMappingUsesUDPTURNAsSTUNSource(t *testing.T) {
+	server := startFakeSTUNServer(t, net.IPv4(198, 51, 100, 44), 45678)
+	defer server.Close()
+
+	traversal, err := NewNATTraversal(&Config{
+		TURNServers: []TURNServer{{
+			URL:      "turn:" + server.LocalAddr().String() + "?transport=udp",
+			Username: "wink",
+			Password: "secret",
+		}},
+	})
+	if err != nil {
+		t.Fatalf("NewNATTraversal() error = %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	report, err := traversal.DetectSTUNMapping(ctx)
+	if err != nil {
+		t.Fatalf("DetectSTUNMapping() error = %v", err)
+	}
+	if len(report.Probes) != 1 || report.Probes[0].MappedAddr == nil || report.Probes[0].MappedAddr.String() != "198.51.100.44:45678" {
+		t.Fatalf("DetectSTUNMapping() probes = %#v, want UDP TURN-derived STUN mapping", report.Probes)
+	}
+}
+
 func TestPublicEndpointHintsFromSTUNMappingIncludesUsableLocalBase(t *testing.T) {
 	hints := PublicEndpointHintsFromSTUNMapping(STUNMappingReport{
 		NATType: NATTypeUnknown,
