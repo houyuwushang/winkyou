@@ -96,10 +96,11 @@ func (e *engine) cleanupPeer(nodeID string) {
 
 	e.mu.RLock()
 	peer := e.peers[nodeID]
+	tun := e.tun
 	e.mu.RUnlock()
 	if peer != nil {
-		if pub, err := tunnel.ParsePublicKey(peer.PublicKey); err == nil && e.tun != nil {
-			e.logCleanupError("remove tunnel peer", e.tun.RemovePeer(pub), logger.String("node_id", nodeID))
+		if pub, err := tunnel.ParsePublicKey(peer.PublicKey); err == nil && tun != nil {
+			e.logCleanupError("remove tunnel peer", tun.RemovePeer(pub), logger.String("node_id", nodeID))
 		}
 	}
 	e.persistState()

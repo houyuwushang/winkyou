@@ -106,14 +106,15 @@ func listenPingUDP(bindIP net.IP) (*net.UDPConn, error) {
 
 func (e *engine) runPingResponder(conn *net.UDPConn) {
 	buffer := make([]byte, 2048)
+	done := e.runDone()
 	for {
 		_ = conn.SetReadDeadline(time.Now().Add(time.Second))
 		n, addr, err := conn.ReadFromUDP(buffer)
 		if err != nil {
 			if ne, ok := err.(net.Error); ok && ne.Timeout() {
-				if e.runCtx != nil {
+				if done != nil {
 					select {
-					case <-e.runCtx.Done():
+					case <-done:
 						return
 					default:
 					}

@@ -72,14 +72,15 @@ func (e *engine) runInbandControlSender(conn *net.UDPConn) {
 
 func (e *engine) runInbandControlReader(conn *net.UDPConn) {
 	buffer := make([]byte, 8192)
+	done := e.runDone()
 	for {
 		_ = conn.SetReadDeadline(time.Now().Add(time.Second))
 		n, _, err := conn.ReadFromUDP(buffer)
 		if err != nil {
 			if ne, ok := err.(net.Error); ok && ne.Timeout() {
-				if e.runCtx != nil {
+				if done != nil {
 					select {
-					case <-e.runCtx.Done():
+					case <-done:
 						return
 					default:
 					}
@@ -217,8 +218,12 @@ func firstString(values ...string) string {
 }
 
 func (e *engine) runDone() <-chan struct{} {
-	if e == nil || e.runCtx == nil {
+	if e == nil {
 		return nil
 	}
-	return e.runCtx.Done()
+	runCtx, ok := e.runContext()
+	if !ok {
+		return nil
+	}
+	return runCtx.Done()
 }

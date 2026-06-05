@@ -8,17 +8,21 @@ import (
 )
 
 func (e *engine) startTunnelEventLoop() {
-	if e.tun == nil || e.runCtx == nil {
+	e.mu.RLock()
+	tun := e.tun
+	runCtx := e.runCtx
+	e.mu.RUnlock()
+	if tun == nil || runCtx == nil {
 		return
 	}
 
-	events := e.tun.Events()
+	events := tun.Events()
 	e.wg.Add(1)
 	go func() {
 		defer e.wg.Done()
 		for {
 			select {
-			case <-e.runCtx.Done():
+			case <-runCtx.Done():
 				return
 			case event, ok := <-events:
 				if !ok {

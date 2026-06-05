@@ -284,23 +284,27 @@ func (e *engine) Stop() error {
 		return nil
 	}
 	e.started = false
+	runCancel := e.runCancel
+	coord := e.coord
+	pingConn := e.pingConn
+	inbandConn := e.inbandConn
+	e.pingConn = nil
+	e.inbandConn = nil
 	e.mu.Unlock()
 
 	e.setState(EngineStateStopping, "")
 
-	if e.runCancel != nil {
-		e.runCancel()
+	if runCancel != nil {
+		runCancel()
 	}
-	if e.coord != nil {
-		e.coord.StopHeartbeat()
+	if coord != nil {
+		coord.StopHeartbeat()
 	}
-	if e.pingConn != nil {
-		e.logCleanupError("close ping responder", e.pingConn.Close())
-		e.pingConn = nil
+	if pingConn != nil {
+		e.logCleanupError("close ping responder", pingConn.Close())
 	}
-	if e.inbandConn != nil {
-		e.logCleanupError("close in-band peer control", e.inbandConn.Close())
-		e.inbandConn = nil
+	if inbandConn != nil {
+		e.logCleanupError("close in-band peer control", inbandConn.Close())
 	}
 
 	e.wg.Wait()
@@ -374,10 +378,13 @@ func (e *engine) OnPeerChange(handler func(peer *PeerStatus, event PeerEvent)) {
 }
 
 func (e *engine) refreshPeers(ctx context.Context) error {
-	if e.coord == nil {
+	e.mu.RLock()
+	coord := e.coord
+	e.mu.RUnlock()
+	if coord == nil {
 		return ErrEngineNotStarted
 	}
-	peers, err := e.coord.ListPeers(ctx, coordclient.WithOnlineOnly(false))
+	peers, err := coord.ListPeers(ctx, coordclient.WithOnlineOnly(false))
 	if err != nil {
 		return err
 	}
@@ -606,6 +613,10 @@ func (e *engine) snapshot() (*EngineStatus, []*PeerStatus) {
 }
 
 func (e *engine) startStateLoop() {
+	done := e.runDone()
+	if done == nil {
+		return
+	}
 	e.wg.Add(1)
 	go func() {
 		defer e.wg.Done()
@@ -614,7 +625,7 @@ func (e *engine) startStateLoop() {
 
 		for {
 			select {
-			case <-e.runCtx.Done():
+			case <-done:
 				return
 			case <-ticker.C:
 				e.persistState()
@@ -624,39 +635,54 @@ func (e *engine) startStateLoop() {
 }
 
 func (e *engine) cleanupResources() {
-	if e.runCancel != nil {
-		e.runCancel()
-	}
+	e.mu.Lock()
+	runCancel := e.runCancel
+	sessions := []*peerSession(nil)
 	if e.peerMgr != nil {
 		for _, s := range e.peerMgr.sessions {
-			e.closePeerSession(s)
+			sessions = append(sessions, s)
 		}
 		e.peerMgr.sessions = map[string]*peerSession{}
 	}
-	if e.tun != nil {
-		e.logCleanupError("stop tunnel", e.tun.Stop())
-		e.tun = nil
-	}
-	if e.coord != nil {
-		e.logCleanupError("close coordinator", e.coord.Close())
-		e.coord = nil
-	}
-	if e.pingConn != nil {
-		e.logCleanupError("close ping responder", e.pingConn.Close())
-		e.pingConn = nil
-	}
-	if e.inbandConn != nil {
-		e.logCleanupError("close in-band peer control", e.inbandConn.Close())
-		e.inbandConn = nil
-	}
-	if e.netif != nil {
-		e.logCleanupError("close network interface", e.netif.Close())
-		e.netif = nil
-	}
+
+	tun := e.tun
+	coord := e.coord
+	pingConn := e.pingConn
+	inbandConn := e.inbandConn
+	netif := e.netif
+
+	e.tun = nil
+	e.coord = nil
+	e.pingConn = nil
+	e.inbandConn = nil
+	e.netif = nil
 	e.nat = nil
 	e.observationStore = nil
 	e.runCtx = nil
 	e.runCancel = nil
+	e.mu.Unlock()
+
+	if runCancel != nil {
+		runCancel()
+	}
+	for _, s := range sessions {
+		e.closePeerSession(s)
+	}
+	if tun != nil {
+		e.logCleanupError("stop tunnel", tun.Stop())
+	}
+	if coord != nil {
+		e.logCleanupError("close coordinator", coord.Close())
+	}
+	if pingConn != nil {
+		e.logCleanupError("close ping responder", pingConn.Close())
+	}
+	if inbandConn != nil {
+		e.logCleanupError("close in-band peer control", inbandConn.Close())
+	}
+	if netif != nil {
+		e.logCleanupError("close network interface", netif.Close())
+	}
 }
 
 func (e *engine) logCleanupError(action string, err error, fields ...logger.Field) {
@@ -679,6 +705,16 @@ func (e *engine) currentNodeID() string {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
 	return e.status.NodeID
+}
+
+func (e *engine) runContext() (context.Context, bool) {
+	if e == nil {
+		return nil, false
+	}
+	e.mu.RLock()
+	ctx := e.runCtx
+	e.mu.RUnlock()
+	return ctx, ctx != nil
 }
 
 func toPeerStatus(peer *coordclient.PeerInfo) *PeerStatus {

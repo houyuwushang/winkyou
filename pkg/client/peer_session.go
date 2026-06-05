@@ -116,19 +116,25 @@ func (e *engine) startPeerSession(s *peerSession) {
 }
 
 func (e *engine) newPeerRunner(s *peerSession) (*sesspkg.Session, error) {
+	e.mu.RLock()
+	tun := e.tun
+	observationStore := e.observationStore
+	localNodeID := e.status.NodeID
+	e.mu.RUnlock()
+
 	var observationSink solver.ObservationSink
 	var observationHistory solver.ObservationHistory
-	if e.observationStore != nil {
-		observationSink = e.observationStore
-		observationHistory = e.observationStore
+	if observationStore != nil {
+		observationSink = observationStore
+		observationHistory = observationStore
 	}
 	return sesspkg.New(sesspkg.Config{
 		SessionID:             s.sessionID,
-		LocalNodeID:           e.currentNodeID(),
+		LocalNodeID:           localNodeID,
 		PeerID:                s.nodeID,
 		Initiator:             s.initiator,
 		Resolver:              e.newStrategyResolver(),
-		Binder:                sesspkg.NewTunnelBinder(e.tun, e),
+		Binder:                sesspkg.NewTunnelBinder(tun, e),
 		Sender:                peerMessageSender{engine: e},
 		ProbeRunner:           e.probeRunner(),
 		ObservationSink:       observationSink,
@@ -420,8 +426,8 @@ func parsePeerAllowedIP(ip net.IP) (net.IP, *net.IPNet, error) {
 }
 
 func (e *engine) sessionContext() context.Context {
-	if e.runCtx != nil {
-		return e.runCtx
+	if runCtx, ok := e.runContext(); ok {
+		return runCtx
 	}
 	return context.Background()
 }
