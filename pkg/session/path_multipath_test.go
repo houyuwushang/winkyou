@@ -39,6 +39,9 @@ func TestBuildResultTransportFromOutcomesBuildsRelayPrimaryDirectStandby(t *test
 	if result.Summary.Details["protected_direct_path_id"] != "direct/path" {
 		t.Fatalf("protected direct detail = %q, want direct/path", result.Summary.Details["protected_direct_path_id"])
 	}
+	if got := result.Summary.Details["child_paths"]; got == "" {
+		t.Fatal("child_paths detail is empty")
+	}
 }
 
 func TestBuildResultTransportFromOutcomesKeepsSingleDirectPrimary(t *testing.T) {

@@ -83,6 +83,10 @@ func TestPeersWithRuntimeState(t *testing.T) {
 				ConnectionType:         "direct",
 				LastPathID:             "legacyice/direct_prefer",
 				LastPathStrategy:       "legacy_ice_udp",
+				LastPathPlanID:         "legacyice/direct_prefer",
+				LastPathRole:           "primary_candidate",
+				LastPathDependencies:   []string{"unknown:remote_cgnat_or_overlay_candidate"},
+				LastPathDetails:        map[string]string{"child_paths": "id=relay/path,role=primary_candidate,deps=relay:turn_or_relay_candidate;id=direct/path,role=protected_direct,deps=none"},
 				LastPathEndpoint:       "1.2.3.4:51820",
 				TxBytes:                1024,
 				RxBytes:                2048,
@@ -153,6 +157,9 @@ func TestPeersWithRuntimeState(t *testing.T) {
 	if !strings.Contains(output, "legacyice/direct_prefer") || !strings.Contains(output, "legacy_ice_udp") {
 		t.Errorf("output should contain last path cache, got: %s", output)
 	}
+	if !strings.Contains(output, "Path Role:  primary_candidate") || !strings.Contains(output, "unknown:remote_cgnat_or_overlay_candidate") {
+		t.Errorf("output should contain path role/dependency, got: %s", output)
+	}
 	if !strings.Contains(output, "1.0 KiB") {
 		t.Errorf("output should contain formatted tx bytes, got: %s", output)
 	}
@@ -167,6 +174,9 @@ func TestPeersWithRuntimeState(t *testing.T) {
 	}
 	if !strings.Contains(output, "Multipath:  enabled") || !strings.Contains(output, "Protected:  direct/path") || !strings.Contains(output, "Active:     direct/path") {
 		t.Errorf("output should contain multipath state, got: %s", output)
+	}
+	if !strings.Contains(output, "Children:   id=relay/path,role=primary_candidate") {
+		t.Errorf("output should contain child path details, got: %s", output)
 	}
 
 	// Clean up for next subtest.
@@ -195,6 +205,9 @@ func TestPeersWithRuntimeStateJSON(t *testing.T) {
 				DataState:              "alive",
 				LastPathID:             "relayonly/turn_relay",
 				LastPathStrategy:       "relay_only",
+				LastPathPlanID:         "relayonly/turn_relay",
+				LastPathRole:           "primary_candidate",
+				LastPathDependencies:   []string{"relay:turn_or_relay_candidate"},
 				MultipathEnabled:       true,
 				PrimaryPathID:          "relay/path",
 				ProtectedDirectPathID:  "direct/path",
@@ -244,6 +257,9 @@ func TestPeersWithRuntimeStateJSON(t *testing.T) {
 	}
 	if result[0].LastPathStrategy != "relay_only" {
 		t.Errorf("LastPathStrategy = %q, want relay_only", result[0].LastPathStrategy)
+	}
+	if result[0].LastPathPlanID != "relayonly/turn_relay" || result[0].LastPathRole != "primary_candidate" || len(result[0].LastPathDependencies) != 1 {
+		t.Errorf("last path diagnostics = %#v", result[0])
 	}
 	if !result[0].MultipathEnabled || result[0].ProtectedDirectPathID != "direct/path" {
 		t.Errorf("multipath fields = %#v", result[0])

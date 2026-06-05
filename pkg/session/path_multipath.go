@@ -74,6 +74,10 @@ func multipathSummary(primary solver.PathSummary, paths []multipath.Path) solver
 	details["child_path_count"] = fmt.Sprintf("%d", len(paths))
 
 	standbyIDs := make([]string, 0, len(paths)-1)
+	childSummaries := make([]string, 0, len(paths))
+	for i := range paths {
+		childSummaries = append(childSummaries, compactPathSummary(paths[i]))
+	}
 	for i := 1; i < len(paths); i++ {
 		standbyIDs = append(standbyIDs, paths[i].ID)
 		pathSummary := paths[i].Summary
@@ -87,8 +91,41 @@ func multipathSummary(primary solver.PathSummary, paths []multipath.Path) solver
 	if len(standbyIDs) > 0 {
 		details["standby_path_ids"] = strings.Join(standbyIDs, ",")
 	}
+	if len(childSummaries) > 0 {
+		details["child_paths"] = strings.Join(childSummaries, ";")
+	}
 	summary.Details = details
 	return summary
+}
+
+func compactPathSummary(path multipath.Path) string {
+	summary := solver.ClonePathSummary(path.Summary)
+	if summary.Role == "" {
+		summary.Role = path.Role
+	}
+	parts := []string{"id=" + path.ID}
+	if summary.Role != "" {
+		parts = append(parts, "role="+string(summary.Role))
+	}
+	if len(summary.Dependencies) == 0 {
+		parts = append(parts, "deps=none")
+	} else {
+		deps := make([]string, 0, len(summary.Dependencies))
+		for _, dependency := range summary.Dependencies {
+			if dependency.Kind == "" {
+				continue
+			}
+			value := string(dependency.Kind)
+			if dependency.Reason != "" {
+				value += ":" + dependency.Reason
+			}
+			deps = append(deps, value)
+		}
+		if len(deps) > 0 {
+			parts = append(parts, "deps="+strings.Join(deps, "|"))
+		}
+	}
+	return strings.Join(parts, ",")
 }
 
 func resultPathID(result solver.Result) string {

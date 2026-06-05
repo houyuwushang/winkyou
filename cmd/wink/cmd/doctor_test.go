@@ -177,12 +177,17 @@ func TestDoctorMultipathDisabledSuggestsEnable(t *testing.T) {
 func TestDoctorMultipathEnabledWithoutProtectedDirectWarns(t *testing.T) {
 	configPath := writeDoctorConfigWithMultipath(t)
 	writeDoctorRuntimeState(t, configPath, []winkclient.RuntimePeerStatus{{
-		NodeID:             "node-b",
-		Name:               "node-b",
-		State:              winkclient.PeerStateConnected.String(),
-		MultipathEnabled:   true,
-		PrimaryPathID:      "relay/path",
-		ActivePathID:       "relay/path",
+		NodeID:           "node-b",
+		Name:             "node-b",
+		State:            winkclient.PeerStateConnected.String(),
+		MultipathEnabled: true,
+		PrimaryPathID:    "relay/path",
+		ActivePathID:     "relay/path",
+		LastPathID:       "overlay/direct",
+		LastPathRole:     "primary_candidate",
+		LastPathDependencies: []string{
+			"unknown:remote_cgnat_or_overlay_candidate",
+		},
 		LastHandshake:      time.Now(),
 		TransportTxPackets: 2,
 		TransportRxPackets: 3,
@@ -190,7 +195,7 @@ func TestDoctorMultipathEnabledWithoutProtectedDirectWarns(t *testing.T) {
 
 	result := runDoctor(context.Background(), &Options{ConfigPath: configPath}, doctorFlags{}, healthyDoctorProbes())
 	check := findDoctorCheck(result, "multipath", "protected direct")
-	if check.Status != doctorWarn || !strings.Contains(check.Message, "protected direct standby is unavailable") {
+	if check.Status != doctorWarn || !strings.Contains(check.Message, "protected direct standby is unavailable") || !strings.Contains(check.Message, "remote_cgnat_or_overlay_candidate") {
 		t.Fatalf("multipath protected direct check = %#v, want standby unavailable warning", check)
 	}
 }

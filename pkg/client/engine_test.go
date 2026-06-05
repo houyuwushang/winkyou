@@ -93,6 +93,10 @@ func TestRuntimeStateRoundTrip(t *testing.T) {
 			LastHandshake:          now.Add(3 * time.Second),
 			LastPathID:             "relayonly/turn_relay",
 			LastPathStrategy:       "relay_only",
+			LastPathPlanID:         "relayonly/turn_relay",
+			LastPathRole:           "primary_candidate",
+			LastPathDependencies:   []string{"relay:turn_or_relay_candidate"},
+			LastPathDetails:        map[string]string{"plan_id": "relayonly/turn_relay"},
 			LastPathEndpoint:       "203.0.113.10:50000",
 			LastPathConnType:       ConnectionTypeRelay.String(),
 			LastPathUpdatedAt:      now.Add(4 * time.Second),
@@ -130,6 +134,12 @@ func TestRuntimeStateRoundTrip(t *testing.T) {
 	}
 	if loaded.Peers[0].LastPathStrategy != "relay_only" || loaded.Peers[0].LastPathEndpoint != "203.0.113.10:50000" {
 		t.Fatalf("loaded path cache = %#v", loaded.Peers[0])
+	}
+	if loaded.Peers[0].LastPathPlanID != "relayonly/turn_relay" || loaded.Peers[0].LastPathRole != "primary_candidate" || len(loaded.Peers[0].LastPathDependencies) != 1 {
+		t.Fatalf("loaded path diagnostics = %#v", loaded.Peers[0])
+	}
+	if loaded.Peers[0].LastPathDetails["plan_id"] != "relayonly/turn_relay" {
+		t.Fatalf("loaded path details = %#v", loaded.Peers[0].LastPathDetails)
 	}
 	if !loaded.Peers[0].MultipathEnabled || loaded.Peers[0].PrimaryPathID != "relay/path" || loaded.Peers[0].ProtectedDirectPathID != "direct/path" {
 		t.Fatalf("loaded multipath fields = %#v", loaded.Peers[0])
@@ -179,6 +189,37 @@ func TestPathStrategyRecognizesLegacyICEPathIDs(t *testing.T) {
 				t.Fatalf("pathStrategy() = %q, want %q", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestRecordPeerPathStoresPathDiagnostics(t *testing.T) {
+	peer := &PeerStatus{}
+	recordPeerPath(peer, solver.PathSummary{
+		PathID:         "legacyice:direct:public_direct:session/node-a/node-b",
+		ConnectionType: "direct",
+		Role:           solver.PathRolePrimaryCandidate,
+		Dependencies: []solver.PathDependency{{
+			Kind:   solver.PathDependencyUnknown,
+			Reason: "remote_cgnat_or_overlay_candidate",
+		}},
+		Details: map[string]string{
+			"strategy":    "legacy_ice_udp",
+			"plan_id":     "legacyice/public_direct",
+			"child_paths": "id=direct/path,role=protected_direct,deps=none",
+		},
+	}, time.Unix(1_700_000_100, 0))
+
+	if peer.LastPathStrategy != "legacy_ice_udp" || peer.LastPathPlanID != "legacyice/public_direct" {
+		t.Fatalf("path strategy/plan = %q/%q", peer.LastPathStrategy, peer.LastPathPlanID)
+	}
+	if peer.LastPathRole != string(solver.PathRolePrimaryCandidate) {
+		t.Fatalf("path role = %q", peer.LastPathRole)
+	}
+	if len(peer.LastPathDependencies) != 1 || peer.LastPathDependencies[0] != "unknown:remote_cgnat_or_overlay_candidate" {
+		t.Fatalf("path dependencies = %#v", peer.LastPathDependencies)
+	}
+	if peer.LastPathDetails["child_paths"] == "" {
+		t.Fatalf("path details = %#v", peer.LastPathDetails)
 	}
 }
 

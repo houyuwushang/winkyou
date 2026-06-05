@@ -96,6 +96,10 @@ type PeerStatus struct {
 	LastInbandPathHealthAt time.Time
 	LastPathID             string
 	LastPathStrategy       string
+	LastPathPlanID         string
+	LastPathRole           string
+	LastPathDependencies   []string
+	LastPathDetails        map[string]string
 	LastPathEndpoint       string
 	LastPathConnType       string
 	LastPathUpdatedAt      time.Time

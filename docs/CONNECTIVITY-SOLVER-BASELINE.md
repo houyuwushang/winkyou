@@ -145,6 +145,8 @@ The connectivity policy layer controls production strategy priority:
 
 Protected-direct multipath is enabled by default in `auto` mode with conservative settings: at most two child paths, direct protection on, and shadow writes off. This preserves the `transport.PacketTransport` boundary while letting the client keep a lower-dependency direct standby when both the primary path and a public/direct path are established. `relay_only` mode and legacy `nat.force_relay=true` keep single-path binding because there is no direct standby to protect. Operators can explicitly set `connectivity.multipath.enabled=false` to restore the older single-path binding behavior.
 
+Runtime state must expose the latest path plan, role, dependencies, and child path summary. A direct-like ICE result is only evidence of protected direct when `last_path_role=protected_direct` and no `last_path_dependencies` are present; `connection_type=direct` alone is not sufficient.
+
 The existing `nat.force_relay` setting remains a compatibility entry and maps to relay-only behavior. Legacy fallback remains available for old peers with empty capability, and the legacy ICE path must still force relay candidate gathering in relay-only mode.
 
 Future strategies may include QUIC, proxy-friendly, or other transports, but the solver core should not encode those details directly.

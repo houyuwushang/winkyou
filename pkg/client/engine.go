@@ -434,6 +434,10 @@ func (e *engine) upsertPeer(peer *coordclient.PeerInfo, event PeerEvent) {
 		updated.LastInbandPathHealthAt = current.LastInbandPathHealthAt
 		updated.LastPathID = current.LastPathID
 		updated.LastPathStrategy = current.LastPathStrategy
+		updated.LastPathPlanID = current.LastPathPlanID
+		updated.LastPathRole = current.LastPathRole
+		updated.LastPathDependencies = append([]string(nil), current.LastPathDependencies...)
+		updated.LastPathDetails = cloneStringMap(current.LastPathDetails)
 		updated.LastPathEndpoint = current.LastPathEndpoint
 		updated.LastPathConnType = current.LastPathConnType
 		updated.LastPathUpdatedAt = current.LastPathUpdatedAt
@@ -771,7 +775,20 @@ func clonePeerStatus(peer *PeerStatus) *PeerStatus {
 	out.VirtualIP = append(net.IP(nil), peer.VirtualIP...)
 	out.Endpoint = netutil.CloneUDPAddr(peer.Endpoint)
 	out.StandbyPathIDs = append([]string(nil), peer.StandbyPathIDs...)
+	out.LastPathDependencies = append([]string(nil), peer.LastPathDependencies...)
+	out.LastPathDetails = cloneStringMap(peer.LastPathDetails)
 	return &out
+}
+
+func cloneStringMap(in map[string]string) map[string]string {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(in))
+	for key, value := range in {
+		out[key] = value
+	}
+	return out
 }
 
 func cloneIPNet(prefix *net.IPNet) *net.IPNet {

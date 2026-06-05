@@ -59,6 +59,9 @@ func newPeersCmd(opts *Options) *cobra.Command {
 				cmd.Printf("  Conn Type:  %s\n", dashIfEmpty(p.ConnectionType))
 				cmd.Printf("  Path ID:    %s\n", dashIfEmpty(p.LastPathID))
 				cmd.Printf("  Path Strat: %s\n", dashIfEmpty(p.LastPathStrategy))
+				cmd.Printf("  Path Plan:  %s\n", dashIfEmpty(p.LastPathPlanID))
+				cmd.Printf("  Path Role:  %s\n", dashIfEmpty(p.LastPathRole))
+				cmd.Printf("  Path Deps:  %s\n", dashIfEmpty(strings.Join(p.LastPathDependencies, ",")))
 				cmd.Printf("  Path Endpt: %s\n", dashIfEmpty(p.LastPathEndpoint))
 				cmd.Printf("  Multipath:  %s\n", formatBoolEnabled(p.MultipathEnabled))
 				if p.MultipathEnabled {
@@ -66,6 +69,9 @@ func newPeersCmd(opts *Options) *cobra.Command {
 					cmd.Printf("  Protected:  %s\n", dashIfEmpty(p.ProtectedDirectPathID))
 					cmd.Printf("  Standby:    %s\n", dashIfEmpty(strings.Join(p.StandbyPathIDs, ",")))
 					cmd.Printf("  Active:     %s\n", dashIfEmpty(p.ActivePathID))
+					if p.LastPathDetails != nil && p.LastPathDetails["child_paths"] != "" {
+						cmd.Printf("  Children:   %s\n", p.LastPathDetails["child_paths"])
+					}
 					if !p.LastFailoverAt.IsZero() {
 						cmd.Printf("  Failover:   %s\n", p.LastFailoverAt.Format(time.RFC3339))
 					} else {

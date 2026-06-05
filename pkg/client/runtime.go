@@ -43,40 +43,44 @@ type RuntimeEngineStatus struct {
 }
 
 type RuntimePeerStatus struct {
-	NodeID                 string    `json:"node_id"`
-	Name                   string    `json:"name"`
-	VirtualIP              string    `json:"virtual_ip"`
-	PublicKey              string    `json:"public_key"`
-	State                  string    `json:"state"`
-	ControlState           string    `json:"control_state"`
-	DataState              string    `json:"data_state"`
-	Endpoint               string    `json:"endpoint,omitempty"`
-	LastSeen               time.Time `json:"last_seen"`
-	LastHandshake          time.Time `json:"last_handshake"`
-	TxBytes                uint64    `json:"tx_bytes"`
-	RxBytes                uint64    `json:"rx_bytes"`
-	ConnectionType         string    `json:"connection_type"`
-	ICEState               string    `json:"ice_state,omitempty"`
-	LocalCandidate         string    `json:"local_candidate,omitempty"`
-	RemoteCandidate        string    `json:"remote_candidate,omitempty"`
-	TransportTxPackets     uint64    `json:"transport_tx_packets"`
-	TransportTxBytes       uint64    `json:"transport_tx_bytes"`
-	TransportRxPackets     uint64    `json:"transport_rx_packets"`
-	TransportRxBytes       uint64    `json:"transport_rx_bytes"`
-	TransportLastError     string    `json:"transport_last_error,omitempty"`
-	MultipathEnabled       bool      `json:"multipath_enabled"`
-	PrimaryPathID          string    `json:"primary_path_id,omitempty"`
-	ProtectedDirectPathID  string    `json:"protected_direct_path_id,omitempty"`
-	StandbyPathIDs         []string  `json:"standby_path_ids,omitempty"`
-	ActivePathID           string    `json:"active_path_id,omitempty"`
-	LastFailoverAt         time.Time `json:"last_failover_at,omitempty"`
-	LastInbandHeartbeatAt  time.Time `json:"last_inband_heartbeat_at,omitempty"`
-	LastInbandPathHealthAt time.Time `json:"last_inband_path_health_at,omitempty"`
-	LastPathID             string    `json:"last_path_id,omitempty"`
-	LastPathStrategy       string    `json:"last_path_strategy,omitempty"`
-	LastPathEndpoint       string    `json:"last_path_endpoint,omitempty"`
-	LastPathConnType       string    `json:"last_path_connection_type,omitempty"`
-	LastPathUpdatedAt      time.Time `json:"last_path_updated_at,omitempty"`
+	NodeID                 string            `json:"node_id"`
+	Name                   string            `json:"name"`
+	VirtualIP              string            `json:"virtual_ip"`
+	PublicKey              string            `json:"public_key"`
+	State                  string            `json:"state"`
+	ControlState           string            `json:"control_state"`
+	DataState              string            `json:"data_state"`
+	Endpoint               string            `json:"endpoint,omitempty"`
+	LastSeen               time.Time         `json:"last_seen"`
+	LastHandshake          time.Time         `json:"last_handshake"`
+	TxBytes                uint64            `json:"tx_bytes"`
+	RxBytes                uint64            `json:"rx_bytes"`
+	ConnectionType         string            `json:"connection_type"`
+	ICEState               string            `json:"ice_state,omitempty"`
+	LocalCandidate         string            `json:"local_candidate,omitempty"`
+	RemoteCandidate        string            `json:"remote_candidate,omitempty"`
+	TransportTxPackets     uint64            `json:"transport_tx_packets"`
+	TransportTxBytes       uint64            `json:"transport_tx_bytes"`
+	TransportRxPackets     uint64            `json:"transport_rx_packets"`
+	TransportRxBytes       uint64            `json:"transport_rx_bytes"`
+	TransportLastError     string            `json:"transport_last_error,omitempty"`
+	MultipathEnabled       bool              `json:"multipath_enabled"`
+	PrimaryPathID          string            `json:"primary_path_id,omitempty"`
+	ProtectedDirectPathID  string            `json:"protected_direct_path_id,omitempty"`
+	StandbyPathIDs         []string          `json:"standby_path_ids,omitempty"`
+	ActivePathID           string            `json:"active_path_id,omitempty"`
+	LastFailoverAt         time.Time         `json:"last_failover_at,omitempty"`
+	LastInbandHeartbeatAt  time.Time         `json:"last_inband_heartbeat_at,omitempty"`
+	LastInbandPathHealthAt time.Time         `json:"last_inband_path_health_at,omitempty"`
+	LastPathID             string            `json:"last_path_id,omitempty"`
+	LastPathStrategy       string            `json:"last_path_strategy,omitempty"`
+	LastPathPlanID         string            `json:"last_path_plan_id,omitempty"`
+	LastPathRole           string            `json:"last_path_role,omitempty"`
+	LastPathDependencies   []string          `json:"last_path_dependencies,omitempty"`
+	LastPathDetails        map[string]string `json:"last_path_details,omitempty"`
+	LastPathEndpoint       string            `json:"last_path_endpoint,omitempty"`
+	LastPathConnType       string            `json:"last_path_connection_type,omitempty"`
+	LastPathUpdatedAt      time.Time         `json:"last_path_updated_at,omitempty"`
 }
 
 func RuntimeStatePath(configPath string) string {
@@ -205,6 +209,10 @@ func newRuntimeStateSnapshot(status *EngineStatus, peers []*PeerStatus) *Runtime
 			LastInbandPathHealthAt: peer.LastInbandPathHealthAt,
 			LastPathID:             peer.LastPathID,
 			LastPathStrategy:       peer.LastPathStrategy,
+			LastPathPlanID:         peer.LastPathPlanID,
+			LastPathRole:           peer.LastPathRole,
+			LastPathDependencies:   append([]string(nil), peer.LastPathDependencies...),
+			LastPathDetails:        cloneStringMap(peer.LastPathDetails),
 			LastPathEndpoint:       peer.LastPathEndpoint,
 			LastPathConnType:       peer.LastPathConnType,
 			LastPathUpdatedAt:      peer.LastPathUpdatedAt,

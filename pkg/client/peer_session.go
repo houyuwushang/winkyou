@@ -379,11 +379,43 @@ func recordPeerPath(peer *PeerStatus, summary solver.PathSummary, at time.Time) 
 	}
 	peer.LastPathID = summary.PathID
 	peer.LastPathStrategy = pathStrategy(summary)
+	peer.LastPathPlanID = pathPlanID(summary)
+	peer.LastPathRole = string(summary.Role)
+	peer.LastPathDependencies = pathDependencyStrings(summary.Dependencies)
+	peer.LastPathDetails = cloneStringMap(summary.Details)
 	peer.LastPathEndpoint = addrString(summary.RemoteAddr)
 	peer.LastPathConnType = summary.ConnectionType
-	if peer.LastPathID != "" || peer.LastPathStrategy != "" || peer.LastPathEndpoint != "" || peer.LastPathConnType != "" {
+	if peer.LastPathID != "" || peer.LastPathStrategy != "" || peer.LastPathPlanID != "" || peer.LastPathRole != "" || len(peer.LastPathDependencies) > 0 || peer.LastPathEndpoint != "" || peer.LastPathConnType != "" {
 		peer.LastPathUpdatedAt = at
 	}
+}
+
+func pathPlanID(summary solver.PathSummary) string {
+	if summary.Details == nil {
+		return ""
+	}
+	return strings.TrimSpace(summary.Details["plan_id"])
+}
+
+func pathDependencyStrings(dependencies []solver.PathDependency) []string {
+	if len(dependencies) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(dependencies))
+	for _, dependency := range dependencies {
+		if dependency.Kind == "" {
+			continue
+		}
+		value := string(dependency.Kind)
+		if dependency.NodeID != "" {
+			value += ":" + dependency.NodeID
+		}
+		if dependency.Reason != "" {
+			value += ":" + dependency.Reason
+		}
+		out = append(out, value)
+	}
+	return out
 }
 
 func pathStrategy(summary solver.PathSummary) string {

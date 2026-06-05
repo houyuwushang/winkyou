@@ -393,11 +393,15 @@ func addMultipathChecks(result *doctorResult, cfg *config.Config, state *winkcli
 	multipathPeers := 0
 	protectedPeers := 0
 	activeDetails := make([]string, 0, len(state.Peers))
+	dependentDetails := make([]string, 0, len(state.Peers))
 	for _, peer := range state.Peers {
 		if !peer.MultipathEnabled {
 			continue
 		}
 		multipathPeers++
+		if len(peer.LastPathDependencies) > 0 || peer.LastPathRole != "" {
+			dependentDetails = append(dependentDetails, fmt.Sprintf("%s path=%s role=%s deps=%s", firstNonEmpty(peer.Name, peer.NodeID), dashIfEmpty(peer.LastPathID), dashIfEmpty(peer.LastPathRole), dashIfEmpty(strings.Join(peer.LastPathDependencies, ","))))
+		}
 		if peer.ProtectedDirectPathID == "" {
 			continue
 		}
@@ -409,7 +413,11 @@ func addMultipathChecks(result *doctorResult, cfg *config.Config, state *winkcli
 		return
 	}
 	if protectedPeers == 0 {
-		result.add(warnCheck("multipath", "protected direct", "multipath is enabled but protected direct standby is unavailable", "check direct/P2P reachability; current paths may depend on a coordinator, relay, or middle node"))
+		message := "multipath is enabled but protected direct standby is unavailable"
+		if len(dependentDetails) > 0 {
+			message += ": " + strings.Join(dependentDetails, "; ")
+		}
+		result.add(warnCheck("multipath", "protected direct", message, "check direct/P2P reachability; current paths may depend on a coordinator, relay, or middle node"))
 		return
 	}
 	result.add(okCheck("multipath", "protected direct", strings.Join(activeDetails, "; ")))
