@@ -141,6 +141,59 @@ func (s *Session) selectAndExecuteProtectedDirect(ctx context.Context, candidate
 	return nil
 }
 
+func (s *Session) selectAndBindProtectedDirect(ctx context.Context) (bool, error) {
+	candidates, err := s.resolveStrategyCandidates(ctx)
+	if err != nil {
+		return false, err
+	}
+	s.recordStrategyOrder(ctx, candidates)
+
+	primaryPathID := resultPathID(s.lastRes)
+	var lastErr error
+	for i, candidate := range candidates {
+		if !strategyMayProduceDirect(candidate.Name) {
+			continue
+		}
+		if err := s.setSelectedStrategyCandidate(candidate); err != nil {
+			return false, err
+		}
+		outcomes, err := s.executeStrategyOutcomes(ctx, candidate.Strategy)
+		if err != nil {
+			lastErr = err
+			s.recordStrategyFailure(ctx, candidate.Name, err, i, len(candidates))
+			s.recordProtectedDirectAttemptFailure(ctx, candidate.Name, err, primaryPathID)
+			s.discardPendingStrategyMessages()
+			s.clearSelectedStrategy()
+			s.ignoreCleanupError(s.runCleanup(candidate.Strategy.Close))
+			if ctx != nil && ctx.Err() != nil {
+				return false, err
+			}
+			continue
+		}
+
+		protected := selectProtectedDirectOutcome(outcomes, s.cfg.PathPolicy)
+		if protected != nil {
+			return true, s.bindOutcomeSet(ctx, outcomes, protected)
+		}
+
+		err = noProtectedDirectOutcomeError(outcomes)
+		lastErr = err
+		s.closeOutcomeTransports(outcomes)
+		s.recordProtectedDirectAttemptFailure(ctx, candidate.Name, err, primaryPathID)
+		s.discardPendingStrategyMessages()
+		s.clearSelectedStrategy()
+		s.ignoreCleanupError(s.runCleanup(candidate.Strategy.Close))
+		if ctx != nil && ctx.Err() != nil {
+			return false, err
+		}
+	}
+
+	if lastErr != nil {
+		return false, nil
+	}
+	return false, nil
+}
+
 func (s *Session) executeSelectedStrategy(ctx context.Context, strategy solver.Strategy) error {
 	outcomes, err := s.executeStrategyOutcomes(ctx, strategy)
 	if err != nil {
@@ -373,6 +426,31 @@ func noSuccessfulOutcomeError(outcomes []solver.CandidateOutcome) error {
 		return lastErr
 	}
 	return fmt.Errorf("session: no successful candidate from %d plans", len(outcomes))
+}
+
+func noProtectedDirectOutcomeError(outcomes []solver.CandidateOutcome) error {
+	if len(outcomes) == 0 {
+		return fmt.Errorf("session: no protected direct candidate outcomes")
+	}
+	for i := range outcomes {
+		if outcomes[i].Err != nil {
+			continue
+		}
+		if outcomes[i].Result != nil {
+			return fmt.Errorf("session: no protected direct path among %d successful candidate(s)", countSuccessfulOutcomes(outcomes))
+		}
+	}
+	return noSuccessfulOutcomeError(outcomes)
+}
+
+func countSuccessfulOutcomes(outcomes []solver.CandidateOutcome) int {
+	count := 0
+	for i := range outcomes {
+		if outcomes[i].Result != nil && outcomes[i].Result.Transport != nil {
+			count++
+		}
+	}
+	return count
 }
 
 func (s *Session) closeOutcomeTransports(outcomes []solver.CandidateOutcome) {

@@ -150,7 +150,7 @@ func (w *wggoTunnel) AddPeer(peer *PeerConfig) error {
 	}
 	if _, exists := w.peers[peer.PublicKey]; exists {
 		w.mu.RUnlock()
-		return fmt.Errorf("tunnel: peer %s already exists", peer.PublicKey)
+		return fmt.Errorf("%w: %s", ErrPeerExists, peer.PublicKey)
 	}
 	device := w.device
 	bind := w.bind
@@ -182,6 +182,58 @@ func (w *wggoTunnel) AddPeer(peer *PeerConfig) error {
 	w.mu.Lock()
 	w.peers[peer.PublicKey] = status
 	w.emitLocked(TunnelEvent{Type: EventPeerAdded, PeerKey: peer.PublicKey, Timestamp: w.now()})
+	w.mu.Unlock()
+	return nil
+}
+
+func (w *wggoTunnel) ReplacePeer(peer *PeerConfig) error {
+	if peer == nil {
+		return errors.New("tunnel: peer config is nil")
+	}
+	if peer.PublicKey == (PublicKey{}) {
+		return errors.New("tunnel: peer public key is empty")
+	}
+
+	w.mu.RLock()
+	if !w.started || w.device == nil || w.bind == nil {
+		w.mu.RUnlock()
+		return errors.New("tunnel: not started")
+	}
+	_, existed := w.peers[peer.PublicKey]
+	device := w.device
+	bind := w.bind
+	w.mu.RUnlock()
+
+	endpointArg := ""
+	if peer.Transport != nil {
+		endpointArg = transportEndpointID(peer.PublicKey)
+	} else if peer.Endpoint != nil {
+		endpointArg = peer.Endpoint.String()
+	}
+
+	if err := device.IpcSet(buildPeerIPC(peer, endpointArg)); err != nil {
+		return fmt.Errorf("tunnel: replace peer %s: %w", peer.PublicKey, err)
+	}
+	if peer.Transport != nil {
+		if _, err := bind.AttachTransport(peer.PublicKey, peer.Transport); err != nil {
+			return err
+		}
+	} else {
+		bind.DetachTransport(peer.PublicKey)
+	}
+
+	status := peerConfigToStatus(peer)
+	if peer.Transport != nil {
+		status.Endpoint = bind.TransportRemoteAddr(peer.PublicKey)
+	}
+
+	w.mu.Lock()
+	w.peers[peer.PublicKey] = status
+	eventType := EventPeerEndpointChanged
+	if !existed {
+		eventType = EventPeerAdded
+	}
+	w.emitLocked(TunnelEvent{Type: eventType, PeerKey: peer.PublicKey, Timestamp: w.now()})
 	w.mu.Unlock()
 	return nil
 }

@@ -243,6 +243,43 @@ func TestAddPeerDuplicate(t *testing.T) {
 	}
 }
 
+func TestReplacePeerUpdatesExistingPeer(t *testing.T) {
+	tun, _ := New(Config{})
+	replacer, ok := tun.(interface{ ReplacePeer(*PeerConfig) error })
+	if !ok {
+		t.Fatal("tunnel should support ReplacePeer")
+	}
+	pk := makeTestKey(22)
+
+	if err := tun.AddPeer(&PeerConfig{
+		PublicKey:  pk,
+		AllowedIPs: []net.IPNet{{IP: net.IPv4(10, 0, 0, 2), Mask: net.CIDRMask(32, 32)}},
+		Endpoint:   &net.UDPAddr{IP: net.IPv4(1, 2, 3, 4), Port: 51820},
+	}); err != nil {
+		t.Fatalf("AddPeer() error: %v", err)
+	}
+	_ = drainEvent(t, tun)
+
+	if err := replacer.ReplacePeer(&PeerConfig{
+		PublicKey:  pk,
+		AllowedIPs: []net.IPNet{{IP: net.IPv4(10, 0, 0, 22), Mask: net.CIDRMask(32, 32)}},
+		Endpoint:   &net.UDPAddr{IP: net.IPv4(5, 6, 7, 8), Port: 51821},
+	}); err != nil {
+		t.Fatalf("ReplacePeer() error: %v", err)
+	}
+
+	peers := tun.GetPeers()
+	if len(peers) != 1 {
+		t.Fatalf("GetPeers() length = %d, want 1", len(peers))
+	}
+	if peers[0].Endpoint == nil || !peers[0].Endpoint.IP.Equal(net.IPv4(5, 6, 7, 8)) || peers[0].Endpoint.Port != 51821 {
+		t.Fatalf("endpoint = %+v, want 5.6.7.8:51821", peers[0].Endpoint)
+	}
+	if len(peers[0].AllowedIPs) != 1 || !peers[0].AllowedIPs[0].IP.Equal(net.IPv4(10, 0, 0, 22)) {
+		t.Fatalf("allowed IPs = %#v, want replaced /32", peers[0].AllowedIPs)
+	}
+}
+
 // --- RemovePeer ---
 
 func TestRemovePeer(t *testing.T) {

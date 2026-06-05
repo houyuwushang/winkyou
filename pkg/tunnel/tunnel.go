@@ -16,6 +16,9 @@ import (
 // implementation yet.
 var ErrNotImplemented = errors.New("tunnel: not implemented")
 
+// ErrPeerExists is returned when adding a peer that is already configured.
+var ErrPeerExists = errors.New("tunnel: peer already exists")
+
 // Config holds the parameters needed to create a Tunnel.
 type Config struct {
 	Interface  netif.NetworkInterface

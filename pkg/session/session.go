@@ -30,6 +30,7 @@ type Session struct {
 	startCond *sync.Cond
 	started   bool
 	starting  bool
+	executeMu sync.Mutex
 	closeMu   sync.Mutex
 	closed    bool
 

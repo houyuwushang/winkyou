@@ -2,6 +2,7 @@ package session
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"time"
@@ -32,6 +33,10 @@ type TunnelBinder struct {
 	provider BindingPeerProvider
 }
 
+type peerReplacingTunnel interface {
+	ReplacePeer(peer *tunnel.PeerConfig) error
+}
+
 func NewTunnelBinder(tun tunnel.Tunnel, provider BindingPeerProvider) *TunnelBinder {
 	return &TunnelBinder{tun: tun, provider: provider}
 }
@@ -57,7 +62,15 @@ func (b *TunnelBinder) Bind(ctx context.Context, peerID string, pt transport.Pac
 	if cfg.Endpoint == nil {
 		cfg.Endpoint = netutil.UDPAddrFromAddr(pt.RemoteAddr())
 	}
-	return b.tun.AddPeer(cfg)
+	if err := b.tun.AddPeer(cfg); err != nil {
+		if errors.Is(err, tunnel.ErrPeerExists) {
+			if replacer, ok := b.tun.(peerReplacingTunnel); ok {
+				return replacer.ReplacePeer(cfg)
+			}
+		}
+		return err
+	}
+	return nil
 }
 
 func (b *TunnelBinder) Unbind(ctx context.Context, peerID string) error {

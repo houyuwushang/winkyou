@@ -20,11 +20,13 @@ client runtime 也已经新增基础可观测字段：
 
 client 还修复了一个真实验证中暴露的恢复问题：当本端不是 deterministic initiator 时，之前 `startPeerConnect` 和 peer session retry 会直接返回，导致高 node id 一侧在远端 stale session 或远端未重新发起时长期停在 `data_state=connecting/failed`。现在 controlled side 也会启动 session 并按 `nat.retry_interval` 重试；`initiator` 仍只作为 session/strategy 角色输入，不再作为 client 层是否允许恢复连接的门槛。
 
+client 还新增了 bound 后的 protected-direct improvement：如果当前已 bound 的 path 是 relay 或带 dependency 的 direct-like path，client 会保留现有 WireGuard 数据面，同时调度 session 继续尝试能证明独立性的 protected direct。失败的临时 transport 会被关闭，旧 path 保持不变；只有后续结果明确为 `protected_direct` 时，binder 才会替换 tunnel peer transport。
+
 这仍只是控制面韧性的早期补强，还不能说明“所有控制面故障下都一定保持连接”。仍待完成和验证：
 
 - 扩展真实双节点环境验证，覆盖更长时间 coordinator 进程退出、heartbeat failure 和 signaling stream failure，而不是断开 natpierce/跳板网络。
 - coordinator heartbeat 或 signaling stream 失败时，不主动拆除已 bound 的 data plane。
-- 使用最近成功 path/cache 做恢复或重试；当前只完成状态展示和缓存。
+- 使用最近成功 path/cache 做恢复或重试；当前已完成状态展示、缓存，以及 bound 后 protected-direct improvement，但还没有完成无外部信令的 cached path 恢复。
 - 已建立虚拟网后的 in-band peer control channel 运行时接入；消息模型和 JSON 编解码已冻结在 `pkg/peercontrol`。
 
 ## 已验证现象
@@ -102,6 +104,8 @@ client 还修复了一个真实验证中暴露的恢复问题：当本端不是 
 
 进一步的策略层修正是新增 `legacyice/public_direct` 执行计划。它在普通 `legacyice/direct_prefer` 之后、`legacyice/relay_only` 之前运行。为避免误杀 STUN server-reflexive 采集，它不会默认把私网/`100.64.0.0/10` 排除追加到 Pion ICE agent；而是在发送 offer/answer 前过滤本地候选，并在收到远端候选后过滤同类 ambiguous candidate，包括私网、`100.64.0.0/10`、loopback、link-local、benchmark/overlay 等。这样如果 natpierce 类工具能通过公网 UDP NAT piercing 建链，WinkYou 也会显式尝试一条不依赖 overlay/100.64 candidate 的公网 direct 路径；如果双方 NAT 或防火墙不允许，该 plan 会正常失败并继续进入 relay fallback。
 
+最新补强是把 protected-direct 重试从“初始建链窗口”扩展到“已经 bound 之后”。这解决了一个实际策略问题：如果 relay、natpierce 相关 underlay 或依赖不清的 direct-like path 先成功，client 过去可能因为 peer 已经 bound/connected 而停止继续争取独立直连。现在 bound peer 仍可后台重试 protected direct；重试期间旧数据面继续工作，只有受保护直连成功时才替换已有 peer transport。
+
 ## 当前限制
 
 没有 coordinator 时，从零建立通用 NAT 场景下的虚拟局域网不可保证。首次连接仍需要某种 bootstrap/rendezvous：
@@ -137,7 +141,7 @@ coordinator bootstrap
 
 ### P0: 控制面断线不拆已连接数据面
 
-- 状态：peer offline update 触发的误清理路径已加第一层保护；controlled side session retry 已修复；coordinator heartbeat NotFound 会触发 client 重新注册；已 bound 数据面上的短时间真实 coordinator 进程退出验证已通过；更长时间 heartbeat/signaling failure 仍需验证。
+- 状态：peer offline update 触发的误清理路径已加第一层保护；controlled side session retry 已修复；coordinator heartbeat NotFound 会触发 client 重新注册；bound 后 protected-direct improvement 已接入；已 bound 数据面上的短时间真实 coordinator 进程退出验证已通过；更长时间 heartbeat/signaling failure 仍需验证。
 - 已 bound 且 WireGuard handshake 正常的 peer 收到 offline/update 丢失时，不要立即 `cleanupPeer`。
 - 保留 tunnel peer、endpoint、PacketTransport 和 session snapshot。
 - peer 状态应区分 control plane 和 data plane，例如：

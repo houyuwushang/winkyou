@@ -36,13 +36,13 @@ wink --config node-a.yaml status
 - 连接失败：确认 TCP `50051` 已开放
 - auth 失败：确认 client 的 `coordinator.auth_key` 和 `WINK_AUTH_KEY` 一致
 - 看不到 peer：两台 client 必须连接同一个 coordinator，且 `wink up` 进程仍在运行
-- 已经 `State: connected` 后断开 coordinator 所在网络，peer 随后断开：这是当前控制面韧性缺口。现有 client 可能把 peer offline/control-plane loss 转成 `cleanupPeer`，从而拆掉已 bound 的 tunnel peer。详见 [`CONTROL-PLANE-RESILIENCE.md`](./CONTROL-PLANE-RESILIENCE.md)。
+- 已经 `State: connected` 后断开 coordinator 所在网络，peer 随后断开：先确认你断开的是否只是 coordinator 进程，而不是 natpierce/跳板/underlay 网络。当前 client 已有第一层 peer-offline 保护和 bound 后 protected-direct improvement，但如果已选 path 本身依赖 natpierce，断开 natpierce 仍会拆掉实际数据路径。详见 [`CONTROL-PLANE-RESILIENCE.md`](./CONTROL-PLANE-RESILIENCE.md)。
 
 部署建议：
 
 - coordinator 应部署在双方都能稳定访问的位置，例如公网服务器或固定内网节点。
 - 不要把唯一 coordinator 放在临时跳板链路后面；否则断开跳板/natpierce 后，心跳、peer discovery 和 session signaling 都会失效。
-- 已建立数据面未来应能容忍 coordinator 短暂不可达。当前已修 peer offline update 导致的第一层误清理风险，但 heartbeat/signaling failure、runtime control/data 状态和真实 coordinator outage 验证仍是 TODO。
+- 已建立数据面未来应能容忍 coordinator 短暂不可达。当前已修 peer offline update 导致的第一层误清理风险，并支持 bound 后继续尝试 protected direct；但 heartbeat/signaling failure 的长时间验证和 cached path 恢复仍需继续收敛。
 - 如果要单独验证 coordinator outage，不要断开 natpierce/跳板网络；应保持 underlay 不动，只停止 coordinator 进程，再观察 `wink peers`、WireGuard handshake 和双向 ping。断开 natpierce 会同时改变控制面和可能的数据面候选路径，不能单独证明 coordinator 问题。
 
 ## 3. STUN/TURN
@@ -110,6 +110,7 @@ Xport Err
 - `State: connected` 但 ping 不通：检查双方虚拟 IP、系统防火墙和 ICMP 策略
 - 如果 `State: connected` 且 `Conn Type: direct`，但候选地址显示为 `100.64.0.0/10`、Tailscale、Docker bridge、其他 VPN/TAP 地址，这只能证明当前 path 不是 TURN relay；不能证明完全不借助已有 overlay。当前代码会把这类 direct-like path 标为带 dependency 的普通路径，不再把它暴露为 `protected_direct_path_id`。纯 NAT piercing 验证应优先查看 `legacyice/public_direct` 是否成功；它会排除私网、`100.64.0.0/10`、loopback、link-local、benchmark/overlay 等 candidate。如果该 plan 失败，说明当前环境下 WinkYou 尚未证明独立公网 direct path。
 - 真实 protected direct 的证据应来自 `wink peers --json`：`last_path_role` 为 `protected_direct`、`last_path_dependencies` 为空；如果启用了 multipath，还应看到非空 `protected_direct_path_id`。如果 `last_path_dependencies` 包含 `unknown:remote_cgnat_or_overlay_candidate` 或类似值，说明当前 path 仍可能依赖 natpierce、VPN/TAP 或跳板 underlay。
+- 如果当前已经 connected/bound，但没有 `protected_direct_path_id`，新版 client 会保留现有 path 并在后台继续尝试 protected direct。尝试失败只会关闭临时 transport，不应打断原 path；只有后续结果明确为 `protected_direct` 时才会替换 tunnel peer transport。
 当前可用过滤配置：
 
 ```yaml
@@ -171,6 +172,15 @@ Get-Content <runtime-state-base>.observations.jsonl |
 - 两边 `candidate_kept>0` 但随后 `candidate_failed`：候选已经交换，问题更可能在 UDP 映射不稳定、防火墙、端口范围、STUN/TURN 配置或 NAT 行为与 natpierce 使用的 socket/映射不一致。
 - `candidate_reject_reasons` 中出现 `*_cgnat_or_overlay_candidate`：当前路径仍可能依赖 natpierce、VPN/TAP 或类似 underlay，不能作为 `protected_direct` 证据。
 - 成功记录中 `remote_candidate_kind=prflx` 或 `public_direct_learned_pair=true`：说明 ICE 过程中通过对端 STUN Binding Request 学到了 peer-reflexive 候选对，更接近 natpierce 这类运行中打洞成功的证据。仍需同时确认 `path_role=protected_direct` 且 `path_dependencies` 为空。
+
+本机能 ping `10.6.22.1` 时，还要先看 Windows 路由表。如果 `10.6.22.0/24` 当前挂在 `natpierce` 接口上，这只能证明 natpierce 的虚拟路由可达，不证明 WinkYou 已经建立了独立 direct path：
+
+```powershell
+Get-NetRoute -DestinationPrefix 10.6.22.0/24
+Get-NetIPAddress -AddressFamily IPv4 | Where-Object InterfaceAlias -like '*natpierce*'
+```
+
+要验证 WinkYou 自己的路径，应以 `wink peers --json` 的 `last_path_role=protected_direct`、空 `last_path_dependencies`、非空 `protected_direct_path_id`，以及对应 observation 里的 `legacyice/public_direct` 成功记录为准。
 
 ## 6. Strategy Selection
 

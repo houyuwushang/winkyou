@@ -59,12 +59,58 @@ func (s *Session) Start(ctx context.Context) error {
 }
 
 func (s *Session) run(ctx context.Context) {
+	s.executeMu.Lock()
+	defer s.executeMu.Unlock()
 	if err := s.selectAndExecute(ctx); err != nil {
 		if errors.Is(err, context.Canceled) && s.State() == StateClosed {
 			return
 		}
 		s.fail(err)
 	}
+}
+
+func (s *Session) ImproveProtectedDirect(ctx context.Context) (bool, error) {
+	if ctx == nil {
+		return false, fmt.Errorf("session: nil context")
+	}
+	if !s.shouldProtectDirectStandby() {
+		return false, nil
+	}
+
+	s.startMu.Lock()
+	started := s.started
+	runCtx := s.runCtx
+	s.startMu.Unlock()
+	if !started {
+		return false, fmt.Errorf("session: not started")
+	}
+	if runCtx != nil {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithCancel(ctx)
+		defer cancel()
+		go func() {
+			select {
+			case <-runCtx.Done():
+				cancel()
+			case <-ctx.Done():
+			}
+		}()
+	}
+
+	s.executeMu.Lock()
+	defer s.executeMu.Unlock()
+	if s.State() != StateBound {
+		return false, nil
+	}
+
+	if err := s.sendCapability(ctx); err != nil {
+		return false, err
+	}
+	found, err := s.selectAndBindProtectedDirect(ctx)
+	if !found && s.State() != StateBound && s.State() != StateClosed {
+		s.transition(StateBound)
+	}
+	return found, err
 }
 
 func (s *Session) Close() error {

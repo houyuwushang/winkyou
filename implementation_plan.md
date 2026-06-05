@@ -432,6 +432,7 @@ Phase 3A (Strategy Portfolio Foundation) 已完成。以下是我基于代码现
 - NAT/ICE 已新增 candidate interface include/exclude 和 candidate CIDR include/exclude 配置，并传入 Pion ICE agent；`wink doctor` 会展示过滤配置并检查 runtime candidate 是否命中 excluded CIDR。
 - coordinator client 已新增 heartbeat NotFound 恢复路径：当 coordinator 重启或持久化 store 恢复后发现当前 node 不存在时，client 会关闭旧 signal stream 并使用最近一次 register 请求重新注册。
 - 2026-06-05 起，`legacyice/public_direct` 的 Pion ICE 配置会在收到 STUN Binding Request 并形成公网 peer-reflexive 候选对时切换 selected pair；relay、私网、`100.64.0.0/10`、loopback、link-local、multicast 和 `198.18.0.0/15` 地址不会触发该切换。这是对“natpierce 能打通则 WinkYou 也应继续尝试公网 UDP NAT piercing”的最小策略补强，但仍需要两端部署新版本后做真实验证。
+- 2026-06-05 起，client 在 peer 已 bound 但 path 不是 `protected_direct` 时，会保留现有数据面并后台继续尝试 protected-direct improvement；失败的临时 transport 会关闭，旧 path 不变，只有新结果明确为 `protected_direct` 时才替换 tunnel peer transport。
 
 2026-06-04 后续验证中，已能通过 SSH 密码登录 `chen-win` 并确认 `wink-coordinator` 进程可被单独停止。排查中先发现本机验证版 client 重启后数据面未重新达到 bound/handshake，原因是 chen-win coordinator 使用 memory store，重启后 `ListPeers` 为空，旧 client 不会自动重新注册。随后 chen-win coordinator scheduled task 已切换到 SQLite store，并按原 public key 顺序恢复 `inner-b=node-000001/10.88.0.1`、`local-a=node-000002/10.88.0.2`。
 
@@ -449,7 +450,7 @@ Phase 3A (Strategy Portfolio Foundation) 已完成。以下是我基于代码现
 - 测试部署的 coordinator 使用持久化 SQLite store，避免重启后注册表为空；当前 chen-win scheduled task 已切到 SQLite。
 - 已 bound 且 WireGuard handshake 正常的 peer 不应因 coordinator 短暂不可达、heartbeat 失败或 peer offline 事件被立即清理。
 - 增加 coordinator outage / heartbeat/signaling failure 回归测试，确保已连接数据面不会被误拆。
-- 后续把已缓存的 peer lease、最近成功 endpoint、strategy、path summary 和 last handshake 用于恢复或 cached path 重试。
+- 后续把已缓存的 peer lease、最近成功 endpoint、strategy、path summary 和 last handshake 用于无外部信令时的恢复或 cached path 重试；当前只完成 bound 后 protected-direct improvement，仍需要可用 signaling。
 - 使用 ICE interface/CIDR 过滤排除 Tailscale、Docker bridge、其他 VPN/TAP 后，做真实纯 NAT piercing 验证。
 - 后续把 `pkg/peercontrol` 接入已建立虚拟网后的 client 网络循环；它可以承载 heartbeat、endpoint update、re-ICE request、capability refresh 和 path health，但首次 bootstrap 仍需要 coordinator、稳定 bootstrap 节点、静态 endpoint/端口映射、已有 overlay、手动交换信息或其他 rendezvous。
 

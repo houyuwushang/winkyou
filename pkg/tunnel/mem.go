@@ -61,35 +61,10 @@ func (m *memTunnel) AddPeer(peer *PeerConfig) error {
 	defer m.mu.Unlock()
 
 	if _, exists := m.peers[peer.PublicKey]; exists {
-		return fmt.Errorf("tunnel: peer %s already exists", peer.PublicKey)
+		return fmt.Errorf("%w: %s", ErrPeerExists, peer.PublicKey)
 	}
 
-	// Deep-copy AllowedIPs.
-	var allowedIPs []net.IPNet
-	for _, ipn := range peer.AllowedIPs {
-		cp := net.IPNet{
-			IP:   make(net.IP, len(ipn.IP)),
-			Mask: make(net.IPMask, len(ipn.Mask)),
-		}
-		copy(cp.IP, ipn.IP)
-		copy(cp.Mask, ipn.Mask)
-		allowedIPs = append(allowedIPs, cp)
-	}
-
-	var ep *net.UDPAddr
-	if peer.Endpoint != nil {
-		ep = &net.UDPAddr{
-			IP:   make(net.IP, len(peer.Endpoint.IP)),
-			Port: peer.Endpoint.Port,
-		}
-		copy(ep.IP, peer.Endpoint.IP)
-	}
-
-	m.peers[peer.PublicKey] = &PeerStatus{
-		PublicKey:  peer.PublicKey,
-		Endpoint:   ep,
-		AllowedIPs: allowedIPs,
-	}
+	m.peers[peer.PublicKey] = peerConfigToStatus(peer)
 
 	m.emitLocked(TunnelEvent{
 		Type:      EventPeerAdded,
@@ -97,6 +72,30 @@ func (m *memTunnel) AddPeer(peer *PeerConfig) error {
 		Timestamp: time.Now(),
 	})
 
+	return nil
+}
+
+func (m *memTunnel) ReplacePeer(peer *PeerConfig) error {
+	if peer == nil {
+		return errors.New("tunnel: peer config is nil")
+	}
+	if peer.PublicKey == (PublicKey{}) {
+		return errors.New("tunnel: peer public key is empty")
+	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	eventType := EventPeerEndpointChanged
+	if _, exists := m.peers[peer.PublicKey]; !exists {
+		eventType = EventPeerAdded
+	}
+	m.peers[peer.PublicKey] = peerConfigToStatus(peer)
+	m.emitLocked(TunnelEvent{
+		Type:      eventType,
+		PeerKey:   peer.PublicKey,
+		Timestamp: time.Now(),
+	})
 	return nil
 }
 

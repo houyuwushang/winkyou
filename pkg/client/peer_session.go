@@ -17,17 +17,20 @@ import (
 )
 
 type peerSession struct {
-	nodeID       string
-	sessionID    string
-	initiator    bool
-	runner       *sesspkg.Session
-	connected    bool
-	bound        bool
-	connecting   bool
-	retryDelay   time.Duration
-	retryPending bool
-	lastPath     solver.PathSummary
-	connectMu    sync.Mutex
+	nodeID         string
+	sessionID      string
+	initiator      bool
+	runner         *sesspkg.Session
+	connected      bool
+	bound          bool
+	connecting     bool
+	improving      bool
+	retryDelay     time.Duration
+	retryPending   bool
+	improveDelay   time.Duration
+	improvePending bool
+	lastPath       solver.PathSummary
+	connectMu      sync.Mutex
 }
 
 type peerMessageSender struct {
@@ -103,7 +106,7 @@ func (e *engine) startPeerSession(s *peerSession) {
 	}
 
 	s.connectMu.Lock()
-	if s.connected || s.bound || s.connecting {
+	if s.connected || s.bound || s.connecting || s.improving {
 		s.connectMu.Unlock()
 		return
 	}
@@ -193,17 +196,25 @@ func (e *engine) handlePeerSessionState(nodeID string, s *peerSession, state ses
 	}
 
 	s.connectMu.Lock()
+	improving := s.improving
 	switch state {
 	case sesspkg.StateNew:
 		s.connecting = false
 	case sesspkg.StateCapabilityExchange, sesspkg.StateSelecting, sesspkg.StatePlanning, sesspkg.StateExecuting, sesspkg.StateBinding:
-		s.connecting = true
+		if improving {
+			s.bound = true
+			s.connecting = false
+		} else {
+			s.connecting = true
+		}
 	case sesspkg.StateBound:
 		s.bound = true
 		s.connecting = false
+		s.improving = false
 	case sesspkg.StateFailed, sesspkg.StateClosed:
 		s.bound = false
 		s.connecting = false
+		s.improving = false
 	}
 	s.connectMu.Unlock()
 
@@ -237,9 +248,14 @@ func (e *engine) handlePeerSessionBound(nodeID string, s *peerSession, result so
 	s.connectMu.Lock()
 	s.bound = true
 	s.connecting = false
+	s.improving = false
 	s.retryDelay = 0
 	s.retryPending = false
 	s.lastPath = result.Summary
+	if !shouldImproveBoundPath(e.multipathPathPolicy(), result.Summary) {
+		s.improveDelay = 0
+		s.improvePending = false
+	}
 	s.connectMu.Unlock()
 
 	var (
@@ -272,6 +288,9 @@ func (e *engine) handlePeerSessionBound(nodeID string, s *peerSession, result so
 		handler(snapshot, PeerEventUpsert)
 	}
 	e.persistState()
+	if shouldImproveBoundPath(e.multipathPathPolicy(), result.Summary) {
+		e.schedulePeerImprovement(nodeID, s)
+	}
 }
 
 func (e *engine) handlePeerSessionError(nodeID string, s *peerSession, err error) {
@@ -478,8 +497,11 @@ func (e *engine) closePeerSession(session *peerSession) {
 	session.bound = false
 	session.connected = false
 	session.connecting = false
+	session.improving = false
 	session.retryPending = false
+	session.improvePending = false
 	session.retryDelay = 0
+	session.improveDelay = 0
 	session.lastPath = solver.PathSummary{}
 	session.connectMu.Unlock()
 
