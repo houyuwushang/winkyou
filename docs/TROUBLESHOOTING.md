@@ -152,7 +152,7 @@ nat:
 legacyice/direct_prefer -> legacyice/public_direct -> legacyice/relay_only
 ```
 
-`direct_prefer` 可能选中 natpierce、Tailscale、Docker bridge 或其他 overlay candidate；`public_direct` 会跳过 TURN/relay candidate gathering，只采 host/server-reflexive direct candidate，才是用于验证双方是否能通过公网 UDP NAT piercing 形成独立 direct path 的 plan。`public_direct` 会用更短 ICE check interval、按 `nat.connect_timeout` 放大的 binding request 预算、更短 srflx/prflx 接受等待，并确保 ICE failed-check timeout 不短于 `nat.connect_timeout`，在同一 public-direct socket 上持续打洞到连接超时；session 的 candidate execution budget 会按每个候选的 execution timeout 扩展，避免前面的 plan 耗时后跳过 `public_direct` 或 relay fallback。如果仍失败，优先比较两端 STUN 映射、候选过滤和 natpierce 实际使用的公网端点。
+`direct_prefer` 可能选中 natpierce、Tailscale、Docker bridge 或其他 overlay candidate；`public_direct` 会跳过 TURN/relay candidate gathering，只采 host/server-reflexive direct candidate，才是用于验证双方是否能通过公网 UDP NAT piercing 形成独立 direct path 的 plan。为避免把外部 overlay 误证明成 WinkYou 自己的 protected direct，`public_direct` 默认会排除 natpierce、Tailscale、ZeroTier、Docker/vEthernet、Wintun/WinkYou 等疑似 overlay/虚拟接口。`public_direct` 会用更短 ICE check interval、按 `nat.connect_timeout` 放大的 binding request 预算、更短 srflx/prflx 接受等待，并确保 ICE failed-check timeout 不短于 `nat.connect_timeout`，在同一 public-direct socket 上持续打洞到连接超时；session 的 candidate execution budget 会按每个候选的 execution timeout 扩展，避免前面的 plan 耗时后跳过 `public_direct` 或 relay fallback。如果仍失败，优先比较两端 STUN 映射、候选过滤和 natpierce 实际使用的公网端点。
 
 如果 public-direct STUN gather 超时，但 Pion agent 已经准备好本地 UDP candidate，WinkYou 会继续返回这批本地候选，让 `public_endpoint_hints` 能尽快追加进 offer/answer 并开始 ICE checks。这个行为只解决“慢 STUN 卡住候选交换”的问题；如果 hint 过期、两端 NAT 映射和 natpierce 使用的 socket 不一致，或远端公网候选被过滤，仍会失败并进入后续 fallback。
 

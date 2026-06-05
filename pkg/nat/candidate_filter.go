@@ -9,12 +9,16 @@ import (
 func buildCandidateInterfaceFilter(cfg ICEConfig) func(string) bool {
 	include := normalizeNameSet(cfg.CandidateInterfaceInclude)
 	exclude := normalizeNameSet(cfg.CandidateInterfaceExclude)
-	if len(include) == 0 && len(exclude) == 0 {
+	autoExcludeVirtual := cfg.PublicDirectCandidate
+	if len(include) == 0 && len(exclude) == 0 && !autoExcludeVirtual {
 		return nil
 	}
 	return func(name string) bool {
 		normalized := strings.ToLower(strings.TrimSpace(name))
 		if _, ok := exclude[normalized]; ok {
+			return false
+		}
+		if autoExcludeVirtual && isLikelyVirtualCandidateInterface(normalized) {
 			return false
 		}
 		if len(include) > 0 {
@@ -23,6 +27,32 @@ func buildCandidateInterfaceFilter(cfg ICEConfig) func(string) bool {
 		}
 		return true
 	}
+}
+
+func isLikelyVirtualCandidateInterface(name string) bool {
+	name = strings.ToLower(strings.TrimSpace(name))
+	if name == "" {
+		return false
+	}
+	for _, token := range []string{
+		"natpierce",
+		"tailscale",
+		"zerotier",
+		"hamachi",
+		"wireguard",
+		"wintun",
+		"wink",
+		"docker",
+		"vethernet",
+		"virtualbox",
+		"vmware",
+		"loopback",
+	} {
+		if strings.Contains(name, token) {
+			return true
+		}
+	}
+	return false
 }
 
 func buildCandidateIPFilter(cfg ICEConfig) (func(net.IP) bool, error) {

@@ -24,6 +24,50 @@ func TestCandidateInterfaceFilter(t *testing.T) {
 	}
 }
 
+func TestPublicDirectCandidateInterfaceFilterRejectsLikelyVirtualOverlays(t *testing.T) {
+	filter := buildCandidateInterfaceFilter(ICEConfig{PublicDirectCandidate: true})
+	if filter == nil {
+		t.Fatal("filter is nil")
+	}
+	for _, name := range []string{
+		"natpierce",
+		"Tailscale",
+		"vEthernet (WSL)",
+		"Docker Desktop",
+		"Wintun Userspace Tunnel",
+		"WinkYou",
+	} {
+		if filter(name) {
+			t.Fatalf("%q should be excluded for public direct", name)
+		}
+	}
+	for _, name := range []string{"Ethernet", "Wi-Fi", "wlan0", "en0"} {
+		if !filter(name) {
+			t.Fatalf("%q should be allowed for public direct", name)
+		}
+	}
+}
+
+func TestPublicDirectCandidateInterfaceFilterKeepsExplicitExcludes(t *testing.T) {
+	filter := buildCandidateInterfaceFilter(ICEConfig{
+		PublicDirectCandidate:     true,
+		CandidateInterfaceInclude: []string{"Ethernet", "natpierce"},
+		CandidateInterfaceExclude: []string{"Wi-Fi"},
+	})
+	if filter == nil {
+		t.Fatal("filter is nil")
+	}
+	if !filter("Ethernet") {
+		t.Fatal("Ethernet should pass explicit include")
+	}
+	if filter("Wi-Fi") {
+		t.Fatal("Wi-Fi should fail explicit exclude")
+	}
+	if filter("natpierce") {
+		t.Fatal("natpierce should still be excluded for public direct")
+	}
+}
+
 func TestCandidateIPFilter(t *testing.T) {
 	filter, err := buildCandidateIPFilter(ICEConfig{
 		CandidateCIDRInclude: []string{"192.168.0.0/16", "203.0.113.0/24"},
