@@ -108,10 +108,11 @@ func (e *engine) relayOnlyMode() bool {
 
 func (e *engine) legacyICEStrategyConfig() legacyice.Config {
 	cfg := legacyice.Config{
-		GatherTimeout:  e.iceGatherTimeout(),
-		ConnectTimeout: e.iceConnectTimeout(),
-		CheckTimeout:   e.iceCheckTimeout(),
-		ForceRelay:     e.relayOnlyMode(),
+		GatherTimeout:       e.iceGatherTimeout(),
+		ConnectTimeout:      e.iceConnectTimeout(),
+		CheckTimeout:        e.iceCheckTimeout(),
+		ForceRelay:          e.relayOnlyMode(),
+		PublicEndpointHints: append([]string(nil), e.cfg.NAT.PublicEndpointHints...),
 	}
 	cfg.NewICEAgent = func(ctx context.Context, req legacyice.AgentRequest) (nat.ICEAgent, error) {
 		if ctx == nil {

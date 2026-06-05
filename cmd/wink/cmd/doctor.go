@@ -420,7 +420,7 @@ func (e publicDirectEvidence) check(path string) doctorCheck {
 		return warnCheck("nat", "public direct evidence", publicDirectObservationMessage("remote has no usable public direct candidates", e.RemoteFilter, path), "check the remote peer STUN result, candidate filters, UDP firewall, and whether it only exposes private/100.64/overlay candidates")
 	}
 	if e.LocalGather != nil && observationCandidateKept(e.LocalGather) == 0 {
-		return warnCheck("nat", "public direct evidence", publicDirectObservationMessage("local gather produced no usable public direct candidates", e.LocalGather, path), "check nat.stun_servers, UDP outbound reachability, candidate filters, and NAT1To1 public candidate hints")
+		return warnCheck("nat", "public direct evidence", publicDirectObservationMessage("local gather produced no usable public direct candidates", e.LocalGather, path), "check nat.stun_servers, UDP outbound reachability, candidate filters, NAT1To1 public hints, or nat.public_endpoint_hints")
 	}
 	if e.Failure != nil {
 		return warnCheck("nat", "public direct evidence", publicDirectObservationMessage("public direct attempt failed", e.Failure, path), "if natpierce succeeds, compare its mapped endpoint with WinkYou STUN/candidate observations and verify both peers run the latest binary")
@@ -776,6 +776,9 @@ func candidateFilterSummary(cfg *config.Config) string {
 	}
 	if len(cfg.NAT.NAT1To1IPs) > 0 {
 		parts = append(parts, "nat1to1_ips="+strings.Join(cfg.NAT.NAT1To1IPs, ","))
+	}
+	if len(cfg.NAT.PublicEndpointHints) > 0 {
+		parts = append(parts, "public_endpoint_hints="+strings.Join(cfg.NAT.PublicEndpointHints, ","))
 	}
 	return strings.Join(parts, " ")
 }

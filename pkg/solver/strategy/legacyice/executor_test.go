@@ -288,6 +288,74 @@ func TestPublicDirectSendOfferAdvertisesOnlyPublicCandidates(t *testing.T) {
 	}
 }
 
+func TestPublicDirectAdvertisesConfiguredPublicEndpointHints(t *testing.T) {
+	hostCandidate := nat.Candidate{Type: nat.CandidateTypeHost, Address: &net.UDPAddr{IP: net.IPv4(192, 168, 1, 20), Port: 40000}}
+	agent := &recordingICEAgent{
+		gathered:      []nat.Candidate{hostCandidate},
+		connectErr:    context.Canceled,
+		connectCalled: make(chan struct{}),
+	}
+	exec := newExecutor(Config{
+		NewICEAgent: func(ctx context.Context, req AgentRequest) (nat.ICEAgent, error) {
+			_ = ctx
+			if !req.PublicDirectCandidate {
+				t.Fatalf("agent request = %+v, want public direct marker", req)
+			}
+			return agent, nil
+		},
+		GatherTimeout:       100 * time.Millisecond,
+		ConnectTimeout:      100 * time.Millisecond,
+		PublicEndpointHints: []string{"117.48.146.2:41000"},
+	}, solver.SolveInput{
+		SessionID:    "session/node-a/node-b",
+		LocalNodeID:  "node-a",
+		RemoteNodeID: "node-b",
+		Initiator:    true,
+	}, solver.Plan{
+		ID:       planIDPublicDirect,
+		Strategy: StrategyName,
+		Metadata: map[string]string{"mode": string(modePublicDirect)},
+	}, executorConfig{
+		Mode:                  modePublicDirect,
+		PublicDirectCandidate: true,
+		PublicEndpointHints:   []string{"117.48.146.2:41000"},
+	})
+
+	io := &capturingSessionIO{}
+	if err := exec.sendOffer(context.Background(), io); err != nil {
+		t.Fatalf("sendOffer(public endpoint hint) error = %v", err)
+	}
+	if len(io.messages) != 1 {
+		t.Fatalf("sent messages = %d, want 1", len(io.messages))
+	}
+	offer, err := unmarshalOfferPayload(io.messages[0].Payload)
+	if err != nil {
+		t.Fatalf("unmarshal offer error = %v", err)
+	}
+	if len(offer.ICE.Candidates) != 1 {
+		t.Fatalf("offer candidates = %#v, want only public endpoint hint", offer.ICE.Candidates)
+	}
+	hint := offer.ICE.Candidates[0]
+	if hint.Type != nat.CandidateTypeSrflx || hint.Address.String() != "117.48.146.2:41000" {
+		t.Fatalf("offer hint = %#v, want srflx 117.48.146.2:41000", hint)
+	}
+	if !strings.HasPrefix(hint.Foundation, "public-hint-") || hint.Priority == 0 {
+		t.Fatalf("offer hint foundation/priority = %q/%d, want populated", hint.Foundation, hint.Priority)
+	}
+	bases := exec.publicDirectLocalBaseSnapshot()
+	if _, ok := bases["192.168.1.20"]; !ok {
+		t.Fatalf("public direct local bases = %#v, want host candidate base from public endpoint hint", bases)
+	}
+	role, deps := pathPolicyMetadata("direct", candidatePairWithTypes(nat.CandidateTypeHost, "192.168.1.20", nat.CandidateTypePrflx, "117.48.146.3"), modePublicDirect, bases)
+	if role != solver.PathRoleProtectedDirect || len(deps) != 0 {
+		t.Fatalf("path policy with public endpoint hint base = role %q deps %#v, want protected direct", role, deps)
+	}
+	obs := findObservation(io.observations, "candidate_gathered")
+	if obs == nil || !strings.Contains(obs.Details["candidate_kept_samples"], "srflx:117.48.146.2:41000") {
+		t.Fatalf("observations = %#v, want kept public endpoint hint sample", io.observations)
+	}
+}
+
 func TestExecutorFiltersRemoteCandidatesByPlanMode(t *testing.T) {
 	hostCandidate := nat.Candidate{Type: nat.CandidateTypeHost, Address: &net.UDPAddr{IP: net.IPv4(10, 0, 0, 1), Port: 1001}}
 	overlayCandidate := nat.Candidate{Type: nat.CandidateTypeHost, Address: &net.UDPAddr{IP: net.IPv4(100, 102, 17, 35), Port: 1002}}

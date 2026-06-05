@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/netip"
 	"net/url"
 	"strings"
 )
@@ -113,6 +114,9 @@ func (c *Config) Validate() error {
 	if err := validateNAT1To1IPs("nat.nat1to1_ips", c.NAT.NAT1To1IPs); err != nil {
 		return err
 	}
+	if err := validatePublicEndpointHints("nat.public_endpoint_hints", c.NAT.PublicEndpointHints); err != nil {
+		return err
+	}
 
 	mode := strings.ToLower(strings.TrimSpace(c.Connectivity.Mode))
 	if mode == "" {
@@ -211,4 +215,32 @@ func validateNAT1To1IPs(field string, values []string) error {
 		}
 	}
 	return nil
+}
+
+func validatePublicEndpointHints(field string, values []string) error {
+	for i, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			return fmt.Errorf("%s[%d] must not be empty", field, i)
+		}
+		endpoint, err := netip.ParseAddrPort(value)
+		if err != nil || !endpoint.Addr().Is4() || endpoint.Port() == 0 || !isPublicEndpointHintAddress(endpoint.Addr()) {
+			return fmt.Errorf("invalid %s[%d]: %q", field, i, value)
+		}
+	}
+	return nil
+}
+
+func isPublicEndpointHintAddress(addr netip.Addr) bool {
+	if !addr.IsValid() ||
+		addr.IsUnspecified() ||
+		addr.IsLoopback() ||
+		addr.IsPrivate() ||
+		addr.IsLinkLocalUnicast() ||
+		addr.IsMulticast() {
+		return false
+	}
+	cgnat := netip.MustParsePrefix("100.64.0.0/10")
+	benchmark := netip.MustParsePrefix("198.18.0.0/15")
+	return !cgnat.Contains(addr) && !benchmark.Contains(addr)
 }

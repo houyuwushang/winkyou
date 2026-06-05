@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/netip"
 	"sort"
 	"strconv"
 	"strings"
@@ -222,6 +223,10 @@ func (e *executor) sendOffer(ctx context.Context, sess solver.SessionIO) error {
 	if err != nil {
 		return err
 	}
+	candidates, err = appendPublicEndpointHintCandidates(candidates, e.execCfg)
+	if err != nil {
+		return err
+	}
 	e.rememberPublicDirectLocalBases(candidates)
 	candidates, summary := filterLocalCandidatesWithSummary(candidates, e.execCfg)
 	e.reportCandidateFilter(sess, "candidate_gathered", "local", MessageTypeOffer, summary)
@@ -259,6 +264,10 @@ func (e *executor) sendAnswer(ctx context.Context, sess solver.SessionIO) error 
 	defer cancel()
 
 	candidates, err := agent.GatherCandidates(gatherCtx)
+	if err != nil {
+		return err
+	}
+	candidates, err = appendPublicEndpointHintCandidates(candidates, e.execCfg)
 	if err != nil {
 		return err
 	}
@@ -368,6 +377,10 @@ func (e *executor) rememberPublicDirectLocalBases(candidates []nat.Candidate) {
 	}
 	bases := make(map[string]struct{})
 	for _, candidate := range candidates {
+		if candidate.Type == nat.CandidateTypeHost && len(e.execCfg.PublicEndpointHints) > 0 && candidate.Address != nil && candidate.Address.IP != nil && candidate.Address.IP.IsPrivate() {
+			bases[candidate.Address.IP.String()] = struct{}{}
+			continue
+		}
 		if candidate.Type == nat.CandidateTypeRelay || candidate.RelatedAddr == nil || candidate.RelatedAddr.IP == nil {
 			continue
 		}
@@ -622,6 +635,66 @@ func isCandidateIPInCIDR(ip net.IP, cidr string) bool {
 func filterRemoteCandidates(candidates []nat.Candidate, execCfg executorConfig) []nat.Candidate {
 	filtered, _ := filterRemoteCandidatesWithSummary(candidates, execCfg)
 	return filtered
+}
+
+func appendPublicEndpointHintCandidates(candidates []nat.Candidate, execCfg executorConfig) ([]nat.Candidate, error) {
+	if execCfg.Mode != modePublicDirect || len(execCfg.PublicEndpointHints) == 0 {
+		return candidates, nil
+	}
+	out := append([]nat.Candidate(nil), candidates...)
+	seen := make(map[string]struct{}, len(out)+len(execCfg.PublicEndpointHints))
+	for _, candidate := range out {
+		seen[candidateAddressKey(candidate)] = struct{}{}
+	}
+	for i, raw := range execCfg.PublicEndpointHints {
+		candidate, err := publicEndpointHintCandidate(raw, i)
+		if err != nil {
+			return nil, err
+		}
+		key := candidateAddressKey(candidate)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, candidate)
+	}
+	return out, nil
+}
+
+func publicEndpointHintCandidate(raw string, index int) (nat.Candidate, error) {
+	endpoint, err := netip.ParseAddrPort(strings.TrimSpace(raw))
+	if err != nil || !endpoint.Addr().Is4() || endpoint.Port() == 0 {
+		return nat.Candidate{}, fmt.Errorf("legacyice: invalid public endpoint hint %q", raw)
+	}
+	ip := net.IP(append([]byte(nil), endpoint.Addr().AsSlice()...))
+	if reason := nonPublicCandidateIPReason(ip); reason != "" {
+		return nat.Candidate{}, fmt.Errorf("legacyice: invalid public endpoint hint %q: %s", raw, reason)
+	}
+	return nat.Candidate{
+		Type:       nat.CandidateTypeSrflx,
+		Address:    &net.UDPAddr{IP: ip, Port: int(endpoint.Port())},
+		Priority:   publicEndpointHintPriority(index),
+		Foundation: fmt.Sprintf("public-hint-%d", index+1),
+	}, nil
+}
+
+func publicEndpointHintPriority(index int) uint32 {
+	const (
+		srflxTypePreference = 100
+		componentID         = 1
+	)
+	localPreference := 65535 - index
+	if localPreference < 1 {
+		localPreference = 1
+	}
+	return uint32(srflxTypePreference)<<24 | uint32(localPreference)<<8 | uint32(256-componentID)
+}
+
+func candidateAddressKey(candidate nat.Candidate) string {
+	if candidate.Address == nil {
+		return candidate.Type.String()
+	}
+	return candidate.Type.String() + "|" + candidate.Address.String()
 }
 
 func filterRemoteCandidatesWithSummary(candidates []nat.Candidate, execCfg executorConfig) ([]nat.Candidate, candidateFilterSummary) {

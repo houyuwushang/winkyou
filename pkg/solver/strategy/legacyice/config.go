@@ -19,11 +19,12 @@ type AgentRequest struct {
 type ICEAgentFactory func(ctx context.Context, req AgentRequest) (nat.ICEAgent, error)
 
 type Config struct {
-	NewICEAgent    ICEAgentFactory
-	GatherTimeout  time.Duration
-	ConnectTimeout time.Duration
-	CheckTimeout   time.Duration
-	ForceRelay     bool
+	NewICEAgent         ICEAgentFactory
+	GatherTimeout       time.Duration
+	ConnectTimeout      time.Duration
+	CheckTimeout        time.Duration
+	ForceRelay          bool
+	PublicEndpointHints []string
 }
 
 type executionMode string
@@ -39,6 +40,7 @@ type executorConfig struct {
 	ForceRelay            bool
 	CandidateCIDRExclude  []string
 	PublicDirectCandidate bool
+	PublicEndpointHints   []string
 }
 
 func (c Config) withDefaults() Config {
@@ -65,6 +67,7 @@ func executorConfigForPlan(plan solver.Plan, cfg Config) (executorConfig, error)
 		return executorConfig{
 			Mode:                  modePublicDirect,
 			PublicDirectCandidate: true,
+			PublicEndpointHints:   append([]string(nil), cfg.PublicEndpointHints...),
 		}, nil
 	case planIDRelayOnly:
 		return executorConfig{
@@ -82,6 +85,7 @@ func executorConfigForPlan(plan solver.Plan, cfg Config) (executorConfig, error)
 			return executorConfig{
 				Mode:                  modePublicDirect,
 				PublicDirectCandidate: true,
+				PublicEndpointHints:   append([]string(nil), cfg.PublicEndpointHints...),
 			}, nil
 		}
 		return executorConfig{}, fmt.Errorf("legacyice: unsupported plan %q", plan.ID)

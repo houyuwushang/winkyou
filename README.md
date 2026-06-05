@@ -148,9 +148,11 @@ nat:
   nat1to1_candidate_type: srflx
   nat1to1_ips:
     - "203.0.113.10/192.168.0.10"
+  public_endpoint_hints:
+    - "117.48.146.2:41000"
 ```
 
-`nat1to1_ips` 使用 Pion ICE 的 `external/local` 语义；只有外部 IP/端口映射稳定时才适合使用。普通家宽或运营商 NAT 如果每个 UDP socket 都分配不同公网端口，仍应依赖 STUN 采集到的 server-reflexive candidate，或走 TURN/relay fallback。
+`nat1to1_ips` 使用 Pion ICE 的 `external/local` 语义，适合公网 IP 映射和本地 ICE 端口范围稳定的场景。`public_endpoint_hints` 直接表达本机已知的公网 UDP `ip:port`，只会作为 `legacyice/public_direct` 额外 srflx 候选发布；它适合拿 natpierce 或路由器日志里的稳定公网端点做验证。普通家宽或运营商 NAT 如果每个 UDP socket 都分配不同公网端口，仍应依赖 STUN 采集到的 server-reflexive candidate，或走 TURN/relay fallback。
 
 用于排查真实 NAT piercing 时，legacy ICE 会把候选采集和过滤结果写入 observation history。客户端运行状态文件同目录下会生成 `<runtime-state-base>.observations.jsonl`，其中：
 

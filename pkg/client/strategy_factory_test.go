@@ -361,6 +361,7 @@ func TestLegacyICEStrategyConfigPropagatesCandidateFilters(t *testing.T) {
 				CandidateCIDRExclude:      []string{"100.64.0.0/10"},
 				NAT1To1IPs:                []string{"203.0.113.10/192.168.0.10"},
 				NAT1To1CandidateType:      "srflx",
+				PublicEndpointHints:       []string{"117.48.146.2:41000"},
 			},
 		},
 	}
@@ -387,6 +388,9 @@ func TestLegacyICEStrategyConfigPropagatesCandidateFilters(t *testing.T) {
 	}
 	if len(got.NAT1To1IPs) != 1 || got.NAT1To1IPs[0] != "203.0.113.10/192.168.0.10" || got.NAT1To1CandidateType != "srflx" {
 		t.Fatalf("nat1to1 hints = ips=%#v type=%q, want configured hints", got.NAT1To1IPs, got.NAT1To1CandidateType)
+	}
+	if len(cfg.PublicEndpointHints) != 1 || cfg.PublicEndpointHints[0] != "117.48.146.2:41000" {
+		t.Fatalf("legacy public endpoint hints = %#v, want configured hint", cfg.PublicEndpointHints)
 	}
 
 	if _, err := cfg.NewICEAgent(context.Background(), legacyice.AgentRequest{

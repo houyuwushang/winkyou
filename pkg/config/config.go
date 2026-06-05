@@ -63,6 +63,7 @@ type NATConfig struct {
 	CandidateCIDRExclude      []string           `mapstructure:"candidate_cidr_exclude" yaml:"candidate_cidr_exclude"`
 	NAT1To1IPs                []string           `mapstructure:"nat1to1_ips" yaml:"nat1to1_ips"`
 	NAT1To1CandidateType      string             `mapstructure:"nat1to1_candidate_type" yaml:"nat1to1_candidate_type"`
+	PublicEndpointHints       []string           `mapstructure:"public_endpoint_hints" yaml:"public_endpoint_hints"`
 }
 
 type ConnectivityConfig struct {
