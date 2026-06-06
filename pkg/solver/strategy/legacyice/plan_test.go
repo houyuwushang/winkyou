@@ -48,7 +48,7 @@ func TestStrategyPlanOmitsRelayWhenRelayDisabled(t *testing.T) {
 	}
 }
 
-func TestStrategyPlanSplitsPublicEndpointHintsByLocalBasePort(t *testing.T) {
+func TestStrategyPlanSplitsPublicEndpointHintsByLocalBase(t *testing.T) {
 	strategy := New(Config{
 		PublicEndpointHints: []string{
 			"117.48.146.2:41000/192.168.1.20:40000",
@@ -78,6 +78,39 @@ func TestStrategyPlanSplitsPublicEndpointHintsByLocalBasePort(t *testing.T) {
 	}
 	if got := plans[2].Metadata[planMetadataPublicEndpointHints]; got != "117.48.146.3:41001/192.168.1.20:40001" {
 		t.Fatalf("second hint plan metadata = %q, want second local-base port hint", got)
+	}
+}
+
+func TestStrategyPlanSplitsPublicEndpointHintsByLocalBaseAddress(t *testing.T) {
+	strategy := New(Config{
+		PublicEndpointHints: []string{
+			"117.48.146.2:41000/192.168.1.20:40000",
+			"117.48.146.3:41001/192.168.1.21:40000",
+		},
+	})
+
+	plans, err := strategy.Plan(context.Background(), solver.SolveInput{
+		SessionID:    "session/node-a/node-b",
+		RemoteNodeID: "node-b",
+	})
+	if err != nil {
+		t.Fatalf("Plan() error = %v", err)
+	}
+
+	wantIDs := []string{
+		planIDDirectPrefer,
+		"legacyice/public_direct_hint_1",
+		"legacyice/public_direct_hint_2",
+		planIDRelayOnly,
+	}
+	if !slices.Equal(planIDs(plans), wantIDs) {
+		t.Fatalf("plans = %v, want split public-direct hint plans %v", planIDs(plans), wantIDs)
+	}
+	if got := plans[1].Metadata[planMetadataPublicEndpointHints]; got != "117.48.146.2:41000/192.168.1.20:40000" {
+		t.Fatalf("first hint plan metadata = %q, want first local-base address hint", got)
+	}
+	if got := plans[2].Metadata[planMetadataPublicEndpointHints]; got != "117.48.146.3:41001/192.168.1.21:40000" {
+		t.Fatalf("second hint plan metadata = %q, want second local-base address hint", got)
 	}
 }
 

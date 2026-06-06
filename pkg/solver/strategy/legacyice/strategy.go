@@ -73,7 +73,7 @@ func (s *Strategy) basePlans() []solver.Plan {
 }
 
 func (s *Strategy) publicDirectPlans() []solver.Plan {
-	groups, unspecific, split := splitPublicEndpointHintsByLocalBasePort(s.cfg.PublicEndpointHints)
+	groups, unspecific, split := splitPublicEndpointHintsByLocalBase(s.cfg.PublicEndpointHints)
 	if !split {
 		return []solver.Plan{newPublicDirectPlan(s.Name(), planIDPublicDirect, nil, "Try public direct candidates only")}
 	}
@@ -107,12 +107,11 @@ func newPublicDirectPlan(strategyName, planID string, hints []string, descriptio
 }
 
 type endpointHintPlanGroup struct {
-	port  uint16
 	hints []string
 }
 
-func splitPublicEndpointHintsByLocalBasePort(values []string) ([]endpointHintPlanGroup, []string, bool) {
-	byPort := make(map[uint16][]string)
+func splitPublicEndpointHintsByLocalBase(values []string) ([]endpointHintPlanGroup, []string, bool) {
+	byLocalBase := make(map[string][]string)
 	var unspecific []string
 	for _, raw := range values {
 		value := normalizePublicEndpointHintValue(raw)
@@ -127,25 +126,24 @@ func splitPublicEndpointHintsByLocalBasePort(values []string) ([]endpointHintPla
 			unspecific = append(unspecific, value)
 			continue
 		}
-		port := uint16(hint.local.Port())
-		byPort[port] = append(byPort[port], value)
+		localBase := hint.local.String()
+		byLocalBase[localBase] = append(byLocalBase[localBase], value)
 	}
-	if len(byPort) <= 1 {
+	if len(byLocalBase) <= 1 {
 		return nil, nil, false
 	}
 
-	ports := make([]int, 0, len(byPort))
-	for port := range byPort {
-		ports = append(ports, int(port))
+	localBases := make([]string, 0, len(byLocalBase))
+	for localBase := range byLocalBase {
+		localBases = append(localBases, localBase)
 	}
-	sort.Ints(ports)
+	sort.Strings(localBases)
 
-	groups := make([]endpointHintPlanGroup, 0, len(ports))
-	for _, port := range ports {
-		hints := append([]string(nil), byPort[uint16(port)]...)
+	groups := make([]endpointHintPlanGroup, 0, len(localBases))
+	for _, localBase := range localBases {
+		hints := append([]string(nil), byLocalBase[localBase]...)
 		sort.Strings(hints)
 		groups = append(groups, endpointHintPlanGroup{
-			port:  uint16(port),
 			hints: hints,
 		})
 	}
