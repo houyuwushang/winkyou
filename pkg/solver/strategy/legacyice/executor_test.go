@@ -686,6 +686,48 @@ func TestPublicDirectCandidateSignalRoundsScaleWithConnectTimeout(t *testing.T) 
 	}
 }
 
+func TestPublicDirectRemoteCandidateGraceScalesWithConnectTimeout(t *testing.T) {
+	defaultExec := newExecutor(Config{}, solver.SolveInput{}, solver.Plan{ID: planIDPublicDirect}, executorConfig{Mode: modePublicDirect})
+	if got := defaultExec.remoteCandidateGraceTimeout(); got != publicDirectRemoteCandidateGraceTimeout {
+		t.Fatalf("default remoteCandidateGraceTimeout() = %v, want %v", got, publicDirectRemoteCandidateGraceTimeout)
+	}
+
+	shortExec := newExecutor(Config{ConnectTimeout: time.Second}, solver.SolveInput{}, solver.Plan{ID: planIDPublicDirect}, executorConfig{Mode: modePublicDirect})
+	if got := shortExec.remoteCandidateGraceTimeout(); got != publicDirectRemoteCandidateGraceTimeout {
+		t.Fatalf("short remoteCandidateGraceTimeout() = %v, want min %v", got, publicDirectRemoteCandidateGraceTimeout)
+	}
+
+	longExec := newExecutor(Config{ConnectTimeout: 25 * time.Second}, solver.SolveInput{}, solver.Plan{ID: planIDPublicDirect}, executorConfig{Mode: modePublicDirect})
+	if got := longExec.remoteCandidateGraceTimeout(); got != publicDirectRemoteCandidateGraceMaxTimeout {
+		t.Fatalf("long remoteCandidateGraceTimeout() = %v, want cap %v", got, publicDirectRemoteCandidateGraceMaxTimeout)
+	}
+}
+
+func TestPublicDirectRemoteCandidateWaitingReportsScaledGrace(t *testing.T) {
+	exec := newExecutor(Config{ConnectTimeout: 25 * time.Second}, solver.SolveInput{}, solver.Plan{
+		ID:       planIDPublicDirect,
+		Strategy: StrategyName,
+	}, executorConfig{Mode: modePublicDirect})
+	t.Cleanup(func() {
+		if err := exec.Close(); err != nil {
+			t.Fatalf("Close() error = %v", err)
+		}
+	})
+	io := &capturingSessionIO{}
+
+	if !exec.waitForPublicDirectRemoteCandidates(io, MessageTypeAnswer) {
+		t.Fatal("waitForPublicDirectRemoteCandidates() = false, want true")
+	}
+
+	obs := findObservation(io.Observations(), "remote_candidates_waiting")
+	if obs == nil {
+		t.Fatalf("observations = %#v, want remote_candidates_waiting", io.Observations())
+	}
+	if obs.Details["candidate_grace_ms"] != strconv.FormatInt(publicDirectRemoteCandidateGraceMaxTimeout.Milliseconds(), 10) {
+		t.Fatalf("remote_candidates_waiting details = %#v, want scaled grace", obs.Details)
+	}
+}
+
 func TestPublicDirectCandidateSignalSendTimeoutScalesWithCandidateCount(t *testing.T) {
 	if got := candidateSignalSendTimeout(0); got != publicDirectCandidateSignalSendTimeout {
 		t.Fatalf("candidateSignalSendTimeout(0) = %v, want base %v", got, publicDirectCandidateSignalSendTimeout)
@@ -1544,7 +1586,7 @@ func TestPublicDirectEmptyRemoteCandidatesFailsPlanWithoutBubbling(t *testing.T)
 		if err == nil || !strings.Contains(err.Error(), "no usable remote candidates") {
 			t.Fatalf("executor err = %v, want no usable remote candidates", err)
 		}
-	case <-time.After(publicDirectRemoteCandidateGraceTimeout + 500*time.Millisecond):
+	case <-time.After(exec.remoteCandidateGraceTimeout() + 500*time.Millisecond):
 		t.Fatal("executor errCh did not receive plan failure after candidate grace")
 	}
 	observations := io.Observations()

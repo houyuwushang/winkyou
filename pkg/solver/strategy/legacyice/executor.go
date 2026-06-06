@@ -62,6 +62,8 @@ const publicDirectCandidateSignalMaxSendTimeout = 5 * time.Second
 
 const publicDirectRemoteCandidateGraceTimeout = 750 * time.Millisecond
 
+const publicDirectRemoteCandidateGraceMaxTimeout = 5 * time.Second
+
 func newExecutor(cfg Config, input solver.SolveInput, plan solver.Plan, execCfg executorConfig) *executor {
 	lifecycleCtx, lifecycleCancel := context.WithCancel(context.Background())
 	return &executor{
@@ -481,6 +483,21 @@ func candidateSignalSendTimeout(candidateCount int) time.Duration {
 	return timeout
 }
 
+func (e *executor) remoteCandidateGraceTimeout() time.Duration {
+	connectTimeout := e.cfg.ConnectTimeout
+	if connectTimeout <= 0 {
+		return publicDirectRemoteCandidateGraceTimeout
+	}
+	grace := connectTimeout / 5
+	if grace < publicDirectRemoteCandidateGraceTimeout {
+		return publicDirectRemoteCandidateGraceTimeout
+	}
+	if grace > publicDirectRemoteCandidateGraceMaxTimeout {
+		return publicDirectRemoteCandidateGraceMaxTimeout
+	}
+	return grace
+}
+
 func (e *executor) sendCandidateMessageRound(ctx context.Context, sess solver.SessionIO, candidates []nat.Candidate, round int, maxRound int) {
 	limit := len(candidates)
 	if limit > publicDirectCandidateSignalLimit {
@@ -817,6 +834,7 @@ func (e *executor) waitForPublicDirectRemoteCandidates(sess solver.SessionIO, me
 	if e.execCfg.Mode != modePublicDirect {
 		return false
 	}
+	grace := e.remoteCandidateGraceTimeout()
 	e.report(sess, solver.Observation{
 		Strategy: e.strategyName(),
 		PlanID:   e.plan.ID,
@@ -825,14 +843,14 @@ func (e *executor) waitForPublicDirectRemoteCandidates(sess solver.SessionIO, me
 			"mode":         string(e.execCfg.Mode),
 			"message_type": messageType,
 			"candidate_grace_ms": strconv.FormatInt(
-				publicDirectRemoteCandidateGraceTimeout.Milliseconds(),
+				grace.Milliseconds(),
 				10,
 			),
 		},
 		Timestamp: time.Now(),
 	})
 	go func() {
-		timer := time.NewTimer(publicDirectRemoteCandidateGraceTimeout)
+		timer := time.NewTimer(grace)
 		defer timer.Stop()
 		select {
 		case <-timer.C:
