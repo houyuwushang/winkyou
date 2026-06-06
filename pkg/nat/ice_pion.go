@@ -198,6 +198,11 @@ func (a *icePionAgent) GatherCandidates(ctx context.Context) ([]Candidate, error
 				// If an external STUN probe is slow, returning already-bound
 				// host candidates lets the strategy append hints and start
 				// punching instead of failing before candidate exchange.
+				a.mu.Lock()
+				if len(a.localCandidates) == 0 {
+					a.localCandidates = cloneCandidates(localCandidates)
+				}
+				a.mu.Unlock()
 				return cloneCandidates(localCandidates), nil
 			}
 			if err != nil {

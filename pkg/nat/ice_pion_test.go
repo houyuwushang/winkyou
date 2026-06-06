@@ -272,6 +272,14 @@ func TestPublicDirectGatherCandidatesReturnsPartialCandidatesOnTimeout(t *testin
 	}) {
 		t.Fatalf("GatherCandidates(public direct partial timeout) = %#v, want a host candidate", candidates)
 	}
+
+	cached, err := agent.GatherCandidates(ctx)
+	if err != nil {
+		t.Fatalf("GatherCandidates(public direct cached partial candidates) error = %v", err)
+	}
+	if len(cached) != len(candidates) {
+		t.Fatalf("cached partial candidates = %d, want %d", len(cached), len(candidates))
+	}
 }
 
 func TestPublicDirectFixedPortMuxRequiresSingleLocalBase(t *testing.T) {
