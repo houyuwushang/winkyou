@@ -402,6 +402,12 @@ func (a *icePionAgent) GetConnectionState() ConnectionState {
 	return a.state
 }
 
+func (a *icePionAgent) RemoteCandidateCount() int {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return len(a.remoteCandidates)
+}
+
 func (a *icePionAgent) OnSelectedCandidatePairChange(handler func(*CandidatePair)) {
 	a.mu.Lock()
 	defer a.mu.Unlock()

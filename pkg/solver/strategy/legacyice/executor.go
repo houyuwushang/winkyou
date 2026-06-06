@@ -838,6 +838,35 @@ func (e *executor) addPublicDirectFailureDetails(details map[string]string) {
 	}
 	if agent != nil {
 		details["ice_state"] = connectionStateString(agent)
+		addPublicDirectAgentFailureDetails(details, agent)
+	}
+}
+
+func addPublicDirectAgentFailureDetails(details map[string]string, agent nat.ICEAgent) {
+	if counter, ok := agent.(interface{ RemoteCandidateCount() int }); ok {
+		details["ice_remote_candidate_count"] = strconv.Itoa(counter.RemoteCandidateCount())
+	}
+	pairReader, ok := agent.(interface {
+		GetSelectedPair() (*nat.CandidatePair, error)
+	})
+	if !ok {
+		return
+	}
+	pair, err := pairReader.GetSelectedPair()
+	if err != nil {
+		details["ice_selected_pair"] = "false"
+		return
+	}
+	if pair == nil {
+		details["ice_selected_pair"] = "false"
+		return
+	}
+	details["ice_selected_pair"] = "true"
+	if pair.Local != nil && pair.Local.Address != nil {
+		details["ice_selected_pair_local"] = formatCandidate(pair.Local)
+	}
+	if pair.Remote != nil && pair.Remote.Address != nil {
+		details["ice_selected_pair_remote"] = formatCandidate(pair.Remote)
 	}
 }
 

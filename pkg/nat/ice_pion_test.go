@@ -444,6 +444,36 @@ func TestPublicDirectFixedPortMuxCloseReleasesPort(t *testing.T) {
 	_ = conn.Close()
 }
 
+func TestICEPionAgentRemoteCandidateCount(t *testing.T) {
+	nt, _ := NewNATTraversal(nil)
+	agent, err := nt.NewICEAgent(ICEConfig{PublicDirectCandidate: true})
+	if err != nil {
+		t.Fatalf("NewICEAgent(public direct) error = %v", err)
+	}
+	defer agent.Close()
+
+	counter, ok := agent.(interface{ RemoteCandidateCount() int })
+	if !ok {
+		t.Fatal("ICE agent does not expose RemoteCandidateCount()")
+	}
+	if got := counter.RemoteCandidateCount(); got != 0 {
+		t.Fatalf("RemoteCandidateCount() = %d, want 0", got)
+	}
+
+	err = agent.SetRemoteCandidates([]Candidate{{
+		Type:       CandidateTypeSrflx,
+		Address:    &net.UDPAddr{IP: net.IPv4(210, 30, 106, 93), Port: 18981},
+		Priority:   100,
+		Foundation: "remote-srflx",
+	}})
+	if err != nil {
+		t.Fatalf("SetRemoteCandidates() error = %v", err)
+	}
+	if got := counter.RemoteCandidateCount(); got != 1 {
+		t.Fatalf("RemoteCandidateCount() = %d, want 1", got)
+	}
+}
+
 func TestPublicDirectDerivesOnlyUDPTURNAsSTUN(t *testing.T) {
 	udpURI, err := publicDirectSTUNURLFromTURN(TURNServer{URL: "turn.example.com:3478", Username: "user", Password: "pass"})
 	if err != nil {

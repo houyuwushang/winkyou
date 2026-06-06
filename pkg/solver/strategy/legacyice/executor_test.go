@@ -20,6 +20,7 @@ type recordingICEAgent struct {
 	remoteCandidates  []nat.Candidate
 	connectErr        error
 	connectCalled     chan struct{}
+	selectedPair      *nat.CandidatePair
 	selectedStats     nat.CandidatePairStats
 	hasSelectedStats  bool
 	gatherDeadline    time.Time
@@ -53,8 +54,19 @@ func (a *recordingICEAgent) Connect(context.Context) (nat.SelectedTransport, *na
 	return nil, nil, a.connectErr
 }
 
+func (a *recordingICEAgent) GetSelectedPair() (*nat.CandidatePair, error) {
+	if a.selectedPair == nil {
+		return nil, errors.New("no selected pair")
+	}
+	return a.selectedPair, nil
+}
+
 func (a *recordingICEAgent) GetSelectedPairStats() (nat.CandidatePairStats, bool) {
 	return a.selectedStats, a.hasSelectedStats
+}
+
+func (a *recordingICEAgent) RemoteCandidateCount() int {
+	return len(a.remoteCandidates)
 }
 
 func (a *recordingICEAgent) Close() error { return nil }
@@ -810,6 +822,45 @@ func TestPublicDirectFailureIncludesLastCandidateSignalDetails(t *testing.T) {
 		obs.Details["last_signal_candidate_round"] != "1" ||
 		obs.Details["last_signal_candidate_rounds"] != strconv.Itoa(publicDirectCandidateSignalRounds) {
 		t.Fatalf("candidate_failed details = %#v, want last signal details", obs.Details)
+	}
+}
+
+func TestPublicDirectFailureIncludesAgentDiagnostics(t *testing.T) {
+	localCandidate := nat.Candidate{
+		Type:    nat.CandidateTypeHost,
+		Address: &net.UDPAddr{IP: net.IPv4(192, 168, 50, 10), Port: 40000},
+	}
+	remoteCandidate := nat.Candidate{
+		Type:    nat.CandidateTypeSrflx,
+		Address: &net.UDPAddr{IP: net.IPv4(210, 30, 106, 93), Port: 18981},
+	}
+	agent := &recordingICEAgent{
+		remoteCandidates: []nat.Candidate{remoteCandidate},
+		selectedPair: &nat.CandidatePair{
+			Local:  &localCandidate,
+			Remote: &remoteCandidate,
+		},
+	}
+	exec := newExecutor(Config{}, solver.SolveInput{
+		SessionID: "session/node-a/node-b",
+	}, solver.Plan{
+		ID:       planIDPublicDirect,
+		Strategy: StrategyName,
+	}, executorConfig{Mode: modePublicDirect})
+	exec.agent = agent
+	io := &capturingSessionIO{}
+
+	exec.reportFailure(io, errors.New("public direct timeout"))
+
+	obs := findObservation(io.Observations(), "candidate_failed")
+	if obs == nil {
+		t.Fatalf("observations = %#v, want candidate_failed", io.Observations())
+	}
+	if obs.Details["ice_remote_candidate_count"] != "1" ||
+		obs.Details["ice_selected_pair"] != "true" ||
+		obs.Details["ice_selected_pair_local"] != "host:192.168.50.10:40000" ||
+		obs.Details["ice_selected_pair_remote"] != "srflx:210.30.106.93:18981" {
+		t.Fatalf("candidate_failed details = %#v, want agent diagnostics", obs.Details)
 	}
 }
 
