@@ -736,6 +736,34 @@ func TestRefreshRuntimePublicEndpointHintsPreservesHintsOnError(t *testing.T) {
 	}
 }
 
+func TestRefreshRuntimePublicEndpointHintsPreservesHintsOnEmptyResult(t *testing.T) {
+	cfg := config.Default()
+	recorder := &recordingNATTraversal{
+		report: nat.STUNMappingReport{NATType: nat.NATTypeUnknown},
+	}
+	eng := &engine{
+		cfg: cfg,
+		nat: recorder,
+		status: EngineStatus{
+			NATType: nat.NATTypeSymmetric.String(),
+		},
+		runtimePublicEndpointHints: []string{"117.48.146.2:41000/192.168.1.20:40000"},
+	}
+
+	eng.refreshRuntimePublicEndpointHints(context.Background(), "test")
+
+	if recorder.detectCalls != 1 {
+		t.Fatalf("DetectSTUNMapping calls = %d, want 1", recorder.detectCalls)
+	}
+	want := []string{"117.48.146.2:41000/192.168.1.20:40000"}
+	if !slices.Equal(eng.runtimePublicEndpointHints, want) {
+		t.Fatalf("runtimePublicEndpointHints = %#v, want preserved hints %#v", eng.runtimePublicEndpointHints, want)
+	}
+	if eng.status.NATType != nat.NATTypeUnknown.String() {
+		t.Fatalf("NATType = %q, want updated %q", eng.status.NATType, nat.NATTypeUnknown.String())
+	}
+}
+
 func TestRefreshRuntimePublicEndpointHintsHonorsOptOut(t *testing.T) {
 	cfg := config.Default()
 	cfg.NAT.AutoPublicEndpointHints = false

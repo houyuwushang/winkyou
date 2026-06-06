@@ -37,9 +37,16 @@ func (e *engine) refreshRuntimePublicEndpointHints(ctx context.Context, reason s
 	}
 
 	hints := runtimePublicEndpointHintsFromReport(e.cfg.NAT, report)
+	preservedHints := false
+	preservedHintCount := 0
 	e.mu.Lock()
 	e.status.NATType = report.NATType.String()
-	e.runtimePublicEndpointHints = append([]string(nil), hints...)
+	if len(hints) > 0 || len(e.runtimePublicEndpointHints) == 0 {
+		e.runtimePublicEndpointHints = append([]string(nil), hints...)
+	} else {
+		preservedHints = true
+		preservedHintCount = len(e.runtimePublicEndpointHints)
+	}
 	e.mu.Unlock()
 
 	if e.log == nil {
@@ -47,6 +54,8 @@ func (e *engine) refreshRuntimePublicEndpointHints(ctx context.Context, reason s
 	}
 	if len(hints) > 0 {
 		e.log.Info("refreshed runtime public endpoint hints", logger.String("reason", reason), logger.String("hints", strings.Join(hints, ",")))
+	} else if preservedHints {
+		e.log.Debug("refreshed runtime public endpoint hints without usable hints; preserving previous hints", logger.String("reason", reason), logger.String("nat_type", report.NATType.String()), logger.Int("preserved_hint_count", preservedHintCount))
 	} else {
 		e.log.Debug("refreshed runtime public endpoint hints without usable hints", logger.String("reason", reason), logger.String("nat_type", report.NATType.String()))
 	}
