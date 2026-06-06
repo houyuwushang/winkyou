@@ -10,6 +10,7 @@ import (
 )
 
 const runtimeEndpointHintRefreshTimeout = 750 * time.Millisecond
+const runtimeEndpointHintRefreshReuseWindow = time.Second
 
 func (e *engine) refreshRuntimePublicEndpointHints(ctx context.Context, reason string) {
 	if e == nil || !e.cfg.NAT.AutoPublicEndpointHints {
@@ -26,10 +27,22 @@ func (e *engine) refreshRuntimePublicEndpointHints(ctx context.Context, reason s
 		ctx = context.Background()
 	}
 
+	e.endpointHintRefreshMu.Lock()
+	now := time.Now()
+	if !e.endpointHintLastRefreshAt.IsZero() && now.Sub(e.endpointHintLastRefreshAt) < runtimeEndpointHintRefreshReuseWindow {
+		e.endpointHintRefreshMu.Unlock()
+		if e.log != nil {
+			e.log.Debug("runtime public endpoint hint refresh skipped after recent refresh", logger.String("reason", reason))
+		}
+		return
+	}
+	defer e.endpointHintRefreshMu.Unlock()
+
 	detectCtx, cancel := context.WithTimeout(ctx, runtimeEndpointHintRefreshTimeout)
 	defer cancel()
 
 	report, err := traversal.DetectSTUNMapping(detectCtx)
+	e.endpointHintLastRefreshAt = time.Now()
 	if err != nil {
 		if e.log != nil {
 			e.log.Debug("runtime public endpoint hint refresh failed", logger.String("reason", reason), logger.Error(err))

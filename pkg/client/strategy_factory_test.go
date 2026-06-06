@@ -6,6 +6,7 @@ import (
 	"net"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -885,6 +886,53 @@ func TestRefreshRuntimePublicEndpointHintsHonorsOptOut(t *testing.T) {
 	}
 }
 
+func TestRefreshRuntimePublicEndpointHintsCoalescesConcurrentCalls(t *testing.T) {
+	cfg := config.Default()
+	recorder := &blockingNATTraversal{
+		report: nat.STUNMappingReport{
+			NATType: nat.NATTypeUnknown,
+			Probes: []nat.STUNMappingProbe{{
+				LocalAddr:  &net.UDPAddr{IP: net.IPv4(192, 168, 1, 20), Port: 40000},
+				MappedAddr: &net.UDPAddr{IP: net.IPv4(198, 51, 100, 44), Port: 45678},
+				ServerAddr: &net.UDPAddr{IP: net.IPv4(198, 51, 100, 1), Port: 3478},
+			}},
+		},
+		started: make(chan struct{}, 1),
+		release: make(chan struct{}),
+	}
+	eng := &engine{
+		cfg: cfg,
+		nat: recorder,
+		status: EngineStatus{
+			NATType: nat.NATTypeSymmetric.String(),
+		},
+	}
+
+	var wg sync.WaitGroup
+	for i := 0; i < 8; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			eng.refreshRuntimePublicEndpointHints(context.Background(), "test")
+		}()
+	}
+	select {
+	case <-recorder.started:
+	case <-time.After(time.Second):
+		t.Fatal("DetectSTUNMapping did not start")
+	}
+	close(recorder.release)
+	wg.Wait()
+
+	if got := recorder.calls(); got != 1 {
+		t.Fatalf("DetectSTUNMapping calls = %d, want 1 coalesced refresh", got)
+	}
+	want := []string{"198.51.100.44:45678/192.168.1.20:40000"}
+	if !slices.Equal(eng.runtimePublicEndpointHints, want) {
+		t.Fatalf("runtimePublicEndpointHints = %#v, want %#v", eng.runtimePublicEndpointHints, want)
+	}
+}
+
 func TestRuntimePublicEndpointHintsFromReportUsesDefaultAndAllowsOptOut(t *testing.T) {
 	report := nat.STUNMappingReport{
 		NATType: nat.NATTypeUnknown,
@@ -963,6 +1011,44 @@ func (r *recordingNATTraversal) DetectSTUNMapping(context.Context) (nat.STUNMapp
 func (r *recordingNATTraversal) NewICEAgent(cfg nat.ICEConfig) (nat.ICEAgent, error) {
 	r.cfg = cfg
 	return nil, nil
+}
+
+type blockingNATTraversal struct {
+	mu      sync.Mutex
+	report  nat.STUNMappingReport
+	started chan struct{}
+	release chan struct{}
+	count   int
+}
+
+func (r *blockingNATTraversal) DetectNATType(context.Context) (nat.NATType, error) {
+	return nat.NATTypeUnknown, nil
+}
+
+func (r *blockingNATTraversal) DetectSTUNMapping(ctx context.Context) (nat.STUNMappingReport, error) {
+	r.mu.Lock()
+	r.count++
+	r.mu.Unlock()
+	select {
+	case r.started <- struct{}{}:
+	default:
+	}
+	select {
+	case <-r.release:
+	case <-ctx.Done():
+		return nat.STUNMappingReport{}, ctx.Err()
+	}
+	return r.report, nil
+}
+
+func (r *blockingNATTraversal) NewICEAgent(nat.ICEConfig) (nat.ICEAgent, error) {
+	return nil, nil
+}
+
+func (r *blockingNATTraversal) calls() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.count
 }
 
 func resolverCandidateNames(candidates []sesspkg.StrategyCandidate) []string {
