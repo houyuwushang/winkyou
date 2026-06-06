@@ -651,12 +651,13 @@ func (s *Session) executeCandidateLoop(ctx context.Context, strategy solver.Stra
 		groupEnd := parallelHintPlanGroupEnd(plans, i, maxCandidates)
 		if groupEnd > i+1 {
 			groupPlans := plans[i:groupEnd]
+			groupTimeout := s.candidateGroupExecutionTimeout(len(groupPlans))
 			for j, plan := range groupPlans {
 				s.emitObservation(ctx, solver.Observation{
 					Strategy:  plan.Strategy,
 					PlanID:    plan.ID,
 					Event:     "candidate_planned",
-					TimeoutMS: durationMS(s.executionTimeout()),
+					TimeoutMS: durationMS(groupTimeout),
 					Details: map[string]string{
 						"candidate_index": fmt.Sprintf("%d", i+j),
 						"candidate_total": fmt.Sprintf("%d", maxCandidates),
@@ -721,6 +722,14 @@ func parallelHintPlanGroupEnd(plans []solver.Plan, start, maxCandidates int) int
 		return start + 1
 	}
 	return end
+}
+
+func (s *Session) candidateGroupExecutionTimeout(planCount int) time.Duration {
+	timeout := s.executionTimeout()
+	if timeout <= 0 || planCount <= 1 {
+		return timeout
+	}
+	return timeout * time.Duration(planCount)
 }
 
 func annotateResultPath(result solver.Result, plan solver.Plan) solver.Result {
@@ -836,7 +845,7 @@ func (s *Session) executeCandidateGroup(ctx context.Context, strategy solver.Str
 	if execCtx == nil {
 		execCtx = context.Background()
 	}
-	if timeout := s.executionTimeout(); timeout > 0 {
+	if timeout := s.candidateGroupExecutionTimeout(len(entries)); timeout > 0 {
 		var cancel context.CancelFunc
 		execCtx, cancel = context.WithTimeout(execCtx, timeout)
 		defer cancel()

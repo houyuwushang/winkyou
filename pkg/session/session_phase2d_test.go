@@ -435,6 +435,16 @@ func TestSessionCandidateBudgetCoversSplitPublicDirectHintPlans(t *testing.T) {
 	}
 }
 
+func TestSessionCandidateGroupTimeoutCoversSplitPublicDirectHintPlans(t *testing.T) {
+	s := &Session{cfg: Config{RunTimeout: 10 * time.Second}}
+	if got := s.candidateGroupExecutionTimeout(1); got != 10*time.Second {
+		t.Fatalf("candidateGroupExecutionTimeout(1) = %v, want one execution timeout", got)
+	}
+	if got := s.candidateGroupExecutionTimeout(3); got != 30*time.Second {
+		t.Fatalf("candidateGroupExecutionTimeout(3) = %v, want timeout per parallel hint plan", got)
+	}
+}
+
 func TestSessionExecutesRelayAfterSplitPublicDirectHintPlansFail(t *testing.T) {
 	plans := []solver.Plan{
 		{ID: "legacyice/direct_prefer", Strategy: "legacy_ice_udp"},
