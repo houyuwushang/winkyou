@@ -62,6 +62,8 @@ func (e *engine) ensurePeerSession(nodeID string) (*peerSession, error) {
 		localID := e.status.NodeID
 		e.mu.RUnlock()
 
+		e.refreshRuntimePublicEndpointHints(e.sessionContext(), "peer_session")
+
 		s := &peerSession{
 			nodeID:    nodeID,
 			sessionID: sessionIDForNodes(localID, nodeID),

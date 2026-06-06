@@ -109,6 +109,7 @@ func (e *engine) startPeerImprovement(nodeID string, session *peerSession) {
 	session.connectMu.Unlock()
 
 	go func(expected *peerSession) {
+		e.refreshRuntimePublicEndpointHints(e.sessionContext(), "path_improvement")
 		found, err := runner.ImproveProtectedDirect(e.sessionContext())
 
 		expected.connectMu.Lock()

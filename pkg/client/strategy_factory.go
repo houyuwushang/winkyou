@@ -44,8 +44,7 @@ func newStrategyResolverWithFeatures(factories []strategyFactory, policy Resolve
 }
 
 func (e *engine) newStrategyResolver() sesspkg.StrategyResolver {
-	legacyCfg := e.legacyICEStrategyConfig()
-	factories := e.strategyFactoriesForOrder(legacyCfg)
+	factories := e.strategyFactoriesForOrder()
 	policy := ResolverPolicy{
 		CompatibilityDefault: legacyice.StrategyName,
 		AllowImplicitLegacy:  true,
@@ -58,7 +57,7 @@ func (e *engine) newStrategyResolver() sesspkg.StrategyResolver {
 	return newStrategyResolverWithFeatures(factories, policy, probeFeatures(e.probeRunner() != nil))
 }
 
-func (e *engine) strategyFactoriesForOrder(legacyCfg legacyice.Config) []strategyFactory {
+func (e *engine) strategyFactoriesForOrder() []strategyFactory {
 	order := e.connectivityStrategyOrder()
 	factories := make([]strategyFactory, 0, len(order))
 	for _, name := range order {
@@ -67,25 +66,24 @@ func (e *engine) strategyFactoriesForOrder(legacyCfg legacyice.Config) []strateg
 			factories = append(factories, strategyFactory{
 				name: legacyice.StrategyName,
 				build: func() solver.Strategy {
-					return legacyice.New(legacyCfg)
+					return legacyice.New(e.legacyICEStrategyConfig())
 				},
 			})
 		case relayonly.StrategyName:
 			factories = append(factories, strategyFactory{
 				name: relayonly.StrategyName,
 				build: func() solver.Strategy {
-					return relayonly.New(legacyCfg)
+					return relayonly.New(e.legacyICEStrategyConfig())
 				},
 			})
 		case tcpframed.StrategyName:
 			if !e.cfg.TCPFramed.Enabled {
 				continue
 			}
-			tcpCfg := e.tcpFramedStrategyConfig()
 			factories = append(factories, strategyFactory{
 				name: tcpframed.StrategyName,
 				build: func() solver.Strategy {
-					return tcpframed.New(tcpCfg)
+					return tcpframed.New(e.tcpFramedStrategyConfig())
 				},
 			})
 		}

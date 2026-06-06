@@ -2,6 +2,7 @@ package client
 
 import (
 	"context"
+	"errors"
 	"net"
 	"slices"
 	"strings"
@@ -544,6 +545,42 @@ func TestLegacyICEStrategyConfigMergesRuntimePublicEndpointHints(t *testing.T) {
 	}
 }
 
+func TestStrategyResolverBuildUsesCurrentRuntimePublicEndpointHints(t *testing.T) {
+	cfg := config.Default()
+	eng := &engine{
+		cfg: cfg,
+		runtimePublicEndpointHints: []string{
+			"117.48.146.2:41000/192.168.1.20:40000",
+			"117.48.146.3:41001/192.168.1.20:40001",
+		},
+	}
+	resolver := eng.newStrategyResolver()
+
+	eng.runtimePublicEndpointHints = []string{
+		"117.48.146.4:41002/192.168.1.21:40000",
+		"117.48.146.5:41003/192.168.1.22:40000",
+	}
+	strategy, _, err := resolver.Resolve(rproto.Capability{Strategies: []string{legacyice.StrategyName}}, true)
+	if err != nil {
+		t.Fatalf("Resolve(legacy) error = %v", err)
+	}
+	plans, err := strategy.Plan(context.Background(), solver.SolveInput{
+		SessionID:    "session/node-a/node-b",
+		RemoteNodeID: "node-b",
+	})
+	if err != nil {
+		t.Fatalf("Plan() error = %v", err)
+	}
+	hints := publicEndpointHintPlanMetadata(plans)
+	want := []string{
+		"117.48.146.4:41002/192.168.1.21:40000",
+		"117.48.146.5:41003/192.168.1.22:40000",
+	}
+	if !slices.Equal(hints, want) {
+		t.Fatalf("planned public endpoint hints = %#v, want current runtime hints %#v", hints, want)
+	}
+}
+
 func TestLegacyICEStrategyConfigWidensEndpointHintWindowForSymmetricNAT(t *testing.T) {
 	cfg := config.Default()
 	eng := &engine{
@@ -636,6 +673,88 @@ func TestLegacyICEStrategyConfigKeepsLargerEndpointHintWindow(t *testing.T) {
 	}
 }
 
+func TestRefreshRuntimePublicEndpointHintsUpdatesRuntimeState(t *testing.T) {
+	cfg := config.Default()
+	recorder := &recordingNATTraversal{
+		report: nat.STUNMappingReport{
+			NATType: nat.NATTypeUnknown,
+			Probes: []nat.STUNMappingProbe{{
+				LocalAddr:  &net.UDPAddr{IP: net.IPv4(192, 168, 1, 20), Port: 40000},
+				MappedAddr: &net.UDPAddr{IP: net.IPv4(198, 51, 100, 44), Port: 45678},
+				ServerAddr: &net.UDPAddr{IP: net.IPv4(198, 51, 100, 1), Port: 3478},
+			}},
+		},
+	}
+	eng := &engine{
+		cfg: cfg,
+		nat: recorder,
+		status: EngineStatus{
+			NATType: nat.NATTypeSymmetric.String(),
+		},
+		runtimePublicEndpointHints: []string{"117.48.146.2:41000/192.168.1.20:40000"},
+	}
+
+	eng.refreshRuntimePublicEndpointHints(context.Background(), "test")
+
+	if recorder.detectCalls != 1 {
+		t.Fatalf("DetectSTUNMapping calls = %d, want 1", recorder.detectCalls)
+	}
+	if eng.status.NATType != nat.NATTypeUnknown.String() {
+		t.Fatalf("NATType = %q, want %q", eng.status.NATType, nat.NATTypeUnknown.String())
+	}
+	want := []string{"198.51.100.44:45678/192.168.1.20:40000"}
+	if !slices.Equal(eng.runtimePublicEndpointHints, want) {
+		t.Fatalf("runtimePublicEndpointHints = %#v, want %#v", eng.runtimePublicEndpointHints, want)
+	}
+}
+
+func TestRefreshRuntimePublicEndpointHintsPreservesHintsOnError(t *testing.T) {
+	cfg := config.Default()
+	recorder := &recordingNATTraversal{
+		detectErr: errors.New("stun timeout"),
+	}
+	eng := &engine{
+		cfg: cfg,
+		nat: recorder,
+		status: EngineStatus{
+			NATType: nat.NATTypeSymmetric.String(),
+		},
+		runtimePublicEndpointHints: []string{"117.48.146.2:41000/192.168.1.20:40000"},
+	}
+
+	eng.refreshRuntimePublicEndpointHints(context.Background(), "test")
+
+	if recorder.detectCalls != 1 {
+		t.Fatalf("DetectSTUNMapping calls = %d, want 1", recorder.detectCalls)
+	}
+	want := []string{"117.48.146.2:41000/192.168.1.20:40000"}
+	if !slices.Equal(eng.runtimePublicEndpointHints, want) {
+		t.Fatalf("runtimePublicEndpointHints = %#v, want preserved hints %#v", eng.runtimePublicEndpointHints, want)
+	}
+	if eng.status.NATType != nat.NATTypeSymmetric.String() {
+		t.Fatalf("NATType = %q, want preserved %q", eng.status.NATType, nat.NATTypeSymmetric.String())
+	}
+}
+
+func TestRefreshRuntimePublicEndpointHintsHonorsOptOut(t *testing.T) {
+	cfg := config.Default()
+	cfg.NAT.AutoPublicEndpointHints = false
+	recorder := &recordingNATTraversal{
+		report: nat.STUNMappingReport{NATType: nat.NATTypeUnknown},
+	}
+	eng := &engine{
+		cfg:                        cfg,
+		nat:                        recorder,
+		runtimePublicEndpointHints: []string{"117.48.146.2:41000/192.168.1.20:40000"},
+	}
+
+	eng.refreshRuntimePublicEndpointHints(context.Background(), "test")
+
+	if recorder.detectCalls != 0 {
+		t.Fatalf("DetectSTUNMapping calls = %d, want 0 when auto hints disabled", recorder.detectCalls)
+	}
+}
+
 func TestRuntimePublicEndpointHintsFromReportUsesDefaultAndAllowsOptOut(t *testing.T) {
 	report := nat.STUNMappingReport{
 		NATType: nat.NATTypeUnknown,
@@ -693,7 +812,10 @@ func TestRuntimePublicEndpointHintsFromReportHonorsTrustedCIDRs(t *testing.T) {
 }
 
 type recordingNATTraversal struct {
-	cfg nat.ICEConfig
+	cfg         nat.ICEConfig
+	report      nat.STUNMappingReport
+	detectErr   error
+	detectCalls int
 }
 
 func (r *recordingNATTraversal) DetectNATType(context.Context) (nat.NATType, error) {
@@ -701,7 +823,11 @@ func (r *recordingNATTraversal) DetectNATType(context.Context) (nat.NATType, err
 }
 
 func (r *recordingNATTraversal) DetectSTUNMapping(context.Context) (nat.STUNMappingReport, error) {
-	return nat.STUNMappingReport{NATType: nat.NATTypeUnknown}, nil
+	r.detectCalls++
+	if r.detectErr != nil {
+		return nat.STUNMappingReport{}, r.detectErr
+	}
+	return r.report, nil
 }
 
 func (r *recordingNATTraversal) NewICEAgent(cfg nat.ICEConfig) (nat.ICEAgent, error) {
@@ -715,6 +841,19 @@ func resolverCandidateNames(candidates []sesspkg.StrategyCandidate) []string {
 		names = append(names, candidate.Name)
 	}
 	return names
+}
+
+func publicEndpointHintPlanMetadata(plans []solver.Plan) []string {
+	out := make([]string, 0)
+	for _, plan := range plans {
+		if plan.Metadata == nil {
+			continue
+		}
+		if value := plan.Metadata["public_endpoint_hints"]; value != "" {
+			out = append(out, value)
+		}
+	}
+	return out
 }
 
 func clientStrategyOrderObservation(strategy, event, connectionType, errorClass string, scoped bool) solver.Observation {
