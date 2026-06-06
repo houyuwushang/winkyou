@@ -126,8 +126,8 @@ func (c *Config) Validate() error {
 	if err := validateNAT1To1IPs("nat.nat1to1_ips", c.NAT.NAT1To1IPs); err != nil {
 		return err
 	}
-	trustedDirectCIDRs := mergeStringLists(c.NAT.DirectTrustedCIDRs, c.NAT.PublicDirectTrustedCIDRs)
-	if err := validatePublicEndpointHints("nat.public_endpoint_hints", c.NAT.PublicEndpointHints, trustedDirectCIDRs); err != nil {
+	endpointHintAllowedCIDRs := mergeStringLists(c.NAT.CandidateCIDRInclude, c.NAT.DirectTrustedCIDRs, c.NAT.PublicDirectTrustedCIDRs)
+	if err := validatePublicEndpointHints("nat.public_endpoint_hints", c.NAT.PublicEndpointHints, endpointHintAllowedCIDRs); err != nil {
 		return err
 	}
 	if c.NAT.PublicEndpointHintPortWindow < 0 || c.NAT.PublicEndpointHintPortWindow > maxPublicEndpointHintPortWindow {

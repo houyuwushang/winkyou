@@ -315,6 +315,13 @@ func TestValidateNATPublicCandidateHints(t *testing.T) {
 	}
 
 	cfg = config.Default()
+	cfg.NAT.CandidateCIDRInclude = []string{"10.6.22.0/24"}
+	cfg.NAT.PublicEndpointHints = []string{"10.6.22.1:41000/10.6.22.3:40000"}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("Validate() candidate-cidr public endpoint hint error = %v", err)
+	}
+
+	cfg = config.Default()
 	cfg.NAT.PublicEndpointHintPortWindow = -1
 	err = cfg.Validate()
 	if err == nil {
