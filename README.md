@@ -195,6 +195,8 @@ nat:
 
 当本轮 `legacyice/public_direct` 已经带有手工或运行时 endpoint hint 时，legacy ICE 会把 `public_direct` 排到普通 `direct_prefer` 前面，让 hint 对应的公网 UDP 打洞先拿到执行窗口；如果历史 observation 显示 relay 更可靠，仍可以先用 relay 保活，但 `public_direct` 会排在 `direct_prefer` 前继续争取 protected-direct standby。
 
+多个 mapped hint 本地端口会拆成多个 public-direct hint 尝试；这些尝试共享 `legacyice/public_direct` 信令家族，且 session 会给后续 `relay_only` fallback 保留执行窗口，避免“多试几个打洞端口”反而跳过保底 relay。
+
 如果另一个打洞工具已经证明某个非公网地址段确实是两端可达的 underlay，例如受控测试中的运营商 CGNAT 段，可以显式配置 `nat.direct_trusted_cidrs`。该字段会让 `legacyice/direct_prefer` 和 `legacyice/public_direct` 在 path dependency 判定中信任这些 CIDR，并让 `public_direct` 接受这些 CIDR 内的候选、手工 mapped hint，以及启动时 STUN 观测生成的 runtime endpoint hint。旧的 `nat.public_direct_trusted_cidrs` 仍兼容，并会与 `direct_trusted_cidrs` 合并使用。默认仍拒绝 `100.64.0.0/10`、私网、loopback、link-local 和 benchmark/overlay 地址。不要把 natpierce、Tailscale、Docker 或其他虚拟 overlay 的接口网段随意加入 trusted CIDR，否则会把依赖不清的 path 误标成 protected direct；只有在你确认该 CIDR 是 WinkYou 自己可直接打到的 underlay，而不是外部 overlay 提供的虚拟路由时才应配置。`wink doctor` 会检查 `direct_trusted_cidrs` 是否命中本机上疑似 natpierce、Tailscale、Docker、Wintun 或 WinkYou 的虚拟接口，并给出 warning。
 
 当 `legacyice/public_direct` 的 STUN gather 超时但本地 UDP candidate 已经建立时，NAT 层会返回已知本地候选，让上层继续追加 `public_endpoint_hints` 并尽快交换候选开始打洞。这不会把私网 host candidate 当作公网候选发布；最终信令里能否出现可用候选，仍由 `public_direct` 的公网过滤规则决定。

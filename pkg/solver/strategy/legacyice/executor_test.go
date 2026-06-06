@@ -823,6 +823,53 @@ func TestPublicDirectSplitHintPlanConstrainsMappedHintPort(t *testing.T) {
 	}
 }
 
+func TestPublicDirectHintExecutorAcceptsPublicDirectPlanFamilyMessage(t *testing.T) {
+	publicCandidate := nat.Candidate{Type: nat.CandidateTypeSrflx, Address: &net.UDPAddr{IP: net.IPv4(117, 48, 146, 2), Port: 41000}}
+	agent := &recordingICEAgent{
+		connectErr:    context.Canceled,
+		connectCalled: make(chan struct{}),
+	}
+	exec := newExecutor(Config{
+		NewICEAgent: func(ctx context.Context, req AgentRequest) (nat.ICEAgent, error) {
+			_ = ctx
+			_ = req
+			return agent, nil
+		},
+		GatherTimeout:  100 * time.Millisecond,
+		ConnectTimeout: 100 * time.Millisecond,
+	}, solver.SolveInput{
+		SessionID:    "session/node-a/node-b",
+		LocalNodeID:  "node-a",
+		RemoteNodeID: "node-b",
+		Initiator:    true,
+	}, solver.Plan{
+		ID:       "legacyice/public_direct_hint_1",
+		Strategy: StrategyName,
+		Metadata: map[string]string{"mode": string(modePublicDirect)},
+	}, executorConfig{Mode: modePublicDirect})
+
+	payload, err := marshalAnswerPayload(answerPayload{
+		SessionID: "session/node-a/node-b",
+		PlanID:    planIDPublicDirect,
+		ICE: nat.ICESessionDescriptionPayload{
+			Ufrag:      "remote",
+			Pwd:        "remote-pwd",
+			Candidates: []nat.Candidate{publicCandidate},
+		},
+		SentAt: time.Now(),
+	})
+	if err != nil {
+		t.Fatalf("marshalAnswerPayload(public_direct family) error = %v", err)
+	}
+	if err := exec.HandleMessage(context.Background(), recordingSessionIO{}, NewMessage(MessageTypeAnswer, payload, time.Now())); err != nil {
+		t.Fatalf("HandleMessage(public_direct family) error = %v", err)
+	}
+	<-agent.connectCalled
+	if len(agent.remoteCandidates) != 1 || agent.remoteCandidates[0].Address.String() != publicCandidate.Address.String() {
+		t.Fatalf("remote candidates = %#v, want public-direct family candidate", agent.remoteCandidates)
+	}
+}
+
 func TestPublicDirectAgentRequestIncludesMultipleMappedHintLocalBases(t *testing.T) {
 	got := publicEndpointHintLocalBaseCIDRs([]string{
 		"117.48.146.3:41001/192.168.1.21:40000",

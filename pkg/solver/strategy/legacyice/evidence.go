@@ -104,6 +104,13 @@ func isPublicDirectPlanID(planID string) bool {
 	return planID == planIDPublicDirect || strings.HasPrefix(planID, planIDPublicDirect+"_hint_")
 }
 
+func legacyICEPlanFamily(planID string) string {
+	if isPublicDirectPlanID(planID) {
+		return planIDPublicDirect
+	}
+	return strings.TrimSpace(planID)
+}
+
 func (e *evidenceSummary) addProbeResult(result *solver.ProbeResultSummary) {
 	if result == nil || result.ScriptType != pmodel.ScriptTypePreflight {
 		return

@@ -424,6 +424,54 @@ func TestSessionCandidateBudgetCoversEachLegacyPlanTimeout(t *testing.T) {
 	}
 }
 
+func TestSessionCandidateBudgetCoversSplitPublicDirectHintPlans(t *testing.T) {
+	s := &Session{cfg: Config{RunTimeout: 10 * time.Second}}
+	budget := s.candidateExecutionBudget(4)
+	if budget.MaxCandidates != 4 {
+		t.Fatalf("MaxCandidates = %d, want all split public-direct plans plus fallback", budget.MaxCandidates)
+	}
+	if budget.TimeBudget < 40*time.Second {
+		t.Fatalf("candidate budget = %v, want at least 40s to cover split hints and fallback", budget.TimeBudget)
+	}
+}
+
+func TestSessionExecutesRelayAfterSplitPublicDirectHintPlansFail(t *testing.T) {
+	plans := []solver.Plan{
+		{ID: "legacyice/direct_prefer", Strategy: "legacy_ice_udp"},
+		{ID: "legacyice/public_direct_hint_1", Strategy: "legacy_ice_udp"},
+		{ID: "legacyice/public_direct_hint_2", Strategy: "legacy_ice_udp"},
+		{ID: "legacyice/relay_only", Strategy: "legacy_ice_udp"},
+	}
+	strategy := &orderedLegacyPlanStrategy{plans: plans, transport: &fakeTransport{}}
+	sender := &fakeSender{}
+
+	s, err := New(Config{
+		SessionID:             "session/node-a/node-b",
+		LocalNodeID:           "node-a",
+		PeerID:                "node-b",
+		Initiator:             true,
+		Resolver:              &fakeResolver{local: rproto.Capability{Strategies: []string{"legacy_ice_udp"}}, strategy: strategy, selection: Selection{StrategyName: "legacy_ice_udp", Negotiated: true}},
+		Sender:                sender,
+		RunTimeout:            3 * time.Second,
+		CapabilityWaitTimeout: time.Second,
+	})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	if err := s.Start(context.Background()); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	if err := s.HandleMessage(context.Background(), envelopeMessage(t, "session/node-a/node-b", "node-b", "node-a", rproto.MsgTypeCapability, 1, rproto.Capability{Strategies: []string{"legacy_ice_udp"}}, time.Now())); err != nil {
+		t.Fatalf("HandleMessage(capability) error = %v", err)
+	}
+	waitForState(t, s, StateBound)
+
+	want := []string{"legacyice/direct_prefer", "legacyice/public_direct_hint_1", "legacyice/public_direct_hint_2", "legacyice/relay_only"}
+	if !slices.Equal(strategy.executed, want) {
+		t.Fatalf("executed plans = %v, want split public-direct hints plus relay fallback %v", strategy.executed, want)
+	}
+}
+
 func TestSessionCandidateLoopContinuesAfterProtectedDirectWhenPolicyEnabled(t *testing.T) {
 	plans := []solver.Plan{
 		{ID: "legacyice/direct_prefer", Strategy: "legacy_ice_udp"},

@@ -4,11 +4,14 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"regexp"
 	"strings"
 
 	rproto "winkyou/pkg/rendezvous/proto"
 	"winkyou/pkg/solver"
 )
+
+var planHintSuffixPattern = regexp.MustCompile(`_hint_[0-9]+$`)
 
 func (s *Session) setActiveExecutor(planID string, executor solver.PlanExecutor) {
 	s.strategyMu.Lock()
@@ -232,7 +235,7 @@ func (s *Session) discardPendingStrategyMessagesForPlan(planID string) {
 	defer s.strategyMu.Unlock()
 	retained := make([]solver.Message, 0, len(s.pending))
 	for _, msg := range s.pending {
-		if msgPlanID, ok := strategyMessagePlanID(msg); ok && msgPlanID != planID {
+		if msgPlanID, ok := strategyMessagePlanID(msg); ok && !strategyPlanIDsMatch(msgPlanID, planID) {
 			retained = append(retained, msg)
 		}
 	}
@@ -244,7 +247,7 @@ func shouldBufferForFuturePlan(msg solver.Message, activePlan string) bool {
 		return false
 	}
 	msgPlanID, ok := strategyMessagePlanID(msg)
-	return ok && msgPlanID != activePlan
+	return ok && !strategyPlanIDsMatch(msgPlanID, activePlan)
 }
 
 func strategyMessagePlanID(msg solver.Message) (string, bool) {
@@ -262,4 +265,17 @@ func strategyMessagePlanID(msg solver.Message) (string, bool) {
 		return "", false
 	}
 	return planID, true
+}
+
+func strategyPlanIDsMatch(a, b string) bool {
+	a = strings.TrimSpace(a)
+	b = strings.TrimSpace(b)
+	if a == "" || b == "" {
+		return false
+	}
+	return a == b || normalizeStrategyPlanID(a) == normalizeStrategyPlanID(b)
+}
+
+func normalizeStrategyPlanID(planID string) string {
+	return planHintSuffixPattern.ReplaceAllString(strings.TrimSpace(planID), "")
 }

@@ -408,6 +408,28 @@ func TestSessionBuffersFuturePlanMessagesForMatchingExecutor(t *testing.T) {
 	}
 }
 
+func TestStrategyPlanMessageMatchingAcceptsHintPlanFamily(t *testing.T) {
+	publicDirect := solver.Message{Kind: solver.MessageKindStrategy, Payload: []byte(`{"plan_id":"legacyice/public_direct"}`)}
+	publicDirectHint := solver.Message{Kind: solver.MessageKindStrategy, Payload: []byte(`{"plan_id":"legacyice/public_direct_hint_2"}`)}
+	relay := solver.Message{Kind: solver.MessageKindStrategy, Payload: []byte(`{"plan_id":"legacyice/relay_only"}`)}
+
+	if shouldBufferForFuturePlan(publicDirect, "legacyice/public_direct_hint_1") {
+		t.Fatal("public_direct family message buffered for hint plan, want immediate delivery")
+	}
+	if shouldBufferForFuturePlan(publicDirectHint, "legacyice/public_direct") {
+		t.Fatal("hint plan family message buffered for public_direct, want immediate delivery")
+	}
+	if !shouldBufferForFuturePlan(relay, "legacyice/public_direct_hint_1") {
+		t.Fatal("relay message not buffered for public_direct hint plan")
+	}
+	if !strategyPlanIDsMatch("legacyice/public_direct_hint_2", "legacyice/public_direct") {
+		t.Fatal("strategyPlanIDsMatch() = false, want hint family match")
+	}
+	if strategyPlanIDsMatch("legacyice/public_direct_hint_2", "legacyice/relay_only") {
+		t.Fatal("strategyPlanIDsMatch() = true for unrelated plans")
+	}
+}
+
 func TestSessionObservationFlowsFromStrategyToSinkAndRemote(t *testing.T) {
 	localTransport := &fakeTransport{}
 	remoteSender := &callbackSender{}

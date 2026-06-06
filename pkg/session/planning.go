@@ -273,10 +273,8 @@ func (s *Session) candidateExecutionBudget(planCount int) solver.ExecutionBudget
 	if planCount <= 0 {
 		return budget
 	}
-	maxCandidates := budget.MaxCandidates
-	if maxCandidates <= 0 || maxCandidates > planCount {
-		maxCandidates = planCount
-	}
+	maxCandidates := planCount
+	budget.MaxCandidates = maxCandidates
 	if timeout := s.executionTimeout(); timeout > 0 && maxCandidates > 0 {
 		minBudget := timeout * time.Duration(maxCandidates)
 		if budget.TimeBudget < minBudget {

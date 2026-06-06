@@ -106,7 +106,7 @@ func (e *executor) HandleMessage(ctx context.Context, sess solver.SessionIO, msg
 		if err != nil {
 			return err
 		}
-		if offer.PlanID != "" && offer.PlanID != e.plan.ID {
+		if !e.messagePlanMatches(offer.PlanID) {
 			return nil
 		}
 		if err := agent.SetRemoteCredentials(offer.ICE.Ufrag, offer.ICE.Pwd); err != nil {
@@ -131,7 +131,7 @@ func (e *executor) HandleMessage(ctx context.Context, sess solver.SessionIO, msg
 		if err != nil {
 			return err
 		}
-		if answer.PlanID != "" && answer.PlanID != e.plan.ID {
+		if !e.messagePlanMatches(answer.PlanID) {
 			return nil
 		}
 		if err := agent.SetRemoteCredentials(answer.ICE.Ufrag, answer.ICE.Pwd); err != nil {
@@ -153,7 +153,7 @@ func (e *executor) HandleMessage(ctx context.Context, sess solver.SessionIO, msg
 		if err != nil {
 			return err
 		}
-		if candidate.PlanID != "" && candidate.PlanID != e.plan.ID {
+		if !e.messagePlanMatches(candidate.PlanID) {
 			return nil
 		}
 		filtered, summary := filterRemoteCandidatesWithSummary([]nat.Candidate{candidate.ICE.Candidate}, e.execCfg)
@@ -169,6 +169,14 @@ func (e *executor) HandleMessage(ctx context.Context, sess solver.SessionIO, msg
 	default:
 		return nil
 	}
+}
+
+func (e *executor) messagePlanMatches(planID string) bool {
+	planID = strings.TrimSpace(planID)
+	if planID == "" {
+		return true
+	}
+	return planID == e.plan.ID || legacyICEPlanFamily(planID) == legacyICEPlanFamily(e.plan.ID)
 }
 
 func (e *executor) Close() error {
