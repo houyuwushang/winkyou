@@ -369,6 +369,26 @@ func TestDoctorCandidateFilterSummaryIncludesEffectiveSymmetricWindow(t *testing
 	}
 }
 
+func TestDoctorCandidateFilterSummaryIncludesEffectiveUnknownWindow(t *testing.T) {
+	cfg := config.Default()
+	cfg.NAT.PublicEndpointHintPortWindow = 2
+	report := nat.STUNMappingReport{
+		NATType: nat.NATTypeUnknown,
+		Probes: []nat.STUNMappingProbe{{
+			LocalAddr:  &net.UDPAddr{IP: net.ParseIP("192.168.1.20"), Port: 50000},
+			MappedAddr: &net.UDPAddr{IP: net.ParseIP("117.48.146.2"), Port: 41000},
+			ServerAddr: &net.UDPAddr{IP: net.ParseIP("8.8.8.8"), Port: 19302},
+		}},
+	}
+
+	summary := candidateFilterSummary(&cfg, &report)
+	if !strings.Contains(summary, "public_endpoint_hint_port_window=2") ||
+		!strings.Contains(summary, "effective_public_endpoint_hint_port_window=16") ||
+		!strings.Contains(summary, "effective_window_reason=unclassified_nat_endpoint_hints") {
+		t.Fatalf("candidateFilterSummary() = %q, want effective unclassified hint window", summary)
+	}
+}
+
 func TestDoctorCandidateFilterSummaryHonorsEffectiveWindowOptOut(t *testing.T) {
 	cfg := config.Default()
 	cfg.NAT.PublicEndpointHintPortWindow = 0

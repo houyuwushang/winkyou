@@ -562,12 +562,30 @@ func TestLegacyICEStrategyConfigWidensEndpointHintWindowForSymmetricNAT(t *testi
 	}
 }
 
-func TestLegacyICEStrategyConfigKeepsEndpointHintWindowForStableNAT(t *testing.T) {
+func TestLegacyICEStrategyConfigWidensEndpointHintWindowForUnknownNAT(t *testing.T) {
 	cfg := config.Default()
 	eng := &engine{
 		cfg: cfg,
 		status: EngineStatus{
 			NATType: nat.NATTypeUnknown.String(),
+		},
+		runtimePublicEndpointHints: []string{
+			"117.48.146.2:41000/192.168.1.20:40000",
+		},
+	}
+
+	legacyCfg := eng.legacyICEStrategyConfig()
+	if legacyCfg.PublicEndpointHintPortWindow != symmetricPublicEndpointHintPortWindow {
+		t.Fatalf("PublicEndpointHintPortWindow = %d, want unclassified runtime hint window %d", legacyCfg.PublicEndpointHintPortWindow, symmetricPublicEndpointHintPortWindow)
+	}
+}
+
+func TestLegacyICEStrategyConfigKeepsEndpointHintWindowForNoNAT(t *testing.T) {
+	cfg := config.Default()
+	eng := &engine{
+		cfg: cfg,
+		status: EngineStatus{
+			NATType: nat.NATTypeNone.String(),
 		},
 		runtimePublicEndpointHints: []string{
 			"117.48.146.2:41000/192.168.1.20:40000",

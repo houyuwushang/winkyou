@@ -206,7 +206,8 @@ func (e *engine) publicEndpointHintPortWindow(hints []string) int {
 	e.mu.RLock()
 	natType := strings.TrimSpace(e.status.NATType)
 	e.mu.RUnlock()
-	if natType == nat.NATTypeSymmetric.String() {
+	switch natType {
+	case nat.NATTypeSymmetric.String(), nat.NATTypeUnknown.String():
 		return symmetricPublicEndpointHintPortWindow
 	}
 	return configured

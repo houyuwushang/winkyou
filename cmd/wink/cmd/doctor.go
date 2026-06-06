@@ -1629,9 +1629,9 @@ func candidateFilterSummary(cfg *config.Config, stunReport *nat.STUNMappingRepor
 	if cfg.NAT.PublicEndpointHintPortWindow > 0 {
 		parts = append(parts, fmt.Sprintf("public_endpoint_hint_port_window=%d", cfg.NAT.PublicEndpointHintPortWindow))
 	}
-	if effective := effectivePublicEndpointHintPortWindow(cfg.NAT, stunReport); effective > cfg.NAT.PublicEndpointHintPortWindow {
+	if effective, reason := effectivePublicEndpointHintPortWindow(cfg.NAT, stunReport); effective > cfg.NAT.PublicEndpointHintPortWindow {
 		parts = append(parts, fmt.Sprintf("effective_public_endpoint_hint_port_window=%d", effective))
-		parts = append(parts, "effective_window_reason=symmetric_nat_endpoint_hints")
+		parts = append(parts, "effective_window_reason="+reason)
 	}
 	if len(cfg.NAT.DirectTrustedCIDRs) > 0 {
 		parts = append(parts, "direct_trusted_cidrs="+strings.Join(cfg.NAT.DirectTrustedCIDRs, ","))
@@ -1644,18 +1644,25 @@ func candidateFilterSummary(cfg *config.Config, stunReport *nat.STUNMappingRepor
 
 const doctorSymmetricPublicEndpointHintPortWindow = 16
 
-func effectivePublicEndpointHintPortWindow(cfg config.NATConfig, stunReport *nat.STUNMappingReport) int {
+func effectivePublicEndpointHintPortWindow(cfg config.NATConfig, stunReport *nat.STUNMappingReport) (int, string) {
 	configured := cfg.PublicEndpointHintPortWindow
 	if configured <= 0 || configured >= doctorSymmetricPublicEndpointHintPortWindow {
-		return configured
+		return configured, ""
 	}
-	if stunReport == nil || stunReport.NATType != nat.NATTypeSymmetric {
-		return configured
+	if stunReport == nil {
+		return configured, ""
 	}
 	if len(effectivePublicEndpointHints(cfg, *stunReport)) == 0 {
-		return configured
+		return configured, ""
 	}
-	return doctorSymmetricPublicEndpointHintPortWindow
+	switch stunReport.NATType {
+	case nat.NATTypeSymmetric:
+		return doctorSymmetricPublicEndpointHintPortWindow, "symmetric_nat_endpoint_hints"
+	case nat.NATTypeUnknown:
+		return doctorSymmetricPublicEndpointHintPortWindow, "unclassified_nat_endpoint_hints"
+	default:
+		return configured, ""
+	}
 }
 
 func effectivePublicEndpointHints(cfg config.NATConfig, report nat.STUNMappingReport) []string {
