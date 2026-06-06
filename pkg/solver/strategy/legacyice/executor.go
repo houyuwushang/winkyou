@@ -43,7 +43,7 @@ type executor struct {
 
 const publicDirectHintGatherTimeout = time.Second
 
-const publicDirectCandidateSignalLimit = 32
+const publicDirectCandidateSignalLimit = 64
 
 func newExecutor(cfg Config, input solver.SolveInput, plan solver.Plan, execCfg executorConfig) *executor {
 	lifecycleCtx, lifecycleCancel := context.WithCancel(context.Background())

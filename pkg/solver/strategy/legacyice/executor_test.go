@@ -489,7 +489,7 @@ func TestPublicDirectCandidateObservationReportsEndpointHintPortWindow(t *testin
 }
 
 func TestPublicDirectCandidateSignalsAreBounded(t *testing.T) {
-	candidates := make([]nat.Candidate, 40)
+	candidates := make([]nat.Candidate, 80)
 	for i := range candidates {
 		candidates[i] = nat.Candidate{
 			Type:    nat.CandidateTypeSrflx,
@@ -525,8 +525,39 @@ func TestPublicDirectCandidateSignalsAreBounded(t *testing.T) {
 	if obs == nil {
 		t.Fatalf("candidate_signaled observation missing: %#v", io.observations)
 	}
-	if obs.Details["candidate_total"] != "40" || obs.Details["candidate_sent"] != strconv.Itoa(publicDirectCandidateSignalLimit) || obs.Details["candidate_capped"] != "true" {
-		t.Fatalf("candidate_signaled details = %#v, want capped 40/%d", obs.Details, publicDirectCandidateSignalLimit)
+	if obs.Details["candidate_total"] != "80" || obs.Details["candidate_sent"] != strconv.Itoa(publicDirectCandidateSignalLimit) || obs.Details["candidate_capped"] != "true" {
+		t.Fatalf("candidate_signaled details = %#v, want capped 80/%d", obs.Details, publicDirectCandidateSignalLimit)
+	}
+}
+
+func TestPublicDirectCandidateSignalLimitCoversSymmetricHintWindow(t *testing.T) {
+	const symmetricHintWindow = 16
+	candidates := make([]nat.Candidate, 1+2*symmetricHintWindow)
+	for i := range candidates {
+		candidates[i] = nat.Candidate{
+			Type:    nat.CandidateTypeSrflx,
+			Address: &net.UDPAddr{IP: net.IPv4(117, 48, 146, 2), Port: 41000 + i},
+		}
+	}
+	exec := newExecutor(Config{}, solver.SolveInput{
+		SessionID: "session/node-a/node-b",
+	}, solver.Plan{
+		ID:       planIDPublicDirect,
+		Strategy: StrategyName,
+	}, executorConfig{Mode: modePublicDirect})
+	io := &capturingSessionIO{}
+
+	exec.sendCandidateMessages(context.Background(), io, candidates)
+
+	if len(io.messages) != len(candidates) {
+		t.Fatalf("candidate signal messages = %d, want all %d symmetric-window candidates", len(io.messages), len(candidates))
+	}
+	obs := findObservation(io.observations, "candidate_signaled")
+	if obs == nil {
+		t.Fatalf("candidate_signaled observation missing: %#v", io.observations)
+	}
+	if obs.Details["candidate_total"] != strconv.Itoa(len(candidates)) || obs.Details["candidate_sent"] != strconv.Itoa(len(candidates)) || obs.Details["candidate_capped"] != "false" {
+		t.Fatalf("candidate_signaled details = %#v, want uncapped full symmetric window", obs.Details)
 	}
 }
 
