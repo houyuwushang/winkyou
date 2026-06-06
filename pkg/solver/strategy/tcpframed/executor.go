@@ -12,6 +12,11 @@ import (
 	"winkyou/pkg/transport/framedstream"
 )
 
+const (
+	dialRetryInterval  = 200 * time.Millisecond
+	dialAttemptTimeout = time.Second
+)
+
 type executor struct {
 	cfg   Config
 	input solver.SolveInput
@@ -166,16 +171,12 @@ func (e *executor) executeDial(ctx context.Context, sess solver.SessionIO) (solv
 
 	dialCtx := ctx
 	cancel := func() {}
-	if _, ok := ctx.Deadline(); !ok && e.cfg.DialTimeout > 0 {
+	if e.cfg.DialTimeout > 0 {
 		dialCtx, cancel = context.WithTimeout(ctx, e.cfg.DialTimeout)
 	}
 	defer cancel()
 
-	var dialer net.Dialer
-	if e.cfg.DialTimeout > 0 {
-		dialer.Timeout = e.cfg.DialTimeout
-	}
-	conn, err := dialer.DialContext(dialCtx, network, endpoint)
+	conn, err := dialWithRetry(dialCtx, network, endpoint)
 	if err != nil {
 		_ = e.sendAnswer(ctx, sess, false, err.Error())
 		return solver.Result{}, err
@@ -186,6 +187,83 @@ func (e *executor) executeDial(ctx context.Context, sess solver.SessionIO) (solv
 		return solver.Result{}, err
 	}
 	return e.resultForConn(e.releaseConn(conn), role), nil
+}
+
+func dialWithRetry(ctx context.Context, network, endpoint string) (net.Conn, error) {
+	var lastErr error
+	for {
+		if err := ctx.Err(); err != nil {
+			if lastErr != nil {
+				return nil, lastErr
+			}
+			return nil, err
+		}
+
+		attemptTimeout := boundedDialAttemptTimeout(ctx)
+		attemptCtx := ctx
+		cancel := func() {}
+		if attemptTimeout > 0 {
+			attemptCtx, cancel = context.WithTimeout(ctx, attemptTimeout)
+		}
+		var dialer net.Dialer
+		if attemptTimeout > 0 {
+			dialer.Timeout = attemptTimeout
+		}
+		conn, err := dialer.DialContext(attemptCtx, network, endpoint)
+		cancel()
+		if err == nil {
+			return conn, nil
+		}
+		lastErr = err
+
+		sleep := boundedDialRetrySleep(ctx)
+		if sleep <= 0 {
+			if lastErr != nil {
+				return nil, lastErr
+			}
+			return nil, ctx.Err()
+		}
+		timer := time.NewTimer(sleep)
+		select {
+		case <-timer.C:
+		case <-ctx.Done():
+			if !timer.Stop() {
+				<-timer.C
+			}
+			if lastErr != nil {
+				return nil, lastErr
+			}
+			return nil, ctx.Err()
+		}
+	}
+}
+
+func boundedDialAttemptTimeout(ctx context.Context) time.Duration {
+	timeout := dialAttemptTimeout
+	if deadline, ok := ctx.Deadline(); ok {
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			return 0
+		}
+		if remaining < timeout {
+			return remaining
+		}
+	}
+	return timeout
+}
+
+func boundedDialRetrySleep(ctx context.Context) time.Duration {
+	sleep := dialRetryInterval
+	if deadline, ok := ctx.Deadline(); ok {
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			return 0
+		}
+		if remaining < sleep {
+			return remaining
+		}
+	}
+	return sleep
 }
 
 func (e *executor) sendOffer(ctx context.Context, sess solver.SessionIO, endpoint string) error {

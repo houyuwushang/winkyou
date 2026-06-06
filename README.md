@@ -142,6 +142,7 @@ tcp_framed:
 在 natpierce 这类拓扑中，`10.6.22.1:22` 能通通常只能证明该端口或该会话被外部系统转发；如果 `10.6.22.1:<随机端口>` 不通，`tcp_framed` 的 `listen_addr: "...:0"` 也不会自动变成可达路径。
 
 配置好固定端口后，可以先运行 `wink --config <config.yaml> doctor --strategy tcp_framed`。如果本端配置了 `tcp_framed.dial_addr`，doctor 会用短超时实际 TCP 连接该 endpoint；成功只能证明该 TCP endpoint 当前可达，失败则优先检查对端监听、端口转发和防火墙。
+真实 session 执行时，`tcp_framed` 的拨号侧会在 `dial_timeout` 窗口内短间隔重试固定 endpoint，避免两端同时启动时监听侧尚未 ready 导致第一次 `connection refused` 就放弃。
 
 显式验证 relay-only 路径时，优先使用连接策略入口：
 

@@ -227,6 +227,57 @@ func TestDialAddrSkipsOffer(t *testing.T) {
 	}
 }
 
+func TestDialAddrRetriesUntilListenerStarts(t *testing.T) {
+	reserved, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("reserve Listen() error = %v", err)
+	}
+	addr := reserved.Addr().String()
+	_ = reserved.Close()
+
+	accepted := make(chan net.Conn, 1)
+	listenErr := make(chan error, 1)
+	go func() {
+		time.Sleep(300 * time.Millisecond)
+		ln, err := net.Listen("tcp", addr)
+		if err != nil {
+			listenErr <- err
+			return
+		}
+		defer ln.Close()
+		conn, err := ln.Accept()
+		if err != nil {
+			listenErr <- err
+			return
+		}
+		accepted <- conn
+	}()
+
+	exec := newExecutor(Config{
+		Role:        RoleDial,
+		DialAddr:    addr,
+		DialTimeout: 2 * time.Second,
+	}, solver.SolveInput{SessionID: "session/node-a/node-b"}, solver.Plan{ID: PlanID, Strategy: StrategyName})
+	defer exec.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	result, err := exec.Execute(ctx, &tcpFramedTestIO{})
+	if err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+	defer result.Transport.Close()
+
+	select {
+	case conn := <-accepted:
+		_ = conn.Close()
+	case err := <-listenErr:
+		t.Fatalf("delayed listener error = %v", err)
+	case <-ctx.Done():
+		t.Fatalf("listener did not accept retried static dial: %v", ctx.Err())
+	}
+}
+
 func TestInvalidRoleFailsBeforeNetwork(t *testing.T) {
 	exec := newExecutor(Config{Role: "sideways"}, solver.SolveInput{SessionID: "session/node-a/node-b"}, solver.Plan{ID: PlanID, Strategy: StrategyName})
 	_, err := exec.Execute(context.Background(), &tcpFramedTestIO{})
