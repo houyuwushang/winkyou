@@ -34,18 +34,22 @@ func shouldRequestInbandReICE(policy solver.PathPolicy, peer *PeerStatus) bool {
 }
 
 func (e *engine) schedulePeerImprovementByID(nodeID string) {
+	e.schedulePeerImprovementByIDWithForce(nodeID, false)
+}
+
+func (e *engine) schedulePeerImprovementByIDWithForce(nodeID string, force bool) {
 	e.mu.RLock()
 	var session *peerSession
 	if e.peerMgr != nil {
 		session = e.peerMgr.sessions[nodeID]
 	}
 	e.mu.RUnlock()
-	e.schedulePeerImprovement(nodeID, session)
+	e.schedulePeerImprovement(nodeID, session, force)
 }
 
-func (e *engine) schedulePeerImprovement(nodeID string, session *peerSession) {
+func (e *engine) schedulePeerImprovement(nodeID string, session *peerSession, force bool) {
 	runCtx, ok := e.runContext()
-	if session == nil || !ok || !shouldImproveBoundPath(e.multipathPathPolicy(), sessionLastPath(session)) {
+	if session == nil || !ok || (!force && !shouldImproveBoundPath(e.multipathPathPolicy(), sessionLastPath(session))) {
 		return
 	}
 
@@ -90,13 +94,13 @@ func (e *engine) schedulePeerImprovement(nodeID string, session *peerSession) {
 		expected.connectMu.Lock()
 		expected.improvePending = false
 		expected.connectMu.Unlock()
-		e.startPeerImprovement(nodeID, expected)
+		e.startPeerImprovement(nodeID, expected, force)
 	}(session, delay)
 }
 
-func (e *engine) startPeerImprovement(nodeID string, session *peerSession) {
+func (e *engine) startPeerImprovement(nodeID string, session *peerSession, force bool) {
 	runner := peerSessionRunner(session)
-	if session == nil || runner == nil || !shouldImproveBoundPath(e.multipathPathPolicy(), sessionLastPath(session)) {
+	if session == nil || runner == nil || (!force && !shouldImproveBoundPath(e.multipathPathPolicy(), sessionLastPath(session))) {
 		return
 	}
 
@@ -124,7 +128,7 @@ func (e *engine) startPeerImprovement(nodeID string, session *peerSession) {
 			e.log.Warn("peer path improvement failed", logger.String("node_id", nodeID), logger.Error(err))
 		}
 		if !found {
-			e.schedulePeerImprovement(nodeID, expected)
+			e.schedulePeerImprovement(nodeID, expected, force)
 		}
 	}(session)
 }

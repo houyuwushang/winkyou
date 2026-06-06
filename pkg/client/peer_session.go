@@ -293,7 +293,7 @@ func (e *engine) handlePeerSessionBound(nodeID string, s *peerSession, result so
 	e.persistState()
 	e.applyPeerAdvertisedRoutes(snapshot)
 	if shouldImproveBoundPath(e.multipathPathPolicy(), result.Summary) {
-		e.schedulePeerImprovement(nodeID, s)
+		e.schedulePeerImprovement(nodeID, s, false)
 	}
 }
 

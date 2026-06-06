@@ -39,7 +39,7 @@ func TestSchedulePeerImprovementAllowsConnectedBoundPeerWithoutProtectedDirect(t
 		}},
 	}
 
-	eng.schedulePeerImprovement("node-2", session)
+	eng.schedulePeerImprovement("node-2", session, false)
 
 	session.connectMu.Lock()
 	defer session.connectMu.Unlock()
@@ -71,11 +71,49 @@ func TestSchedulePeerImprovementSkipsProtectedDirectPath(t *testing.T) {
 		}},
 	}
 
-	eng.schedulePeerImprovement("node-2", session)
+	eng.schedulePeerImprovement("node-2", session, false)
 
 	session.connectMu.Lock()
 	defer session.connectMu.Unlock()
 	if session.improvePending {
 		t.Fatal("protected direct path should not schedule improvement")
+	}
+}
+
+func TestForcedSchedulePeerImprovementAllowsProtectedDirectPath(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	cfg := config.Default()
+	cfg.NAT.RetryInterval = time.Minute
+	cfg.NAT.RetryMaxInterval = time.Minute
+	session := &peerSession{
+		bound: true,
+		lastPath: solver.PathSummary{
+			PathID:         "multipath:relay/path",
+			ConnectionType: "relay",
+			Role:           solver.PathRolePrimaryCandidate,
+			Details: map[string]string{
+				"protected_direct_path_id": "direct/path",
+			},
+		},
+	}
+	eng := &engine{
+		cfg:    cfg,
+		runCtx: ctx,
+		peerMgr: &peerManager{sessions: map[string]*peerSession{
+			"node-2": session,
+		}},
+	}
+
+	eng.schedulePeerImprovement("node-2", session, true)
+
+	session.connectMu.Lock()
+	defer session.connectMu.Unlock()
+	if !session.improvePending {
+		t.Fatal("forced re-ice should schedule improvement even when local path is already protected")
+	}
+	if session.improveDelay != time.Minute {
+		t.Fatalf("improve delay = %v, want %v", session.improveDelay, time.Minute)
 	}
 }

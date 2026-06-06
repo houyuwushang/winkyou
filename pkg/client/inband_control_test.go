@@ -287,6 +287,57 @@ func TestHandleInbandReICERequestSchedulesImprovement(t *testing.T) {
 	}
 }
 
+func TestHandleInbandReICERequestForcesImprovementWhenLocalPathProtected(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	cfg := config.Default()
+	cfg.NAT.RetryInterval = time.Minute
+	cfg.NAT.RetryMaxInterval = time.Minute
+	session := &peerSession{
+		nodeID: "node-b",
+		bound:  true,
+		lastPath: solver.PathSummary{
+			PathID:         "multipath:relay/path",
+			ConnectionType: "relay",
+			Role:           solver.PathRolePrimaryCandidate,
+			Details: map[string]string{
+				"protected_direct_path_id": "direct/path",
+			},
+		},
+	}
+	eng := &engine{
+		cfg:    cfg,
+		runCtx: ctx,
+		status: EngineStatus{NodeID: "node-a"},
+		peers: map[string]*PeerStatus{
+			"node-b": {
+				NodeID:    "node-b",
+				State:     PeerStateConnected,
+				DataState: PeerDataStateAlive,
+			},
+		},
+		peerMgr: &peerManager{sessions: map[string]*peerSession{
+			"node-b": session,
+		}},
+	}
+
+	msg := peercontrol.NewReICERequest("node-b", "node-a", peercontrol.ReICERequest{
+		PathID: "relay/path",
+		Reason: "peer_protected_direct_unavailable",
+	})
+	eng.handleInbandControlMessage(msg)
+
+	session.connectMu.Lock()
+	defer session.connectMu.Unlock()
+	if !session.improvePending {
+		t.Fatal("re-ice request should force protected-direct improvement even when local path is already protected")
+	}
+	if session.improveDelay != time.Minute {
+		t.Fatalf("improve delay = %v, want %v", session.improveDelay, time.Minute)
+	}
+}
+
 func TestSendInbandControlSnapshotWritesHeartbeatAndPathHealth(t *testing.T) {
 	receiver, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: InbandControlPort})
 	if err != nil {

@@ -225,7 +225,7 @@ func (e *engine) handleInbandControlMessage(msg peercontrol.Message) {
 	}
 	e.mu.Unlock()
 	if knownPeer && msg.ReICERequest != nil {
-		e.schedulePeerImprovementByID(msg.From)
+		e.schedulePeerImprovementByIDWithForce(msg.From, true)
 	}
 	if knownPeer && msg.SessionSignal != nil {
 		if e.markInbandMessageSeen(msg, time.Now()) {
