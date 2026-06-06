@@ -122,6 +122,9 @@ func New(paths []Path, policy solver.PathPolicy) (*Transport, error) {
 		go t.readLoop(state)
 	}
 	t.primaryID = t.activeID
+	if t.activePathSilenceTimeout > 0 {
+		go t.healthLoop()
+	}
 	return t, nil
 }
 
@@ -141,6 +144,7 @@ func (t *Transport) ReadPacket(ctx context.Context, dst []byte) (int, transport.
 		if result.meta.ReceivedAt.IsZero() {
 			result.meta.ReceivedAt = time.Now()
 		}
+		t.failoverStaleActivePath(result.meta.ReceivedAt)
 		if t.shouldPromoteReadPath(result.pathID) {
 			t.promote(result.pathID, "read_from_standby")
 		}
@@ -279,6 +283,23 @@ func (t *Transport) readLoop(state *pathState) {
 		case <-t.closeCh:
 			return
 		case t.readCh <- readResult{pathID: state.path.ID, n: n, packet: packet, meta: meta}:
+		}
+	}
+}
+
+func (t *Transport) healthLoop() {
+	interval := t.activePathSilenceTimeout / 3
+	if interval <= 0 {
+		interval = t.activePathSilenceTimeout
+	}
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case now := <-ticker.C:
+			t.failoverStaleActivePath(now)
+		case <-t.closeCh:
+			return
 		}
 	}
 }

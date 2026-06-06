@@ -178,6 +178,66 @@ func TestWriteFailsOverFromStaleActivePath(t *testing.T) {
 	}
 }
 
+func TestHealthLoopFailsOverFromStaleActivePathWithoutWrite(t *testing.T) {
+	primary := newFakePacketTransport("primary")
+	standby := newFakePacketTransport("standby")
+	mp := newTestTransport(t, []Path{
+		testPath("primary", solver.PathRolePrimaryCandidate, primary, 100),
+		testPath("standby", solver.PathRoleProtectedDirect, standby, 10),
+	}, solver.PathPolicy{ActivePathSilenceTimeout: 10 * time.Millisecond})
+	defer mp.Close()
+
+	primary.deliver([]byte("primary-alive"))
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	buf := make([]byte, 64)
+	if _, _, err := mp.ReadPacket(ctx, buf); err != nil {
+		t.Fatalf("ReadPacket() error = %v", err)
+	}
+
+	waitFor(t, 2*time.Second, func() bool {
+		return mp.ActivePathID() == "standby"
+	})
+	if got := primary.writeCount(); got != 0 {
+		t.Fatalf("primary writes = %d, want 0", got)
+	}
+	if got := standby.writeCount(); got != 0 {
+		t.Fatalf("standby writes = %d, want 0", got)
+	}
+	stats := mp.MultipathStats()
+	if stats.LastFailoverWhy != "active_path_rx_silence:primary" {
+		t.Fatalf("last failover reason = %q, want active path silence", stats.LastFailoverWhy)
+	}
+}
+
+func TestReadFromStandbyFailsOverAfterActiveSilence(t *testing.T) {
+	primary := newFakePacketTransport("primary")
+	standby := newFakePacketTransport("standby")
+	mp := newTestTransport(t, []Path{
+		testPath("primary", solver.PathRolePrimaryCandidate, primary, 100),
+		testPath("standby", solver.PathRoleProtectedDirect, standby, 10),
+	}, solver.PathPolicy{ActivePathSilenceTimeout: 10 * time.Millisecond})
+	defer mp.Close()
+
+	primary.deliver([]byte("primary-alive"))
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	buf := make([]byte, 64)
+	if _, _, err := mp.ReadPacket(ctx, buf); err != nil {
+		t.Fatalf("ReadPacket() error = %v", err)
+	}
+	time.Sleep(20 * time.Millisecond)
+	standby.deliver([]byte("standby-alive"))
+	if _, meta, err := mp.ReadPacket(ctx, buf); err != nil {
+		t.Fatalf("ReadPacket() error = %v", err)
+	} else if meta.PathID != "standby" {
+		t.Fatalf("ReadPacket() path id = %q, want standby", meta.PathID)
+	}
+	if active := mp.ActivePathID(); active != "standby" {
+		t.Fatalf("active path = %q, want standby", active)
+	}
+}
+
 func TestWriteReturnsClearErrorWhenAllPathsFail(t *testing.T) {
 	primary := newFakePacketTransport("primary")
 	standby := newFakePacketTransport("standby")
@@ -377,4 +437,16 @@ func (f *fakePacketTransport) isClosed() bool {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.closed
+}
+
+func waitFor(t *testing.T, timeout time.Duration, fn func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if fn() {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatalf("condition was not met within %s", timeout)
 }
