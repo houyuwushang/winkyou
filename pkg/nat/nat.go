@@ -168,6 +168,7 @@ type PublicDirectPunchOptions struct {
 type PublicDirectPunchReport struct {
 	CandidateTotal int
 	CandidateSent  int
+	LocalAddr      *net.UDPAddr
 }
 
 // PublicDirectPuncher is an optional ICEAgent capability. Implementations may

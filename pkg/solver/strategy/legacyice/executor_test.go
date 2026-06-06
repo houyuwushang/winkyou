@@ -76,6 +76,7 @@ type recordingPunchICEAgent struct {
 	mu       sync.Mutex
 	punched  []nat.Candidate
 	punchErr error
+	local    *net.UDPAddr
 }
 
 func (a *recordingPunchICEAgent) PunchCandidates(ctx context.Context, candidates []nat.Candidate, opts nat.PublicDirectPunchOptions) (nat.PublicDirectPunchReport, error) {
@@ -90,6 +91,7 @@ func (a *recordingPunchICEAgent) PunchCandidates(ctx context.Context, candidates
 	return nat.PublicDirectPunchReport{
 		CandidateTotal: len(candidates),
 		CandidateSent:  limit,
+		LocalAddr:      cloneTestUDPAddr(a.local),
 	}, a.punchErr
 }
 
@@ -97,6 +99,13 @@ func (a *recordingPunchICEAgent) Punched() []nat.Candidate {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	return append([]nat.Candidate(nil), a.punched...)
+}
+
+func cloneTestUDPAddr(addr *net.UDPAddr) *net.UDPAddr {
+	if addr == nil {
+		return nil
+	}
+	return &net.UDPAddr{IP: append(net.IP(nil), addr.IP...), Port: addr.Port, Zone: addr.Zone}
 }
 
 type recordingSessionIO struct{}
@@ -694,7 +703,7 @@ func TestExecutorPublicDirectSingleCandidatePunchAvoidsObservationNoise(t *testi
 		Priority:   100,
 		Foundation: "remote-srflx",
 	}
-	agent := &recordingPunchICEAgent{}
+	agent := &recordingPunchICEAgent{local: &net.UDPAddr{IP: net.IPv4(172, 29, 7, 111), Port: 64779}}
 	exec := newExecutor(Config{}, solver.SolveInput{}, solver.Plan{
 		ID:       planIDPublicDirect,
 		Strategy: StrategyName,
@@ -1681,6 +1690,7 @@ func TestExecutorPublicDirectPunchesRemoteCandidatesAfterAnswer(t *testing.T) {
 		Foundation: "remote-srflx",
 	}
 	agent := &recordingPunchICEAgent{
+		local: &net.UDPAddr{IP: net.IPv4(192, 168, 1, 20), Port: 40000},
 		recordingICEAgent: recordingICEAgent{
 			connectErr:    context.Canceled,
 			connectCalled: make(chan struct{}),
@@ -1739,6 +1749,9 @@ func TestExecutorPublicDirectPunchesRemoteCandidatesAfterAnswer(t *testing.T) {
 		obs.Details["candidate_total"] != "1" ||
 		obs.Details["candidate_sent"] != "1" {
 		t.Fatalf("remote_candidates_punched details = %#v, want answer total=1 sent=1", obs.Details)
+	}
+	if obs.Details["punch_local_addr"] != "192.168.1.20:40000" || obs.Details["punch_local_port"] != "40000" {
+		t.Fatalf("remote_candidates_punched details = %#v, want punch local addr", obs.Details)
 	}
 }
 
@@ -1825,7 +1838,7 @@ func TestExecutorPublicDirectPunchRoundResumesAtCandidateOffset(t *testing.T) {
 			Foundation: "srflx-" + strconv.Itoa(i),
 		}
 	}
-	agent := &recordingPunchICEAgent{}
+	agent := &recordingPunchICEAgent{local: &net.UDPAddr{IP: net.IPv4(172, 29, 7, 111), Port: 64779}}
 	exec := newExecutor(Config{}, solver.SolveInput{}, solver.Plan{
 		ID:       planIDPublicDirect,
 		Strategy: StrategyName,
@@ -1870,7 +1883,7 @@ func TestExecutorPublicDirectPunchCoversEndpointHintWindow(t *testing.T) {
 		Address:    &net.UDPAddr{IP: net.IPv4(210, 30, 106, 93), Port: 30000},
 		Foundation: "srflx-current",
 	})
-	agent := &recordingPunchICEAgent{}
+	agent := &recordingPunchICEAgent{local: &net.UDPAddr{IP: net.IPv4(172, 29, 7, 111), Port: 64779}}
 	exec := newExecutor(Config{}, solver.SolveInput{}, solver.Plan{
 		ID:       planIDPublicDirect,
 		Strategy: StrategyName,
@@ -1890,6 +1903,9 @@ func TestExecutorPublicDirectPunchCoversEndpointHintWindow(t *testing.T) {
 	if obs.Details["candidate_limit"] != strconv.Itoa(len(candidates)) ||
 		obs.Details["candidate_sent"] != strconv.Itoa(len(candidates)) {
 		t.Fatalf("remote_candidates_punched details = %#v, want full endpoint-hint window", obs.Details)
+	}
+	if obs.Details["punch_local_addr"] != "172.29.7.111:64779" || obs.Details["punch_local_port"] != "64779" {
+		t.Fatalf("remote_candidates_punched details = %#v, want fixed punch local addr", obs.Details)
 	}
 }
 

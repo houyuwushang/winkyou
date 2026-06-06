@@ -310,6 +310,9 @@ func (a *icePionAgent) PunchCandidates(ctx context.Context, candidates []Candida
 	if conn == nil || !publicDirect {
 		return report, nil
 	}
+	if local, ok := conn.LocalAddr().(*net.UDPAddr); ok && local != nil {
+		report.LocalAddr = &net.UDPAddr{IP: append(net.IP(nil), local.IP...), Port: local.Port, Zone: local.Zone}
+	}
 
 	limit := opts.Limit
 	if limit <= 0 || limit > len(candidates) {

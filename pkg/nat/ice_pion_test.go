@@ -492,6 +492,9 @@ func TestPublicDirectPunchCandidatesUsesFixedMuxSocket(t *testing.T) {
 	if report.CandidateTotal != 1 || report.CandidateSent != 1 {
 		t.Fatalf("PunchCandidates() report = %+v, want total=1 sent=1", report)
 	}
+	if report.LocalAddr == nil || report.LocalAddr.Port != int(port) {
+		t.Fatalf("PunchCandidates() local addr = %v, want fixed mux port %d", report.LocalAddr, port)
+	}
 
 	if err := receiver.SetDeadline(time.Now().Add(time.Second)); err != nil {
 		t.Fatalf("receiver.SetDeadline() error = %v", err)

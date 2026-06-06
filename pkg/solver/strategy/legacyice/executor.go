@@ -448,6 +448,7 @@ func (e *executor) punchRemoteCandidates(ctx context.Context, sess solver.Sessio
 		"punch_rounds":      strconv.Itoa(rounds),
 		"retry_interval_ms": strconv.FormatInt(e.remoteCandidatePunchRetryInterval(rounds).Milliseconds(), 10),
 	}
+	addPunchReportDetails(details, report)
 	addCandidateCoverageDetails(details, ordered, candidateStart, report.CandidateSent)
 	if err != nil {
 		details["last_error"] = err.Error()
@@ -502,6 +503,7 @@ func (e *executor) punchRemoteCandidateRound(ctx context.Context, sess solver.Se
 		"punch_rounds":      strconv.Itoa(maxRound),
 		"retry_interval_ms": strconv.FormatInt(e.remoteCandidatePunchRetryInterval(maxRound).Milliseconds(), 10),
 	}
+	addPunchReportDetails(details, report)
 	addCandidateCoverageDetails(details, candidates, candidateStart, report.CandidateSent)
 	if err != nil {
 		details["last_error"] = err.Error()
@@ -681,6 +683,13 @@ func addCandidateCoverageDetails(details map[string]string, candidates []nat.Can
 	if minPort != 0 {
 		details["candidate_port_min"] = strconv.Itoa(minPort)
 		details["candidate_port_max"] = strconv.Itoa(maxPort)
+	}
+}
+
+func addPunchReportDetails(details map[string]string, report nat.PublicDirectPunchReport) {
+	if report.LocalAddr != nil {
+		details["punch_local_addr"] = report.LocalAddr.String()
+		details["punch_local_port"] = strconv.Itoa(report.LocalAddr.Port)
 	}
 }
 
