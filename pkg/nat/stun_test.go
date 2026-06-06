@@ -274,6 +274,11 @@ func TestPublicEndpointHintsFromSTUNMappingAllowsTrustedNonPublicEndpoint(t *tes
 	if len(hints) != 1 || hints[0] != "100.102.17.36:45678/100.102.17.35:40000" {
 		t.Fatalf("PublicEndpointHintsFromSTUNMappingWithTrustedCIDRs() = %#v, want trusted mapped hint", hints)
 	}
+
+	hints = PublicEndpointHintsFromSTUNMappingWithAllowedCIDRs(report, []string{"100.64.0.0/10"})
+	if len(hints) != 1 || hints[0] != "100.102.17.36:45678/100.102.17.35:40000" {
+		t.Fatalf("PublicEndpointHintsFromSTUNMappingWithAllowedCIDRs() = %#v, want allowed mapped hint", hints)
+	}
 }
 
 func TestPublicEndpointHintsFromSTUNMappingStillRejectsInvalidTrustedEndpoint(t *testing.T) {

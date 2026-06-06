@@ -588,6 +588,12 @@ func TestRuntimePublicEndpointHintsFromReportHonorsTrustedCIDRs(t *testing.T) {
 		t.Fatalf("runtimePublicEndpointHintsFromReport(default) = %#v, want no untrusted non-public hint", got)
 	}
 
+	cfg.CandidateCIDRInclude = []string{"100.64.0.0/10"}
+	if got := runtimePublicEndpointHintsFromReport(cfg, report); len(got) != 1 || got[0] != "100.102.17.36:45678/100.102.17.35:40000" {
+		t.Fatalf("runtimePublicEndpointHintsFromReport(candidate include) = %#v, want included non-public hint", got)
+	}
+
+	cfg = config.Default().NAT
 	cfg.DirectTrustedCIDRs = []string{"100.64.0.0/10"}
 	if got := runtimePublicEndpointHintsFromReport(cfg, report); len(got) != 1 || got[0] != "100.102.17.36:45678/100.102.17.35:40000" {
 		t.Fatalf("runtimePublicEndpointHintsFromReport(trusted) = %#v, want trusted non-public hint", got)

@@ -142,7 +142,14 @@ func PublicEndpointHintsFromSTUNMapping(report STUNMappingReport) []string {
 // PublicEndpointHintsFromSTUNMapping, but allows explicitly trusted non-public
 // underlay prefixes to appear in the mapped endpoint or local base.
 func PublicEndpointHintsFromSTUNMappingWithTrustedCIDRs(report STUNMappingReport, trustedCIDRs []string) []string {
-	trusted := parseEndpointHintTrustedCIDRs(trustedCIDRs)
+	return PublicEndpointHintsFromSTUNMappingWithAllowedCIDRs(report, trustedCIDRs)
+}
+
+// PublicEndpointHintsFromSTUNMappingWithAllowedCIDRs is like
+// PublicEndpointHintsFromSTUNMapping, but allows explicitly configured
+// non-public prefixes to appear in the mapped endpoint or local base.
+func PublicEndpointHintsFromSTUNMappingWithAllowedCIDRs(report STUNMappingReport, allowedCIDRs []string) []string {
+	trusted := parseEndpointHintTrustedCIDRs(allowedCIDRs)
 	seen := make(map[string]struct{}, len(report.Probes))
 	hints := make([]string, 0, len(report.Probes))
 	for _, probe := range report.Probes {

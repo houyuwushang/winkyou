@@ -199,9 +199,9 @@ func runtimePublicEndpointHintsFromReport(cfg config.NATConfig, report nat.STUNM
 	if !cfg.AutoPublicEndpointHints {
 		return nil
 	}
-	return nat.PublicEndpointHintsFromSTUNMappingWithTrustedCIDRs(
+	return nat.PublicEndpointHintsFromSTUNMappingWithAllowedCIDRs(
 		report,
-		mergeStrategyTrustedCIDRs(cfg.DirectTrustedCIDRs, cfg.PublicDirectTrustedCIDRs),
+		mergeStrategyTrustedCIDRs(cfg.CandidateCIDRInclude, cfg.DirectTrustedCIDRs, cfg.PublicDirectTrustedCIDRs),
 	)
 }
 
