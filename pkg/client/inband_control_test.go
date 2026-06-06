@@ -282,8 +282,8 @@ func TestHandleInbandReICERequestSchedulesImprovement(t *testing.T) {
 	if !session.improvePending {
 		t.Fatal("re-ice request should schedule protected-direct improvement")
 	}
-	if session.improveDelay != time.Minute {
-		t.Fatalf("improve delay = %v, want %v", session.improveDelay, time.Minute)
+	if session.improveDelay != forcedPeerImprovementDelay {
+		t.Fatalf("improve delay = %v, want forced delay %v", session.improveDelay, forcedPeerImprovementDelay)
 	}
 }
 
@@ -333,8 +333,8 @@ func TestHandleInbandReICERequestForcesImprovementWhenLocalPathProtected(t *test
 	if !session.improvePending {
 		t.Fatal("re-ice request should force protected-direct improvement even when local path is already protected")
 	}
-	if session.improveDelay != time.Minute {
-		t.Fatalf("improve delay = %v, want %v", session.improveDelay, time.Minute)
+	if session.improveDelay != forcedPeerImprovementDelay {
+		t.Fatalf("improve delay = %v, want forced delay %v", session.improveDelay, forcedPeerImprovementDelay)
 	}
 }
 

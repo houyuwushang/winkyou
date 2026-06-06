@@ -7,6 +7,8 @@ import (
 	"winkyou/pkg/solver"
 )
 
+const forcedPeerImprovementDelay = 100 * time.Millisecond
+
 func shouldImproveBoundPath(policy solver.PathPolicy, summary solver.PathSummary) bool {
 	if !policy.MultipathEnabled || !policy.ProtectDirect {
 		return false
@@ -58,15 +60,7 @@ func (e *engine) schedulePeerImprovement(nodeID string, session *peerSession, fo
 		session.connectMu.Unlock()
 		return
 	}
-	delay := session.improveDelay
-	if delay <= 0 {
-		delay = e.peerRetryInterval()
-	} else {
-		delay *= 2
-	}
-	if maxDelay := e.peerRetryMaxInterval(); delay > maxDelay {
-		delay = maxDelay
-	}
+	delay := nextImprovementDelay(session, e.peerRetryInterval(), e.peerRetryMaxInterval(), force)
 	session.improveDelay = delay
 	session.improvePending = true
 	session.connectMu.Unlock()
@@ -96,6 +90,25 @@ func (e *engine) schedulePeerImprovement(nodeID string, session *peerSession, fo
 		expected.connectMu.Unlock()
 		e.startPeerImprovement(nodeID, expected, force)
 	}(session, delay)
+}
+
+func nextImprovementDelay(session *peerSession, base, max time.Duration, force bool) time.Duration {
+	if force {
+		return forcedPeerImprovementDelay
+	}
+	delay := time.Duration(0)
+	if session != nil {
+		delay = session.improveDelay
+	}
+	if delay <= 0 {
+		delay = base
+	} else {
+		delay *= 2
+	}
+	if max > 0 && delay > max {
+		delay = max
+	}
+	return delay
 }
 
 func (e *engine) startPeerImprovement(nodeID string, session *peerSession, force bool) {

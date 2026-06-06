@@ -113,7 +113,24 @@ func TestForcedSchedulePeerImprovementAllowsProtectedDirectPath(t *testing.T) {
 	if !session.improvePending {
 		t.Fatal("forced re-ice should schedule improvement even when local path is already protected")
 	}
-	if session.improveDelay != time.Minute {
-		t.Fatalf("improve delay = %v, want %v", session.improveDelay, time.Minute)
+	if session.improveDelay != forcedPeerImprovementDelay {
+		t.Fatalf("improve delay = %v, want forced delay %v", session.improveDelay, forcedPeerImprovementDelay)
+	}
+}
+
+func TestNextImprovementDelay(t *testing.T) {
+	base := time.Minute
+	max := 5 * time.Minute
+	if got := nextImprovementDelay(&peerSession{}, base, max, true); got != forcedPeerImprovementDelay {
+		t.Fatalf("forced delay = %v, want %v", got, forcedPeerImprovementDelay)
+	}
+	if got := nextImprovementDelay(&peerSession{}, base, max, false); got != base {
+		t.Fatalf("initial delay = %v, want %v", got, base)
+	}
+	if got := nextImprovementDelay(&peerSession{improveDelay: base}, base, max, false); got != 2*base {
+		t.Fatalf("backoff delay = %v, want %v", got, 2*base)
+	}
+	if got := nextImprovementDelay(&peerSession{improveDelay: max}, base, max, false); got != max {
+		t.Fatalf("max delay = %v, want %v", got, max)
 	}
 }
