@@ -195,6 +195,7 @@ func (s *Session) flushPendingStrategyMessages(ctx context.Context, handler stra
 	if handler == nil {
 		return nil
 	}
+	deliveredReusable := make(map[string]struct{})
 	for {
 		s.strategyMu.Lock()
 		var deliver []solver.Message
@@ -203,6 +204,14 @@ func (s *Session) flushPendingStrategyMessages(ctx context.Context, handler stra
 			if shouldBufferForFuturePlan(msg, activePlan) {
 				retained = append(retained, msg)
 				continue
+			}
+			if shouldRetainForLaterPlanAfterDelivery(msg, activePlan) {
+				retained = append(retained, msg)
+				key := reusableStrategyMessageKey(msg)
+				if _, ok := deliveredReusable[key]; ok {
+					continue
+				}
+				deliveredReusable[key] = struct{}{}
 			}
 			deliver = append(deliver, msg)
 		}
@@ -248,6 +257,21 @@ func shouldBufferForFuturePlan(msg solver.Message, activePlan string) bool {
 	}
 	msgPlanID, ok := strategyMessagePlanID(msg)
 	return ok && !strategyPlanIDsMatch(msgPlanID, activePlan)
+}
+
+func shouldRetainForLaterPlanAfterDelivery(msg solver.Message, activePlan string) bool {
+	if strings.TrimSpace(activePlan) == "" {
+		return false
+	}
+	msgPlanID, ok := strategyMessagePlanID(msg)
+	if !ok || strings.TrimSpace(msgPlanID) == strings.TrimSpace(activePlan) {
+		return false
+	}
+	return strategyPlanIDsMatch(msgPlanID, activePlan)
+}
+
+func reusableStrategyMessageKey(msg solver.Message) string {
+	return string(msg.Kind) + "\x00" + msg.Namespace + "\x00" + msg.Type + "\x00" + string(msg.Payload)
 }
 
 func strategyMessagePlanID(msg solver.Message) (string, bool) {

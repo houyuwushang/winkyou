@@ -453,6 +453,35 @@ func TestDiscardPendingStrategyMessagesKeepsPublicDirectFamilyForLaterHintPlans(
 	}
 }
 
+func TestFlushPendingStrategyMessagesReusesPublicDirectFamilyForHintPlans(t *testing.T) {
+	publicDirect := solver.Message{Kind: solver.MessageKindStrategy, Namespace: "legacyice", Type: "answer", Payload: []byte(`{"plan_id":"legacyice/public_direct"}`)}
+	publicDirectHint1 := solver.Message{Kind: solver.MessageKindStrategy, Namespace: "legacyice", Type: "answer", Payload: []byte(`{"plan_id":"legacyice/public_direct_hint_1"}`)}
+	relay := solver.Message{Kind: solver.MessageKindStrategy, Namespace: "legacyice", Type: "answer", Payload: []byte(`{"plan_id":"legacyice/relay_only"}`)}
+	s := &Session{pending: []solver.Message{publicDirect, publicDirectHint1, relay}}
+	firstExec := newScriptedExecutor(solver.Result{}, nil)
+
+	if err := s.flushPendingStrategyMessages(context.Background(), firstExec, "legacyice/public_direct_hint_1"); err != nil {
+		t.Fatalf("flushPendingStrategyMessages(hint_1) error = %v", err)
+	}
+	if got, _ := firstExec.snapshot(); got != 2 {
+		t.Fatalf("first executor messages = %d, want reusable family + exact hint", got)
+	}
+	if len(s.pending) != 2 {
+		t.Fatalf("pending messages after hint_1 = %d, want reusable family + relay", len(s.pending))
+	}
+
+	secondExec := newScriptedExecutor(solver.Result{}, nil)
+	if err := s.flushPendingStrategyMessages(context.Background(), secondExec, "legacyice/public_direct_hint_2"); err != nil {
+		t.Fatalf("flushPendingStrategyMessages(hint_2) error = %v", err)
+	}
+	if got, _ := secondExec.snapshot(); got != 1 {
+		t.Fatalf("second executor messages = %d, want reusable public_direct family message", got)
+	}
+	if len(s.pending) != 2 {
+		t.Fatalf("pending messages after hint_2 = %d, want reusable family + relay still retained", len(s.pending))
+	}
+}
+
 func TestSessionObservationFlowsFromStrategyToSinkAndRemote(t *testing.T) {
 	localTransport := &fakeTransport{}
 	remoteSender := &callbackSender{}
