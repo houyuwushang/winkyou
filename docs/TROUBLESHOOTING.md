@@ -138,7 +138,7 @@ nat:
     - "117.48.146.2:41000/192.168.1.20:40000"
 ```
 
-这只适用于公网 IP/端口映射相对可预测的场景。`nat1to1_ips` 表示公网 IP 映射，`public_endpoint_hints` 表示本机已知的公网 UDP `ip:port`，也可以写成 `公网ip:公网端口/本地ip:本地端口` 绑定到具体本地 UDP base；它只会作为 `legacyice/public_direct` 的额外 srflx 候选发布。当 mapped hint 带本地 base 时，`legacyice/public_direct` 会让本次 ICE agent 只在这些本地 IP 上 gather；如果只有一个唯一的本地 base 端口，也会尝试绑定该端口，从而让公网 hint 指向 WinkYou 正在监听的 socket。若运营商 NAT 会为每个 UDP socket 动态改写端口，过期的 `public_endpoint_hints` 不能保证复现 natpierce 的成功路径；默认 `nat.public_endpoint_hint_port_window: 2` 会围绕已观测端口追加小窗口候选，再查看 `legacyice/public_direct` 是否采集到了 server-reflexive/peer-reflexive candidate，或使用 TURN/`relay_only` fallback。
+这只适用于公网 IP/端口映射相对可预测的场景。`nat1to1_ips` 表示公网 IP 映射，`public_endpoint_hints` 表示本机已知的公网 UDP `ip:port`，也可以写成 `公网ip:公网端口/本地ip:本地端口` 绑定到具体本地 UDP base；它只会作为 `legacyice/public_direct` 的额外 srflx 候选发布。当 mapped hint 带本地 base 时，`legacyice/public_direct` 会让本次 ICE agent 只在这些本地 IP 上 gather；如果只有一个唯一的本地 base 端口，也会尝试绑定该端口，从而让公网 hint 指向 WinkYou 正在监听的 socket。若运营商 NAT 会为每个 UDP socket 动态改写端口，过期的 `public_endpoint_hints` 不能保证复现 natpierce 的成功路径；默认配置 `nat.public_endpoint_hint_port_window: 2` 会围绕已观测端口追加小窗口候选，生产启动检测到 symmetric NAT 且本轮有 endpoint hint 时会把有效窗口提高到 `16`，再查看 `legacyice/public_direct` 是否采集到了 server-reflexive/peer-reflexive candidate，或使用 TURN/`relay_only` fallback。
 
 如果 natpierce 或路由器日志证明两端使用的是一个非公网但确实可达的 underlay 地址段，可以在两端显式加入 `nat.direct_trusted_cidrs`，例如 `100.64.0.0/10`。这会让 `legacyice/direct_prefer` 和 `legacyice/public_direct` 在 path dependency 判定中信任该 CIDR；`public_direct` 也会接受该 CIDR 内的候选、手工 mapped hint、启动 STUN 观测生成的 runtime endpoint hint，并允许 ICE 过程中学到的 peer-reflexive pair 切换到该地址段。旧的 `nat.public_direct_trusted_cidrs` 仍兼容，并会与 `direct_trusted_cidrs` 合并使用。不要把虚拟 overlay、Tailscale、Docker、Wintun peer 网段或只是“看起来能 ping”的跳板地址加入 trusted CIDR；否则 `protected_direct` 证据会失真。默认配置仍会拒绝这些地址段。`wink doctor` 会检查 `direct_trusted_cidrs` 是否命中本机疑似虚拟/overlay 接口；如果看到 `nat/direct trusted cidrs` warning，先移除该 trust 配置或改成真实 underlay CIDR。
 
@@ -158,7 +158,7 @@ nat:
   public_endpoint_hint_port_window: 2
 ```
 
-如果 doctor 显示 `nat_type=symmetric`，这些映射仍只是 best-effort：这不是说 natpierce 的直连不可能，而是说明 WinkYou 不能把“到 STUN 服务器的映射”直接当成“到 inner-gw peer 的映射”。这种情况继续看 `legacyice/public_direct` 是否学到 `peer_reflexive_pair` / `public_direct_learned_pair`，或手工配置已确认稳定的 natpierce/路由器端点。需要保守复现时，可以设为 `auto_public_endpoint_hints: false` 或 `public_endpoint_hint_port_window: 0`。
+如果 doctor 显示 `nat_type=symmetric`，这些映射仍只是 best-effort：这不是说 natpierce 的直连不可能，而是说明 WinkYou 不能把“到 STUN 服务器的映射”直接当成“到 inner-gw peer 的映射”。生产配置会在有 endpoint hint 时自动扩大有效端口窗口，覆盖更多可预测端口漂移；这种情况继续看 `legacyice/public_direct` 是否学到 `peer_reflexive_pair` / `public_direct_learned_pair`，或手工配置已确认稳定的 natpierce/路由器端点。需要保守复现时，可以设为 `auto_public_endpoint_hints: false` 或 `public_endpoint_hint_port_window: 0`。
 
 无 TURN 的 `auto` 模式还会禁用 `legacy_ice_udp` 内部的 `legacyice/relay_only` plan。这样即使 observation history 里有旧的 relay success，当前会话也不会先等待不可用的 relay plan，而是把预算留给 `direct_prefer` 和 `public_direct`。显式 `connectivity.mode: relay_only` 或 `nat.force_relay: true` 仍会保留 relay-only 行为，用于检查 TURN 配置或强制 relay。
 

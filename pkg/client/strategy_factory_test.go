@@ -544,6 +544,80 @@ func TestLegacyICEStrategyConfigMergesRuntimePublicEndpointHints(t *testing.T) {
 	}
 }
 
+func TestLegacyICEStrategyConfigWidensEndpointHintWindowForSymmetricNAT(t *testing.T) {
+	cfg := config.Default()
+	eng := &engine{
+		cfg: cfg,
+		status: EngineStatus{
+			NATType: nat.NATTypeSymmetric.String(),
+		},
+		runtimePublicEndpointHints: []string{
+			"117.48.146.2:41000/192.168.1.20:40000",
+		},
+	}
+
+	legacyCfg := eng.legacyICEStrategyConfig()
+	if legacyCfg.PublicEndpointHintPortWindow != symmetricPublicEndpointHintPortWindow {
+		t.Fatalf("PublicEndpointHintPortWindow = %d, want symmetric window %d", legacyCfg.PublicEndpointHintPortWindow, symmetricPublicEndpointHintPortWindow)
+	}
+}
+
+func TestLegacyICEStrategyConfigKeepsEndpointHintWindowForStableNAT(t *testing.T) {
+	cfg := config.Default()
+	eng := &engine{
+		cfg: cfg,
+		status: EngineStatus{
+			NATType: nat.NATTypeUnknown.String(),
+		},
+		runtimePublicEndpointHints: []string{
+			"117.48.146.2:41000/192.168.1.20:40000",
+		},
+	}
+
+	legacyCfg := eng.legacyICEStrategyConfig()
+	if legacyCfg.PublicEndpointHintPortWindow != cfg.NAT.PublicEndpointHintPortWindow {
+		t.Fatalf("PublicEndpointHintPortWindow = %d, want configured %d", legacyCfg.PublicEndpointHintPortWindow, cfg.NAT.PublicEndpointHintPortWindow)
+	}
+}
+
+func TestLegacyICEStrategyConfigHonorsEndpointHintWindowOptOut(t *testing.T) {
+	cfg := config.Default()
+	cfg.NAT.PublicEndpointHintPortWindow = 0
+	eng := &engine{
+		cfg: cfg,
+		status: EngineStatus{
+			NATType: nat.NATTypeSymmetric.String(),
+		},
+		runtimePublicEndpointHints: []string{
+			"117.48.146.2:41000/192.168.1.20:40000",
+		},
+	}
+
+	legacyCfg := eng.legacyICEStrategyConfig()
+	if legacyCfg.PublicEndpointHintPortWindow != 0 {
+		t.Fatalf("PublicEndpointHintPortWindow = %d, want explicit opt-out 0", legacyCfg.PublicEndpointHintPortWindow)
+	}
+}
+
+func TestLegacyICEStrategyConfigKeepsLargerEndpointHintWindow(t *testing.T) {
+	cfg := config.Default()
+	cfg.NAT.PublicEndpointHintPortWindow = symmetricPublicEndpointHintPortWindow + 1
+	eng := &engine{
+		cfg: cfg,
+		status: EngineStatus{
+			NATType: nat.NATTypeSymmetric.String(),
+		},
+		runtimePublicEndpointHints: []string{
+			"117.48.146.2:41000/192.168.1.20:40000",
+		},
+	}
+
+	legacyCfg := eng.legacyICEStrategyConfig()
+	if legacyCfg.PublicEndpointHintPortWindow != cfg.NAT.PublicEndpointHintPortWindow {
+		t.Fatalf("PublicEndpointHintPortWindow = %d, want configured %d", legacyCfg.PublicEndpointHintPortWindow, cfg.NAT.PublicEndpointHintPortWindow)
+	}
+}
+
 func TestRuntimePublicEndpointHintsFromReportUsesDefaultAndAllowsOptOut(t *testing.T) {
 	report := nat.STUNMappingReport{
 		NATType: nat.NATTypeUnknown,

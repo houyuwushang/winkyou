@@ -22,6 +22,8 @@ type strategyFactory struct {
 	build func() solver.Strategy
 }
 
+const symmetricPublicEndpointHintPortWindow = 16
+
 func newStrategyResolver(factories []strategyFactory, policy ResolverPolicy) sesspkg.StrategyResolver {
 	return newStrategyResolverWithFeatures(factories, policy, nil)
 }
@@ -132,6 +134,7 @@ func hasTURNServers(servers []config.TURNServerConfig) bool {
 }
 
 func (e *engine) legacyICEStrategyConfig() legacyice.Config {
+	publicEndpointHints := e.publicEndpointHints()
 	cfg := legacyice.Config{
 		GatherTimeout:                e.iceGatherTimeout(),
 		ConnectTimeout:               e.iceConnectTimeout(),
@@ -139,8 +142,8 @@ func (e *engine) legacyICEStrategyConfig() legacyice.Config {
 		ForceRelay:                   e.relayOnlyMode(),
 		RelayDisabled:                e.disableLegacyRelayPlan(),
 		CandidateCIDRInclude:         append([]string(nil), e.cfg.NAT.CandidateCIDRInclude...),
-		PublicEndpointHints:          e.publicEndpointHints(),
-		PublicEndpointHintPortWindow: e.cfg.NAT.PublicEndpointHintPortWindow,
+		PublicEndpointHints:          publicEndpointHints,
+		PublicEndpointHintPortWindow: e.publicEndpointHintPortWindow(publicEndpointHints),
 		DirectTrustedCIDRs:           append([]string(nil), e.cfg.NAT.DirectTrustedCIDRs...),
 		PublicDirectTrustedCIDRs:     append([]string(nil), e.cfg.NAT.PublicDirectTrustedCIDRs...),
 	}
@@ -193,6 +196,20 @@ func (e *engine) publicEndpointHints() []string {
 	runtimeHints := append([]string(nil), e.runtimePublicEndpointHints...)
 	e.mu.RUnlock()
 	return mergeStrategyTrustedCIDRs(e.cfg.NAT.PublicEndpointHints, runtimeHints)
+}
+
+func (e *engine) publicEndpointHintPortWindow(hints []string) int {
+	configured := e.cfg.NAT.PublicEndpointHintPortWindow
+	if configured <= 0 || len(hints) == 0 || configured >= symmetricPublicEndpointHintPortWindow {
+		return configured
+	}
+	e.mu.RLock()
+	natType := strings.TrimSpace(e.status.NATType)
+	e.mu.RUnlock()
+	if natType == nat.NATTypeSymmetric.String() {
+		return symmetricPublicEndpointHintPortWindow
+	}
+	return configured
 }
 
 func runtimePublicEndpointHintsFromReport(cfg config.NATConfig, report nat.STUNMappingReport) []string {
