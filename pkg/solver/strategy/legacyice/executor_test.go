@@ -668,6 +668,23 @@ func TestPublicDirectCandidateSignalsRetryAsynchronously(t *testing.T) {
 	}
 }
 
+func TestPublicDirectCandidateSignalRoundsScaleWithConnectTimeout(t *testing.T) {
+	defaultExec := newExecutor(Config{}, solver.SolveInput{}, solver.Plan{ID: planIDPublicDirect}, executorConfig{Mode: modePublicDirect})
+	if got := defaultExec.candidateSignalRounds(); got != publicDirectCandidateSignalRounds {
+		t.Fatalf("default candidateSignalRounds() = %d, want %d", got, publicDirectCandidateSignalRounds)
+	}
+
+	shortExec := newExecutor(Config{ConnectTimeout: publicDirectCandidateSignalRetryInterval}, solver.SolveInput{}, solver.Plan{ID: planIDPublicDirect}, executorConfig{Mode: modePublicDirect})
+	if got := shortExec.candidateSignalRounds(); got != publicDirectCandidateSignalRounds {
+		t.Fatalf("short candidateSignalRounds() = %d, want min %d", got, publicDirectCandidateSignalRounds)
+	}
+
+	longExec := newExecutor(Config{ConnectTimeout: 25 * time.Second}, solver.SolveInput{}, solver.Plan{ID: planIDPublicDirect}, executorConfig{Mode: modePublicDirect})
+	if got := longExec.candidateSignalRounds(); got != publicDirectCandidateSignalMaxRounds {
+		t.Fatalf("long candidateSignalRounds() = %d, want capped %d", got, publicDirectCandidateSignalMaxRounds)
+	}
+}
+
 func TestPublicDirectCandidateSignalLimitCoversSymmetricHintWindow(t *testing.T) {
 	const symmetricHintWindow = 16
 	candidates := make([]nat.Candidate, 1+2*symmetricHintWindow)

@@ -49,6 +49,8 @@ const publicDirectCandidateSignalLimit = 64
 
 const publicDirectCandidateSignalRounds = 3
 
+const publicDirectCandidateSignalMaxRounds = 20
+
 const publicDirectCandidateSignalRetryInterval = 100 * time.Millisecond
 
 const publicDirectCandidateSignalSendTimeout = time.Second
@@ -373,12 +375,13 @@ func (e *executor) sendCandidateMessages(ctx context.Context, sess solver.Sessio
 	if e.execCfg.Mode != modePublicDirect || len(candidates) == 0 || sess == nil {
 		return
 	}
+	rounds := e.candidateSignalRounds()
 	candidates = prioritizePublicDirectSignalCandidates(candidates)
-	e.sendCandidateMessageRound(ctx, sess, candidates, 1)
-	if publicDirectCandidateSignalRounds <= 1 {
+	e.sendCandidateMessageRound(ctx, sess, candidates, 1, rounds)
+	if rounds <= 1 {
 		return
 	}
-	go e.sendCandidateMessageRetries(sess, candidates, 2)
+	go e.sendCandidateMessageRetries(sess, candidates, 2, rounds)
 }
 
 func prioritizePublicDirectSignalCandidates(candidates []nat.Candidate) []nat.Candidate {
@@ -415,8 +418,26 @@ func publicDirectSignalCandidateRank(candidate nat.Candidate) int {
 	}
 }
 
-func (e *executor) sendCandidateMessageRetries(sess solver.SessionIO, candidates []nat.Candidate, startRound int) {
-	for round := startRound; round <= publicDirectCandidateSignalRounds; round++ {
+func (e *executor) candidateSignalRounds() int {
+	connectTimeout := e.cfg.ConnectTimeout
+	if connectTimeout <= 0 {
+		return publicDirectCandidateSignalRounds
+	}
+	rounds := int(connectTimeout / publicDirectCandidateSignalRetryInterval)
+	if connectTimeout%publicDirectCandidateSignalRetryInterval != 0 {
+		rounds++
+	}
+	if rounds < publicDirectCandidateSignalRounds {
+		return publicDirectCandidateSignalRounds
+	}
+	if rounds > publicDirectCandidateSignalMaxRounds {
+		return publicDirectCandidateSignalMaxRounds
+	}
+	return rounds
+}
+
+func (e *executor) sendCandidateMessageRetries(sess solver.SessionIO, candidates []nat.Candidate, startRound int, maxRound int) {
+	for round := startRound; round <= maxRound; round++ {
 		timer := time.NewTimer(publicDirectCandidateSignalRetryInterval)
 		select {
 		case <-timer.C:
@@ -425,12 +446,12 @@ func (e *executor) sendCandidateMessageRetries(sess solver.SessionIO, candidates
 			return
 		}
 		roundCtx, cancel := context.WithTimeout(e.lifecycleCtx, publicDirectCandidateSignalSendTimeout)
-		e.sendCandidateMessageRound(roundCtx, sess, candidates, round)
+		e.sendCandidateMessageRound(roundCtx, sess, candidates, round, maxRound)
 		cancel()
 	}
 }
 
-func (e *executor) sendCandidateMessageRound(ctx context.Context, sess solver.SessionIO, candidates []nat.Candidate, round int) {
+func (e *executor) sendCandidateMessageRound(ctx context.Context, sess solver.SessionIO, candidates []nat.Candidate, round int, maxRound int) {
 	limit := len(candidates)
 	if limit > publicDirectCandidateSignalLimit {
 		limit = publicDirectCandidateSignalLimit
@@ -471,7 +492,7 @@ sendLoop:
 		"candidate_limit":   strconv.Itoa(publicDirectCandidateSignalLimit),
 		"candidate_capped":  fmt.Sprintf("%t", len(candidates) > limit),
 		"candidate_round":   strconv.Itoa(round),
-		"candidate_rounds":  strconv.Itoa(publicDirectCandidateSignalRounds),
+		"candidate_rounds":  strconv.Itoa(maxRound),
 		"retry_interval_ms": strconv.Itoa(int(publicDirectCandidateSignalRetryInterval / time.Millisecond)),
 	}
 	if lastErr != nil {
