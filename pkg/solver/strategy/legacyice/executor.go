@@ -448,6 +448,7 @@ func (e *executor) punchRemoteCandidates(ctx context.Context, sess solver.Sessio
 		"punch_rounds":      strconv.Itoa(rounds),
 		"retry_interval_ms": strconv.FormatInt(e.remoteCandidatePunchRetryInterval(rounds).Milliseconds(), 10),
 	}
+	addCandidateCoverageDetails(details, ordered, candidateStart, report.CandidateSent)
 	if err != nil {
 		details["last_error"] = err.Error()
 	}
@@ -501,6 +502,7 @@ func (e *executor) punchRemoteCandidateRound(ctx context.Context, sess solver.Se
 		"punch_rounds":      strconv.Itoa(maxRound),
 		"retry_interval_ms": strconv.FormatInt(e.remoteCandidatePunchRetryInterval(maxRound).Milliseconds(), 10),
 	}
+	addCandidateCoverageDetails(details, candidates, candidateStart, report.CandidateSent)
 	if err != nil {
 		details["last_error"] = err.Error()
 	}
@@ -642,6 +644,44 @@ func rotateCandidates(candidates []nat.Candidate, start int) []nat.Candidate {
 	out = append(out, candidates[start:]...)
 	out = append(out, candidates[:start]...)
 	return out
+}
+
+func addCandidateCoverageDetails(details map[string]string, candidates []nat.Candidate, start int, sent int) {
+	total := len(candidates)
+	if total == 0 || sent <= 0 {
+		details["candidate_next_start"] = strconv.Itoa(normalizeCandidateStart(start, total))
+		return
+	}
+	if sent > total {
+		sent = total
+	}
+	start = normalizeCandidateStart(start, total)
+	end := normalizeCandidateStart(start+sent-1, total)
+	details["candidate_end"] = strconv.Itoa(end)
+	details["candidate_next_start"] = strconv.Itoa(nextCandidateStart(start, sent, total))
+	if first := candidates[start].Address; first != nil {
+		details["candidate_first"] = first.String()
+	}
+	if last := candidates[end].Address; last != nil {
+		details["candidate_last"] = last.String()
+	}
+	var minPort, maxPort int
+	for i := 0; i < sent; i++ {
+		addr := candidates[(start+i)%total].Address
+		if addr == nil {
+			continue
+		}
+		if minPort == 0 || addr.Port < minPort {
+			minPort = addr.Port
+		}
+		if addr.Port > maxPort {
+			maxPort = addr.Port
+		}
+	}
+	if minPort != 0 {
+		details["candidate_port_min"] = strconv.Itoa(minPort)
+		details["candidate_port_max"] = strconv.Itoa(maxPort)
+	}
 }
 
 func (e *executor) candidateSignalRounds() int {
@@ -789,6 +829,7 @@ sendLoop:
 		"signal_window_ms":  strconv.FormatInt((retryInterval * time.Duration(maxRound-1)).Milliseconds(), 10),
 		"send_timeout_ms":   strconv.FormatInt(candidateSignalSendTimeout(len(candidates)).Milliseconds(), 10),
 	}
+	addCandidateCoverageDetails(details, candidates, candidateStart, sent)
 	if lastErr != nil {
 		details["last_error"] = lastErr.Error()
 	}

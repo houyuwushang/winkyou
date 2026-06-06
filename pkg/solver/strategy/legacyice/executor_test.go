@@ -886,6 +886,13 @@ func TestPublicDirectCandidateSignalRoundResumesAfterPartialSend(t *testing.T) {
 	if obs == nil || obs.Details["candidate_start"] != "3" {
 		t.Fatalf("second round observations = %#v, want candidate_start=3", secondRound.Observations())
 	}
+	if obs.Details["candidate_first"] != "117.48.146.2:41003" ||
+		obs.Details["candidate_last"] != "117.48.146.2:41002" ||
+		obs.Details["candidate_next_start"] != "3" ||
+		obs.Details["candidate_port_min"] != "41000" ||
+		obs.Details["candidate_port_max"] != "41004" {
+		t.Fatalf("second round coverage details = %#v, want wrapped coverage diagnostics", obs.Details)
+	}
 }
 
 func TestPublicDirectCandidateSignalsRetryAsynchronously(t *testing.T) {
@@ -1840,6 +1847,12 @@ func TestExecutorPublicDirectPunchRoundResumesAtCandidateOffset(t *testing.T) {
 	obs := findObservation(io.Observations(), "remote_candidates_punched")
 	if obs == nil || obs.Details["candidate_start"] != strconv.Itoa(publicDirectCandidateSignalLimit) {
 		t.Fatalf("observations = %#v, want candidate_start=%d", io.Observations(), publicDirectCandidateSignalLimit)
+	}
+	if obs.Details["candidate_first"] != "117.48.146.2:42024" ||
+		obs.Details["candidate_next_start"] != strconv.Itoa(publicDirectCandidateSignalLimit*2%len(candidates)) ||
+		obs.Details["candidate_port_min"] != "41000" ||
+		obs.Details["candidate_port_max"] != "42025" {
+		t.Fatalf("punch coverage details = %#v, want offset coverage diagnostics", obs.Details)
 	}
 }
 
