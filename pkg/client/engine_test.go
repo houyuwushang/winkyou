@@ -5,6 +5,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -911,6 +912,25 @@ func TestStartPeerConnectAllowsControlledSide(t *testing.T) {
 	defer session.connectMu.Unlock()
 	if !session.retryPending {
 		t.Fatal("controlled-side peer session should retry after start failure")
+	}
+}
+
+func TestEnsurePeerSessionRejectsEmptyLocalNodeID(t *testing.T) {
+	eng := &engine{
+		cfg:     config.Default(),
+		log:     logger.Nop(),
+		peerMgr: &peerManager{sessions: map[string]*peerSession{}},
+	}
+
+	_, err := eng.ensurePeerSession("node-2")
+	if err == nil {
+		t.Fatal("ensurePeerSession() error = nil, want local node id error")
+	}
+	if !strings.Contains(err.Error(), "local node id") {
+		t.Fatalf("ensurePeerSession() error = %v, want local node id error", err)
+	}
+	if len(eng.peerMgr.sessions) != 0 {
+		t.Fatalf("sessions = %#v, want none created with empty local node id", eng.peerMgr.sessions)
 	}
 }
 

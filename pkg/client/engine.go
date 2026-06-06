@@ -172,6 +172,10 @@ func (e *engine) Start(ctx context.Context) (err error) {
 	if err != nil {
 		return err
 	}
+	e.mu.Lock()
+	e.status.NodeID = reg.NodeID
+	e.status.PublicKey = privateKey.PublicKey().String()
+	e.mu.Unlock()
 
 	virtualIP, networkCIDR, err := parseVirtualNetwork(reg.VirtualIP, reg.NetworkCIDR)
 	if err != nil {

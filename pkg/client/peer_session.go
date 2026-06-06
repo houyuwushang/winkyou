@@ -61,6 +61,15 @@ func (e *engine) ensurePeerSession(nodeID string) (*peerSession, error) {
 
 		localID := e.status.NodeID
 		e.mu.RUnlock()
+		if strings.TrimSpace(localID) == "" {
+			return nil, fmt.Errorf("client: local node id is not ready")
+		}
+		if strings.TrimSpace(nodeID) == "" {
+			return nil, fmt.Errorf("client: peer node id is required")
+		}
+		if localID == nodeID {
+			return nil, fmt.Errorf("client: peer node id matches local node id")
+		}
 
 		e.refreshRuntimePublicEndpointHints(e.sessionContext(), "peer_session")
 
@@ -126,6 +135,9 @@ func (e *engine) newPeerRunner(s *peerSession) (*sesspkg.Session, error) {
 	observationStore := e.observationStore
 	localNodeID := e.status.NodeID
 	e.mu.RUnlock()
+	if strings.TrimSpace(localNodeID) == "" {
+		return nil, fmt.Errorf("client: local node id is not ready")
+	}
 
 	var observationSink solver.ObservationSink
 	var observationHistory solver.ObservationHistory
