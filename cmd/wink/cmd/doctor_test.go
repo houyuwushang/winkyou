@@ -825,7 +825,8 @@ func TestDoctorRouteTargetWarnsExternalOverlay(t *testing.T) {
 		!strings.Contains(check.Suggestion, "external overlay") ||
 		!strings.Contains(check.Suggestion, "candidate_interface_include=[natpierce]") ||
 		!strings.Contains(check.Suggestion, "candidate_cidr_include=[10.6.22.3/32,10.6.22.1/32]") ||
-		!strings.Contains(check.Suggestion, "direct_trusted_cidrs") {
+		!strings.Contains(check.Suggestion, "direct_trusted_cidrs") ||
+		!strings.Contains(check.Suggestion, "/32 route beats a /24") {
 		t.Fatalf("target route check = %#v, want external overlay warning", check)
 	}
 }

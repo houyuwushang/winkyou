@@ -84,6 +84,7 @@ func TestBuildWindowsSetIPScript(t *testing.T) {
 		"Get-NetIPAddress",
 		"New-NetIPAddress",
 		"Set-NetIPInterface",
+		"-InterfaceMetric 1",
 		"$ip = '10.42.0.2'",
 		"$prefix = 24",
 		"$mtu = 1280",
@@ -98,7 +99,10 @@ func TestBuildWindowsRouteScripts(t *testing.T) {
 	_, dst, _ := net.ParseCIDR("10.42.0.0/24")
 
 	addScript := buildWindowsAddRouteScript("wink0", dst, net.ParseIP("10.42.0.1"))
-	if !strings.Contains(addScript, "New-NetRoute") || !strings.Contains(addScript, "$nextHop = '10.42.0.1'") {
+	if !strings.Contains(addScript, "New-NetRoute") ||
+		!strings.Contains(addScript, "$nextHop = '10.42.0.1'") ||
+		!strings.Contains(addScript, "$routeMetric = 1") ||
+		!strings.Contains(addScript, "-RouteMetric $routeMetric") {
 		t.Fatalf("unexpected add route script:\n%s", addScript)
 	}
 

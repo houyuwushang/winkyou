@@ -17,6 +17,7 @@ import (
 
 const defaultWindowsTUNName = "wink0"
 const windowsTUNNameEnv = "WINKYOU_TUN_NAME"
+const windowsTUNRouteMetric = 1
 
 type batchTunDevice interface {
 	Read(bufs [][]byte, sizes []int, offset int) (int, error)
@@ -201,7 +202,7 @@ func buildWindowsSetIPScript(iface string, ip net.IP, mask net.IPMask, mtu int) 
 		"if ($matched.Count -eq 0) {",
 		"  New-NetIPAddress -InterfaceAlias $alias -IPAddress $ip -PrefixLength $prefix -AddressFamily IPv4 -Type Unicast -PolicyStore ActiveStore | Out-Null",
 		"}",
-		"Set-NetIPInterface -InterfaceAlias $alias -AddressFamily IPv4 -NlMtuBytes $mtu | Out-Null",
+		fmt.Sprintf("Set-NetIPInterface -InterfaceAlias $alias -AddressFamily IPv4 -NlMtuBytes $mtu -InterfaceMetric %d | Out-Null", windowsTUNRouteMetric),
 		"Enable-NetAdapter -Name $alias -Confirm:$false -ErrorAction SilentlyContinue | Out-Null",
 	), nil
 }
@@ -216,13 +217,14 @@ func buildWindowsAddRouteScript(iface string, dst *net.IPNet, gateway net.IP) st
 		fmt.Sprintf("$alias = '%s'", escapePowerShellSingleQuoted(iface)),
 		fmt.Sprintf("$destination = '%s'", dst.String()),
 		fmt.Sprintf("$nextHop = '%s'", nextHop),
+		fmt.Sprintf("$routeMetric = %d", windowsTUNRouteMetric),
 		"$ipif = Get-NetIPInterface -InterfaceAlias $alias -AddressFamily IPv4 -ErrorAction SilentlyContinue | Select-Object -First 1",
 		"if ($null -eq $ipif) { throw \"interface not found or IPv4 not ready: $alias\" }",
 		"$existing = @(Get-NetRoute -DestinationPrefix $destination -InterfaceIndex $ipif.InterfaceIndex -ErrorAction SilentlyContinue)",
 		"foreach ($route in $existing) {",
 		"  Remove-NetRoute -InputObject $route -Confirm:$false -ErrorAction SilentlyContinue",
 		"}",
-		"New-NetRoute -DestinationPrefix $destination -InterfaceIndex $ipif.InterfaceIndex -NextHop $nextHop -PolicyStore ActiveStore | Out-Null",
+		"New-NetRoute -DestinationPrefix $destination -InterfaceIndex $ipif.InterfaceIndex -NextHop $nextHop -RouteMetric $routeMetric -PolicyStore ActiveStore | Out-Null",
 	)
 }
 

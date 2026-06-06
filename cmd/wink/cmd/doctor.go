@@ -1233,6 +1233,7 @@ func routeTargetOverlaySuggestion(route doctorRouteTargetProbeResult) string {
 	}
 	parts = append(parts, "only add nat.direct_trusted_cidrs after proving this is an independent underlay")
 	parts = append(parts, "to prove WinkYou carries the backend, advertise the backend route through a WinkYou peer and verify the route points to that peer virtual IP")
+	parts = append(parts, "if a stale overlay route still wins, remove it or add an equally specific WinkYou backend route because a /32 route beats a /24 regardless of metric")
 	return strings.Join(parts, "; ")
 }
 
