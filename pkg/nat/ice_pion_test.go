@@ -516,6 +516,69 @@ func TestPublicDirectPunchCandidatesUsesFixedMuxSocket(t *testing.T) {
 	}
 }
 
+func TestPublicDirectPunchCandidatesSendsConfiguredBurst(t *testing.T) {
+	port := uint16(freeUDPPort(t))
+	receiver, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 0})
+	if err != nil {
+		t.Fatalf("ListenUDP(receiver) error = %v", err)
+	}
+	defer receiver.Close()
+	receiverAddr, ok := receiver.LocalAddr().(*net.UDPAddr)
+	if !ok {
+		t.Fatalf("receiver LocalAddr type = %T, want *net.UDPAddr", receiver.LocalAddr())
+	}
+
+	nt, _ := NewNATTraversal(nil)
+	agent, err := nt.NewICEAgent(ICEConfig{
+		PublicDirectCandidate: true,
+		CandidatePortMin:      port,
+		CandidatePortMax:      port,
+		CandidateCIDRInclude:  []string{"127.0.0.1/32"},
+	})
+	if err != nil {
+		t.Fatalf("NewICEAgent(public direct fixed mux) error = %v", err)
+	}
+	defer agent.Close()
+	puncher, ok := agent.(PublicDirectPuncher)
+	if !ok {
+		t.Fatal("public-direct fixed mux agent does not expose PublicDirectPuncher")
+	}
+
+	report, err := puncher.PunchCandidates(context.Background(), []Candidate{{
+		Type:       CandidateTypeSrflx,
+		Address:    receiverAddr,
+		Priority:   100,
+		Foundation: "remote-srflx",
+	}}, PublicDirectPunchOptions{Limit: 1, Burst: 3})
+	if err != nil {
+		t.Fatalf("PunchCandidates() error = %v", err)
+	}
+	if report.CandidateTotal != 1 || report.CandidateSent != 1 || report.PacketSent != 3 {
+		t.Fatalf("PunchCandidates() report = %+v, want total=1 candidate=1 packet=3", report)
+	}
+
+	if err := receiver.SetDeadline(time.Now().Add(time.Second)); err != nil {
+		t.Fatalf("receiver.SetDeadline() error = %v", err)
+	}
+	buf := make([]byte, stunMaxPacket)
+	for i := 0; i < 3; i++ {
+		n, src, err := receiver.ReadFromUDP(buf)
+		if err != nil {
+			t.Fatalf("receiver.ReadFromUDP(%d) error = %v", i, err)
+		}
+		if src.Port != int(port) {
+			t.Fatalf("punch source port = %d, want fixed mux port %d", src.Port, port)
+		}
+		msg, err := parseSTUNMessage(buf[:n])
+		if err != nil {
+			t.Fatalf("parse punch packet %d error = %v", i, err)
+		}
+		if msg.msgType != stunMsgTypeBindingReq {
+			t.Fatalf("punch message %d type = 0x%04x, want STUN binding request", i, msg.msgType)
+		}
+	}
+}
+
 func TestICEPionAgentRemoteCandidateCount(t *testing.T) {
 	nt, _ := NewNATTraversal(nil)
 	agent, err := nt.NewICEAgent(ICEConfig{PublicDirectCandidate: true})

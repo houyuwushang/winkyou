@@ -75,6 +75,7 @@ type recordingPunchICEAgent struct {
 	recordingICEAgent
 	mu       sync.Mutex
 	punched  []nat.Candidate
+	opts     []nat.PublicDirectPunchOptions
 	punchErr error
 	local    *net.UDPAddr
 }
@@ -88,9 +89,15 @@ func (a *recordingPunchICEAgent) PunchCandidates(ctx context.Context, candidates
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.punched = append(a.punched, candidates[:limit]...)
+	a.opts = append(a.opts, opts)
+	burst := opts.Burst
+	if burst <= 0 {
+		burst = 1
+	}
 	return nat.PublicDirectPunchReport{
 		CandidateTotal: len(candidates),
 		CandidateSent:  limit,
+		PacketSent:     limit * burst,
 		LocalAddr:      cloneTestUDPAddr(a.local),
 	}, a.punchErr
 }
@@ -99,6 +106,12 @@ func (a *recordingPunchICEAgent) Punched() []nat.Candidate {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	return append([]nat.Candidate(nil), a.punched...)
+}
+
+func (a *recordingPunchICEAgent) PunchOptions() []nat.PublicDirectPunchOptions {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return append([]nat.PublicDirectPunchOptions(nil), a.opts...)
 }
 
 func cloneTestUDPAddr(addr *net.UDPAddr) *net.UDPAddr {
@@ -1112,6 +1125,8 @@ func TestPublicDirectFailureIncludesLastRemotePunchDetails(t *testing.T) {
 		obs.Details["last_punch_candidate_first"] != "117.48.146.2:41001" ||
 		obs.Details["last_punch_candidate_port_min"] != "41000" ||
 		obs.Details["last_punch_candidate_port_max"] != "41001" ||
+		obs.Details["last_punch_packet_sent"] != strconv.Itoa(2*publicDirectRemotePunchBurst) ||
+		obs.Details["last_punch_punch_burst"] != strconv.Itoa(publicDirectRemotePunchBurst) ||
 		obs.Details["last_punch_punch_round"] != "2" ||
 		obs.Details["last_punch_punch_rounds"] != "3" {
 		t.Fatalf("candidate_failed details = %#v, want last punch diagnostics", obs.Details)
@@ -1773,14 +1788,20 @@ func TestExecutorPublicDirectPunchesRemoteCandidatesAfterAnswer(t *testing.T) {
 	if len(punched) != 1 || punched[0].Address.String() != publicCandidate.Address.String() {
 		t.Fatalf("punched candidates = %#v, want remote public candidate", punched)
 	}
+	opts := agent.PunchOptions()
+	if len(opts) != 1 || opts[0].Burst != publicDirectRemotePunchBurst {
+		t.Fatalf("punch options = %#v, want burst=%d", opts, publicDirectRemotePunchBurst)
+	}
 	obs := findObservation(io.Observations(), "remote_candidates_punched")
 	if obs == nil {
 		t.Fatalf("observations = %#v, want remote_candidates_punched", io.Observations())
 	}
 	if obs.Details["message_type"] != MessageTypeAnswer ||
 		obs.Details["candidate_total"] != "1" ||
-		obs.Details["candidate_sent"] != "1" {
-		t.Fatalf("remote_candidates_punched details = %#v, want answer total=1 sent=1", obs.Details)
+		obs.Details["candidate_sent"] != "1" ||
+		obs.Details["packet_sent"] != strconv.Itoa(publicDirectRemotePunchBurst) ||
+		obs.Details["punch_burst"] != strconv.Itoa(publicDirectRemotePunchBurst) {
+		t.Fatalf("remote_candidates_punched details = %#v, want answer total=1 sent=1 burst diagnostics", obs.Details)
 	}
 	if obs.Details["punch_local_addr"] != "192.168.1.20:40000" || obs.Details["punch_local_port"] != "40000" {
 		t.Fatalf("remote_candidates_punched details = %#v, want punch local addr", obs.Details)

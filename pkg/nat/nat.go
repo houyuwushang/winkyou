@@ -162,12 +162,14 @@ type CandidatePairStats struct {
 // public-direct candidates.
 type PublicDirectPunchOptions struct {
 	Limit int
+	Burst int
 }
 
 // PublicDirectPunchReport summarizes a best-effort UDP punch burst.
 type PublicDirectPunchReport struct {
 	CandidateTotal int
 	CandidateSent  int
+	PacketSent     int
 	LocalAddr      *net.UDPAddr
 }
 

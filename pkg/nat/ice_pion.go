@@ -318,6 +318,10 @@ func (a *icePionAgent) PunchCandidates(ctx context.Context, candidates []Candida
 	if limit <= 0 || limit > len(candidates) {
 		limit = len(candidates)
 	}
+	burst := opts.Burst
+	if burst <= 0 {
+		burst = 1
+	}
 	seen := make(map[string]struct{}, limit)
 	var firstErr error
 	for i := 0; i < len(candidates) && report.CandidateSent < limit; i++ {
@@ -339,20 +343,35 @@ func (a *icePionAgent) PunchCandidates(ctx context.Context, candidates []Candida
 		}
 		seen[key] = struct{}{}
 
-		txID, err := newTransactionID()
-		if err != nil {
-			if firstErr == nil {
-				firstErr = fmt.Errorf("nat: punch txid: %w", err)
+		var sentForCandidate bool
+		for attempt := 0; attempt < burst; attempt++ {
+			select {
+			case <-ctx.Done():
+				if firstErr == nil {
+					firstErr = ctx.Err()
+				}
+				return report, firstErr
+			default:
 			}
-			continue
-		}
-		if _, err := conn.WriteToUDP(buildBindingRequest(txID), candidate.Address); err != nil {
-			if firstErr == nil {
-				firstErr = fmt.Errorf("nat: punch candidate %s: %w", candidate.Address, err)
+			txID, err := newTransactionID()
+			if err != nil {
+				if firstErr == nil {
+					firstErr = fmt.Errorf("nat: punch txid: %w", err)
+				}
+				continue
 			}
-			continue
+			if _, err := conn.WriteToUDP(buildBindingRequest(txID), candidate.Address); err != nil {
+				if firstErr == nil {
+					firstErr = fmt.Errorf("nat: punch candidate %s: %w", candidate.Address, err)
+				}
+				continue
+			}
+			report.PacketSent++
+			sentForCandidate = true
 		}
-		report.CandidateSent++
+		if sentForCandidate {
+			report.CandidateSent++
+		}
 	}
 	return report, firstErr
 }

@@ -79,6 +79,8 @@ const publicDirectRemotePunchRetryInterval = 250 * time.Millisecond
 
 const publicDirectRemotePunchMaxRounds = 20
 
+const publicDirectRemotePunchBurst = 3
+
 func newExecutor(cfg Config, input solver.SolveInput, plan solver.Plan, execCfg executorConfig) *executor {
 	lifecycleCtx, lifecycleCancel := context.WithCancel(context.Background())
 	return &executor{
@@ -420,7 +422,8 @@ func (e *executor) punchRemoteCandidates(ctx context.Context, sess solver.Sessio
 		return
 	}
 	ordered := prioritizePublicDirectSignalCandidates(candidates)
-	punchCtx, cancel := context.WithTimeout(ctx, remoteCandidatePunchTimeout(len(ordered)))
+	punchBurst := e.remoteCandidatePunchBurst()
+	punchCtx, cancel := context.WithTimeout(ctx, remoteCandidatePunchTimeout(len(ordered), punchBurst))
 	defer cancel()
 	limit := publicDirectCandidateSignalLimitFor(ordered)
 	candidateStart := 0
@@ -430,6 +433,7 @@ func (e *executor) punchRemoteCandidates(ctx context.Context, sess solver.Sessio
 	}
 	report, err := puncher.PunchCandidates(punchCtx, ordered, nat.PublicDirectPunchOptions{
 		Limit: limit,
+		Burst: punchBurst,
 	})
 	nextStart := nextCandidateStart(candidateStart, report.CandidateSent, len(ordered))
 	if err == nil && messageType == MessageTypeCandidate && report.CandidateTotal == 1 {
@@ -444,6 +448,8 @@ func (e *executor) punchRemoteCandidates(ctx context.Context, sess solver.Sessio
 		"candidate_total":   strconv.Itoa(report.CandidateTotal),
 		"candidate_sent":    strconv.Itoa(report.CandidateSent),
 		"candidate_limit":   strconv.Itoa(limit),
+		"packet_sent":       strconv.Itoa(report.PacketSent),
+		"punch_burst":       strconv.Itoa(punchBurst),
 		"candidate_start":   strconv.Itoa(candidateStart),
 		"punch_round":       "1",
 		"punch_rounds":      strconv.Itoa(rounds),
@@ -486,13 +492,15 @@ func (e *executor) punchRemoteCandidateRound(ctx context.Context, sess solver.Se
 	if len(candidates) == 0 {
 		return 0
 	}
-	punchCtx, cancel := context.WithTimeout(ctx, remoteCandidatePunchTimeout(len(candidates)))
+	punchBurst := e.remoteCandidatePunchBurst()
+	punchCtx, cancel := context.WithTimeout(ctx, remoteCandidatePunchTimeout(len(candidates), punchBurst))
 	defer cancel()
 	limit := publicDirectCandidateSignalLimitFor(candidates)
 	candidateStart := normalizeCandidateStart(startIndex, len(candidates))
 	roundCandidates := rotateCandidates(candidates, candidateStart)
 	report, err := puncher.PunchCandidates(punchCtx, roundCandidates, nat.PublicDirectPunchOptions{
 		Limit: limit,
+		Burst: punchBurst,
 	})
 	details := map[string]string{
 		"mode":              string(e.execCfg.Mode),
@@ -500,6 +508,8 @@ func (e *executor) punchRemoteCandidateRound(ctx context.Context, sess solver.Se
 		"candidate_total":   strconv.Itoa(report.CandidateTotal),
 		"candidate_sent":    strconv.Itoa(report.CandidateSent),
 		"candidate_limit":   strconv.Itoa(limit),
+		"packet_sent":       strconv.Itoa(report.PacketSent),
+		"punch_burst":       strconv.Itoa(punchBurst),
 		"candidate_start":   strconv.Itoa(candidateStart),
 		"punch_round":       strconv.Itoa(round),
 		"punch_rounds":      strconv.Itoa(maxRound),
@@ -554,15 +564,25 @@ func (e *executor) remoteCandidatePunchRetryInterval(maxRound int) time.Duration
 	return interval
 }
 
-func remoteCandidatePunchTimeout(candidateCount int) time.Duration {
+func (e *executor) remoteCandidatePunchBurst() int {
+	if e.execCfg.Mode != modePublicDirect {
+		return 1
+	}
+	return publicDirectRemotePunchBurst
+}
+
+func remoteCandidatePunchTimeout(candidateCount int, burst int) time.Duration {
 	if candidateCount <= 0 {
 		return publicDirectRemotePunchTimeout
 	}
 	if candidateCount > publicDirectCandidateSignalEndpointHintLimit {
 		candidateCount = publicDirectCandidateSignalEndpointHintLimit
 	}
+	if burst <= 0 {
+		burst = 1
+	}
 	timeout := publicDirectRemotePunchTimeout +
-		time.Duration(candidateCount)*publicDirectRemotePunchPerCandidateTimeout
+		time.Duration(candidateCount*burst)*publicDirectRemotePunchPerCandidateTimeout
 	if timeout > publicDirectRemotePunchMaxTimeout {
 		return publicDirectRemotePunchMaxTimeout
 	}
