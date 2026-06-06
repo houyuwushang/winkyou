@@ -1086,6 +1086,38 @@ func TestPublicDirectFailureIncludesLastCandidateSignalDetails(t *testing.T) {
 	}
 }
 
+func TestPublicDirectFailureIncludesLastRemotePunchDetails(t *testing.T) {
+	candidates := []nat.Candidate{
+		{Type: nat.CandidateTypeSrflx, Address: &net.UDPAddr{IP: net.IPv4(117, 48, 146, 2), Port: 41000}, Foundation: "srflx-1"},
+		{Type: nat.CandidateTypeSrflx, Address: &net.UDPAddr{IP: net.IPv4(117, 48, 146, 2), Port: 41001}, Foundation: "srflx-2"},
+	}
+	agent := &recordingPunchICEAgent{local: &net.UDPAddr{IP: net.IPv4(192, 168, 1, 20), Port: 40000}}
+	exec := newExecutor(Config{}, solver.SolveInput{
+		SessionID: "session/node-a/node-b",
+	}, solver.Plan{
+		ID:       planIDPublicDirect,
+		Strategy: StrategyName,
+	}, executorConfig{Mode: modePublicDirect})
+	io := &capturingSessionIO{}
+
+	exec.punchRemoteCandidateRound(context.Background(), io, agent, candidates, MessageTypeAnswer, 2, 3, 1)
+	exec.reportFailure(io, errors.New("public direct timeout"))
+
+	obs := findObservation(io.Observations(), "candidate_failed")
+	if obs == nil {
+		t.Fatalf("observations = %#v, want candidate_failed", io.Observations())
+	}
+	if obs.Details["last_punch_punch_local_addr"] != "192.168.1.20:40000" ||
+		obs.Details["last_punch_candidate_start"] != "1" ||
+		obs.Details["last_punch_candidate_first"] != "117.48.146.2:41001" ||
+		obs.Details["last_punch_candidate_port_min"] != "41000" ||
+		obs.Details["last_punch_candidate_port_max"] != "41001" ||
+		obs.Details["last_punch_punch_round"] != "2" ||
+		obs.Details["last_punch_punch_rounds"] != "3" {
+		t.Fatalf("candidate_failed details = %#v, want last punch diagnostics", obs.Details)
+	}
+}
+
 func TestPublicDirectFailureIncludesAgentDiagnostics(t *testing.T) {
 	localCandidate := nat.Candidate{
 		Type:    nat.CandidateTypeHost,

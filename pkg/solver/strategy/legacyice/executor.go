@@ -36,6 +36,7 @@ type executor struct {
 	lastLocalFilterDetails  map[string]string
 	lastRemoteFilterDetails map[string]string
 	lastSignalDetails       map[string]string
+	lastPunchDetails        map[string]string
 
 	lifecycleCtx    context.Context
 	lifecycleCancel context.CancelFunc
@@ -453,6 +454,7 @@ func (e *executor) punchRemoteCandidates(ctx context.Context, sess solver.Sessio
 	if err != nil {
 		details["last_error"] = err.Error()
 	}
+	e.rememberRemotePunchDetails(details)
 	e.report(sess, solver.Observation{
 		Strategy:  e.strategyName(),
 		PlanID:    e.plan.ID,
@@ -508,6 +510,7 @@ func (e *executor) punchRemoteCandidateRound(ctx context.Context, sess solver.Se
 	if err != nil {
 		details["last_error"] = err.Error()
 	}
+	e.rememberRemotePunchDetails(details)
 	e.report(sess, solver.Observation{
 		Strategy:  e.strategyName(),
 		PlanID:    e.plan.ID,
@@ -1114,6 +1117,10 @@ func (e *executor) addPublicDirectFailureDetails(details map[string]string) {
 	for key, value := range signal {
 		details["last_signal_"+key] = value
 	}
+	punch := e.remotePunchSnapshot()
+	for key, value := range punch {
+		details["last_punch_"+key] = value
+	}
 	if agent != nil {
 		details["ice_state"] = connectionStateString(agent)
 		addPublicDirectAgentFailureDetails(details, agent)
@@ -1253,6 +1260,21 @@ func (e *executor) candidateSignalSnapshot() map[string]string {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	return cloneStringMap(e.lastSignalDetails)
+}
+
+func (e *executor) rememberRemotePunchDetails(details map[string]string) {
+	if e.execCfg.Mode != modePublicDirect {
+		return
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.lastPunchDetails = cloneStringMap(details)
+}
+
+func (e *executor) remotePunchSnapshot() map[string]string {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return cloneStringMap(e.lastPunchDetails)
 }
 
 func (e *executor) report(sess solver.SessionIO, obs solver.Observation) {
