@@ -97,5 +97,7 @@ func setDefaults(v *viper.Viper, cfg Config) {
 	v.SetDefault("tcp_framed.enabled", cfg.TCPFramed.Enabled)
 	v.SetDefault("tcp_framed.listen_addr", cfg.TCPFramed.ListenAddr)
 	v.SetDefault("tcp_framed.advertise_addr", cfg.TCPFramed.AdvertiseAddr)
+	v.SetDefault("tcp_framed.dial_addr", cfg.TCPFramed.DialAddr)
+	v.SetDefault("tcp_framed.role", cfg.TCPFramed.Role)
 	v.SetDefault("tcp_framed.dial_timeout", cfg.TCPFramed.DialTimeout)
 }

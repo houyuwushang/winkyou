@@ -30,6 +30,7 @@ const (
 	defaultDirectProtectionBonus = 100
 	defaultActivePathSilence     = 15 * time.Second
 	defaultTCPFramedListenAddr   = "0.0.0.0:0"
+	defaultTCPFramedRole         = "auto"
 	defaultTCPFramedDialTime     = 5 * time.Second
 )
 
@@ -86,6 +87,7 @@ func Default() Config {
 		TCPFramed: TCPFramedConfig{
 			Enabled:     false,
 			ListenAddr:  defaultTCPFramedListenAddr,
+			Role:        defaultTCPFramedRole,
 			DialTimeout: defaultTCPFramedDialTime,
 		},
 	}

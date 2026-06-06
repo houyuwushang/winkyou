@@ -6,6 +6,7 @@ import (
 	"net"
 	"net/netip"
 	"net/url"
+	"strconv"
 	"strings"
 )
 
@@ -16,6 +17,7 @@ var (
 	validBackends               = map[string]struct{}{"auto": {}, "tun": {}, "userspace": {}, "proxy": {}}
 	validConnectivityModes      = map[string]struct{}{"auto": {}, "relay_only": {}}
 	validConnectivityStrategies = map[string]struct{}{"legacy_ice_udp": {}, "relay_only": {}, "tcp_framed": {}, "signal_relay": {}}
+	validTCPFramedRoles         = map[string]struct{}{"auto": {}, "listen": {}, "dial": {}}
 )
 
 const maxPublicEndpointHintPortWindow = 512
@@ -165,11 +167,35 @@ func (c *Config) Validate() error {
 		if strings.TrimSpace(c.TCPFramed.ListenAddr) == "" {
 			return errors.New("tcp_framed.listen_addr must not be empty when tcp_framed.enabled=true")
 		}
+		role := strings.ToLower(strings.TrimSpace(c.TCPFramed.Role))
+		if role == "" {
+			role = "auto"
+		}
+		if err := requireOneOf("tcp_framed.role", role, validTCPFramedRoles); err != nil {
+			return err
+		}
+		if strings.TrimSpace(c.TCPFramed.DialAddr) != "" {
+			if err := validateHostPort("tcp_framed.dial_addr", c.TCPFramed.DialAddr); err != nil {
+				return err
+			}
+		}
 		if c.TCPFramed.DialTimeout <= 0 {
 			return errors.New("tcp_framed.dial_timeout must be greater than zero when tcp_framed.enabled=true")
 		}
 	}
 
+	return nil
+}
+
+func validateHostPort(field, value string) error {
+	host, port, err := net.SplitHostPort(strings.TrimSpace(value))
+	if err != nil || strings.TrimSpace(host) == "" || strings.TrimSpace(port) == "" {
+		return fmt.Errorf("invalid %s: %q", field, value)
+	}
+	portValue, err := strconv.Atoi(port)
+	if err != nil || portValue <= 0 || portValue > 65535 {
+		return fmt.Errorf("invalid %s: %q", field, value)
+	}
 	return nil
 }
 

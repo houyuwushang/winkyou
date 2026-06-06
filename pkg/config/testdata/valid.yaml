@@ -67,4 +67,6 @@ tcp_framed:
   enabled: true
   listen_addr: "127.0.0.1:0"
   advertise_addr: "127.0.0.1:12345"
+  dial_addr: "127.0.0.1:23456"
+  role: auto
   dial_timeout: 2s

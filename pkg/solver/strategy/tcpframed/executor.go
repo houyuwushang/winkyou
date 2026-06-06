@@ -39,7 +39,11 @@ func (e *executor) Execute(ctx context.Context, sess solver.SessionIO) (solver.R
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	if e.input.Initiator {
+	role, err := e.cfg.roleForInitiator(e.input.Initiator)
+	if err != nil {
+		return solver.Result{}, err
+	}
+	if role == RoleListen {
 		return e.executeListen(ctx, sess)
 	}
 	return e.executeDial(ctx, sess)
@@ -140,16 +144,24 @@ func (e *executor) executeListen(ctx context.Context, sess solver.SessionIO) (so
 }
 
 func (e *executor) executeDial(ctx context.Context, sess solver.SessionIO) (solver.Result, error) {
-	offer, err := e.waitOffer(ctx)
-	if err != nil {
-		return solver.Result{}, err
-	}
-	if strings.TrimSpace(offer.Endpoint.Address) == "" {
-		return solver.Result{}, fmt.Errorf("tcpframed: offer missing endpoint address")
-	}
-	network := strings.TrimSpace(offer.Endpoint.Network)
-	if network == "" {
-		network = "tcp"
+	endpoint := strings.TrimSpace(e.cfg.DialAddr)
+	network := "tcp"
+	role := "dialer"
+	if endpoint != "" {
+		role = "dialer_static"
+	} else {
+		offer, err := e.waitOffer(ctx)
+		if err != nil {
+			return solver.Result{}, err
+		}
+		endpoint = strings.TrimSpace(offer.Endpoint.Address)
+		if endpoint == "" {
+			return solver.Result{}, fmt.Errorf("tcpframed: offer missing endpoint address")
+		}
+		network = strings.TrimSpace(offer.Endpoint.Network)
+		if network == "" {
+			network = "tcp"
+		}
 	}
 
 	dialCtx := ctx
@@ -163,7 +175,7 @@ func (e *executor) executeDial(ctx context.Context, sess solver.SessionIO) (solv
 	if e.cfg.DialTimeout > 0 {
 		dialer.Timeout = e.cfg.DialTimeout
 	}
-	conn, err := dialer.DialContext(dialCtx, network, offer.Endpoint.Address)
+	conn, err := dialer.DialContext(dialCtx, network, endpoint)
 	if err != nil {
 		_ = e.sendAnswer(ctx, sess, false, err.Error())
 		return solver.Result{}, err
@@ -173,7 +185,7 @@ func (e *executor) executeDial(ctx context.Context, sess solver.SessionIO) (solv
 		_ = conn.Close()
 		return solver.Result{}, err
 	}
-	return e.resultForConn(e.releaseConn(conn), "dialer"), nil
+	return e.resultForConn(e.releaseConn(conn), role), nil
 }
 
 func (e *executor) sendOffer(ctx context.Context, sess solver.SessionIO, endpoint string) error {

@@ -37,6 +37,7 @@ WinkYou = connectivity solver + secure WireGuard data plane
 - runtime/`wink peers --json` 会暴露最近 path 的 plan、role、dependency 和 child path 摘要；验证真实直连时应以 `last_path_role=protected_direct` 且 `last_path_dependencies` 为空作为证据，而不是只看 `connection_type=direct`
 - `wink peers` / `wink peers --json` 会显示 `last_failover_why`，例如 `active_path_rx_silence:<path>`，用于判断断开 natpierce/relay/underlay 后是否真的触发了 multipath failover
 - 2026-06-06 真实节点验证：`signal_relay` 可以把 local-live 与 inner-live 绑定到 `Path Strat: signal_relay`，`Path Deps: coordinator:...:coordinator_signal_stream`，后台 `tcp_framed` / `legacy_ice_udp` protected-direct improvement 失败后不再清空已绑定 path。该路径依赖 coordinator signal stream，不等价于 coordinator-less，也不能在断开 chen-win/coordinator/natpierce 这一整条 underlay 后继续承载数据。
+- 2026-06-06 同一现场还确认：本机到 inner-gw 的 `10.6.22.1:22` 能通过 natpierce/chen-win 访问，但 inner-gw 临时监听的随机 TCP 端口没有收到本机连接，inner-gw `tcpdump -i natpierce tcp port 22` 看到的 SSH 来源也是 `10.6.22.4`，不是本机 `10.6.22.3`。因此当前 natpierce 拓扑不能被当作“任意 TCP/UDP 端口都直达”的 underlay；`tcp_framed` 必须配置固定且已转发/已放行的 TCP endpoint，`legacy_ice_udp` 仍需独立 STUN/ICE 证据证明 protected direct。
 - 同一轮验证还暴露了 Windows Wintun 应用流量问题：in-band `33435` 和 tunnel 计数持续读写，但外部 `wink ping`/PowerShell UDP 到 `10.88.0.8:33434` 可能被 Windows 计入 `OutboundDiscardedPackets`，未进入 wink 的 TUN read，也未到达 inner-gw `wink0`。当前已提供默认关闭的 `WINKYOU_TRACE_TUN_PACKETS=1` 调试开关，用于区分“应用包未进入 Wintun”和“已进入 tunnel 但未到远端”。
 - 真实双节点验证已证明 `legacy_ice_udp` direct path 可以建立虚拟局域网；在已 bound 数据面上只停止 chen-win 的 coordinator 进程 15 秒后，`wink ping` 仍成功，说明基础 coordinator outage 已通过。但历史 selected pair 的 remote candidate 曾为 `100.102.17.35`，属于 `100.64.0.0/10`，这只能证明没有走 TURN relay，不能证明该 path 独立于 natpierce/chen-win underlay。client 已加第一层 peer-offline 保护、controlled-side retry、coordinator NotFound 重注册，并已在 runtime/`wink peers` 中暴露 control/data 状态和最近成功 path cache；`pkg/peercontrol` 消息模型已冻结，client 已接入最小 in-band heartbeat/path_health 循环，`re_ice_request` 会触发 protected-direct improvement，`session_signal` 会在已建立虚拟网内冗余发送现有 session/strategy 信令，并会短期重发最近信令、按序列去重，后续仍需覆盖更长时间 heartbeat/signaling failure、完整 ACK/backoff 和 cached path 恢复；详见 [`docs/CONTROL-PLANE-RESILIENCE.md`](./docs/CONTROL-PLANE-RESILIENCE.md)
 
@@ -115,8 +116,30 @@ tcp_framed:
   enabled: true
   listen_addr: "0.0.0.0:0"
   advertise_addr: "203.0.113.10:39000"
+  role: auto
   dial_timeout: 5s
 ```
+
+如果只有一端有固定可达入口，或者外部工具只转发了某个固定 TCP 端口，不要使用随机 `:0` 作为可达性证据。可把监听端固定在被转发端口，并在对端配置静态拨号：
+
+```yaml
+# listener side
+tcp_framed:
+  enabled: true
+  role: listen
+  listen_addr: "0.0.0.0:39000"
+  advertise_addr: "203.0.113.10:39000"
+  dial_timeout: 5s
+
+# dialer side
+tcp_framed:
+  enabled: true
+  role: dial
+  dial_addr: "203.0.113.10:39000"
+  dial_timeout: 5s
+```
+
+在 natpierce 这类拓扑中，`10.6.22.1:22` 能通通常只能证明该端口或该会话被外部系统转发；如果 `10.6.22.1:<随机端口>` 不通，`tcp_framed` 的 `listen_addr: "...:0"` 也不会自动变成可达路径。
 
 显式验证 relay-only 路径时，优先使用连接策略入口：
 

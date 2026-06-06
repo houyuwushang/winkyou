@@ -45,6 +45,9 @@ func TestLoadValidFile(t *testing.T) {
 	if !cfg.TCPFramed.Enabled || cfg.TCPFramed.ListenAddr != "127.0.0.1:0" || cfg.TCPFramed.AdvertiseAddr != "127.0.0.1:12345" {
 		t.Fatalf("tcp_framed config = %#v, want enabled loopback config", cfg.TCPFramed)
 	}
+	if cfg.TCPFramed.Role != "auto" || cfg.TCPFramed.DialAddr != "127.0.0.1:23456" {
+		t.Fatalf("tcp_framed role/dial_addr = %q/%q, want auto/127.0.0.1:23456", cfg.TCPFramed.Role, cfg.TCPFramed.DialAddr)
+	}
 	if cfg.TCPFramed.DialTimeout.String() != "2s" {
 		t.Fatalf("tcp_framed.dial_timeout = %s, want 2s", cfg.TCPFramed.DialTimeout)
 	}
@@ -158,6 +161,12 @@ func TestDefaultConnectivityPolicy(t *testing.T) {
 	if cfg.TCPFramed.ListenAddr != "0.0.0.0:0" {
 		t.Fatalf("default tcp_framed.listen_addr = %q, want 0.0.0.0:0", cfg.TCPFramed.ListenAddr)
 	}
+	if cfg.TCPFramed.Role != "auto" {
+		t.Fatalf("default tcp_framed.role = %q, want auto", cfg.TCPFramed.Role)
+	}
+	if cfg.TCPFramed.DialAddr != "" {
+		t.Fatalf("default tcp_framed.dial_addr = %q, want empty", cfg.TCPFramed.DialAddr)
+	}
 	if !cfg.Connectivity.Multipath.Enabled {
 		t.Fatal("default multipath.enabled = false, want true")
 	}
@@ -191,6 +200,34 @@ func TestValidateRejectsUnknownConnectivityStrategy(t *testing.T) {
 	}
 	if got := err.Error(); got != `invalid connectivity.strategy_order[1]: "future_quic"` {
 		t.Fatalf("Validate() error = %q, want unknown strategy error", got)
+	}
+}
+
+func TestValidateRejectsInvalidTCPFramedRole(t *testing.T) {
+	cfg := config.Default()
+	cfg.TCPFramed.Enabled = true
+	cfg.TCPFramed.Role = "server"
+
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("expected validation error, got nil")
+	}
+	if got := err.Error(); got != `invalid tcp_framed.role: "server"` {
+		t.Fatalf("Validate() error = %q, want invalid tcp_framed role", got)
+	}
+}
+
+func TestValidateRejectsInvalidTCPFramedDialAddr(t *testing.T) {
+	cfg := config.Default()
+	cfg.TCPFramed.Enabled = true
+	cfg.TCPFramed.DialAddr = "10.6.22.1"
+
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("expected validation error, got nil")
+	}
+	if got := err.Error(); got != `invalid tcp_framed.dial_addr: "10.6.22.1"` {
+		t.Fatalf("Validate() error = %q, want invalid tcp_framed dial_addr", got)
 	}
 }
 

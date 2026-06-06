@@ -362,6 +362,25 @@ func TestEngineStrategyResolverRegistersTCPFramedWhenEnabled(t *testing.T) {
 	}
 }
 
+func TestTCPFramedStrategyConfigPropagatesStaticEndpointPolicy(t *testing.T) {
+	cfg := config.Default()
+	cfg.TCPFramed.ListenAddr = "10.6.22.1:22069"
+	cfg.TCPFramed.AdvertiseAddr = "10.6.22.1:22069"
+	cfg.TCPFramed.DialAddr = "10.6.22.1:22069"
+	cfg.TCPFramed.Role = tcpframed.RoleDial
+	cfg.TCPFramed.DialTimeout = 7 * time.Second
+	eng := &engine{cfg: cfg}
+
+	got := eng.tcpFramedStrategyConfig()
+	if got.ListenAddr != cfg.TCPFramed.ListenAddr ||
+		got.AdvertiseAddr != cfg.TCPFramed.AdvertiseAddr ||
+		got.DialAddr != cfg.TCPFramed.DialAddr ||
+		got.Role != cfg.TCPFramed.Role ||
+		got.DialTimeout != cfg.TCPFramed.DialTimeout {
+		t.Fatalf("tcpFramedStrategyConfig() = %#v, want config fields propagated", got)
+	}
+}
+
 func TestEngineStrategyResolverConnectivityRelayOnlyKeepsImplicitLegacyFallback(t *testing.T) {
 	cfg := config.Default()
 	cfg.Connectivity.Mode = relayonly.StrategyName

@@ -259,6 +259,8 @@ func (e *engine) tcpFramedStrategyConfig() tcpframed.Config {
 	return tcpframed.Config{
 		ListenAddr:    e.cfg.TCPFramed.ListenAddr,
 		AdvertiseAddr: e.cfg.TCPFramed.AdvertiseAddr,
+		DialAddr:      e.cfg.TCPFramed.DialAddr,
+		Role:          e.cfg.TCPFramed.Role,
 		DialTimeout:   e.cfg.TCPFramed.DialTimeout,
 	}
 }

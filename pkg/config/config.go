@@ -91,6 +91,8 @@ type TCPFramedConfig struct {
 	Enabled       bool          `mapstructure:"enabled" yaml:"enabled"`
 	ListenAddr    string        `mapstructure:"listen_addr" yaml:"listen_addr"`
 	AdvertiseAddr string        `mapstructure:"advertise_addr" yaml:"advertise_addr"`
+	DialAddr      string        `mapstructure:"dial_addr" yaml:"dial_addr"`
+	Role          string        `mapstructure:"role" yaml:"role"`
 	DialTimeout   time.Duration `mapstructure:"dial_timeout" yaml:"dial_timeout"`
 }
 

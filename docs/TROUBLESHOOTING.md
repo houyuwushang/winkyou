@@ -309,10 +309,32 @@ tcp_framed:
   enabled: true
   listen_addr: "0.0.0.0:0"
   advertise_addr: "203.0.113.10:39000"
+  role: auto
   dial_timeout: 5s
 ```
 
-`tcp_framed` 不做 TCP NAT 打洞；`advertise_addr` 必须能被对端直接访问。
+`tcp_framed` 不做 TCP NAT 打洞；`advertise_addr` 必须能被对端直接访问。`role` 支持 `auto`、`listen`、`dial`：默认 `auto` 仍按 session initiator 决定监听/拨号；`listen` 强制本端监听并发送 endpoint；`dial` 强制本端拨号。`dial_addr` 非空时会直接拨该固定 endpoint，不再等待对端 offer。
+
+如果只有某个固定端口被外部系统转发或放行，使用固定监听/拨号配置：
+
+```yaml
+# listener side
+tcp_framed:
+  enabled: true
+  role: listen
+  listen_addr: "0.0.0.0:39000"
+  advertise_addr: "203.0.113.10:39000"
+  dial_timeout: 5s
+
+# dialer side
+tcp_framed:
+  enabled: true
+  role: dial
+  dial_addr: "203.0.113.10:39000"
+  dial_timeout: 5s
+```
+
+现场验证中，本机到 inner-gw 的 `10.6.22.1:22` 能通过 natpierce/chen-win 访问，但 inner-gw 临时监听的随机 TCP 端口没有收到本机连接，`tcpdump -i natpierce tcp port 22` 看到的 SSH 来源也是 `10.6.22.4` 而不是本机 `10.6.22.3`。这种现象说明当前外部 overlay 只证明特定通道或端口可达，不证明随机 `tcp_framed` 端口可达。若 `connection refused` 或超时，先确认端口确实监听、被转发、能从对端直接连接，再用 `tcp_framed.role` / `tcp_framed.dial_addr` 固定角色。
 
 ## 7. Tunnel / Transport
 

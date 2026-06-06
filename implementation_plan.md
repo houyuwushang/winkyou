@@ -40,6 +40,7 @@ WinkYou = connectivity solver + WireGuard 数据平面
 - local-live 与 inner-live 已能通过 `signal_relay` 绑定，`wink peers` 显示 `Path Strat: signal_relay`、`Path Plan: signalrelay/coordinator_signal`、`Path Deps: coordinator:...:coordinator_signal_stream`。
 - `signal_relay` ready 信号需要在等待窗口内重发；一次性 ready 会在两端 session 启动错位时丢失，导致双方都 `remote ready timeout`。
 - 后台 `tcp_framed` / `legacy_ice_udp` protected-direct improvement 失败时，不应清空已绑定的 `signal_relay` path；当前代码已增加保护。
+- `tcp_framed` 现场验证暴露了外部 overlay 的边界：本机能访问 inner-gw 的 `10.6.22.1:22`，但 inner-gw 临时监听的随机 TCP 端口收不到本机连接，且 natpierce 抓包显示 SSH 来源是 `10.6.22.4` 而不是本机 `10.6.22.3`。因此 `tcp_framed` 后续应按“固定可达 TCP endpoint”验证，使用 `tcp_framed.role` / `tcp_framed.dial_addr` 固定监听/拨号方向，不能把随机端口失败解释为代码已经证明物理不可达。
 - 断开 chen-win/coordinator/natpierce 这一整条 underlay 后，`signal_relay` 也会断，因为它明确依赖 coordinator signal stream。只有已经存在另一条不依赖该 underlay 的 bound `PacketTransport` 时，才可能维持会话。
 - Windows Wintun 仍有独立待办：in-band `33435` 和 tunnel 计数可持续读写，但外部 `wink ping` / PowerShell UDP 到 `10.88.0.8:33434` 可能增加 `wink0` `OutboundDiscardedPackets`，却不进入 wink 的 TUN read，也不会出现在 inner-gw `tcpdump -i wink0`。已新增默认关闭的 `WINKYOU_TRACE_TUN_PACKETS=1` 用于区分 OS/Wintun ingress 问题和 solver/transport 问题。
 
