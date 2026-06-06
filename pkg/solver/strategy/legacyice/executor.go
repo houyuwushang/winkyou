@@ -370,12 +370,46 @@ func (e *executor) sendCandidateMessages(ctx context.Context, sess solver.Sessio
 	if e.execCfg.Mode != modePublicDirect || len(candidates) == 0 || sess == nil {
 		return
 	}
+	candidates = prioritizePublicDirectSignalCandidates(candidates)
 	e.sendCandidateMessageRound(ctx, sess, candidates, 1)
 	if publicDirectCandidateSignalRounds <= 1 {
 		return
 	}
-	candidates = cloneLegacyCandidates(candidates)
 	go e.sendCandidateMessageRetries(sess, candidates, 2)
+}
+
+func prioritizePublicDirectSignalCandidates(candidates []nat.Candidate) []nat.Candidate {
+	out := cloneLegacyCandidates(candidates)
+	sort.SliceStable(out, func(i, j int) bool {
+		leftRank := publicDirectSignalCandidateRank(out[i])
+		rightRank := publicDirectSignalCandidateRank(out[j])
+		if leftRank != rightRank {
+			return leftRank < rightRank
+		}
+		if out[i].Priority != out[j].Priority {
+			return out[i].Priority > out[j].Priority
+		}
+		return candidateAddressKey(out[i]) < candidateAddressKey(out[j])
+	})
+	return out
+}
+
+func publicDirectSignalCandidateRank(candidate nat.Candidate) int {
+	if strings.HasPrefix(candidate.Foundation, "public-hint-") {
+		return 0
+	}
+	switch candidate.Type {
+	case nat.CandidateTypeSrflx:
+		return 1
+	case nat.CandidateTypePrflx:
+		return 2
+	case nat.CandidateTypeHost:
+		return 3
+	case nat.CandidateTypeRelay:
+		return 5
+	default:
+		return 4
+	}
 }
 
 func (e *executor) sendCandidateMessageRetries(sess solver.SessionIO, candidates []nat.Candidate, startRound int) {

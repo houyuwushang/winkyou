@@ -588,6 +588,53 @@ func TestPublicDirectCandidateSignalsAreBounded(t *testing.T) {
 	}
 }
 
+func TestPublicDirectCandidateSignalsPrioritizeEndpointHintsWhenCapped(t *testing.T) {
+	candidates := make([]nat.Candidate, publicDirectCandidateSignalLimit)
+	for i := range candidates {
+		candidates[i] = nat.Candidate{
+			Type:       nat.CandidateTypeSrflx,
+			Address:    &net.UDPAddr{IP: net.IPv4(117, 48, 146, 3), Port: 42000 + i},
+			Priority:   1000 - uint32(i),
+			Foundation: "srflx-" + strconv.Itoa(i),
+		}
+	}
+	hintCandidate := nat.Candidate{
+		Type:       nat.CandidateTypeSrflx,
+		Address:    &net.UDPAddr{IP: net.IPv4(117, 48, 146, 2), Port: 41000},
+		Priority:   1,
+		Foundation: "public-hint-1",
+		RelatedAddr: &net.UDPAddr{
+			IP:   net.IPv4(192, 168, 1, 20),
+			Port: 40000,
+		},
+	}
+	candidates = append(candidates, hintCandidate)
+	exec := newExecutor(Config{}, solver.SolveInput{
+		SessionID: "session/node-a/node-b",
+	}, solver.Plan{
+		ID:       planIDPublicDirect,
+		Strategy: StrategyName,
+	}, executorConfig{Mode: modePublicDirect})
+	io := &capturingSessionIO{}
+
+	exec.sendCandidateMessages(context.Background(), io, candidates)
+
+	messages := io.Messages()
+	if len(messages) != publicDirectCandidateSignalLimit {
+		t.Fatalf("immediate candidate signal messages = %d, want first round limit %d", len(messages), publicDirectCandidateSignalLimit)
+	}
+	payload, err := unmarshalCandidatePayload(messages[0].Payload)
+	if err != nil {
+		t.Fatalf("unmarshal first candidate error = %v", err)
+	}
+	if payload.ICE.Candidate.Address.String() != hintCandidate.Address.String() {
+		t.Fatalf("first signaled candidate = %v, want endpoint hint %v", payload.ICE.Candidate.Address, hintCandidate.Address)
+	}
+	if payload.ICE.Candidate.Foundation != hintCandidate.Foundation {
+		t.Fatalf("first signaled foundation = %q, want %q", payload.ICE.Candidate.Foundation, hintCandidate.Foundation)
+	}
+}
+
 func TestPublicDirectCandidateSignalsRetryAsynchronously(t *testing.T) {
 	candidate := nat.Candidate{
 		Type:    nat.CandidateTypeSrflx,

@@ -203,7 +203,7 @@ nat:
 
 如果本轮已经有手工或运行时 `public_endpoint_hints`，`public_direct` 会使用较短的 gather deadline，先拿到本地 socket 并尽快把 hint 发给对端；没有 hint 时仍使用正常 gather timeout 等待 STUN/server-reflexive candidate。
 
-`legacyice/public_direct` 会在 offer/answer 后对已发布候选发送三轮短间隔、有界的 `candidate` 信令 burst。第一轮会立即发送，后续 retry 在 executor 生命周期内后台补发，不阻塞 ICE connect。它不会替代 offer/answer 里的 ICE credentials，但能让 coordinator 和已建立虚拟网内的 `session_signal` 多缓存候选信息，降低短窗口打洞时单次候选信令丢失或延迟的影响。为避免端口窗口过大时刷爆控制面，每轮 candidate 重发有固定上限，超出部分仍以 offer/answer 内的完整候选列表为准。如果 `candidate` 消息先于 offer/answer credentials 到达，legacy ICE 会先缓存可用候选，等 credentials 到达后再与 offer/answer 中的候选合并去重并交给 ICE agent；后续 offer/answer 本身没有可用公网候选时，也不会覆盖这批已缓存的有效候选。如果 offer/answer credentials 先到但里面的候选全被 public-direct 过滤掉，executor 会短暂等待后续 `candidate` burst，而不是立即让 plan 失败；窗口内收到可用候选后会继续 ICE checks。
+`legacyice/public_direct` 会在 offer/answer 后对已发布候选发送三轮短间隔、有界的 `candidate` 信令 burst。第一轮会立即发送，后续 retry 在 executor 生命周期内后台补发，不阻塞 ICE connect。它不会替代 offer/answer 里的 ICE credentials，但能让 coordinator 和已建立虚拟网内的 `session_signal` 多缓存候选信息，降低短窗口打洞时单次候选信令丢失或延迟的影响。为避免端口窗口过大时刷爆控制面，每轮 candidate 重发有固定上限，超出部分仍以 offer/answer 内的完整候选列表为准；当候选被上限截断时，public endpoint hint/window 生成的 candidate 会被优先发送。如果 `candidate` 消息先于 offer/answer credentials 到达，legacy ICE 会先缓存可用候选，等 credentials 到达后再与 offer/answer 中的候选合并去重并交给 ICE agent；后续 offer/answer 本身没有可用公网候选时，也不会覆盖这批已缓存的有效候选。如果 offer/answer credentials 先到但里面的候选全被 public-direct 过滤掉，executor 会短暂等待后续 `candidate` burst，而不是立即让 plan 失败；窗口内收到可用候选后会继续 ICE checks。
 
 用于排查真实 NAT piercing 时，legacy ICE 会把候选采集和过滤结果写入 observation history。客户端运行状态文件同目录下会生成 `<runtime-state-base>.observations.jsonl`，其中：
 
