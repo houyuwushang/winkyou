@@ -23,7 +23,7 @@ type strategyFactory struct {
 	build func() solver.Strategy
 }
 
-const symmetricPublicEndpointHintPortWindow = 16
+const symmetricPublicEndpointHintPortWindow = 64
 
 func newStrategyResolver(factories []strategyFactory, policy ResolverPolicy) sesspkg.StrategyResolver {
 	return newStrategyResolverWithFeatures(factories, policy, nil)

@@ -427,7 +427,7 @@ func TestDoctorCandidateFilterSummaryIncludesEffectiveSymmetricWindow(t *testing
 
 	summary := candidateFilterSummary(&cfg, &report)
 	if !strings.Contains(summary, "public_endpoint_hint_port_window=2") ||
-		!strings.Contains(summary, "effective_public_endpoint_hint_port_window=16") ||
+		!strings.Contains(summary, "effective_public_endpoint_hint_port_window=64") ||
 		!strings.Contains(summary, "effective_window_reason=symmetric_nat_endpoint_hints") {
 		t.Fatalf("candidateFilterSummary() = %q, want effective symmetric hint window", summary)
 	}
@@ -447,7 +447,7 @@ func TestDoctorCandidateFilterSummaryIncludesEffectiveUnknownWindow(t *testing.T
 
 	summary := candidateFilterSummary(&cfg, &report)
 	if !strings.Contains(summary, "public_endpoint_hint_port_window=2") ||
-		!strings.Contains(summary, "effective_public_endpoint_hint_port_window=16") ||
+		!strings.Contains(summary, "effective_public_endpoint_hint_port_window=64") ||
 		!strings.Contains(summary, "effective_window_reason=unclassified_nat_endpoint_hints") {
 		t.Fatalf("candidateFilterSummary() = %q, want effective unclassified hint window", summary)
 	}

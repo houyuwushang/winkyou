@@ -46,7 +46,7 @@ type executor struct {
 
 const publicDirectHintGatherTimeout = time.Second
 
-const publicDirectCandidateSignalLimit = 64
+const publicDirectCandidateSignalLimit = 256
 
 const publicDirectCandidateSignalRounds = 3
 

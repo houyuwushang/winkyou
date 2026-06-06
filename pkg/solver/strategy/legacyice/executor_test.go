@@ -569,7 +569,7 @@ func TestPublicDirectCandidateObservationReportsEndpointHintPortWindow(t *testin
 }
 
 func TestPublicDirectCandidateSignalsAreBounded(t *testing.T) {
-	candidates := make([]nat.Candidate, 80)
+	candidates := make([]nat.Candidate, publicDirectCandidateSignalLimit+16)
 	for i := range candidates {
 		candidates[i] = nat.Candidate{
 			Type:    nat.CandidateTypeSrflx,
@@ -608,8 +608,8 @@ func TestPublicDirectCandidateSignalsAreBounded(t *testing.T) {
 	if obs == nil {
 		t.Fatalf("candidate_signaled observation missing: %#v", observations)
 	}
-	if obs.Details["candidate_total"] != "80" || obs.Details["candidate_sent"] != strconv.Itoa(publicDirectCandidateSignalLimit) || obs.Details["candidate_capped"] != "true" || obs.Details["candidate_rounds"] != strconv.Itoa(publicDirectCandidateSignalRounds) {
-		t.Fatalf("candidate_signaled details = %#v, want capped 80/%d with configured rounds", obs.Details, publicDirectCandidateSignalLimit)
+	if obs.Details["candidate_total"] != strconv.Itoa(len(candidates)) || obs.Details["candidate_sent"] != strconv.Itoa(publicDirectCandidateSignalLimit) || obs.Details["candidate_capped"] != "true" || obs.Details["candidate_rounds"] != strconv.Itoa(publicDirectCandidateSignalRounds) {
+		t.Fatalf("candidate_signaled details = %#v, want capped %d/%d with configured rounds", obs.Details, len(candidates), publicDirectCandidateSignalLimit)
 	}
 }
 
@@ -882,7 +882,7 @@ func TestPublicDirectFailureIncludesAgentDiagnostics(t *testing.T) {
 }
 
 func TestPublicDirectCandidateSignalLimitCoversSymmetricHintWindow(t *testing.T) {
-	const symmetricHintWindow = 16
+	const symmetricHintWindow = 64
 	candidates := make([]nat.Candidate, 1+2*symmetricHintWindow)
 	for i := range candidates {
 		candidates[i] = nat.Candidate{

@@ -1727,7 +1727,7 @@ func candidateFilterSummary(cfg *config.Config, stunReport *nat.STUNMappingRepor
 	return strings.Join(parts, " ")
 }
 
-const doctorSymmetricPublicEndpointHintPortWindow = 16
+const doctorSymmetricPublicEndpointHintPortWindow = 64
 
 func effectivePublicEndpointHintPortWindow(cfg config.NATConfig, stunReport *nat.STUNMappingReport) (int, string) {
 	configured := cfg.PublicEndpointHintPortWindow
