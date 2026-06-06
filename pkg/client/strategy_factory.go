@@ -193,7 +193,7 @@ func (e *engine) publicEndpointHints() []string {
 	e.mu.RLock()
 	runtimeHints := append([]string(nil), e.runtimePublicEndpointHints...)
 	e.mu.RUnlock()
-	return mergeStrategyTrustedCIDRs(e.cfg.NAT.PublicEndpointHints, runtimeHints)
+	return mergeStrategyTrustedCIDRs(e.cfg.NAT.PublicEndpointHints, runtimeHints, e.observationPublicEndpointHints())
 }
 
 func (e *engine) publicEndpointHintPortWindow(hints []string) int {

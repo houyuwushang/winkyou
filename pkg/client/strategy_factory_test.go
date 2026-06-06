@@ -14,6 +14,7 @@ import (
 	rproto "winkyou/pkg/rendezvous/proto"
 	sesspkg "winkyou/pkg/session"
 	"winkyou/pkg/solver"
+	solverstore "winkyou/pkg/solver/store"
 	"winkyou/pkg/solver/strategy/legacyice"
 	"winkyou/pkg/solver/strategy/relayonly"
 	"winkyou/pkg/solver/strategy/tcpframed"
@@ -542,6 +543,107 @@ func TestLegacyICEStrategyConfigMergesRuntimePublicEndpointHints(t *testing.T) {
 	}
 	if !slices.Equal(legacyCfg.PublicEndpointHints, want) {
 		t.Fatalf("PublicEndpointHints = %#v, want %#v", legacyCfg.PublicEndpointHints, want)
+	}
+}
+
+func TestLegacyICEStrategyConfigMergesObservationPublicEndpointHints(t *testing.T) {
+	cfg := config.Default()
+	store := solverstore.NewObservationStore("")
+	if err := store.Record(solver.Observation{
+		Strategy:  legacyice.StrategyName,
+		PlanID:    "legacyice/public_direct",
+		Event:     "candidate_gathered",
+		Timestamp: time.Now(),
+		Details: map[string]string{
+			"mode":                   "public_direct",
+			"candidate_side":         "local",
+			"candidate_kept_samples": "srflx:198.51.100.44:45678<-192.168.1.20:40000;host:192.168.1.20:40000",
+		},
+	}); err != nil {
+		t.Fatalf("record observation: %v", err)
+	}
+	eng := &engine{
+		cfg:              cfg,
+		observationStore: store,
+	}
+
+	legacyCfg := eng.legacyICEStrategyConfig()
+	want := []string{"198.51.100.44:45678/192.168.1.20:40000"}
+	if !slices.Equal(legacyCfg.PublicEndpointHints, want) {
+		t.Fatalf("PublicEndpointHints = %#v, want observation hint %#v", legacyCfg.PublicEndpointHints, want)
+	}
+}
+
+func TestObservationPublicEndpointHintsIgnoreStaleAndRemoteSamples(t *testing.T) {
+	cfg := config.Default()
+	store := solverstore.NewObservationStore("")
+	for _, obs := range []solver.Observation{
+		{
+			Strategy:  legacyice.StrategyName,
+			PlanID:    "legacyice/public_direct",
+			Event:     "candidate_gathered",
+			Timestamp: time.Now().Add(-observationEndpointHintMaxAge - time.Second),
+			Details: map[string]string{
+				"mode":                   "public_direct",
+				"candidate_side":         "local",
+				"candidate_kept_samples": "srflx:198.51.100.44:45678<-192.168.1.20:40000",
+			},
+		},
+		{
+			Strategy:  legacyice.StrategyName,
+			PlanID:    "legacyice/public_direct",
+			Event:     "candidate_gathered",
+			Timestamp: time.Now(),
+			Details: map[string]string{
+				"mode":                   "public_direct",
+				"candidate_side":         "remote",
+				"candidate_kept_samples": "srflx:198.51.100.45:45679<-192.168.1.20:40000",
+			},
+		},
+	} {
+		if err := store.Record(obs); err != nil {
+			t.Fatalf("record observation: %v", err)
+		}
+	}
+	eng := &engine{
+		cfg:              cfg,
+		observationStore: store,
+	}
+
+	if got := eng.observationPublicEndpointHints(); len(got) != 0 {
+		t.Fatalf("observationPublicEndpointHints = %#v, want none", got)
+	}
+}
+
+func TestObservationPublicEndpointHintsHonorTrustedCIDRs(t *testing.T) {
+	cfg := config.Default()
+	store := solverstore.NewObservationStore("")
+	if err := store.Record(solver.Observation{
+		Strategy:  legacyice.StrategyName,
+		PlanID:    "legacyice/public_direct",
+		Event:     "candidate_gathered",
+		Timestamp: time.Now(),
+		Details: map[string]string{
+			"mode":                   "public_direct",
+			"candidate_side":         "local",
+			"candidate_kept_samples": "srflx:100.102.17.36:45678<-100.102.17.35:40000",
+		},
+	}); err != nil {
+		t.Fatalf("record observation: %v", err)
+	}
+	eng := &engine{
+		cfg:              cfg,
+		observationStore: store,
+	}
+	if got := eng.observationPublicEndpointHints(); len(got) != 0 {
+		t.Fatalf("observationPublicEndpointHints(default) = %#v, want no untrusted CGN hint", got)
+	}
+
+	cfg.NAT.DirectTrustedCIDRs = []string{"100.64.0.0/10"}
+	eng.cfg = cfg
+	want := []string{"100.102.17.36:45678/100.102.17.35:40000"}
+	if got := eng.observationPublicEndpointHints(); !slices.Equal(got, want) {
+		t.Fatalf("observationPublicEndpointHints(trusted) = %#v, want %#v", got, want)
 	}
 }
 
