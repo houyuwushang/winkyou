@@ -146,11 +146,14 @@ func runDoctor(ctx context.Context, opts *Options, flags doctorFlags, probes doc
 	}
 	result.add(coordinatorProbe(ctx, cfg))
 
-	stunProbe := probes.STUN
-	if stunProbe == nil {
-		stunProbe = defaultSTUNProbe
+	var stunReport *nat.STUNMappingReport
+	if probes.STUN == nil {
+		check, report := defaultSTUNProbeWithReport(ctx, cfg)
+		stunReport = report
+		result.add(check)
+	} else {
+		result.add(probes.STUN(ctx, cfg))
 	}
-	result.add(stunProbe(ctx, cfg))
 
 	turnProbe := probes.TURN
 	if turnProbe == nil {
@@ -169,7 +172,7 @@ func runDoctor(ctx context.Context, opts *Options, flags doctorFlags, probes doc
 
 	state, stateErr := winkclient.LoadRuntimeState(runtimeStateKey(opts))
 	addStrategyChecks(&result, cfg, flags)
-	addCandidateFilterChecks(&result, cfg, state, stateErr)
+	addCandidateFilterChecks(&result, cfg, state, stateErr, stunReport)
 	addPublicDirectEvidenceChecks(&result, opts)
 	addTunnelChecks(&result, state, stateErr)
 	routeTableProbe := probes.RouteTable
@@ -242,26 +245,31 @@ func defaultCoordinatorProbe(ctx context.Context, cfg *config.Config) doctorChec
 }
 
 func defaultSTUNProbe(ctx context.Context, cfg *config.Config) doctorCheck {
+	check, _ := defaultSTUNProbeWithReport(ctx, cfg)
+	return check
+}
+
+func defaultSTUNProbeWithReport(ctx context.Context, cfg *config.Config) (doctorCheck, *nat.STUNMappingReport) {
 	servers, err := nat.PublicDirectSTUNServerURLs(nat.ICEConfig{
 		STUNServers: cfg.NAT.STUNServers,
 		TURNServers: doctorNATTURNServers(cfg.NAT.TURNServers),
 	})
 	if err != nil {
-		return warnCheck("nat", "stun", "invalid public direct STUN/TURN configuration: "+err.Error(), "fix nat.stun_servers or UDP nat.turn_servers")
+		return warnCheck("nat", "stun", "invalid public direct STUN/TURN configuration: "+err.Error(), "fix nat.stun_servers or UDP nat.turn_servers"), nil
 	}
 	if len(servers) == 0 {
-		return warnCheck("nat", "stun", "no STUN server configured", "configure nat.stun_servers, configure UDP nat.turn_servers for coturn STUN binding, or use TURN/relay_only")
+		return warnCheck("nat", "stun", "no STUN server configured", "configure nat.stun_servers, configure UDP nat.turn_servers for coturn STUN binding, or use TURN/relay_only"), nil
 	}
 
 	servers = normalizeStringList(servers)
 	if len(servers) == 0 {
-		return warnCheck("nat", "stun", "no usable STUN server configured", "remove empty nat.stun_servers entries or configure a reachable STUN/UDP TURN server")
+		return warnCheck("nat", "stun", "no usable STUN server configured", "remove empty nat.stun_servers entries or configure a reachable STUN/UDP TURN server"), nil
 	}
 	probeCtx, cancel := context.WithTimeout(ctx, stunMappingProbeTimeout(len(servers)))
 	report, err := nat.ProbeSTUNMapping(probeCtx, servers)
 	cancel()
 	if err != nil {
-		return warnCheck("nat", "stun", "all STUN probes failed: "+formatSTUNMappingReport(report), "configure a reachable STUN server near both peers, or use TURN/relay_only")
+		return warnCheck("nat", "stun", "all STUN probes failed: "+formatSTUNMappingReport(report), "configure a reachable STUN server near both peers, or use TURN/relay_only"), &report
 	}
 	message := fmt.Sprintf("nat_type=%s %s", report.NATType.String(), formatSTUNMappingReport(report))
 	hintSuggestion := publicEndpointHintSuggestion(report, cfg.NAT)
@@ -270,11 +278,11 @@ func defaultSTUNProbe(ctx context.Context, cfg *config.Config) doctorCheck {
 		if hintSuggestion != "" {
 			suggestion += "; " + hintSuggestion
 		}
-		return warnCheck("nat", "stun", message, suggestion)
+		return warnCheck("nat", "stun", message, suggestion), &report
 	}
 	check := okCheck("nat", "stun", message)
 	check.Suggestion = hintSuggestion
-	return check
+	return check, &report
 }
 
 func stunMappingProbeTimeout(serverCount int) time.Duration {
@@ -318,8 +326,7 @@ func publicEndpointHintSuggestion(report nat.STUNMappingReport, cfg config.NATCo
 }
 
 func observedPublicEndpointHints(report nat.STUNMappingReport, cfg config.NATConfig) []string {
-	trusted := normalizeStringList(append(append([]string(nil), cfg.DirectTrustedCIDRs...), cfg.PublicDirectTrustedCIDRs...))
-	return nat.PublicEndpointHintsFromSTUNMappingWithTrustedCIDRs(report, trusted)
+	return runtimePublicEndpointHintsForDoctor(cfg, report)
 }
 
 func quoteCSV(values []string) string {
@@ -518,8 +525,8 @@ func hasDoctorTURNServers(servers []config.TURNServerConfig) bool {
 	return false
 }
 
-func addCandidateFilterChecks(result *doctorResult, cfg *config.Config, state *winkclient.RuntimeState, stateErr error) {
-	filterSummary := candidateFilterSummary(cfg)
+func addCandidateFilterChecks(result *doctorResult, cfg *config.Config, state *winkclient.RuntimeState, stateErr error, stunReport *nat.STUNMappingReport) {
+	filterSummary := candidateFilterSummary(cfg, stunReport)
 	if filterSummary == "" {
 		result.add(okCheck("nat", "candidate filters", "no candidate filters configured"))
 		if check := publicEndpointHintLocalBaseCheck(cfg.NAT.PublicEndpointHints, doctorLocalInterfaceIPs()); check != nil {
@@ -1587,7 +1594,7 @@ func failCheck(layer, name, message, suggestion string) doctorCheck {
 	return doctorCheck{Layer: layer, Name: name, Status: doctorFail, Message: message, Suggestion: suggestion}
 }
 
-func candidateFilterSummary(cfg *config.Config) string {
+func candidateFilterSummary(cfg *config.Config, stunReport *nat.STUNMappingReport) string {
 	if cfg == nil {
 		return ""
 	}
@@ -1622,6 +1629,10 @@ func candidateFilterSummary(cfg *config.Config) string {
 	if cfg.NAT.PublicEndpointHintPortWindow > 0 {
 		parts = append(parts, fmt.Sprintf("public_endpoint_hint_port_window=%d", cfg.NAT.PublicEndpointHintPortWindow))
 	}
+	if effective := effectivePublicEndpointHintPortWindow(cfg.NAT, stunReport); effective > cfg.NAT.PublicEndpointHintPortWindow {
+		parts = append(parts, fmt.Sprintf("effective_public_endpoint_hint_port_window=%d", effective))
+		parts = append(parts, "effective_window_reason=symmetric_nat_endpoint_hints")
+	}
 	if len(cfg.NAT.DirectTrustedCIDRs) > 0 {
 		parts = append(parts, "direct_trusted_cidrs="+strings.Join(cfg.NAT.DirectTrustedCIDRs, ","))
 	}
@@ -1629,6 +1640,35 @@ func candidateFilterSummary(cfg *config.Config) string {
 		parts = append(parts, "public_direct_trusted_cidrs="+strings.Join(cfg.NAT.PublicDirectTrustedCIDRs, ","))
 	}
 	return strings.Join(parts, " ")
+}
+
+const doctorSymmetricPublicEndpointHintPortWindow = 16
+
+func effectivePublicEndpointHintPortWindow(cfg config.NATConfig, stunReport *nat.STUNMappingReport) int {
+	configured := cfg.PublicEndpointHintPortWindow
+	if configured <= 0 || configured >= doctorSymmetricPublicEndpointHintPortWindow {
+		return configured
+	}
+	if stunReport == nil || stunReport.NATType != nat.NATTypeSymmetric {
+		return configured
+	}
+	if len(effectivePublicEndpointHints(cfg, *stunReport)) == 0 {
+		return configured
+	}
+	return doctorSymmetricPublicEndpointHintPortWindow
+}
+
+func effectivePublicEndpointHints(cfg config.NATConfig, report nat.STUNMappingReport) []string {
+	hints := append([]string(nil), cfg.PublicEndpointHints...)
+	if cfg.AutoPublicEndpointHints {
+		hints = append(hints, runtimePublicEndpointHintsForDoctor(cfg, report)...)
+	}
+	return normalizeStringList(hints)
+}
+
+func runtimePublicEndpointHintsForDoctor(cfg config.NATConfig, report nat.STUNMappingReport) []string {
+	allowed := normalizeStringList(append(append(append([]string(nil), cfg.CandidateCIDRInclude...), cfg.DirectTrustedCIDRs...), cfg.PublicDirectTrustedCIDRs...))
+	return nat.PublicEndpointHintsFromSTUNMappingWithAllowedCIDRs(report, allowed)
 }
 
 func parseDoctorCIDRs(values []string) ([]*net.IPNet, error) {

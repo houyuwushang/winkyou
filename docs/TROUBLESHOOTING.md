@@ -203,6 +203,7 @@ Get-Content <runtime-state-base>.observations.jsonl |
 - `remote_candidates_filtered` 的 `candidate_kept=0`：远端发来的候选没有可用于独立公网 direct 的地址，本端不会把它交给 ICE agent。该 plan 会记录 `candidate_failed`，但不应把整个 peer session 直接打失败。
 - `candidate_kept_samples` 和 `candidate_rejected_samples`：少量候选样本。用这些字段直接对比 natpierce 日志里的公网 endpoint；带 local base 的 hint 会显示为 `srflx:公网ip:端口<-本地ip:端口`。如果 WinkYou 只看到 `host:100.64...` 或私网样本，说明它还没有采到同级别的公网 srflx/prflx 候选。
 - `public_endpoint_hint_count` 和 `public_endpoint_hint_port_window`：只会出现在带 `public_endpoint_hints` 的本地 `candidate_gathered` observation 中。看到这些字段才能确认本轮 `legacyice/public_direct` 确实带着 endpoint hint 和端口窗口参与了 ICE 检查；如果配置里开了窗口但 observation 没有这些字段，优先确认两端二进制和实际使用的 config。
+- doctor 的 `candidate filters` 会显示静态配置的 `public_endpoint_hint_port_window`。如果当前 STUN probe 判定为 symmetric NAT，且本轮能生成 endpoint hint，还会额外显示 `effective_public_endpoint_hint_port_window=16` 和 `effective_window_reason=symmetric_nat_endpoint_hints`，表示生产策略会使用放宽后的有效端口窗口。
 - `candidate_signaled`：`public_direct` 在 offer/answer 后额外发送的有界 candidate 信令。重点看 `candidate_sent`、`candidate_total` 和 `candidate_capped`；如果完全没有该事件，优先确认两端二进制是否包含候选信令重发补强。
 - `candidate_failed` 中的 `last_local_candidate_*` / `last_remote_candidate_*`：这是失败事件携带的最近一次候选摘要。如果 `last_local_candidate_kept=0`，优先查本端 STUN、hint、CIDR 过滤和本地 base；如果 `last_remote_candidate_kept=0`，优先查对端是否发布了公网/受信 underlay 候选，或本端是否缺少对应 `nat.direct_trusted_cidrs`。
 - 两边 `candidate_kept>0` 但随后 `candidate_failed`：候选已经交换，问题更可能在 UDP 映射不稳定、防火墙、端口范围、STUN/TURN 配置或 NAT 行为与 natpierce 使用的 socket/映射不一致。

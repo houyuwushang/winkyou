@@ -237,6 +237,24 @@ func TestObservedPublicEndpointHintsHonorTrustedCIDRs(t *testing.T) {
 	}
 }
 
+func TestObservedPublicEndpointHintsHonorCandidateCIDRInclude(t *testing.T) {
+	report := nat.STUNMappingReport{
+		NATType: nat.NATTypeUnknown,
+		Probes: []nat.STUNMappingProbe{{
+			LocalAddr:  &net.UDPAddr{IP: net.ParseIP("100.102.17.35"), Port: 50000},
+			MappedAddr: &net.UDPAddr{IP: net.ParseIP("100.102.17.36"), Port: 41000},
+			ServerAddr: &net.UDPAddr{IP: net.ParseIP("100.102.17.1"), Port: 19302},
+		}},
+	}
+	cfg := config.Default().NAT
+	cfg.CandidateCIDRInclude = []string{"100.64.0.0/10"}
+
+	hints := observedPublicEndpointHints(report, cfg)
+	if len(hints) != 1 || hints[0] != "100.102.17.36:41000/100.102.17.35:50000" {
+		t.Fatalf("observedPublicEndpointHints(candidate include) = %#v, want included non-public hint", hints)
+	}
+}
+
 func TestDoctorTunnelPermissionFail(t *testing.T) {
 	configPath := writeDoctorConfig(t)
 	probes := healthyDoctorProbes()
@@ -328,6 +346,38 @@ func TestDoctorCandidateFilterSummaryIncludesPublicCandidateHints(t *testing.T) 
 		!strings.Contains(check.Message, "direct_trusted_cidrs=100.64.0.0/10") ||
 		!strings.Contains(check.Message, "public_direct_trusted_cidrs=198.18.0.0/15") {
 		t.Fatalf("candidate filters check = %#v, want public candidate hint summary", check)
+	}
+}
+
+func TestDoctorCandidateFilterSummaryIncludesEffectiveSymmetricWindow(t *testing.T) {
+	cfg := config.Default()
+	cfg.NAT.PublicEndpointHintPortWindow = 2
+	report := nat.STUNMappingReport{
+		NATType: nat.NATTypeSymmetric,
+		Probes: []nat.STUNMappingProbe{{
+			LocalAddr:  &net.UDPAddr{IP: net.ParseIP("192.168.1.20"), Port: 50000},
+			MappedAddr: &net.UDPAddr{IP: net.ParseIP("117.48.146.2"), Port: 41000},
+			ServerAddr: &net.UDPAddr{IP: net.ParseIP("8.8.8.8"), Port: 19302},
+		}},
+	}
+
+	summary := candidateFilterSummary(&cfg, &report)
+	if !strings.Contains(summary, "public_endpoint_hint_port_window=2") ||
+		!strings.Contains(summary, "effective_public_endpoint_hint_port_window=16") ||
+		!strings.Contains(summary, "effective_window_reason=symmetric_nat_endpoint_hints") {
+		t.Fatalf("candidateFilterSummary() = %q, want effective symmetric hint window", summary)
+	}
+}
+
+func TestDoctorCandidateFilterSummaryHonorsEffectiveWindowOptOut(t *testing.T) {
+	cfg := config.Default()
+	cfg.NAT.PublicEndpointHintPortWindow = 0
+	cfg.NAT.PublicEndpointHints = []string{"117.48.146.2:41000/192.168.1.20:40000"}
+	report := nat.STUNMappingReport{NATType: nat.NATTypeSymmetric}
+
+	summary := candidateFilterSummary(&cfg, &report)
+	if strings.Contains(summary, "effective_public_endpoint_hint_port_window") {
+		t.Fatalf("candidateFilterSummary() = %q, want no effective window when configured window is 0", summary)
 	}
 }
 
