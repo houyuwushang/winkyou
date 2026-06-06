@@ -144,6 +144,8 @@ tcp_framed:
 配置好固定端口后，可以先运行 `wink --config <config.yaml> doctor --strategy tcp_framed`。如果本端配置了 `tcp_framed.dial_addr`，doctor 会用短超时实际 TCP 连接该 endpoint；成功只能证明该 TCP endpoint 当前可达，失败则优先检查对端监听、端口转发和防火墙。
 真实 session 执行时，`tcp_framed` 的拨号侧会在 `dial_timeout` 窗口内短间隔重试固定 endpoint，避免两端同时启动时监听侧尚未 ready 导致第一次 `connection refused` 就放弃。
 
+`tcp_framed` 的 path summary 会按远端 TCP endpoint 保守标记路径证据：公网 endpoint 成功后可标为 `protected_direct`；私网、`100.64.0.0/10`、loopback、link-local、benchmark/overlay 等非公网 endpoint 默认会保留 `unknown` dependency。只有在两端已经独立确认该非公网网段是 WinkYou 可直接使用的 underlay，并显式加入 `nat.direct_trusted_cidrs`（或兼容字段 `nat.public_direct_trusted_cidrs`）后，`tcp_framed` 才会把该 endpoint 视为 dependency-free direct path。
+
 显式验证 relay-only 路径时，优先使用连接策略入口：
 
 ```yaml

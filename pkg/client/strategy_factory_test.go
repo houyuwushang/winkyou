@@ -369,6 +369,8 @@ func TestTCPFramedStrategyConfigPropagatesStaticEndpointPolicy(t *testing.T) {
 	cfg.TCPFramed.DialAddr = "10.6.22.1:22069"
 	cfg.TCPFramed.Role = tcpframed.RoleDial
 	cfg.TCPFramed.DialTimeout = 7 * time.Second
+	cfg.NAT.DirectTrustedCIDRs = []string{"10.6.22.0/24"}
+	cfg.NAT.PublicDirectTrustedCIDRs = []string{"100.64.0.0/10"}
 	eng := &engine{cfg: cfg}
 
 	got := eng.tcpFramedStrategyConfig()
@@ -378,6 +380,9 @@ func TestTCPFramedStrategyConfigPropagatesStaticEndpointPolicy(t *testing.T) {
 		got.Role != cfg.TCPFramed.Role ||
 		got.DialTimeout != cfg.TCPFramed.DialTimeout {
 		t.Fatalf("tcpFramedStrategyConfig() = %#v, want config fields propagated", got)
+	}
+	if len(got.DirectTrustedCIDRs) != 2 || got.DirectTrustedCIDRs[0] != "10.6.22.0/24" || got.DirectTrustedCIDRs[1] != "100.64.0.0/10" {
+		t.Fatalf("tcpFramedStrategyConfig().DirectTrustedCIDRs = %#v, want merged trusted CIDRs", got.DirectTrustedCIDRs)
 	}
 }
 

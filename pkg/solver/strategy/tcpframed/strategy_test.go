@@ -63,6 +63,81 @@ func TestResultForConnAnnotatesPathPolicyMetadata(t *testing.T) {
 	}
 }
 
+func TestResultForConnMarksPublicEndpointProtectedDirect(t *testing.T) {
+	left, right := net.Pipe()
+	defer left.Close()
+	defer right.Close()
+
+	conn := remoteAddrConn{
+		Conn:   left,
+		remote: &net.TCPAddr{IP: net.ParseIP("1.1.1.1"), Port: 39000},
+	}
+	exec := &executor{input: solver.SolveInput{SessionID: "session/node-a/node-b"}}
+	result := exec.resultForConn(conn, "dialer")
+	summary := result.Summary
+
+	if summary.Role != solver.PathRoleProtectedDirect {
+		t.Fatalf("role = %q, want %q", summary.Role, solver.PathRoleProtectedDirect)
+	}
+	if len(summary.Dependencies) != 0 {
+		t.Fatalf("dependencies = %#v, want none", summary.Dependencies)
+	}
+	if !solver.IsProtectedDirectPath(summary) {
+		t.Fatal("IsProtectedDirectPath(summary) = false, want true")
+	}
+}
+
+func TestResultForConnKeepsUntrustedCGNEndpointDependent(t *testing.T) {
+	left, right := net.Pipe()
+	defer left.Close()
+	defer right.Close()
+
+	conn := remoteAddrConn{
+		Conn:   left,
+		remote: &net.TCPAddr{IP: net.ParseIP("100.102.17.35"), Port: 39000},
+	}
+	exec := &executor{input: solver.SolveInput{SessionID: "session/node-a/node-b"}}
+	result := exec.resultForConn(conn, "dialer")
+	summary := result.Summary
+
+	if summary.Role != solver.PathRolePrimaryCandidate {
+		t.Fatalf("role = %q, want %q", summary.Role, solver.PathRolePrimaryCandidate)
+	}
+	if len(summary.Dependencies) != 1 || summary.Dependencies[0].Kind != solver.PathDependencyUnknown || summary.Dependencies[0].Reason != "remote_cgnat_or_overlay_candidate" {
+		t.Fatalf("dependencies = %#v, want remote CGN unknown dependency", summary.Dependencies)
+	}
+	if solver.IsProtectedDirectPath(summary) {
+		t.Fatal("IsProtectedDirectPath(summary) = true, want false")
+	}
+}
+
+func TestResultForConnTrustsConfiguredNonPublicEndpointCIDR(t *testing.T) {
+	left, right := net.Pipe()
+	defer left.Close()
+	defer right.Close()
+
+	conn := remoteAddrConn{
+		Conn:   left,
+		remote: &net.TCPAddr{IP: net.ParseIP("10.6.22.1"), Port: 39000},
+	}
+	exec := &executor{
+		cfg:   Config{DirectTrustedCIDRs: []string{"10.6.22.0/24"}},
+		input: solver.SolveInput{SessionID: "session/node-a/node-b"},
+	}
+	result := exec.resultForConn(conn, "dialer")
+	summary := result.Summary
+
+	if summary.Role != solver.PathRoleProtectedDirect {
+		t.Fatalf("role = %q, want %q", summary.Role, solver.PathRoleProtectedDirect)
+	}
+	if len(summary.Dependencies) != 0 {
+		t.Fatalf("dependencies = %#v, want none", summary.Dependencies)
+	}
+	if !solver.IsProtectedDirectPath(summary) {
+		t.Fatal("IsProtectedDirectPath(summary) = false, want true")
+	}
+}
+
 func TestMessageCodecsRoundTrip(t *testing.T) {
 	now := time.Unix(1_700_000_000, 0)
 	offer := offerPayload{
@@ -291,6 +366,15 @@ func TestInvalidRoleFailsBeforeNetwork(t *testing.T) {
 
 type tcpFramedTestIO struct {
 	target solver.PlanExecutor
+}
+
+type remoteAddrConn struct {
+	net.Conn
+	remote net.Addr
+}
+
+func (c remoteAddrConn) RemoteAddr() net.Addr {
+	return c.remote
 }
 
 func (io *tcpFramedTestIO) Send(ctx context.Context, msg solver.Message) error {

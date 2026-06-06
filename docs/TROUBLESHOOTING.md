@@ -315,6 +315,8 @@ tcp_framed:
 
 `tcp_framed` 不做 TCP NAT 打洞；`advertise_addr` 必须能被对端直接访问。`role` 支持 `auto`、`listen`、`dial`：默认 `auto` 仍按 session initiator 决定监听/拨号；`listen` 强制本端监听并发送 endpoint；`dial` 强制本端拨号。`dial_addr` 非空时会直接拨该固定 endpoint，不再等待对端 offer。
 
+`tcp_framed` 成功后会根据远端 TCP endpoint 标记 path policy：公网 endpoint 可作为 `protected_direct`；私网、`100.64.0.0/10`、loopback、link-local、benchmark/overlay 等 endpoint 默认会留下 `unknown` dependency。只有把已独立验证的真实 underlay 网段加入 `nat.direct_trusted_cidrs` 后，非公网 TCP endpoint 才会被当作 dependency-free direct path。不要把只由 natpierce/Tailscale/Docker/Wintun 等外部 overlay 提供的虚拟网段随意加入 trust，否则会把“依赖外部通道”的路径误标为可保护直连。
+
 如果只有某个固定端口被外部系统转发或放行，使用固定监听/拨号配置：
 
 ```yaml

@@ -328,17 +328,15 @@ func (e *executor) advertiseEndpoint(addr net.Addr) (string, error) {
 
 func (e *executor) resultForConn(conn net.Conn, role string) solver.Result {
 	pathID := "tcpframed:direct:" + e.input.SessionID
+	pathRole, dependencies := tcpEndpointPathPolicy(conn.RemoteAddr(), e.cfg.DirectTrustedCIDRs)
 	return solver.Result{
 		Transport: framedstream.New(conn, pathID),
 		Summary: solver.PathSummary{
 			PathID:         pathID,
 			ConnectionType: "direct",
 			RemoteAddr:     conn.RemoteAddr(),
-			Role:           solver.PathRolePrimaryCandidate,
-			Dependencies: []solver.PathDependency{{
-				Kind:   solver.PathDependencyUnknown,
-				Reason: "explicit_tcp_address",
-			}},
+			Role:           pathRole,
+			Dependencies:   dependencies,
 			Metrics: map[string]string{
 				"transport": StrategyName,
 			},

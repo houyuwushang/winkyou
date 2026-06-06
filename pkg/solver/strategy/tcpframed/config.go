@@ -13,11 +13,12 @@ const (
 )
 
 type Config struct {
-	ListenAddr    string
-	AdvertiseAddr string
-	DialAddr      string
-	Role          string
-	DialTimeout   time.Duration
+	ListenAddr         string
+	AdvertiseAddr      string
+	DialAddr           string
+	Role               string
+	DialTimeout        time.Duration
+	DirectTrustedCIDRs []string
 }
 
 func (c Config) withDefaults() Config {
@@ -32,6 +33,7 @@ func (c Config) withDefaults() Config {
 	if c.DialTimeout <= 0 {
 		c.DialTimeout = 5 * time.Second
 	}
+	c.DirectTrustedCIDRs = append([]string(nil), c.DirectTrustedCIDRs...)
 	return c
 }
 
