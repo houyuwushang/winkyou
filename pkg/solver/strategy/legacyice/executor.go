@@ -35,6 +35,7 @@ type executor struct {
 	publicDirectLocalBases  map[string]struct{}
 	lastLocalFilterDetails  map[string]string
 	lastRemoteFilterDetails map[string]string
+	lastSignalDetails       map[string]string
 
 	lifecycleCtx    context.Context
 	lifecycleCancel context.CancelFunc
@@ -498,6 +499,7 @@ sendLoop:
 	if lastErr != nil {
 		details["last_error"] = lastErr.Error()
 	}
+	e.rememberCandidateSignalDetails(details)
 	e.report(sess, solver.Observation{
 		Strategy:  e.strategyName(),
 		PlanID:    e.plan.ID,
@@ -763,6 +765,10 @@ func (e *executor) addPublicDirectFailureDetails(details map[string]string) {
 	for key, value := range remote {
 		details["last_remote_"+key] = value
 	}
+	signal := e.candidateSignalSnapshot()
+	for key, value := range signal {
+		details["last_signal_"+key] = value
+	}
 	if agent != nil {
 		details["ice_state"] = connectionStateString(agent)
 	}
@@ -856,6 +862,21 @@ func (e *executor) candidateFilterSnapshots() (map[string]string, map[string]str
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	return cloneStringMap(e.lastLocalFilterDetails), cloneStringMap(e.lastRemoteFilterDetails), e.agent
+}
+
+func (e *executor) rememberCandidateSignalDetails(details map[string]string) {
+	if e.execCfg.Mode != modePublicDirect {
+		return
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.lastSignalDetails = cloneStringMap(details)
+}
+
+func (e *executor) candidateSignalSnapshot() map[string]string {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return cloneStringMap(e.lastSignalDetails)
 }
 
 func (e *executor) report(sess solver.SessionIO, obs solver.Observation) {

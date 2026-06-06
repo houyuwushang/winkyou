@@ -2,6 +2,7 @@ package legacyice
 
 import (
 	"context"
+	"errors"
 	"net"
 	"slices"
 	"strconv"
@@ -682,6 +683,34 @@ func TestPublicDirectCandidateSignalRoundsScaleWithConnectTimeout(t *testing.T) 
 	longExec := newExecutor(Config{ConnectTimeout: 25 * time.Second}, solver.SolveInput{}, solver.Plan{ID: planIDPublicDirect}, executorConfig{Mode: modePublicDirect})
 	if got := longExec.candidateSignalRounds(); got != publicDirectCandidateSignalMaxRounds {
 		t.Fatalf("long candidateSignalRounds() = %d, want capped %d", got, publicDirectCandidateSignalMaxRounds)
+	}
+}
+
+func TestPublicDirectFailureIncludesLastCandidateSignalDetails(t *testing.T) {
+	candidate := nat.Candidate{
+		Type:    nat.CandidateTypeSrflx,
+		Address: &net.UDPAddr{IP: net.IPv4(117, 48, 146, 2), Port: 41000},
+	}
+	exec := newExecutor(Config{}, solver.SolveInput{
+		SessionID: "session/node-a/node-b",
+	}, solver.Plan{
+		ID:       planIDPublicDirect,
+		Strategy: StrategyName,
+	}, executorConfig{Mode: modePublicDirect})
+	io := &capturingSessionIO{}
+
+	exec.sendCandidateMessageRound(context.Background(), io, []nat.Candidate{candidate}, 1, publicDirectCandidateSignalRounds)
+	exec.reportFailure(io, errors.New("public direct timeout"))
+
+	obs := findObservation(io.Observations(), "candidate_failed")
+	if obs == nil {
+		t.Fatalf("observations = %#v, want candidate_failed", io.Observations())
+	}
+	if obs.Details["last_signal_candidate_sent"] != "1" ||
+		obs.Details["last_signal_candidate_total"] != "1" ||
+		obs.Details["last_signal_candidate_round"] != "1" ||
+		obs.Details["last_signal_candidate_rounds"] != strconv.Itoa(publicDirectCandidateSignalRounds) {
+		t.Fatalf("candidate_failed details = %#v, want last signal details", obs.Details)
 	}
 }
 
