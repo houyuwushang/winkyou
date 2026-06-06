@@ -60,6 +60,8 @@ type engine struct {
 
 	observationStore           *solverstore.ObservationStore
 	runtimePublicEndpointHints []string
+	endpointHintRefreshMu      sync.Mutex
+	endpointHintLastRefreshAt  time.Time
 
 	runCtx    context.Context
 	runCancel context.CancelFunc
