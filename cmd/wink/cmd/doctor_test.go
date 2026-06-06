@@ -116,6 +116,70 @@ func TestDoctorLegacyPlansIncludeRelayWithTURN(t *testing.T) {
 	}
 }
 
+func TestDoctorTCPFramedStaticDialOK(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("Listen() error = %v", err)
+	}
+	defer listener.Close()
+	accepted := make(chan net.Conn, 1)
+	go func() {
+		conn, err := listener.Accept()
+		if err == nil {
+			accepted <- conn
+		}
+	}()
+
+	configPath := writeDoctorTCPFramedConfig(t, `
+  role: dial
+  dial_addr: "`+listener.Addr().String()+`"
+`)
+
+	result := runDoctor(context.Background(), &Options{ConfigPath: configPath}, doctorFlags{strategy: "tcp_framed"}, healthyDoctorProbes())
+	check := findDoctorCheck(result, "strategy", "tcp_framed dial")
+	if check.Status != doctorOK || !strings.Contains(check.Message, "tcp connect succeeded") {
+		t.Fatalf("tcp_framed dial check = %#v, want ok", check)
+	}
+	select {
+	case conn := <-accepted:
+		_ = conn.Close()
+	case <-time.After(time.Second):
+		t.Fatal("listener did not accept doctor tcp_framed probe")
+	}
+}
+
+func TestDoctorTCPFramedStaticDialFail(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("Listen() error = %v", err)
+	}
+	addr := listener.Addr().String()
+	_ = listener.Close()
+
+	configPath := writeDoctorTCPFramedConfig(t, `
+  role: dial
+  dial_addr: "`+addr+`"
+`)
+
+	result := runDoctor(context.Background(), &Options{ConfigPath: configPath}, doctorFlags{strategy: "tcp_framed"}, healthyDoctorProbes())
+	check := findDoctorCheck(result, "strategy", "tcp_framed dial")
+	if check.Status != doctorFail || !strings.Contains(check.Message, "tcp connect failed") {
+		t.Fatalf("tcp_framed dial check = %#v, want fail", check)
+	}
+}
+
+func TestDoctorTCPFramedWarnsDynamicListener(t *testing.T) {
+	configPath := writeDoctorTCPFramedConfig(t, `
+  role: listen
+`)
+
+	result := runDoctor(context.Background(), &Options{ConfigPath: configPath}, doctorFlags{strategy: "tcp_framed"}, healthyDoctorProbes())
+	check := findDoctorCheck(result, "strategy", "tcp_framed listener")
+	if check.Status != doctorWarn || !strings.Contains(check.Message, "dynamic port") {
+		t.Fatalf("tcp_framed listener check = %#v, want dynamic port warning", check)
+	}
+}
+
 func TestDoctorSTUNWarnWhenProbeFails(t *testing.T) {
 	configPath := writeDoctorConfig(t)
 	probes := healthyDoctorProbes()
@@ -965,6 +1029,39 @@ connectivity:
     - legacy_ice_udp
     - relay_only
 `
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(path, []byte(strings.TrimSpace(body)+"\n"), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	return path
+}
+
+func writeDoctorTCPFramedConfig(t *testing.T, tcpFramedExtra string) string {
+	t.Helper()
+	body := `
+node:
+  name: node-a
+coordinator:
+  url: grpc://127.0.0.1:50051
+  auth_key: test-auth
+netif:
+  backend: tun
+wireguard:
+  private_key: test-private-key
+nat:
+  stun_servers:
+    - stun:127.0.0.1:3478
+connectivity:
+  mode: auto
+  strategy_order:
+    - tcp_framed
+    - legacy_ice_udp
+tcp_framed:
+  enabled: true
+  listen_addr: "127.0.0.1:0"
+  advertise_addr: "127.0.0.1:39000"
+  dial_timeout: 500ms
+` + tcpFramedExtra
 	path := filepath.Join(t.TempDir(), "config.yaml")
 	if err := os.WriteFile(path, []byte(strings.TrimSpace(body)+"\n"), 0o644); err != nil {
 		t.Fatalf("write config: %v", err)

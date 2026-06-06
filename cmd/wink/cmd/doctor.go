@@ -172,7 +172,7 @@ func runDoctor(ctx context.Context, opts *Options, flags doctorFlags, probes doc
 	result.add(interfaceProbe(ctx, cfg))
 
 	state, stateErr := winkclient.LoadRuntimeState(runtimeStateKey(opts))
-	addStrategyChecks(&result, cfg, flags)
+	addStrategyChecks(ctx, &result, cfg, flags)
 	addCandidateFilterChecks(&result, cfg, state, stateErr, stunReport)
 	addPublicDirectEvidenceChecks(&result, opts)
 	addTunnelChecks(&result, state, stateErr)
@@ -469,7 +469,7 @@ func parseWindowsIPForwardingProbeOutput(output string) (bool, string) {
 	return enabled, strings.Join(lines, "; ")
 }
 
-func addStrategyChecks(result *doctorResult, cfg *config.Config, flags doctorFlags) {
+func addStrategyChecks(ctx context.Context, result *doctorResult, cfg *config.Config, flags doctorFlags) {
 	order := configuredStrategyOrder(cfg)
 	if len(order) == 0 {
 		result.add(failCheck("strategy", "order", "no strategy order configured", "set connectivity.strategy_order"))
@@ -497,6 +497,89 @@ func addStrategyChecks(result *doctorResult, cfg *config.Config, flags doctorFla
 		return
 	}
 	result.add(okCheck("strategy", "requested", strategy+" is locally selectable"))
+	if strategy == tcpframed.StrategyName {
+		addTCPFramedStrategyChecks(ctx, result, cfg)
+	}
+}
+
+func addTCPFramedStrategyChecks(ctx context.Context, result *doctorResult, cfg *config.Config) {
+	role := normalizedTCPFramedRole(cfg.TCPFramed.Role)
+	listenAddr := strings.TrimSpace(cfg.TCPFramed.ListenAddr)
+	advertiseAddr := strings.TrimSpace(cfg.TCPFramed.AdvertiseAddr)
+	dialAddr := strings.TrimSpace(cfg.TCPFramed.DialAddr)
+	result.add(okCheck("strategy", "tcp_framed config", fmt.Sprintf("enabled role=%s listen_addr=%s advertise_addr=%s dial_addr=%s", role, dashIfEmpty(listenAddr), dashIfEmpty(advertiseAddr), dashIfEmpty(dialAddr))))
+
+	if tcpFramedMayListen(role) {
+		if tcpFramedPortIsZero(listenAddr) {
+			result.add(warnCheck("strategy", "tcp_framed listener", "listen_addr uses a dynamic port: "+listenAddr, "use a fixed forwarded/listening port and set advertise_addr before treating tcp_framed as externally reachable"))
+		}
+		if tcpFramedHostIsUnspecified(listenAddr) && advertiseAddr == "" {
+			result.add(warnCheck("strategy", "tcp_framed listener", "listen_addr is unspecified and advertise_addr is empty", "set advertise_addr to the exact endpoint the peer can dial"))
+		}
+	}
+
+	if role == tcpframed.RoleListen && dialAddr != "" {
+		result.add(warnCheck("strategy", "tcp_framed dial", "dial_addr is configured but role=listen will not use it", "remove dial_addr on the listener side or set role=dial on the dialer side"))
+		return
+	}
+	if dialAddr == "" {
+		if role == tcpframed.RoleDial {
+			result.add(warnCheck("strategy", "tcp_framed dial", "role=dial has no dial_addr and will wait for a signaled offer", "set tcp_framed.dial_addr to probe a fixed reachable endpoint"))
+		}
+		return
+	}
+	result.add(tcpFramedDialCheck(ctx, cfg))
+}
+
+func normalizedTCPFramedRole(value string) string {
+	role := strings.ToLower(strings.TrimSpace(value))
+	if role == "" {
+		return tcpframed.RoleAuto
+	}
+	return role
+}
+
+func tcpFramedMayListen(role string) bool {
+	return role == tcpframed.RoleAuto || role == tcpframed.RoleListen
+}
+
+func tcpFramedPortIsZero(addr string) bool {
+	_, port, err := net.SplitHostPort(strings.TrimSpace(addr))
+	if err != nil {
+		return false
+	}
+	return strings.TrimSpace(port) == "0"
+}
+
+func tcpFramedHostIsUnspecified(addr string) bool {
+	host, _, err := net.SplitHostPort(strings.TrimSpace(addr))
+	if err != nil {
+		return false
+	}
+	ip := net.ParseIP(strings.Trim(host, "[]"))
+	return ip != nil && ip.IsUnspecified()
+}
+
+func tcpFramedDialCheck(ctx context.Context, cfg *config.Config) doctorCheck {
+	target := strings.TrimSpace(cfg.TCPFramed.DialAddr)
+	timeout := cfg.TCPFramed.DialTimeout
+	if timeout <= 0 {
+		timeout = 5 * time.Second
+	}
+	if timeout > 3*time.Second {
+		timeout = 3 * time.Second
+	}
+	dialCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	var dialer net.Dialer
+	dialer.Timeout = timeout
+	conn, err := dialer.DialContext(dialCtx, "tcp", target)
+	if err != nil {
+		return failCheck("strategy", "tcp_framed dial", "tcp connect failed to "+target+": "+err.Error(), "verify the endpoint is listening, forwarded, and reachable from this node; random natpierce/overlay ports are not proof of reachability")
+	}
+	_ = conn.Close()
+	return okCheck("strategy", "tcp_framed dial", "tcp connect succeeded: "+target)
 }
 
 func legacyPlanCheck(cfg *config.Config) doctorCheck {

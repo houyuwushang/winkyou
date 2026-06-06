@@ -336,6 +336,8 @@ tcp_framed:
 
 现场验证中，本机到 inner-gw 的 `10.6.22.1:22` 能通过 natpierce/chen-win 访问，但 inner-gw 临时监听的随机 TCP 端口没有收到本机连接，`tcpdump -i natpierce tcp port 22` 看到的 SSH 来源也是 `10.6.22.4` 而不是本机 `10.6.22.3`。这种现象说明当前外部 overlay 只证明特定通道或端口可达，不证明随机 `tcp_framed` 端口可达。若 `connection refused` 或超时，先确认端口确实监听、被转发、能从对端直接连接，再用 `tcp_framed.role` / `tcp_framed.dial_addr` 固定角色。
 
+运行 `wink --config <config.yaml> doctor --strategy tcp_framed` 可以检查当前 TCP framed 配置。若配置了 `tcp_framed.dial_addr`，doctor 会实际 TCP connect 该地址；`tcp_framed dial` 失败说明该 endpoint 当前不能被本机直接使用，即使 SSH、natpierce 或其他外部工具的某个特定端口仍然能通。
+
 ## 7. Tunnel / Transport
 
 如果 `wink peers` 中有 `Xport Err`：
