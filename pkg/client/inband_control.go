@@ -160,6 +160,15 @@ func (e *engine) inbandMessagesForPeer(localNodeID string, peer *PeerStatus) []p
 	})
 	pathHealth.Seq = atomic.AddUint64(&e.inbandSeq, 1)
 	messages := []peercontrol.Message{heartbeat, pathHealth}
+	if endpoint := udpAddrString(peer.Endpoint); endpoint != "" {
+		update := peercontrol.NewEndpointUpdate(localNodeID, peer.NodeID, peercontrol.EndpointUpdate{
+			PathID:   lastPathID,
+			Endpoint: endpoint,
+			Reason:   "peer_observed_endpoint",
+		})
+		update.Seq = atomic.AddUint64(&e.inbandSeq, 1)
+		messages = append(messages, update)
+	}
 	if shouldRequestInbandReICE(e.multipathPathPolicy(), peer) {
 		reICE := peercontrol.NewReICERequest(localNodeID, peer.NodeID, peercontrol.ReICERequest{
 			PathID: lastPathID,
@@ -218,17 +227,27 @@ func (e *engine) handleInbandControlMessage(msg peercontrol.Message) {
 		if msg.ReICERequest != nil {
 			changed = true
 		}
+		if msg.EndpointUpdate != nil {
+			changed = true
+		}
 		if changed {
 			peer.LastSeen = seenAt
 			e.applyPeerHealthStateLocked(seenAt)
 		}
 	}
 	e.mu.Unlock()
-	if knownPeer && msg.ReICERequest != nil {
+	learnedEndpointHint := false
+	if knownPeer && msg.PathHealth != nil {
+		learnedEndpointHint = e.learnRuntimePublicEndpointHintFromPeer(msg.PathHealth.Endpoint, msg.From)
+	}
+	if knownPeer && msg.EndpointUpdate != nil {
+		learnedEndpointHint = e.learnRuntimePublicEndpointHintFromPeer(msg.EndpointUpdate.Endpoint, msg.From) || learnedEndpointHint
+	}
+	if learnedEndpointHint {
 		e.schedulePeerImprovementByIDWithForce(msg.From, true)
 	}
-	if knownPeer && msg.PathHealth != nil {
-		e.learnRuntimePublicEndpointHintFromPeer(msg.PathHealth.Endpoint, msg.From)
+	if knownPeer && msg.ReICERequest != nil {
+		e.schedulePeerImprovementByIDWithForce(msg.From, true)
 	}
 	if knownPeer && msg.SessionSignal != nil {
 		if e.markInbandMessageSeen(msg, time.Now()) {

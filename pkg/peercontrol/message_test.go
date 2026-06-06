@@ -42,6 +42,30 @@ func TestValidateEndpointUpdateRequiresEndpoint(t *testing.T) {
 	}
 }
 
+func TestEndpointUpdateRoundTrip(t *testing.T) {
+	msg := NewEndpointUpdate("node-a", "node-b", EndpointUpdate{
+		PathID:   "direct/path",
+		Endpoint: "203.0.113.10:50000",
+		Reason:   "peer_observed_endpoint",
+	})
+	msg.Seq = 9
+
+	raw, err := Marshal(msg)
+	if err != nil {
+		t.Fatalf("Marshal() error = %v", err)
+	}
+	got, err := Unmarshal(raw)
+	if err != nil {
+		t.Fatalf("Unmarshal() error = %v", err)
+	}
+	if got.Type != TypeEndpointUpdate || got.Seq != 9 || got.EndpointUpdate == nil {
+		t.Fatalf("endpoint update message = %#v", got)
+	}
+	if got.EndpointUpdate.PathID != "direct/path" || got.EndpointUpdate.Endpoint != "203.0.113.10:50000" || got.EndpointUpdate.Reason != "peer_observed_endpoint" {
+		t.Fatalf("endpoint update payload = %#v", got.EndpointUpdate)
+	}
+}
+
 func TestValidateRejectsBootstraplessMetadata(t *testing.T) {
 	tests := []struct {
 		name string

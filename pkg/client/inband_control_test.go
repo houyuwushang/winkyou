@@ -30,8 +30,8 @@ func TestInbandMessagesForPeer(t *testing.T) {
 	}
 
 	messages := eng.inbandMessagesForPeer("node-a", peer)
-	if len(messages) != 2 {
-		t.Fatalf("len(messages) = %d, want 2", len(messages))
+	if len(messages) != 3 {
+		t.Fatalf("len(messages) = %d, want 3", len(messages))
 	}
 
 	heartbeat := messages[0]
@@ -63,6 +63,14 @@ func TestInbandMessagesForPeer(t *testing.T) {
 	}
 	if !health.PathHealth.LastHandshake.Equal(now) {
 		t.Fatalf("path health handshake = %v, want %v", health.PathHealth.LastHandshake, now)
+	}
+
+	update := messages[2]
+	if update.Type != peercontrol.TypeEndpointUpdate || update.Seq != health.Seq+1 || update.EndpointUpdate == nil {
+		t.Fatalf("endpoint update = %#v", update)
+	}
+	if update.EndpointUpdate.PathID != "direct/path" || update.EndpointUpdate.Endpoint != "203.0.113.10:50000" || update.EndpointUpdate.Reason != "peer_observed_endpoint" {
+		t.Fatalf("endpoint update payload = %#v", update.EndpointUpdate)
 	}
 }
 
@@ -312,6 +320,62 @@ func TestHandleInbandPathHealthEndpointHintHonorsPolicy(t *testing.T) {
 	}))
 	if len(eng.runtimePublicEndpointHints) != 1 || eng.runtimePublicEndpointHints[0] != "100.102.17.36:45678" {
 		t.Fatalf("runtimePublicEndpointHints = %#v, want trusted CGNAT endpoint", eng.runtimePublicEndpointHints)
+	}
+}
+
+func TestHandleInbandEndpointUpdateLearnsHintAndForcesImprovement(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	cfg := config.Default()
+	cfg.NAT.RetryInterval = time.Minute
+	cfg.NAT.RetryMaxInterval = time.Minute
+	session := &peerSession{
+		nodeID: "node-b",
+		bound:  true,
+		lastPath: solver.PathSummary{
+			PathID:         "relay/path",
+			ConnectionType: "relay",
+			Role:           solver.PathRolePrimaryCandidate,
+			Dependencies: []solver.PathDependency{{
+				Kind:   solver.PathDependencyRelay,
+				Reason: "turn_or_relay_candidate",
+			}},
+		},
+	}
+	eng := &engine{
+		cfg:    cfg,
+		runCtx: ctx,
+		status: EngineStatus{NodeID: "node-a"},
+		peers: map[string]*PeerStatus{
+			"node-b": {
+				NodeID:    "node-b",
+				State:     PeerStateConnected,
+				DataState: PeerDataStateAlive,
+			},
+		},
+		peerMgr: &peerManager{sessions: map[string]*peerSession{
+			"node-b": session,
+		}},
+	}
+
+	msg := peercontrol.NewEndpointUpdate("node-b", "node-a", peercontrol.EndpointUpdate{
+		PathID:   "relay/path",
+		Endpoint: "8.8.8.8:45678",
+		Reason:   "peer_observed_endpoint",
+	})
+	eng.handleInbandControlMessage(msg)
+
+	if len(eng.runtimePublicEndpointHints) != 1 || eng.runtimePublicEndpointHints[0] != "8.8.8.8:45678" {
+		t.Fatalf("runtimePublicEndpointHints = %#v, want learned endpoint hint", eng.runtimePublicEndpointHints)
+	}
+	session.connectMu.Lock()
+	defer session.connectMu.Unlock()
+	if !session.improvePending {
+		t.Fatal("new peer-observed endpoint hint should schedule protected-direct improvement")
+	}
+	if session.improveDelay != forcedPeerImprovementDelay {
+		t.Fatalf("improve delay = %v, want forced delay %v", session.improveDelay, forcedPeerImprovementDelay)
 	}
 }
 
