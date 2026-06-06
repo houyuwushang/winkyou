@@ -274,6 +274,176 @@ func TestPublicDirectGatherCandidatesReturnsPartialCandidatesOnTimeout(t *testin
 	}
 }
 
+func TestPublicDirectFixedPortMuxRequiresSingleLocalBase(t *testing.T) {
+	port := uint16(freeUDPPort(t))
+	noMuxCases := []struct {
+		name string
+		cfg  ICEConfig
+	}{
+		{
+			name: "not public direct",
+			cfg: ICEConfig{
+				CandidatePortMin:     port,
+				CandidatePortMax:     port,
+				CandidateCIDRInclude: []string{"127.0.0.1/32"},
+			},
+		},
+		{
+			name: "force relay",
+			cfg: ICEConfig{
+				PublicDirectCandidate: true,
+				ForceRelay:            true,
+				CandidatePortMin:      port,
+				CandidatePortMax:      port,
+				CandidateCIDRInclude:  []string{"127.0.0.1/32"},
+			},
+		},
+		{
+			name: "no fixed port",
+			cfg: ICEConfig{
+				PublicDirectCandidate: true,
+				CandidatePortMin:      port,
+				CandidatePortMax:      port + 1,
+				CandidateCIDRInclude:  []string{"127.0.0.1/32"},
+			},
+		},
+		{
+			name: "no single host cidr",
+			cfg: ICEConfig{
+				PublicDirectCandidate: true,
+				CandidatePortMin:      port,
+				CandidatePortMax:      port,
+				CandidateCIDRInclude:  []string{"127.0.0.0/24"},
+			},
+		},
+		{
+			name: "multiple host cidrs",
+			cfg: ICEConfig{
+				PublicDirectCandidate: true,
+				CandidatePortMin:      port,
+				CandidatePortMax:      port,
+				CandidateCIDRInclude: []string{
+					"127.0.0.1/32",
+					"127.0.0.2/32",
+				},
+			},
+		},
+	}
+	for _, tc := range noMuxCases {
+		t.Run(tc.name, func(t *testing.T) {
+			mux, closer, err := publicDirectFixedPortMuxForConfig(tc.cfg)
+			if err != nil {
+				t.Fatalf("publicDirectFixedPortMuxForConfig() error = %v", err)
+			}
+			if mux != nil || closer != nil {
+				t.Fatalf("publicDirectFixedPortMuxForConfig() = %v, %v; want no mux", mux, closer)
+			}
+		})
+	}
+
+	_, _, err := publicDirectFixedPortMuxForConfig(ICEConfig{
+		PublicDirectCandidate: true,
+		CandidatePortMin:      port,
+		CandidatePortMax:      port,
+		CandidateCIDRInclude:  []string{"not-a-cidr"},
+	})
+	if err == nil {
+		t.Fatal("publicDirectFixedPortMuxForConfig(invalid CIDR) error = nil")
+	}
+
+	muxPort := uint16(freeUDPPort(t))
+	mux, closer, err := publicDirectFixedPortMuxForConfig(ICEConfig{
+		PublicDirectCandidate: true,
+		CandidatePortMin:      muxPort,
+		CandidatePortMax:      muxPort,
+		CandidateCIDRInclude:  []string{"127.0.0.1/32"},
+	})
+	if err != nil {
+		t.Fatalf("publicDirectFixedPortMuxForConfig(single local base) error = %v", err)
+	}
+	if mux == nil || closer == nil {
+		t.Fatalf("publicDirectFixedPortMuxForConfig(single local base) = %v, %v; want mux", mux, closer)
+	}
+	if err := closer.Close(); err != nil {
+		t.Fatalf("fixed UDP mux close error = %v", err)
+	}
+}
+
+func TestPublicDirectFixedPortMuxGathersHostAndSrflxOnSameSocket(t *testing.T) {
+	stunServer := startFakeSTUNServer(t, net.IPv4(198, 51, 100, 42), 41000)
+	port := uint16(freeUDPPort(t))
+
+	nt, _ := NewNATTraversal(nil)
+	agent, err := nt.NewICEAgent(ICEConfig{
+		PublicDirectCandidate: true,
+		STUNServers:           []string{"stun:" + stunServer.LocalAddr().String()},
+		GatherTimeout:         2 * time.Second,
+		ConnectTimeout:        time.Second,
+		CandidatePortMin:      port,
+		CandidatePortMax:      port,
+		CandidateCIDRInclude:  []string{"127.0.0.1/32"},
+	})
+	if err != nil {
+		t.Fatalf("NewICEAgent(public direct fixed mux) error = %v", err)
+	}
+	defer agent.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	candidates, err := agent.GatherCandidates(ctx)
+	if err != nil {
+		t.Fatalf("GatherCandidates(public direct fixed mux) error = %v", err)
+	}
+
+	var hostHasFixedPort, srflxHasFixedRelatedPort bool
+	for _, candidate := range candidates {
+		if candidate.Address == nil {
+			continue
+		}
+		switch candidate.Type {
+		case CandidateTypeHost:
+			if candidate.Address.Port == int(port) && candidate.Address.IP.Equal(net.IPv4(127, 0, 0, 1)) {
+				hostHasFixedPort = true
+			}
+		case CandidateTypeSrflx:
+			if candidate.RelatedAddr != nil && candidate.RelatedAddr.Port == int(port) &&
+				candidate.RelatedAddr.IP.Equal(net.IPv4(127, 0, 0, 1)) {
+				srflxHasFixedRelatedPort = true
+			}
+		}
+	}
+	if !hostHasFixedPort {
+		t.Fatalf("GatherCandidates(public direct fixed mux) = %#v, want host on 127.0.0.1:%d", candidates, port)
+	}
+	if !srflxHasFixedRelatedPort {
+		t.Fatalf("GatherCandidates(public direct fixed mux) = %#v, want srflx related addr on 127.0.0.1:%d", candidates, port)
+	}
+}
+
+func TestPublicDirectFixedPortMuxCloseReleasesPort(t *testing.T) {
+	port := uint16(freeUDPPort(t))
+
+	nt, _ := NewNATTraversal(nil)
+	agent, err := nt.NewICEAgent(ICEConfig{
+		PublicDirectCandidate: true,
+		CandidatePortMin:      port,
+		CandidatePortMax:      port,
+		CandidateCIDRInclude:  []string{"127.0.0.1/32"},
+	})
+	if err != nil {
+		t.Fatalf("NewICEAgent(public direct fixed mux) error = %v", err)
+	}
+	if err := agent.Close(); err != nil {
+		t.Fatalf("agent.Close() error = %v", err)
+	}
+
+	conn, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: int(port)})
+	if err != nil {
+		t.Fatalf("ListenUDP(127.0.0.1:%d) after agent close error = %v", port, err)
+	}
+	_ = conn.Close()
+}
+
 func TestPublicDirectDerivesOnlyUDPTURNAsSTUN(t *testing.T) {
 	udpURI, err := publicDirectSTUNURLFromTURN(TURNServer{URL: "turn.example.com:3478", Username: "user", Password: "pass"})
 	if err != nil {
@@ -546,4 +716,22 @@ func mustPionCandidate(t *testing.T, candidate Candidate) pionice.Candidate {
 		t.Fatalf("candidateToPion(%+v) error = %v", candidate, err)
 	}
 	return out
+}
+
+func freeUDPPort(t *testing.T) int {
+	t.Helper()
+	conn, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 0})
+	if err != nil {
+		t.Fatalf("ListenUDP(free port) error = %v", err)
+	}
+	addr, ok := conn.LocalAddr().(*net.UDPAddr)
+	if !ok {
+		_ = conn.Close()
+		t.Fatalf("free UDP port LocalAddr type = %T, want *net.UDPAddr", conn.LocalAddr())
+	}
+	port := addr.Port
+	if err := conn.Close(); err != nil {
+		t.Fatalf("free UDP port close error = %v", err)
+	}
+	return port
 }

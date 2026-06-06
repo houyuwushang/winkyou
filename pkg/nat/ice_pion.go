@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"strings"
 	"sync"
@@ -36,6 +37,7 @@ type icePionAgent struct {
 	transport        SelectedTransport
 	state            ConnectionState
 	onPairChange     func(*CandidatePair)
+	muxClosers       []io.Closer
 }
 
 func newICEPionAgent(cfg ICEConfig) (ICEAgent, error) {
@@ -58,7 +60,7 @@ func newICEPionAgent(cfg ICEConfig) (ICEAgent, error) {
 		disconnectedTimeout = 5 * time.Second
 	}
 
-	agent, err := pionice.NewAgent(&pionice.AgentConfig{
+	agentCfg := &pionice.AgentConfig{
 		Urls:                   urls,
 		PortMin:                cfg.CandidatePortMin,
 		PortMax:                cfg.CandidatePortMax,
@@ -77,14 +79,28 @@ func newICEPionAgent(cfg ICEConfig) (ICEAgent, error) {
 		BindingRequestHandler:  bindingRequestHandlerForConfig(cfg),
 		InterfaceFilter:        buildCandidateInterfaceFilter(cfg),
 		IPFilter:               ipFilter,
-	})
+	}
+	mux, muxCloser, err := publicDirectFixedPortMuxForConfig(cfg)
 	if err != nil {
+		return nil, err
+	}
+	muxClosers := make([]io.Closer, 0, 1)
+	if mux != nil {
+		agentCfg.UDPMux = mux
+		agentCfg.UDPMuxSrflx = mux
+		muxClosers = append(muxClosers, muxCloser)
+	}
+
+	agent, err := pionice.NewAgent(agentCfg)
+	if err != nil {
+		closeAll(muxClosers)
 		return nil, fmt.Errorf("nat: create pion ice agent: %w", err)
 	}
 
 	localUfrag, localPwd, err := agent.GetLocalUserCredentials()
 	if err != nil {
 		_ = agent.Close()
+		closeAll(muxClosers)
 		return nil, fmt.Errorf("nat: get local ice credentials: %w", err)
 	}
 
@@ -95,6 +111,7 @@ func newICEPionAgent(cfg ICEConfig) (ICEAgent, error) {
 		localPwd:         localPwd,
 		remoteCandidates: make(map[string]struct{}),
 		state:            ConnectionStateNew,
+		muxClosers:       muxClosers,
 	}
 	if err := agent.OnConnectionStateChange(func(state pionice.ConnectionState) {
 		a.mu.Lock()
@@ -102,6 +119,7 @@ func newICEPionAgent(cfg ICEConfig) (ICEAgent, error) {
 		a.mu.Unlock()
 	}); err != nil {
 		_ = agent.Close()
+		closeAll(muxClosers)
 		return nil, fmt.Errorf("nat: register connection state handler: %w", err)
 	}
 
@@ -129,6 +147,7 @@ func newICEPionAgent(cfg ICEConfig) (ICEAgent, error) {
 		}
 	}); err != nil {
 		_ = agent.Close()
+		closeAll(muxClosers)
 		return nil, fmt.Errorf("nat: register selected pair handler: %w", err)
 	}
 
@@ -327,7 +346,12 @@ func (a *icePionAgent) Close() error {
 		return nil
 	}
 	a.closed = true
-	return a.agent.Close()
+	agentErr := a.agent.Close()
+	muxErr := closeAll(a.muxClosers)
+	if agentErr != nil {
+		return agentErr
+	}
+	return muxErr
 }
 
 func (a *icePionAgent) GetSelectedPair() (*CandidatePair, error) {
@@ -459,6 +483,63 @@ func publicDirectSTUNURLFromTURN(turnServer TURNServer) (*stun.URI, error) {
 		Port:   uri.Port,
 		Proto:  stun.ProtoTypeUDP,
 	}, nil
+}
+
+func publicDirectFixedPortMuxForConfig(cfg ICEConfig) (pionice.UniversalUDPMux, io.Closer, error) {
+	addr, ok, err := publicDirectFixedLocalBaseAddr(cfg)
+	if err != nil || !ok {
+		return nil, nil, err
+	}
+	conn, err := net.ListenUDP("udp4", addr)
+	if err != nil {
+		return nil, nil, fmt.Errorf("nat: bind public-direct fixed UDP mux %s: %w", addr, err)
+	}
+	mux := pionice.NewUniversalUDPMuxDefault(pionice.UniversalUDPMuxParams{UDPConn: conn})
+	return mux, mux, nil
+}
+
+func publicDirectFixedLocalBaseAddr(cfg ICEConfig) (*net.UDPAddr, bool, error) {
+	if cfg.relayOnly || cfg.ForceRelay || !cfg.PublicDirectCandidate {
+		return nil, false, nil
+	}
+	if cfg.CandidatePortMin == 0 || cfg.CandidatePortMin != cfg.CandidatePortMax {
+		return nil, false, nil
+	}
+	ip, ok, err := singleIPv4HostCIDR("candidate_cidr_include", cfg.CandidateCIDRInclude)
+	if err != nil || !ok {
+		return nil, false, err
+	}
+	return &net.UDPAddr{IP: ip, Port: int(cfg.CandidatePortMin)}, true, nil
+}
+
+func singleIPv4HostCIDR(field string, values []string) (net.IP, bool, error) {
+	var selected net.IP
+	for i, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		ip, prefix, err := net.ParseCIDR(value)
+		if err != nil {
+			return nil, false, fmt.Errorf("nat: invalid %s[%d]: %q", field, i, value)
+		}
+		ones, bits := prefix.Mask.Size()
+		if bits != 32 || ones != 32 {
+			continue
+		}
+		ip = ip.To4()
+		if ip == nil {
+			continue
+		}
+		if selected != nil && !selected.Equal(ip) {
+			return nil, false, nil
+		}
+		selected = append(net.IP(nil), ip...)
+	}
+	if selected == nil {
+		return nil, false, nil
+	}
+	return selected, true, nil
 }
 
 func candidateTypesForConfig(cfg ICEConfig) []pionice.CandidateType {
@@ -680,6 +761,19 @@ func durationPtr(v time.Duration) *time.Duration {
 		return nil
 	}
 	return &v
+}
+
+func closeAll(closers []io.Closer) error {
+	var firstErr error
+	for _, closer := range closers {
+		if closer == nil {
+			continue
+		}
+		if err := closer.Close(); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	return firstErr
 }
 
 func secondsDuration(seconds float64) time.Duration {

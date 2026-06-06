@@ -138,7 +138,7 @@ nat:
     - "117.48.146.2:41000/192.168.1.20:40000"
 ```
 
-这只适用于公网 IP/端口映射相对可预测的场景。`nat1to1_ips` 表示公网 IP 映射，`public_endpoint_hints` 表示本机已知的公网 UDP `ip:port`，也可以写成 `公网ip:公网端口/本地ip:本地端口` 绑定到具体本地 UDP base；它只会作为 `legacyice/public_direct` 的额外 srflx 候选发布。当 mapped hint 带本地 base 时，`legacyice/public_direct` 会让本次 ICE agent 只在这些本地 IP 上 gather；如果只有一个唯一的本地 base 端口，也会尝试绑定该端口，从而让公网 hint 指向 WinkYou 正在监听的 socket。若运营商 NAT 会为每个 UDP socket 动态改写端口，过期的 `public_endpoint_hints` 不能保证复现 natpierce 的成功路径；默认配置 `nat.public_endpoint_hint_port_window: 2` 会围绕已观测端口追加小窗口候选，生产启动检测到 symmetric NAT 且本轮有 endpoint hint 时会把有效窗口提高到 `16`，再查看 `legacyice/public_direct` 是否采集到了 server-reflexive/peer-reflexive candidate，或使用 TURN/`relay_only` fallback。
+这只适用于公网 IP/端口映射相对可预测的场景。`nat1to1_ips` 表示公网 IP 映射，`public_endpoint_hints` 表示本机已知的公网 UDP `ip:port`，也可以写成 `公网ip:公网端口/本地ip:本地端口` 绑定到具体本地 UDP base；它只会作为 `legacyice/public_direct` 的额外 srflx 候选发布。当 mapped hint 带本地 base 时，`legacyice/public_direct` 会让本次 ICE agent 只在这些本地 IP 上 gather；如果只有一个唯一的本地 base 端口，会在该本地 `ip:port` 上使用固定 UDP mux，让 host candidate 和 STUN/server-reflexive candidate 共用同一个 socket，从而让公网 hint 指向 WinkYou 实际用于打洞的 socket。若运营商 NAT 会为每个 UDP socket 动态改写端口，过期的 `public_endpoint_hints` 不能保证复现 natpierce 的成功路径；默认配置 `nat.public_endpoint_hint_port_window: 2` 会围绕已观测端口追加小窗口候选，生产启动检测到 symmetric NAT 且本轮有 endpoint hint 时会把有效窗口提高到 `16`，再查看 `legacyice/public_direct` 是否采集到了 server-reflexive/peer-reflexive candidate，或使用 TURN/`relay_only` fallback。
 
 如果 natpierce 或路由器日志证明两端使用的是一个非公网但确实可达的 underlay 地址段，可以在两端显式加入 `nat.direct_trusted_cidrs`，例如 `100.64.0.0/10`。这会让 `legacyice/direct_prefer` 和 `legacyice/public_direct` 在 path dependency 判定中信任该 CIDR；`public_direct` 也会接受该 CIDR 内的候选、手工 mapped hint、启动 STUN 观测生成的 runtime endpoint hint，并允许 ICE 过程中学到的 peer-reflexive pair 切换到该地址段。旧的 `nat.public_direct_trusted_cidrs` 仍兼容，并会与 `direct_trusted_cidrs` 合并使用。不要把虚拟 overlay、Tailscale、Docker、Wintun peer 网段或只是“看起来能 ping”的跳板地址加入 trusted CIDR；否则 `protected_direct` 证据会失真。默认配置仍会拒绝这些地址段。`wink doctor` 会检查 `direct_trusted_cidrs` 是否命中本机疑似虚拟/overlay 接口；如果看到 `nat/direct trusted cidrs` warning，先移除该 trust 配置或改成真实 underlay CIDR。
 
@@ -176,7 +176,7 @@ legacyice/direct_prefer -> legacyice/public_direct -> legacyice/relay_only
 
 当 `nat.auto_public_endpoint_hints` 或手工 `nat.public_endpoint_hints` 为本轮提供了公网 endpoint hint，legacy ICE 会优先执行 `legacyice/public_direct`。这是为了把 natpierce/路由器日志或启动 STUN 观测到的 UDP 映射尽早用于双方打洞；如果先跑普通 `direct_prefer`，映射可能在 `public_direct` 开始前已经过期。
 
-如果 public-direct STUN gather 超时，但 Pion agent 已经准备好本地 UDP candidate，WinkYou 会继续返回这批本地候选，让 `public_endpoint_hints` 能尽快追加进 offer/answer 并开始 ICE checks。这个行为只解决“慢 STUN 卡住候选交换”的问题；如果 hint 过期、两端 NAT 映射和 natpierce 使用的 socket 不一致，或远端公网候选被过滤，仍会失败并进入后续 fallback。
+如果 public-direct STUN gather 超时，但 Pion agent 已经准备好本地 UDP candidate，WinkYou 会继续返回这批本地候选，让 `public_endpoint_hints` 能尽快追加进 offer/answer 并开始 ICE checks。这个行为只解决“慢 STUN 卡住候选交换”的问题；如果 hint 过期、两端 NAT 映射和 natpierce 使用的 socket/端口行为不一致，或远端公网候选被过滤，仍会失败并进入后续 fallback。若 hint 已写成 `公网ip:公网端口/本地ip:本地端口` 且本轮只有一个本地 base 端口，WinkYou 会让 host 和 srflx candidate 共用固定 UDP mux；如果仍失败，问题更可能在对端端点、端口漂移窗口、防火墙或 NAT 对 peer 目的地的映射差异。
 
 如果本轮已经有手工或运行时 `public_endpoint_hints`，`public_direct` 会用较短的 gather deadline 尽快进入候选交换，`candidate_gathered` details 会出现 `public_endpoint_hint_fast_gather=true` 和 `gather_timeout_ms=1000`。如果没有这些字段，说明本轮并没有带 endpoint hint，或者二进制不是最新版本。
 
