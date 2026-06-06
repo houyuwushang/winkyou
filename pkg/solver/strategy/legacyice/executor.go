@@ -28,6 +28,8 @@ type executor struct {
 	agent                   nat.ICEAgent
 	connecting              bool
 	closed                  bool
+	remoteCredentialsSet    bool
+	remoteCandidatesSet     bool
 	publicDirectLocalBases  map[string]struct{}
 	lastLocalFilterDetails  map[string]string
 	lastRemoteFilterDetails map[string]string
@@ -40,6 +42,8 @@ type executor struct {
 }
 
 const publicDirectHintGatherTimeout = time.Second
+
+const publicDirectCandidateSignalLimit = 32
 
 func newExecutor(cfg Config, input solver.SolveInput, plan solver.Plan, execCfg executorConfig) *executor {
 	lifecycleCtx, lifecycleCancel := context.WithCancel(context.Background())
@@ -112,6 +116,7 @@ func (e *executor) HandleMessage(ctx context.Context, sess solver.SessionIO, msg
 		if err := agent.SetRemoteCredentials(offer.ICE.Ufrag, offer.ICE.Pwd); err != nil {
 			return err
 		}
+		e.markRemoteCredentialsSet()
 		candidates, summary := filterRemoteCandidatesWithSummary(offer.ICE.Candidates, e.execCfg)
 		e.reportCandidateFilter(sess, "remote_candidates_filtered", "remote", MessageTypeOffer, summary)
 		if len(candidates) == 0 {
@@ -121,6 +126,7 @@ func (e *executor) HandleMessage(ctx context.Context, sess solver.SessionIO, msg
 		if err := agent.SetRemoteCandidates(candidates); err != nil {
 			return err
 		}
+		e.markRemoteCandidatesSet()
 		if err := e.sendAnswer(ctx, sess); err != nil {
 			return err
 		}
@@ -137,6 +143,7 @@ func (e *executor) HandleMessage(ctx context.Context, sess solver.SessionIO, msg
 		if err := agent.SetRemoteCredentials(answer.ICE.Ufrag, answer.ICE.Pwd); err != nil {
 			return err
 		}
+		e.markRemoteCredentialsSet()
 		candidates, summary := filterRemoteCandidatesWithSummary(answer.ICE.Candidates, e.execCfg)
 		e.reportCandidateFilter(sess, "remote_candidates_filtered", "remote", MessageTypeAnswer, summary)
 		if len(candidates) == 0 {
@@ -146,6 +153,7 @@ func (e *executor) HandleMessage(ctx context.Context, sess solver.SessionIO, msg
 		if err := agent.SetRemoteCandidates(candidates); err != nil {
 			return err
 		}
+		e.markRemoteCandidatesSet()
 		e.startConnect(sess)
 		return nil
 	case MessageTypeCandidate:
@@ -164,7 +172,10 @@ func (e *executor) HandleMessage(ctx context.Context, sess solver.SessionIO, msg
 		if err := agent.SetRemoteCandidates(filtered); err != nil {
 			return err
 		}
-		e.startConnect(sess)
+		e.markRemoteCandidatesSet()
+		if e.remoteReadyToConnect() {
+			e.startConnect(sess)
+		}
 		return nil
 	default:
 		return nil
@@ -277,7 +288,11 @@ func (e *executor) sendOffer(ctx context.Context, sess solver.SessionIO) error {
 	if err != nil {
 		return err
 	}
-	return sess.Send(ctx, NewMessage(MessageTypeOffer, payload, time.Now()))
+	if err := sess.Send(ctx, NewMessage(MessageTypeOffer, payload, time.Now())); err != nil {
+		return err
+	}
+	e.sendCandidateMessages(ctx, sess, candidates)
+	return nil
 }
 
 func (e *executor) sendAnswer(ctx context.Context, sess solver.SessionIO) error {
@@ -321,7 +336,78 @@ func (e *executor) sendAnswer(ctx context.Context, sess solver.SessionIO) error 
 	if err != nil {
 		return err
 	}
-	return sess.Send(ctx, NewMessage(MessageTypeAnswer, payload, time.Now()))
+	if err := sess.Send(ctx, NewMessage(MessageTypeAnswer, payload, time.Now())); err != nil {
+		return err
+	}
+	e.sendCandidateMessages(ctx, sess, candidates)
+	return nil
+}
+
+func (e *executor) sendCandidateMessages(ctx context.Context, sess solver.SessionIO, candidates []nat.Candidate) {
+	if e.execCfg.Mode != modePublicDirect || len(candidates) == 0 || sess == nil {
+		return
+	}
+	limit := len(candidates)
+	if limit > publicDirectCandidateSignalLimit {
+		limit = publicDirectCandidateSignalLimit
+	}
+	sent := 0
+	var lastErr error
+	for i := 0; i < limit; i++ {
+		payload, err := marshalCandidatePayload(candidatePayload{
+			SessionID: e.input.SessionID,
+			PlanID:    e.plan.ID,
+			ICE: nat.ICECandidatePayload{
+				Candidate: candidates[i],
+			},
+			SentAt: time.Now(),
+		})
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		if err := sess.Send(ctx, NewMessage(MessageTypeCandidate, payload, time.Now())); err != nil {
+			lastErr = err
+			continue
+		}
+		sent++
+	}
+	details := map[string]string{
+		"mode":             string(e.execCfg.Mode),
+		"message_type":     MessageTypeCandidate,
+		"candidate_total":  strconv.Itoa(len(candidates)),
+		"candidate_sent":   strconv.Itoa(sent),
+		"candidate_limit":  strconv.Itoa(publicDirectCandidateSignalLimit),
+		"candidate_capped": fmt.Sprintf("%t", len(candidates) > limit),
+	}
+	if lastErr != nil {
+		details["last_error"] = lastErr.Error()
+	}
+	e.report(sess, solver.Observation{
+		Strategy:  e.strategyName(),
+		PlanID:    e.plan.ID,
+		Event:     "candidate_signaled",
+		Details:   details,
+		Timestamp: time.Now(),
+	})
+}
+
+func (e *executor) markRemoteCredentialsSet() {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.remoteCredentialsSet = true
+}
+
+func (e *executor) markRemoteCandidatesSet() {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.remoteCandidatesSet = true
+}
+
+func (e *executor) remoteReadyToConnect() bool {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.remoteCredentialsSet && e.remoteCandidatesSet
 }
 
 func (e *executor) startConnect(sess solver.SessionIO) {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"net"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -259,8 +260,8 @@ func TestPublicDirectSendOfferAdvertisesOnlyPublicCandidates(t *testing.T) {
 	if err := exec.sendOffer(context.Background(), io); err != nil {
 		t.Fatalf("sendOffer(public_direct) error = %v", err)
 	}
-	if len(io.messages) != 1 {
-		t.Fatalf("sent messages = %d, want 1", len(io.messages))
+	if len(io.messages) != 2 {
+		t.Fatalf("sent messages = %d, want offer + candidate signal", len(io.messages))
 	}
 	offer, err := unmarshalOfferPayload(io.messages[0].Payload)
 	if err != nil {
@@ -271,6 +272,16 @@ func TestPublicDirectSendOfferAdvertisesOnlyPublicCandidates(t *testing.T) {
 	}
 	if offer.ICE.Candidates[0].Address.String() != publicCandidate.Address.String() {
 		t.Fatalf("offer candidate = %v, want %v", offer.ICE.Candidates[0].Address, publicCandidate.Address)
+	}
+	if io.messages[1].Type != MessageTypeCandidate {
+		t.Fatalf("second message type = %q, want candidate", io.messages[1].Type)
+	}
+	signaled, err := unmarshalCandidatePayload(io.messages[1].Payload)
+	if err != nil {
+		t.Fatalf("unmarshal candidate signal error = %v", err)
+	}
+	if signaled.PlanID != planIDPublicDirect || signaled.ICE.Candidate.Address.String() != publicCandidate.Address.String() {
+		t.Fatalf("candidate signal = %#v, want public_direct %v", signaled, publicCandidate.Address)
 	}
 	obs := findObservation(io.observations, "candidate_gathered")
 	if obs == nil {
@@ -295,6 +306,10 @@ func TestPublicDirectSendOfferAdvertisesOnlyPublicCandidates(t *testing.T) {
 		if !strings.Contains(reasons, want) {
 			t.Fatalf("candidate_gathered reject reasons = %q, want %q", reasons, want)
 		}
+	}
+	signaledObs := findObservation(io.observations, "candidate_signaled")
+	if signaledObs == nil || signaledObs.Details["candidate_sent"] != "1" || signaledObs.Details["candidate_total"] != "1" {
+		t.Fatalf("candidate_signaled observation = %#v, want sent=1 total=1", signaledObs)
 	}
 }
 
@@ -343,8 +358,8 @@ func TestPublicDirectAdvertisesConfiguredPublicEndpointHints(t *testing.T) {
 	if remaining := time.Until(agent.gatherDeadline); remaining <= 0 || remaining > 2*time.Second {
 		t.Fatalf("GatherCandidates deadline remaining = %v, want short public endpoint hint gather timeout", remaining)
 	}
-	if len(io.messages) != 1 {
-		t.Fatalf("sent messages = %d, want 1", len(io.messages))
+	if len(io.messages) != 2 {
+		t.Fatalf("sent messages = %d, want offer + candidate signal", len(io.messages))
 	}
 	offer, err := unmarshalOfferPayload(io.messages[0].Payload)
 	if err != nil {
@@ -470,6 +485,48 @@ func TestPublicDirectCandidateObservationReportsEndpointHintPortWindow(t *testin
 	}
 	if obs.Details["public_endpoint_hint_count"] != "1" || obs.Details["public_endpoint_hint_port_window"] != "2" {
 		t.Fatalf("candidate_gathered details = %#v, want endpoint hint count/window", obs.Details)
+	}
+}
+
+func TestPublicDirectCandidateSignalsAreBounded(t *testing.T) {
+	candidates := make([]nat.Candidate, 40)
+	for i := range candidates {
+		candidates[i] = nat.Candidate{
+			Type:    nat.CandidateTypeSrflx,
+			Address: &net.UDPAddr{IP: net.IPv4(117, 48, 146, 2), Port: 41000 + i},
+		}
+	}
+	exec := newExecutor(Config{}, solver.SolveInput{
+		SessionID: "session/node-a/node-b",
+	}, solver.Plan{
+		ID:       planIDPublicDirect,
+		Strategy: StrategyName,
+	}, executorConfig{Mode: modePublicDirect})
+	io := &capturingSessionIO{}
+
+	exec.sendCandidateMessages(context.Background(), io, candidates)
+
+	if len(io.messages) != publicDirectCandidateSignalLimit {
+		t.Fatalf("candidate signal messages = %d, want limit %d", len(io.messages), publicDirectCandidateSignalLimit)
+	}
+	for i, msg := range io.messages {
+		if msg.Type != MessageTypeCandidate {
+			t.Fatalf("message[%d].Type = %q, want candidate", i, msg.Type)
+		}
+		payload, err := unmarshalCandidatePayload(msg.Payload)
+		if err != nil {
+			t.Fatalf("unmarshal candidate[%d] error = %v", i, err)
+		}
+		if payload.PlanID != planIDPublicDirect {
+			t.Fatalf("candidate[%d] plan id = %q, want %q", i, payload.PlanID, planIDPublicDirect)
+		}
+	}
+	obs := findObservation(io.observations, "candidate_signaled")
+	if obs == nil {
+		t.Fatalf("candidate_signaled observation missing: %#v", io.observations)
+	}
+	if obs.Details["candidate_total"] != "40" || obs.Details["candidate_sent"] != strconv.Itoa(publicDirectCandidateSignalLimit) || obs.Details["candidate_capped"] != "true" {
+		t.Fatalf("candidate_signaled details = %#v, want capped 40/%d", obs.Details, publicDirectCandidateSignalLimit)
 	}
 }
 
@@ -867,6 +924,72 @@ func TestPublicDirectHintExecutorAcceptsPublicDirectPlanFamilyMessage(t *testing
 	<-agent.connectCalled
 	if len(agent.remoteCandidates) != 1 || agent.remoteCandidates[0].Address.String() != publicCandidate.Address.String() {
 		t.Fatalf("remote candidates = %#v, want public-direct family candidate", agent.remoteCandidates)
+	}
+}
+
+func TestExecutorCandidateMessageWaitsForRemoteCredentials(t *testing.T) {
+	publicCandidate := nat.Candidate{Type: nat.CandidateTypeSrflx, Address: &net.UDPAddr{IP: net.IPv4(117, 48, 146, 2), Port: 41000}}
+	agent := &recordingICEAgent{
+		connectErr:    context.Canceled,
+		connectCalled: make(chan struct{}),
+	}
+	exec := newExecutor(Config{
+		NewICEAgent: func(ctx context.Context, req AgentRequest) (nat.ICEAgent, error) {
+			_ = ctx
+			_ = req
+			return agent, nil
+		},
+		GatherTimeout:  100 * time.Millisecond,
+		ConnectTimeout: 100 * time.Millisecond,
+	}, solver.SolveInput{
+		SessionID:    "session/node-a/node-b",
+		LocalNodeID:  "node-a",
+		RemoteNodeID: "node-b",
+		Initiator:    true,
+	}, solver.Plan{
+		ID:       planIDPublicDirect,
+		Strategy: StrategyName,
+		Metadata: map[string]string{"mode": string(modePublicDirect)},
+	}, executorConfig{Mode: modePublicDirect})
+
+	candidatePayload, err := marshalCandidatePayload(candidatePayload{
+		SessionID: "session/node-a/node-b",
+		PlanID:    planIDPublicDirect,
+		ICE:       nat.ICECandidatePayload{Candidate: publicCandidate},
+		SentAt:    time.Now(),
+	})
+	if err != nil {
+		t.Fatalf("marshalCandidatePayload() error = %v", err)
+	}
+	if err := exec.HandleMessage(context.Background(), recordingSessionIO{}, NewMessage(MessageTypeCandidate, candidatePayload, time.Now())); err != nil {
+		t.Fatalf("HandleMessage(candidate first) error = %v", err)
+	}
+	select {
+	case <-agent.connectCalled:
+		t.Fatal("candidate-only message started ICE connect before remote credentials")
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	answerPayload, err := marshalAnswerPayload(answerPayload{
+		SessionID: "session/node-a/node-b",
+		PlanID:    planIDPublicDirect,
+		ICE: nat.ICESessionDescriptionPayload{
+			Ufrag:      "remote",
+			Pwd:        "remote-pwd",
+			Candidates: []nat.Candidate{publicCandidate},
+		},
+		SentAt: time.Now(),
+	})
+	if err != nil {
+		t.Fatalf("marshalAnswerPayload() error = %v", err)
+	}
+	if err := exec.HandleMessage(context.Background(), recordingSessionIO{}, NewMessage(MessageTypeAnswer, answerPayload, time.Now())); err != nil {
+		t.Fatalf("HandleMessage(answer after candidate) error = %v", err)
+	}
+	select {
+	case <-agent.connectCalled:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for ICE connect after remote credentials")
 	}
 }
 

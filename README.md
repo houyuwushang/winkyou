@@ -203,10 +203,13 @@ nat:
 
 如果本轮已经有手工或运行时 `public_endpoint_hints`，`public_direct` 会使用较短的 gather deadline，先拿到本地 socket 并尽快把 hint 发给对端；没有 hint 时仍使用正常 gather timeout 等待 STUN/server-reflexive candidate。
 
+`legacyice/public_direct` 会在 offer/answer 后对已发布候选发送一轮有界 `candidate` 信令重发。它不会替代 offer/answer 里的 ICE credentials，但能让 coordinator 和已建立虚拟网内的 `session_signal` 多缓存一份候选信息，降低短窗口打洞时单次候选信令丢失或延迟的影响。为避免端口窗口过大时刷爆控制面，单轮 candidate 重发有固定上限，超出部分仍以 offer/answer 内的完整候选列表为准。
+
 用于排查真实 NAT piercing 时，legacy ICE 会把候选采集和过滤结果写入 observation history。客户端运行状态文件同目录下会生成 `<runtime-state-base>.observations.jsonl`，其中：
 
 - `candidate_gathered`：本端 gather 后准备发布的 candidate 统计。
 - `remote_candidates_filtered`：收到远端 offer/answer/candidate 后的过滤统计。
+- `candidate_signaled`：`public_direct` 在 offer/answer 后额外发送的有界 candidate 信令统计，包括 `candidate_sent`、`candidate_total` 和是否 `candidate_capped`。
 - `candidate_total`、`candidate_kept`、`candidate_rejected`、`candidate_reject_reasons` 可用于判断是没有采到公网候选、候选被 `public_direct` 规则过滤，还是候选保留下来后 ICE 连通检查失败。`candidate_kept_samples` 会保留少量候选样本；带 local base 的 hint 会显示为 `srflx:公网ip:端口<-本地ip:端口`，便于和 natpierce 或路由器日志对比。
 - `candidate_failed`：`public_direct` 失败时会附带最近一次 `last_local_candidate_*` / `last_remote_candidate_*` 摘要、`public_endpoint_hint_count` 和 `ice_state`，便于直接判断是本端没有发布有效候选、远端候选被过滤，还是 ICE checks 已经进入 checking 但没选中路径。
 
