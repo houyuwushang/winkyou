@@ -6,6 +6,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -64,18 +65,35 @@ func (recordingSessionIO) Send(context.Context, solver.Message) error { return n
 func (recordingSessionIO) ReportObservation(context.Context, solver.Observation) error { return nil }
 
 type capturingSessionIO struct {
+	mu           sync.Mutex
 	messages     []solver.Message
 	observations []solver.Observation
 }
 
 func (c *capturingSessionIO) Send(_ context.Context, msg solver.Message) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	c.messages = append(c.messages, msg)
 	return nil
 }
 
 func (c *capturingSessionIO) ReportObservation(_ context.Context, obs solver.Observation) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	c.observations = append(c.observations, obs)
 	return nil
+}
+
+func (c *capturingSessionIO) Messages() []solver.Message {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return append([]solver.Message(nil), c.messages...)
+}
+
+func (c *capturingSessionIO) Observations() []solver.Observation {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return append([]solver.Observation(nil), c.observations...)
 }
 
 func TestExecutorConfigForPlanProducesDistinctModes(t *testing.T) {
@@ -260,10 +278,12 @@ func TestPublicDirectSendOfferAdvertisesOnlyPublicCandidates(t *testing.T) {
 	if err := exec.sendOffer(context.Background(), io); err != nil {
 		t.Fatalf("sendOffer(public_direct) error = %v", err)
 	}
-	if len(io.messages) != 2 {
-		t.Fatalf("sent messages = %d, want offer + candidate signal", len(io.messages))
+	messages := io.Messages()
+	wantMessages := 1 + publicDirectCandidateSignalRounds
+	if len(messages) != wantMessages {
+		t.Fatalf("sent messages = %d, want offer + %d candidate signal rounds", len(messages), publicDirectCandidateSignalRounds)
 	}
-	offer, err := unmarshalOfferPayload(io.messages[0].Payload)
+	offer, err := unmarshalOfferPayload(messages[0].Payload)
 	if err != nil {
 		t.Fatalf("unmarshal offer error = %v", err)
 	}
@@ -273,19 +293,20 @@ func TestPublicDirectSendOfferAdvertisesOnlyPublicCandidates(t *testing.T) {
 	if offer.ICE.Candidates[0].Address.String() != publicCandidate.Address.String() {
 		t.Fatalf("offer candidate = %v, want %v", offer.ICE.Candidates[0].Address, publicCandidate.Address)
 	}
-	if io.messages[1].Type != MessageTypeCandidate {
-		t.Fatalf("second message type = %q, want candidate", io.messages[1].Type)
+	if messages[1].Type != MessageTypeCandidate {
+		t.Fatalf("second message type = %q, want candidate", messages[1].Type)
 	}
-	signaled, err := unmarshalCandidatePayload(io.messages[1].Payload)
+	signaled, err := unmarshalCandidatePayload(messages[1].Payload)
 	if err != nil {
 		t.Fatalf("unmarshal candidate signal error = %v", err)
 	}
 	if signaled.PlanID != planIDPublicDirect || signaled.ICE.Candidate.Address.String() != publicCandidate.Address.String() {
 		t.Fatalf("candidate signal = %#v, want public_direct %v", signaled, publicCandidate.Address)
 	}
-	obs := findObservation(io.observations, "candidate_gathered")
+	observations := io.Observations()
+	obs := findObservation(observations, "candidate_gathered")
 	if obs == nil {
-		t.Fatalf("candidate_gathered observation not reported: %#v", io.observations)
+		t.Fatalf("candidate_gathered observation not reported: %#v", observations)
 	}
 	if obs.Details["mode"] != string(modePublicDirect) || obs.Details["message_type"] != MessageTypeOffer {
 		t.Fatalf("candidate_gathered details = %#v, want public direct offer", obs.Details)
@@ -307,9 +328,9 @@ func TestPublicDirectSendOfferAdvertisesOnlyPublicCandidates(t *testing.T) {
 			t.Fatalf("candidate_gathered reject reasons = %q, want %q", reasons, want)
 		}
 	}
-	signaledObs := findObservation(io.observations, "candidate_signaled")
-	if signaledObs == nil || signaledObs.Details["candidate_sent"] != "1" || signaledObs.Details["candidate_total"] != "1" {
-		t.Fatalf("candidate_signaled observation = %#v, want sent=1 total=1", signaledObs)
+	signaledObs := findObservation(observations, "candidate_signaled")
+	if signaledObs == nil || signaledObs.Details["candidate_sent"] != "1" || signaledObs.Details["candidate_total"] != "1" || signaledObs.Details["candidate_rounds"] != strconv.Itoa(publicDirectCandidateSignalRounds) {
+		t.Fatalf("candidate_signaled observation = %#v, want sent=1 total=1 with configured rounds", signaledObs)
 	}
 }
 
@@ -358,10 +379,12 @@ func TestPublicDirectAdvertisesConfiguredPublicEndpointHints(t *testing.T) {
 	if remaining := time.Until(agent.gatherDeadline); remaining <= 0 || remaining > 2*time.Second {
 		t.Fatalf("GatherCandidates deadline remaining = %v, want short public endpoint hint gather timeout", remaining)
 	}
-	if len(io.messages) != 2 {
-		t.Fatalf("sent messages = %d, want offer + candidate signal", len(io.messages))
+	messages := io.Messages()
+	wantMessages := 1 + publicDirectCandidateSignalRounds
+	if len(messages) != wantMessages {
+		t.Fatalf("sent messages = %d, want offer + %d candidate signal rounds", len(messages), publicDirectCandidateSignalRounds)
 	}
-	offer, err := unmarshalOfferPayload(io.messages[0].Payload)
+	offer, err := unmarshalOfferPayload(messages[0].Payload)
 	if err != nil {
 		t.Fatalf("unmarshal offer error = %v", err)
 	}
@@ -393,9 +416,10 @@ func TestPublicDirectAdvertisesConfiguredPublicEndpointHints(t *testing.T) {
 	if role != solver.PathRolePrimaryCandidate || len(deps) != 1 || deps[0].Reason != "local_private_candidate" {
 		t.Fatalf("path policy with unmapped private base = role %q deps %#v, want dependent direct", role, deps)
 	}
-	obs := findObservation(io.observations, "candidate_gathered")
+	observations := io.Observations()
+	obs := findObservation(observations, "candidate_gathered")
 	if obs == nil || !strings.Contains(obs.Details["candidate_kept_samples"], "srflx:117.48.146.2:41000<-192.168.1.20:40000") {
-		t.Fatalf("observations = %#v, want kept public endpoint hint sample", io.observations)
+		t.Fatalf("observations = %#v, want kept public endpoint hint sample", observations)
 	}
 	if obs.Details["public_endpoint_hint_count"] != "1" {
 		t.Fatalf("candidate_gathered public endpoint hint count = %#v, want 1", obs.Details)
@@ -479,9 +503,10 @@ func TestPublicDirectCandidateObservationReportsEndpointHintPortWindow(t *testin
 
 	exec.reportCandidateFilter(io, "candidate_gathered", "local", MessageTypeOffer, summary)
 
-	obs := findObservation(io.observations, "candidate_gathered")
+	observations := io.Observations()
+	obs := findObservation(observations, "candidate_gathered")
 	if obs == nil {
-		t.Fatalf("observations = %#v, want candidate_gathered", io.observations)
+		t.Fatalf("observations = %#v, want candidate_gathered", observations)
 	}
 	if obs.Details["public_endpoint_hint_count"] != "1" || obs.Details["public_endpoint_hint_port_window"] != "2" {
 		t.Fatalf("candidate_gathered details = %#v, want endpoint hint count/window", obs.Details)
@@ -506,10 +531,12 @@ func TestPublicDirectCandidateSignalsAreBounded(t *testing.T) {
 
 	exec.sendCandidateMessages(context.Background(), io, candidates)
 
-	if len(io.messages) != publicDirectCandidateSignalLimit {
-		t.Fatalf("candidate signal messages = %d, want limit %d", len(io.messages), publicDirectCandidateSignalLimit)
+	messages := io.Messages()
+	wantMessages := publicDirectCandidateSignalLimit * publicDirectCandidateSignalRounds
+	if len(messages) != wantMessages {
+		t.Fatalf("candidate signal messages = %d, want limit %d across %d rounds", len(messages), publicDirectCandidateSignalLimit, publicDirectCandidateSignalRounds)
 	}
-	for i, msg := range io.messages {
+	for i, msg := range messages {
 		if msg.Type != MessageTypeCandidate {
 			t.Fatalf("message[%d].Type = %q, want candidate", i, msg.Type)
 		}
@@ -521,12 +548,13 @@ func TestPublicDirectCandidateSignalsAreBounded(t *testing.T) {
 			t.Fatalf("candidate[%d] plan id = %q, want %q", i, payload.PlanID, planIDPublicDirect)
 		}
 	}
-	obs := findObservation(io.observations, "candidate_signaled")
+	observations := io.Observations()
+	obs := findObservation(observations, "candidate_signaled")
 	if obs == nil {
-		t.Fatalf("candidate_signaled observation missing: %#v", io.observations)
+		t.Fatalf("candidate_signaled observation missing: %#v", observations)
 	}
-	if obs.Details["candidate_total"] != "80" || obs.Details["candidate_sent"] != strconv.Itoa(publicDirectCandidateSignalLimit) || obs.Details["candidate_capped"] != "true" {
-		t.Fatalf("candidate_signaled details = %#v, want capped 80/%d", obs.Details, publicDirectCandidateSignalLimit)
+	if obs.Details["candidate_total"] != "80" || obs.Details["candidate_sent"] != strconv.Itoa(publicDirectCandidateSignalLimit) || obs.Details["candidate_capped"] != "true" || obs.Details["candidate_rounds"] != strconv.Itoa(publicDirectCandidateSignalRounds) {
+		t.Fatalf("candidate_signaled details = %#v, want capped 80/%d with configured rounds", obs.Details, publicDirectCandidateSignalLimit)
 	}
 }
 
@@ -549,14 +577,17 @@ func TestPublicDirectCandidateSignalLimitCoversSymmetricHintWindow(t *testing.T)
 
 	exec.sendCandidateMessages(context.Background(), io, candidates)
 
-	if len(io.messages) != len(candidates) {
-		t.Fatalf("candidate signal messages = %d, want all %d symmetric-window candidates", len(io.messages), len(candidates))
+	messages := io.Messages()
+	wantMessages := len(candidates) * publicDirectCandidateSignalRounds
+	if len(messages) != wantMessages {
+		t.Fatalf("candidate signal messages = %d, want all %d symmetric-window candidates across %d rounds", len(messages), len(candidates), publicDirectCandidateSignalRounds)
 	}
-	obs := findObservation(io.observations, "candidate_signaled")
+	observations := io.Observations()
+	obs := findObservation(observations, "candidate_signaled")
 	if obs == nil {
-		t.Fatalf("candidate_signaled observation missing: %#v", io.observations)
+		t.Fatalf("candidate_signaled observation missing: %#v", observations)
 	}
-	if obs.Details["candidate_total"] != strconv.Itoa(len(candidates)) || obs.Details["candidate_sent"] != strconv.Itoa(len(candidates)) || obs.Details["candidate_capped"] != "false" {
+	if obs.Details["candidate_total"] != strconv.Itoa(len(candidates)) || obs.Details["candidate_sent"] != strconv.Itoa(len(candidates)) || obs.Details["candidate_capped"] != "false" || obs.Details["candidate_rounds"] != strconv.Itoa(publicDirectCandidateSignalRounds) {
 		t.Fatalf("candidate_signaled details = %#v, want uncapped full symmetric window", obs.Details)
 	}
 }
@@ -1179,9 +1210,10 @@ func TestExecutorFiltersRemoteCandidatesByPlanMode(t *testing.T) {
 	if len(publicLocalCandidates) != 1 || publicLocalCandidates[0].Address.String() != publicCandidate.Address.String() {
 		t.Fatalf("public direct local candidates = %#v, want only %v", publicLocalCandidates, publicCandidate.Address)
 	}
-	obs := findObservation(publicDirectIO.observations, "remote_candidates_filtered")
+	publicDirectObservations := publicDirectIO.Observations()
+	obs := findObservation(publicDirectObservations, "remote_candidates_filtered")
 	if obs == nil {
-		t.Fatalf("remote_candidates_filtered observation not reported: %#v", publicDirectIO.observations)
+		t.Fatalf("remote_candidates_filtered observation not reported: %#v", publicDirectObservations)
 	}
 	if obs.Details["mode"] != string(modePublicDirect) || obs.Details["message_type"] != MessageTypeAnswer {
 		t.Fatalf("remote_candidates_filtered details = %#v, want public direct answer", obs.Details)
@@ -1265,15 +1297,16 @@ func TestPublicDirectEmptyRemoteCandidatesFailsPlanWithoutBubbling(t *testing.T)
 	default:
 		t.Fatal("executor errCh did not receive plan failure")
 	}
-	if obs := findObservation(io.observations, "remote_candidates_filtered"); obs == nil || obs.Details["candidate_kept"] != "0" {
-		t.Fatalf("observations = %#v, want remote_candidates_filtered kept=0", io.observations)
+	observations := io.Observations()
+	if obs := findObservation(observations, "remote_candidates_filtered"); obs == nil || obs.Details["candidate_kept"] != "0" {
+		t.Fatalf("observations = %#v, want remote_candidates_filtered kept=0", observations)
 	}
-	if obs := findObservation(io.observations, "candidate_failed"); obs == nil || !strings.Contains(obs.Reason, "no usable remote candidates") {
-		t.Fatalf("observations = %#v, want candidate_failed no usable remote candidates", io.observations)
+	if obs := findObservation(observations, "candidate_failed"); obs == nil || !strings.Contains(obs.Reason, "no usable remote candidates") {
+		t.Fatalf("observations = %#v, want candidate_failed no usable remote candidates", observations)
 	}
-	obs := findObservation(io.observations, "candidate_failed")
+	obs := findObservation(observations, "candidate_failed")
 	if obs == nil {
-		t.Fatalf("observations = %#v, want candidate_failed", io.observations)
+		t.Fatalf("observations = %#v, want candidate_failed", observations)
 	}
 	if obs.Details["last_remote_candidate_total"] != "3" || obs.Details["last_remote_candidate_kept"] != "0" {
 		t.Fatalf("candidate_failed details = %#v, want last remote candidate counts", obs.Details)

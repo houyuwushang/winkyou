@@ -46,6 +46,10 @@ const publicDirectHintGatherTimeout = time.Second
 
 const publicDirectCandidateSignalLimit = 64
 
+const publicDirectCandidateSignalRounds = 3
+
+const publicDirectCandidateSignalRetryInterval = 100 * time.Millisecond
+
 func newExecutor(cfg Config, input solver.SolveInput, plan solver.Plan, execCfg executorConfig) *executor {
 	lifecycleCtx, lifecycleCancel := context.WithCancel(context.Background())
 	return &executor{
@@ -356,6 +360,32 @@ func (e *executor) sendCandidateMessages(ctx context.Context, sess solver.Sessio
 	if e.execCfg.Mode != modePublicDirect || len(candidates) == 0 || sess == nil {
 		return
 	}
+	for round := 1; round <= publicDirectCandidateSignalRounds; round++ {
+		select {
+		case <-ctx.Done():
+			return
+		case <-e.lifecycleCtx.Done():
+			return
+		default:
+		}
+		e.sendCandidateMessageRound(ctx, sess, candidates, round)
+		if round == publicDirectCandidateSignalRounds {
+			return
+		}
+		timer := time.NewTimer(publicDirectCandidateSignalRetryInterval)
+		select {
+		case <-timer.C:
+		case <-ctx.Done():
+			timer.Stop()
+			return
+		case <-e.lifecycleCtx.Done():
+			timer.Stop()
+			return
+		}
+	}
+}
+
+func (e *executor) sendCandidateMessageRound(ctx context.Context, sess solver.SessionIO, candidates []nat.Candidate, round int) {
 	limit := len(candidates)
 	if limit > publicDirectCandidateSignalLimit {
 		limit = publicDirectCandidateSignalLimit
@@ -382,12 +412,15 @@ func (e *executor) sendCandidateMessages(ctx context.Context, sess solver.Sessio
 		sent++
 	}
 	details := map[string]string{
-		"mode":             string(e.execCfg.Mode),
-		"message_type":     MessageTypeCandidate,
-		"candidate_total":  strconv.Itoa(len(candidates)),
-		"candidate_sent":   strconv.Itoa(sent),
-		"candidate_limit":  strconv.Itoa(publicDirectCandidateSignalLimit),
-		"candidate_capped": fmt.Sprintf("%t", len(candidates) > limit),
+		"mode":              string(e.execCfg.Mode),
+		"message_type":      MessageTypeCandidate,
+		"candidate_total":   strconv.Itoa(len(candidates)),
+		"candidate_sent":    strconv.Itoa(sent),
+		"candidate_limit":   strconv.Itoa(publicDirectCandidateSignalLimit),
+		"candidate_capped":  fmt.Sprintf("%t", len(candidates) > limit),
+		"candidate_round":   strconv.Itoa(round),
+		"candidate_rounds":  strconv.Itoa(publicDirectCandidateSignalRounds),
+		"retry_interval_ms": strconv.Itoa(int(publicDirectCandidateSignalRetryInterval / time.Millisecond)),
 	}
 	if lastErr != nil {
 		details["last_error"] = lastErr.Error()
