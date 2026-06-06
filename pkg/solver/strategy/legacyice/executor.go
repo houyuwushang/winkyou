@@ -220,6 +220,7 @@ func (e *executor) HandleMessage(ctx context.Context, sess solver.SessionIO, msg
 			return nil
 		}
 		if !e.remoteCredentialsReady() {
+			e.punchRemoteCandidates(ctx, sess, agent, filtered, MessageTypeCandidate)
 			e.queuePendingRemoteCandidates(filtered)
 			return nil
 		}

@@ -1729,6 +1729,69 @@ func TestExecutorCandidateMessageWaitsForRemoteCredentials(t *testing.T) {
 	}
 }
 
+func TestExecutorPublicDirectPunchesEarlyCandidateBeforeCredentials(t *testing.T) {
+	publicCandidate := nat.Candidate{
+		Type:       nat.CandidateTypeSrflx,
+		Address:    &net.UDPAddr{IP: net.IPv4(117, 48, 146, 2), Port: 41000},
+		Priority:   100,
+		Foundation: "remote-srflx",
+	}
+	agent := &recordingPunchICEAgent{
+		local: &net.UDPAddr{IP: net.IPv4(192, 168, 1, 20), Port: 40000},
+		recordingICEAgent: recordingICEAgent{
+			connectErr:    context.Canceled,
+			connectCalled: make(chan struct{}),
+		},
+	}
+	exec := newExecutor(Config{
+		NewICEAgent: func(ctx context.Context, req AgentRequest) (nat.ICEAgent, error) {
+			_ = ctx
+			_ = req
+			return agent, nil
+		},
+		GatherTimeout:  100 * time.Millisecond,
+		ConnectTimeout: 100 * time.Millisecond,
+	}, solver.SolveInput{
+		SessionID:    "session/node-a/node-b",
+		LocalNodeID:  "node-a",
+		RemoteNodeID: "node-b",
+		Initiator:    true,
+	}, solver.Plan{
+		ID:       planIDPublicDirect,
+		Strategy: StrategyName,
+		Metadata: map[string]string{"mode": string(modePublicDirect)},
+	}, executorConfig{Mode: modePublicDirect})
+
+	candidatePayload, err := marshalCandidatePayload(candidatePayload{
+		SessionID: "session/node-a/node-b",
+		PlanID:    planIDPublicDirect,
+		ICE:       nat.ICECandidatePayload{Candidate: publicCandidate},
+		SentAt:    time.Now(),
+	})
+	if err != nil {
+		t.Fatalf("marshalCandidatePayload() error = %v", err)
+	}
+	if err := exec.HandleMessage(context.Background(), recordingSessionIO{}, NewMessage(MessageTypeCandidate, candidatePayload, time.Now())); err != nil {
+		t.Fatalf("HandleMessage(candidate first) error = %v", err)
+	}
+	select {
+	case <-agent.connectCalled:
+		t.Fatal("candidate-only message started ICE connect before remote credentials")
+	case <-time.After(50 * time.Millisecond):
+	}
+	if len(agent.remoteCandidates) != 0 {
+		t.Fatalf("candidate-only message set remote candidates = %#v, want buffered until credentials", agent.remoteCandidates)
+	}
+	punched := agent.Punched()
+	if len(punched) != 1 || punched[0].Address.String() != publicCandidate.Address.String() {
+		t.Fatalf("early punched candidates = %#v, want remote public candidate", punched)
+	}
+	opts := agent.PunchOptions()
+	if len(opts) != 1 || opts[0].Burst != publicDirectRemotePunchBurst {
+		t.Fatalf("early punch options = %#v, want burst=%d", opts, publicDirectRemotePunchBurst)
+	}
+}
+
 func TestExecutorPublicDirectPunchesRemoteCandidatesAfterAnswer(t *testing.T) {
 	publicCandidate := nat.Candidate{
 		Type:       nat.CandidateTypeSrflx,
