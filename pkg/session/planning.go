@@ -403,8 +403,13 @@ func (s *Session) bindProtectedDirectImprovement(ctx context.Context, outcomes [
 		protected := selectProtectedDirectOutcome(outcomes, s.cfg.PathPolicy)
 		return s.bindOutcomeSet(ctx, outcomes, protected)
 	}
-	combined := s.prependCurrentBoundOutcome(outcomes)
-	return s.bindOutcomeSet(ctx, combined, nil)
+	current := s.currentBoundOutcome()
+	if current == nil {
+		protected := selectProtectedDirectOutcome(outcomes, s.cfg.PathPolicy)
+		return s.bindOutcomeSet(ctx, outcomes, protected)
+	}
+	combined := prependOutcomeIfMissing(outcomes, *current)
+	return s.bindOutcomeSet(ctx, combined, current)
 }
 
 func (s *Session) prependCurrentBoundOutcome(outcomes []solver.CandidateOutcome) []solver.CandidateOutcome {
@@ -412,14 +417,18 @@ func (s *Session) prependCurrentBoundOutcome(outcomes []solver.CandidateOutcome)
 	if current == nil {
 		return outcomes
 	}
-	currentKey := outcomeKey(*current)
+	return prependOutcomeIfMissing(outcomes, *current)
+}
+
+func prependOutcomeIfMissing(outcomes []solver.CandidateOutcome, current solver.CandidateOutcome) []solver.CandidateOutcome {
+	currentKey := outcomeKey(current)
 	for i := range outcomes {
 		if outcomeKey(outcomes[i]) == currentKey {
 			return outcomes
 		}
 	}
 	combined := make([]solver.CandidateOutcome, 0, len(outcomes)+1)
-	combined = append(combined, *current)
+	combined = append(combined, current)
 	combined = append(combined, outcomes...)
 	return combined
 }

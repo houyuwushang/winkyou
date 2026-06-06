@@ -625,6 +625,9 @@ func TestSessionImproveProtectedDirectCombinesExistingPathWhenProtectedPathFound
 	if stats.ChildPathCount != 2 || stats.ProtectedDirectPathID != "direct/path" {
 		t.Fatalf("multipath stats = %#v, want relay plus protected direct", stats)
 	}
+	if stats.PrimaryPathID != "relay/path" || stats.ActivePathID != "relay/path" {
+		t.Fatalf("multipath stats = %#v, want existing relay path to remain primary", stats)
+	}
 	if !multipathStatsHasPath(stats, "relay/path") || !multipathStatsHasPath(stats, "direct/path") {
 		t.Fatalf("multipath stats = %#v, want relay/path and direct/path", stats)
 	}
