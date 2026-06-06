@@ -73,6 +73,7 @@ func (a *recordingICEAgent) Close() error { return nil }
 
 type recordingPunchICEAgent struct {
 	recordingICEAgent
+	mu       sync.Mutex
 	punched  []nat.Candidate
 	punchErr error
 }
@@ -83,11 +84,19 @@ func (a *recordingPunchICEAgent) PunchCandidates(ctx context.Context, candidates
 	if limit <= 0 || limit > len(candidates) {
 		limit = len(candidates)
 	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
 	a.punched = append(a.punched, candidates[:limit]...)
 	return nat.PublicDirectPunchReport{
 		CandidateTotal: len(candidates),
 		CandidateSent:  limit,
 	}, a.punchErr
+}
+
+func (a *recordingPunchICEAgent) Punched() []nat.Candidate {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return append([]nat.Candidate(nil), a.punched...)
 }
 
 type recordingSessionIO struct{}
@@ -678,8 +687,9 @@ func TestExecutorPublicDirectSingleCandidatePunchAvoidsObservationNoise(t *testi
 
 	exec.punchRemoteCandidates(context.Background(), io, agent, []nat.Candidate{publicCandidate}, MessageTypeCandidate)
 
-	if len(agent.punched) != 1 || agent.punched[0].Address.String() != publicCandidate.Address.String() {
-		t.Fatalf("punched candidates = %#v, want single remote candidate", agent.punched)
+	punched := agent.Punched()
+	if len(punched) != 1 || punched[0].Address.String() != publicCandidate.Address.String() {
+		t.Fatalf("punched candidates = %#v, want single remote candidate", punched)
 	}
 	if obs := findObservation(io.Observations(), "remote_candidates_punched"); obs != nil {
 		t.Fatalf("remote_candidates_punched observation = %#v, want no noisy single-candidate success observation", obs)
@@ -1653,8 +1663,9 @@ func TestExecutorPublicDirectPunchesRemoteCandidatesAfterAnswer(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("timed out waiting for ICE connect")
 	}
-	if len(agent.punched) != 1 || agent.punched[0].Address.String() != publicCandidate.Address.String() {
-		t.Fatalf("punched candidates = %#v, want remote public candidate", agent.punched)
+	punched := agent.Punched()
+	if len(punched) != 1 || punched[0].Address.String() != publicCandidate.Address.String() {
+		t.Fatalf("punched candidates = %#v, want remote public candidate", punched)
 	}
 	obs := findObservation(io.Observations(), "remote_candidates_punched")
 	if obs == nil {
@@ -1664,6 +1675,80 @@ func TestExecutorPublicDirectPunchesRemoteCandidatesAfterAnswer(t *testing.T) {
 		obs.Details["candidate_total"] != "1" ||
 		obs.Details["candidate_sent"] != "1" {
 		t.Fatalf("remote_candidates_punched details = %#v, want answer total=1 sent=1", obs.Details)
+	}
+}
+
+func TestExecutorPublicDirectRetriesRemoteCandidatePunchesAfterAnswer(t *testing.T) {
+	publicCandidate := nat.Candidate{
+		Type:       nat.CandidateTypeSrflx,
+		Address:    &net.UDPAddr{IP: net.IPv4(117, 48, 146, 2), Port: 41000},
+		Priority:   100,
+		Foundation: "remote-srflx",
+	}
+	agent := &recordingPunchICEAgent{
+		recordingICEAgent: recordingICEAgent{
+			connectErr:    context.Canceled,
+			connectCalled: make(chan struct{}),
+		},
+	}
+	exec := newExecutor(Config{
+		NewICEAgent: func(ctx context.Context, req AgentRequest) (nat.ICEAgent, error) {
+			_ = ctx
+			_ = req
+			return agent, nil
+		},
+		GatherTimeout:  100 * time.Millisecond,
+		ConnectTimeout: 500 * time.Millisecond,
+	}, solver.SolveInput{
+		SessionID:    "session/node-a/node-b",
+		LocalNodeID:  "node-a",
+		RemoteNodeID: "node-b",
+		Initiator:    true,
+	}, solver.Plan{
+		ID:       planIDPublicDirect,
+		Strategy: StrategyName,
+		Metadata: map[string]string{"mode": string(modePublicDirect)},
+	}, executorConfig{Mode: modePublicDirect})
+	defer exec.Close()
+	io := &capturingSessionIO{}
+
+	answerPayload, err := marshalAnswerPayload(answerPayload{
+		SessionID: "session/node-a/node-b",
+		PlanID:    planIDPublicDirect,
+		ICE: nat.ICESessionDescriptionPayload{
+			Ufrag:      "remote",
+			Pwd:        "remote-pwd",
+			Candidates: []nat.Candidate{publicCandidate},
+		},
+		SentAt: time.Now(),
+	})
+	if err != nil {
+		t.Fatalf("marshalAnswerPayload() error = %v", err)
+	}
+	if err := exec.HandleMessage(context.Background(), io, NewMessage(MessageTypeAnswer, answerPayload, time.Now())); err != nil {
+		t.Fatalf("HandleMessage(answer) error = %v", err)
+	}
+
+	deadline := time.Now().Add(time.Second)
+	for {
+		if len(agent.Punched()) >= 3 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("punched candidates = %d, want retries across at least 3 rounds", len(agent.Punched()))
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	observations := io.Observations()
+	var sawRetry bool
+	for _, obs := range observations {
+		if obs.Event == "remote_candidates_punched" && obs.Details["punch_round"] == "2" {
+			sawRetry = true
+			break
+		}
+	}
+	if !sawRetry {
+		t.Fatalf("observations = %#v, want retry punch observation", observations)
 	}
 }
 
@@ -1690,8 +1775,9 @@ func TestExecutorPublicDirectPunchCoversEndpointHintWindow(t *testing.T) {
 
 	exec.punchRemoteCandidates(context.Background(), io, agent, candidates, MessageTypeAnswer)
 
-	if len(agent.punched) != len(candidates) {
-		t.Fatalf("punched candidates = %d, want full endpoint-hint window %d", len(agent.punched), len(candidates))
+	punched := agent.Punched()
+	if len(punched) != len(candidates) {
+		t.Fatalf("punched candidates = %d, want full endpoint-hint window %d", len(punched), len(candidates))
 	}
 	obs := findObservation(io.Observations(), "remote_candidates_punched")
 	if obs == nil {

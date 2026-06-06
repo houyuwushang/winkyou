@@ -74,6 +74,10 @@ const publicDirectRemotePunchPerCandidateTimeout = 5 * time.Millisecond
 
 const publicDirectRemotePunchMaxTimeout = 1500 * time.Millisecond
 
+const publicDirectRemotePunchRetryInterval = 250 * time.Millisecond
+
+const publicDirectRemotePunchMaxRounds = 20
+
 func newExecutor(cfg Config, input solver.SolveInput, plan solver.Plan, execCfg executorConfig) *executor {
 	lifecycleCtx, lifecycleCancel := context.WithCancel(context.Background())
 	return &executor{
@@ -418,18 +422,28 @@ func (e *executor) punchRemoteCandidates(ctx context.Context, sess solver.Sessio
 	punchCtx, cancel := context.WithTimeout(ctx, remoteCandidatePunchTimeout(len(ordered)))
 	defer cancel()
 	limit := publicDirectCandidateSignalLimitFor(ordered)
+	rounds := 1
+	if messageType != MessageTypeCandidate {
+		rounds = e.remoteCandidatePunchRounds()
+	}
 	report, err := puncher.PunchCandidates(punchCtx, ordered, nat.PublicDirectPunchOptions{
 		Limit: limit,
 	})
 	if err == nil && messageType == MessageTypeCandidate && report.CandidateTotal == 1 {
 		return
 	}
+	if rounds > 1 {
+		go e.punchRemoteCandidateRetries(sess, puncher, ordered, messageType, 2, rounds)
+	}
 	details := map[string]string{
-		"mode":            string(e.execCfg.Mode),
-		"message_type":    messageType,
-		"candidate_total": strconv.Itoa(report.CandidateTotal),
-		"candidate_sent":  strconv.Itoa(report.CandidateSent),
-		"candidate_limit": strconv.Itoa(limit),
+		"mode":              string(e.execCfg.Mode),
+		"message_type":      messageType,
+		"candidate_total":   strconv.Itoa(report.CandidateTotal),
+		"candidate_sent":    strconv.Itoa(report.CandidateSent),
+		"candidate_limit":   strconv.Itoa(limit),
+		"punch_round":       "1",
+		"punch_rounds":      strconv.Itoa(rounds),
+		"retry_interval_ms": strconv.FormatInt(e.remoteCandidatePunchRetryInterval(rounds).Milliseconds(), 10),
 	}
 	if err != nil {
 		details["last_error"] = err.Error()
@@ -441,6 +455,85 @@ func (e *executor) punchRemoteCandidates(ctx context.Context, sess solver.Sessio
 		Details:   details,
 		Timestamp: time.Now(),
 	})
+}
+
+func (e *executor) punchRemoteCandidateRetries(sess solver.SessionIO, puncher nat.PublicDirectPuncher, candidates []nat.Candidate, messageType string, startRound int, maxRound int) {
+	if maxRound < startRound {
+		return
+	}
+	interval := e.remoteCandidatePunchRetryInterval(maxRound)
+	for round := startRound; round <= maxRound; round++ {
+		timer := time.NewTimer(interval)
+		select {
+		case <-timer.C:
+		case <-e.lifecycleCtx.Done():
+			timer.Stop()
+			return
+		}
+		e.punchRemoteCandidateRound(e.lifecycleCtx, sess, puncher, candidates, messageType, round, maxRound)
+	}
+}
+
+func (e *executor) punchRemoteCandidateRound(ctx context.Context, sess solver.SessionIO, puncher nat.PublicDirectPuncher, candidates []nat.Candidate, messageType string, round int, maxRound int) {
+	punchCtx, cancel := context.WithTimeout(ctx, remoteCandidatePunchTimeout(len(candidates)))
+	defer cancel()
+	limit := publicDirectCandidateSignalLimitFor(candidates)
+	report, err := puncher.PunchCandidates(punchCtx, candidates, nat.PublicDirectPunchOptions{
+		Limit: limit,
+	})
+	details := map[string]string{
+		"mode":              string(e.execCfg.Mode),
+		"message_type":      messageType,
+		"candidate_total":   strconv.Itoa(report.CandidateTotal),
+		"candidate_sent":    strconv.Itoa(report.CandidateSent),
+		"candidate_limit":   strconv.Itoa(limit),
+		"punch_round":       strconv.Itoa(round),
+		"punch_rounds":      strconv.Itoa(maxRound),
+		"retry_interval_ms": strconv.FormatInt(e.remoteCandidatePunchRetryInterval(maxRound).Milliseconds(), 10),
+	}
+	if err != nil {
+		details["last_error"] = err.Error()
+	}
+	e.report(sess, solver.Observation{
+		Strategy:  e.strategyName(),
+		PlanID:    e.plan.ID,
+		Event:     "remote_candidates_punched",
+		Details:   details,
+		Timestamp: time.Now(),
+	})
+}
+
+func (e *executor) remoteCandidatePunchRounds() int {
+	connectTimeout := e.cfg.ConnectTimeout
+	if connectTimeout <= 0 {
+		return publicDirectCandidateSignalRounds
+	}
+	rounds := int(connectTimeout / publicDirectRemotePunchRetryInterval)
+	if connectTimeout%publicDirectRemotePunchRetryInterval != 0 {
+		rounds++
+	}
+	if rounds < publicDirectCandidateSignalRounds {
+		return publicDirectCandidateSignalRounds
+	}
+	if rounds > publicDirectRemotePunchMaxRounds {
+		return publicDirectRemotePunchMaxRounds
+	}
+	return rounds
+}
+
+func (e *executor) remoteCandidatePunchRetryInterval(maxRound int) time.Duration {
+	connectTimeout := e.cfg.ConnectTimeout
+	if connectTimeout <= 0 || maxRound <= publicDirectCandidateSignalRounds {
+		return publicDirectRemotePunchRetryInterval
+	}
+	interval := connectTimeout / time.Duration(maxRound)
+	if interval < publicDirectRemotePunchRetryInterval {
+		return publicDirectRemotePunchRetryInterval
+	}
+	if interval > publicDirectCandidateSignalMaxRetryInterval {
+		return publicDirectCandidateSignalMaxRetryInterval
+	}
+	return interval
 }
 
 func remoteCandidatePunchTimeout(candidateCount int) time.Duration {
