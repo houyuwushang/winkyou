@@ -30,6 +30,7 @@ type executor struct {
 	closed                  bool
 	remoteCredentialsSet    bool
 	remoteCandidatesSet     bool
+	pendingRemoteCandidates []nat.Candidate
 	publicDirectLocalBases  map[string]struct{}
 	lastLocalFilterDetails  map[string]string
 	lastRemoteFilterDetails map[string]string
@@ -119,6 +120,7 @@ func (e *executor) HandleMessage(ctx context.Context, sess solver.SessionIO, msg
 		e.markRemoteCredentialsSet()
 		candidates, summary := filterRemoteCandidatesWithSummary(offer.ICE.Candidates, e.execCfg)
 		e.reportCandidateFilter(sess, "remote_candidates_filtered", "remote", MessageTypeOffer, summary)
+		candidates = e.remoteCandidatesWithPending(candidates)
 		if len(candidates) == 0 {
 			e.failRemoteCandidates(sess, MessageTypeOffer)
 			return nil
@@ -126,6 +128,7 @@ func (e *executor) HandleMessage(ctx context.Context, sess solver.SessionIO, msg
 		if err := agent.SetRemoteCandidates(candidates); err != nil {
 			return err
 		}
+		e.clearPendingRemoteCandidates()
 		e.markRemoteCandidatesSet()
 		if err := e.sendAnswer(ctx, sess); err != nil {
 			return err
@@ -146,6 +149,7 @@ func (e *executor) HandleMessage(ctx context.Context, sess solver.SessionIO, msg
 		e.markRemoteCredentialsSet()
 		candidates, summary := filterRemoteCandidatesWithSummary(answer.ICE.Candidates, e.execCfg)
 		e.reportCandidateFilter(sess, "remote_candidates_filtered", "remote", MessageTypeAnswer, summary)
+		candidates = e.remoteCandidatesWithPending(candidates)
 		if len(candidates) == 0 {
 			e.failRemoteCandidates(sess, MessageTypeAnswer)
 			return nil
@@ -153,6 +157,7 @@ func (e *executor) HandleMessage(ctx context.Context, sess solver.SessionIO, msg
 		if err := agent.SetRemoteCandidates(candidates); err != nil {
 			return err
 		}
+		e.clearPendingRemoteCandidates()
 		e.markRemoteCandidatesSet()
 		e.startConnect(sess)
 		return nil
@@ -167,6 +172,10 @@ func (e *executor) HandleMessage(ctx context.Context, sess solver.SessionIO, msg
 		filtered, summary := filterRemoteCandidatesWithSummary([]nat.Candidate{candidate.ICE.Candidate}, e.execCfg)
 		e.reportCandidateFilter(sess, "remote_candidates_filtered", "remote", MessageTypeCandidate, summary)
 		if len(filtered) == 0 {
+			return nil
+		}
+		if !e.remoteCredentialsReady() {
+			e.queuePendingRemoteCandidates(filtered)
 			return nil
 		}
 		if err := agent.SetRemoteCandidates(filtered); err != nil {
@@ -398,10 +407,66 @@ func (e *executor) markRemoteCredentialsSet() {
 	e.remoteCredentialsSet = true
 }
 
+func (e *executor) remoteCredentialsReady() bool {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.remoteCredentialsSet
+}
+
 func (e *executor) markRemoteCandidatesSet() {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.remoteCandidatesSet = true
+}
+
+func (e *executor) queuePendingRemoteCandidates(candidates []nat.Candidate) {
+	if len(candidates) == 0 {
+		return
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	seen := make(map[string]struct{}, len(e.pendingRemoteCandidates)+len(candidates))
+	for _, candidate := range e.pendingRemoteCandidates {
+		seen[candidateAddressKey(candidate)] = struct{}{}
+	}
+	for _, candidate := range candidates {
+		key := candidateAddressKey(candidate)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		e.pendingRemoteCandidates = append(e.pendingRemoteCandidates, cloneLegacyCandidate(candidate))
+	}
+}
+
+func (e *executor) remoteCandidatesWithPending(candidates []nat.Candidate) []nat.Candidate {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	out := make([]nat.Candidate, 0, len(e.pendingRemoteCandidates)+len(candidates))
+	seen := make(map[string]struct{}, len(e.pendingRemoteCandidates)+len(candidates))
+	for _, candidate := range e.pendingRemoteCandidates {
+		key := candidateAddressKey(candidate)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, cloneLegacyCandidate(candidate))
+	}
+	for _, candidate := range candidates {
+		key := candidateAddressKey(candidate)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, cloneLegacyCandidate(candidate))
+	}
+	return out
+}
+
+func (e *executor) clearPendingRemoteCandidates() {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.pendingRemoteCandidates = nil
 }
 
 func (e *executor) remoteReadyToConnect() bool {
@@ -1092,6 +1157,31 @@ func candidateAddressKey(candidate nat.Candidate) string {
 		return candidate.Type.String()
 	}
 	return candidate.Type.String() + "|" + candidate.Address.String()
+}
+
+func cloneLegacyCandidate(candidate nat.Candidate) nat.Candidate {
+	return nat.Candidate{
+		Type:        candidate.Type,
+		Address:     cloneLegacyUDPAddr(candidate.Address),
+		Priority:    candidate.Priority,
+		Foundation:  candidate.Foundation,
+		RelatedAddr: cloneLegacyUDPAddr(candidate.RelatedAddr),
+	}
+}
+
+func cloneLegacyUDPAddr(addr *net.UDPAddr) *net.UDPAddr {
+	if addr == nil {
+		return nil
+	}
+	var ip net.IP
+	if addr.IP != nil {
+		ip = append(net.IP(nil), addr.IP...)
+	}
+	return &net.UDPAddr{
+		IP:   ip,
+		Port: addr.Port,
+		Zone: addr.Zone,
+	}
 }
 
 func filterRemoteCandidatesWithSummary(candidates []nat.Candidate, execCfg executorConfig) ([]nat.Candidate, candidateFilterSummary) {

@@ -1008,6 +1008,7 @@ func TestPublicDirectHintExecutorAcceptsPublicDirectPlanFamilyMessage(t *testing
 
 func TestExecutorCandidateMessageWaitsForRemoteCredentials(t *testing.T) {
 	publicCandidate := nat.Candidate{Type: nat.CandidateTypeSrflx, Address: &net.UDPAddr{IP: net.IPv4(117, 48, 146, 2), Port: 41000}}
+	privateCandidate := nat.Candidate{Type: nat.CandidateTypeHost, Address: &net.UDPAddr{IP: net.IPv4(10, 0, 0, 1), Port: 1001}}
 	agent := &recordingICEAgent{
 		connectErr:    context.Canceled,
 		connectCalled: make(chan struct{}),
@@ -1048,6 +1049,9 @@ func TestExecutorCandidateMessageWaitsForRemoteCredentials(t *testing.T) {
 		t.Fatal("candidate-only message started ICE connect before remote credentials")
 	case <-time.After(50 * time.Millisecond):
 	}
+	if len(agent.remoteCandidates) != 0 {
+		t.Fatalf("candidate-only message set remote candidates = %#v, want buffered until credentials", agent.remoteCandidates)
+	}
 
 	answerPayload, err := marshalAnswerPayload(answerPayload{
 		SessionID: "session/node-a/node-b",
@@ -1055,7 +1059,7 @@ func TestExecutorCandidateMessageWaitsForRemoteCredentials(t *testing.T) {
 		ICE: nat.ICESessionDescriptionPayload{
 			Ufrag:      "remote",
 			Pwd:        "remote-pwd",
-			Candidates: []nat.Candidate{publicCandidate},
+			Candidates: []nat.Candidate{privateCandidate},
 		},
 		SentAt: time.Now(),
 	})
@@ -1069,6 +1073,9 @@ func TestExecutorCandidateMessageWaitsForRemoteCredentials(t *testing.T) {
 	case <-agent.connectCalled:
 	case <-time.After(time.Second):
 		t.Fatal("timed out waiting for ICE connect after remote credentials")
+	}
+	if len(agent.remoteCandidates) != 1 || agent.remoteCandidates[0].Address.String() != publicCandidate.Address.String() {
+		t.Fatalf("remote candidates = %#v, want buffered public candidate after credentials", agent.remoteCandidates)
 	}
 }
 
