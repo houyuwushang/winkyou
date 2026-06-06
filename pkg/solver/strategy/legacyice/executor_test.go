@@ -167,6 +167,22 @@ func (c *capturingSessionIO) WaitObservations(t *testing.T, count int) []solver.
 	}
 }
 
+type cancelAfterSessionIO struct {
+	capturingSessionIO
+	cancelAfter int
+	cancel      context.CancelFunc
+}
+
+func (c *cancelAfterSessionIO) Send(ctx context.Context, msg solver.Message) error {
+	if err := c.capturingSessionIO.Send(ctx, msg); err != nil {
+		return err
+	}
+	if c.cancelAfter > 0 && len(c.Messages()) >= c.cancelAfter && c.cancel != nil {
+		c.cancel()
+	}
+	return nil
+}
+
 func TestExecutorConfigForPlanProducesDistinctModes(t *testing.T) {
 	direct, err := executorConfigForPlan(solver.Plan{ID: "legacyice/direct_prefer", Metadata: map[string]string{"mode": "direct_prefer"}}, Config{DirectTrustedCIDRs: []string{"100.64.0.0/10"}})
 	if err != nil {
@@ -828,6 +844,47 @@ func TestPublicDirectCandidateSignalsCoverEndpointHintWindowWhenCapped(t *testin
 		obs.Details["candidate_sent"] != strconv.Itoa(len(candidates)) ||
 		obs.Details["candidate_capped"] != "false" {
 		t.Fatalf("candidate_signaled details = %#v, want full endpoint-hint window", obs.Details)
+	}
+}
+
+func TestPublicDirectCandidateSignalRoundResumesAfterPartialSend(t *testing.T) {
+	candidates := []nat.Candidate{
+		{Type: nat.CandidateTypeSrflx, Address: &net.UDPAddr{IP: net.IPv4(117, 48, 146, 2), Port: 41000}, Foundation: "srflx-1"},
+		{Type: nat.CandidateTypeSrflx, Address: &net.UDPAddr{IP: net.IPv4(117, 48, 146, 2), Port: 41001}, Foundation: "srflx-2"},
+		{Type: nat.CandidateTypeSrflx, Address: &net.UDPAddr{IP: net.IPv4(117, 48, 146, 2), Port: 41002}, Foundation: "srflx-3"},
+		{Type: nat.CandidateTypeSrflx, Address: &net.UDPAddr{IP: net.IPv4(117, 48, 146, 2), Port: 41003}, Foundation: "srflx-4"},
+		{Type: nat.CandidateTypeSrflx, Address: &net.UDPAddr{IP: net.IPv4(117, 48, 146, 2), Port: 41004}, Foundation: "srflx-5"},
+	}
+	exec := newExecutor(Config{}, solver.SolveInput{
+		SessionID: "session/node-a/node-b",
+	}, solver.Plan{
+		ID:       planIDPublicDirect,
+		Strategy: StrategyName,
+	}, executorConfig{Mode: modePublicDirect})
+	ctx, cancel := context.WithCancel(context.Background())
+	io := &cancelAfterSessionIO{cancelAfter: 3, cancel: cancel}
+
+	nextStart := exec.sendCandidateMessageRoundFrom(ctx, io, candidates, 1, 3, 0)
+
+	if nextStart != 3 {
+		t.Fatalf("next start = %d, want 3 after partial send", nextStart)
+	}
+	secondRound := &capturingSessionIO{}
+	exec.sendCandidateMessageRoundFrom(context.Background(), secondRound, candidates, 2, 3, nextStart)
+	messages := secondRound.Messages()
+	if len(messages) == 0 {
+		t.Fatal("second round did not send any candidate")
+	}
+	payload, err := unmarshalCandidatePayload(messages[0].Payload)
+	if err != nil {
+		t.Fatalf("unmarshal first second-round candidate error = %v", err)
+	}
+	if payload.ICE.Candidate.Address.String() != "117.48.146.2:41003" {
+		t.Fatalf("second round first candidate = %v, want resume at 117.48.146.2:41003", payload.ICE.Candidate.Address)
+	}
+	obs := findObservation(secondRound.Observations(), "candidate_signaled")
+	if obs == nil || obs.Details["candidate_start"] != "3" {
+		t.Fatalf("second round observations = %#v, want candidate_start=3", secondRound.Observations())
 	}
 }
 
@@ -1749,6 +1806,40 @@ func TestExecutorPublicDirectRetriesRemoteCandidatePunchesAfterAnswer(t *testing
 	}
 	if !sawRetry {
 		t.Fatalf("observations = %#v, want retry punch observation", observations)
+	}
+}
+
+func TestExecutorPublicDirectPunchRoundResumesAtCandidateOffset(t *testing.T) {
+	candidates := make([]nat.Candidate, publicDirectCandidateSignalLimit+2)
+	for i := range candidates {
+		candidates[i] = nat.Candidate{
+			Type:       nat.CandidateTypeSrflx,
+			Address:    &net.UDPAddr{IP: net.IPv4(117, 48, 146, 2), Port: 41000 + i},
+			Foundation: "srflx-" + strconv.Itoa(i),
+		}
+	}
+	agent := &recordingPunchICEAgent{}
+	exec := newExecutor(Config{}, solver.SolveInput{}, solver.Plan{
+		ID:       planIDPublicDirect,
+		Strategy: StrategyName,
+	}, executorConfig{Mode: modePublicDirect})
+	io := &capturingSessionIO{}
+
+	nextStart := exec.punchRemoteCandidateRound(context.Background(), io, agent, candidates, MessageTypeAnswer, 2, 3, publicDirectCandidateSignalLimit)
+
+	punched := agent.Punched()
+	if len(punched) == 0 {
+		t.Fatal("punch round did not punch any candidate")
+	}
+	if punched[0].Address.String() != "117.48.146.2:42024" {
+		t.Fatalf("first punched candidate = %v, want resume at offset %d", punched[0].Address, publicDirectCandidateSignalLimit)
+	}
+	if nextStart != publicDirectCandidateSignalLimit*2%len(candidates) {
+		t.Fatalf("next start = %d, want %d", nextStart, publicDirectCandidateSignalLimit*2%len(candidates))
+	}
+	obs := findObservation(io.Observations(), "remote_candidates_punched")
+	if obs == nil || obs.Details["candidate_start"] != strconv.Itoa(publicDirectCandidateSignalLimit) {
+		t.Fatalf("observations = %#v, want candidate_start=%d", io.Observations(), publicDirectCandidateSignalLimit)
 	}
 }
 

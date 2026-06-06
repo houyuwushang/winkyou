@@ -402,12 +402,12 @@ func (e *executor) sendCandidateMessages(ctx context.Context, sess solver.Sessio
 	rounds := e.candidateSignalRounds()
 	candidates = prioritizePublicDirectSignalCandidates(candidates)
 	roundCtx, cancel := e.candidateSignalRoundContext(ctx, len(candidates))
-	e.sendCandidateMessageRound(roundCtx, sess, candidates, 1, rounds)
+	nextStart := e.sendCandidateMessageRoundFrom(roundCtx, sess, candidates, 1, rounds, 0)
 	cancel()
 	if rounds <= 1 {
 		return
 	}
-	go e.sendCandidateMessageRetries(sess, candidates, 2, rounds)
+	go e.sendCandidateMessageRetries(sess, candidates, 2, rounds, nextStart)
 }
 
 func (e *executor) punchRemoteCandidates(ctx context.Context, sess solver.SessionIO, agent nat.ICEAgent, candidates []nat.Candidate, messageType string) {
@@ -422,6 +422,7 @@ func (e *executor) punchRemoteCandidates(ctx context.Context, sess solver.Sessio
 	punchCtx, cancel := context.WithTimeout(ctx, remoteCandidatePunchTimeout(len(ordered)))
 	defer cancel()
 	limit := publicDirectCandidateSignalLimitFor(ordered)
+	candidateStart := 0
 	rounds := 1
 	if messageType != MessageTypeCandidate {
 		rounds = e.remoteCandidatePunchRounds()
@@ -429,11 +430,12 @@ func (e *executor) punchRemoteCandidates(ctx context.Context, sess solver.Sessio
 	report, err := puncher.PunchCandidates(punchCtx, ordered, nat.PublicDirectPunchOptions{
 		Limit: limit,
 	})
+	nextStart := nextCandidateStart(candidateStart, report.CandidateSent, len(ordered))
 	if err == nil && messageType == MessageTypeCandidate && report.CandidateTotal == 1 {
 		return
 	}
 	if rounds > 1 {
-		go e.punchRemoteCandidateRetries(sess, puncher, ordered, messageType, 2, rounds)
+		go e.punchRemoteCandidateRetries(sess, puncher, ordered, messageType, 2, rounds, nextStart)
 	}
 	details := map[string]string{
 		"mode":              string(e.execCfg.Mode),
@@ -441,6 +443,7 @@ func (e *executor) punchRemoteCandidates(ctx context.Context, sess solver.Sessio
 		"candidate_total":   strconv.Itoa(report.CandidateTotal),
 		"candidate_sent":    strconv.Itoa(report.CandidateSent),
 		"candidate_limit":   strconv.Itoa(limit),
+		"candidate_start":   strconv.Itoa(candidateStart),
 		"punch_round":       "1",
 		"punch_rounds":      strconv.Itoa(rounds),
 		"retry_interval_ms": strconv.FormatInt(e.remoteCandidatePunchRetryInterval(rounds).Milliseconds(), 10),
@@ -457,11 +460,12 @@ func (e *executor) punchRemoteCandidates(ctx context.Context, sess solver.Sessio
 	})
 }
 
-func (e *executor) punchRemoteCandidateRetries(sess solver.SessionIO, puncher nat.PublicDirectPuncher, candidates []nat.Candidate, messageType string, startRound int, maxRound int) {
+func (e *executor) punchRemoteCandidateRetries(sess solver.SessionIO, puncher nat.PublicDirectPuncher, candidates []nat.Candidate, messageType string, startRound int, maxRound int, startIndex int) {
 	if maxRound < startRound {
 		return
 	}
 	interval := e.remoteCandidatePunchRetryInterval(maxRound)
+	nextStart := normalizeCandidateStart(startIndex, len(candidates))
 	for round := startRound; round <= maxRound; round++ {
 		timer := time.NewTimer(interval)
 		select {
@@ -470,15 +474,20 @@ func (e *executor) punchRemoteCandidateRetries(sess solver.SessionIO, puncher na
 			timer.Stop()
 			return
 		}
-		e.punchRemoteCandidateRound(e.lifecycleCtx, sess, puncher, candidates, messageType, round, maxRound)
+		nextStart = e.punchRemoteCandidateRound(e.lifecycleCtx, sess, puncher, candidates, messageType, round, maxRound, nextStart)
 	}
 }
 
-func (e *executor) punchRemoteCandidateRound(ctx context.Context, sess solver.SessionIO, puncher nat.PublicDirectPuncher, candidates []nat.Candidate, messageType string, round int, maxRound int) {
+func (e *executor) punchRemoteCandidateRound(ctx context.Context, sess solver.SessionIO, puncher nat.PublicDirectPuncher, candidates []nat.Candidate, messageType string, round int, maxRound int, startIndex int) int {
+	if len(candidates) == 0 {
+		return 0
+	}
 	punchCtx, cancel := context.WithTimeout(ctx, remoteCandidatePunchTimeout(len(candidates)))
 	defer cancel()
 	limit := publicDirectCandidateSignalLimitFor(candidates)
-	report, err := puncher.PunchCandidates(punchCtx, candidates, nat.PublicDirectPunchOptions{
+	candidateStart := normalizeCandidateStart(startIndex, len(candidates))
+	roundCandidates := rotateCandidates(candidates, candidateStart)
+	report, err := puncher.PunchCandidates(punchCtx, roundCandidates, nat.PublicDirectPunchOptions{
 		Limit: limit,
 	})
 	details := map[string]string{
@@ -487,6 +496,7 @@ func (e *executor) punchRemoteCandidateRound(ctx context.Context, sess solver.Se
 		"candidate_total":   strconv.Itoa(report.CandidateTotal),
 		"candidate_sent":    strconv.Itoa(report.CandidateSent),
 		"candidate_limit":   strconv.Itoa(limit),
+		"candidate_start":   strconv.Itoa(candidateStart),
 		"punch_round":       strconv.Itoa(round),
 		"punch_rounds":      strconv.Itoa(maxRound),
 		"retry_interval_ms": strconv.FormatInt(e.remoteCandidatePunchRetryInterval(maxRound).Milliseconds(), 10),
@@ -501,6 +511,7 @@ func (e *executor) punchRemoteCandidateRound(ctx context.Context, sess solver.Se
 		Details:   details,
 		Timestamp: time.Now(),
 	})
+	return nextCandidateStart(candidateStart, report.CandidateSent, len(candidates))
 }
 
 func (e *executor) remoteCandidatePunchRounds() int {
@@ -601,6 +612,38 @@ func publicDirectCandidateSignalLimitFor(candidates []nat.Candidate) int {
 	return len(candidates)
 }
 
+func normalizeCandidateStart(start int, total int) int {
+	if total <= 0 {
+		return 0
+	}
+	start %= total
+	if start < 0 {
+		start += total
+	}
+	return start
+}
+
+func nextCandidateStart(start int, sent int, total int) int {
+	if sent <= 0 {
+		return normalizeCandidateStart(start, total)
+	}
+	return normalizeCandidateStart(start+sent, total)
+}
+
+func rotateCandidates(candidates []nat.Candidate, start int) []nat.Candidate {
+	if len(candidates) == 0 {
+		return nil
+	}
+	start = normalizeCandidateStart(start, len(candidates))
+	if start == 0 {
+		return candidates
+	}
+	out := make([]nat.Candidate, 0, len(candidates))
+	out = append(out, candidates[start:]...)
+	out = append(out, candidates[:start]...)
+	return out
+}
+
 func (e *executor) candidateSignalRounds() int {
 	connectTimeout := e.cfg.ConnectTimeout
 	if connectTimeout <= 0 {
@@ -619,8 +662,9 @@ func (e *executor) candidateSignalRounds() int {
 	return rounds
 }
 
-func (e *executor) sendCandidateMessageRetries(sess solver.SessionIO, candidates []nat.Candidate, startRound int, maxRound int) {
+func (e *executor) sendCandidateMessageRetries(sess solver.SessionIO, candidates []nat.Candidate, startRound int, maxRound int, startIndex int) {
 	retryInterval := e.candidateSignalRetryInterval(maxRound)
+	nextStart := normalizeCandidateStart(startIndex, len(candidates))
 	for round := startRound; round <= maxRound; round++ {
 		timer := time.NewTimer(retryInterval)
 		select {
@@ -630,7 +674,7 @@ func (e *executor) sendCandidateMessageRetries(sess solver.SessionIO, candidates
 			return
 		}
 		roundCtx, cancel := e.candidateSignalRoundContext(e.lifecycleCtx, len(candidates))
-		e.sendCandidateMessageRound(roundCtx, sess, candidates, round, maxRound)
+		nextStart = e.sendCandidateMessageRoundFrom(roundCtx, sess, candidates, round, maxRound, nextStart)
 		cancel()
 	}
 }
@@ -689,12 +733,20 @@ func (e *executor) remoteCandidateGraceTimeout() time.Duration {
 }
 
 func (e *executor) sendCandidateMessageRound(ctx context.Context, sess solver.SessionIO, candidates []nat.Candidate, round int, maxRound int) {
+	e.sendCandidateMessageRoundFrom(ctx, sess, candidates, round, maxRound, 0)
+}
+
+func (e *executor) sendCandidateMessageRoundFrom(ctx context.Context, sess solver.SessionIO, candidates []nat.Candidate, round int, maxRound int, startIndex int) int {
+	if len(candidates) == 0 {
+		return 0
+	}
 	limit := len(candidates)
 	signalLimit := publicDirectCandidateSignalLimitFor(candidates)
 	if limit > signalLimit {
 		limit = signalLimit
 	}
 	retryInterval := e.candidateSignalRetryInterval(maxRound)
+	candidateStart := normalizeCandidateStart(startIndex, len(candidates))
 	sent := 0
 	var lastErr error
 sendLoop:
@@ -709,7 +761,7 @@ sendLoop:
 			SessionID: e.input.SessionID,
 			PlanID:    e.plan.ID,
 			ICE: nat.ICECandidatePayload{
-				Candidate: candidates[i],
+				Candidate: candidates[(candidateStart+i)%len(candidates)],
 			},
 			SentAt: time.Now(),
 		})
@@ -729,6 +781,7 @@ sendLoop:
 		"candidate_total":   strconv.Itoa(len(candidates)),
 		"candidate_sent":    strconv.Itoa(sent),
 		"candidate_limit":   strconv.Itoa(signalLimit),
+		"candidate_start":   strconv.Itoa(candidateStart),
 		"candidate_capped":  fmt.Sprintf("%t", len(candidates) > limit),
 		"candidate_round":   strconv.Itoa(round),
 		"candidate_rounds":  strconv.Itoa(maxRound),
@@ -747,6 +800,7 @@ sendLoop:
 		Details:   details,
 		Timestamp: time.Now(),
 	})
+	return nextCandidateStart(candidateStart, sent, len(candidates))
 }
 
 func (e *executor) markRemoteCredentialsSet() {
