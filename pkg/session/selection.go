@@ -235,7 +235,7 @@ func (s *Session) discardPendingStrategyMessagesForPlan(planID string) {
 	defer s.strategyMu.Unlock()
 	retained := make([]solver.Message, 0, len(s.pending))
 	for _, msg := range s.pending {
-		if msgPlanID, ok := strategyMessagePlanID(msg); ok && !strategyPlanIDsMatch(msgPlanID, planID) {
+		if msgPlanID, ok := strategyMessagePlanID(msg); ok && strings.TrimSpace(msgPlanID) != strings.TrimSpace(planID) {
 			retained = append(retained, msg)
 		}
 	}

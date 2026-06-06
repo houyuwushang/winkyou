@@ -430,6 +430,29 @@ func TestStrategyPlanMessageMatchingAcceptsHintPlanFamily(t *testing.T) {
 	}
 }
 
+func TestDiscardPendingStrategyMessagesKeepsPublicDirectFamilyForLaterHintPlans(t *testing.T) {
+	publicDirect := solver.Message{Kind: solver.MessageKindStrategy, Payload: []byte(`{"plan_id":"legacyice/public_direct"}`)}
+	publicDirectHint1 := solver.Message{Kind: solver.MessageKindStrategy, Payload: []byte(`{"plan_id":"legacyice/public_direct_hint_1"}`)}
+	publicDirectHint2 := solver.Message{Kind: solver.MessageKindStrategy, Payload: []byte(`{"plan_id":"legacyice/public_direct_hint_2"}`)}
+	relay := solver.Message{Kind: solver.MessageKindStrategy, Payload: []byte(`{"plan_id":"legacyice/relay_only"}`)}
+	s := &Session{pending: []solver.Message{publicDirect, publicDirectHint1, publicDirectHint2, relay}}
+
+	s.discardPendingStrategyMessagesForPlan("legacyice/public_direct_hint_1")
+
+	if len(s.pending) != 3 {
+		t.Fatalf("pending messages = %d, want public_direct base, hint_2, relay retained", len(s.pending))
+	}
+	for _, msg := range s.pending {
+		planID, ok := strategyMessagePlanID(msg)
+		if !ok {
+			t.Fatalf("pending message without plan id: %#v", msg)
+		}
+		if planID == "legacyice/public_direct_hint_1" {
+			t.Fatal("discardPendingStrategyMessagesForPlan retained exact current hint plan message")
+		}
+	}
+}
+
 func TestSessionObservationFlowsFromStrategyToSinkAndRemote(t *testing.T) {
 	localTransport := &fakeTransport{}
 	remoteSender := &callbackSender{}
