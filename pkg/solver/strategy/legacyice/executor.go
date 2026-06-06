@@ -54,6 +54,8 @@ const publicDirectCandidateSignalMaxRounds = 20
 
 const publicDirectCandidateSignalRetryInterval = 100 * time.Millisecond
 
+const publicDirectCandidateSignalMaxRetryInterval = 2 * time.Second
+
 const publicDirectCandidateSignalSendTimeout = time.Second
 
 const publicDirectCandidateSignalSendPerCandidateTimeout = 75 * time.Millisecond
@@ -446,8 +448,9 @@ func (e *executor) candidateSignalRounds() int {
 }
 
 func (e *executor) sendCandidateMessageRetries(sess solver.SessionIO, candidates []nat.Candidate, startRound int, maxRound int) {
+	retryInterval := e.candidateSignalRetryInterval(maxRound)
 	for round := startRound; round <= maxRound; round++ {
-		timer := time.NewTimer(publicDirectCandidateSignalRetryInterval)
+		timer := time.NewTimer(retryInterval)
 		select {
 		case <-timer.C:
 		case <-e.lifecycleCtx.Done():
@@ -458,6 +461,21 @@ func (e *executor) sendCandidateMessageRetries(sess solver.SessionIO, candidates
 		e.sendCandidateMessageRound(roundCtx, sess, candidates, round, maxRound)
 		cancel()
 	}
+}
+
+func (e *executor) candidateSignalRetryInterval(maxRound int) time.Duration {
+	connectTimeout := e.cfg.ConnectTimeout
+	if connectTimeout <= 0 || maxRound <= publicDirectCandidateSignalRounds {
+		return publicDirectCandidateSignalRetryInterval
+	}
+	interval := connectTimeout / time.Duration(maxRound)
+	if interval < publicDirectCandidateSignalRetryInterval {
+		return publicDirectCandidateSignalRetryInterval
+	}
+	if interval > publicDirectCandidateSignalMaxRetryInterval {
+		return publicDirectCandidateSignalMaxRetryInterval
+	}
+	return interval
 }
 
 func (e *executor) candidateSignalRoundContext(parent context.Context, candidateCount int) (context.Context, context.CancelFunc) {
@@ -503,6 +521,7 @@ func (e *executor) sendCandidateMessageRound(ctx context.Context, sess solver.Se
 	if limit > publicDirectCandidateSignalLimit {
 		limit = publicDirectCandidateSignalLimit
 	}
+	retryInterval := e.candidateSignalRetryInterval(maxRound)
 	sent := 0
 	var lastErr error
 sendLoop:
@@ -540,7 +559,8 @@ sendLoop:
 		"candidate_capped":  fmt.Sprintf("%t", len(candidates) > limit),
 		"candidate_round":   strconv.Itoa(round),
 		"candidate_rounds":  strconv.Itoa(maxRound),
-		"retry_interval_ms": strconv.Itoa(int(publicDirectCandidateSignalRetryInterval / time.Millisecond)),
+		"retry_interval_ms": strconv.FormatInt(retryInterval.Milliseconds(), 10),
+		"signal_window_ms":  strconv.FormatInt((retryInterval * time.Duration(maxRound-1)).Milliseconds(), 10),
 		"send_timeout_ms":   strconv.FormatInt(candidateSignalSendTimeout(len(candidates)).Milliseconds(), 10),
 	}
 	if lastErr != nil {

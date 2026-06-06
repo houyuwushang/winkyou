@@ -686,6 +686,48 @@ func TestPublicDirectCandidateSignalRoundsScaleWithConnectTimeout(t *testing.T) 
 	}
 }
 
+func TestPublicDirectCandidateSignalRetryIntervalScalesWithConnectTimeout(t *testing.T) {
+	defaultExec := newExecutor(Config{}, solver.SolveInput{}, solver.Plan{ID: planIDPublicDirect}, executorConfig{Mode: modePublicDirect})
+	if got := defaultExec.candidateSignalRetryInterval(defaultExec.candidateSignalRounds()); got != publicDirectCandidateSignalRetryInterval {
+		t.Fatalf("default candidateSignalRetryInterval() = %v, want %v", got, publicDirectCandidateSignalRetryInterval)
+	}
+
+	longExec := newExecutor(Config{ConnectTimeout: 25 * time.Second}, solver.SolveInput{}, solver.Plan{ID: planIDPublicDirect}, executorConfig{Mode: modePublicDirect})
+	if got := longExec.candidateSignalRetryInterval(longExec.candidateSignalRounds()); got != 1250*time.Millisecond {
+		t.Fatalf("long candidateSignalRetryInterval() = %v, want 1.25s", got)
+	}
+
+	veryLongExec := newExecutor(Config{ConnectTimeout: 5 * time.Minute}, solver.SolveInput{}, solver.Plan{ID: planIDPublicDirect}, executorConfig{Mode: modePublicDirect})
+	if got := veryLongExec.candidateSignalRetryInterval(veryLongExec.candidateSignalRounds()); got != publicDirectCandidateSignalMaxRetryInterval {
+		t.Fatalf("very long candidateSignalRetryInterval() = %v, want cap %v", got, publicDirectCandidateSignalMaxRetryInterval)
+	}
+}
+
+func TestPublicDirectCandidateSignalObservationReportsRetryWindow(t *testing.T) {
+	candidate := nat.Candidate{
+		Type:    nat.CandidateTypeSrflx,
+		Address: &net.UDPAddr{IP: net.IPv4(117, 48, 146, 2), Port: 41000},
+	}
+	exec := newExecutor(Config{ConnectTimeout: 25 * time.Second}, solver.SolveInput{
+		SessionID: "session/node-a/node-b",
+	}, solver.Plan{
+		ID:       planIDPublicDirect,
+		Strategy: StrategyName,
+	}, executorConfig{Mode: modePublicDirect})
+	io := &capturingSessionIO{}
+
+	rounds := exec.candidateSignalRounds()
+	exec.sendCandidateMessageRound(context.Background(), io, []nat.Candidate{candidate}, 1, rounds)
+
+	obs := findObservation(io.Observations(), "candidate_signaled")
+	if obs == nil {
+		t.Fatalf("observations = %#v, want candidate_signaled", io.Observations())
+	}
+	if obs.Details["retry_interval_ms"] != "1250" || obs.Details["signal_window_ms"] != "23750" {
+		t.Fatalf("candidate_signaled details = %#v, want stretched retry window", obs.Details)
+	}
+}
+
 func TestPublicDirectRemoteCandidateGraceScalesWithConnectTimeout(t *testing.T) {
 	defaultExec := newExecutor(Config{}, solver.SolveInput{}, solver.Plan{ID: planIDPublicDirect}, executorConfig{Mode: modePublicDirect})
 	if got := defaultExec.remoteCandidateGraceTimeout(); got != publicDirectRemoteCandidateGraceTimeout {

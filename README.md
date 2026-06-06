@@ -236,13 +236,13 @@ nat:
 
 如果本轮已经有手工或运行时 `public_endpoint_hints`，`public_direct` 会使用较短的 gather deadline，先拿到本地 socket 并尽快把 hint 发给对端；没有 hint 时仍使用正常 gather timeout 等待 STUN/server-reflexive candidate。
 
-`legacyice/public_direct` 会在 offer/answer 后对已发布候选发送三轮短间隔、有界的 `candidate` 信令 burst。第一轮会立即发送，后续 retry 在 executor 生命周期内后台补发，不阻塞 ICE connect。它不会替代 offer/answer 里的 ICE credentials，但能让 coordinator 和已建立虚拟网内的 `session_signal` 多缓存候选信息，降低短窗口打洞时单次候选信令丢失或延迟的影响。为避免端口窗口过大时刷爆控制面，每轮 candidate 重发有固定上限，超出部分仍以 offer/answer 内的完整候选列表为准；当候选被上限截断时，public endpoint hint/window 生成的 candidate 会被优先发送。如果 `candidate` 消息先于 offer/answer credentials 到达，legacy ICE 会先缓存可用候选，等 credentials 到达后再与 offer/answer 中的候选合并去重并交给 ICE agent；后续 offer/answer 本身没有可用公网候选时，也不会覆盖这批已缓存的有效候选。如果 offer/answer credentials 先到但里面的候选全被 public-direct 过滤掉，executor 会短暂等待后续 `candidate` burst，而不是立即让 plan 失败；窗口内收到可用候选后会继续 ICE checks。
+`legacyice/public_direct` 会在 offer/answer 后对已发布候选发送有界的 `candidate` 信令 burst。第一轮会立即发送，后续 retry 在 executor 生命周期内后台补发，不阻塞 ICE connect；默认仍是三轮，生产路径会按 `nat.connect_timeout` 把重试窗口拉长，最多二十轮且不增加单轮候选上限。它不会替代 offer/answer 里的 ICE credentials，但能让 coordinator 和已建立虚拟网内的 `session_signal` 多缓存候选信息，降低短窗口打洞时单次候选信令丢失或延迟的影响。为避免端口窗口过大时刷爆控制面，每轮 candidate 重发有固定上限，超出部分仍以 offer/answer 内的完整候选列表为准；当候选被上限截断时，public endpoint hint/window 生成的 candidate 会被优先发送。如果 `candidate` 消息先于 offer/answer credentials 到达，legacy ICE 会先缓存可用候选，等 credentials 到达后再与 offer/answer 中的候选合并去重并交给 ICE agent；后续 offer/answer 本身没有可用公网候选时，也不会覆盖这批已缓存的有效候选。如果 offer/answer credentials 先到但里面的候选全被 public-direct 过滤掉，executor 会短暂等待后续 `candidate` burst，而不是立即让 plan 失败；窗口内收到可用候选后会继续 ICE checks。
 
 用于排查真实 NAT piercing 时，legacy ICE 会把候选采集和过滤结果写入 observation history。客户端运行状态文件同目录下会生成 `<runtime-state-base>.observations.jsonl`，其中：
 
 - `candidate_gathered`：本端 gather 后准备发布的 candidate 统计。
 - `remote_candidates_filtered`：收到远端 offer/answer/candidate 后的过滤统计。
-- `candidate_signaled`：`public_direct` 在 offer/answer 后额外发送的有界 candidate 信令统计，包括 `candidate_sent`、`candidate_total`、`candidate_round` / `candidate_rounds`、`send_timeout_ms` 和是否 `candidate_capped`。
+- `candidate_signaled`：`public_direct` 在 offer/answer 后额外发送的有界 candidate 信令统计，包括 `candidate_sent`、`candidate_total`、`candidate_round` / `candidate_rounds`、`retry_interval_ms`、`signal_window_ms`、`send_timeout_ms` 和是否 `candidate_capped`。
 - `candidate_total`、`candidate_kept`、`candidate_rejected`、`candidate_reject_reasons` 可用于判断是没有采到公网候选、候选被 `public_direct` 规则过滤，还是候选保留下来后 ICE 连通检查失败。`candidate_kept_samples` 会保留少量候选样本；带 local base 的 hint 会显示为 `srflx:公网ip:端口<-本地ip:端口`，便于和 natpierce 或路由器日志对比。
 - `candidate_failed`：`public_direct` 失败时会附带最近一次 `last_local_candidate_*` / `last_remote_candidate_*` / `last_signal_*` 摘要、`public_endpoint_hint_count` 和 `ice_state`，便于直接判断是本端没有发布有效候选、远端候选被过滤，候选信令是否实际发出，还是 ICE checks 已经进入 checking 但没选中路径。
 
