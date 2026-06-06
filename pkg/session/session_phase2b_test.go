@@ -16,7 +16,7 @@ import (
 type executorFactoryStrategy struct {
 	name       string
 	plans      []solver.Plan
-	executors  map[string]*scriptedExecutor
+	executors  map[string]solver.PlanExecutor
 	execCalled bool
 }
 
@@ -108,6 +108,36 @@ func (e *scriptedExecutor) snapshot() (messages int, closed bool) {
 	return len(e.messages), e.closed
 }
 
+type blockingExecutor struct {
+	*scriptedExecutor
+	release <-chan struct{}
+}
+
+func newBlockingExecutor(result solver.Result, execErr error, release <-chan struct{}) *blockingExecutor {
+	return &blockingExecutor{
+		scriptedExecutor: newScriptedExecutor(result, execErr),
+		release:          release,
+	}
+}
+
+func (e *blockingExecutor) Execute(ctx context.Context, sess solver.SessionIO) (solver.Result, error) {
+	_ = sess
+	select {
+	case <-e.started:
+	default:
+		close(e.started)
+	}
+	select {
+	case <-e.release:
+	case <-ctx.Done():
+		return solver.Result{}, ctx.Err()
+	}
+	if e.execErr != nil {
+		return solver.Result{}, e.execErr
+	}
+	return e.result, nil
+}
+
 type callbackSender struct {
 	mu       sync.Mutex
 	messages []solver.Message
@@ -164,29 +194,31 @@ func (s *observationStrategy) Close() error { return nil }
 func TestSessionUsesPlanScopedExecutorsAndClosesLosers(t *testing.T) {
 	relayTransport := &fakeTransport{}
 	directTransport := &fakeTransport{}
+	relayExec := newScriptedExecutor(solver.Result{
+		Transport: relayTransport,
+		Summary: solver.PathSummary{
+			PathID:         "relay/path",
+			ConnectionType: "relay",
+			RemoteAddr:     relayTransport.RemoteAddr(),
+		},
+	}, nil)
+	directExec := newScriptedExecutor(solver.Result{
+		Transport: directTransport,
+		Summary: solver.PathSummary{
+			PathID:         "direct/path",
+			ConnectionType: "direct",
+			RemoteAddr:     directTransport.RemoteAddr(),
+		},
+	}, nil)
 	strategy := &executorFactoryStrategy{
 		name: "legacy_ice_udp",
 		plans: []solver.Plan{
 			{ID: "plan-relay", Strategy: "legacy_ice_udp"},
 			{ID: "plan-direct", Strategy: "legacy_ice_udp"},
 		},
-		executors: map[string]*scriptedExecutor{
-			"plan-relay": newScriptedExecutor(solver.Result{
-				Transport: relayTransport,
-				Summary: solver.PathSummary{
-					PathID:         "relay/path",
-					ConnectionType: "relay",
-					RemoteAddr:     relayTransport.RemoteAddr(),
-				},
-			}, nil),
-			"plan-direct": newScriptedExecutor(solver.Result{
-				Transport: directTransport,
-				Summary: solver.PathSummary{
-					PathID:         "direct/path",
-					ConnectionType: "direct",
-					RemoteAddr:     directTransport.RemoteAddr(),
-				},
-			}, nil),
+		executors: map[string]solver.PlanExecutor{
+			"plan-relay":  relayExec,
+			"plan-direct": directExec,
 		},
 	}
 	sender := &callbackSender{}
@@ -235,10 +267,10 @@ func TestSessionUsesPlanScopedExecutorsAndClosesLosers(t *testing.T) {
 	if directTransport.closed {
 		t.Fatal("winning direct transport should stay open until Session.Close()")
 	}
-	if _, closed := strategy.executors["plan-relay"].snapshot(); !closed {
+	if _, closed := relayExec.snapshot(); !closed {
 		t.Fatal("relay executor was not closed")
 	}
-	if _, closed := strategy.executors["plan-direct"].snapshot(); !closed {
+	if _, closed := directExec.snapshot(); !closed {
 		t.Fatal("direct executor was not closed after handing off transport")
 	}
 }
@@ -260,7 +292,7 @@ func TestSessionRoutesMessagesToActiveExecutorAndDoesNotPolluteNextCandidate(t *
 			{ID: "plan-fail", Strategy: "legacy_ice_udp"},
 			{ID: "plan-clean", Strategy: "legacy_ice_udp"},
 		},
-		executors: map[string]*scriptedExecutor{
+		executors: map[string]solver.PlanExecutor{
 			"plan-fail":  firstExec,
 			"plan-clean": secondExec,
 		},
@@ -342,7 +374,7 @@ func TestSessionBuffersFuturePlanMessagesForMatchingExecutor(t *testing.T) {
 			{ID: "plan-fail", Strategy: "legacy_ice_udp"},
 			{ID: "plan-clean", Strategy: "legacy_ice_udp"},
 		},
-		executors: map[string]*scriptedExecutor{
+		executors: map[string]solver.PlanExecutor{
 			"plan-fail":  firstExec,
 			"plan-clean": secondExec,
 		},
@@ -479,6 +511,188 @@ func TestFlushPendingStrategyMessagesReusesPublicDirectFamilyForHintPlans(t *tes
 	}
 	if len(s.pending) != 2 {
 		t.Fatalf("pending messages after hint_2 = %d, want reusable family + relay still retained", len(s.pending))
+	}
+}
+
+func TestActivePlanExecutorGroupRoutesPublicDirectFamilyMessages(t *testing.T) {
+	publicDirect := solver.Message{Kind: solver.MessageKindStrategy, Namespace: "legacyice", Type: "answer", Payload: []byte(`{"plan_id":"legacyice/public_direct"}`)}
+	publicDirectHint1 := solver.Message{Kind: solver.MessageKindStrategy, Namespace: "legacyice", Type: "answer", Payload: []byte(`{"plan_id":"legacyice/public_direct_hint_1"}`)}
+	publicDirectHint2 := solver.Message{Kind: solver.MessageKindStrategy, Namespace: "legacyice", Type: "answer", Payload: []byte(`{"plan_id":"legacyice/public_direct_hint_2"}`)}
+	relay := solver.Message{Kind: solver.MessageKindStrategy, Namespace: "legacyice", Type: "answer", Payload: []byte(`{"plan_id":"legacyice/relay_only"}`)}
+	s := &Session{pending: []solver.Message{publicDirect, publicDirectHint1, publicDirectHint2, relay}}
+	firstExec := newScriptedExecutor(solver.Result{}, nil)
+	secondExec := newScriptedExecutor(solver.Result{}, nil)
+	group := &activePlanExecutorGroup{
+		familyPlanID: "legacyice/public_direct",
+		entries: []activePlanExecutorEntry{
+			{planID: "legacyice/public_direct_hint_1", executor: firstExec},
+			{planID: "legacyice/public_direct_hint_2", executor: secondExec},
+		},
+	}
+
+	if err := s.flushPendingStrategyMessages(context.Background(), group, "legacyice/public_direct"); err != nil {
+		t.Fatalf("flushPendingStrategyMessages(group) error = %v", err)
+	}
+	if got, _ := firstExec.snapshot(); got != 2 {
+		t.Fatalf("first executor messages = %d, want base family + exact hint", got)
+	}
+	if got, _ := secondExec.snapshot(); got != 2 {
+		t.Fatalf("second executor messages = %d, want base family + exact hint", got)
+	}
+	if len(s.pending) != 3 {
+		t.Fatalf("pending messages after group flush = %d, want retained hint_1/hint_2 plus relay", len(s.pending))
+	}
+
+	s.discardPendingStrategyMessagesForPlanFamily("legacyice/public_direct")
+	if len(s.pending) != 1 {
+		t.Fatalf("pending messages after family discard = %d, want relay only", len(s.pending))
+	}
+	planID, ok := strategyMessagePlanID(s.pending[0])
+	if !ok || planID != "legacyice/relay_only" {
+		t.Fatalf("remaining pending message plan = %q/%t, want relay_only", planID, ok)
+	}
+}
+
+func TestSessionExecutesSplitPublicDirectHintPlansConcurrently(t *testing.T) {
+	release := make(chan struct{})
+	firstExec := newBlockingExecutor(solver.Result{}, errors.New("first hint failed"), release)
+	secondExec := newBlockingExecutor(solver.Result{}, errors.New("second hint failed"), release)
+	relayTransport := &fakeTransport{}
+	relayExec := newScriptedExecutor(solver.Result{
+		Transport: relayTransport,
+		Summary: solver.PathSummary{
+			PathID:         "relay/path",
+			ConnectionType: "relay",
+			RemoteAddr:     relayTransport.RemoteAddr(),
+		},
+	}, nil)
+	strategy := &executorFactoryStrategy{
+		name: "legacy_ice_udp",
+		plans: []solver.Plan{
+			{ID: "legacyice/public_direct_hint_1", Strategy: "legacy_ice_udp"},
+			{ID: "legacyice/public_direct_hint_2", Strategy: "legacy_ice_udp"},
+			{ID: "legacyice/relay_only", Strategy: "legacy_ice_udp"},
+		},
+		executors: map[string]solver.PlanExecutor{
+			"legacyice/public_direct_hint_1": firstExec,
+			"legacyice/public_direct_hint_2": secondExec,
+			"legacyice/relay_only":           relayExec,
+		},
+	}
+	bound := make(chan solver.Result, 1)
+	s, err := New(Config{
+		SessionID:             "session/node-a/node-b",
+		LocalNodeID:           "node-a",
+		PeerID:                "node-b",
+		Initiator:             true,
+		Resolver:              &fakeResolver{local: rproto.Capability{Strategies: []string{"legacy_ice_udp"}}, strategy: strategy, selection: Selection{StrategyName: "legacy_ice_udp", Negotiated: true}},
+		Sender:                &callbackSender{},
+		RunTimeout:            2 * time.Second,
+		CapabilityWaitTimeout: time.Millisecond,
+		Hooks: Hooks{
+			OnBound: func(result solver.Result) {
+				bound <- result
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	if err := s.HandleMessage(context.Background(), envelopeMessage(t, "session/node-a/node-b", "node-b", "node-a", rproto.MsgTypeCapability, 1, rproto.Capability{Strategies: []string{"legacy_ice_udp"}}, time.Now())); err != nil {
+		t.Fatalf("HandleMessage(capability) error = %v", err)
+	}
+	if err := s.Start(context.Background()); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+
+	select {
+	case <-firstExec.started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for first hint executor")
+	}
+	select {
+	case <-secondExec.started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for second hint executor; split hint plans were not started concurrently")
+	}
+	close(release)
+
+	select {
+	case result := <-bound:
+		if result.Summary.PathID != "relay/path" {
+			t.Fatalf("OnBound() path_id = %q, want relay/path", result.Summary.PathID)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for relay fallback after split hints failed")
+	}
+}
+
+func TestSessionCancelsSlowerSplitPublicDirectHintAfterSuccess(t *testing.T) {
+	neverRelease := make(chan struct{})
+	successTransport := &fakeTransport{}
+	fastExec := newScriptedExecutor(solver.Result{
+		Transport: successTransport,
+		Summary: solver.PathSummary{
+			PathID:         "public-direct/path",
+			ConnectionType: "direct",
+			RemoteAddr:     successTransport.RemoteAddr(),
+		},
+	}, nil)
+	slowExec := newBlockingExecutor(solver.Result{}, errors.New("slow hint should be canceled"), neverRelease)
+	strategy := &executorFactoryStrategy{
+		name: "legacy_ice_udp",
+		plans: []solver.Plan{
+			{ID: "legacyice/public_direct_hint_1", Strategy: "legacy_ice_udp"},
+			{ID: "legacyice/public_direct_hint_2", Strategy: "legacy_ice_udp"},
+		},
+		executors: map[string]solver.PlanExecutor{
+			"legacyice/public_direct_hint_1": fastExec,
+			"legacyice/public_direct_hint_2": slowExec,
+		},
+	}
+	bound := make(chan solver.Result, 1)
+	s, err := New(Config{
+		SessionID:             "session/node-a/node-b",
+		LocalNodeID:           "node-a",
+		PeerID:                "node-b",
+		Initiator:             true,
+		Resolver:              &fakeResolver{local: rproto.Capability{Strategies: []string{"legacy_ice_udp"}}, strategy: strategy, selection: Selection{StrategyName: "legacy_ice_udp", Negotiated: true}},
+		Sender:                &callbackSender{},
+		RunTimeout:            2 * time.Second,
+		CapabilityWaitTimeout: time.Millisecond,
+		Hooks: Hooks{
+			OnBound: func(result solver.Result) {
+				bound <- result
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	if err := s.HandleMessage(context.Background(), envelopeMessage(t, "session/node-a/node-b", "node-b", "node-a", rproto.MsgTypeCapability, 1, rproto.Capability{Strategies: []string{"legacy_ice_udp"}}, time.Now())); err != nil {
+		t.Fatalf("HandleMessage(capability) error = %v", err)
+	}
+	if err := s.Start(context.Background()); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+
+	select {
+	case result := <-bound:
+		if result.Summary.PathID != "public-direct/path" {
+			t.Fatalf("OnBound() path_id = %q, want public-direct/path", result.Summary.PathID)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for fast split hint success")
+	}
+	select {
+	case <-slowExec.started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for slow split hint executor to start")
+	}
+	if _, closed := slowExec.snapshot(); !closed {
+		t.Fatal("slow split hint executor was not closed after fast success")
 	}
 }
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	pmodel "winkyou/pkg/probe/model"
@@ -560,14 +561,35 @@ func (s *Session) executeCandidateLoop(ctx context.Context, strategy solver.Stra
 		maxCandidates = len(plans)
 	}
 
-	for i := 0; i < maxCandidates; i++ {
-		plan := plans[i]
-
+	for i := 0; i < maxCandidates; {
 		// Check time budget
 		if budget.TimeBudget > 0 && time.Since(budgetStart) >= budget.TimeBudget {
 			break
 		}
 
+		groupEnd := parallelHintPlanGroupEnd(plans, i, maxCandidates)
+		if groupEnd > i+1 {
+			groupPlans := plans[i:groupEnd]
+			for j, plan := range groupPlans {
+				s.emitObservation(ctx, solver.Observation{
+					Strategy:  plan.Strategy,
+					PlanID:    plan.ID,
+					Event:     "candidate_planned",
+					TimeoutMS: durationMS(s.executionTimeout()),
+					Details: map[string]string{
+						"candidate_index": fmt.Sprintf("%d", i+j),
+						"candidate_total": fmt.Sprintf("%d", maxCandidates),
+						"execution_mode":  "parallel_hint_family",
+						"plan_family":     normalizeStrategyPlanID(plan.ID),
+					},
+				})
+			}
+			outcomes = append(outcomes, s.executeCandidateGroup(ctx, strategy, groupPlans)...)
+			i = groupEnd
+			continue
+		}
+
+		plan := plans[i]
 		s.emitObservation(ctx, solver.Observation{
 			Strategy:  plan.Strategy,
 			PlanID:    plan.ID,
@@ -580,6 +602,7 @@ func (s *Session) executeCandidateLoop(ctx context.Context, strategy solver.Stra
 		})
 		outcome := s.executeCandidate(ctx, strategy, plan)
 		outcomes = append(outcomes, outcome)
+		i++
 	}
 
 	// Score all outcomes
@@ -592,6 +615,31 @@ func (s *Session) executeCandidateLoop(ctx context.Context, strategy solver.Stra
 	}
 
 	return outcomes
+}
+
+func parallelHintPlanGroupEnd(plans []solver.Plan, start, maxCandidates int) int {
+	if start < 0 || start >= len(plans) || start >= maxCandidates {
+		return start
+	}
+	first := plans[start]
+	family := normalizeStrategyPlanID(first.ID)
+	if family == "" {
+		return start + 1
+	}
+	hasHint := isHintPlanID(first.ID)
+	end := start + 1
+	for end < len(plans) && end < maxCandidates {
+		plan := plans[end]
+		if plan.Strategy != first.Strategy || normalizeStrategyPlanID(plan.ID) != family {
+			break
+		}
+		hasHint = hasHint || isHintPlanID(plan.ID)
+		end++
+	}
+	if end-start <= 1 || !hasHint {
+		return start + 1
+	}
+	return end
 }
 
 func annotateResultPath(result solver.Result, plan solver.Plan) solver.Result {
@@ -645,6 +693,127 @@ func (s *Session) executeCandidate(ctx context.Context, strategy solver.Strategy
 	outcome.Result = &result
 	outcome.PathID = result.Summary.PathID
 	return outcome
+}
+
+func (s *Session) executeCandidateGroup(ctx context.Context, strategy solver.Strategy, plans []solver.Plan) []solver.CandidateOutcome {
+	if len(plans) == 0 {
+		return nil
+	}
+	factory, ok := strategy.(solver.ExecutorFactory)
+	if !ok || len(plans) == 1 {
+		outcomes := make([]solver.CandidateOutcome, 0, len(plans))
+		for _, plan := range plans {
+			outcomes = append(outcomes, s.executeCandidate(ctx, strategy, plan))
+		}
+		return outcomes
+	}
+
+	startTime := time.Now()
+	initialObsCount := s.localObservationCount()
+	outcomes := make([]solver.CandidateOutcome, len(plans))
+	entries := make([]activePlanExecutorEntry, 0, len(plans))
+	for i, plan := range plans {
+		outcomes[i] = solver.CandidateOutcome{
+			Plan:   plan,
+			PlanID: plan.ID,
+		}
+		executor, err := factory.NewExecutor(plan)
+		if err != nil {
+			outcomes[i].Err = err
+			outcomes[i].ErrorClass = classifyError(err)
+			outcomes[i].FinishedAt = time.Now()
+			outcomes[i].ExecutionDur = time.Since(startTime)
+			continue
+		}
+		entries = append(entries, activePlanExecutorEntry{
+			index:    i,
+			planID:   plan.ID,
+			executor: executor,
+		})
+	}
+	if len(entries) == 0 {
+		return outcomes
+	}
+
+	familyPlan := normalizeStrategyPlanID(plans[0].ID)
+	group := &activePlanExecutorGroup{
+		familyPlanID: familyPlan,
+		entries:      entries,
+	}
+	s.transition(StateExecuting)
+	s.setActiveExecutor(familyPlan, group)
+	defer func() {
+		s.clearActiveExecutor(group)
+		s.discardPendingStrategyMessagesForPlanFamily(familyPlan)
+		s.ignoreCleanupError(s.runCleanup(group.Close))
+	}()
+
+	execCtx := ctx
+	if execCtx == nil {
+		execCtx = s.runContext()
+	}
+	if execCtx == nil {
+		execCtx = context.Background()
+	}
+	if timeout := s.executionTimeout(); timeout > 0 {
+		var cancel context.CancelFunc
+		execCtx, cancel = context.WithTimeout(execCtx, timeout)
+		defer cancel()
+	}
+	groupCtx, cancelGroup := context.WithCancel(execCtx)
+	defer cancelGroup()
+
+	if err := s.flushPendingStrategyMessages(groupCtx, group, familyPlan); err != nil {
+		finished := time.Now()
+		for _, entry := range entries {
+			outcomes[entry.index].Err = err
+			outcomes[entry.index].ErrorClass = classifyError(err)
+			outcomes[entry.index].FinishedAt = finished
+			outcomes[entry.index].ExecutionDur = finished.Sub(startTime)
+			outcomes[entry.index].ObservationCount = s.localObservationCount() - initialObsCount
+		}
+		return outcomes
+	}
+
+	type executorResult struct {
+		index      int
+		result     solver.Result
+		err        error
+		finishedAt time.Time
+	}
+	resultCh := make(chan executorResult, len(entries))
+	var wg sync.WaitGroup
+	for _, entry := range entries {
+		entry := entry
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			result, err := entry.executor.Execute(groupCtx, s.io)
+			resultCh <- executorResult{
+				index:      entry.index,
+				result:     result,
+				err:        err,
+				finishedAt: time.Now(),
+			}
+		}()
+	}
+	for remaining := len(entries); remaining > 0; remaining-- {
+		item := <-resultCh
+		outcome := &outcomes[item.index]
+		outcome.FinishedAt = item.finishedAt
+		outcome.ExecutionDur = item.finishedAt.Sub(startTime)
+		outcome.ObservationCount = s.localObservationCount() - initialObsCount
+		if item.err != nil {
+			outcome.Err = item.err
+			outcome.ErrorClass = classifyError(item.err)
+			continue
+		}
+		outcome.Result = &item.result
+		outcome.PathID = item.result.Summary.PathID
+		cancelGroup()
+	}
+	wg.Wait()
+	return outcomes
 }
 
 func (s *Session) executePlan(ctx context.Context, strategy solver.Strategy, plan solver.Plan) (solver.Result, error) {

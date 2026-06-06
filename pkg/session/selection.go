@@ -13,6 +13,67 @@ import (
 
 var planHintSuffixPattern = regexp.MustCompile(`_hint_[0-9]+$`)
 
+type activePlanExecutorEntry struct {
+	index    int
+	planID   string
+	executor solver.PlanExecutor
+}
+
+type activePlanExecutorGroup struct {
+	familyPlanID string
+	entries      []activePlanExecutorEntry
+}
+
+func (g *activePlanExecutorGroup) Execute(ctx context.Context, sess solver.SessionIO) (solver.Result, error) {
+	return solver.Result{}, fmt.Errorf("session: executor group cannot be executed directly")
+}
+
+func (g *activePlanExecutorGroup) HandleMessage(ctx context.Context, sess solver.SessionIO, msg solver.Message) error {
+	targets := g.messageTargets(msg)
+	for _, target := range targets {
+		if target.executor == nil {
+			continue
+		}
+		if err := target.executor.HandleMessage(ctx, sess, msg); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (g *activePlanExecutorGroup) Close() error {
+	var result error
+	for _, entry := range g.entries {
+		if entry.executor == nil {
+			continue
+		}
+		if err := entry.executor.Close(); err != nil && result == nil {
+			result = err
+		}
+	}
+	return result
+}
+
+func (g *activePlanExecutorGroup) messageTargets(msg solver.Message) []activePlanExecutorEntry {
+	msgPlanID, ok := strategyMessagePlanID(msg)
+	if !ok || strings.TrimSpace(msgPlanID) == "" || strings.TrimSpace(msgPlanID) == strings.TrimSpace(g.familyPlanID) {
+		return append([]activePlanExecutorEntry(nil), g.entries...)
+	}
+	var exact []activePlanExecutorEntry
+	for _, entry := range g.entries {
+		if strings.TrimSpace(entry.planID) == strings.TrimSpace(msgPlanID) {
+			exact = append(exact, entry)
+		}
+	}
+	if len(exact) > 0 {
+		return exact
+	}
+	if strategyPlanIDsMatch(msgPlanID, g.familyPlanID) {
+		return append([]activePlanExecutorEntry(nil), g.entries...)
+	}
+	return nil
+}
+
 func (s *Session) setActiveExecutor(planID string, executor solver.PlanExecutor) {
 	s.strategyMu.Lock()
 	defer s.strategyMu.Unlock()
@@ -251,6 +312,23 @@ func (s *Session) discardPendingStrategyMessagesForPlan(planID string) {
 	s.pending = retained
 }
 
+func (s *Session) discardPendingStrategyMessagesForPlanFamily(planID string) {
+	if strings.TrimSpace(planID) == "" {
+		s.discardPendingStrategyMessages()
+		return
+	}
+	s.strategyMu.Lock()
+	defer s.strategyMu.Unlock()
+	retained := make([]solver.Message, 0, len(s.pending))
+	for _, msg := range s.pending {
+		msgPlanID, ok := strategyMessagePlanID(msg)
+		if !ok || !strategyPlanIDsMatch(msgPlanID, planID) {
+			retained = append(retained, msg)
+		}
+	}
+	s.pending = retained
+}
+
 func shouldBufferForFuturePlan(msg solver.Message, activePlan string) bool {
 	if strings.TrimSpace(activePlan) == "" {
 		return false
@@ -302,4 +380,9 @@ func strategyPlanIDsMatch(a, b string) bool {
 
 func normalizeStrategyPlanID(planID string) string {
 	return planHintSuffixPattern.ReplaceAllString(strings.TrimSpace(planID), "")
+}
+
+func isHintPlanID(planID string) bool {
+	planID = strings.TrimSpace(planID)
+	return planID != "" && planHintSuffixPattern.MatchString(planID)
 }

@@ -447,6 +447,7 @@ Phase 3A (Strategy Portfolio Foundation) 已完成。以下是我基于代码现
 - 2026-06-06 起，生产 `legacy_ice_udp` 配置在无 TURN 且非显式 relay-only 模式下会禁用内部 `legacyice/relay_only` plan。这样旧 observation 中的 relay success 不会把当前不可用的 relay plan 排到 `public_direct` 前面，避免无 TURN 环境浪费 candidate budget。
 - 2026-06-06 起，`wink doctor` 会在 strategy 层输出 `legacy_ice_udp` 内部 plan order，用于确认无 TURN 环境是否实际执行 `legacyice/direct_prefer -> legacyice/public_direct`，而不是先等待不可用的 relay plan。
 - 2026-06-06 起，当手工或运行时 `public_endpoint_hints` 存在时，`legacyice/public_direct` 会排到普通 `legacyice/direct_prefer` 前面，避免 natpierce/路由器/STUN 观测到的 UDP 映射在真正打洞前过期；若 relay evidence 更强，relay 仍可先保活，但 hinted `public_direct` 会排在 `direct_prefer` 前继续争取 protected-direct standby。
+- 2026-06-06 起，多个 mapped `public_direct_hint_N` 计划会在同一个 `legacyice/public_direct` 信令家族内并发执行。base `public_direct` 信令会广播给 active hint executor，精确 hint 信令优先送到对应 executor；任一 hint 成功会取消同 family 慢 hint 并立即进入 bind，全部失败时仍继续后续 fallback。这个改动用于缩小与 natpierce 类工具在“多个端口同时打洞”上的执行差距，但真实独立可达仍必须用 `path_role=protected_direct` 且无 dependency 的 selected path 证明。
 - 2026-06-06 起，protected-direct session 调度不再因为第一条 protected/direct outcome 成功就停止跨 strategy 搜索；只要 `connectivity.multipath.max_paths` 预算未填满，后续 `relay_only` 或其他候选仍会获得执行机会，让低延迟 primary 与 protected direct standby 能在同一个 multipath transport 中同时保留。
 - 2026-06-05 起，client 在 peer 已 bound 但 path 不是 `protected_direct` 时，会保留现有数据面并后台继续尝试 protected-direct improvement；失败的临时 transport 会关闭，旧 path 不变，只有新结果明确为 `protected_direct` 时才替换 tunnel peer transport。
 

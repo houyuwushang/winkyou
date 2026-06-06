@@ -155,7 +155,7 @@ func TestSessionBindUsesMultipathTransportWhenPolicyEnabled(t *testing.T) {
 			{ID: "plan-relay", Strategy: "legacy_ice_udp"},
 			{ID: "plan-direct", Strategy: "legacy_ice_udp"},
 		},
-		executors: map[string]*scriptedExecutor{
+		executors: map[string]solver.PlanExecutor{
 			"plan-relay": newScriptedExecutor(solver.Result{
 				Transport: &fakeTransport{},
 				Summary: solver.PathSummary{
@@ -239,7 +239,7 @@ func TestSessionEvaluatesRelayAfterProtectedDirectForLowerLatencyPrimary(t *test
 			{ID: "plan-direct", Strategy: "legacy_ice_udp"},
 			{ID: "plan-relay", Strategy: "legacy_ice_udp"},
 		},
-		executors: map[string]*scriptedExecutor{
+		executors: map[string]solver.PlanExecutor{
 			"plan-direct": newScriptedExecutor(solver.Result{
 				Transport: &fakeTransport{},
 				Summary: solver.PathSummary{
