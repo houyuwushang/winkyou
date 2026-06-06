@@ -182,7 +182,7 @@ legacyice/direct_prefer -> legacyice/public_direct -> legacyice/relay_only
 
 如果 observation history 中已有 direct 失败和 relay 成功，legacy ICE 可以把 `relay_only` 排到前面，但 `public_direct` 不应仅因为 `direct_prefer` 失败而被剪掉。排障时如果只看到 `legacyice/relay_only`，没有看到 `legacyice/public_direct` 的 `candidate_planned` 或 `candidate_started`，应检查当前二进制是否为最新版本，或是否处于显式 `connectivity.mode: relay_only` / `nat.force_relay: true`。
 
-当前 session 会按 strategy message 顶层 `plan_id` 缓存未来 plan 的消息。如果两端推进速度不一致，`legacyice/public_direct` 的 offer/answer 不应再被仍在执行 `legacyice/direct_prefer` 的 executor 吞掉。若仍看不到 `public_direct` 的 candidate 事件，优先确认两端二进制都已更新。
+当前 session 会按 strategy message 顶层 `plan_id` 缓存未来 plan 的消息。如果两端推进速度不一致，`legacyice/public_direct` 的 offer/answer 不应再被仍在执行 `legacyice/direct_prefer` 的 executor 吞掉。public-direct 收到 offer/answer credentials 但里面没有可用公网候选时，会短暂等待后续 `candidate` burst；observation 中应能看到 `remote_candidates_waiting`。如果随后仍失败，说明 grace 窗口内没有收到可用 public-direct candidate，继续排查控制面延迟、candidate 信令是否被发送、远端候选是否被过滤。若仍看不到 `public_direct` 的 candidate 事件，优先确认两端二进制都已更新。
 
 如果 natpierce 能从本机直达 `inner-gw`，但 WinkYou 不能建立 `protected_direct`，不要先判断为“物理不可达”。先运行：
 

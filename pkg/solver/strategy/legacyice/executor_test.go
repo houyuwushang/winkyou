@@ -1173,6 +1173,85 @@ func TestExecutorCandidateMessageWaitsForRemoteCredentials(t *testing.T) {
 	}
 }
 
+func TestExecutorAnswerWithoutUsableCandidatesWaitsForCandidateMessage(t *testing.T) {
+	publicCandidate := nat.Candidate{Type: nat.CandidateTypeSrflx, Address: &net.UDPAddr{IP: net.IPv4(117, 48, 146, 2), Port: 41000}}
+	privateCandidate := nat.Candidate{Type: nat.CandidateTypeHost, Address: &net.UDPAddr{IP: net.IPv4(10, 0, 0, 1), Port: 1001}}
+	agent := &recordingICEAgent{
+		connectErr:    context.Canceled,
+		connectCalled: make(chan struct{}),
+	}
+	exec := newExecutor(Config{
+		NewICEAgent: func(ctx context.Context, req AgentRequest) (nat.ICEAgent, error) {
+			_ = ctx
+			_ = req
+			return agent, nil
+		},
+		GatherTimeout:  100 * time.Millisecond,
+		ConnectTimeout: 100 * time.Millisecond,
+	}, solver.SolveInput{
+		SessionID:    "session/node-a/node-b",
+		LocalNodeID:  "node-a",
+		RemoteNodeID: "node-b",
+		Initiator:    true,
+	}, solver.Plan{
+		ID:       planIDPublicDirect,
+		Strategy: StrategyName,
+		Metadata: map[string]string{"mode": string(modePublicDirect)},
+	}, executorConfig{Mode: modePublicDirect})
+	io := &capturingSessionIO{}
+
+	answerPayload, err := marshalAnswerPayload(answerPayload{
+		SessionID: "session/node-a/node-b",
+		PlanID:    planIDPublicDirect,
+		ICE: nat.ICESessionDescriptionPayload{
+			Ufrag:      "remote",
+			Pwd:        "remote-pwd",
+			Candidates: []nat.Candidate{privateCandidate},
+		},
+		SentAt: time.Now(),
+	})
+	if err != nil {
+		t.Fatalf("marshalAnswerPayload() error = %v", err)
+	}
+	if err := exec.HandleMessage(context.Background(), io, NewMessage(MessageTypeAnswer, answerPayload, time.Now())); err != nil {
+		t.Fatalf("HandleMessage(answer first) error = %v", err)
+	}
+	select {
+	case err := <-exec.errCh:
+		t.Fatalf("answer without usable candidates failed before candidate grace: %v", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+	if obs := findObservation(io.Observations(), "remote_candidates_waiting"); obs == nil {
+		t.Fatalf("observations = %#v, want remote_candidates_waiting", io.Observations())
+	}
+	select {
+	case <-agent.connectCalled:
+		t.Fatal("answer without usable candidates started ICE connect before candidate message")
+	default:
+	}
+
+	candidatePayload, err := marshalCandidatePayload(candidatePayload{
+		SessionID: "session/node-a/node-b",
+		PlanID:    planIDPublicDirect,
+		ICE:       nat.ICECandidatePayload{Candidate: publicCandidate},
+		SentAt:    time.Now(),
+	})
+	if err != nil {
+		t.Fatalf("marshalCandidatePayload() error = %v", err)
+	}
+	if err := exec.HandleMessage(context.Background(), io, NewMessage(MessageTypeCandidate, candidatePayload, time.Now())); err != nil {
+		t.Fatalf("HandleMessage(candidate after answer) error = %v", err)
+	}
+	select {
+	case <-agent.connectCalled:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for ICE connect after delayed candidate")
+	}
+	if len(agent.remoteCandidates) != 1 || agent.remoteCandidates[0].Address.String() != publicCandidate.Address.String() {
+		t.Fatalf("remote candidates = %#v, want delayed public candidate", agent.remoteCandidates)
+	}
+}
+
 func TestPublicDirectAgentRequestIncludesMultipleMappedHintLocalBases(t *testing.T) {
 	got := publicEndpointHintLocalBaseCIDRs([]string{
 		"117.48.146.3:41001/192.168.1.21:40000",
@@ -1357,12 +1436,15 @@ func TestPublicDirectEmptyRemoteCandidatesFailsPlanWithoutBubbling(t *testing.T)
 		if err == nil || !strings.Contains(err.Error(), "no usable remote candidates") {
 			t.Fatalf("executor err = %v, want no usable remote candidates", err)
 		}
-	default:
-		t.Fatal("executor errCh did not receive plan failure")
+	case <-time.After(publicDirectRemoteCandidateGraceTimeout + 500*time.Millisecond):
+		t.Fatal("executor errCh did not receive plan failure after candidate grace")
 	}
 	observations := io.Observations()
 	if obs := findObservation(observations, "remote_candidates_filtered"); obs == nil || obs.Details["candidate_kept"] != "0" {
 		t.Fatalf("observations = %#v, want remote_candidates_filtered kept=0", observations)
+	}
+	if obs := findObservation(observations, "remote_candidates_waiting"); obs == nil {
+		t.Fatalf("observations = %#v, want remote_candidates_waiting", observations)
 	}
 	if obs := findObservation(observations, "candidate_failed"); obs == nil || !strings.Contains(obs.Reason, "no usable remote candidates") {
 		t.Fatalf("observations = %#v, want candidate_failed no usable remote candidates", observations)

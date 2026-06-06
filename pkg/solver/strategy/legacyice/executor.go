@@ -52,6 +52,8 @@ const publicDirectCandidateSignalRetryInterval = 100 * time.Millisecond
 
 const publicDirectCandidateSignalSendTimeout = time.Second
 
+const publicDirectRemoteCandidateGraceTimeout = 750 * time.Millisecond
+
 func newExecutor(cfg Config, input solver.SolveInput, plan solver.Plan, execCfg executorConfig) *executor {
 	lifecycleCtx, lifecycleCancel := context.WithCancel(context.Background())
 	return &executor{
@@ -128,6 +130,9 @@ func (e *executor) HandleMessage(ctx context.Context, sess solver.SessionIO, msg
 		e.reportCandidateFilter(sess, "remote_candidates_filtered", "remote", MessageTypeOffer, summary)
 		candidates = e.remoteCandidatesWithPending(candidates)
 		if len(candidates) == 0 {
+			if e.waitForPublicDirectRemoteCandidates(sess, MessageTypeOffer) {
+				return nil
+			}
 			e.failRemoteCandidates(sess, MessageTypeOffer)
 			return nil
 		}
@@ -157,6 +162,9 @@ func (e *executor) HandleMessage(ctx context.Context, sess solver.SessionIO, msg
 		e.reportCandidateFilter(sess, "remote_candidates_filtered", "remote", MessageTypeAnswer, summary)
 		candidates = e.remoteCandidatesWithPending(candidates)
 		if len(candidates) == 0 {
+			if e.waitForPublicDirectRemoteCandidates(sess, MessageTypeAnswer) {
+				return nil
+			}
 			e.failRemoteCandidates(sess, MessageTypeAnswer)
 			return nil
 		}
@@ -709,6 +717,40 @@ func (e *executor) failRemoteCandidates(sess solver.SessionIO, messageType strin
 	case e.errCh <- err:
 	default:
 	}
+}
+
+func (e *executor) waitForPublicDirectRemoteCandidates(sess solver.SessionIO, messageType string) bool {
+	if e.execCfg.Mode != modePublicDirect {
+		return false
+	}
+	e.report(sess, solver.Observation{
+		Strategy: e.strategyName(),
+		PlanID:   e.plan.ID,
+		Event:    "remote_candidates_waiting",
+		Details: map[string]string{
+			"mode":         string(e.execCfg.Mode),
+			"message_type": messageType,
+			"candidate_grace_ms": strconv.FormatInt(
+				publicDirectRemoteCandidateGraceTimeout.Milliseconds(),
+				10,
+			),
+		},
+		Timestamp: time.Now(),
+	})
+	go func() {
+		timer := time.NewTimer(publicDirectRemoteCandidateGraceTimeout)
+		defer timer.Stop()
+		select {
+		case <-timer.C:
+		case <-e.lifecycleCtx.Done():
+			return
+		}
+		if e.remoteReadyToConnect() {
+			return
+		}
+		e.failRemoteCandidates(sess, messageType)
+	}()
+	return true
 }
 
 func (e *executor) reportCandidateFilter(sess solver.SessionIO, event, side, messageType string, summary candidateFilterSummary) {
