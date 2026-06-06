@@ -62,7 +62,7 @@ const publicDirectCandidateSignalSendTimeout = time.Second
 
 const publicDirectCandidateSignalSendPerCandidateTimeout = 75 * time.Millisecond
 
-const publicDirectCandidateSignalMaxSendTimeout = 5 * time.Second
+const publicDirectCandidateSignalMaxSendTimeout = 15 * time.Second
 
 const publicDirectRemoteCandidateGraceTimeout = 750 * time.Millisecond
 
@@ -502,10 +502,10 @@ func publicDirectCandidateSignalLimitFor(candidates []nat.Candidate) int {
 	if hintCount <= publicDirectCandidateSignalLimit {
 		return publicDirectCandidateSignalLimit
 	}
-	if hintCount > publicDirectCandidateSignalEndpointHintLimit {
+	if len(candidates) > publicDirectCandidateSignalEndpointHintLimit {
 		return publicDirectCandidateSignalEndpointHintLimit
 	}
-	return hintCount
+	return len(candidates)
 }
 
 func (e *executor) candidateSignalRounds() int {

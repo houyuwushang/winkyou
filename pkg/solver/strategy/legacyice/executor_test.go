@@ -787,6 +787,11 @@ func TestPublicDirectCandidateSignalsCoverEndpointHintWindowWhenCapped(t *testin
 	if err != nil {
 		t.Fatalf("appendPublicEndpointHintCandidates() error = %v", err)
 	}
+	candidates = append(candidates, nat.Candidate{
+		Type:       nat.CandidateTypeSrflx,
+		Address:    &net.UDPAddr{IP: net.IPv4(210, 30, 106, 93), Port: 30000},
+		Foundation: "srflx-current",
+	})
 	if len(candidates) <= publicDirectCandidateSignalLimit {
 		t.Fatalf("hint candidates = %d, want more than default signal limit %d", len(candidates), publicDirectCandidateSignalLimit)
 	}
@@ -1671,6 +1676,11 @@ func TestExecutorPublicDirectPunchCoversEndpointHintWindow(t *testing.T) {
 	if err != nil {
 		t.Fatalf("appendPublicEndpointHintCandidates() error = %v", err)
 	}
+	candidates = append(candidates, nat.Candidate{
+		Type:       nat.CandidateTypeSrflx,
+		Address:    &net.UDPAddr{IP: net.IPv4(210, 30, 106, 93), Port: 30000},
+		Foundation: "srflx-current",
+	})
 	agent := &recordingPunchICEAgent{}
 	exec := newExecutor(Config{}, solver.SolveInput{}, solver.Plan{
 		ID:       planIDPublicDirect,
