@@ -1510,6 +1510,81 @@ func TestPublicDirectEmptyRemoteCandidatesFailsPlanWithoutBubbling(t *testing.T)
 	}
 }
 
+func TestExecutorSerializesConcurrentOfferHandling(t *testing.T) {
+	localCandidate := nat.Candidate{Type: nat.CandidateTypeSrflx, Address: &net.UDPAddr{IP: net.IPv4(117, 48, 146, 2), Port: 41000}}
+	remoteCandidate := nat.Candidate{Type: nat.CandidateTypeSrflx, Address: &net.UDPAddr{IP: net.IPv4(210, 30, 106, 93), Port: 18734}}
+	agent := &serializedGatherICEAgent{
+		gathered:     []nat.Candidate{localCandidate},
+		firstRelease: make(chan struct{}),
+		entered:      make(chan int, 2),
+	}
+	exec := newExecutor(Config{
+		NewICEAgent: func(ctx context.Context, req AgentRequest) (nat.ICEAgent, error) {
+			_ = ctx
+			_ = req
+			return agent, nil
+		},
+		GatherTimeout:  time.Second,
+		ConnectTimeout: 10 * time.Millisecond,
+	}, solver.SolveInput{
+		SessionID:    "session/node-a/node-b",
+		LocalNodeID:  "node-b",
+		RemoteNodeID: "node-a",
+		Initiator:    false,
+	}, solver.Plan{
+		ID:       planIDPublicDirect,
+		Strategy: StrategyName,
+		Metadata: map[string]string{"mode": string(modePublicDirect)},
+	}, executorConfig{Mode: modePublicDirect, PublicDirectCandidate: true})
+	payload, err := marshalOfferPayload(offerPayload{
+		SessionID: "session/node-a/node-b",
+		PlanID:    planIDPublicDirect,
+		ICE: nat.ICESessionDescriptionPayload{
+			Ufrag:      "remote",
+			Pwd:        "remote-pwd",
+			Candidates: []nat.Candidate{remoteCandidate},
+		},
+		SentAt: time.Now(),
+	})
+	if err != nil {
+		t.Fatalf("marshalOfferPayload() error = %v", err)
+	}
+
+	io := &capturingSessionIO{}
+	errs := make(chan error, 2)
+	go func() {
+		errs <- exec.HandleMessage(context.Background(), io, NewMessage(MessageTypeOffer, payload, time.Now()))
+	}()
+	select {
+	case <-agent.entered:
+	case <-time.After(time.Second):
+		t.Fatal("first offer did not enter GatherCandidates")
+	}
+	go func() {
+		errs <- exec.HandleMessage(context.Background(), io, NewMessage(MessageTypeOffer, payload, time.Now()))
+	}()
+	time.Sleep(25 * time.Millisecond)
+	close(agent.firstRelease)
+
+	for i := 0; i < 2; i++ {
+		select {
+		case err := <-errs:
+			if err != nil {
+				t.Fatalf("HandleMessage(%d) error = %v", i, err)
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatalf("timed out waiting for HandleMessage(%d)", i)
+		}
+	}
+	calls, concurrent := agent.snapshot()
+	if calls != 2 {
+		t.Fatalf("GatherCandidates calls = %d, want 2", calls)
+	}
+	if concurrent {
+		t.Fatal("GatherCandidates was entered concurrently")
+	}
+}
+
 func stringSliceContains(values []string, want string) bool {
 	for _, value := range values {
 		if value == want {
@@ -1544,6 +1619,77 @@ func newExecutorWithRecordingAgent(planID string, mode executionMode, gathered [
 		Metadata: map[string]string{"mode": string(mode)},
 	}, executorConfig{Mode: mode, ForceRelay: mode == modeRelayOnly, PublicDirectCandidate: mode == modePublicDirect})
 	return exec, agent
+}
+
+type serializedGatherICEAgent struct {
+	mu           sync.Mutex
+	gathered     []nat.Candidate
+	firstRelease chan struct{}
+	entered      chan int
+	calls        int
+	active       bool
+	concurrent   bool
+}
+
+func (a *serializedGatherICEAgent) GatherCandidates(ctx context.Context) ([]nat.Candidate, error) {
+	a.mu.Lock()
+	a.calls++
+	call := a.calls
+	if a.active {
+		a.concurrent = true
+		a.mu.Unlock()
+		return nil, context.Canceled
+	}
+	a.active = true
+	a.mu.Unlock()
+
+	select {
+	case a.entered <- call:
+	default:
+	}
+	if call == 1 {
+		select {
+		case <-a.firstRelease:
+		case <-ctx.Done():
+			a.mu.Lock()
+			a.active = false
+			a.mu.Unlock()
+			return nil, ctx.Err()
+		}
+	}
+
+	a.mu.Lock()
+	a.active = false
+	a.mu.Unlock()
+	return append([]nat.Candidate(nil), a.gathered...), nil
+}
+
+func (a *serializedGatherICEAgent) GetLocalCredentials() (string, string, error) {
+	return "ufrag", "pwd", nil
+}
+
+func (a *serializedGatherICEAgent) SetRemoteCredentials(string, string) error {
+	return nil
+}
+
+func (a *serializedGatherICEAgent) SetRemoteCandidates([]nat.Candidate) error {
+	return nil
+}
+
+func (a *serializedGatherICEAgent) Connect(ctx context.Context) (nat.SelectedTransport, *nat.CandidatePair, error) {
+	return nil, nil, ctx.Err()
+}
+
+func (a *serializedGatherICEAgent) GetSelectedPairStats() (nat.CandidatePairStats, bool) {
+	return nat.CandidatePairStats{}, false
+}
+
+func (a *serializedGatherICEAgent) Close() error { return nil }
+
+func (a *serializedGatherICEAgent) snapshot() (int, bool) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.calls, a.concurrent
 }
 
 func findObservation(observations []solver.Observation, event string) *solver.Observation {

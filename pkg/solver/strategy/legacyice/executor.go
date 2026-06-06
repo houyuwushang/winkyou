@@ -24,6 +24,7 @@ type executor struct {
 	plan    solver.Plan
 	execCfg executorConfig
 
+	messageMu               sync.Mutex
 	mu                      sync.Mutex
 	agent                   nat.ICEAgent
 	connecting              bool
@@ -107,6 +108,8 @@ func (e *executor) HandleMessage(ctx context.Context, sess solver.SessionIO, msg
 	if !IsMessage(msg) {
 		return nil
 	}
+	e.messageMu.Lock()
+	defer e.messageMu.Unlock()
 
 	agent, err := e.ensureAgent(ctx)
 	if err != nil {
