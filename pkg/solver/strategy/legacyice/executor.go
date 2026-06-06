@@ -56,6 +56,10 @@ const publicDirectCandidateSignalRetryInterval = 100 * time.Millisecond
 
 const publicDirectCandidateSignalSendTimeout = time.Second
 
+const publicDirectCandidateSignalSendPerCandidateTimeout = 75 * time.Millisecond
+
+const publicDirectCandidateSignalMaxSendTimeout = 5 * time.Second
+
 const publicDirectRemoteCandidateGraceTimeout = 750 * time.Millisecond
 
 func newExecutor(cfg Config, input solver.SolveInput, plan solver.Plan, execCfg executorConfig) *executor {
@@ -378,7 +382,9 @@ func (e *executor) sendCandidateMessages(ctx context.Context, sess solver.Sessio
 	}
 	rounds := e.candidateSignalRounds()
 	candidates = prioritizePublicDirectSignalCandidates(candidates)
-	e.sendCandidateMessageRound(ctx, sess, candidates, 1, rounds)
+	roundCtx, cancel := e.candidateSignalRoundContext(ctx, len(candidates))
+	e.sendCandidateMessageRound(roundCtx, sess, candidates, 1, rounds)
+	cancel()
 	if rounds <= 1 {
 		return
 	}
@@ -446,10 +452,33 @@ func (e *executor) sendCandidateMessageRetries(sess solver.SessionIO, candidates
 			timer.Stop()
 			return
 		}
-		roundCtx, cancel := context.WithTimeout(e.lifecycleCtx, publicDirectCandidateSignalSendTimeout)
+		roundCtx, cancel := e.candidateSignalRoundContext(e.lifecycleCtx, len(candidates))
 		e.sendCandidateMessageRound(roundCtx, sess, candidates, round, maxRound)
 		cancel()
 	}
+}
+
+func (e *executor) candidateSignalRoundContext(parent context.Context, candidateCount int) (context.Context, context.CancelFunc) {
+	timeout := candidateSignalSendTimeout(candidateCount)
+	if timeout <= 0 {
+		return parent, func() {}
+	}
+	return context.WithTimeout(parent, timeout)
+}
+
+func candidateSignalSendTimeout(candidateCount int) time.Duration {
+	if candidateCount <= 0 {
+		return publicDirectCandidateSignalSendTimeout
+	}
+	if candidateCount > publicDirectCandidateSignalLimit {
+		candidateCount = publicDirectCandidateSignalLimit
+	}
+	timeout := publicDirectCandidateSignalSendTimeout +
+		time.Duration(candidateCount)*publicDirectCandidateSignalSendPerCandidateTimeout
+	if timeout > publicDirectCandidateSignalMaxSendTimeout {
+		return publicDirectCandidateSignalMaxSendTimeout
+	}
+	return timeout
 }
 
 func (e *executor) sendCandidateMessageRound(ctx context.Context, sess solver.SessionIO, candidates []nat.Candidate, round int, maxRound int) {
@@ -495,6 +524,7 @@ sendLoop:
 		"candidate_round":   strconv.Itoa(round),
 		"candidate_rounds":  strconv.Itoa(maxRound),
 		"retry_interval_ms": strconv.Itoa(int(publicDirectCandidateSignalRetryInterval / time.Millisecond)),
+		"send_timeout_ms":   strconv.FormatInt(candidateSignalSendTimeout(len(candidates)).Milliseconds(), 10),
 	}
 	if lastErr != nil {
 		details["last_error"] = lastErr.Error()

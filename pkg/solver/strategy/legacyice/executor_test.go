@@ -686,6 +686,21 @@ func TestPublicDirectCandidateSignalRoundsScaleWithConnectTimeout(t *testing.T) 
 	}
 }
 
+func TestPublicDirectCandidateSignalSendTimeoutScalesWithCandidateCount(t *testing.T) {
+	if got := candidateSignalSendTimeout(0); got != publicDirectCandidateSignalSendTimeout {
+		t.Fatalf("candidateSignalSendTimeout(0) = %v, want base %v", got, publicDirectCandidateSignalSendTimeout)
+	}
+
+	tenCandidates := publicDirectCandidateSignalSendTimeout + 10*publicDirectCandidateSignalSendPerCandidateTimeout
+	if got := candidateSignalSendTimeout(10); got != tenCandidates {
+		t.Fatalf("candidateSignalSendTimeout(10) = %v, want %v", got, tenCandidates)
+	}
+
+	if got := candidateSignalSendTimeout(10_000); got != publicDirectCandidateSignalMaxSendTimeout {
+		t.Fatalf("candidateSignalSendTimeout(large) = %v, want cap %v", got, publicDirectCandidateSignalMaxSendTimeout)
+	}
+}
+
 func TestPublicDirectFailureIncludesLastCandidateSignalDetails(t *testing.T) {
 	candidate := nat.Candidate{
 		Type:    nat.CandidateTypeSrflx,

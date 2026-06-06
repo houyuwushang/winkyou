@@ -242,7 +242,7 @@ nat:
 
 - `candidate_gathered`：本端 gather 后准备发布的 candidate 统计。
 - `remote_candidates_filtered`：收到远端 offer/answer/candidate 后的过滤统计。
-- `candidate_signaled`：`public_direct` 在 offer/answer 后额外发送的有界 candidate 信令统计，包括 `candidate_sent`、`candidate_total`、`candidate_round` / `candidate_rounds` 和是否 `candidate_capped`。
+- `candidate_signaled`：`public_direct` 在 offer/answer 后额外发送的有界 candidate 信令统计，包括 `candidate_sent`、`candidate_total`、`candidate_round` / `candidate_rounds`、`send_timeout_ms` 和是否 `candidate_capped`。
 - `candidate_total`、`candidate_kept`、`candidate_rejected`、`candidate_reject_reasons` 可用于判断是没有采到公网候选、候选被 `public_direct` 规则过滤，还是候选保留下来后 ICE 连通检查失败。`candidate_kept_samples` 会保留少量候选样本；带 local base 的 hint 会显示为 `srflx:公网ip:端口<-本地ip:端口`，便于和 natpierce 或路由器日志对比。
 - `candidate_failed`：`public_direct` 失败时会附带最近一次 `last_local_candidate_*` / `last_remote_candidate_*` / `last_signal_*` 摘要、`public_endpoint_hint_count` 和 `ice_state`，便于直接判断是本端没有发布有效候选、远端候选被过滤，候选信令是否实际发出，还是 ICE checks 已经进入 checking 但没选中路径。
 
