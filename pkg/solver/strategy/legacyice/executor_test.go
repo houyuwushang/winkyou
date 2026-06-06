@@ -778,6 +778,44 @@ func TestPublicDirectCandidateSignalsPrioritizeEndpointHintsWhenCapped(t *testin
 	}
 }
 
+func TestPublicDirectCandidateSignalsCoverEndpointHintWindowWhenCapped(t *testing.T) {
+	candidates, err := appendPublicEndpointHintCandidates(nil, executorConfig{
+		Mode:                         modePublicDirect,
+		PublicEndpointHints:          []string{"210.30.106.93:50000/172.29.7.111:64779"},
+		PublicEndpointHintPortWindow: 512,
+	})
+	if err != nil {
+		t.Fatalf("appendPublicEndpointHintCandidates() error = %v", err)
+	}
+	if len(candidates) <= publicDirectCandidateSignalLimit {
+		t.Fatalf("hint candidates = %d, want more than default signal limit %d", len(candidates), publicDirectCandidateSignalLimit)
+	}
+	exec := newExecutor(Config{}, solver.SolveInput{
+		SessionID: "session/node-a/node-b",
+	}, solver.Plan{
+		ID:       planIDPublicDirect,
+		Strategy: StrategyName,
+	}, executorConfig{Mode: modePublicDirect})
+	io := &capturingSessionIO{}
+
+	ordered := prioritizePublicDirectSignalCandidates(candidates)
+	exec.sendCandidateMessageRound(context.Background(), io, ordered, 1, 1)
+
+	messages := io.Messages()
+	if len(messages) != len(candidates) {
+		t.Fatalf("candidate signal messages = %d, want full endpoint-hint window %d", len(messages), len(candidates))
+	}
+	obs := findObservation(io.Observations(), "candidate_signaled")
+	if obs == nil {
+		t.Fatalf("observations = %#v, want candidate_signaled", io.Observations())
+	}
+	if obs.Details["candidate_limit"] != strconv.Itoa(len(candidates)) ||
+		obs.Details["candidate_sent"] != strconv.Itoa(len(candidates)) ||
+		obs.Details["candidate_capped"] != "false" {
+		t.Fatalf("candidate_signaled details = %#v, want full endpoint-hint window", obs.Details)
+	}
+}
+
 func TestPublicDirectCandidateSignalsRetryAsynchronously(t *testing.T) {
 	candidate := nat.Candidate{
 		Type:    nat.CandidateTypeSrflx,
@@ -1621,6 +1659,37 @@ func TestExecutorPublicDirectPunchesRemoteCandidatesAfterAnswer(t *testing.T) {
 		obs.Details["candidate_total"] != "1" ||
 		obs.Details["candidate_sent"] != "1" {
 		t.Fatalf("remote_candidates_punched details = %#v, want answer total=1 sent=1", obs.Details)
+	}
+}
+
+func TestExecutorPublicDirectPunchCoversEndpointHintWindow(t *testing.T) {
+	candidates, err := appendPublicEndpointHintCandidates(nil, executorConfig{
+		Mode:                         modePublicDirect,
+		PublicEndpointHints:          []string{"210.30.106.93:50000/172.29.7.111:64779"},
+		PublicEndpointHintPortWindow: 512,
+	})
+	if err != nil {
+		t.Fatalf("appendPublicEndpointHintCandidates() error = %v", err)
+	}
+	agent := &recordingPunchICEAgent{}
+	exec := newExecutor(Config{}, solver.SolveInput{}, solver.Plan{
+		ID:       planIDPublicDirect,
+		Strategy: StrategyName,
+	}, executorConfig{Mode: modePublicDirect})
+	io := &capturingSessionIO{}
+
+	exec.punchRemoteCandidates(context.Background(), io, agent, candidates, MessageTypeAnswer)
+
+	if len(agent.punched) != len(candidates) {
+		t.Fatalf("punched candidates = %d, want full endpoint-hint window %d", len(agent.punched), len(candidates))
+	}
+	obs := findObservation(io.Observations(), "remote_candidates_punched")
+	if obs == nil {
+		t.Fatalf("observations = %#v, want remote_candidates_punched", io.Observations())
+	}
+	if obs.Details["candidate_limit"] != strconv.Itoa(len(candidates)) ||
+		obs.Details["candidate_sent"] != strconv.Itoa(len(candidates)) {
+		t.Fatalf("remote_candidates_punched details = %#v, want full endpoint-hint window", obs.Details)
 	}
 }
 

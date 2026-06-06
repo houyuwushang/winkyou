@@ -48,6 +48,8 @@ const publicDirectHintGatherTimeout = time.Second
 
 const publicDirectCandidateSignalLimit = 1024
 
+const publicDirectCandidateSignalEndpointHintLimit = 4096
+
 const publicDirectCandidateSignalRounds = 3
 
 const publicDirectCandidateSignalMaxRounds = 20
@@ -415,8 +417,9 @@ func (e *executor) punchRemoteCandidates(ctx context.Context, sess solver.Sessio
 	ordered := prioritizePublicDirectSignalCandidates(candidates)
 	punchCtx, cancel := context.WithTimeout(ctx, remoteCandidatePunchTimeout(len(ordered)))
 	defer cancel()
+	limit := publicDirectCandidateSignalLimitFor(ordered)
 	report, err := puncher.PunchCandidates(punchCtx, ordered, nat.PublicDirectPunchOptions{
-		Limit: publicDirectCandidateSignalLimit,
+		Limit: limit,
 	})
 	if err == nil && messageType == MessageTypeCandidate && report.CandidateTotal == 1 {
 		return
@@ -426,7 +429,7 @@ func (e *executor) punchRemoteCandidates(ctx context.Context, sess solver.Sessio
 		"message_type":    messageType,
 		"candidate_total": strconv.Itoa(report.CandidateTotal),
 		"candidate_sent":  strconv.Itoa(report.CandidateSent),
-		"candidate_limit": strconv.Itoa(publicDirectCandidateSignalLimit),
+		"candidate_limit": strconv.Itoa(limit),
 	}
 	if err != nil {
 		details["last_error"] = err.Error()
@@ -444,8 +447,8 @@ func remoteCandidatePunchTimeout(candidateCount int) time.Duration {
 	if candidateCount <= 0 {
 		return publicDirectRemotePunchTimeout
 	}
-	if candidateCount > publicDirectCandidateSignalLimit {
-		candidateCount = publicDirectCandidateSignalLimit
+	if candidateCount > publicDirectCandidateSignalEndpointHintLimit {
+		candidateCount = publicDirectCandidateSignalEndpointHintLimit
 	}
 	timeout := publicDirectRemotePunchTimeout +
 		time.Duration(candidateCount)*publicDirectRemotePunchPerCandidateTimeout
@@ -487,6 +490,22 @@ func publicDirectSignalCandidateRank(candidate nat.Candidate) int {
 	default:
 		return 4
 	}
+}
+
+func publicDirectCandidateSignalLimitFor(candidates []nat.Candidate) int {
+	hintCount := 0
+	for _, candidate := range candidates {
+		if strings.HasPrefix(candidate.Foundation, "public-hint-") {
+			hintCount++
+		}
+	}
+	if hintCount <= publicDirectCandidateSignalLimit {
+		return publicDirectCandidateSignalLimit
+	}
+	if hintCount > publicDirectCandidateSignalEndpointHintLimit {
+		return publicDirectCandidateSignalEndpointHintLimit
+	}
+	return hintCount
 }
 
 func (e *executor) candidateSignalRounds() int {
@@ -550,8 +569,8 @@ func candidateSignalSendTimeout(candidateCount int) time.Duration {
 	if candidateCount <= 0 {
 		return publicDirectCandidateSignalSendTimeout
 	}
-	if candidateCount > publicDirectCandidateSignalLimit {
-		candidateCount = publicDirectCandidateSignalLimit
+	if candidateCount > publicDirectCandidateSignalEndpointHintLimit {
+		candidateCount = publicDirectCandidateSignalEndpointHintLimit
 	}
 	timeout := publicDirectCandidateSignalSendTimeout +
 		time.Duration(candidateCount)*publicDirectCandidateSignalSendPerCandidateTimeout
@@ -578,8 +597,9 @@ func (e *executor) remoteCandidateGraceTimeout() time.Duration {
 
 func (e *executor) sendCandidateMessageRound(ctx context.Context, sess solver.SessionIO, candidates []nat.Candidate, round int, maxRound int) {
 	limit := len(candidates)
-	if limit > publicDirectCandidateSignalLimit {
-		limit = publicDirectCandidateSignalLimit
+	signalLimit := publicDirectCandidateSignalLimitFor(candidates)
+	if limit > signalLimit {
+		limit = signalLimit
 	}
 	retryInterval := e.candidateSignalRetryInterval(maxRound)
 	sent := 0
@@ -615,7 +635,7 @@ sendLoop:
 		"message_type":      MessageTypeCandidate,
 		"candidate_total":   strconv.Itoa(len(candidates)),
 		"candidate_sent":    strconv.Itoa(sent),
-		"candidate_limit":   strconv.Itoa(publicDirectCandidateSignalLimit),
+		"candidate_limit":   strconv.Itoa(signalLimit),
 		"candidate_capped":  fmt.Sprintf("%t", len(candidates) > limit),
 		"candidate_round":   strconv.Itoa(round),
 		"candidate_rounds":  strconv.Itoa(maxRound),
