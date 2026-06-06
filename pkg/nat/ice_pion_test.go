@@ -206,8 +206,8 @@ func TestPublicDirectCandidateConfigSkipsRelayAndTURN(t *testing.T) {
 		t.Fatalf("public direct check interval = %v, want %v", checkInterval, publicDirectCheckInterval)
 	}
 	maxRequests := maxBindingRequestsForConfig(ICEConfig{PublicDirectCandidate: true})
-	if maxRequests == nil || *maxRequests != 300 {
-		t.Fatalf("public direct max binding requests = %v, want 300 for default 30s connect timeout", maxRequests)
+	if maxRequests == nil || *maxRequests != publicDirectMaxBindingRequests {
+		t.Fatalf("public direct max binding requests = %v, want cap %d for default 30s connect timeout", maxRequests, publicDirectMaxBindingRequests)
 	}
 	acceptanceWait := acceptanceMinWaitForConfig(ICEConfig{PublicDirectCandidate: true})
 	if acceptanceWait == nil || *acceptanceWait != publicDirectAcceptanceMinWait {
@@ -534,8 +534,8 @@ func TestPublicDirectMaxBindingRequestsScaleWithConnectTimeout(t *testing.T) {
 		PublicDirectCandidate: true,
 		ConnectTimeout:        2550 * time.Millisecond,
 	})
-	if fractional == nil || *fractional != 26 {
-		t.Fatalf("fractional public direct max binding requests = %v, want ceil 26", fractional)
+	if fractional == nil || *fractional != 78 {
+		t.Fatalf("fractional public direct max binding requests = %v, want burst 78", fractional)
 	}
 
 	long := maxBindingRequestsForConfig(ICEConfig{

@@ -17,6 +17,7 @@ import (
 const (
 	publicDirectCheckInterval      = 100 * time.Millisecond
 	publicDirectMinBindingRequests = 25
+	publicDirectBindingBurst       = 3
 	publicDirectMaxBindingRequests = 600
 	publicDirectAcceptanceMinWait  = 100 * time.Millisecond
 )
@@ -583,6 +584,9 @@ func maxBindingRequestsForConfig(cfg ICEConfig) *uint16 {
 	attempts := uint64(connectTimeout / publicDirectCheckInterval)
 	if connectTimeout%publicDirectCheckInterval != 0 {
 		attempts++
+	}
+	if attempts > publicDirectMinBindingRequests {
+		attempts *= publicDirectBindingBurst
 	}
 	if attempts < publicDirectMinBindingRequests {
 		attempts = publicDirectMinBindingRequests

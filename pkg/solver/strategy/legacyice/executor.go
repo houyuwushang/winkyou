@@ -824,6 +824,7 @@ func (e *executor) addPublicDirectFailureDetails(details map[string]string) {
 		if e.execCfg.PublicEndpointHintPortWindow > 0 {
 			details["public_endpoint_hint_port_window"] = strconv.Itoa(publicEndpointHintPortWindow(e.execCfg.PublicEndpointHintPortWindow))
 		}
+		addPublicEndpointHintLocalBaseDetails(details, e.execCfg.PublicEndpointHints)
 	}
 	local, remote, agent := e.candidateFilterSnapshots()
 	for key, value := range local {
@@ -923,6 +924,7 @@ func (e *executor) reportCandidateFilter(sess solver.SessionIO, event, side, mes
 		if e.execCfg.PublicEndpointHintPortWindow > 0 {
 			details["public_endpoint_hint_port_window"] = strconv.Itoa(publicEndpointHintPortWindow(e.execCfg.PublicEndpointHintPortWindow))
 		}
+		addPublicEndpointHintLocalBaseDetails(details, e.execCfg.PublicEndpointHints)
 		if e.publicDirectHintFastGatherEnabled() {
 			details["public_endpoint_hint_fast_gather"] = "true"
 			details["gather_timeout_ms"] = strconv.FormatInt(e.gatherTimeout().Milliseconds(), 10)
@@ -1343,6 +1345,55 @@ func publicEndpointHintsHaveLocalBases(values []string) bool {
 		}
 	}
 	return false
+}
+
+func addPublicEndpointHintLocalBaseDetails(details map[string]string, values []string) {
+	if details == nil {
+		return
+	}
+	localBases := publicEndpointHintLocalBases(values)
+	if len(localBases) == 0 {
+		details["public_endpoint_hint_local_base_count"] = "0"
+		return
+	}
+	details["public_endpoint_hint_local_base_count"] = strconv.Itoa(len(localBases))
+	if len(localBases) <= 4 {
+		parts := make([]string, 0, len(localBases))
+		for _, base := range localBases {
+			parts = append(parts, base.String())
+		}
+		details["public_endpoint_hint_local_bases"] = strings.Join(parts, ",")
+	}
+	if minPort, maxPort, ok := publicEndpointHintLocalPortRange(values); ok && minPort == maxPort {
+		details["public_endpoint_hint_fixed_local_port"] = strconv.Itoa(int(minPort))
+		if len(localBases) == 1 {
+			details["public_endpoint_hint_fixed_udp_mux_candidate"] = "true"
+		}
+	}
+}
+
+func publicEndpointHintLocalBases(values []string) []netip.AddrPort {
+	seen := make(map[string]netip.AddrPort)
+	for _, raw := range values {
+		hint, err := parsePublicEndpointHint(raw)
+		if err != nil || !hint.local.IsValid() {
+			continue
+		}
+		seen[hint.local.String()] = hint.local
+	}
+	if len(seen) == 0 {
+		return nil
+	}
+	keys := make([]string, 0, len(seen))
+	for key := range seen {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	out := make([]netip.AddrPort, 0, len(keys))
+	for _, key := range keys {
+		out = append(out, seen[key])
+	}
+	return out
 }
 
 func publicEndpointHintLocalPortRange(values []string) (uint16, uint16, bool) {

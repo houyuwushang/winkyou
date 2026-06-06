@@ -470,6 +470,12 @@ func TestPublicDirectAdvertisesConfiguredPublicEndpointHints(t *testing.T) {
 	if obs.Details["public_endpoint_hint_fast_gather"] != "true" || obs.Details["gather_timeout_ms"] != "1000" {
 		t.Fatalf("candidate_gathered fast gather details = %#v, want fast gather timeout", obs.Details)
 	}
+	if obs.Details["public_endpoint_hint_local_base_count"] != "1" ||
+		obs.Details["public_endpoint_hint_local_bases"] != "192.168.1.20:40000" ||
+		obs.Details["public_endpoint_hint_fixed_local_port"] != "40000" ||
+		obs.Details["public_endpoint_hint_fixed_udp_mux_candidate"] != "true" {
+		t.Fatalf("candidate_gathered local base details = %#v, want fixed local base diagnostics", obs.Details)
+	}
 }
 
 func TestPublicDirectGatherTimeoutOnlyShortensWithEndpointHints(t *testing.T) {
@@ -553,6 +559,12 @@ func TestPublicDirectCandidateObservationReportsEndpointHintPortWindow(t *testin
 	}
 	if obs.Details["public_endpoint_hint_count"] != "1" || obs.Details["public_endpoint_hint_port_window"] != "2" {
 		t.Fatalf("candidate_gathered details = %#v, want endpoint hint count/window", obs.Details)
+	}
+	if obs.Details["public_endpoint_hint_local_base_count"] != "1" ||
+		obs.Details["public_endpoint_hint_local_bases"] != "192.168.1.20:40000" ||
+		obs.Details["public_endpoint_hint_fixed_local_port"] != "40000" ||
+		obs.Details["public_endpoint_hint_fixed_udp_mux_candidate"] != "true" {
+		t.Fatalf("candidate_gathered local base details = %#v, want fixed local base diagnostics", obs.Details)
 	}
 }
 
