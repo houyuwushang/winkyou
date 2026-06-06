@@ -39,6 +39,7 @@ type icePionAgent struct {
 	state            ConnectionState
 	onPairChange     func(*CandidatePair)
 	muxClosers       []io.Closer
+	punchConn        *net.UDPConn
 }
 
 func newICEPionAgent(cfg ICEConfig) (ICEAgent, error) {
@@ -81,7 +82,7 @@ func newICEPionAgent(cfg ICEConfig) (ICEAgent, error) {
 		InterfaceFilter:        buildCandidateInterfaceFilter(cfg),
 		IPFilter:               ipFilter,
 	}
-	mux, muxCloser, err := publicDirectFixedPortMuxForConfig(cfg)
+	mux, muxCloser, punchConn, err := publicDirectFixedPortMuxForConfig(cfg)
 	if err != nil {
 		return nil, err
 	}
@@ -113,6 +114,7 @@ func newICEPionAgent(cfg ICEConfig) (ICEAgent, error) {
 		remoteCandidates: make(map[string]struct{}),
 		state:            ConnectionStateNew,
 		muxClosers:       muxClosers,
+		punchConn:        punchConn,
 	}
 	if err := agent.OnConnectionStateChange(func(state pionice.ConnectionState) {
 		a.mu.Lock()
@@ -289,6 +291,67 @@ func (a *icePionAgent) SetRemoteCandidates(candidates []Candidate) error {
 		a.remoteCandidates[key] = struct{}{}
 	}
 	return nil
+}
+
+func (a *icePionAgent) PunchCandidates(ctx context.Context, candidates []Candidate, opts PublicDirectPunchOptions) (PublicDirectPunchReport, error) {
+	report := PublicDirectPunchReport{CandidateTotal: len(candidates)}
+	if len(candidates) == 0 {
+		return report, nil
+	}
+
+	a.mu.RLock()
+	if a.closed {
+		a.mu.RUnlock()
+		return report, fmt.Errorf("nat: agent closed")
+	}
+	conn := a.punchConn
+	publicDirect := a.cfg.PublicDirectCandidate && !a.cfg.ForceRelay && !a.cfg.relayOnly
+	a.mu.RUnlock()
+	if conn == nil || !publicDirect {
+		return report, nil
+	}
+
+	limit := opts.Limit
+	if limit <= 0 || limit > len(candidates) {
+		limit = len(candidates)
+	}
+	seen := make(map[string]struct{}, limit)
+	var firstErr error
+	for i := 0; i < len(candidates) && report.CandidateSent < limit; i++ {
+		select {
+		case <-ctx.Done():
+			if firstErr == nil {
+				firstErr = ctx.Err()
+			}
+			return report, firstErr
+		default:
+		}
+		candidate := candidates[i]
+		if candidate.Address == nil {
+			continue
+		}
+		key := candidate.Address.String()
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+
+		txID, err := newTransactionID()
+		if err != nil {
+			if firstErr == nil {
+				firstErr = fmt.Errorf("nat: punch txid: %w", err)
+			}
+			continue
+		}
+		if _, err := conn.WriteToUDP(buildBindingRequest(txID), candidate.Address); err != nil {
+			if firstErr == nil {
+				firstErr = fmt.Errorf("nat: punch candidate %s: %w", candidate.Address, err)
+			}
+			continue
+		}
+		report.CandidateSent++
+	}
+	return report, firstErr
 }
 
 func (a *icePionAgent) Connect(ctx context.Context) (SelectedTransport, *CandidatePair, error) {
@@ -497,17 +560,17 @@ func publicDirectSTUNURLFromTURN(turnServer TURNServer) (*stun.URI, error) {
 	}, nil
 }
 
-func publicDirectFixedPortMuxForConfig(cfg ICEConfig) (pionice.UniversalUDPMux, io.Closer, error) {
+func publicDirectFixedPortMuxForConfig(cfg ICEConfig) (pionice.UniversalUDPMux, io.Closer, *net.UDPConn, error) {
 	addr, ok, err := publicDirectFixedLocalBaseAddr(cfg)
 	if err != nil || !ok {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	conn, err := net.ListenUDP("udp4", addr)
 	if err != nil {
-		return nil, nil, fmt.Errorf("nat: bind public-direct fixed UDP mux %s: %w", addr, err)
+		return nil, nil, nil, fmt.Errorf("nat: bind public-direct fixed UDP mux %s: %w", addr, err)
 	}
 	mux := pionice.NewUniversalUDPMuxDefault(pionice.UniversalUDPMuxParams{UDPConn: conn})
-	return mux, mux, nil
+	return mux, mux, conn, nil
 }
 
 func publicDirectFixedLocalBaseAddr(cfg ICEConfig) (*net.UDPAddr, bool, error) {

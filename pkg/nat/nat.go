@@ -158,6 +158,26 @@ type CandidatePairStats struct {
 	TotalRoundTripTime   time.Duration
 }
 
+// PublicDirectPunchOptions controls a best-effort UDP punch burst to remote
+// public-direct candidates.
+type PublicDirectPunchOptions struct {
+	Limit int
+}
+
+// PublicDirectPunchReport summarizes a best-effort UDP punch burst.
+type PublicDirectPunchReport struct {
+	CandidateTotal int
+	CandidateSent  int
+}
+
+// PublicDirectPuncher is an optional ICEAgent capability. Implementations may
+// send best-effort UDP packets from the same public-direct socket used by ICE
+// to open endpoint-dependent NAT mappings before normal ICE checks select a
+// pair.
+type PublicDirectPuncher interface {
+	PunchCandidates(ctx context.Context, candidates []Candidate, opts PublicDirectPunchOptions) (PublicDirectPunchReport, error)
+}
+
 // ConnectionState represents the ICE connection state.
 type ConnectionState int
 

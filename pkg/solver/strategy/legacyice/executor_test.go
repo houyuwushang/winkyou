@@ -71,6 +71,25 @@ func (a *recordingICEAgent) RemoteCandidateCount() int {
 
 func (a *recordingICEAgent) Close() error { return nil }
 
+type recordingPunchICEAgent struct {
+	recordingICEAgent
+	punched  []nat.Candidate
+	punchErr error
+}
+
+func (a *recordingPunchICEAgent) PunchCandidates(ctx context.Context, candidates []nat.Candidate, opts nat.PublicDirectPunchOptions) (nat.PublicDirectPunchReport, error) {
+	_ = ctx
+	limit := opts.Limit
+	if limit <= 0 || limit > len(candidates) {
+		limit = len(candidates)
+	}
+	a.punched = append(a.punched, candidates[:limit]...)
+	return nat.PublicDirectPunchReport{
+		CandidateTotal: len(candidates),
+		CandidateSent:  limit,
+	}, a.punchErr
+}
+
 type recordingSessionIO struct{}
 
 func (recordingSessionIO) Send(context.Context, solver.Message) error { return nil }
@@ -422,17 +441,17 @@ func TestPublicDirectAdvertisesConfiguredPublicEndpointHints(t *testing.T) {
 	if remaining := time.Until(agent.gatherDeadline); remaining <= 0 || remaining > 2*time.Second {
 		t.Fatalf("GatherCandidates deadline remaining = %v, want short public endpoint hint gather timeout", remaining)
 	}
-	wantMessages := 1 + publicDirectCandidateSignalRounds
+	wantMessages := 1 + 2*publicDirectCandidateSignalRounds
 	messages := io.WaitMessages(t, wantMessages)
 	if len(messages) != wantMessages {
-		t.Fatalf("sent messages = %d, want offer + %d candidate signal rounds", len(messages), publicDirectCandidateSignalRounds)
+		t.Fatalf("sent messages = %d, want offer + %d candidate signal rounds for two endpoint-hint candidates", len(messages), publicDirectCandidateSignalRounds)
 	}
 	offer, err := unmarshalOfferPayload(messages[0].Payload)
 	if err != nil {
 		t.Fatalf("unmarshal offer error = %v", err)
 	}
-	if len(offer.ICE.Candidates) != 1 {
-		t.Fatalf("offer candidates = %#v, want only public endpoint hint", offer.ICE.Candidates)
+	if len(offer.ICE.Candidates) != 2 {
+		t.Fatalf("offer candidates = %#v, want mapped and local-port public endpoint hints", offer.ICE.Candidates)
 	}
 	hint := offer.ICE.Candidates[0]
 	if hint.Type != nat.CandidateTypeSrflx || hint.Address.String() != "117.48.146.2:41000" {
@@ -443,6 +462,13 @@ func TestPublicDirectAdvertisesConfiguredPublicEndpointHints(t *testing.T) {
 	}
 	if !strings.HasPrefix(hint.Foundation, "public-hint-") || hint.Priority == 0 {
 		t.Fatalf("offer hint foundation/priority = %q/%d, want populated", hint.Foundation, hint.Priority)
+	}
+	localPortHint := offer.ICE.Candidates[1]
+	if localPortHint.Type != nat.CandidateTypeSrflx || localPortHint.Address.String() != "117.48.146.2:40000" {
+		t.Fatalf("offer local-port hint = %#v, want srflx 117.48.146.2:40000", localPortHint)
+	}
+	if localPortHint.RelatedAddr == nil || localPortHint.RelatedAddr.String() != "192.168.1.20:40000" {
+		t.Fatalf("offer local-port hint related addr = %#v, want 192.168.1.20:40000", localPortHint.RelatedAddr)
 	}
 	bases := exec.publicDirectLocalBaseSnapshot()
 	if _, ok := bases["192.168.1.20"]; !ok {
@@ -528,10 +554,78 @@ func TestPublicDirectExpandsPublicEndpointHintPortWindow(t *testing.T) {
 		"117.48.146.2:41001",
 		"117.48.146.2:40998",
 		"117.48.146.2:41002",
+		"117.48.146.2:40000",
+		"117.48.146.2:39999",
+		"117.48.146.2:40001",
+		"117.48.146.2:39998",
+		"117.48.146.2:40002",
 	}
 	if !slices.Equal(got, want) {
 		t.Fatalf("expanded hint candidates = %#v, want %#v", got, want)
 	}
+}
+
+func TestPublicDirectHintPriorityIncludesLocalBasePortCenter(t *testing.T) {
+	candidates, err := appendPublicEndpointHintCandidates(nil, executorConfig{
+		Mode:                         modePublicDirect,
+		PublicEndpointHints:          []string{"117.48.146.2:41000/192.168.1.20:40000"},
+		PublicEndpointHintPortWindow: 2,
+	})
+	if err != nil {
+		t.Fatalf("appendPublicEndpointHintCandidates() error = %v", err)
+	}
+	ordered := prioritizePublicDirectSignalCandidates(candidates)
+	localBaseCenter := candidateAddressIndex(ordered, "117.48.146.2:40000")
+	mappedOffsetOne := candidateAddressIndex(ordered, "117.48.146.2:40999")
+	if localBaseCenter < 0 || mappedOffsetOne < 0 {
+		t.Fatalf("ordered candidates missing expected addresses: %#v", candidateAddresses(ordered))
+	}
+	if localBaseCenter > mappedOffsetOne {
+		t.Fatalf("hint priority order = %#v; want local-base port center before mapped port offset 1", candidateAddresses(ordered))
+	}
+}
+
+func TestPublicDirectHintPriorityInterleavesMultipleHintsByOffset(t *testing.T) {
+	candidates, err := appendPublicEndpointHintCandidates(nil, executorConfig{
+		Mode: modePublicDirect,
+		PublicEndpointHints: []string{
+			"117.48.146.2:41000/192.168.1.20:40000",
+			"117.48.146.3:42000/192.168.1.20:40000",
+		},
+		PublicEndpointHintPortWindow: 2,
+	})
+	if err != nil {
+		t.Fatalf("appendPublicEndpointHintCandidates() error = %v", err)
+	}
+	ordered := prioritizePublicDirectSignalCandidates(candidates)
+	secondHintBase := candidateAddressIndex(ordered, "117.48.146.3:42000")
+	firstHintOffsetTwo := candidateAddressIndex(ordered, "117.48.146.2:40998")
+	if secondHintBase < 0 || firstHintOffsetTwo < 0 {
+		t.Fatalf("ordered candidates missing expected addresses: %#v", candidateAddresses(ordered))
+	}
+	if secondHintBase > firstHintOffsetTwo {
+		t.Fatalf("hint priority order = %#v; want second hint base before first hint offset distance 2", candidateAddresses(ordered))
+	}
+}
+
+func candidateAddressIndex(candidates []nat.Candidate, address string) int {
+	for i, candidate := range candidates {
+		if candidate.Address != nil && candidate.Address.String() == address {
+			return i
+		}
+	}
+	return -1
+}
+
+func candidateAddresses(candidates []nat.Candidate) []string {
+	out := make([]string, 0, len(candidates))
+	for _, candidate := range candidates {
+		if candidate.Address == nil {
+			continue
+		}
+		out = append(out, candidate.Address.String())
+	}
+	return out
 }
 
 func TestPublicDirectCandidateObservationReportsEndpointHintPortWindow(t *testing.T) {
@@ -565,6 +659,30 @@ func TestPublicDirectCandidateObservationReportsEndpointHintPortWindow(t *testin
 		obs.Details["public_endpoint_hint_fixed_local_port"] != "40000" ||
 		obs.Details["public_endpoint_hint_fixed_udp_mux_candidate"] != "true" {
 		t.Fatalf("candidate_gathered local base details = %#v, want fixed local base diagnostics", obs.Details)
+	}
+}
+
+func TestExecutorPublicDirectSingleCandidatePunchAvoidsObservationNoise(t *testing.T) {
+	publicCandidate := nat.Candidate{
+		Type:       nat.CandidateTypeSrflx,
+		Address:    &net.UDPAddr{IP: net.IPv4(117, 48, 146, 2), Port: 41000},
+		Priority:   100,
+		Foundation: "remote-srflx",
+	}
+	agent := &recordingPunchICEAgent{}
+	exec := newExecutor(Config{}, solver.SolveInput{}, solver.Plan{
+		ID:       planIDPublicDirect,
+		Strategy: StrategyName,
+	}, executorConfig{Mode: modePublicDirect})
+	io := &capturingSessionIO{}
+
+	exec.punchRemoteCandidates(context.Background(), io, agent, []nat.Candidate{publicCandidate}, MessageTypeCandidate)
+
+	if len(agent.punched) != 1 || agent.punched[0].Address.String() != publicCandidate.Address.String() {
+		t.Fatalf("punched candidates = %#v, want single remote candidate", agent.punched)
+	}
+	if obs := findObservation(io.Observations(), "remote_candidates_punched"); obs != nil {
+		t.Fatalf("remote_candidates_punched observation = %#v, want no noisy single-candidate success observation", obs)
 	}
 }
 
@@ -1097,15 +1215,20 @@ func TestPublicDirectCandidateCIDRIncludeAllowsEndpointHintWithoutTrustingPath(t
 	if err != nil {
 		t.Fatalf("appendPublicEndpointHintCandidates(included) error = %v", err)
 	}
-	if len(candidates) != 1 || candidates[0].Address.String() != "10.6.22.1:41000" {
+	mappedIndex := candidateAddressIndex(candidates, "10.6.22.1:41000")
+	if mappedIndex < 0 {
 		t.Fatalf("included endpoint hint candidates = %#v, want 10.6.22.1:41000", candidates)
 	}
-	if candidates[0].RelatedAddr == nil || candidates[0].RelatedAddr.String() != "10.6.22.3:40000" {
-		t.Fatalf("included endpoint hint related addr = %#v, want 10.6.22.3:40000", candidates[0].RelatedAddr)
+	if localBaseIndex := candidateAddressIndex(candidates, "10.6.22.1:40000"); localBaseIndex < 0 {
+		t.Fatalf("included endpoint hint candidates = %#v, want local-base port candidate 10.6.22.1:40000", candidates)
+	}
+	mapped := candidates[mappedIndex]
+	if mapped.RelatedAddr == nil || mapped.RelatedAddr.String() != "10.6.22.3:40000" {
+		t.Fatalf("included endpoint hint related addr = %#v, want 10.6.22.3:40000", mapped.RelatedAddr)
 	}
 
 	local := nat.Candidate{Type: nat.CandidateTypeHost, Address: &net.UDPAddr{IP: net.IPv4(10, 6, 22, 3), Port: 40000}}
-	role, deps := pathPolicyMetadata("direct", &nat.CandidatePair{Local: &local, Remote: &candidates[0]}, modePublicDirect, nil, nil)
+	role, deps := pathPolicyMetadata("direct", &nat.CandidatePair{Local: &local, Remote: &mapped}, modePublicDirect, nil, nil)
 	if role != solver.PathRolePrimaryCandidate {
 		t.Fatalf("role = %q, want dependent primary candidate without direct trust", role)
 	}
@@ -1430,6 +1553,74 @@ func TestExecutorCandidateMessageWaitsForRemoteCredentials(t *testing.T) {
 	}
 	if len(agent.remoteCandidates) != 1 || agent.remoteCandidates[0].Address.String() != publicCandidate.Address.String() {
 		t.Fatalf("remote candidates = %#v, want buffered public candidate after credentials", agent.remoteCandidates)
+	}
+}
+
+func TestExecutorPublicDirectPunchesRemoteCandidatesAfterAnswer(t *testing.T) {
+	publicCandidate := nat.Candidate{
+		Type:       nat.CandidateTypeSrflx,
+		Address:    &net.UDPAddr{IP: net.IPv4(117, 48, 146, 2), Port: 41000},
+		Priority:   100,
+		Foundation: "remote-srflx",
+	}
+	agent := &recordingPunchICEAgent{
+		recordingICEAgent: recordingICEAgent{
+			connectErr:    context.Canceled,
+			connectCalled: make(chan struct{}),
+		},
+	}
+	exec := newExecutor(Config{
+		NewICEAgent: func(ctx context.Context, req AgentRequest) (nat.ICEAgent, error) {
+			_ = ctx
+			_ = req
+			return agent, nil
+		},
+		GatherTimeout:  100 * time.Millisecond,
+		ConnectTimeout: 100 * time.Millisecond,
+	}, solver.SolveInput{
+		SessionID:    "session/node-a/node-b",
+		LocalNodeID:  "node-a",
+		RemoteNodeID: "node-b",
+		Initiator:    true,
+	}, solver.Plan{
+		ID:       planIDPublicDirect,
+		Strategy: StrategyName,
+		Metadata: map[string]string{"mode": string(modePublicDirect)},
+	}, executorConfig{Mode: modePublicDirect})
+	io := &capturingSessionIO{}
+
+	answerPayload, err := marshalAnswerPayload(answerPayload{
+		SessionID: "session/node-a/node-b",
+		PlanID:    planIDPublicDirect,
+		ICE: nat.ICESessionDescriptionPayload{
+			Ufrag:      "remote",
+			Pwd:        "remote-pwd",
+			Candidates: []nat.Candidate{publicCandidate},
+		},
+		SentAt: time.Now(),
+	})
+	if err != nil {
+		t.Fatalf("marshalAnswerPayload() error = %v", err)
+	}
+	if err := exec.HandleMessage(context.Background(), io, NewMessage(MessageTypeAnswer, answerPayload, time.Now())); err != nil {
+		t.Fatalf("HandleMessage(answer) error = %v", err)
+	}
+	select {
+	case <-agent.connectCalled:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for ICE connect")
+	}
+	if len(agent.punched) != 1 || agent.punched[0].Address.String() != publicCandidate.Address.String() {
+		t.Fatalf("punched candidates = %#v, want remote public candidate", agent.punched)
+	}
+	obs := findObservation(io.Observations(), "remote_candidates_punched")
+	if obs == nil {
+		t.Fatalf("observations = %#v, want remote_candidates_punched", io.Observations())
+	}
+	if obs.Details["message_type"] != MessageTypeAnswer ||
+		obs.Details["candidate_total"] != "1" ||
+		obs.Details["candidate_sent"] != "1" {
+		t.Fatalf("remote_candidates_punched details = %#v, want answer total=1 sent=1", obs.Details)
 	}
 }
 

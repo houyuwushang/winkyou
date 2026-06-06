@@ -46,7 +46,7 @@ type executor struct {
 
 const publicDirectHintGatherTimeout = time.Second
 
-const publicDirectCandidateSignalLimit = 256
+const publicDirectCandidateSignalLimit = 1024
 
 const publicDirectCandidateSignalRounds = 3
 
@@ -65,6 +65,12 @@ const publicDirectCandidateSignalMaxSendTimeout = 5 * time.Second
 const publicDirectRemoteCandidateGraceTimeout = 750 * time.Millisecond
 
 const publicDirectRemoteCandidateGraceMaxTimeout = 10 * time.Second
+
+const publicDirectRemotePunchTimeout = 500 * time.Millisecond
+
+const publicDirectRemotePunchPerCandidateTimeout = 5 * time.Millisecond
+
+const publicDirectRemotePunchMaxTimeout = 1500 * time.Millisecond
 
 func newExecutor(cfg Config, input solver.SolveInput, plan solver.Plan, execCfg executorConfig) *executor {
 	lifecycleCtx, lifecycleCancel := context.WithCancel(context.Background())
@@ -153,6 +159,7 @@ func (e *executor) HandleMessage(ctx context.Context, sess solver.SessionIO, msg
 		if err := agent.SetRemoteCandidates(candidates); err != nil {
 			return err
 		}
+		e.punchRemoteCandidates(ctx, sess, agent, candidates, MessageTypeOffer)
 		e.clearPendingRemoteCandidates()
 		e.markRemoteCandidatesSet()
 		if err := e.sendAnswer(ctx, sess); err != nil {
@@ -185,6 +192,7 @@ func (e *executor) HandleMessage(ctx context.Context, sess solver.SessionIO, msg
 		if err := agent.SetRemoteCandidates(candidates); err != nil {
 			return err
 		}
+		e.punchRemoteCandidates(ctx, sess, agent, candidates, MessageTypeAnswer)
 		e.clearPendingRemoteCandidates()
 		e.markRemoteCandidatesSet()
 		e.startConnect(sess)
@@ -209,6 +217,7 @@ func (e *executor) HandleMessage(ctx context.Context, sess solver.SessionIO, msg
 		if err := agent.SetRemoteCandidates(filtered); err != nil {
 			return err
 		}
+		e.punchRemoteCandidates(ctx, sess, agent, filtered, MessageTypeCandidate)
 		e.markRemoteCandidatesSet()
 		if e.remoteReadyToConnect() {
 			e.startConnect(sess)
@@ -393,6 +402,57 @@ func (e *executor) sendCandidateMessages(ctx context.Context, sess solver.Sessio
 		return
 	}
 	go e.sendCandidateMessageRetries(sess, candidates, 2, rounds)
+}
+
+func (e *executor) punchRemoteCandidates(ctx context.Context, sess solver.SessionIO, agent nat.ICEAgent, candidates []nat.Candidate, messageType string) {
+	if e.execCfg.Mode != modePublicDirect || len(candidates) == 0 || sess == nil || agent == nil {
+		return
+	}
+	puncher, ok := agent.(nat.PublicDirectPuncher)
+	if !ok {
+		return
+	}
+	ordered := prioritizePublicDirectSignalCandidates(candidates)
+	punchCtx, cancel := context.WithTimeout(ctx, remoteCandidatePunchTimeout(len(ordered)))
+	defer cancel()
+	report, err := puncher.PunchCandidates(punchCtx, ordered, nat.PublicDirectPunchOptions{
+		Limit: publicDirectCandidateSignalLimit,
+	})
+	if err == nil && messageType == MessageTypeCandidate && report.CandidateTotal == 1 {
+		return
+	}
+	details := map[string]string{
+		"mode":            string(e.execCfg.Mode),
+		"message_type":    messageType,
+		"candidate_total": strconv.Itoa(report.CandidateTotal),
+		"candidate_sent":  strconv.Itoa(report.CandidateSent),
+		"candidate_limit": strconv.Itoa(publicDirectCandidateSignalLimit),
+	}
+	if err != nil {
+		details["last_error"] = err.Error()
+	}
+	e.report(sess, solver.Observation{
+		Strategy:  e.strategyName(),
+		PlanID:    e.plan.ID,
+		Event:     "remote_candidates_punched",
+		Details:   details,
+		Timestamp: time.Now(),
+	})
+}
+
+func remoteCandidatePunchTimeout(candidateCount int) time.Duration {
+	if candidateCount <= 0 {
+		return publicDirectRemotePunchTimeout
+	}
+	if candidateCount > publicDirectCandidateSignalLimit {
+		candidateCount = publicDirectCandidateSignalLimit
+	}
+	timeout := publicDirectRemotePunchTimeout +
+		time.Duration(candidateCount)*publicDirectRemotePunchPerCandidateTimeout
+	if timeout > publicDirectRemotePunchMaxTimeout {
+		return publicDirectRemotePunchMaxTimeout
+	}
+	return timeout
 }
 
 func prioritizePublicDirectSignalCandidates(candidates []nat.Candidate) []nat.Candidate {
@@ -1224,22 +1284,46 @@ func publicEndpointHintCandidates(raw string, index int, portWindow int, trusted
 		related = &net.UDPAddr{IP: localIP, Port: int(hint.local.Port())}
 	}
 
-	offsets := publicEndpointHintPortOffsets(hint.public.Port(), portWindow)
-	candidates := make([]nat.Candidate, 0, len(offsets))
-	for _, offset := range offsets {
-		port := int(hint.public.Port()) + offset
-		candidate := nat.Candidate{
-			Type:       nat.CandidateTypeSrflx,
-			Address:    &net.UDPAddr{IP: append(net.IP(nil), ip...), Port: port},
-			Priority:   publicEndpointHintPriorityForOffset(index, offset),
-			Foundation: publicEndpointHintFoundation(index, offset),
+	centers := []publicEndpointHintPortCenter{{
+		port:    hint.public.Port(),
+		variant: publicEndpointHintPortVariantMapped,
+	}}
+	if hint.local.IsValid() && hint.local.Port() != hint.public.Port() {
+		centers = append(centers, publicEndpointHintPortCenter{
+			port:    hint.local.Port(),
+			variant: publicEndpointHintPortVariantLocalBase,
+		})
+	}
+	candidates := make([]nat.Candidate, 0, len(centers)*(1+2*portWindow))
+	for _, center := range centers {
+		offsets := publicEndpointHintPortOffsets(center.port, portWindow)
+		for _, offset := range offsets {
+			port := int(center.port) + offset
+			candidate := nat.Candidate{
+				Type:       nat.CandidateTypeSrflx,
+				Address:    &net.UDPAddr{IP: append(net.IP(nil), ip...), Port: port},
+				Priority:   publicEndpointHintPriorityForOffsetVariant(index, offset, center.variant),
+				Foundation: publicEndpointHintFoundation(index, offset, center.variant),
+			}
+			if related != nil {
+				candidate.RelatedAddr = &net.UDPAddr{IP: append(net.IP(nil), related.IP...), Port: related.Port}
+			}
+			candidates = append(candidates, candidate)
 		}
-		if related != nil {
-			candidate.RelatedAddr = &net.UDPAddr{IP: append(net.IP(nil), related.IP...), Port: related.Port}
-		}
-		candidates = append(candidates, candidate)
 	}
 	return candidates, nil
+}
+
+type publicEndpointHintPortVariant int
+
+const (
+	publicEndpointHintPortVariantMapped publicEndpointHintPortVariant = iota
+	publicEndpointHintPortVariantLocalBase
+)
+
+type publicEndpointHintPortCenter struct {
+	port    uint16
+	variant publicEndpointHintPortVariant
 }
 
 func publicEndpointHintPortWindow(window int) int {
@@ -1270,11 +1354,15 @@ func publicEndpointHintPortOffsets(port uint16, window int) []int {
 	return offsets
 }
 
-func publicEndpointHintFoundation(index int, offset int) string {
-	if offset == 0 {
-		return fmt.Sprintf("public-hint-%d", index+1)
+func publicEndpointHintFoundation(index int, offset int, variant publicEndpointHintPortVariant) string {
+	prefix := fmt.Sprintf("public-hint-%d", index+1)
+	if variant == publicEndpointHintPortVariantLocalBase {
+		prefix += "-local-port"
 	}
-	return fmt.Sprintf("public-hint-%d-offset-%d", index+1, offset)
+	if offset == 0 {
+		return prefix
+	}
+	return fmt.Sprintf("%s-offset-%d", prefix, offset)
 }
 
 func publicEndpointHintLocalBaseRejectReason(ip net.IP, trustedCIDRs []string) string {
@@ -1447,14 +1535,20 @@ func publicEndpointHintPriority(index int) uint32 {
 }
 
 func publicEndpointHintPriorityForOffset(index int, offset int) uint32 {
+	return publicEndpointHintPriorityForOffsetVariant(index, offset, publicEndpointHintPortVariantMapped)
+}
+
+func publicEndpointHintPriorityForOffsetVariant(index int, offset int, variant publicEndpointHintPortVariant) uint32 {
 	const (
 		srflxTypePreference = 100
 		componentID         = 1
+		offsetPriorityStep  = 128
+		variantPriorityStep = 64
 	)
 	if offset < 0 {
 		offset = -offset
 	}
-	localPreference := 65535 - index*1024 - offset
+	localPreference := 65535 - offset*offsetPriorityStep - int(variant)*variantPriorityStep - index
 	if localPreference < 1 {
 		localPreference = 1
 	}

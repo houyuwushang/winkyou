@@ -339,17 +339,17 @@ func TestPublicDirectFixedPortMuxRequiresSingleLocalBase(t *testing.T) {
 	}
 	for _, tc := range noMuxCases {
 		t.Run(tc.name, func(t *testing.T) {
-			mux, closer, err := publicDirectFixedPortMuxForConfig(tc.cfg)
+			mux, closer, punchConn, err := publicDirectFixedPortMuxForConfig(tc.cfg)
 			if err != nil {
 				t.Fatalf("publicDirectFixedPortMuxForConfig() error = %v", err)
 			}
-			if mux != nil || closer != nil {
-				t.Fatalf("publicDirectFixedPortMuxForConfig() = %v, %v; want no mux", mux, closer)
+			if mux != nil || closer != nil || punchConn != nil {
+				t.Fatalf("publicDirectFixedPortMuxForConfig() = %v, %v, %v; want no mux", mux, closer, punchConn)
 			}
 		})
 	}
 
-	_, _, err := publicDirectFixedPortMuxForConfig(ICEConfig{
+	_, _, _, err := publicDirectFixedPortMuxForConfig(ICEConfig{
 		PublicDirectCandidate: true,
 		CandidatePortMin:      port,
 		CandidatePortMax:      port,
@@ -360,7 +360,7 @@ func TestPublicDirectFixedPortMuxRequiresSingleLocalBase(t *testing.T) {
 	}
 
 	muxPort := uint16(freeUDPPort(t))
-	mux, closer, err := publicDirectFixedPortMuxForConfig(ICEConfig{
+	mux, closer, punchConn, err := publicDirectFixedPortMuxForConfig(ICEConfig{
 		PublicDirectCandidate: true,
 		CandidatePortMin:      muxPort,
 		CandidatePortMax:      muxPort,
@@ -369,8 +369,8 @@ func TestPublicDirectFixedPortMuxRequiresSingleLocalBase(t *testing.T) {
 	if err != nil {
 		t.Fatalf("publicDirectFixedPortMuxForConfig(single local base) error = %v", err)
 	}
-	if mux == nil || closer == nil {
-		t.Fatalf("publicDirectFixedPortMuxForConfig(single local base) = %v, %v; want mux", mux, closer)
+	if mux == nil || closer == nil || punchConn == nil {
+		t.Fatalf("publicDirectFixedPortMuxForConfig(single local base) = %v, %v, %v; want mux", mux, closer, punchConn)
 	}
 	if err := closer.Close(); err != nil {
 		t.Fatalf("fixed UDP mux close error = %v", err)
@@ -450,6 +450,67 @@ func TestPublicDirectFixedPortMuxCloseReleasesPort(t *testing.T) {
 		t.Fatalf("ListenUDP(127.0.0.1:%d) after agent close error = %v", port, err)
 	}
 	_ = conn.Close()
+}
+
+func TestPublicDirectPunchCandidatesUsesFixedMuxSocket(t *testing.T) {
+	port := uint16(freeUDPPort(t))
+	receiver, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 0})
+	if err != nil {
+		t.Fatalf("ListenUDP(receiver) error = %v", err)
+	}
+	defer receiver.Close()
+	receiverAddr, ok := receiver.LocalAddr().(*net.UDPAddr)
+	if !ok {
+		t.Fatalf("receiver LocalAddr type = %T, want *net.UDPAddr", receiver.LocalAddr())
+	}
+
+	nt, _ := NewNATTraversal(nil)
+	agent, err := nt.NewICEAgent(ICEConfig{
+		PublicDirectCandidate: true,
+		CandidatePortMin:      port,
+		CandidatePortMax:      port,
+		CandidateCIDRInclude:  []string{"127.0.0.1/32"},
+	})
+	if err != nil {
+		t.Fatalf("NewICEAgent(public direct fixed mux) error = %v", err)
+	}
+	defer agent.Close()
+	puncher, ok := agent.(PublicDirectPuncher)
+	if !ok {
+		t.Fatal("public-direct fixed mux agent does not expose PublicDirectPuncher")
+	}
+
+	report, err := puncher.PunchCandidates(context.Background(), []Candidate{{
+		Type:       CandidateTypeSrflx,
+		Address:    receiverAddr,
+		Priority:   100,
+		Foundation: "remote-srflx",
+	}}, PublicDirectPunchOptions{Limit: 1})
+	if err != nil {
+		t.Fatalf("PunchCandidates() error = %v", err)
+	}
+	if report.CandidateTotal != 1 || report.CandidateSent != 1 {
+		t.Fatalf("PunchCandidates() report = %+v, want total=1 sent=1", report)
+	}
+
+	if err := receiver.SetDeadline(time.Now().Add(time.Second)); err != nil {
+		t.Fatalf("receiver.SetDeadline() error = %v", err)
+	}
+	buf := make([]byte, stunMaxPacket)
+	n, src, err := receiver.ReadFromUDP(buf)
+	if err != nil {
+		t.Fatalf("receiver.ReadFromUDP() error = %v", err)
+	}
+	if src.Port != int(port) {
+		t.Fatalf("punch source port = %d, want fixed mux port %d", src.Port, port)
+	}
+	msg, err := parseSTUNMessage(buf[:n])
+	if err != nil {
+		t.Fatalf("parse punch packet error = %v", err)
+	}
+	if msg.msgType != stunMsgTypeBindingReq {
+		t.Fatalf("punch message type = 0x%04x, want STUN binding request", msg.msgType)
+	}
 }
 
 func TestICEPionAgentRemoteCandidateCount(t *testing.T) {
