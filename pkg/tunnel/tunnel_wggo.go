@@ -553,6 +553,7 @@ type boundTransport struct {
 	conn      transport.PacketTransport
 	endpoint  *transportEndpoint
 	stopCh    chan struct{}
+	stopOnce  sync.Once
 	closeOnce sync.Once
 	statsMu   sync.RWMutex
 	stats     transportCounters
@@ -696,26 +697,31 @@ func (b *peerTransportBind) BatchSize() int {
 	return baseSize
 }
 
-func (b *peerTransportBind) AttachTransport(publicKey PublicKey, transport transport.PacketTransport) (string, error) {
-	if transport == nil {
+func (b *peerTransportBind) AttachTransport(publicKey PublicKey, pt transport.PacketTransport) (string, error) {
+	if pt == nil {
 		return "", fmt.Errorf("tunnel: peer transport is nil")
 	}
 
 	endpoint := &transportEndpoint{
 		key:        publicKey,
 		id:         transportEndpointID(publicKey),
-		remoteAddr: transport.RemoteAddr(),
-		localAddr:  transport.LocalAddr(),
+		remoteAddr: pt.RemoteAddr(),
+		localAddr:  pt.LocalAddr(),
 	}
 	bound := &boundTransport{
-		conn:     transport,
+		conn:     pt,
 		endpoint: endpoint,
 		stopCh:   make(chan struct{}),
 	}
 
 	b.mu.Lock()
 	if existing := b.transports[publicKey]; existing != nil {
-		_ = existing.Close()
+		if adopter, ok := pt.(multipath.TransportAdopter); ok && adopter.ContainsTransport(existing.conn) {
+			existing.StopReceiving()
+			adopter.AdoptTransport(existing.conn)
+		} else {
+			_ = existing.Close()
+		}
 	}
 	b.transports[publicKey] = bound
 	b.mu.Unlock()
@@ -973,14 +979,23 @@ func (t *boundTransport) Close() error {
 
 	var err error
 	t.closeOnce.Do(func() {
-		if t.stopCh != nil {
-			close(t.stopCh)
-		}
+		t.StopReceiving()
 		if t.conn != nil {
 			err = t.conn.Close()
 		}
 	})
 	return err
+}
+
+func (t *boundTransport) StopReceiving() {
+	if t == nil {
+		return
+	}
+	t.stopOnce.Do(func() {
+		if t.stopCh != nil {
+			close(t.stopCh)
+		}
+	})
 }
 
 func (t *boundTransport) recordSend(size int) {

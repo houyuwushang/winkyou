@@ -172,7 +172,7 @@ func (s *Session) selectAndBindProtectedDirect(ctx context.Context) (bool, error
 
 		protected := selectProtectedDirectOutcome(outcomes, s.cfg.PathPolicy)
 		if protected != nil {
-			return true, s.bindOutcomeSet(ctx, outcomes, protected)
+			return true, s.bindProtectedDirectImprovement(ctx, outcomes)
 		}
 
 		err = noProtectedDirectOutcomeError(outcomes)
@@ -396,6 +396,60 @@ func (s *Session) bindOutcomeSet(ctx context.Context, outcomes []solver.Candidat
 func (s *Session) shouldProtectDirectStandby() bool {
 	policy := s.cfg.PathPolicy
 	return policy.MultipathEnabled && policy.ProtectDirect
+}
+
+func (s *Session) bindProtectedDirectImprovement(ctx context.Context, outcomes []solver.CandidateOutcome) error {
+	if desiredMultipathPathCount(s.cfg.PathPolicy) <= 1 {
+		protected := selectProtectedDirectOutcome(outcomes, s.cfg.PathPolicy)
+		return s.bindOutcomeSet(ctx, outcomes, protected)
+	}
+	combined := s.prependCurrentBoundOutcome(outcomes)
+	return s.bindOutcomeSet(ctx, combined, nil)
+}
+
+func (s *Session) prependCurrentBoundOutcome(outcomes []solver.CandidateOutcome) []solver.CandidateOutcome {
+	current := s.currentBoundOutcome()
+	if current == nil {
+		return outcomes
+	}
+	currentKey := outcomeKey(*current)
+	for i := range outcomes {
+		if outcomeKey(outcomes[i]) == currentKey {
+			return outcomes
+		}
+	}
+	combined := make([]solver.CandidateOutcome, 0, len(outcomes)+1)
+	combined = append(combined, *current)
+	combined = append(combined, outcomes...)
+	return combined
+}
+
+func (s *Session) currentBoundOutcome() *solver.CandidateOutcome {
+	if s.lastRes.Transport == nil {
+		return nil
+	}
+	result := s.lastRes
+	result.Summary = solver.ClonePathSummary(s.lastRes.Summary)
+	plan := s.lastPlan
+	if plan.ID == "" && result.Summary.Details != nil {
+		plan.ID = result.Summary.Details["plan_id"]
+	}
+	if plan.Strategy == "" && result.Summary.Details != nil {
+		plan.Strategy = result.Summary.Details["strategy"]
+	}
+	outcome := solver.CandidateOutcome{
+		Plan:              plan,
+		PlanID:            plan.ID,
+		Result:            &result,
+		PathID:            result.Summary.PathID,
+		BorrowedTransport: true,
+	}
+	if s.cfg.PathPolicy.MultipathEnabled {
+		outcome.Score = solver.ScoreOutcomeWithPolicy(outcome, s.cfg.PathPolicy)
+	} else {
+		outcome.Score = solver.ScoreOutcome(outcome)
+	}
+	return &outcome
 }
 
 func strategyMayProduceDirect(name string) bool {

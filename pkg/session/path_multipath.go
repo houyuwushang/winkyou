@@ -41,6 +41,7 @@ func buildResultTransportFromOutcomes(best *solver.CandidateOutcome, outcomes []
 			Summary:   solver.ClonePathSummary(outcome.Result.Summary),
 			Transport: outcome.Result.Transport,
 			Priority:  priority,
+			Borrowed:  outcome.BorrowedTransport,
 		})
 	}
 	if len(paths) <= 1 {

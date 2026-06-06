@@ -85,6 +85,9 @@ func (s *Session) closeUnusedOutcomes(outcomes []solver.CandidateOutcome, select
 		if _, ok := retainedKeys[outcomeKey(*outcome)]; ok {
 			continue
 		}
+		if outcome.BorrowedTransport {
+			continue
+		}
 		if outcome.Result != nil && outcome.Result.Transport != nil {
 			s.ignoreCleanupError(s.runCleanup(outcome.Result.Transport.Close))
 		}
@@ -98,6 +101,9 @@ func (s *Session) closeRetainedOutcomes() {
 	retained := s.retained
 	s.retained = nil
 	for i := range retained {
+		if retained[i].BorrowedTransport {
+			continue
+		}
 		if retained[i].Result != nil && retained[i].Result.Transport != nil {
 			s.ignoreCleanupError(s.runCleanup(retained[i].Result.Transport.Close))
 		}

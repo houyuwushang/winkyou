@@ -299,6 +299,51 @@ func TestPeerTransportBindReplaceClosesOldTransport(t *testing.T) {
 	}
 }
 
+func TestPeerTransportBindAdoptsExistingTransportIntoMultipath(t *testing.T) {
+	bind := newPeerTransportBind()
+	defer bind.Shutdown()
+
+	publicKey := makeTestKey(77)
+	first, firstPeer := newTrackedPipe()
+	defer firstPeer.Close()
+	second, secondPeer := newTrackedPipe()
+	defer secondPeer.Close()
+
+	firstTransport := iceadapter.New(first, "test/adopt/first")
+	if _, err := bind.AttachTransport(publicKey, firstTransport); err != nil {
+		t.Fatalf("AttachTransport(first) error: %v", err)
+	}
+	secondTransport := iceadapter.New(second, "test/adopt/second")
+	wrapper, err := multipath.New([]multipath.Path{
+		{ID: "first", Transport: firstTransport, Borrowed: true},
+		{ID: "second", Transport: secondTransport},
+	}, solver.PathPolicy{})
+	if err != nil {
+		t.Fatalf("multipath.New() error = %v", err)
+	}
+	if _, err := bind.AttachTransport(publicKey, wrapper); err != nil {
+		t.Fatalf("AttachTransport(multipath) error: %v", err)
+	}
+
+	select {
+	case <-first.closed:
+		t.Fatal("adopted transport was closed during replacement")
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	bind.DetachTransport(publicKey)
+	select {
+	case <-first.closed:
+	case <-time.After(time.Second):
+		t.Fatal("adopted transport was not closed after detach")
+	}
+	select {
+	case <-second.closed:
+	case <-time.After(time.Second):
+		t.Fatal("new multipath child transport was not closed after detach")
+	}
+}
+
 func TestPeerTransportBindDetachClosesTransport(t *testing.T) {
 	bind := newPeerTransportBind()
 	defer bind.Shutdown()

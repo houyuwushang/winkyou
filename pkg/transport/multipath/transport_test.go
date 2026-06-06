@@ -297,6 +297,50 @@ func TestCloseClosesAllChildren(t *testing.T) {
 	}
 }
 
+func TestCloseSkipsBorrowedChildUntilAdopted(t *testing.T) {
+	borrowed := newFakePacketTransport("borrowed")
+	owned := newFakePacketTransport("owned")
+	mp := newTestTransport(t, []Path{
+		testPath("borrowed", solver.PathRolePrimaryCandidate, borrowed, 100),
+		testPath("owned", solver.PathRoleProtectedDirect, owned, 10),
+	}, solver.PathPolicy{})
+	mp.paths[0].path.Borrowed = true
+
+	if !mp.ContainsTransport(borrowed) {
+		t.Fatal("ContainsTransport() = false, want borrowed child match")
+	}
+	if err := mp.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+	if borrowed.isClosed() {
+		t.Fatal("borrowed child was closed before adoption")
+	}
+	if !owned.isClosed() {
+		t.Fatal("owned child was not closed")
+	}
+}
+
+func TestAdoptTransportMakesBorrowedChildOwned(t *testing.T) {
+	borrowed := newFakePacketTransport("borrowed")
+	owned := newFakePacketTransport("owned")
+	mp := newTestTransport(t, []Path{
+		testPath("borrowed", solver.PathRolePrimaryCandidate, borrowed, 100),
+		testPath("owned", solver.PathRoleProtectedDirect, owned, 10),
+	}, solver.PathPolicy{})
+	mp.paths[0].path.Borrowed = true
+
+	mp.AdoptTransport(borrowed)
+	if err := mp.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+	if !borrowed.isClosed() {
+		t.Fatal("adopted child was not closed")
+	}
+	if !owned.isClosed() {
+		t.Fatal("owned child was not closed")
+	}
+}
+
 func TestShadowWriteCopiesToStandbyPaths(t *testing.T) {
 	primary := newFakePacketTransport("primary")
 	directStandby := newFakePacketTransport("direct-standby")

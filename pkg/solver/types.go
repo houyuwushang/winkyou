@@ -66,18 +66,19 @@ type ExecutionBudget struct {
 
 // CandidateOutcome represents the result of executing a single candidate plan
 type CandidateOutcome struct {
-	Plan             Plan
-	PlanID           string
-	Result           *Result
-	PathID           string
-	ErrorClass       string
-	Err              error
-	Score            int
-	Selected         bool
-	SelectionReason  string
-	FinishedAt       time.Time
-	ExecutionDur     time.Duration
-	ObservationCount int
+	Plan              Plan
+	PlanID            string
+	Result            *Result
+	PathID            string
+	BorrowedTransport bool
+	ErrorClass        string
+	Err               error
+	Score             int
+	Selected          bool
+	SelectionReason   string
+	FinishedAt        time.Time
+	ExecutionDur      time.Duration
+	ObservationCount  int
 }
 
 type SessionIO interface {

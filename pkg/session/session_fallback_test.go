@@ -555,7 +555,7 @@ func TestSessionMultipathDirectStandbyFailureDoesNotBlockPrimary(t *testing.T) {
 	}
 }
 
-func TestSessionImproveProtectedDirectRebindsWhenProtectedPathFound(t *testing.T) {
+func TestSessionImproveProtectedDirectCombinesExistingPathWhenProtectedPathFound(t *testing.T) {
 	relayTransport := &fakeTransport{}
 	directTransport := &fakeTransport{}
 	relay := &successfulFallbackStrategy{
@@ -617,8 +617,19 @@ func TestSessionImproveProtectedDirectRebindsWhenProtectedPathFound(t *testing.T
 	if !found {
 		t.Fatal("ImproveProtectedDirect() found = false, want true")
 	}
-	if binder.boundTransport != directTransport {
-		t.Fatalf("improved bound transport = %T, want direct transport", binder.boundTransport)
+	provider, ok := binder.boundTransport.(multipath.StatsProvider)
+	if !ok {
+		t.Fatalf("improved bound transport = %T, want multipath stats provider", binder.boundTransport)
+	}
+	stats := provider.MultipathStats()
+	if stats.ChildPathCount != 2 || stats.ProtectedDirectPathID != "direct/path" {
+		t.Fatalf("multipath stats = %#v, want relay plus protected direct", stats)
+	}
+	if !multipathStatsHasPath(stats, "relay/path") || !multipathStatsHasPath(stats, "direct/path") {
+		t.Fatalf("multipath stats = %#v, want relay/path and direct/path", stats)
+	}
+	if relayTransport.closed {
+		t.Fatal("existing relay transport was closed instead of being retained")
 	}
 	if s.State() != StateBound {
 		t.Fatalf("state = %s, want bound", s.State())

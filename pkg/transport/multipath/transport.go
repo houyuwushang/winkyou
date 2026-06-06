@@ -21,10 +21,20 @@ type Path struct {
 	Summary   solver.PathSummary
 	Transport transport.PacketTransport
 	Priority  int
+	Borrowed  bool
 }
 
 type StatsProvider interface {
 	MultipathStats() Stats
+}
+
+type TransportMatcher interface {
+	ContainsTransport(transport.PacketTransport) bool
+}
+
+type TransportAdopter interface {
+	TransportMatcher
+	AdoptTransport(transport.PacketTransport)
 }
 
 type HealthController interface {
@@ -207,6 +217,9 @@ func (t *Transport) Close() error {
 		t.mu.Unlock()
 		close(t.closeCh)
 		for _, state := range t.paths {
+			if state.path.Borrowed {
+				continue
+			}
 			if err := state.path.Transport.Close(); err != nil && result == nil {
 				result = err
 			}
@@ -258,6 +271,40 @@ func (t *Transport) ActivePathID() string {
 	t.mu.RLock()
 	defer t.mu.RUnlock()
 	return t.activeID
+}
+
+func (t *Transport) ContainsTransport(target transport.PacketTransport) bool {
+	if target == nil {
+		return false
+	}
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	for _, state := range t.paths {
+		if state.path.Transport == target {
+			return true
+		}
+		if matcher, ok := state.path.Transport.(TransportMatcher); ok && matcher.ContainsTransport(target) {
+			return true
+		}
+	}
+	return false
+}
+
+func (t *Transport) AdoptTransport(target transport.PacketTransport) {
+	if target == nil {
+		return
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	for _, state := range t.paths {
+		if state.path.Transport == target {
+			state.path.Borrowed = false
+			continue
+		}
+		if adopter, ok := state.path.Transport.(TransportAdopter); ok && adopter.ContainsTransport(target) {
+			adopter.AdoptTransport(target)
+		}
+	}
 }
 
 func (t *Transport) readLoop(state *pathState) {
