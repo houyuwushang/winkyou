@@ -50,6 +50,8 @@ const publicDirectCandidateSignalRounds = 3
 
 const publicDirectCandidateSignalRetryInterval = 100 * time.Millisecond
 
+const publicDirectCandidateSignalSendTimeout = time.Second
+
 func newExecutor(cfg Config, input solver.SolveInput, plan solver.Plan, execCfg executorConfig) *executor {
 	lifecycleCtx, lifecycleCancel := context.WithCancel(context.Background())
 	return &executor{
@@ -360,28 +362,26 @@ func (e *executor) sendCandidateMessages(ctx context.Context, sess solver.Sessio
 	if e.execCfg.Mode != modePublicDirect || len(candidates) == 0 || sess == nil {
 		return
 	}
-	for round := 1; round <= publicDirectCandidateSignalRounds; round++ {
-		select {
-		case <-ctx.Done():
-			return
-		case <-e.lifecycleCtx.Done():
-			return
-		default:
-		}
-		e.sendCandidateMessageRound(ctx, sess, candidates, round)
-		if round == publicDirectCandidateSignalRounds {
-			return
-		}
+	e.sendCandidateMessageRound(ctx, sess, candidates, 1)
+	if publicDirectCandidateSignalRounds <= 1 {
+		return
+	}
+	candidates = cloneLegacyCandidates(candidates)
+	go e.sendCandidateMessageRetries(sess, candidates, 2)
+}
+
+func (e *executor) sendCandidateMessageRetries(sess solver.SessionIO, candidates []nat.Candidate, startRound int) {
+	for round := startRound; round <= publicDirectCandidateSignalRounds; round++ {
 		timer := time.NewTimer(publicDirectCandidateSignalRetryInterval)
 		select {
 		case <-timer.C:
-		case <-ctx.Done():
-			timer.Stop()
-			return
 		case <-e.lifecycleCtx.Done():
 			timer.Stop()
 			return
 		}
+		roundCtx, cancel := context.WithTimeout(e.lifecycleCtx, publicDirectCandidateSignalSendTimeout)
+		e.sendCandidateMessageRound(roundCtx, sess, candidates, round)
+		cancel()
 	}
 }
 
@@ -392,7 +392,14 @@ func (e *executor) sendCandidateMessageRound(ctx context.Context, sess solver.Se
 	}
 	sent := 0
 	var lastErr error
+sendLoop:
 	for i := 0; i < limit; i++ {
+		select {
+		case <-ctx.Done():
+			lastErr = ctx.Err()
+			break sendLoop
+		default:
+		}
 		payload, err := marshalCandidatePayload(candidatePayload{
 			SessionID: e.input.SessionID,
 			PlanID:    e.plan.ID,
@@ -1200,6 +1207,17 @@ func cloneLegacyCandidate(candidate nat.Candidate) nat.Candidate {
 		Foundation:  candidate.Foundation,
 		RelatedAddr: cloneLegacyUDPAddr(candidate.RelatedAddr),
 	}
+}
+
+func cloneLegacyCandidates(candidates []nat.Candidate) []nat.Candidate {
+	if len(candidates) == 0 {
+		return nil
+	}
+	out := make([]nat.Candidate, 0, len(candidates))
+	for _, candidate := range candidates {
+		out = append(out, cloneLegacyCandidate(candidate))
+	}
+	return out
 }
 
 func cloneLegacyUDPAddr(addr *net.UDPAddr) *net.UDPAddr {

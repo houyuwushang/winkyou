@@ -90,10 +90,40 @@ func (c *capturingSessionIO) Messages() []solver.Message {
 	return append([]solver.Message(nil), c.messages...)
 }
 
+func (c *capturingSessionIO) WaitMessages(t *testing.T, count int) []solver.Message {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		messages := c.Messages()
+		if len(messages) >= count {
+			return messages
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("messages = %d, want at least %d", len(messages), count)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
 func (c *capturingSessionIO) Observations() []solver.Observation {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return append([]solver.Observation(nil), c.observations...)
+}
+
+func (c *capturingSessionIO) WaitObservations(t *testing.T, count int) []solver.Observation {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		observations := c.Observations()
+		if len(observations) >= count {
+			return observations
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("observations = %d, want at least %d", len(observations), count)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 }
 
 func TestExecutorConfigForPlanProducesDistinctModes(t *testing.T) {
@@ -278,8 +308,8 @@ func TestPublicDirectSendOfferAdvertisesOnlyPublicCandidates(t *testing.T) {
 	if err := exec.sendOffer(context.Background(), io); err != nil {
 		t.Fatalf("sendOffer(public_direct) error = %v", err)
 	}
-	messages := io.Messages()
 	wantMessages := 1 + publicDirectCandidateSignalRounds
+	messages := io.WaitMessages(t, wantMessages)
 	if len(messages) != wantMessages {
 		t.Fatalf("sent messages = %d, want offer + %d candidate signal rounds", len(messages), publicDirectCandidateSignalRounds)
 	}
@@ -379,8 +409,8 @@ func TestPublicDirectAdvertisesConfiguredPublicEndpointHints(t *testing.T) {
 	if remaining := time.Until(agent.gatherDeadline); remaining <= 0 || remaining > 2*time.Second {
 		t.Fatalf("GatherCandidates deadline remaining = %v, want short public endpoint hint gather timeout", remaining)
 	}
-	messages := io.Messages()
 	wantMessages := 1 + publicDirectCandidateSignalRounds
+	messages := io.WaitMessages(t, wantMessages)
 	if len(messages) != wantMessages {
 		t.Fatalf("sent messages = %d, want offer + %d candidate signal rounds", len(messages), publicDirectCandidateSignalRounds)
 	}
@@ -531,8 +561,8 @@ func TestPublicDirectCandidateSignalsAreBounded(t *testing.T) {
 
 	exec.sendCandidateMessages(context.Background(), io, candidates)
 
-	messages := io.Messages()
 	wantMessages := publicDirectCandidateSignalLimit * publicDirectCandidateSignalRounds
+	messages := io.WaitMessages(t, wantMessages)
 	if len(messages) != wantMessages {
 		t.Fatalf("candidate signal messages = %d, want limit %d across %d rounds", len(messages), publicDirectCandidateSignalLimit, publicDirectCandidateSignalRounds)
 	}
@@ -558,6 +588,39 @@ func TestPublicDirectCandidateSignalsAreBounded(t *testing.T) {
 	}
 }
 
+func TestPublicDirectCandidateSignalsRetryAsynchronously(t *testing.T) {
+	candidate := nat.Candidate{
+		Type:    nat.CandidateTypeSrflx,
+		Address: &net.UDPAddr{IP: net.IPv4(117, 48, 146, 2), Port: 41000},
+	}
+	exec := newExecutor(Config{}, solver.SolveInput{
+		SessionID: "session/node-a/node-b",
+	}, solver.Plan{
+		ID:       planIDPublicDirect,
+		Strategy: StrategyName,
+	}, executorConfig{Mode: modePublicDirect})
+	io := &capturingSessionIO{}
+
+	start := time.Now()
+	exec.sendCandidateMessages(context.Background(), io, []nat.Candidate{candidate})
+	if elapsed := time.Since(start); elapsed >= publicDirectCandidateSignalRetryInterval {
+		t.Fatalf("sendCandidateMessages elapsed = %v, want return before retry interval", elapsed)
+	}
+	if messages := io.Messages(); len(messages) != 1 {
+		t.Fatalf("immediate candidate signal messages = %d, want first round only", len(messages))
+	}
+
+	messages := io.WaitMessages(t, publicDirectCandidateSignalRounds)
+	if len(messages) != publicDirectCandidateSignalRounds {
+		t.Fatalf("candidate signal messages = %d, want %d rounds", len(messages), publicDirectCandidateSignalRounds)
+	}
+	observations := io.WaitObservations(t, publicDirectCandidateSignalRounds)
+	last := observations[len(observations)-1]
+	if last.Event != "candidate_signaled" || last.Details["candidate_round"] != strconv.Itoa(publicDirectCandidateSignalRounds) {
+		t.Fatalf("last observation = %#v, want final candidate_signaled round", last)
+	}
+}
+
 func TestPublicDirectCandidateSignalLimitCoversSymmetricHintWindow(t *testing.T) {
 	const symmetricHintWindow = 16
 	candidates := make([]nat.Candidate, 1+2*symmetricHintWindow)
@@ -577,8 +640,8 @@ func TestPublicDirectCandidateSignalLimitCoversSymmetricHintWindow(t *testing.T)
 
 	exec.sendCandidateMessages(context.Background(), io, candidates)
 
-	messages := io.Messages()
 	wantMessages := len(candidates) * publicDirectCandidateSignalRounds
+	messages := io.WaitMessages(t, wantMessages)
 	if len(messages) != wantMessages {
 		t.Fatalf("candidate signal messages = %d, want all %d symmetric-window candidates across %d rounds", len(messages), len(candidates), publicDirectCandidateSignalRounds)
 	}
