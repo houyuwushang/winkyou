@@ -227,6 +227,9 @@ func (e *engine) handleInbandControlMessage(msg peercontrol.Message) {
 	if knownPeer && msg.ReICERequest != nil {
 		e.schedulePeerImprovementByIDWithForce(msg.From, true)
 	}
+	if knownPeer && msg.PathHealth != nil {
+		e.learnRuntimePublicEndpointHintFromPeer(msg.PathHealth.Endpoint, msg.From)
+	}
 	if knownPeer && msg.SessionSignal != nil {
 		if e.markInbandMessageSeen(msg, time.Now()) {
 			return

@@ -235,6 +235,86 @@ func TestHandleInbandControlMessageUpdatesPeerTimestamps(t *testing.T) {
 	}
 }
 
+func TestHandleInbandPathHealthLearnsRuntimePublicEndpointHint(t *testing.T) {
+	cfg := config.Default()
+	eng := &engine{
+		cfg:    cfg,
+		status: EngineStatus{NodeID: "node-a"},
+		peers: map[string]*PeerStatus{
+			"node-b": {NodeID: "node-b"},
+		},
+		runtimePublicEndpointHints: []string{"9.9.9.9:40000"},
+	}
+
+	msg := peercontrol.NewPathHealth("node-b", "node-a", peercontrol.PathHealth{
+		Endpoint: "8.8.8.8:45678",
+	})
+	eng.handleInbandControlMessage(msg)
+
+	want := []string{"9.9.9.9:40000", "8.8.8.8:45678"}
+	if len(eng.runtimePublicEndpointHints) != len(want) {
+		t.Fatalf("runtimePublicEndpointHints = %#v, want %#v", eng.runtimePublicEndpointHints, want)
+	}
+	for i, hint := range want {
+		if eng.runtimePublicEndpointHints[i] != hint {
+			t.Fatalf("runtimePublicEndpointHints = %#v, want %#v", eng.runtimePublicEndpointHints, want)
+		}
+	}
+
+	eng.handleInbandControlMessage(msg)
+	if len(eng.runtimePublicEndpointHints) != len(want) {
+		t.Fatalf("runtimePublicEndpointHints after duplicate = %#v, want %#v", eng.runtimePublicEndpointHints, want)
+	}
+}
+
+func TestHandleInbandPathHealthEndpointHintHonorsPolicy(t *testing.T) {
+	cfg := config.Default()
+	cfg.NAT.AutoPublicEndpointHints = false
+	eng := &engine{
+		cfg:    cfg,
+		status: EngineStatus{NodeID: "node-a"},
+		peers: map[string]*PeerStatus{
+			"node-b": {NodeID: "node-b"},
+		},
+	}
+	eng.handleInbandControlMessage(peercontrol.NewPathHealth("node-b", "node-a", peercontrol.PathHealth{
+		Endpoint: "8.8.8.8:45678",
+	}))
+	if len(eng.runtimePublicEndpointHints) != 0 {
+		t.Fatalf("runtimePublicEndpointHints = %#v, want none when auto hints disabled", eng.runtimePublicEndpointHints)
+	}
+
+	cfg = config.Default()
+	eng = &engine{
+		cfg:    cfg,
+		status: EngineStatus{NodeID: "node-a"},
+		peers: map[string]*PeerStatus{
+			"node-b": {NodeID: "node-b"},
+		},
+	}
+	eng.handleInbandControlMessage(peercontrol.NewPathHealth("node-b", "node-a", peercontrol.PathHealth{
+		Endpoint: "100.102.17.36:45678",
+	}))
+	if len(eng.runtimePublicEndpointHints) != 0 {
+		t.Fatalf("runtimePublicEndpointHints = %#v, want untrusted CGNAT endpoint rejected", eng.runtimePublicEndpointHints)
+	}
+
+	cfg.NAT.DirectTrustedCIDRs = []string{"100.64.0.0/10"}
+	eng = &engine{
+		cfg:    cfg,
+		status: EngineStatus{NodeID: "node-a"},
+		peers: map[string]*PeerStatus{
+			"node-b": {NodeID: "node-b"},
+		},
+	}
+	eng.handleInbandControlMessage(peercontrol.NewPathHealth("node-b", "node-a", peercontrol.PathHealth{
+		Endpoint: "100.102.17.36:45678",
+	}))
+	if len(eng.runtimePublicEndpointHints) != 1 || eng.runtimePublicEndpointHints[0] != "100.102.17.36:45678" {
+		t.Fatalf("runtimePublicEndpointHints = %#v, want trusted CGNAT endpoint", eng.runtimePublicEndpointHints)
+	}
+}
+
 func TestHandleInbandReICERequestSchedulesImprovement(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

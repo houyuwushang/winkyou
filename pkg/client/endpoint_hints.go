@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"winkyou/pkg/logger"
+	"winkyou/pkg/nat"
 )
 
 const runtimeEndpointHintRefreshTimeout = 750 * time.Millisecond
@@ -59,4 +60,32 @@ func (e *engine) refreshRuntimePublicEndpointHints(ctx context.Context, reason s
 	} else {
 		e.log.Debug("refreshed runtime public endpoint hints without usable hints", logger.String("reason", reason), logger.String("nat_type", report.NATType.String()))
 	}
+}
+
+func (e *engine) learnRuntimePublicEndpointHintFromPeer(endpoint, peerID string) bool {
+	if e == nil || !e.cfg.NAT.AutoPublicEndpointHints {
+		return false
+	}
+	hint := nat.PublicEndpointHintFromObservedEndpoint(
+		endpoint,
+		mergeStrategyTrustedCIDRs(e.cfg.NAT.CandidateCIDRInclude, e.cfg.NAT.DirectTrustedCIDRs, e.cfg.NAT.PublicDirectTrustedCIDRs),
+	)
+	if hint == "" {
+		return false
+	}
+
+	e.mu.Lock()
+	for _, existing := range e.runtimePublicEndpointHints {
+		if strings.TrimSpace(existing) == hint {
+			e.mu.Unlock()
+			return false
+		}
+	}
+	e.runtimePublicEndpointHints = append(e.runtimePublicEndpointHints, hint)
+	e.mu.Unlock()
+
+	if e.log != nil {
+		e.log.Info("learned runtime public endpoint hint from in-band path health", logger.String("peer", peerID), logger.String("hint", hint))
+	}
+	return true
 }

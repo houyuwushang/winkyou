@@ -295,6 +295,26 @@ func TestPublicEndpointHintsFromSTUNMappingStillRejectsInvalidTrustedEndpoint(t 
 	}
 }
 
+func TestPublicEndpointHintFromObservedEndpoint(t *testing.T) {
+	if got := PublicEndpointHintFromObservedEndpoint("8.8.8.8:45678", nil); got != "8.8.8.8:45678" {
+		t.Fatalf("PublicEndpointHintFromObservedEndpoint(public) = %q, want public hint", got)
+	}
+	if got := PublicEndpointHintFromObservedEndpoint("100.102.17.36:45678", nil); got != "" {
+		t.Fatalf("PublicEndpointHintFromObservedEndpoint(untrusted cgnat) = %q, want rejected", got)
+	}
+	if got := PublicEndpointHintFromObservedEndpoint("198.18.0.1:45678", nil); got != "" {
+		t.Fatalf("PublicEndpointHintFromObservedEndpoint(untrusted benchmark) = %q, want rejected", got)
+	}
+	if got := PublicEndpointHintFromObservedEndpoint("100.102.17.36:45678", []string{"100.64.0.0/10"}); got != "100.102.17.36:45678" {
+		t.Fatalf("PublicEndpointHintFromObservedEndpoint(trusted cgnat) = %q, want trusted hint", got)
+	}
+	for _, endpoint := range []string{"127.0.0.1:45678", "0.0.0.0:45678", "8.8.8.8:0", "not-an-endpoint"} {
+		if got := PublicEndpointHintFromObservedEndpoint(endpoint, []string{"0.0.0.0/0"}); got != "" {
+			t.Fatalf("PublicEndpointHintFromObservedEndpoint(%q) = %q, want rejected", endpoint, got)
+		}
+	}
+}
+
 func TestStunBindTimeout(t *testing.T) {
 	// Server that never responds.
 	serverConn, err := net.ListenPacket("udp4", "127.0.0.1:0")

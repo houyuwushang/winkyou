@@ -173,6 +173,21 @@ func PublicEndpointHintsFromSTUNMappingWithAllowedCIDRs(report STUNMappingReport
 	return hints
 }
 
+// PublicEndpointHintFromObservedEndpoint formats a peer-observed endpoint as a
+// public endpoint hint when it passes the same conservative endpoint filter used
+// for STUN-derived mappings.
+func PublicEndpointHintFromObservedEndpoint(endpoint string, allowedCIDRs []string) string {
+	addrPort, err := netip.ParseAddrPort(strings.TrimSpace(endpoint))
+	if err != nil || !addrPort.Addr().Is4() || addrPort.Port() == 0 {
+		return ""
+	}
+	ip := net.IP(addrPort.Addr().AsSlice())
+	if !usablePublicEndpointHintIP(ip, parseEndpointHintTrustedCIDRs(allowedCIDRs)) {
+		return ""
+	}
+	return addrPort.String()
+}
+
 func usablePublicEndpointHintLocalAddr(probe STUNMappingProbe, trusted []netip.Prefix) *net.UDPAddr {
 	if usableEndpointHintLocalAddr(probe.LocalAddr, trusted) {
 		return cloneUDPAddr(probe.LocalAddr)
