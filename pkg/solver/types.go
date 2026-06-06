@@ -148,6 +148,10 @@ type MessageHandler interface {
 	HandleMessage(ctx context.Context, sess SessionIO, msg Message) error
 }
 
+type MessageAcceptor interface {
+	AcceptsMessage(msg Message) bool
+}
+
 type PlanExecutor interface {
 	Execute(ctx context.Context, sess SessionIO) (Result, error)
 	HandleMessage(ctx context.Context, sess SessionIO, msg Message) error

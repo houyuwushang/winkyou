@@ -25,6 +25,7 @@ import (
 	"winkyou/pkg/solver"
 	"winkyou/pkg/solver/strategy/legacyice"
 	"winkyou/pkg/solver/strategy/relayonly"
+	"winkyou/pkg/solver/strategy/signalrelay"
 	"winkyou/pkg/solver/strategy/tcpframed"
 )
 
@@ -484,7 +485,7 @@ func addStrategyChecks(result *doctorResult, cfg *config.Config, flags doctorFla
 		return
 	}
 	if !knownDoctorStrategy(strategy) {
-		result.add(failCheck("strategy", "requested", "unknown strategy: "+strategy, "use legacy_ice_udp, relay_only, or tcp_framed"))
+		result.add(failCheck("strategy", "requested", "unknown strategy: "+strategy, "use legacy_ice_udp, relay_only, tcp_framed, or signal_relay"))
 		return
 	}
 	if !slices.Contains(order, strategy) {
@@ -1723,7 +1724,7 @@ func requestedStrategy(flags doctorFlags) string {
 func configuredStrategyOrder(cfg *config.Config) []string {
 	order := append([]string(nil), cfg.Connectivity.StrategyOrder...)
 	if len(order) == 0 {
-		order = []string{legacyice.StrategyName, relayonly.StrategyName}
+		order = []string{legacyice.StrategyName, relayonly.StrategyName, signalrelay.StrategyName}
 	}
 	if cfg.Connectivity.Mode == relayonly.StrategyName {
 		order = append([]string{relayonly.StrategyName}, removeStrategy(order, relayonly.StrategyName)...)
@@ -1743,7 +1744,7 @@ func removeStrategy(values []string, target string) []string {
 
 func knownDoctorStrategy(strategy string) bool {
 	switch strategy {
-	case legacyice.StrategyName, relayonly.StrategyName, tcpframed.StrategyName:
+	case legacyice.StrategyName, relayonly.StrategyName, tcpframed.StrategyName, signalrelay.StrategyName:
 		return true
 	default:
 		return false

@@ -18,6 +18,7 @@ import (
 	solverstore "winkyou/pkg/solver/store"
 	"winkyou/pkg/solver/strategy/legacyice"
 	"winkyou/pkg/solver/strategy/relayonly"
+	"winkyou/pkg/solver/strategy/signalrelay"
 	"winkyou/pkg/solver/strategy/tcpframed"
 )
 
@@ -120,8 +121,8 @@ func TestEngineStrategyResolverDefaultsToLegacyWithImplicitFallback(t *testing.T
 	resolver := eng.newStrategyResolver()
 
 	capability := resolver.LocalCapability()
-	if len(capability.Strategies) != 2 || capability.Strategies[0] != legacyice.StrategyName || capability.Strategies[1] != relayonly.StrategyName {
-		t.Fatalf("LocalCapability().Strategies = %#v, want legacy then relay_only", capability.Strategies)
+	if got, want := capability.Strategies, []string{legacyice.StrategyName, relayonly.StrategyName, signalrelay.StrategyName}; !slices.Equal(got, want) {
+		t.Fatalf("LocalCapability().Strategies = %#v, want %#v", got, want)
 	}
 
 	strategy, selection, err := resolver.Resolve(rproto.Capability{}, true)
@@ -149,6 +150,56 @@ func TestEngineStrategyResolverSelectsRelayOnlyWhenRemoteOnlySupportsRelayOnly(t
 	}
 	if selection != (sesspkg.Selection{StrategyName: relayonly.StrategyName, Negotiated: true}) {
 		t.Fatalf("Resolve(relay_only) selection = %#v, want negotiated relay_only", selection)
+	}
+}
+
+func TestEngineStrategyResolverSelectsSignalRelayWhenRemoteOnlySupportsSignalRelay(t *testing.T) {
+	eng := &engine{cfg: config.Default()}
+	resolver := eng.newStrategyResolver()
+
+	strategy, selection, err := resolver.Resolve(rproto.Capability{Strategies: []string{signalrelay.StrategyName}}, true)
+	if err != nil {
+		t.Fatalf("Resolve(signal_relay) error = %v", err)
+	}
+	if strategy.Name() != signalrelay.StrategyName {
+		t.Fatalf("Resolve(signal_relay) strategy = %q, want %q", strategy.Name(), signalrelay.StrategyName)
+	}
+	if selection != (sesspkg.Selection{StrategyName: signalrelay.StrategyName, Negotiated: true}) {
+		t.Fatalf("Resolve(signal_relay) selection = %#v, want negotiated signal_relay", selection)
+	}
+}
+
+func TestEngineStrategyResolverSignalRelayFirstUsesConfiguredImplicitFallback(t *testing.T) {
+	cfg := config.Default()
+	cfg.Connectivity.StrategyOrder = []string{signalrelay.StrategyName, tcpframed.StrategyName, legacyice.StrategyName}
+	cfg.TCPFramed.Enabled = true
+	eng := &engine{cfg: cfg}
+	resolver := eng.newStrategyResolver()
+	ordered, ok := resolver.(sesspkg.OrderedStrategyResolver)
+	if !ok {
+		t.Fatalf("resolver %T does not implement OrderedStrategyResolver", resolver)
+	}
+
+	candidates, err := ordered.ResolveAll(sesspkg.ResolveInput{
+		SessionID:        "session/node-a/node-b",
+		LocalNodeID:      "node-a",
+		PeerID:           "node-b",
+		Initiator:        true,
+		RemoteCapability: rproto.Capability{},
+	})
+	if err != nil {
+		t.Fatalf("ResolveAll(empty capability) error = %v", err)
+	}
+	if got, want := resolverCandidateNames(candidates), []string{signalrelay.StrategyName, tcpframed.StrategyName, legacyice.StrategyName}; !slices.Equal(got, want) {
+		t.Fatalf("ResolveAll(empty capability) candidates = %#v, want %#v", got, want)
+	}
+	for _, candidate := range candidates {
+		if candidate.Selection.Negotiated {
+			t.Fatalf("candidate %s negotiated = true, want implicit fallback", candidate.Name)
+		}
+		if candidate.Reason != "implicit_configured_order_fallback" {
+			t.Fatalf("candidate %s reason = %q, want implicit_configured_order_fallback", candidate.Name, candidate.Reason)
+		}
 	}
 }
 
@@ -192,7 +243,7 @@ func TestEngineStrategyResolverPrefersRelayFirstForSymmetricNAT(t *testing.T) {
 	}
 
 	capability := resolver.LocalCapability()
-	if got, want := capability.Strategies, []string{relayonly.StrategyName, legacyice.StrategyName}; !slices.Equal(got, want) {
+	if got, want := capability.Strategies, []string{relayonly.StrategyName, legacyice.StrategyName, signalrelay.StrategyName}; !slices.Equal(got, want) {
 		t.Fatalf("LocalCapability().Strategies = %#v, want %#v", got, want)
 	}
 
@@ -221,7 +272,7 @@ func TestEngineStrategyResolverKeepsLegacyFirstForSymmetricNATWithoutTURN(t *tes
 	}
 
 	capability := resolver.LocalCapability()
-	if got, want := capability.Strategies, []string{legacyice.StrategyName, relayonly.StrategyName}; !slices.Equal(got, want) {
+	if got, want := capability.Strategies, []string{legacyice.StrategyName, relayonly.StrategyName, signalrelay.StrategyName}; !slices.Equal(got, want) {
 		t.Fatalf("LocalCapability().Strategies = %#v, want %#v", got, want)
 	}
 
@@ -247,8 +298,8 @@ func TestEngineStrategyResolverConnectivityRelayOnlyModePrefersRelayOnly(t *test
 	resolver := eng.newStrategyResolver()
 
 	capability := resolver.LocalCapability()
-	if len(capability.Strategies) != 2 || capability.Strategies[0] != relayonly.StrategyName || capability.Strategies[1] != legacyice.StrategyName {
-		t.Fatalf("LocalCapability().Strategies = %#v, want relay_only then legacy", capability.Strategies)
+	if got, want := capability.Strategies, []string{relayonly.StrategyName, legacyice.StrategyName, signalrelay.StrategyName}; !slices.Equal(got, want) {
+		t.Fatalf("LocalCapability().Strategies = %#v, want %#v", got, want)
 	}
 
 	strategy, selection, err := resolver.Resolve(rproto.Capability{Strategies: []string{legacyice.StrategyName, relayonly.StrategyName}}, true)
@@ -270,8 +321,8 @@ func TestEngineStrategyResolverStrategyOrderCanPreferRelayOnly(t *testing.T) {
 	resolver := eng.newStrategyResolver()
 
 	capability := resolver.LocalCapability()
-	if len(capability.Strategies) != 2 || capability.Strategies[0] != relayonly.StrategyName || capability.Strategies[1] != legacyice.StrategyName {
-		t.Fatalf("LocalCapability().Strategies = %#v, want relay_only then legacy", capability.Strategies)
+	if got, want := capability.Strategies, []string{relayonly.StrategyName, legacyice.StrategyName}; !slices.Equal(got, want) {
+		t.Fatalf("LocalCapability().Strategies = %#v, want %#v", got, want)
 	}
 
 	strategy, selection, err := resolver.Resolve(rproto.Capability{Strategies: []string{legacyice.StrategyName, relayonly.StrategyName}}, true)
@@ -347,8 +398,8 @@ func TestEngineStrategyResolverForceRelayPrefersRelayOnlyWhenMutual(t *testing.T
 	resolver := eng.newStrategyResolver()
 
 	capability := resolver.LocalCapability()
-	if len(capability.Strategies) != 2 || capability.Strategies[0] != relayonly.StrategyName || capability.Strategies[1] != legacyice.StrategyName {
-		t.Fatalf("LocalCapability().Strategies = %#v, want relay_only then legacy", capability.Strategies)
+	if got, want := capability.Strategies, []string{relayonly.StrategyName, legacyice.StrategyName, signalrelay.StrategyName}; !slices.Equal(got, want) {
+		t.Fatalf("LocalCapability().Strategies = %#v, want %#v", got, want)
 	}
 
 	strategy, selection, err := resolver.Resolve(rproto.Capability{Strategies: []string{legacyice.StrategyName, relayonly.StrategyName}}, true)

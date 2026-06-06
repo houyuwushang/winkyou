@@ -2,6 +2,7 @@ package client
 
 import (
 	"context"
+	"errors"
 	"net"
 	"testing"
 	"time"
@@ -115,6 +116,45 @@ func TestForcedSchedulePeerImprovementAllowsProtectedDirectPath(t *testing.T) {
 	}
 	if session.improveDelay != forcedPeerImprovementDelay {
 		t.Fatalf("improve delay = %v, want forced delay %v", session.improveDelay, forcedPeerImprovementDelay)
+	}
+}
+
+func TestPeerSessionHookErrorDuringImprovementPreservesBoundPath(t *testing.T) {
+	path := solver.PathSummary{
+		PathID:         "signalrelay:path",
+		ConnectionType: "relay",
+		Role:           solver.PathRolePrimaryCandidate,
+	}
+	session := &peerSession{
+		bound:     true,
+		improving: true,
+		lastPath:  path,
+	}
+	eng := &engine{
+		peers: map[string]*PeerStatus{
+			"node-2": {
+				NodeID:       "node-2",
+				State:        PeerStateConnected,
+				DataState:    PeerDataStateAlive,
+				LastPathID:   path.PathID,
+				LastPathRole: string(path.Role),
+			},
+		},
+	}
+
+	eng.handlePeerSessionHookError("node-2", session, errors.New("legacyice: executor closed"))
+
+	session.connectMu.Lock()
+	defer session.connectMu.Unlock()
+	if !session.bound || !session.improving {
+		t.Fatalf("session flags bound=%v improving=%v, want preserved", session.bound, session.improving)
+	}
+	if session.lastPath.PathID != path.PathID || session.lastPath.ConnectionType != path.ConnectionType {
+		t.Fatalf("lastPath = %#v, want preserved %#v", session.lastPath, path)
+	}
+	peer := eng.peers["node-2"]
+	if peer.DataState == PeerDataStateFailed || peer.LastPathID == "" {
+		t.Fatalf("peer status = %#v, want bound path preserved", peer)
 	}
 }
 

@@ -12,6 +12,7 @@ import (
 	"winkyou/pkg/solver"
 	"winkyou/pkg/solver/strategy/legacyice"
 	"winkyou/pkg/solver/strategy/relayonly"
+	"winkyou/pkg/solver/strategy/signalrelay"
 	"winkyou/pkg/solver/strategy/tcpframed"
 )
 
@@ -54,6 +55,9 @@ func (e *engine) newStrategyResolver() sesspkg.StrategyResolver {
 	if e.relayOnlyMode() {
 		policy.PinnedFirstStrategy = relayonly.StrategyName
 	}
+	if len(factories) > 0 && factories[0].name == signalrelay.StrategyName {
+		policy.AllowImplicitOrder = true
+	}
 	return newStrategyResolverWithFeatures(factories, policy, probeFeatures(e.probeRunner() != nil))
 }
 
@@ -86,6 +90,13 @@ func (e *engine) strategyFactoriesForOrder() []strategyFactory {
 					return tcpframed.New(e.tcpFramedStrategyConfig())
 				},
 			})
+		case signalrelay.StrategyName:
+			factories = append(factories, strategyFactory{
+				name: signalrelay.StrategyName,
+				build: func() solver.Strategy {
+					return signalrelay.New(signalrelay.Config{})
+				},
+			})
 		}
 	}
 	return factories
@@ -94,7 +105,7 @@ func (e *engine) strategyFactoriesForOrder() []strategyFactory {
 func (e *engine) connectivityStrategyOrder() []string {
 	order := append([]string(nil), e.cfg.Connectivity.StrategyOrder...)
 	if len(order) == 0 {
-		order = []string{legacyice.StrategyName, relayonly.StrategyName}
+		order = []string{legacyice.StrategyName, relayonly.StrategyName, signalrelay.StrategyName}
 	}
 	if e.relayOnlyMode() {
 		order = preferRelayOnly(order)

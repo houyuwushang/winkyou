@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	rproto "winkyou/pkg/rendezvous/proto"
@@ -18,6 +19,9 @@ func (s *Session) HandleMessage(ctx context.Context, msg solver.Message) error {
 		}
 		return s.handleEnvelopeMessage(msg)
 	case solver.MessageKindStrategy:
+		if target := s.boundTransportMessageTarget(msg); target != nil {
+			return target.HandleMessage(ctx, s.io, msg)
+		}
 		target, activePlan, pending := s.strategyHandlerSnapshot()
 		if pending || target == nil {
 			s.enqueueStrategyMessage(msg)
@@ -31,6 +35,31 @@ func (s *Session) HandleMessage(ctx context.Context, msg solver.Message) error {
 	default:
 		return nil
 	}
+}
+
+func (s *Session) boundTransportMessageTarget(msg solver.Message) strategyMessageTarget {
+	s.strategyMu.RLock()
+	target := s.boundMsgTarget
+	acceptor := s.boundMsgAcceptor
+	planID := s.boundMsgPlanID
+	s.strategyMu.RUnlock()
+	if target == nil {
+		return nil
+	}
+	if acceptor != nil {
+		if acceptor.AcceptsMessage(msg) {
+			return target
+		}
+		return nil
+	}
+	msgPlanID, ok := strategyMessagePlanID(msg)
+	if !ok || strings.TrimSpace(msgPlanID) == "" || strings.TrimSpace(planID) == "" {
+		return nil
+	}
+	if strategyPlanIDsMatch(msgPlanID, planID) {
+		return target
+	}
+	return nil
 }
 
 func (s *Session) sendCapability(ctx context.Context) error {

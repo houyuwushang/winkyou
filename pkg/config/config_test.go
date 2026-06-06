@@ -149,8 +149,8 @@ func TestDefaultConnectivityPolicy(t *testing.T) {
 	if cfg.Connectivity.Mode != "auto" {
 		t.Fatalf("default connectivity mode = %q, want auto", cfg.Connectivity.Mode)
 	}
-	if len(cfg.Connectivity.StrategyOrder) != 2 || cfg.Connectivity.StrategyOrder[0] != "legacy_ice_udp" || cfg.Connectivity.StrategyOrder[1] != "relay_only" {
-		t.Fatalf("default strategy order = %#v, want legacy_ice_udp then relay_only", cfg.Connectivity.StrategyOrder)
+	if len(cfg.Connectivity.StrategyOrder) != 3 || cfg.Connectivity.StrategyOrder[0] != "legacy_ice_udp" || cfg.Connectivity.StrategyOrder[1] != "relay_only" || cfg.Connectivity.StrategyOrder[2] != "signal_relay" {
+		t.Fatalf("default strategy order = %#v, want legacy_ice_udp, relay_only, signal_relay", cfg.Connectivity.StrategyOrder)
 	}
 	if cfg.TCPFramed.Enabled {
 		t.Fatal("default tcp_framed.enabled = true, want false")

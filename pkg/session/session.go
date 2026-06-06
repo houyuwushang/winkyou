@@ -38,11 +38,14 @@ type Session struct {
 	meta   Snapshot
 	seq    uint64
 
-	strategyMu sync.RWMutex
-	strategy   solver.Strategy
-	pending    []solver.Message
-	activePlan string
-	executor   solver.PlanExecutor
+	strategyMu       sync.RWMutex
+	strategy         solver.Strategy
+	pending          []solver.Message
+	activePlan       string
+	executor         solver.PlanExecutor
+	boundMsgTarget   strategyMessageTarget
+	boundMsgAcceptor solver.MessageAcceptor
+	boundMsgPlanID   string
 
 	capabilityCh  chan struct{}
 	probeResultCh chan probeResultSignal

@@ -13,7 +13,7 @@ wink --config node-a.yaml status
 常见问题：
 
 - `invalid coordinator.url`：确认使用 `grpc://host:50051`
-- `invalid connectivity.strategy_order`：只使用当前实现的 strategy 名称，例如 `legacy_ice_udp`、`relay_only`、`tcp_framed`
+- `invalid connectivity.strategy_order`：只使用当前实现的 strategy 名称，例如 `legacy_ice_udp`、`relay_only`、`tcp_framed`、`signal_relay`
 - `connectivity.multipath.max_paths must be greater than zero`：默认 multipath 已启用，因此 `max_paths` 必须至少为 `1`；真实 protected direct 验证建议使用 `2`
 - WireGuard 私钥错误：重新运行 `wink genkey`，把 private key 写入 `wireguard.private_key`
 
@@ -74,6 +74,16 @@ Windows：
 - 确认 Wintun/TUN backend 可用
 - 如果是手动下载的 Wintun，建议把 `wintun.dll` 放在 `wink.exe` 同目录或部署脚本明确复制到运行目录；本地验证环境曾使用 `D:\deployment\winkyou\bin\wintun.dll`
 - 如果创建接口失败，先重启终端或系统，再确认安全软件没有拦截虚拟网卡
+- 如果 `wink peers` 显示 `Data: alive`、`Xport Tx/Rx` 持续增长，但外部 `wink ping`、PowerShell UDP 或普通应用流量没有到达远端，先区分是 TUN 入站问题还是路径问题。临时用 `WINKYOU_TRACE_TUN_PACKETS=1` 启动 `wink up`，再重试应用流量；stderr 会打印 `wink tun read ...` 和 `wink tun write ...`。如果 in-band `33435` 有 read/write，而目标应用端口没有 `read`，同时 `Get-NetAdapterStatistics -Name wink0` 的 `OutboundDiscardedPackets` 增加，说明该包在 Windows/Wintun/本机防火墙路径上被丢弃，尚未进入 WinkYou tunnel。
+- 复核 Windows 路由和接口统计：
+
+```powershell
+Get-NetRoute -AddressFamily IPv4 | Where-Object DestinationPrefix -like '10.88.*'
+Get-NetIPAddress -AddressFamily IPv4 | Where-Object InterfaceAlias -like 'wink*'
+Get-NetAdapterStatistics -Name wink0
+```
+
+如果 `Test-NetConnection` 选择了 `wink0` 但 trace 仍看不到该应用包，继续检查 Windows 防火墙、安全软件、Wintun 驱动状态和是否存在旧的 overlay `/32` route；这不是 `signal_relay` 或 solver path selection 已经失败的证据。
 
 Linux：
 
@@ -108,6 +118,7 @@ Xport Err
 - `Handshake: -` 且 `Conn Type: relay`：优先排查 coturn relay 端口范围
 - `Xport Tx` 增长但 `Xport Rx` 不增长：对端 client 可能未运行或 relay 回包失败
 - `State: connected` 但 ping 不通：检查双方虚拟 IP、系统防火墙和 ICMP 策略
+- `Path Strat: signal_relay` 且 `Path Deps: coordinator:...:coordinator_signal_stream`：说明当前数据面通过 coordinator signal stream 兜底。它可以在 direct/TCP 暂不可用时保持 WireGuard 运行，但依赖 coordinator；断开 chen-win/coordinator/natpierce 这一整条承载 coordinator 的 underlay 后，它也会断。
 - 如果 `State: connected` 且 `Conn Type: direct`，但候选地址显示为 `100.64.0.0/10`、Tailscale、Docker bridge、其他 VPN/TAP 地址，这只能证明当前 path 不是 TURN relay；不能证明完全不借助已有 overlay。当前代码会把这类 direct-like path 标为带 dependency 的普通路径，不再把它暴露为 `protected_direct_path_id`。纯 NAT piercing 验证应优先查看 `legacyice/public_direct` 是否成功；它会排除私网、`100.64.0.0/10`、loopback、link-local、benchmark/overlay 等 candidate。如果该 plan 失败，说明当前环境下 WinkYou 尚未证明独立公网 direct path。
 - 真实 protected direct 的证据应来自 `wink peers --json`：`last_path_role` 为 `protected_direct`、`last_path_dependencies` 为空；如果启用了 multipath，还应看到非空 `protected_direct_path_id`。如果 `last_path_dependencies` 包含 `unknown:remote_cgnat_or_overlay_candidate` 或类似值，说明当前 path 仍可能依赖 natpierce、VPN/TAP 或跳板 underlay。
 - 如果当前已经 connected/bound，但没有 `protected_direct_path_id`，新版 client 会保留现有 path 并在后台继续尝试 protected direct。尝试失败只会关闭临时 transport，不应打断原 path；只有后续结果明确为 `protected_direct` 时才会替换 tunnel peer transport。

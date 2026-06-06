@@ -209,6 +209,34 @@ func (s *Session) clearSelectedStrategy() {
 	s.activePlan = ""
 }
 
+func (s *Session) setBoundTransportMessageTarget(result solver.Result, plan solver.Plan) {
+	target, _ := result.Transport.(strategyMessageTarget)
+	acceptor, _ := result.Transport.(solver.MessageAcceptor)
+	planID := strings.TrimSpace(plan.ID)
+	if planID == "" && result.Summary.Details != nil {
+		planID = strings.TrimSpace(result.Summary.Details["plan_id"])
+	}
+	s.strategyMu.Lock()
+	defer s.strategyMu.Unlock()
+	if target == nil {
+		s.boundMsgTarget = nil
+		s.boundMsgAcceptor = nil
+		s.boundMsgPlanID = ""
+		return
+	}
+	s.boundMsgTarget = target
+	s.boundMsgAcceptor = acceptor
+	s.boundMsgPlanID = planID
+}
+
+func (s *Session) clearBoundTransportMessageTarget() {
+	s.strategyMu.Lock()
+	defer s.strategyMu.Unlock()
+	s.boundMsgTarget = nil
+	s.boundMsgAcceptor = nil
+	s.boundMsgPlanID = ""
+}
+
 func (s *Session) selectedStrategyName() string {
 	s.metaMu.RLock()
 	defer s.metaMu.RUnlock()

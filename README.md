@@ -21,7 +21,8 @@ WinkYou = connectivity solver + secure WireGuard data plane
 - Phase 3B code health 已完成，包括 CI 质量门、session 机械拆分、状态转换校验、resolver 统一、context 边界修复和若干小型清理
 - Phase 4A 已新增 `relay_only` strategy
 - `tcp_framed` 已作为 alpha strategy 加入，用来验证 framed stream 可以承载 `PacketTransport`
-- 当前生产注册顺序保持兼容：`legacy_ice_udp` -> `relay_only`
+- `signal_relay` 已作为 coordinator signal stream 上的低吞吐保底 packet path 加入，用来在没有 TURN 且 direct/TCP 暂不可用时保持已绑定 WireGuard 数据面
+- 当前生产注册顺序保持兼容：`legacy_ice_udp` -> `relay_only` -> `signal_relay`
 - `tcp_framed` 默认禁用，只有显式 `tcp_framed.enabled: true` 且加入 `connectivity.strategy_order` 时才会注册
 - `connectivity.mode: relay_only` 会把生产 strategy 顺序切到 `relay_only` -> `legacy_ice_udp`
 - `connectivity.mode: auto` 下如果本机 NAT 检测为 `symmetric` 且已配置 TURN，生产 resolver 会临时把顺序调为 `relay_only` -> `legacy_ice_udp`，先用 relay 保活，再让 legacy/public-direct 继续尝试独立路径；如果没有 TURN，仍保持 `legacy_ice_udp` 优先，让 `direct_prefer/public_direct` 先尝试打洞
@@ -35,6 +36,8 @@ WinkYou = connectivity solver + secure WireGuard data plane
 - 如果已 bound 的 path 不是 `protected_direct`，client 会保留现有数据面并在后台继续尝试保护直连；只有后续结果明确为 `protected_direct` 时，才会替换 tunnel peer 的 transport
 - runtime/`wink peers --json` 会暴露最近 path 的 plan、role、dependency 和 child path 摘要；验证真实直连时应以 `last_path_role=protected_direct` 且 `last_path_dependencies` 为空作为证据，而不是只看 `connection_type=direct`
 - `wink peers` / `wink peers --json` 会显示 `last_failover_why`，例如 `active_path_rx_silence:<path>`，用于判断断开 natpierce/relay/underlay 后是否真的触发了 multipath failover
+- 2026-06-06 真实节点验证：`signal_relay` 可以把 local-live 与 inner-live 绑定到 `Path Strat: signal_relay`，`Path Deps: coordinator:...:coordinator_signal_stream`，后台 `tcp_framed` / `legacy_ice_udp` protected-direct improvement 失败后不再清空已绑定 path。该路径依赖 coordinator signal stream，不等价于 coordinator-less，也不能在断开 chen-win/coordinator/natpierce 这一整条 underlay 后继续承载数据。
+- 同一轮验证还暴露了 Windows Wintun 应用流量问题：in-band `33435` 和 tunnel 计数持续读写，但外部 `wink ping`/PowerShell UDP 到 `10.88.0.8:33434` 可能被 Windows 计入 `OutboundDiscardedPackets`，未进入 wink 的 TUN read，也未到达 inner-gw `wink0`。当前已提供默认关闭的 `WINKYOU_TRACE_TUN_PACKETS=1` 调试开关，用于区分“应用包未进入 Wintun”和“已进入 tunnel 但未到远端”。
 - 真实双节点验证已证明 `legacy_ice_udp` direct path 可以建立虚拟局域网；在已 bound 数据面上只停止 chen-win 的 coordinator 进程 15 秒后，`wink ping` 仍成功，说明基础 coordinator outage 已通过。但历史 selected pair 的 remote candidate 曾为 `100.102.17.35`，属于 `100.64.0.0/10`，这只能证明没有走 TURN relay，不能证明该 path 独立于 natpierce/chen-win underlay。client 已加第一层 peer-offline 保护、controlled-side retry、coordinator NotFound 重注册，并已在 runtime/`wink peers` 中暴露 control/data 状态和最近成功 path cache；`pkg/peercontrol` 消息模型已冻结，client 已接入最小 in-band heartbeat/path_health 循环，`re_ice_request` 会触发 protected-direct improvement，`session_signal` 会在已建立虚拟网内冗余发送现有 session/strategy 信令，并会短期重发最近信令、按序列去重，后续仍需覆盖更长时间 heartbeat/signaling failure、完整 ACK/backoff 和 cached path 恢复；详见 [`docs/CONTROL-PLANE-RESILIENCE.md`](./docs/CONTROL-PLANE-RESILIENCE.md)
 
 当文档发生冲突时，以 [`docs/CONNECTIVITY-SOLVER-BASELINE.md`](./docs/CONNECTIVITY-SOLVER-BASELINE.md) 作为 session、solver、strategy 和 transport 边界的判断依据。部分历史架构文档已标记为 proposal/archive，不能覆盖 active baseline。
@@ -56,6 +59,7 @@ WinkYou = connectivity solver + secure WireGuard data plane
 - `legacy_ice_udp`：兼容现有 ICE/UDP 路径，内部支持 `direct_prefer`、`public_direct` 和 `relay_only` execution plan
 - `relay_only`：第二个真实 strategy，是 `legacyice` 的 thin wrapper，强制 relay，并对外以 `relay_only` 出现在 capability、observation 和 path_commit 中
 - `tcp_framed`：alpha 非 UDP strategy，使用显式可达 TCP 地址和 `transport/framedstream` 适配器，不承诺 NAT TCP 打洞
+- `signal_relay`：通过 coordinator strategy message 承载加密 WireGuard packet 的低吞吐 fallback，path summary 会明确标记 coordinator dependency；它是保活/诊断兜底，不是 TURN 替代品，也不是无 coordinator 的 bootstrap 方案
 
 默认连接策略：
 
@@ -65,6 +69,7 @@ connectivity:
   strategy_order:
     - legacy_ice_udp
     - relay_only
+    - signal_relay
   multipath:
     enabled: true
     protect_direct: true
@@ -256,6 +261,7 @@ nat:
 - [`pkg/solver`](./pkg/solver)：连接求解器核心抽象
 - [`pkg/solver/strategy/legacyice`](./pkg/solver/strategy/legacyice)：当前 ICE/UDP 兼容 strategy
 - [`pkg/solver/strategy/relayonly`](./pkg/solver/strategy/relayonly)：relay-only strategy
+- [`pkg/solver/strategy/signalrelay`](./pkg/solver/strategy/signalrelay)：coordinator signal stream fallback strategy
 - [`pkg/transport`](./pkg/transport)：packet transport 抽象及适配器
 - [`pkg/tunnel`](./pkg/tunnel)：userspace WireGuard 数据平面和 per-peer transport bind
 - [`pkg/rendezvous`](./pkg/rendezvous)：coordinator-backed rendezvous 通道与 v2 envelope 类型

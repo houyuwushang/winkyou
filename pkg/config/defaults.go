@@ -33,7 +33,7 @@ const (
 	defaultTCPFramedDialTime     = 5 * time.Second
 )
 
-var defaultConnectivityStrategyOrder = []string{"legacy_ice_udp", "relay_only"}
+var defaultConnectivityStrategyOrder = []string{"legacy_ice_udp", "relay_only", "signal_relay"}
 
 func Default() Config {
 	return Config{

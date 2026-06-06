@@ -183,7 +183,7 @@ func TestSessionFallbackDiscardsPendingStrategyMessagesBeforeNextStrategy(t *tes
 	}
 }
 
-func TestSessionMultipathReevaluatesPrimaryAfterProtectedDirect(t *testing.T) {
+func TestSessionMultipathBindsRelayBeforeProtectedDirectSearch(t *testing.T) {
 	relayTransport := &fakeTransport{}
 	directTransport := &fakeTransport{}
 	relay := &successfulFallbackStrategy{
@@ -233,19 +233,17 @@ func TestSessionMultipathReevaluatesPrimaryAfterProtectedDirect(t *testing.T) {
 	}
 	waitForState(t, s, StateBound)
 
-	if relay.execCount() != 1 || direct.execCount() != 1 {
-		t.Fatalf("exec counts = relay:%d direct:%d, want 1/1", relay.execCount(), direct.execCount())
+	if relay.execCount() != 1 || direct.execCount() != 0 {
+		t.Fatalf("exec counts = relay:%d direct:%d, want 1/0 before background improvement", relay.execCount(), direct.execCount())
 	}
-	provider, ok := binder.boundTransport.(multipath.StatsProvider)
-	if !ok {
-		t.Fatalf("bound transport = %T, want multipath stats provider", binder.boundTransport)
+	if binder.boundTransport != relayTransport {
+		t.Fatalf("bound transport = %T, want initial relay transport", binder.boundTransport)
 	}
-	stats := provider.MultipathStats()
-	if stats.PrimaryPathID != "direct/path" || stats.ProtectedDirectPathID != "direct/path" || stats.ActivePathID != "direct/path" {
-		t.Fatalf("multipath stats = %#v, want protected direct as primary", stats)
+	if got := s.Snapshot().SelectedStrategy; got != relayonly.StrategyName {
+		t.Fatalf("SelectedStrategy = %q, want initial relay strategy", got)
 	}
-	if got := s.Snapshot().SelectedStrategy; got != legacyice.StrategyName {
-		t.Fatalf("SelectedStrategy = %q, want protected direct strategy", got)
+	if solver.IsProtectedDirectPath(s.lastRes.Summary) {
+		t.Fatal("initial relay-bound path should remain eligible for client-side protected-direct improvement")
 	}
 }
 
@@ -501,7 +499,7 @@ func TestSessionMultipathCanSelectLaterRelayPrimaryAndRetainProtectedDirect(t *t
 	}
 }
 
-func TestSessionMultipathDirectStandbyFailureDoesNotBlockPrimary(t *testing.T) {
+func TestSessionMultipathRelayPrimaryDoesNotWaitForDirectStandby(t *testing.T) {
 	relayTransport := &fakeTransport{}
 	relay := &successfulFallbackStrategy{
 		name:           relayonly.StrategyName,
@@ -544,14 +542,11 @@ func TestSessionMultipathDirectStandbyFailureDoesNotBlockPrimary(t *testing.T) {
 	}
 	waitForState(t, s, StateBound)
 
-	if relay.execCount() != 1 || direct.execCount() != 1 {
-		t.Fatalf("exec counts = relay:%d direct:%d, want 1/1", relay.execCount(), direct.execCount())
+	if relay.execCount() != 1 || direct.execCount() != 0 {
+		t.Fatalf("exec counts = relay:%d direct:%d, want 1/0 before background improvement", relay.execCount(), direct.execCount())
 	}
 	if binder.boundTransport != relayTransport {
 		t.Fatalf("bound transport = %T, want relay primary transport", binder.boundTransport)
-	}
-	if !hasObservation(s.Observations(), legacyice.StrategyName, "protected_direct_attempt_failed") {
-		t.Fatalf("observations = %#v, want protected_direct_attempt_failed", s.Observations())
 	}
 }
 

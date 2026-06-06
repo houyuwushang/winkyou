@@ -107,9 +107,14 @@ func (s *Session) selectAndExecuteProtectedDirect(ctx context.Context, candidate
 			continue
 		}
 
+		bestKey := outcomeKey(*best)
 		allOutcomes = append(allOutcomes, outcomes...)
+		best = findOutcomeByKey(allOutcomes, bestKey)
+		if shouldBindPrimaryBeforeProtectedDirectSearch(best, s.cfg.PathPolicy) {
+			return s.bindOutcomeSet(ctx, allOutcomes, best)
+		}
 		if primaryKey == "" {
-			primaryKey = outcomeKey(*best)
+			primaryKey = bestKey
 			if protectedDirectSearchComplete(allOutcomes, candidates[i+1:], s.cfg.PathPolicy) {
 				break
 			}
@@ -322,6 +327,7 @@ func (s *Session) bindOutcomeSet(ctx context.Context, outcomes []solver.Candidat
 	}
 	s.lastPlan = best.Plan
 	s.lastRes = boundResult
+	s.setBoundTransportMessageTarget(boundResult, best.Plan)
 	s.emitObservation(ctx, solver.Observation{
 		Strategy:       best.Plan.Strategy,
 		PlanID:         best.Plan.ID,
@@ -347,6 +353,7 @@ func (s *Session) bindOutcomeSet(ctx context.Context, outcomes []solver.Candidat
 		err := s.cfg.Binder.Bind(bindCtx, s.cfg.PeerID, best.Result.Transport)
 		cancel()
 		if err != nil {
+			s.clearBoundTransportMessageTarget()
 			s.closeRetainedOutcomes()
 			s.ignoreCleanupError(s.runCleanup(best.Result.Transport.Close))
 			return err
@@ -372,6 +379,7 @@ func (s *Session) bindOutcomeSet(ctx context.Context, outcomes []solver.Candidat
 		}
 		s.closeRetainedOutcomes()
 		s.ignoreCleanupError(s.runCleanup(best.Result.Transport.Close))
+		s.clearBoundTransportMessageTarget()
 		s.lastRes.Transport = nil
 		return err
 	}
@@ -396,6 +404,16 @@ func (s *Session) bindOutcomeSet(ctx context.Context, outcomes []solver.Candidat
 func (s *Session) shouldProtectDirectStandby() bool {
 	policy := s.cfg.PathPolicy
 	return policy.MultipathEnabled && policy.ProtectDirect
+}
+
+func shouldBindPrimaryBeforeProtectedDirectSearch(best *solver.CandidateOutcome, policy solver.PathPolicy) bool {
+	if best == nil || best.Result == nil || !policy.MultipathEnabled || !policy.ProtectDirect {
+		return false
+	}
+	summary := best.Result.Summary
+	return summary.ConnectionType == "relay" ||
+		solver.HasDependency(summary, solver.PathDependencyRelay) ||
+		solver.HasDependency(summary, solver.PathDependencyCoordinator)
 }
 
 func (s *Session) bindProtectedDirectImprovement(ctx context.Context, outcomes []solver.CandidateOutcome) error {

@@ -26,6 +26,7 @@ type StrategyFactoryEntry struct {
 type PortfolioResolverPolicy struct {
 	CompatibilityDefault string
 	AllowImplicitLegacy  bool
+	AllowImplicitOrder   bool
 	DirectStrategy       string
 	RelayStrategy        string
 	PinnedFirstStrategy  string
@@ -204,16 +205,10 @@ func (r *FactoryPortfolioResolver) ResolveAll(input ResolveInput) ([]StrategyCan
 	orderReason := "configured_order"
 	if len(names) == 0 {
 		if len(input.RemoteCapability.Strategies) == 0 && r.policy.AllowImplicitLegacy && r.policy.CompatibilityDefault != "" {
-			strategy, err := r.build(r.policy.CompatibilityDefault)
-			if err != nil {
-				return nil, err
+			if r.policy.AllowImplicitOrder {
+				return r.implicitOrderCandidates("implicit_configured_order_fallback")
 			}
-			return []StrategyCandidate{{
-				Name:      r.policy.CompatibilityDefault,
-				Strategy:  strategy,
-				Selection: Selection{StrategyName: r.policy.CompatibilityDefault, Negotiated: false},
-				Reason:    "implicit_legacy_fallback",
-			}}, nil
+			return r.implicitCompatibilityCandidate()
 		}
 		if len(input.RemoteCapability.Strategies) == 0 {
 			return nil, fmt.Errorf("session: remote capability missing and compatibility fallback disabled")
@@ -234,6 +229,39 @@ func (r *FactoryPortfolioResolver) ResolveAll(input ResolveInput) ([]StrategyCan
 			Selection: Selection{StrategyName: name, Negotiated: true},
 			Reason:    orderReason,
 		})
+	}
+	return candidates, nil
+}
+
+func (r *FactoryPortfolioResolver) implicitCompatibilityCandidate() ([]StrategyCandidate, error) {
+	strategy, err := r.build(r.policy.CompatibilityDefault)
+	if err != nil {
+		return nil, err
+	}
+	return []StrategyCandidate{{
+		Name:      r.policy.CompatibilityDefault,
+		Strategy:  strategy,
+		Selection: Selection{StrategyName: r.policy.CompatibilityDefault, Negotiated: false},
+		Reason:    "implicit_legacy_fallback",
+	}}, nil
+}
+
+func (r *FactoryPortfolioResolver) implicitOrderCandidates(reason string) ([]StrategyCandidate, error) {
+	candidates := make([]StrategyCandidate, 0, len(r.order))
+	for _, name := range r.order {
+		strategy, err := r.build(name)
+		if err != nil {
+			return nil, err
+		}
+		candidates = append(candidates, StrategyCandidate{
+			Name:      name,
+			Strategy:  strategy,
+			Selection: Selection{StrategyName: name, Negotiated: false},
+			Reason:    reason,
+		})
+	}
+	if len(candidates) == 0 {
+		return nil, fmt.Errorf("session: implicit configured order fallback has no candidates")
 	}
 	return candidates, nil
 }

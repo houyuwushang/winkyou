@@ -143,6 +143,7 @@ func (s *Session) Close() error {
 	if s.lastRes.Transport != nil {
 		transport := s.lastRes.Transport
 		s.lastRes.Transport = nil
+		s.clearBoundTransportMessageTarget()
 		s.ignoreCleanupError(s.runCleanup(transport.Close))
 	}
 	s.closeRetainedOutcomes()

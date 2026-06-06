@@ -19,6 +19,7 @@ WinkYou = connectivity solver + WireGuard 数据平面
 当前可运行路径：
 - ICE/UDP 打洞 (via `pion/ice`) → `PacketTransport` → userspace `wireguard-go` → TUN/Wintun
 - relay 模式通过 coturn TURN 中继
+- `signal_relay` 可通过 coordinator signal stream 承载已加密 WireGuard packet，作为 direct/TCP/TURN 暂不可用时的低吞吐保活 fallback
 - 协调服务器 (gRPC) 做节点发现、信令交换
 
 ### 当前阶段
@@ -31,8 +32,16 @@ WinkYou = connectivity solver + WireGuard 数据平面
 | Phase 4A relay_only | ✅ 冻结 | `make test-phase4a` |
 | Connectivity policy / fallback / scoring | ✅ 完成 | `auto` / `relay_only`、ordered fallback、observation ordering |
 | `tcp_framed` alpha | ✅ 完成 | 显式 TCP PacketTransport 验证 |
+| `signal_relay` coordinator fallback | 🟡 现场验证中 | 已能绑定并保留 path；依赖 coordinator，不是无 coordinator bootstrap |
 | v0.1 运维闭环 | 🟡 进行中 | self-host quickstart、doctor、long-running workflow、release pipeline、控制面韧性补强 |
 | v0.1 freeze gate | ✅ 已定义 | `docs/V0.1-FREEZE.md` |
+
+2026-06-06 现场结论：
+- local-live 与 inner-live 已能通过 `signal_relay` 绑定，`wink peers` 显示 `Path Strat: signal_relay`、`Path Plan: signalrelay/coordinator_signal`、`Path Deps: coordinator:...:coordinator_signal_stream`。
+- `signal_relay` ready 信号需要在等待窗口内重发；一次性 ready 会在两端 session 启动错位时丢失，导致双方都 `remote ready timeout`。
+- 后台 `tcp_framed` / `legacy_ice_udp` protected-direct improvement 失败时，不应清空已绑定的 `signal_relay` path；当前代码已增加保护。
+- 断开 chen-win/coordinator/natpierce 这一整条 underlay 后，`signal_relay` 也会断，因为它明确依赖 coordinator signal stream。只有已经存在另一条不依赖该 underlay 的 bound `PacketTransport` 时，才可能维持会话。
+- Windows Wintun 仍有独立待办：in-band `33435` 和 tunnel 计数可持续读写，但外部 `wink ping` / PowerShell UDP 到 `10.88.0.8:33434` 可能增加 `wink0` `OutboundDiscardedPackets`，却不进入 wink 的 TUN read，也不会出现在 inner-gw `tcpdump -i wink0`。已新增默认关闭的 `WINKYOU_TRACE_TUN_PACKETS=1` 用于区分 OS/Wintun ingress 问题和 solver/transport 问题。
 
 Phase 3A 已交付：`PortfolioResolver`、`StrategyEntry`、strategy selection 测试覆盖、fake strategy 验证。session 不再硬编码 `legacy_ice_udp`。
 

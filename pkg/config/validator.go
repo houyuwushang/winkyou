@@ -15,7 +15,7 @@ var (
 	validLogOutputs             = map[string]struct{}{"stderr": {}, "stdout": {}, "file": {}}
 	validBackends               = map[string]struct{}{"auto": {}, "tun": {}, "userspace": {}, "proxy": {}}
 	validConnectivityModes      = map[string]struct{}{"auto": {}, "relay_only": {}}
-	validConnectivityStrategies = map[string]struct{}{"legacy_ice_udp": {}, "relay_only": {}, "tcp_framed": {}}
+	validConnectivityStrategies = map[string]struct{}{"legacy_ice_udp": {}, "relay_only": {}, "tcp_framed": {}, "signal_relay": {}}
 )
 
 const maxPublicEndpointHintPortWindow = 512

@@ -496,6 +496,7 @@ func (d *netifDevice) Read(bufs [][]byte, sizes []int, offset int) (int, error) 
 	}
 	n, err := d.ni.Read(bufs[0][offset:])
 	if n > 0 {
+		traceTUNPacket("read", bufs[0][offset:offset+n])
 		sizes[0] = n
 		return 1, nil
 	}
@@ -508,9 +509,11 @@ func (d *netifDevice) Write(bufs [][]byte, offset int) (int, error) {
 		if offset > len(buf) {
 			continue
 		}
-		if _, err := d.ni.Write(buf[offset:]); err != nil {
+		packet := buf[offset:]
+		if _, err := d.ni.Write(packet); err != nil {
 			return written, err
 		}
+		traceTUNPacket("write", packet)
 		written++
 	}
 	return written, nil

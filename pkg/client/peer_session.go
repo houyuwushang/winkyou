@@ -168,7 +168,7 @@ func (e *engine) newPeerRunner(s *peerSession) (*sesspkg.Session, error) {
 				e.handlePeerSessionBound(s.nodeID, s, result)
 			},
 			OnError: func(err error) {
-				e.handlePeerSessionError(s.nodeID, s, err)
+				e.handlePeerSessionHookError(s.nodeID, s, err)
 			},
 		},
 	})
@@ -337,6 +337,24 @@ func (e *engine) handlePeerSessionError(nodeID string, s *peerSession, err error
 		e.log.Warn("peer session failed", logger.String("node_id", nodeID), logger.Error(err))
 	}
 	e.schedulePeerRetry(nodeID, s)
+}
+
+func (e *engine) handlePeerSessionHookError(nodeID string, s *peerSession, err error) {
+	if s == nil {
+		return
+	}
+	s.connectMu.Lock()
+	bound := s.bound || s.connected
+	improving := s.improving
+	hasPath := s.lastPath.PathID != "" || s.lastPath.ConnectionType != ""
+	s.connectMu.Unlock()
+	if bound && (improving || hasPath) {
+		if err != nil && e.log != nil {
+			e.log.Warn("peer path improvement failed", logger.String("node_id", nodeID), logger.Error(err))
+		}
+		return
+	}
+	e.handlePeerSessionError(nodeID, s, err)
 }
 
 func (e *engine) BindingPeer(ctx context.Context, peerID string) (*sesspkg.BindingPeer, error) {
