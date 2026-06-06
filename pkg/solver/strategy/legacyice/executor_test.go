@@ -755,6 +755,11 @@ func TestPublicDirectRemoteCandidateGraceScalesWithConnectTimeout(t *testing.T) 
 	if got := longExec.remoteCandidateGraceTimeout(); got != publicDirectRemoteCandidateGraceMaxTimeout {
 		t.Fatalf("long remoteCandidateGraceTimeout() = %v, want cap %v", got, publicDirectRemoteCandidateGraceMaxTimeout)
 	}
+
+	midExec := newExecutor(Config{ConnectTimeout: 8 * time.Second}, solver.SolveInput{}, solver.Plan{ID: planIDPublicDirect}, executorConfig{Mode: modePublicDirect})
+	if got := midExec.remoteCandidateGraceTimeout(); got != 4*time.Second {
+		t.Fatalf("mid remoteCandidateGraceTimeout() = %v, want half connect timeout", got)
+	}
 }
 
 func TestPublicDirectRemoteCandidateWaitingReportsScaledGrace(t *testing.T) {

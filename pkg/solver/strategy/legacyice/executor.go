@@ -64,7 +64,7 @@ const publicDirectCandidateSignalMaxSendTimeout = 5 * time.Second
 
 const publicDirectRemoteCandidateGraceTimeout = 750 * time.Millisecond
 
-const publicDirectRemoteCandidateGraceMaxTimeout = 5 * time.Second
+const publicDirectRemoteCandidateGraceMaxTimeout = 10 * time.Second
 
 func newExecutor(cfg Config, input solver.SolveInput, plan solver.Plan, execCfg executorConfig) *executor {
 	lifecycleCtx, lifecycleCancel := context.WithCancel(context.Background())
@@ -506,7 +506,7 @@ func (e *executor) remoteCandidateGraceTimeout() time.Duration {
 	if connectTimeout <= 0 {
 		return publicDirectRemoteCandidateGraceTimeout
 	}
-	grace := connectTimeout / 5
+	grace := connectTimeout / 2
 	if grace < publicDirectRemoteCandidateGraceTimeout {
 		return publicDirectRemoteCandidateGraceTimeout
 	}
