@@ -66,11 +66,10 @@ func stunBindConn(ctx context.Context, conn net.PacketConn, raddr *net.UDPAddr) 
 
 	req := buildBindingRequest(txID)
 
-	// Set deadline from context, or use default.
-	deadline, ok := ctx.Deadline()
-	if !ok {
-		deadline = time.Now().Add(stunDefaultTimeout)
-	}
+	// Bound every individual STUN transaction. A solve/session context commonly
+	// has a much longer deadline; inheriting it directly would let one filtered
+	// provider block all remaining servers and endpoint exchange.
+	deadline := stunRequestDeadline(ctx, time.Now())
 	if err := conn.SetDeadline(deadline); err != nil {
 		return nil, fmt.Errorf("stun: set deadline: %w", err)
 	}
@@ -125,6 +124,14 @@ func stunBindConn(ctx context.Context, conn net.PacketConn, raddr *net.UDPAddr) 
 			ServerAddr: raddr,
 		}, nil
 	}
+}
+
+func stunRequestDeadline(ctx context.Context, now time.Time) time.Time {
+	deadline := now.Add(stunDefaultTimeout)
+	if callerDeadline, ok := ctx.Deadline(); ok && callerDeadline.Before(deadline) {
+		return callerDeadline
+	}
+	return deadline
 }
 
 // parseSTUNAddr normalises a STUN server address string.

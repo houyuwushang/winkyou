@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"context"
 	"errors"
 	"os"
 	"strings"
@@ -8,6 +9,7 @@ import (
 
 	winkclient "winkyou/pkg/client"
 	"winkyou/pkg/config"
+	"winkyou/pkg/nat"
 
 	"github.com/spf13/cobra"
 )
@@ -55,7 +57,212 @@ func newDebugCmd(opts *Options) *cobra.Command {
 	}
 
 	cmd.Flags().BoolVar(&asJSON, "json", false, "output debug info as json")
+	cmd.AddCommand(newDebugPortAllocCmd(opts))
 	return cmd
+}
+
+type portAllocSampleJSON struct {
+	Server     string `json:"server,omitempty"`
+	ServerAddr string `json:"server_addr,omitempty"`
+	LocalPort  int    `json:"local_port"`
+	MappedIP   string `json:"mapped_ip"`
+	MappedPort int    `json:"mapped_port"`
+}
+
+type portAllocMappingProbeJSON struct {
+	Server     string `json:"server"`
+	ServerAddr string `json:"server_addr,omitempty"`
+	LocalAddr  string `json:"local_addr,omitempty"`
+	MappedAddr string `json:"mapped_addr,omitempty"`
+	Error      string `json:"error,omitempty"`
+}
+
+type portAllocOutput struct {
+	// Server is kept for compatibility with the original single-STUN JSON.
+	Server        string                      `json:"server"`
+	Servers       []string                    `json:"servers"`
+	MappingType   string                      `json:"mapping_type"`
+	MappingError  string                      `json:"mapping_error,omitempty"`
+	MappingProbes []portAllocMappingProbeJSON `json:"mapping_probes,omitempty"`
+	SampleCount   int                         `json:"sample_count"`
+	Pattern       string                      `json:"pattern"`
+	Delta         int                         `json:"delta"`
+	MappedIP      string                      `json:"mapped_ip"`
+	StableIP      bool                        `json:"stable_ip"`
+	Confidence    float64                     `json:"confidence"`
+	Predictable   bool                        `json:"predictable"`
+	Samples       []portAllocSampleJSON       `json:"samples"`
+	Predicted     []int                       `json:"predicted_targets,omitempty"`
+}
+
+// newDebugPortAllocCmd probes the NAT's external-port allocation pattern, which
+// decides whether the birthday-paradox puncher can predict a peer's next mapped
+// port or must fall back to random spraying.
+func newDebugPortAllocCmd(opts *Options) *cobra.Command {
+	var (
+		asJSON     bool
+		samples    int
+		stunServer []string
+	)
+
+	cmd := &cobra.Command{
+		Use:   "port-alloc [stun-server...]",
+		Short: "Probe the NAT external-port allocation pattern (hole-punch prediction)",
+		Args:  cobra.MaximumNArgs(16),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			servers := append([]string(nil), stunServer...)
+			if len(servers) == 0 {
+				servers = append(servers, args...)
+			}
+			if len(servers) == 0 {
+				if cfg, err := loadConfig(opts); err == nil && len(cfg.NAT.STUNServers) > 0 {
+					servers = append(servers, cfg.NAT.STUNServers...)
+				}
+			}
+			servers = normalizedPortAllocServers(servers)
+			if len(servers) == 0 {
+				return errors.New("no STUN server: pass one or more as arguments/--stun flags, or set nat.stun_servers in config")
+			}
+
+			ctx, cancel := context.WithTimeout(cmd.Context(), 45*time.Second)
+			defer cancel()
+
+			report, err := nat.ProbePortAllocationWithMapping(ctx, servers, samples)
+			if err != nil {
+				return err
+			}
+
+			out := portAllocOutputFromReport(servers, report)
+			if asJSON {
+				return writeJSON(cmd, out)
+			}
+			printPortAllocOutput(cmd, out)
+			return nil
+		},
+	}
+
+	cmd.Flags().BoolVar(&asJSON, "json", false, "output as json")
+	cmd.Flags().IntVar(&samples, "samples", 0, "number of probe sockets (default 8)")
+	cmd.Flags().StringArrayVar(&stunServer, "stun", nil, "STUN server; repeat to test mapping behavior (overrides arguments and config)")
+	return cmd
+}
+
+func portAllocOutputFromReport(servers []string, report nat.PortAllocationReport) *portAllocOutput {
+	predictable := report.Pattern == nat.PortAllocationSequential || report.Pattern == nat.PortAllocationPreserving
+
+	out := &portAllocOutput{
+		Servers:      append([]string(nil), servers...),
+		MappingType:  report.MappingNATType.String(),
+		MappingError: report.MappingError,
+		SampleCount:  len(report.Samples),
+		Pattern:      report.Pattern.String(),
+		Delta:        report.Delta,
+		StableIP:     report.StableIP,
+		Confidence:   report.Confidence,
+		Predictable:  predictable,
+	}
+	if len(servers) > 0 {
+		out.Server = servers[0]
+	}
+	if report.MappedIP != nil {
+		out.MappedIP = report.MappedIP.String()
+	}
+	for _, probe := range report.MappingProbes {
+		item := portAllocMappingProbeJSON{Server: probe.Server, Error: probe.Error}
+		if probe.LocalAddr != nil {
+			item.LocalAddr = probe.LocalAddr.String()
+		}
+		if probe.ServerAddr != nil {
+			item.ServerAddr = probe.ServerAddr.String()
+		}
+		if probe.MappedAddr != nil {
+			item.MappedAddr = probe.MappedAddr.String()
+		}
+		out.MappingProbes = append(out.MappingProbes, item)
+	}
+	for _, s := range report.Samples {
+		ip := ""
+		if s.MappedIP != nil {
+			ip = s.MappedIP.String()
+		}
+		out.Samples = append(out.Samples, portAllocSampleJSON{
+			Server:     s.Server,
+			LocalPort:  s.LocalPort,
+			MappedIP:   ip,
+			MappedPort: s.MappedPort,
+		})
+		if s.ServerAddr != nil {
+			out.Samples[len(out.Samples)-1].ServerAddr = s.ServerAddr.String()
+		}
+	}
+	if predictable && len(report.Samples) > 0 {
+		base := report.Samples[len(report.Samples)-1].MappedPort
+		out.Predicted = report.PredictMappedPorts(base, 8)
+	}
+	return out
+}
+
+func printPortAllocOutput(cmd *cobra.Command, out *portAllocOutput) {
+	cmd.Println("NAT Port Allocation Probe")
+	cmd.Println("-------------------------")
+	cmd.Printf("STUN Servers: %s\n", strings.Join(out.Servers, ", "))
+	cmd.Printf("Mapping:      %s\n", out.MappingType)
+	if out.MappingError != "" {
+		cmd.Printf("Mapping note: %s\n", out.MappingError)
+	}
+	for _, probe := range out.MappingProbes {
+		if probe.MappedAddr != "" {
+			cmd.Printf("  %s [%s] -> %s (local %s)\n", probe.Server, dashIfEmpty(probe.ServerAddr), probe.MappedAddr, dashIfEmpty(probe.LocalAddr))
+		} else {
+			cmd.Printf("  %s -> ERROR: %s\n", probe.Server, probe.Error)
+		}
+	}
+	cmd.Printf("Samples:      %d usable\n", out.SampleCount)
+	cmd.Printf("Public IP:    %s (%s)\n", dashIfEmpty(out.MappedIP), stableLabel(out.StableIP))
+	switch out.Pattern {
+	case "sequential":
+		cmd.Printf("Pattern:      sequential (delta %+d, confidence %.2f)\n", out.Delta, out.Confidence)
+	default:
+		cmd.Printf("Pattern:      %s (confidence %.2f)\n", out.Pattern, out.Confidence)
+	}
+	if out.Predictable {
+		cmd.Println("Prediction:   YES — peers can target predicted ports; birthday-punch uses prediction.")
+	} else {
+		cmd.Println("Prediction:   NO — birthday-punch will fall back to random spraying.")
+	}
+	if len(out.Samples) > 0 {
+		cmd.Println("Allocation samples (server, local -> mapped):")
+		for _, s := range out.Samples {
+			cmd.Printf("  %s [%s]: %d -> %s:%d\n", s.Server, dashIfEmpty(s.ServerAddr), s.LocalPort, s.MappedIP, s.MappedPort)
+		}
+	}
+	if len(out.Predicted) > 0 {
+		cmd.Printf("Predicted next targets: %v\n", out.Predicted)
+	}
+}
+
+func normalizedPortAllocServers(servers []string) []string {
+	seen := make(map[string]struct{}, len(servers))
+	out := make([]string, 0, len(servers))
+	for _, server := range servers {
+		server = strings.TrimSpace(server)
+		if server == "" {
+			continue
+		}
+		if _, ok := seen[server]; ok {
+			continue
+		}
+		seen[server] = struct{}{}
+		out = append(out, server)
+	}
+	return out
+}
+
+func stableLabel(stable bool) string {
+	if stable {
+		return "stable"
+	}
+	return "UNSTABLE — public IP changed across probes"
 }
 
 func collectDebugOutput(opts *Options) *debugOutput {

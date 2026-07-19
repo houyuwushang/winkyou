@@ -20,3 +20,7 @@ Thumbs.db
 # Local config overrides
 *.local.yaml
 *.local.yml
+
+# Local field/stability test artifacts
+/.live-run/
+/.stability-run/

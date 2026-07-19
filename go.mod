@@ -7,6 +7,7 @@ require (
 	github.com/pion/logging v0.2.2
 	github.com/pion/stun v0.6.1
 	github.com/pion/turn/v2 v2.1.3
+	github.com/quic-go/quic-go v0.54.1
 	github.com/spf13/cobra v1.8.1
 	github.com/spf13/viper v1.20.1
 	go.uber.org/zap v1.27.0
@@ -43,9 +44,13 @@ require (
 	github.com/stretchr/testify v1.10.0 // indirect
 	github.com/subosito/gotenv v1.6.0 // indirect
 	github.com/wlynxg/anet v0.0.3 // indirect
+	go.uber.org/mock v0.5.0 // indirect
 	go.uber.org/multierr v1.10.0 // indirect
+	golang.org/x/mod v0.18.0 // indirect
 	golang.org/x/net v0.39.0 // indirect
+	golang.org/x/sync v0.13.0 // indirect
 	golang.org/x/text v0.24.0 // indirect
+	golang.org/x/tools v0.22.0 // indirect
 	golang.zx2c4.com/wintun v0.0.0-20230126152724-0fa3db229ce2 // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20241223144023-3abc09e42ca8 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect

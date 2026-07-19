@@ -10,6 +10,7 @@ import (
 	rproto "winkyou/pkg/rendezvous/proto"
 	sesspkg "winkyou/pkg/session"
 	"winkyou/pkg/solver"
+	"winkyou/pkg/solver/strategy/birthdaypunch"
 	"winkyou/pkg/solver/strategy/legacyice"
 	"winkyou/pkg/solver/strategy/relayonly"
 	"winkyou/pkg/solver/strategy/signalrelay"
@@ -97,9 +98,23 @@ func (e *engine) strategyFactoriesForOrder() []strategyFactory {
 					return signalrelay.New(signalrelay.Config{})
 				},
 			})
+		case birthdaypunch.StrategyName:
+			factories = append(factories, strategyFactory{
+				name: birthdaypunch.StrategyName,
+				build: func() solver.Strategy {
+					return birthdaypunch.New(e.birthdayPunchStrategyConfig())
+				},
+			})
 		}
 	}
 	return factories
+}
+
+func (e *engine) birthdayPunchStrategyConfig() birthdaypunch.Config {
+	return birthdaypunch.Config{
+		STUNServers:  append([]string(nil), e.cfg.NAT.STUNServers...),
+		PunchTimeout: e.iceConnectTimeout(),
+	}
 }
 
 func (e *engine) connectivityStrategyOrder() []string {

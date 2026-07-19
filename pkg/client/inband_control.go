@@ -395,6 +395,9 @@ func inbandSeenKey(msg peercontrol.Message) string {
 
 func clonePeerControlMessage(msg peercontrol.Message) peercontrol.Message {
 	out := msg
+	if len(msg.PathVector) > 0 {
+		out.PathVector = append([]string(nil), msg.PathVector...)
+	}
 	if msg.Heartbeat != nil {
 		cp := *msg.Heartbeat
 		out.Heartbeat = &cp
@@ -424,6 +427,27 @@ func clonePeerControlMessage(msg peercontrol.Message) peercontrol.Message {
 			cp.Payload = append([]byte(nil), cp.Payload...)
 		}
 		out.SessionSignal = &cp
+	}
+	if msg.ControlEcho != nil {
+		cp := *msg.ControlEcho
+		if len(cp.Payload) > 0 {
+			cp.Payload = append([]byte(nil), cp.Payload...)
+		}
+		if len(cp.RequestPath) > 0 {
+			cp.RequestPath = append([]string(nil), cp.RequestPath...)
+		}
+		out.ControlEcho = &cp
+	}
+	if msg.MemberRecord != nil {
+		cp := *msg.MemberRecord
+		cp.Endpoints = append([]string(nil), cp.Endpoints...)
+		cp.Capabilities = append([]string(nil), cp.Capabilities...)
+		out.MemberRecord = &cp
+	}
+	if msg.LinkState != nil {
+		cp := *msg.LinkState
+		cp.Links = append([]peercontrol.LinkStateLink(nil), cp.Links...)
+		out.LinkState = &cp
 	}
 	return out
 }

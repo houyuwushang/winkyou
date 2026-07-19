@@ -14,9 +14,9 @@ var (
 	validLogLevels              = map[string]struct{}{"debug": {}, "info": {}, "warn": {}, "error": {}}
 	validLogFormats             = map[string]struct{}{"text": {}, "json": {}}
 	validLogOutputs             = map[string]struct{}{"stderr": {}, "stdout": {}, "file": {}}
-	validBackends               = map[string]struct{}{"auto": {}, "tun": {}, "userspace": {}, "proxy": {}}
+	validBackends               = map[string]struct{}{"auto": {}, "tun": {}, "userspace": {}, "proxy": {}, "memory": {}}
 	validConnectivityModes      = map[string]struct{}{"auto": {}, "relay_only": {}}
-	validConnectivityStrategies = map[string]struct{}{"legacy_ice_udp": {}, "relay_only": {}, "tcp_framed": {}, "signal_relay": {}}
+	validConnectivityStrategies = map[string]struct{}{"legacy_ice_udp": {}, "relay_only": {}, "tcp_framed": {}, "signal_relay": {}, "birthday_punch": {}}
 	validTCPFramedRoles         = map[string]struct{}{"auto": {}, "listen": {}, "dial": {}}
 )
 

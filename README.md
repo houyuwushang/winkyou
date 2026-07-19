@@ -22,6 +22,9 @@ WinkYou = connectivity solver + secure WireGuard data plane
 - Phase 4A 已新增 `relay_only` strategy
 - `tcp_framed` 已作为 alpha strategy 加入，用来验证 framed stream 可以承载 `PacketTransport`
 - `signal_relay` 已作为 coordinator signal stream 上的低吞吐保底 packet path 加入，用来在没有 TURN 且 direct/TCP 暂不可用时保持已绑定 WireGuard 数据面
+- 实验性 `birthday_punch` 已在双端 symmetric/EDM 真机上完成公网直连；`punchtest bridge` 可把获胜 UDP socket 直接升级为 QUIC/mTLS 固定目标 TCP 转发，并已在两端 Tailscale/natpierce 全部关闭时通过 SSH。该入口不使用 WireGuard/Wintun，也不是透明 VPN 或完整虚拟局域网；详见 [`docs/BIRTHDAY-PUNCH-DESIGN.md`](./docs/BIRTHDAY-PUNCH-DESIGN.md)
+- `birthday_punch` 的获胜 UDP socket 也已接入实验性 `cmd/meshnode` 图运行时，成为可路由的 direct `PacketNeighbor`。post-r9 源码候选进一步加入持久化 recovery card：当两端既没有邻居也没有图路由时，可按确定性时间窗直接重打缓存的公网 IPv4 端点；第一条边恢复后，再由普通 mesh peer 协调补齐其余 maintained direct edge。本地源码测试已覆盖一个全新 peer runtime 仅凭 card 回来，以及全部三 runtime 重建后先成树再补齐 direct triangle，并通过 5 次重复与 race。该能力未进入 staged r9 二进制，但 r12 已在 C、A 两个真实公网 NAT 进程重启中完成 zero-seed rejoin；机器重启、三节点同时冷启动、变更公网 IP 和长期 `wink up` 主引擎生命周期仍未验证。详见 [`docs/SELF-BOOTSTRAP-RECOVERY.md`](./docs/SELF-BOOTSTRAP-RECOVERY.md)
+- 2026-07-17 长时实测：同一 QUIC 会话连续完成 626 次新建 SSH 探针，最后一次完整成功距建连约 10 小时 58 分；原桥接进程随后仍持续存活并承载新的已认证 SSH stream，但第 627 条短命令没有正常收尾，暴露出 per-stream deadline/关闭语义仍需补测，不能只凭进程存活宣称业务全绿
 - 当前生产注册顺序保持兼容：`legacy_ice_udp` -> `relay_only` -> `signal_relay`
 - `tcp_framed` 默认禁用，只有显式 `tcp_framed.enabled: true` 且加入 `connectivity.strategy_order` 时才会注册
 - `connectivity.mode: relay_only` 会把生产 strategy 顺序切到 `relay_only` -> `legacy_ice_udp`
@@ -36,10 +39,10 @@ WinkYou = connectivity solver + secure WireGuard data plane
 - 如果已 bound 的 path 不是 `protected_direct`，client 会保留现有数据面并在后台继续尝试保护直连；只有后续结果明确为 `protected_direct` 时，才会替换 tunnel peer 的 transport
 - runtime/`wink peers --json` 会暴露最近 path 的 plan、role、dependency 和 child path 摘要；验证真实直连时应以 `last_path_role=protected_direct` 且 `last_path_dependencies` 为空作为证据，而不是只看 `connection_type=direct`
 - `wink peers` / `wink peers --json` 会显示 `last_failover_why`，例如 `active_path_rx_silence:<path>`，用于判断断开 natpierce/relay/underlay 后是否真的触发了 multipath failover
-- 2026-06-06 真实节点验证：`signal_relay` 可以把 local-live 与 inner-live 绑定到 `Path Strat: signal_relay`，`Path Deps: coordinator:...:coordinator_signal_stream`，后台 `tcp_framed` / `legacy_ice_udp` protected-direct improvement 失败后不再清空已绑定 path。该路径依赖 coordinator signal stream，不等价于 coordinator-less，也不能在断开 chen-win/coordinator/natpierce 这一整条 underlay 后继续承载数据。
-- 2026-06-06 同一现场还确认：本机到 inner-gw 的 `10.6.22.1:22` 能通过 natpierce/chen-win 访问，但 inner-gw 临时监听的随机 TCP 端口没有收到本机连接，inner-gw `tcpdump -i natpierce tcp port 22` 看到的 SSH 来源也是 `10.6.22.4`，不是本机 `10.6.22.3`。因此当前 natpierce 拓扑不能被当作“任意 TCP/UDP 端口都直达”的 underlay；`tcp_framed` 必须配置固定且已转发/已放行的 TCP endpoint，`legacy_ice_udp` 仍需独立 STUN/ICE 证据证明 protected direct。
+- 2026-06-06 真实节点验证：`signal_relay` 可以把 local-live 与 inner-live 绑定到 `Path Strat: signal_relay`，`Path Deps: coordinator:...:coordinator_signal_stream`，后台 `tcp_framed` / `legacy_ice_udp` protected-direct improvement 失败后不再清空已绑定 path。该路径依赖 coordinator signal stream，不等价于 coordinator-less，也不能在断开 node-b/coordinator/natpierce 这一整条 underlay 后继续承载数据。
+- 2026-06-06 同一现场还确认：本机到 inner-gw 的 `10.20.0.1:22` 能通过 natpierce/node-b 访问，但 inner-gw 临时监听的随机 TCP 端口没有收到本机连接，inner-gw `tcpdump -i natpierce tcp port 22` 看到的 SSH 来源也是 `10.20.0.4`，不是本机 `10.20.0.3`。因此当前 natpierce 拓扑不能被当作“任意 TCP/UDP 端口都直达”的 underlay；`tcp_framed` 必须配置固定且已转发/已放行的 TCP endpoint，`legacy_ice_udp` 仍需独立 STUN/ICE 证据证明 protected direct。
 - 同一轮验证还暴露了 Windows Wintun 应用流量问题：in-band `33435` 和 tunnel 计数持续读写，但外部 `wink ping`/PowerShell UDP 到 `10.88.0.8:33434` 可能被 Windows 计入 `OutboundDiscardedPackets`，未进入 wink 的 TUN read，也未到达 inner-gw `wink0`。当前已提供默认关闭的 `WINKYOU_TRACE_TUN_PACKETS=1` 调试开关，用于区分“应用包未进入 Wintun”和“已进入 tunnel 但未到远端”。
-- 真实双节点验证已证明 `legacy_ice_udp` direct path 可以建立虚拟局域网；在已 bound 数据面上只停止 chen-win 的 coordinator 进程 15 秒后，`wink ping` 仍成功，说明基础 coordinator outage 已通过。但历史 selected pair 的 remote candidate 曾为 `100.102.17.35`，属于 `100.64.0.0/10`，这只能证明没有走 TURN relay，不能证明该 path 独立于 natpierce/chen-win underlay。client 已加第一层 peer-offline 保护、controlled-side retry、coordinator NotFound 重注册，并已在 runtime/`wink peers` 中暴露 control/data 状态和最近成功 path cache；`pkg/peercontrol` 消息模型已冻结，client 已接入最小 in-band heartbeat/path_health 循环，`re_ice_request` 会触发 protected-direct improvement，`session_signal` 会在已建立虚拟网内冗余发送现有 session/strategy 信令，并会短期重发最近信令、按序列去重，后续仍需覆盖更长时间 heartbeat/signaling failure、完整 ACK/backoff 和 cached path 恢复；详见 [`docs/CONTROL-PLANE-RESILIENCE.md`](./docs/CONTROL-PLANE-RESILIENCE.md)
+- 真实双节点验证已证明 `legacy_ice_udp` direct path 可以建立虚拟局域网；在已 bound 数据面上只停止 node-b 的 coordinator 进程 15 秒后，`wink ping` 仍成功，说明基础 coordinator outage 已通过。但历史 selected pair 的 remote candidate 曾为 `100.64.0.10`，属于 `100.64.0.0/10`，这只能证明没有走 TURN relay，不能证明该 path 独立于 natpierce/node-b underlay。client 已加第一层 peer-offline 保护、controlled-side retry、coordinator NotFound 重注册，并已在 runtime/`wink peers` 中暴露 control/data 状态和最近成功 path cache；`pkg/peercontrol` 消息模型已冻结，client 已接入最小 in-band heartbeat/path_health 循环，`re_ice_request` 会触发 protected-direct improvement，`session_signal` 会在已建立虚拟网内冗余发送现有 session/strategy 信令，并会短期重发最近信令、按序列去重，后续仍需覆盖更长时间 heartbeat/signaling failure、完整 ACK/backoff 和 cached path 恢复；详见 [`docs/CONTROL-PLANE-RESILIENCE.md`](./docs/CONTROL-PLANE-RESILIENCE.md)
 
 当文档发生冲突时，以 [`docs/CONNECTIVITY-SOLVER-BASELINE.md`](./docs/CONNECTIVITY-SOLVER-BASELINE.md) 作为 session、solver、strategy 和 transport 边界的判断依据。部分历史架构文档已标记为 proposal/archive，不能覆盖 active baseline。
 
@@ -53,6 +56,10 @@ WinkYou = connectivity solver + secure WireGuard data plane
 - coturn 作为公网部署推荐 TURN relay
 - userspace `wireguard-go` 作为安全数据平面
 - `PacketTransport` 负责把选中的 packet path 绑定给 tunnel
+- 独立现场工具 `punchtest bridge` 可运行无 Wintun 的固定目标 QUIC/TCP bridge；历史现场曾用本机 `127.0.0.1:22022` 作为该 bridge 入口。当前三节点 r12 实验中，这个端口已由 A 的 `meshnode` 监听并通过 WinkYou 图路由到 C，可用 `ssh -o ProxyJump=none -p 22022 node-c-user@127.0.0.1` 访问，不应再把当前监听误认成独立 `punchtest bridge`
+- 实验性 `cmd/meshnode` 已把 direct UDP edge、peer transit、用户态 TCP service 和 cached-endpoint self-bootstrap 接到同一图运行时；这不等于 `wink up` 已采用该生命周期，也不提供透明系统 L3
+- Windows IPv6 TCP facade 已实现：新旗标 `--virtual-tcp-forward [VIRTUAL_IP]:PORT=NODE_ID` 只接受 IPv6 ULA `/128`，运行时把地址临时挂到 Windows loopback（ActiveStore、`SkipAsSource=true`），退出时清理。它沿用现有 fixed-target `OPEN`，可与 r12 对端兼容，但远端仍必须配置 `--tcp-target`。普通 Windows TCP 客户端可在选定端口直接运行 `ssh -6 node-b-user@fd00::b` 或 `ssh -6 node-c-user@fd00::c`；它不提供任意端口、UDP、ICMP、系统 L3 或出口节点，facade 本身也不依赖 Wintun/WireGuard
+- 2026-07-19 A-only 现场验收：candidate PID `80524`（runtime `2026-07-19T00:57:05Z`）先通过 cached self-bootstrap 恢复一跳 A-B；A-C 第一轮经普通 peer B 协调打洞超时，第二轮成功并达到 `stable`，最终 A-B/A-C 均为一跳 `protected_direct`。旧入口 `127.0.0.1:22024/22022` 与新入口 `[fd00::b]:22/[fd00::c]:22` 共四个入口完成两轮正确 SSH banner，随后保持 45 秒；独立终验中 A 的 `data_forwarded` 从 `40` 增至 `60`，`data_dropped=0`。随后普通 Windows OpenSSH 通过两个 ULA 完成实际认证，分别返回 B 的 `node-b-host` 与 C 的 `node-c-host`，退出码均为 `0`。`fd00::b/c` 仅存在于 loopback interface index `1`，均为 ActiveStore `/128`、`SkipAsSource=true`，PersistentStore 数量为 `0`，portproxy 为空。现场 Tailscale 服务和 natpierce 进程当时仍在运行，但未承载该路径：ULA 入口命中 loopback，A 到 B/C 公网端点的 UDP socket 分别使用本进程端口 `52507/62451`，并由物理以太网源 `10.0.0.10` 经网关 `10.0.0.1` 路由；natpierce 是独立的 `58606 -> 203.0.113.40` 连接。该结论是 A 节点 candidate 的现场证明，不等于三节点都已升级到 r13，也不扩大为完整 L3 能力
 - rendezvous v2 envelope 负责 capability、observation、probe、path_commit 等 session 消息
 
 当前真实 strategy：
@@ -81,18 +88,18 @@ connectivity:
     active_path_silence_timeout: 15s
 ```
 
-如果某个 WinkYou peer 还负责转发它后面的后端网段，例如 `inner-gw` 所在的 `10.6.22.0/24` 不是一个直接注册到 coordinator 的 WinkYou 节点，而是 chen-win 后面的虚拟局域网，需要在网关 peer 上显式发布路由：
+如果某个 WinkYou peer 还负责转发它后面的后端网段，例如 `inner-gw` 所在的 `10.6.22.0/24` 不是一个直接注册到 coordinator 的 WinkYou 节点，而是 node-b 后面的虚拟局域网，需要在网关 peer 上显式发布路由：
 
 ```yaml
 node:
-  name: chen-win
+  name: node-b
   advertise_routes:
     - "10.6.22.0/24"
 ```
 
-其他 peer 从 coordinator 收到该发布后，会把 `10.6.22.0/24` 加入 chen-win 这个 peer 的 WireGuard `AllowedIPs`，并在本机加一条经由 chen-win 虚拟 IP 的系统路由。这不是默认 peer relay，也不会自动替任何 peer 转发任意网段；只有被显式配置的后端 CIDR 才会发布。网关机器本身仍必须允许 IP forwarding/转发，并放行对应防火墙规则。后端主机还必须能把 WinkYou 虚拟网段回包送回该网关；如果后端网络不能加静态回程路由，就需要在网关上做 SNAT/masquerade。
+其他 peer 从 coordinator 收到该发布后，会把 `10.6.22.0/24` 加入 node-b 这个 peer 的 WireGuard `AllowedIPs`，并在本机加一条经由 node-b 虚拟 IP 的系统路由。这不是默认 peer relay，也不会自动替任何 peer 转发任意网段；只有被显式配置的后端 CIDR 才会发布。网关机器本身仍必须允许 IP forwarding/转发，并放行对应防火墙规则。后端主机还必须能把 WinkYou 虚拟网段回包送回该网关；如果后端网络不能加静态回程路由，就需要在网关上做 SNAT/masquerade。
 
-排查时，`wink peers` 的 `Routes` 行和 `wink peers --json` 的 `advertised_routes` 字段会显示远端 peer 发布的后端网段；`wink doctor` 会在 `routing` 层报告本节点正在发布的路由、已绑定 peer 的远端发布路由，并检查本机操作系统路由表是否已经把远端后端网段指向对应 peer 的 WinkYou 虚拟 IP。Windows TUN 后端路由会用低 route/interface metric 安装，避免同前缀路由轻易被 natpierce/Tailscale 等外部 overlay 抢走；但更具体的 `/32` host route 仍会优先于 `/24`，需要清理 stale overlay route 或发布同样具体的 WinkYou 后端路由。配置了 `node.advertise_routes` 的网关 peer 还会检查当前操作系统的 IP forwarding 状态，同时提醒检查后端回程路由或 SNAT。要确认某个具体地址当前是否仍由 natpierce/Tailscale 等外部 overlay 承载，可以运行 `wink --config <config.yaml> doctor --route-target 10.6.22.1`；如果输出接口是 `natpierce`，这只能证明 natpierce overlay 能到达该地址，不能证明 WinkYou 已经独立承载这条路。
+排查时，`wink peers` 的 `Routes` 行和 `wink peers --json` 的 `advertised_routes` 字段会显示远端 peer 发布的后端网段；`wink doctor` 会在 `routing` 层报告本节点正在发布的路由、已绑定 peer 的远端发布路由，并检查本机操作系统路由表是否已经把远端后端网段指向对应 peer 的 WinkYou 虚拟 IP。Windows TUN 后端路由会用低 route/interface metric 安装，避免同前缀路由轻易被 natpierce/Tailscale 等外部 overlay 抢走；但更具体的 `/32` host route 仍会优先于 `/24`，需要清理 stale overlay route 或发布同样具体的 WinkYou 后端路由。配置了 `node.advertise_routes` 的网关 peer 还会检查当前操作系统的 IP forwarding 状态，同时提醒检查后端回程路由或 SNAT。要确认某个具体地址当前是否仍由 natpierce/Tailscale 等外部 overlay 承载，可以运行 `wink --config <config.yaml> doctor --route-target 10.20.0.1`；如果输出接口是 `natpierce`，这只能证明 natpierce overlay 能到达该地址，不能证明 WinkYou 已经独立承载这条路。
 
 默认 `auto` 模式会启用 protected-direct multipath：最多保留 primary + 一条 standby，并默认开启 shadow write，让 standby path 也持续收到数据包，从而维持 NAT/relay 状态。session 会执行预算内候选，而不是在第一个 direct 成功后立刻停止；跨 strategy 场景下也会在 `max_paths` 预算内继续给后续候选一次机会，直到能组成 primary + protected direct standby 或没有剩余候选。legacy ICE 会把 selected pair 的 RTT 写入 path metrics，让低延迟 relay/其他 path 和高延迟 direct 能参与同一轮评分。默认 scoring 会惩罚 relay/依赖路径，并对 `unknown` 依赖加倍惩罚，同时给真正的 `protected_direct` 加保护分。这样当 `legacyice/direct_prefer` 选中了低延迟但依赖不清的 path，而 `legacyice/public_direct` 或后续 direct path 也成功时，client 会把它们组合成一个 `multipath` transport 绑定给 WireGuard；如果没有 RTT 证据，依赖不清的 direct-like path 不应仅因为看起来是 direct 就压过明确可用的 relay。
 
@@ -139,7 +146,7 @@ tcp_framed:
   dial_timeout: 5s
 ```
 
-在 natpierce 这类拓扑中，`10.6.22.1:22` 能通通常只能证明该端口或该会话被外部系统转发；如果 `10.6.22.1:<随机端口>` 不通，`tcp_framed` 的 `listen_addr: "...:0"` 也不会自动变成可达路径。
+在 natpierce 这类拓扑中，`10.20.0.1:22` 能通通常只能证明该端口或该会话被外部系统转发；如果 `10.20.0.1:<随机端口>` 不通，`tcp_framed` 的 `listen_addr: "...:0"` 也不会自动变成可达路径。
 
 配置好固定端口后，可以先运行 `wink --config <config.yaml> doctor --strategy tcp_framed`。如果本端配置了 `tcp_framed.dial_addr`，doctor 会用短超时实际 TCP 连接该 endpoint；成功只能证明该 TCP endpoint 当前可达，失败则优先检查对端监听、端口转发和防火墙。
 真实 session 执行时，`tcp_framed` 的拨号侧会在 `dial_timeout` 窗口内短间隔重试固定 endpoint，避免两端同时启动时监听侧尚未 ready 导致第一次 `connection refused` 就放弃。
@@ -210,7 +217,7 @@ nat:
   nat1to1_ips:
     - "203.0.113.10/192.168.0.10"
   public_endpoint_hints:
-    - "117.48.146.2:41000/192.168.1.20:40000"
+    - "192.0.2.52:41000/192.168.1.20:40000"
   # 默认开启。启动时 STUN 观测到的公网 endpoint 会自动合入
   # legacyice/public_direct 的 public_endpoint_hints。
   auto_public_endpoint_hints: true
@@ -409,6 +416,9 @@ Peer 1
 
 - Active baseline：[`docs/CONNECTIVITY-SOLVER-BASELINE.md`](./docs/CONNECTIVITY-SOLVER-BASELINE.md)
 - 文档索引：[`docs/README.md`](./docs/README.md)
+- 自治 mesh 与 peer transit ADR：[`docs/ADR-AUTONOMOUS-MESH.md`](./docs/ADR-AUTONOMOUS-MESH.md)
+- 三节点 rejoin 现场记录：[`docs/MESH-REJOIN-FIELD-EXPERIMENT.md`](./docs/MESH-REJOIN-FIELD-EXPERIMENT.md)
+- post-r9 recovery card 与无路由自举：[`docs/SELF-BOOTSTRAP-RECOVERY.md`](./docs/SELF-BOOTSTRAP-RECOVERY.md)
 - Phase 2D freeze gate：[`docs/PHASE2D-FREEZE.md`](./docs/PHASE2D-FREEZE.md)
 - Phase 3A entry：[`docs/PHASE3A-STRATEGY-PORTFOLIO.md`](./docs/PHASE3A-STRATEGY-PORTFOLIO.md)
 - Phase 3B+ working plan：[`implementation_plan.md`](./implementation_plan.md)

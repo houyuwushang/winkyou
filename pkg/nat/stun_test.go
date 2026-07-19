@@ -334,6 +334,22 @@ func TestStunBindTimeout(t *testing.T) {
 	}
 }
 
+func TestStunRequestDeadlineCapsLongParent(t *testing.T) {
+	now := time.Now()
+	longCtx, cancelLong := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancelLong()
+	if got, want := stunRequestDeadline(longCtx, now), now.Add(stunDefaultTimeout); !got.Equal(want) {
+		t.Fatalf("long parent deadline = %s, want per-request cap %s", got, want)
+	}
+
+	shortCtx, cancelShort := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancelShort()
+	parentDeadline, _ := shortCtx.Deadline()
+	if got := stunRequestDeadline(shortCtx, now); !got.Equal(parentDeadline) {
+		t.Fatalf("short parent deadline = %s, want %s", got, parentDeadline)
+	}
+}
+
 // --- Host candidate dedup/filter tests ---
 
 func TestGatherHostCandidates(t *testing.T) {

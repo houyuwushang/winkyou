@@ -10,6 +10,9 @@ When documents disagree, treat `CONNECTIVITY-SOLVER-BASELINE.md` as the source o
 
 ## Current Roadmap
 
+- Autonomous mesh control, peer transit, and shortcut ADR (Slices 1-4 executable proof): [`ADR-AUTONOMOUS-MESH.md`](./ADR-AUTONOMOUS-MESH.md)
+- Three-node peer-coordinated rejoin plus direct routed-SSH field experiment: [`MESH-REJOIN-FIELD-EXPERIMENT.md`](./MESH-REJOIN-FIELD-EXPERIMENT.md)
+- Post-r9 cached-endpoint self-bootstrap and recovery-card boundary: [`SELF-BOOTSTRAP-RECOVERY.md`](./SELF-BOOTSTRAP-RECOVERY.md)
 - Phase 2D freeze gate: [`PHASE2D-FREEZE.md`](./PHASE2D-FREEZE.md)
 - Phase 3A strategy portfolio entry: [`PHASE3A-STRATEGY-PORTFOLIO.md`](./PHASE3A-STRATEGY-PORTFOLIO.md)
 - v0.1 freeze gate: [`V0.1-FREEZE.md`](./V0.1-FREEZE.md)
@@ -21,6 +24,7 @@ When documents disagree, treat `CONNECTIVITY-SOLVER-BASELINE.md` as the source o
 ## Operator Docs
 
 - Self-host quickstart: [`SELFHOST-QUICKSTART.md`](./SELFHOST-QUICKSTART.md)
+- Experimental `meshnode` restart recovery and recovery-card operation: [`SELF-BOOTSTRAP-RECOVERY.md`](./SELF-BOOTSTRAP-RECOVERY.md)
 - Long-running client workflow: [`LONG-RUNNING-CLIENT.md`](./LONG-RUNNING-CLIENT.md)
 - Control-plane resilience notes: [`CONTROL-PLANE-RESILIENCE.md`](./CONTROL-PLANE-RESILIENCE.md)
 - Multipath failover verification: [`MULTIPATH-FAILOVER-VERIFICATION.md`](./MULTIPATH-FAILOVER-VERIFICATION.md)
