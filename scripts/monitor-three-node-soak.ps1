@@ -18,6 +18,12 @@ Only these remote operations are used:
 The script never calls peer, neighbor, or shortcut mutation endpoints. It does
 not reconnect, restart, repunch, or alter the topology after a failure.
 
+B and C use public-key BatchMode by default. To use SSH_ASKPASS for a node,
+provide both its AskPassPath and PasswordEnvironmentVariable parameters and set
+that named variable in the monitor process before launch. The password value is
+passed only through child-process environment blocks; it is never added to argv,
+events, logs, or run.state.json.
+
 .EXAMPLE
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\monitor-three-node-soak.ps1
 
@@ -61,6 +67,8 @@ param(
     [string]$BProxyCommand = "",
     [string]$BRemoteCurl = "curl.exe",
     [string]$BExpectedHostname = "",
+    [string]$BAskPassPath = "",
+    [string]$BPasswordEnvironmentVariable = "",
 
     [string]$ABAttemptID = "",
     [string]$BCAttemptID = "",
@@ -81,6 +89,8 @@ param(
     [int]$CPort = 22022,
     [string]$CProxyCommand = "",
     [string]$CRemoteCurl = "curl",
+    [string]$CAskPassPath = "",
+    [string]$CPasswordEnvironmentVariable = "",
 
     [string]$SshExecutable = "ssh.exe",
     [string]$CurlExecutable = "curl.exe",
@@ -101,6 +111,7 @@ $script:EventWriter = $null
 $script:ProbeStates = @{}
 $script:NodeStates = @{}
 $script:Nodes = $null
+$script:SensitiveValues = New-Object 'System.Collections.Generic.List[string]'
 $abTargetID = if ($ABInitiatorID -eq "A") { "B" } else { "A" }
 $bcTargetID = if ($BCInitiatorID -eq "B") { "C" } else { "B" }
 $acTargetID = if ($ACInitiatorID -eq "A") { "C" } else { "A" }
@@ -192,18 +203,88 @@ function Limit-Text {
     if ($null -eq $Value) {
         return ""
     }
-    $clean = $Value.Trim()
+    $clean = Protect-SensitiveText -Value $Value
+    $clean = $clean.Trim()
     if ($clean.Length -le $MaximumLength) {
         return $clean
     }
     return $clean.Substring(0, $MaximumLength) + "...<truncated>"
 }
 
+function Protect-SensitiveText {
+    param([AllowNull()][string]$Value)
+
+    if ($null -eq $Value) {
+        return ""
+    }
+    $protected = $Value
+    foreach ($secret in @($script:SensitiveValues)) {
+        if (-not [string]::IsNullOrEmpty($secret)) {
+            $protected = $protected.Replace($secret, "<redacted>")
+        }
+    }
+    return $protected
+}
+
+function Get-SshAuthenticationConfiguration {
+    param(
+        [AllowEmptyString()][string]$AskPassPath,
+        [AllowEmptyString()][string]$PasswordEnvironmentVariable
+    )
+
+    $hasAskPass = -not [string]::IsNullOrWhiteSpace($AskPassPath)
+    $hasPasswordName = -not [string]::IsNullOrWhiteSpace($PasswordEnvironmentVariable)
+    if (-not $hasAskPass -and -not $hasPasswordName) {
+        return [pscustomobject][ordered]@{
+            UseAskPass = $false
+            EnvironmentVariables = @{}
+        }
+    }
+    if (-not $hasAskPass -or -not $hasPasswordName) {
+        throw "SSH_ASKPASS path and password environment-variable name must be configured together"
+    }
+    if ($PasswordEnvironmentVariable -notmatch '^[A-Za-z_][A-Za-z0-9_]*$') {
+        throw "SSH password environment-variable name is invalid"
+    }
+    foreach ($value in @($AskPassPath, $PasswordEnvironmentVariable)) {
+        if ($value.IndexOfAny([char[]]@([char]0, [char]10, [char]13)) -ge 0) {
+            throw "SSH_ASKPASS configuration must not contain NUL or line breaks"
+        }
+    }
+
+    $resolvedAskPass = [System.IO.Path]::GetFullPath($AskPassPath)
+    if (-not (Test-Path -LiteralPath $resolvedAskPass -PathType Leaf)) {
+        throw "SSH_ASKPASS executable not found"
+    }
+    $password = [Environment]::GetEnvironmentVariable($PasswordEnvironmentVariable, "Process")
+    if ([string]::IsNullOrEmpty($password)) {
+        throw "configured SSH password environment variable is empty or unavailable"
+    }
+    if ($password.IndexOfAny([char[]]@([char]0, [char]10, [char]13)) -ge 0) {
+        throw "configured SSH password contains an unsupported control character"
+    }
+    if (-not $script:SensitiveValues.Contains($password)) {
+        $script:SensitiveValues.Add($password)
+    }
+
+    return [pscustomobject][ordered]@{
+        UseAskPass = $true
+        EnvironmentVariables = @{
+            SSH_ASKPASS = $resolvedAskPass
+            SSH_ASKPASS_REQUIRE = "force"
+            DISPLAY = "winkyou-soak-monitor"
+            $PasswordEnvironmentVariable = $password
+        }
+    }
+}
+
 function Start-CapturedProcess {
     param(
         [string]$FilePath,
         [string[]]$Arguments,
-        [AllowNull()][string]$InputText = $null
+        [AllowNull()][string]$InputText = $null,
+        [AllowNull()][hashtable]$EnvironmentVariables = $null,
+        [switch]$CompleteOnOutputLine
     )
 
     $process = $null
@@ -218,11 +299,31 @@ function Start-CapturedProcess {
         $startInfo.RedirectStandardOutput = $true
         $startInfo.RedirectStandardError = $true
         $startInfo.RedirectStandardInput = $true
+        if ($null -ne $EnvironmentVariables) {
+            foreach ($entry in $EnvironmentVariables.GetEnumerator()) {
+                $name = [string]$entry.Key
+                if ([string]::IsNullOrWhiteSpace($name) -or
+                    $name.IndexOfAny([char[]]@([char]0, [char]61)) -ge 0) {
+                    throw "invalid child-process environment-variable name"
+                }
+                $startInfo.EnvironmentVariables[$name] = [string]$entry.Value
+            }
+        }
 
         $process = New-Object System.Diagnostics.Process
         $process.StartInfo = $startInfo
         [void]$process.Start()
-        $stdoutTask = $process.StandardOutput.ReadToEndAsync()
+        $stdoutTask = $null
+        $stdoutLineTask = $null
+        if ($CompleteOnOutputLine) {
+            # WinkYou status, ping, and hostname probes each return exactly one
+            # line. Reading that line independently lets us recognize a complete
+            # business response even when Windows OpenSSH hangs while closing
+            # its local forwarded socket after stdout has already arrived.
+            $stdoutLineTask = $process.StandardOutput.ReadLineAsync()
+        } else {
+            $stdoutTask = $process.StandardOutput.ReadToEndAsync()
+        }
         $stderrTask = $process.StandardError.ReadToEndAsync()
         if ($null -ne $InputText) {
             # StandardInput.Write() in Windows PowerShell 5.1 emits a BOM that
@@ -236,10 +337,12 @@ function Start-CapturedProcess {
         return [pscustomobject][ordered]@{
             Process = $process
             StdoutTask = $stdoutTask
+            StdoutLineTask = $stdoutLineTask
             StderrTask = $stderrTask
             Stopwatch = $stopwatch
             StartedUtc = $startedUtc
             FilePath = $FilePath
+            CompleteOnOutputLine = [bool]$CompleteOnOutputLine
             StartError = $null
         }
     } catch {
@@ -251,10 +354,12 @@ function Start-CapturedProcess {
         return [pscustomobject][ordered]@{
             Process = $null
             StdoutTask = $null
+            StdoutLineTask = $null
             StderrTask = $null
             Stopwatch = $stopwatch
             StartedUtc = $startedUtc
             FilePath = $FilePath
+            CompleteOnOutputLine = [bool]$CompleteOnOutputLine
             StartError = $_.Exception.Message
         }
     }
@@ -263,13 +368,18 @@ function Start-CapturedProcess {
 function Complete-CapturedProcess {
     param(
         [object]$Handle,
-        [int]$TimeoutMilliseconds
+        [int]$TimeoutMilliseconds,
+        [ValidateRange(0, 5000)]
+        [int]$OutputCloseGraceMilliseconds = 500
     )
 
     if ($null -ne $Handle.StartError) {
         return [pscustomobject][ordered]@{
             ok = $false
             timed_out = $false
+            complete_output_line = $false
+            terminated_after_complete_output = $false
+            transport_close_anomaly = $false
             exit_code = -1
             stdout = ""
             stderr = $Handle.StartError
@@ -279,23 +389,72 @@ function Complete-CapturedProcess {
 
     $process = $Handle.Process
     $timedOut = $false
+    $completeOutputLine = $false
+    $terminatedAfterCompleteOutput = $false
     try {
-        $remaining = $TimeoutMilliseconds - [int]$Handle.Stopwatch.ElapsedMilliseconds
-        if ($remaining -lt 0) {
-            $remaining = 0
-        }
-        if (-not $process.WaitForExit($remaining)) {
-            $timedOut = $true
-            try { $process.Kill() } catch { }
-            [void]$process.WaitForExit(2000)
+        if ($Handle.CompleteOnOutputLine) {
+            while ($true) {
+                if ($Handle.StdoutLineTask.IsCompleted) {
+                    $completeOutputLine = $true
+                    if (-not $process.WaitForExit($OutputCloseGraceMilliseconds)) {
+                        $terminatedAfterCompleteOutput = $true
+                        try { $process.Kill() } catch { }
+                        [void]$process.WaitForExit(2000)
+                    } else {
+                        $process.WaitForExit()
+                    }
+                    break
+                }
+                $remaining = $TimeoutMilliseconds - [int]$Handle.Stopwatch.ElapsedMilliseconds
+                if ($remaining -le 0) {
+                    $timedOut = $true
+                    try { $process.Kill() } catch { }
+                    [void]$process.WaitForExit(2000)
+                    break
+                }
+                if ($process.WaitForExit([int][math]::Min(25, $remaining))) {
+                    $process.WaitForExit()
+                    break
+                }
+            }
         } else {
-            # Ensures asynchronous stdout/stderr readers have observed EOF.
-            $process.WaitForExit()
+            $remaining = $TimeoutMilliseconds - [int]$Handle.Stopwatch.ElapsedMilliseconds
+            if ($remaining -lt 0) {
+                $remaining = 0
+            }
+            if (-not $process.WaitForExit($remaining)) {
+                $timedOut = $true
+                try { $process.Kill() } catch { }
+                [void]$process.WaitForExit(2000)
+            } else {
+                # Ensures asynchronous stdout/stderr readers have observed EOF.
+                $process.WaitForExit()
+            }
         }
 
         $stdout = ""
         $stderr = ""
-        try { $stdout = $Handle.StdoutTask.Result } catch { $stderr = $_.Exception.Message }
+        if ($Handle.CompleteOnOutputLine) {
+            try {
+                if (-not $Handle.StdoutLineTask.IsCompleted) {
+                    [void]$Handle.StdoutLineTask.Wait(2000)
+                }
+                if ($Handle.StdoutLineTask.IsCompleted -and $null -ne $Handle.StdoutLineTask.Result) {
+                    $stdout = [string]$Handle.StdoutLineTask.Result
+                }
+                $remainingStdout = $process.StandardOutput.ReadToEnd()
+                if (-not [string]::IsNullOrEmpty($remainingStdout)) {
+                    if (-not [string]::IsNullOrEmpty($stdout)) {
+                        $stdout += [Environment]::NewLine
+                    }
+                    $stdout += $remainingStdout
+                }
+            } catch {
+                $stderr = $_.Exception.Message
+            }
+        } else {
+            try { $stdout = $Handle.StdoutTask.Result } catch { $stderr = $_.Exception.Message }
+        }
         try { $stderrFromTask = $Handle.StderrTask.Result } catch { $stderrFromTask = $_.Exception.Message }
         if (-not [string]::IsNullOrWhiteSpace($stderrFromTask)) {
             if ([string]::IsNullOrWhiteSpace($stderr)) {
@@ -304,10 +463,17 @@ function Complete-CapturedProcess {
                 $stderr = $stderr + [Environment]::NewLine + $stderrFromTask
             }
         }
-        $exitCode = if ($timedOut) { -1 } else { $process.ExitCode }
+        $exitCode = if ($timedOut -or $terminatedAfterCompleteOutput) { -1 } else { $process.ExitCode }
+        $knownWindowsCloseError = (-not [string]::IsNullOrWhiteSpace($stderr) -and
+            $stderr -match 'close\s+-\s+IO is still pending on closed socket')
+        $transportCloseAnomaly = ($completeOutputLine -and
+            ($terminatedAfterCompleteOutput -or ($exitCode -ne 0 -and $knownWindowsCloseError)))
         return [pscustomobject][ordered]@{
-            ok = (-not $timedOut -and $exitCode -eq 0)
+            ok = (-not $timedOut -and -not $terminatedAfterCompleteOutput -and $exitCode -eq 0)
             timed_out = $timedOut
+            complete_output_line = $completeOutputLine
+            terminated_after_complete_output = $terminatedAfterCompleteOutput
+            transport_close_anomaly = $transportCloseAnomaly
             exit_code = $exitCode
             stdout = $stdout
             stderr = $stderr
@@ -326,7 +492,8 @@ function New-SshArguments {
         [int]$Port,
         [AllowEmptyString()][string]$ProxyCommand = "",
         [string]$RemoteCommand,
-        [switch]$UsesStandardInput
+        [switch]$UsesStandardInput,
+        [switch]$UseAskPass
     )
 
     if ([string]::IsNullOrWhiteSpace($User)) {
@@ -341,11 +508,24 @@ function New-SshArguments {
         }
     }
 
-    $arguments = @(
-        "-T",
-        "-o", "BatchMode=yes",
-        "-o", "NumberOfPasswordPrompts=0",
-        "-o", "PreferredAuthentications=publickey",
+    $arguments = @("-T")
+    if ($UseAskPass) {
+        $arguments += @(
+            "-o", "BatchMode=no",
+            "-o", "NumberOfPasswordPrompts=1",
+            "-o", "PreferredAuthentications=password,keyboard-interactive",
+            "-o", "PubkeyAuthentication=no"
+        )
+    } else {
+        # Preserve the original r12/public-key behavior when no per-node
+        # SSH_ASKPASS configuration is supplied.
+        $arguments += @(
+            "-o", "BatchMode=yes",
+            "-o", "NumberOfPasswordPrompts=0",
+            "-o", "PreferredAuthentications=publickey"
+        )
+    }
+    $arguments += @(
         "-o", "StrictHostKeyChecking=no",
         "-o", "UserKnownHostsFile=NUL",
         "-o", "LogLevel=ERROR",
@@ -365,6 +545,15 @@ function New-SshArguments {
     }
     $arguments += @("-p", [string]$Port, "${User}@${HostName}", $RemoteCommand)
     return $arguments
+}
+
+function Test-ProcessResultOutputCandidate {
+    param(
+        [object]$Result,
+        [switch]$IsSsh
+    )
+
+    return ($Result.ok -or ($IsSsh -and $Result.transport_close_anomaly))
 }
 
 function Start-NodeApiRequest {
@@ -400,8 +589,9 @@ function Start-NodeApiRequest {
     # All curl arguments above are intentionally whitespace-free. Joining them
     # avoids shell-specific quoting differences between B (Windows) and C (Linux).
     $remoteCommand = $node.RemoteCurl + " " + ($curlArguments -join " ")
-    $sshArguments = New-SshArguments -User $node.User -HostName $node.HostName -Port $node.Port -ProxyCommand $node.ProxyCommand -RemoteCommand $remoteCommand -UsesStandardInput:($Method -eq "POST")
-    return Start-CapturedProcess -FilePath $SshExecutable -Arguments $sshArguments -InputText $Body
+    $authentication = Get-SshAuthenticationConfiguration -AskPassPath $node.AskPassPath -PasswordEnvironmentVariable $node.PasswordEnvironmentVariable
+    $sshArguments = New-SshArguments -User $node.User -HostName $node.HostName -Port $node.Port -ProxyCommand $node.ProxyCommand -RemoteCommand $remoteCommand -UsesStandardInput:($Method -eq "POST") -UseAskPass:$authentication.UseAskPass
+    return Start-CapturedProcess -FilePath $SshExecutable -Arguments $sshArguments -InputText $Body -EnvironmentVariables $authentication.EnvironmentVariables -CompleteOnOutputLine
 }
 
 function Get-ProcessFailureText {
@@ -476,6 +666,7 @@ function Update-ProbeState {
         [string]$ErrorText = ""
     )
 
+    $ErrorText = Protect-SensitiveText -Value $ErrorText
     $state = Get-OrCreateProbeState -Key $Key -Kind $Kind
     $state.Attempts++
     if ($null -ne $ObservedMilliseconds) {
@@ -657,6 +848,28 @@ function Normalize-NodeStatus {
             $_.connection_type -eq "direct" -and -not [string]::IsNullOrWhiteSpace($_.direct_peer_id)
         } | ForEach-Object { $_.direct_peer_id } | Sort-Object -Unique)
 
+    $maintainedPeersProperty = $Status.PSObject.Properties["maintained_direct_peers"]
+    $maintainedPeersPresent = ($null -ne $maintainedPeersProperty)
+    $maintainedPeers = @()
+    foreach ($peer in @(Get-PropertyValue -InputObject $Status -Name "maintained_direct_peers" -Default @())) {
+        $maintainedPeers += [pscustomobject][ordered]@{
+            peer_id = [string](Get-PropertyValue $peer "peer_id" "")
+            owner_id = [string](Get-PropertyValue $peer "owner_id" "")
+            state = [string](Get-PropertyValue $peer "state" "")
+            neighbor_kind = [string](Get-PropertyValue $peer "neighbor_kind" "")
+            protected_direct = [bool](Get-PropertyValue $peer "protected_direct" $false)
+            reachable = [bool](Get-PropertyValue $peer "reachable" $false)
+            route_path = @((Get-PropertyValue $peer "route_path" @()) | ForEach-Object { [string]$_ })
+            route_hop_count = [int](Get-PropertyValue $peer "route_hop_count" 0)
+            coordinator_id = [string](Get-PropertyValue $peer "coordinator_id" "")
+            attempt_id = [string](Get-PropertyValue $peer "attempt_id" "")
+            attempt_phase = [string](Get-PropertyValue $peer "attempt_phase" "")
+            failures = [int](Get-PropertyValue $peer "failures" 0)
+            last_error = [string](Get-PropertyValue $peer "last_error" "")
+        }
+    }
+    $maintainedPeers = @($maintainedPeers | Sort-Object peer_id)
+
     $desiredPeers = Get-PropertyValue -InputObject $Status -Name "desired_bootstrap_peers" -Default ([pscustomobject]@{})
     $desiredPeerIDs = @($desiredPeers.PSObject.Properties | ForEach-Object { $_.Name } | Sort-Object -Unique)
     $counters = Get-PropertyValue -InputObject $Status -Name "counters" -Default ([pscustomobject]@{})
@@ -670,6 +883,8 @@ function Normalize-NodeStatus {
         stable_shortcuts = $stableShortcuts
         stable_attempt_ids = $stableAttemptIDs
         stable_direct_peer_ids = $directPeerIDs
+        maintained_direct_peers_present = $maintainedPeersPresent
+        maintained_direct_peers = $maintainedPeers
         desired_bootstrap_peer_ids = $desiredPeerIDs
         counters = $counters
         infrastructure_coordinator_started = [bool](Get-PropertyValue $Status "infrastructure_coordinator_started" $false)
@@ -707,14 +922,26 @@ function Get-TopologyHealth {
         })
     $actualDirectAttemptIDs = @($participantRecords | ForEach-Object { $_.attempt_id } | Sort-Object -Unique)
     $neighborsMatch = Test-StringSetEqual -Left $expectedPeers -Right $actualNeighbors
-    $directPeersMatch = ($participantRecords.Count -eq $expectedPeers.Count -and
+    $legacyDirectPeersMatch = ($participantRecords.Count -eq $expectedPeers.Count -and
         (Test-StringSetEqual -Left $expectedPeers -Right $actualDirectPeers))
+    $maintainedPeersPresent = [bool]$NormalizedStatus.maintained_direct_peers_present
+    $maintainedPeers = @($NormalizedStatus.maintained_direct_peers)
+    $maintainedPeerIDs = @($maintainedPeers | ForEach-Object { $_.peer_id } | Sort-Object -Unique)
+    $maintainedPeersHealthy = ($maintainedPeers.Count -eq $expectedPeers.Count -and
+        (Test-StringSetEqual -Left $expectedPeers -Right $maintainedPeerIDs) -and
+        @($maintainedPeers | Where-Object {
+                $_.state -ne "healthy" -or $_.neighbor_kind -ne "packet" -or
+                -not $_.protected_direct -or -not $_.reachable
+            }).Count -eq 0)
+    $directEvidenceSource = if ($maintainedPeersPresent) { "maintained_direct_peers" } else { "stable_shortcuts" }
+    $directPeersMatch = if ($maintainedPeersPresent) { $maintainedPeersHealthy } else { $legacyDirectPeersMatch }
     $desiredPeersEmpty = @($NormalizedStatus.desired_bootstrap_peer_ids).Count -eq 0
-    $directMetadataValid = @($participantRecords | Where-Object {
+    $legacyDirectMetadataValid = @($participantRecords | Where-Object {
             $_.strategy -ne "birthday_punch" -or $_.connection_type -ne "direct" -or
             $_.path_id -ne "birthdaypunch/direct" -or $_.path_role -ne "protected_direct" -or
             [string]::IsNullOrWhiteSpace($_.remote_addr) -or @($_.dependencies).Count -ne 0
         }).Count -eq 0
+    $directMetadataValid = if ($maintainedPeersPresent) { $maintainedPeersHealthy } else { $legacyDirectMetadataValid }
     $noInfrastructureCoordinator = -not $NormalizedStatus.infrastructure_coordinator_started
 
     $routeDestinations = @($NormalizedStatus.routes | ForEach-Object { $_.destination })
@@ -794,7 +1021,11 @@ function Get-TopologyHealth {
         expected_peers = $expectedPeers
         complete_neighbor_set = $neighborsMatch
         one_hop_routes = $oneHopRoutes
-        stable_direct_shortcuts_to_both_peers = $directPeersMatch
+        stable_direct_shortcuts_to_both_peers = $legacyDirectPeersMatch
+        maintained_direct_peers_present = $maintainedPeersPresent
+        maintained_direct_peers_healthy = $maintainedPeersHealthy
+        direct_evidence_source = $directEvidenceSource
+        direct_evidence_to_both_peers = $directPeersMatch
         desired_bootstrap_peers_empty = $desiredPeersEmpty
         local_stable_direct_attempt_ids = $actualDirectAttemptIDs
         edge_manifest_configured = ($configuredEdges.Count -eq 3)
@@ -802,7 +1033,8 @@ function Get-TopologyHealth {
         edge_manifest_checks = $manifestChecks
         expected_started_at = $expectedStartedAt
         started_at_matches = $startedAtMatches
-        direct_shortcut_metadata_valid = $directMetadataValid
+        direct_shortcut_metadata_valid = $legacyDirectMetadataValid
+        direct_evidence_metadata_valid = $directMetadataValid
         infrastructure_coordinator_stopped = $noInfrastructureCoordinator
         complete_direct_triangle_locally = ($neighborsMatch -and $oneHopRoutes -and $directPeersMatch -and
             $desiredPeersEmpty -and $edgeManifestMatch -and $startedAtMatches -and
@@ -892,11 +1124,20 @@ function Update-NodeContinuity {
     $routeSignature = (@($NormalizedStatus.routes | ForEach-Object {
                 $_.destination + '|' + $_.next_hop + '|' + $_.hop_count + '|' + (@($_.path) -join '>')
             } | Sort-Object) -join ';')
-    $directSignature = (@($NormalizedStatus.stable_shortcuts | Where-Object {
-                $_.connection_type -eq "direct" -and -not [string]::IsNullOrWhiteSpace($_.direct_peer_id)
-            } | ForEach-Object {
-                $_.attempt_id + '|' + $_.direct_peer_id + '|' + $_.remote_addr + '|' + $_.path_id + '|' + $_.path_role
-            } | Sort-Object) -join ';')
+    if ($NormalizedStatus.maintained_direct_peers_present) {
+        $directSignature = (@($NormalizedStatus.maintained_direct_peers | ForEach-Object {
+                    $_.peer_id + '|' + $_.state + '|' + $_.neighbor_kind + '|' +
+                    [string]$_.protected_direct + '|' + [string]$_.reachable
+                } | Sort-Object) -join ';')
+        $directChangeKind = "maintained_direct_peers"
+    } else {
+        $directSignature = (@($NormalizedStatus.stable_shortcuts | Where-Object {
+                    $_.connection_type -eq "direct" -and -not [string]::IsNullOrWhiteSpace($_.direct_peer_id)
+                } | ForEach-Object {
+                    $_.attempt_id + '|' + $_.direct_peer_id + '|' + $_.remote_addr + '|' + $_.path_id + '|' + $_.path_role
+                } | Sort-Object) -join ';')
+        $directChangeKind = "stable_direct_shortcuts"
+    }
 
     if ($null -eq $state.FirstNeighborSignature) {
         $state.FirstNeighborSignature = $neighborSignature
@@ -914,7 +1155,7 @@ function Update-NodeContinuity {
         $state.FirstDirectSignature = $directSignature
     } elseif ($state.LastDirectSignature -ne $directSignature) {
         $state.StableDirectChanges++
-        Write-ContinuityChange -NodeID $nodeID -ChangeKind "stable_direct_shortcuts" -Previous $state.LastDirectSignature -Current $directSignature -SampleIndex $SampleIndex
+        Write-ContinuityChange -NodeID $nodeID -ChangeKind $directChangeKind -Previous $state.LastDirectSignature -Current $directSignature -SampleIndex $SampleIndex
     }
 
     $state.LastNeighborSignature = $neighborSignature
@@ -938,7 +1179,8 @@ function Invoke-StatusSample {
     foreach ($nodeID in $script:Nodes.Keys) {
         $result = Complete-CapturedProcess -Handle $handles[$nodeID] -TimeoutMilliseconds ($CommandTimeoutSeconds * 1000)
         $timestamp = [DateTimeOffset]::UtcNow
-        $succeeded = $result.ok
+        $isSsh = ($script:Nodes[$nodeID].Access -eq "ssh")
+        $succeeded = Test-ProcessResultOutputCandidate -Result $result -IsSsh:$isSsh
         $errorText = ""
         $normalized = $null
         $health = $null
@@ -972,7 +1214,13 @@ function Invoke-StatusSample {
             ok = $succeeded
             observed_ms = $result.elapsed_ms
             exit_code = $result.exit_code
-            error = $errorText
+            raw_transport_ok = $result.ok
+            transport_timed_out = $result.timed_out
+            complete_output_line = $result.complete_output_line
+            transport_close_anomaly = $result.transport_close_anomaly
+            accepted_after_transport_close_anomaly = ($succeeded -and $result.transport_close_anomaly)
+            transport_stderr = Limit-Text -Value $result.stderr -MaximumLength 512
+            error = Limit-Text -Value $errorText
             consecutive_failures = $streak.consecutive_failures
             max_consecutive_failures = $streak.max_consecutive_failures
             failure_streak_seconds = $streak.failure_streak_seconds
@@ -1028,7 +1276,8 @@ function Invoke-PingRound {
         $result = Complete-CapturedProcess -Handle $handle -TimeoutMilliseconds ($CommandTimeoutSeconds * 1000)
         $completedUtc = [DateTimeOffset]::UtcNow
         $startedUtc = $handle.StartedUtc
-        $succeeded = $result.ok
+        $isSsh = ($script:Nodes[$sourceID].Access -eq "ssh")
+        $succeeded = Test-ProcessResultOutputCandidate -Result $result -IsSsh:$isSsh
         $errorText = ""
         $apiRttMilliseconds = $null
         $requestPath = @()
@@ -1083,7 +1332,13 @@ function Invoke-PingRound {
                 reply_path = $replyPath
                 one_hop_both_ways = $oneHop
                 exit_code = $result.exit_code
-                error = $errorText
+                raw_transport_ok = $result.ok
+                transport_timed_out = $result.timed_out
+                complete_output_line = $result.complete_output_line
+                transport_close_anomaly = $result.transport_close_anomaly
+                accepted_after_transport_close_anomaly = ($succeeded -and $result.transport_close_anomaly)
+                transport_stderr = Limit-Text -Value $result.stderr -MaximumLength 512
+                error = Limit-Text -Value $errorText
                 consecutive_failures = $streak.consecutive_failures
                 max_consecutive_failures = $streak.max_consecutive_failures
                 failure_streak_seconds = $streak.failure_streak_seconds
@@ -1099,18 +1354,21 @@ function Invoke-DirectSshProbe {
         [DateTimeOffset]$ScheduledUtc
     )
 
-    $arguments = New-SshArguments -User $BUser -HostName $BHost -Port $BPort -ProxyCommand $BProxyCommand -RemoteCommand "hostname"
-    $handle = Start-CapturedProcess -FilePath $SshExecutable -Arguments $arguments
+    $authentication = Get-SshAuthenticationConfiguration -AskPassPath $BAskPassPath -PasswordEnvironmentVariable $BPasswordEnvironmentVariable
+    $arguments = New-SshArguments -User $BUser -HostName $BHost -Port $BPort -ProxyCommand $BProxyCommand -RemoteCommand "hostname" -UseAskPass:$authentication.UseAskPass
+    $handle = Start-CapturedProcess -FilePath $SshExecutable -Arguments $arguments -EnvironmentVariables $authentication.EnvironmentVariables -CompleteOnOutputLine
     $result = Complete-CapturedProcess -Handle $handle -TimeoutMilliseconds ($CommandTimeoutSeconds * 1000)
     $timestamp = [DateTimeOffset]::UtcNow
-    $hostname = Limit-Text -Value $result.stdout -MaximumLength 256
-    $succeeded = ($result.ok -and -not [string]::IsNullOrWhiteSpace($hostname))
+    $hostnameLines = @($result.stdout -split '\r?\n' | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+    $hostname = if ($hostnameLines.Count -eq 1) { Limit-Text -Value $hostnameLines[0] -MaximumLength 256 } else { "" }
+    $outputCandidate = Test-ProcessResultOutputCandidate -Result $result -IsSsh
+    $succeeded = ($outputCandidate -and $hostnameLines.Count -eq 1 -and -not [string]::IsNullOrWhiteSpace($hostname))
     $errorText = ""
     if (-not $succeeded) {
-        if (-not $result.ok) {
+        if (-not $outputCandidate) {
             $errorText = Get-ProcessFailureText -Result $result
         } else {
-            $errorText = "hostname returned empty output"
+            $errorText = "hostname did not return exactly one non-empty line"
         }
     } elseif (-not [string]::IsNullOrWhiteSpace($BExpectedHostname) -and $hostname.Trim() -ne $BExpectedHostname.Trim()) {
         $succeeded = $false
@@ -1134,8 +1392,13 @@ function Invoke-DirectSshProbe {
             hostname = $hostname
             observed_ms = $result.elapsed_ms
             exit_code = $result.exit_code
+            raw_transport_ok = $result.ok
+            transport_timed_out = $result.timed_out
+            complete_output_line = $result.complete_output_line
+            transport_close_anomaly = $result.transport_close_anomaly
+            accepted_after_transport_close_anomaly = ($succeeded -and $result.transport_close_anomaly)
             stderr = Limit-Text -Value $result.stderr -MaximumLength 512
-            error = $errorText
+            error = Limit-Text -Value $errorText
             consecutive_failures = $streak.consecutive_failures
             max_consecutive_failures = $streak.max_consecutive_failures
             failure_streak_seconds = $streak.failure_streak_seconds
@@ -1375,16 +1638,19 @@ function Start-BackgroundMonitor {
     $stderrPath = Join-Path $RunDirectory "monitor.stderr.log"
     [System.IO.File]::WriteAllText($stdoutPath, "")
     [System.IO.File]::WriteAllText($stderrPath, "")
-    # Start-Process with redirected output keeps its parent PowerShell waiting
-    # for the long-lived child on Windows PowerShell 5.1. WMI creates the same
-    # user process outside that redirected-handle lifetime and returns at once.
-    $commandLine = (ConvertTo-NativeArgument $hostExecutable) + " " + (Join-NativeArguments -Arguments $childArguments)
-    $creator = [wmiclass]"Win32_Process"
-    $created = $creator.Create($commandLine, (Split-Path -Parent $PSScriptRoot), $null)
-    if ($created.ReturnValue -ne 0) {
-        throw "Win32_Process.Create failed: $($created.ReturnValue)"
+    # Do not redirect the long-lived child through Start-Process: Windows
+    # PowerShell 5.1 may then retain the redirected handles and wait for it.
+    # A hidden child without redirection returns immediately and, unlike a WMI
+    # provider-created process, inherits the caller's process environment. That
+    # inheritance is required for password values named by the per-node
+    # SSH_ASKPASS parameters; values never enter argv, logs, or run.state.json.
+    $argumentLine = Join-NativeArguments -Arguments $childArguments
+    $backgroundProcess = Start-Process -FilePath $hostExecutable -ArgumentList $argumentLine `
+        -WorkingDirectory (Split-Path -Parent $PSScriptRoot) -WindowStyle Hidden -PassThru
+    if ($null -eq $backgroundProcess) {
+        throw "failed to start background monitor"
     }
-    $processID = [int]$created.ProcessId
+    $processID = [int]$backgroundProcess.Id
     $statePath = Join-Path $RunDirectory "run.state.json"
     $eventsPath = Join-Path $RunDirectory "events.jsonl"
     $ready = $false
@@ -1410,6 +1676,7 @@ function Start-BackgroundMonitor {
     if ($monitorPID -ne $processID -or $null -eq (Get-Process -Id $monitorPID -ErrorAction SilentlyContinue)) {
         throw "background monitor PID/readiness validation failed"
     }
+    try { $backgroundProcess.Dispose() } catch { }
     [System.IO.File]::WriteAllText((Join-Path $RunDirectory "monitor.pid"), [string]$monitorPID + [Environment]::NewLine)
     return [pscustomobject][ordered]@{
         started = $true
@@ -1442,6 +1709,8 @@ function New-BackgroundMonitorArguments {
         "-BProxyCommand", $BProxyCommand,
         "-BRemoteCurl", $BRemoteCurl,
         "-BExpectedHostname", $BExpectedHostname,
+        "-BAskPassPath", $BAskPassPath,
+        "-BPasswordEnvironmentVariable", $BPasswordEnvironmentVariable,
         "-ABAttemptID", $ABAttemptID,
         "-BCAttemptID", $BCAttemptID,
         "-ACAttemptID", $ACAttemptID,
@@ -1456,6 +1725,8 @@ function New-BackgroundMonitorArguments {
         "-CPort", [string]$CPort,
         "-CProxyCommand", $CProxyCommand,
         "-CRemoteCurl", $CRemoteCurl,
+        "-CAskPassPath", $CAskPassPath,
+        "-CPasswordEnvironmentVariable", $CPasswordEnvironmentVariable,
         "-SshExecutable", $SshExecutable,
         "-CurlExecutable", $CurlExecutable,
         "-OutputDirectory", $RunDirectory
@@ -1502,6 +1773,59 @@ function Invoke-SelfTest {
     $health = Get-TopologyHealth -NormalizedStatus $normalized
     Assert-SelfTest (-not $health.stable_direct_shortcuts_to_both_peers) "an incomplete direct peer set is reported without throwing"
 
+    $productSample = @'
+{
+  "node_id":"A",
+  "started_at":"2026-07-19T10:00:00Z",
+  "uptime":"1m0s",
+  "neighbors":["B","C"],
+  "desired_bootstrap_peers":{},
+  "routes":[
+    {"destination":"B","next_hop":"B","hop_count":1,"rtt_millis":1,"path":["A","B"]},
+    {"destination":"C","next_hop":"C","hop_count":1,"rtt_millis":2,"path":["A","C"]}
+  ],
+  "shortcuts":[
+    {"attempt_id":"stale","phase":"stable","local_role":"initiator","direct_peer_id":"B","connection_type":"direct","path_role":"primary_candidate"}
+  ],
+  "maintained_direct_peers":[
+    {"peer_id":"B","owner_id":"A","state":"healthy","neighbor_kind":"packet","protected_direct":true,"reachable":true,"route_path":["A","B"],"route_hop_count":1},
+    {"peer_id":"C","owner_id":"A","state":"healthy","neighbor_kind":"packet","protected_direct":true,"reachable":true,"route_path":["A","C"],"route_hop_count":1}
+  ],
+  "counters":{"data_forwarded":0},
+  "infrastructure_coordinator_started":false
+}
+'@ | ConvertFrom-Json
+    $productNormalized = Normalize-NodeStatus -Status $productSample
+    $productHealth = Get-TopologyHealth -NormalizedStatus $productNormalized
+    Assert-SelfTest ($productHealth.direct_evidence_source -eq "maintained_direct_peers" -and $productHealth.maintained_direct_peers_healthy) "product status prefers maintained-direct evidence"
+    Assert-SelfTest ($productHealth.complete_direct_triangle_locally -and -not $productHealth.stable_direct_shortcuts_to_both_peers) "healthy maintained peers make product topology healthy despite stale shortcut rows"
+
+    $productSample.maintained_direct_peers[0].protected_direct = $false
+    $degradedProductHealth = Get-TopologyHealth -NormalizedStatus (Normalize-NodeStatus -Status $productSample)
+    Assert-SelfTest (-not $degradedProductHealth.complete_direct_triangle_locally -and -not $degradedProductHealth.maintained_direct_peers_healthy) "present maintained-direct evidence fails closed when a peer is not protected direct"
+
+    $r12Sample = @'
+{
+  "node_id":"A",
+  "started_at":"2026-07-18T10:00:00Z",
+  "uptime":"1m0s",
+  "neighbors":["B","C"],
+  "desired_bootstrap_peers":{},
+  "routes":[
+    {"destination":"B","next_hop":"B","hop_count":1,"rtt_millis":1,"path":["A","B"]},
+    {"destination":"C","next_hop":"C","hop_count":1,"rtt_millis":2,"path":["A","C"]}
+  ],
+  "shortcuts":[
+    {"attempt_id":"ab","phase":"stable","strategy":"birthday_punch","local_role":"initiator","direct_peer_id":"B","connection_type":"direct","path_id":"birthdaypunch/direct","path_role":"protected_direct","remote_addr":"192.0.2.1:1","dependencies":[]},
+    {"attempt_id":"ac","phase":"stable","strategy":"birthday_punch","local_role":"initiator","direct_peer_id":"C","connection_type":"direct","path_id":"birthdaypunch/direct","path_role":"protected_direct","remote_addr":"192.0.2.2:1","dependencies":[]}
+  ],
+  "counters":{"data_forwarded":0},
+  "infrastructure_coordinator_started":false
+}
+'@ | ConvertFrom-Json
+    $r12Health = Get-TopologyHealth -NormalizedStatus (Normalize-NodeStatus -Status $r12Sample)
+    Assert-SelfTest ($r12Health.direct_evidence_source -eq "stable_shortcuts" -and $r12Health.complete_direct_triangle_locally) "r12 status without maintained peers retains shortcut fallback"
+
     $now = [DateTimeOffset]::UtcNow
     $first = Update-ProbeState -Key "test" -Kind "test" -Succeeded $false -TimestampUtc $now -ErrorText "one"
     $second = Update-ProbeState -Key "test" -Kind "test" -Succeeded $false -TimestampUtc $now.AddSeconds(1) -ErrorText "two"
@@ -1517,6 +1841,23 @@ function Invoke-SelfTest {
     $directSshArguments = @(New-SshArguments -User "node-b-user" -HostName "127.0.0.1" -Port 22024 -RemoteCommand "hostname")
     Assert-SelfTest ($directSshArguments[-2] -eq "node-b-user@127.0.0.1" -and $directSshArguments[-1] -eq "hostname") "direct SSH destination uses the configured host"
     Assert-SelfTest ($directSshArguments -contains "ProxyJump=none" -and @($directSshArguments | Where-Object { $_ -like "ProxyCommand=*" }).Count -eq 0) "direct SSH explicitly disables inherited ProxyJump"
+    Assert-SelfTest ($directSshArguments -contains "BatchMode=yes" -and $directSshArguments -contains "PreferredAuthentications=publickey") "unconfigured SSH retains public-key BatchMode behavior"
+
+    $askPassArguments = @(New-SshArguments -User "node-b-user" -HostName "127.0.0.1" -Port 22024 -RemoteCommand "hostname" -UseAskPass)
+    Assert-SelfTest ($askPassArguments -contains "BatchMode=no" -and $askPassArguments -contains "PreferredAuthentications=password,keyboard-interactive" -and $askPassArguments -contains "PubkeyAuthentication=no") "configured SSH enables forced askpass-compatible authentication"
+
+    $selfTestPasswordName = "WINKYOU_SOAK_SELFTEST_PASSWORD"
+    $selfTestPassword = "soak-self-test-secret"
+    $previousSelfTestPassword = [Environment]::GetEnvironmentVariable($selfTestPasswordName, "Process")
+    try {
+        [Environment]::SetEnvironmentVariable($selfTestPasswordName, $selfTestPassword, "Process")
+        $askPassConfiguration = Get-SshAuthenticationConfiguration -AskPassPath $PSCommandPath -PasswordEnvironmentVariable $selfTestPasswordName
+    } finally {
+        [Environment]::SetEnvironmentVariable($selfTestPasswordName, $previousSelfTestPassword, "Process")
+    }
+    Assert-SelfTest ($askPassConfiguration.UseAskPass -and $askPassConfiguration.EnvironmentVariables.SSH_ASKPASS_REQUIRE -eq "force") "askpass configuration builds the required child environment"
+    Assert-SelfTest ($askPassConfiguration.EnvironmentVariables[$selfTestPasswordName] -eq $selfTestPassword -and ($askPassArguments -join ' ') -notlike "*$selfTestPassword*") "password is carried only in the child environment"
+    [void]$script:SensitiveValues.Remove($selfTestPassword)
 
     $syntheticProxyCommand = 'ssh.exe -T -p 22024 node-b-user@127.0.0.1 ncat.exe 10.20.0.1 22'
     $proxiedSshArguments = @(New-SshArguments -User "node-c-user" -HostName "10.20.0.1" -Port 22 -ProxyCommand $syntheticProxyCommand -RemoteCommand "hostname")
@@ -1531,6 +1872,29 @@ function Invoke-SelfTest {
     }
     Assert-SelfTest $rejectedLineBreak "SSH connection fields reject line-break injection"
 
+    $environmentHandle = Start-CapturedProcess -FilePath $env:ComSpec -Arguments @("/d", "/c", "echo", "%WINKYOU_SOAK_SELFTEST_MARKER%") -EnvironmentVariables @{ WINKYOU_SOAK_SELFTEST_MARKER = "SOAK_ENV_OK" }
+    $environmentResult = Complete-CapturedProcess -Handle $environmentHandle -TimeoutMilliseconds 5000
+    Assert-SelfTest ($environmentResult.ok -and $environmentResult.stdout.Trim() -eq "SOAK_ENV_OK") "captured process injects environment variables through ProcessStartInfo"
+
+    $selfTestHost = if ($PSVersionTable.PSEdition -eq "Core") { Join-Path $PSHOME "pwsh.exe" } else { Join-Path $PSHOME "powershell.exe" }
+    $completeLineCommand = '[Console]::Out.WriteLine(''{"ok":true}''); Start-Sleep -Seconds 3'
+    $completeLineHandle = Start-CapturedProcess -FilePath $selfTestHost -Arguments @("-NoLogo", "-NoProfile", "-NonInteractive", "-Command", $completeLineCommand) -CompleteOnOutputLine
+    $completeLineResult = Complete-CapturedProcess -Handle $completeLineHandle -TimeoutMilliseconds 3000 -OutputCloseGraceMilliseconds 100
+    $completeLineJson = $completeLineResult.stdout | ConvertFrom-Json
+    Assert-SelfTest ($completeLineResult.transport_close_anomaly -and $completeLineResult.terminated_after_complete_output -and $completeLineJson.ok) "complete JSON line is usable when transport EOF hangs"
+    Assert-SelfTest ($completeLineResult.elapsed_ms -lt 2000 -and (Test-ProcessResultOutputCandidate -Result $completeLineResult -IsSsh)) "complete SSH output returns before the command timeout"
+
+    $truncatedLineCommand = '[Console]::Out.WriteLine(''{"ok":''); Start-Sleep -Seconds 3'
+    $truncatedLineHandle = Start-CapturedProcess -FilePath $selfTestHost -Arguments @("-NoLogo", "-NoProfile", "-NonInteractive", "-Command", $truncatedLineCommand) -CompleteOnOutputLine
+    $truncatedLineResult = Complete-CapturedProcess -Handle $truncatedLineHandle -TimeoutMilliseconds 3000 -OutputCloseGraceMilliseconds 100
+    $truncatedJsonRejected = $false
+    try {
+        [void]($truncatedLineResult.stdout | ConvertFrom-Json)
+    } catch {
+        $truncatedJsonRejected = $true
+    }
+    Assert-SelfTest ($truncatedLineResult.transport_close_anomaly -and $truncatedJsonRejected) "truncated JSON is rejected even when an SSH output line arrived"
+
     $backgroundArguments = @(New-BackgroundMonitorArguments -RunDirectory "self-test-output")
     $bHostIndex = [Array]::IndexOf($backgroundArguments, "-BHost")
     $bProxyIndex = [Array]::IndexOf($backgroundArguments, "-BProxyCommand")
@@ -1538,6 +1902,15 @@ function Invoke-SelfTest {
     $cProxyIndex = [Array]::IndexOf($backgroundArguments, "-CProxyCommand")
     Assert-SelfTest ($bHostIndex -ge 0 -and $bProxyIndex -ge 0 -and $cHostIndex -ge 0 -and $cProxyIndex -ge 0) "background monitor passes all SSH access parameter names"
     Assert-SelfTest ($backgroundArguments[$bHostIndex + 1] -eq $BHost -and $backgroundArguments[$bProxyIndex + 1] -eq $BProxyCommand -and $backgroundArguments[$cHostIndex + 1] -eq $CHost -and $backgroundArguments[$cProxyIndex + 1] -eq $CProxyCommand) "background monitor preserves all SSH access parameter values"
+    foreach ($parameterName in @("-BAskPassPath", "-BPasswordEnvironmentVariable", "-CAskPassPath", "-CPasswordEnvironmentVariable")) {
+        Assert-SelfTest ([Array]::IndexOf($backgroundArguments, $parameterName) -ge 0) "background monitor passes $parameterName"
+    }
+    $bAskPassIndex = [Array]::IndexOf($backgroundArguments, "-BAskPassPath")
+    $bPasswordNameIndex = [Array]::IndexOf($backgroundArguments, "-BPasswordEnvironmentVariable")
+    $cAskPassIndex = [Array]::IndexOf($backgroundArguments, "-CAskPassPath")
+    $cPasswordNameIndex = [Array]::IndexOf($backgroundArguments, "-CPasswordEnvironmentVariable")
+    Assert-SelfTest ($backgroundArguments[$bAskPassIndex + 1] -eq $BAskPassPath -and $backgroundArguments[$bPasswordNameIndex + 1] -eq $BPasswordEnvironmentVariable -and
+        $backgroundArguments[$cAskPassIndex + 1] -eq $CAskPassPath -and $backgroundArguments[$cPasswordNameIndex + 1] -eq $CPasswordEnvironmentVariable) "background monitor preserves per-node askpass parameter values without password values"
 
     $abEdge = @($script:ExpectedEdges | Where-Object { $_.edge -eq "A-B" })[0]
     $bcEdge = @($script:ExpectedEdges | Where-Object { $_.edge -eq "B-C" })[0]
@@ -1601,7 +1974,7 @@ function Invoke-SelfTest {
 
     return [pscustomobject][ordered]@{
         ok = $true
-        tests = 26
+        tests = 41
         policy = $script:Policy
     }
 }
@@ -1610,6 +1983,9 @@ if ($SelfTest) {
     Invoke-SelfTest | ConvertTo-Json -Depth 4
     exit 0
 }
+
+[void](Get-SshAuthenticationConfiguration -AskPassPath $BAskPassPath -PasswordEnvironmentVariable $BPasswordEnvironmentVariable)
+[void](Get-SshAuthenticationConfiguration -AskPassPath $CAskPassPath -PasswordEnvironmentVariable $CPasswordEnvironmentVariable)
 
 $OutputDirectory = Initialize-OutputDirectory -RequestedPath $OutputDirectory
 if ($Background) {
@@ -1635,6 +2011,8 @@ $script:Nodes = [ordered]@{
         Port = $BPort
         ProxyCommand = $BProxyCommand
         RemoteCurl = $BRemoteCurl
+        AskPassPath = $BAskPassPath
+        PasswordEnvironmentVariable = $BPasswordEnvironmentVariable
         Description = if ([string]::IsNullOrWhiteSpace($BProxyCommand)) { "SSH ${BUser}@${BHost}:$BPort (ProxyJump=none)" } else { "SSH ${BUser}@${BHost}:$BPort via configured ProxyCommand" }
     }
     C = [pscustomobject][ordered]@{
@@ -1646,6 +2024,8 @@ $script:Nodes = [ordered]@{
         Port = $CPort
         ProxyCommand = $CProxyCommand
         RemoteCurl = $CRemoteCurl
+        AskPassPath = $CAskPassPath
+        PasswordEnvironmentVariable = $CPasswordEnvironmentVariable
         Description = if ([string]::IsNullOrWhiteSpace($CProxyCommand)) { "SSH ${CUser}@${CHost}:$CPort (ProxyJump=none)" } else { "SSH ${CUser}@${CHost}:$CPort via configured ProxyCommand" }
     }
 }

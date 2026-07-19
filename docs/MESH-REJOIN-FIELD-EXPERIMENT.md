@@ -7,9 +7,10 @@ to coordinate C-A; A later recovered A-C and used C to coordinate A-B. A, B,
 and C now run r12 after a completed rolling migration. This is not a
 simultaneous three-node cold start, operating-system reboot/autostart, or
 public-IP-change result. The first r7 link-hold run remains an interrupted
-C-power-loss incident record, 2026-07-18. The later Slice 4.5 `wink` adapter is
-source-integrated and locally tested only; it has not replaced these field
-processes and must not be attributed to the historical results below.
+C-power-loss incident record, 2026-07-18. Slice 4.5 later replaced all three
+processes through a separate guarded product rollout recorded in
+`SLICE-4.5-FIELD-ROLLOUT-2026-07-19.md`; that successor result must not be
+attributed retroactively to the historical results below.
 
 ## Goal and node identities
 
@@ -1130,10 +1131,11 @@ system packet ingress/egress such as TUN, WFP, or a WinkYou-owned driver.
 
 Slice 4.5 has since extracted this runtime to `pkg/meshruntime` and connected it
 to `wink up/down/status/peers` behind default-off typed `autonomous_mesh`
-configuration, with merge acceptance gated by its documented regression
-commands. That is source integration with local test coverage, not a rerun of this field
-experiment, not an in-place process replacement, and not OS-autostart evidence.
-The system packet backend remains Slice 5 work.
+configuration. Its later C -> B -> A guarded rollout replaced all three field
+processes; that is a separate successor acceptance recorded in
+`SLICE-4.5-FIELD-ROLLOUT-2026-07-19.md`, not a retroactive rerun of this
+historical experiment and not OS-autostart evidence. The system packet backend
+remains Slice 5 work.
 
 ## Acceptance evidence
 

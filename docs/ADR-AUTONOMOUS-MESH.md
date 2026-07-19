@@ -1,17 +1,18 @@
 # ADR: Autonomous Mesh Control and Peer Transit
 
 - Status: accepted; Slices 1-4, the three-host edge rotation, direct routed SSH,
-  a two-hour continuity hold, dynamic user-space service access, and two r12
-  cached-endpoint public-NAT zero-seed rejoins are field-proven; A/B/C now run
-  r12 after a rolling migration, while simultaneous cold start, OS autostart,
-  and the public-IP-change matrix remain open; the Windows IPv6 TCP facade is
-  implemented and A-only field-proven, while B/C remain r12 and a full r13
-  three-node rollout remains open. Slice 4.5 source integration is implemented:
-  the reusable runtime now lives in `pkg/meshruntime`, and an explicitly enabled
-  `autonomous_mesh` configuration selects it from `wink up` with managed
-  status/peers/graceful-down lifecycle. Slice 4.5 has passed the full test suite,
-  targeted race tests, full vet, and an isolated local CLI lifecycle smoke; it
-  has not replaced or restarted any field process
+  a two-hour continuity hold, dynamic user-space service access, and the r12
+  cached-endpoint public-NAT zero-seed rejoins are field-proven. Slice 4.5 now
+  also has a completed C -> B -> A three-node field rollout: A/B/C run the
+  explicitly enabled autonomous graph engine through managed `wink up`, with
+  zero configured seeds, no infrastructure coordinator, and two one-hop
+  protected packet edges per node. The Windows selected-port facade returned
+  complete command output through all four A entry points. A follow-up 120-second
+  monitor then observed all 44 SSH-carried probes exit with code zero despite a
+  recurring Win32-OpenSSH close warning; no stream hang was reproduced in this
+  rollout. Simultaneous cold start, OS autostart/reboot, and the public-IP-change
+  matrix remain open; see
+  `SLICE-4.5-FIELD-ROLLOUT-2026-07-19.md`
 - Date: 2026-07-19
 - Scope: control routing, graph routing, direct-edge improvement, and peer transit
 
@@ -256,9 +257,16 @@ loopback. A's public B/C packet sockets used candidate UDP ports `52507` and
 `62451`, routed from physical Ethernet address `10.0.0.10` through gateway
 `10.0.0.1`; natpierce separately held `58606 -> 203.0.113.40`.
 
-This result accepts the implementation on A while its peers remain r12. It does
-not claim a three-node r13 rollout and does not broaden the facade into system
-L3, arbitrary TCP ports, UDP, ICMP, subnet routing, or exit-node support.
+This was the A-only facade acceptance checkpoint. The later guarded Slice 4.5
+rollout replaced all three field processes with managed `wink up` runtimes while
+revalidating complete command output through A's four facades. Its first
+independent probes were conservatively stopped as soon as output arrived, so
+they did not establish a clean client-exit result. A subsequent output-aware
+monitor gave each client a close grace period: all 44 SSH-carried probes exited
+with code zero, while Win32-OpenSSH still printed its known pending-I/O close
+warning. That warning alone is not evidence of a WinkYou FIN defect. See
+`SLICE-4.5-FIELD-ROLLOUT-2026-07-19.md`. Neither result broadens the facade into
+system L3, arbitrary TCP ports, UDP, ICMP, subnet routing, or exit-node support.
 
 ### 12. Use bilateral recovery cards only when the graph has no route
 
@@ -377,9 +385,9 @@ Implementation status on 2026-07-19:
   without changing the legacy `peers --json` top-level array. `wink down` uses an
   authenticated loopback shutdown endpoint, verifies the process-start identity
   and runtime instance, and never falls back to PID killing for a managed
-  autonomous runtime, including with `--force`. The source tests and isolated
-  local CLI lifecycle are accepted; this is not a field rollout or OS
-  service/autostart result.
+  autonomous runtime, including with `--force`. The source tests, isolated local
+  CLI lifecycle, and guarded C -> B -> A field rollout are accepted. OS
+  service/autostart and reboot remain unaccepted.
 - The r9 source candidate adds event-driven maintained-direct-edge recovery.
   Symmetric `--maintain-peer` declarations elect the lexicographically smaller
   endpoint as repair owner. It selects an ordinary coordinator from an
@@ -684,8 +692,10 @@ forwarding core plus a solver-to-neighbor promotion path. Slice 4.5 adopts that
 runtime through a separate client-engine adapter and shared runtime-state/CLI
 lifecycle; it does not merge the legacy and autonomous resource state machines.
 This keeps the frozen connectivity solver/session boundary intact while making
-the graph behavior executable through normal commands. It is still a source-
-level integration until a guarded field rollout accepts it.
+the graph behavior executable through normal commands. The guarded 2026-07-19
+C -> B -> A product rollout accepted that integration on all three field nodes;
+OS autostart/reboot, simultaneous cold start, and public-IP-change recovery are
+still separate acceptance work.
 
 Run the executable Slice 1 proof with:
 

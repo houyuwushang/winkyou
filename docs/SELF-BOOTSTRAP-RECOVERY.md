@@ -1,15 +1,13 @@
 # Cached-endpoint self-bootstrap and recovery cards
 
 Status: implemented and locally covered, with real public-NAT zero-seed
-executable rejoins accepted on C and A using r12. Each started with no mesh
-listener and no configured peer seed, recovered its first edge from bilateral
-cached endpoint information, then used that ordinary peer to coordinate its
-second direct edge. A, B, and C are now running r12 after a rolling migration.
-This is not yet a simultaneous three-node cold-start matrix, public-IP change,
-or operating-system boot/autostart result. Slice 4.5 now exposes the same source
-runtime through default-off `autonomous_mesh` configuration and the normal
-`wink up/down/status/peers` lifecycle, but that adapter has not replaced these
-field processes and is not additional public-NAT evidence.
+executable rejoins first accepted on C and A using r12. Slice 4.5 subsequently
+completed a C -> B -> A rolling replacement with the normal managed
+`wink up/down/status/peers` lifecycle. All three product runtimes started with
+no configured seed or infrastructure coordinator and converged to two one-hop
+protected packet edges per node. This is still not a simultaneous three-node
+cold-start matrix, public-IP change, or operating-system boot/autostart result;
+see `SLICE-4.5-FIELD-ROLLOUT-2026-07-19.md`.
 
 ## Purpose and recovery layers
 
@@ -87,8 +85,9 @@ autonomous_mesh:
 ```
 
 See `LONG-RUNNING-CLIENT.md` for bootstrap-peer, TCP-facade, status, isolated
-smoke-test, and authenticated graceful-down examples. This configuration is
-source-integrated but has not been used for a field process replacement.
+smoke-test, and authenticated graceful-down examples. The same typed
+configuration has now replaced all three field processes in the guarded Slice
+4.5 rollout; it remains explicit opt-in rather than the default engine.
 
 The lexicographically smaller node ID owns normal r9 repairs that run over an
 existing alternate graph route. That ownership rule does not apply to cold
@@ -370,8 +369,7 @@ The loopback test still enables a test-only non-public-address seam. The r12 C
 and A runs supply public-NAT reachability results; the following remain pending
 and must not be reported as passed yet:
 
-- B zero-seed rejoin and simultaneous cold-restart cases on the real A/B/C
-  topology;
+- simultaneous cold restart of the real A/B/C topology;
 - one or more real public-IP changes;
 - operating-system boot/autostart and process supervision; and
 - hostile-peer security acceptance.
@@ -392,9 +390,8 @@ restart.
 Finally, the graph/recovery implementation now belongs to reusable
 `pkg/meshruntime`; `cmd/meshnode` is its experimental compatibility wrapper, and
 Slice 4.5 adapts it to the long-running `wink up` lifecycle behind explicit
-`autonomous_mesh.enabled: true`. That integration has local test coverage but
-has not yet been deployed on the field topology; merge acceptance still
-requires the Slice 4.5 regression commands to pass. It does not provide
-transparent system L3
-ingress/egress. Wintun, WFP, TUN, or a WinkYou-owned packet backend remains
+`autonomous_mesh.enabled: true`. That integration has local test coverage and
+the guarded 2026-07-19 C -> B -> A three-node field rollout recorded in
+`SLICE-4.5-FIELD-ROLLOUT-2026-07-19.md`. It does not provide transparent system
+L3 ingress/egress. Wintun, WFP, TUN, or a WinkYou-owned packet backend remains
 separate Slice 5 work.

@@ -11,6 +11,7 @@ When documents disagree, treat `CONNECTIVITY-SOLVER-BASELINE.md` as the source o
 ## Current Roadmap
 
 - Autonomous mesh control, peer transit, shortcut proof, and default-off `wink` lifecycle integration (Slices 1-4.5): [`ADR-AUTONOMOUS-MESH.md`](./ADR-AUTONOMOUS-MESH.md)
+- Accepted Slice 4.5 C -> B -> A three-node product rollout: [`SLICE-4.5-FIELD-ROLLOUT-2026-07-19.md`](./SLICE-4.5-FIELD-ROLLOUT-2026-07-19.md)
 - Three-node peer-coordinated rejoin plus direct routed-SSH field experiment: [`MESH-REJOIN-FIELD-EXPERIMENT.md`](./MESH-REJOIN-FIELD-EXPERIMENT.md)
 - Post-r9 cached-endpoint self-bootstrap and recovery-card boundary: [`SELF-BOOTSTRAP-RECOVERY.md`](./SELF-BOOTSTRAP-RECOVERY.md)
 - Phase 2D freeze gate: [`PHASE2D-FREEZE.md`](./PHASE2D-FREEZE.md)

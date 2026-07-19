@@ -2,7 +2,9 @@
 
 本文说明当前可用的长期运行方式。现阶段不引入新的 service 框架；`wink up` 仍是前台 client 进程，Linux 交给 systemd 管理，Windows 先使用管理员启动项、Task Scheduler 或 NSSM 管理。
 
-源码现在包含两个显式运行模式：默认的 `legacy` coordinator/WireGuard engine，以及默认关闭的 `autonomous_mesh` graph engine。只有配置 `autonomous_mesh.enabled: true` 才会选择后者。该 Slice 4.5 接入已通过全量测试、目标 race、全量 vet 和隔离本机 CLI 生命周期验收；它尚未滚动部署到现有现场节点，也未完成 systemd、Task Scheduler、NSSM 或整机重启验收。不要因为本节存在就替换当前运行中的实验进程。
+源码现在包含两个显式运行模式：默认的 `legacy` coordinator/WireGuard engine，以及默认关闭的 `autonomous_mesh` graph engine。只有配置 `autonomous_mesh.enabled: true` 才会选择后者。该 Slice 4.5 接入已通过全量测试、目标 race、全量 vet、隔离本机 CLI 生命周期，以及 2026-07-19 的 C -> B -> A 三节点 `wink up` 滚动现场验收。三个节点均以 zero seed、无基础设施 coordinator、每节点两条一跳 `protected_direct` packet edge 运行；详细冻结构建和验收边界见 [`SLICE-4.5-FIELD-ROLLOUT-2026-07-19.md`](./SLICE-4.5-FIELD-ROLLOUT-2026-07-19.md)。systemd、Task Scheduler、NSSM、整机重启、三节点同时冷启动和公网 IP 变化仍未完成现场验收。
+
+A 的四个 SSH facade 都返回了完整的预期 stdout 或状态 JSON。最初的独立探针在输出留证后立即终止本地 ssh，因此本身不能证明 client-side close；随后 120 秒 output-aware monitor 给每个客户端 500ms 收尾窗口，44 个 SSH 承载的 status/ping/hostname 探针全部自然返回 exit code `0`，同时 Win32-OpenSSH 仍打印 `close - IO is still pending on closed socket`。该字符串应作为客户端关闭警告单独留证，不能单凭它认定 WinkYou stream/FIN 失败；历史 M8 第 627 条真正不退出仍是独立回归测试项。
 
 ## CLI 工作流
 
