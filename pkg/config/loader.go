@@ -100,4 +100,17 @@ func setDefaults(v *viper.Viper, cfg Config) {
 	v.SetDefault("tcp_framed.dial_addr", cfg.TCPFramed.DialAddr)
 	v.SetDefault("tcp_framed.role", cfg.TCPFramed.Role)
 	v.SetDefault("tcp_framed.dial_timeout", cfg.TCPFramed.DialTimeout)
+
+	v.SetDefault("autonomous_mesh.enabled", cfg.AutonomousMesh.Enabled)
+	v.SetDefault("autonomous_mesh.node_id", cfg.AutonomousMesh.NodeID)
+	v.SetDefault("autonomous_mesh.virtual_ip", cfg.AutonomousMesh.VirtualIP)
+	v.SetDefault("autonomous_mesh.listen", cfg.AutonomousMesh.Listen)
+	v.SetDefault("autonomous_mesh.control_listen", cfg.AutonomousMesh.ControlListen)
+	v.SetDefault("autonomous_mesh.bootstrap_peers", cfg.AutonomousMesh.BootstrapPeers)
+	v.SetDefault("autonomous_mesh.maintain_peers", cfg.AutonomousMesh.MaintainPeers)
+	v.SetDefault("autonomous_mesh.recovery_card", cfg.AutonomousMesh.RecoveryCard)
+	v.SetDefault("autonomous_mesh.self_bootstrap_secret_file", cfg.AutonomousMesh.SelfBootstrapSecretFile)
+	v.SetDefault("autonomous_mesh.tcp_target", cfg.AutonomousMesh.TCPTarget)
+	v.SetDefault("autonomous_mesh.tcp_forwards", cfg.AutonomousMesh.TCPForwards)
+	v.SetDefault("autonomous_mesh.virtual_tcp_forwards", cfg.AutonomousMesh.VirtualTCPForwards)
 }

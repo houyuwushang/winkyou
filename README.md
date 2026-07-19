@@ -23,7 +23,7 @@ WinkYou = connectivity solver + secure WireGuard data plane
 - `tcp_framed` 已作为 alpha strategy 加入，用来验证 framed stream 可以承载 `PacketTransport`
 - `signal_relay` 已作为 coordinator signal stream 上的低吞吐保底 packet path 加入，用来在没有 TURN 且 direct/TCP 暂不可用时保持已绑定 WireGuard 数据面
 - 实验性 `birthday_punch` 已在双端 symmetric/EDM 真机上完成公网直连；`punchtest bridge` 可把获胜 UDP socket 直接升级为 QUIC/mTLS 固定目标 TCP 转发，并已在两端 Tailscale/natpierce 全部关闭时通过 SSH。该入口不使用 WireGuard/Wintun，也不是透明 VPN 或完整虚拟局域网；详见 [`docs/BIRTHDAY-PUNCH-DESIGN.md`](./docs/BIRTHDAY-PUNCH-DESIGN.md)
-- `birthday_punch` 的获胜 UDP socket 也已接入实验性 `cmd/meshnode` 图运行时，成为可路由的 direct `PacketNeighbor`。post-r9 源码候选进一步加入持久化 recovery card：当两端既没有邻居也没有图路由时，可按确定性时间窗直接重打缓存的公网 IPv4 端点；第一条边恢复后，再由普通 mesh peer 协调补齐其余 maintained direct edge。本地源码测试已覆盖一个全新 peer runtime 仅凭 card 回来，以及全部三 runtime 重建后先成树再补齐 direct triangle，并通过 5 次重复与 race。该能力未进入 staged r9 二进制，但 r12 已在 C、A 两个真实公网 NAT 进程重启中完成 zero-seed rejoin；机器重启、三节点同时冷启动、变更公网 IP 和长期 `wink up` 主引擎生命周期仍未验证。详见 [`docs/SELF-BOOTSTRAP-RECOVERY.md`](./docs/SELF-BOOTSTRAP-RECOVERY.md)
+- `birthday_punch` 的获胜 UDP socket 也已接入自治图运行时，成为可路由的 direct `PacketNeighbor`。post-r9 源码候选进一步加入持久化 recovery card：当两端既没有邻居也没有图路由时，可按确定性时间窗直接重打缓存的公网 IPv4 端点；第一条边恢复后，再由普通 mesh peer 协调补齐其余 maintained direct edge。本地源码测试已覆盖一个全新 peer runtime 仅凭 card 回来，以及全部三 runtime 重建后先成树再补齐 direct triangle，并通过重复与 race 检查。该能力未进入 staged r9 二进制，但 r12 已完成两个真实公网 NAT 进程的 zero-seed rejoin。Slice 4.5 现已把该运行时抽到 `pkg/meshruntime`，并以默认关闭的 `autonomous_mesh` 模式接入 `wink up/down/status/peers`；全量测试、目标 race、全量 vet 和隔离本机 CLI 生命周期均已通过。它尚未替换任何现有现场进程，也尚未通过机器重启、三节点同时冷启动、变更公网 IP 或 OS 自启动验收。详见 [`docs/SELF-BOOTSTRAP-RECOVERY.md`](./docs/SELF-BOOTSTRAP-RECOVERY.md) 和 [`docs/LONG-RUNNING-CLIENT.md`](./docs/LONG-RUNNING-CLIENT.md)
 - 2026-07-17 长时实测：同一 QUIC 会话连续完成 626 次新建 SSH 探针，最后一次完整成功距建连约 10 小时 58 分；原桥接进程随后仍持续存活并承载新的已认证 SSH stream，但第 627 条短命令没有正常收尾，暴露出 per-stream deadline/关闭语义仍需补测，不能只凭进程存活宣称业务全绿
 - 当前生产注册顺序保持兼容：`legacy_ice_udp` -> `relay_only` -> `signal_relay`
 - `tcp_framed` 默认禁用，只有显式 `tcp_framed.enabled: true` 且加入 `connectivity.strategy_order` 时才会注册
@@ -32,7 +32,7 @@ WinkYou = connectivity solver + secure WireGuard data plane
 - 旧的 `nat.force_relay: true` 仍兼容映射到 relay-only 行为
 - 旧 peer 空 capability 仍会隐式 fallback 到 `legacy_ice_udp`
 - `wink doctor` 已提供 config、coordinator、STUN、TURN、本地接口、strategy、routing、tunnel、transport 的分层诊断；strategy 层会显示 production strategy order 和 `legacy_ice_udp` 内部 plan order；STUN 检查会用同一个本地 UDP socket 探测多个 public-direct STUN 来源，显示本机映射地址、提示映射是否稳定，并在可用时给出 `nat.public_endpoint_hints` 候选；`public direct evidence` 检查会读取 observation history，说明 `legacyice/public_direct` 是未尝试、无可用公网候选、候选已交换但 ICE 检查失败，还是已证明 `protected_direct`；`--route-target <ip>` 可以检查访问某个目标 IP 时当前操作系统实际选中的接口/本地地址/下一跳，并在命中 natpierce、Tailscale、Docker 等外部 overlay 接口时给出 warning
-- `wink up/down/status/peers/logs` 已形成长期运行 CLI 工作流；Linux systemd 和 Windows 启动项文档已补齐
+- `wink up/down/status/peers/logs` 已形成长期运行 CLI 工作流；默认仍运行原有 legacy coordinator/WireGuard engine。只有显式配置 `autonomous_mesh.enabled: true` 才选择自治图 engine；Linux systemd 和 Windows 启动项文档已补齐，但自治模式尚未完成 OS 自启动现场验收
 - v0.1 release workflow 已能构建 Windows client、Linux client、Linux coordinator、Linux relay 和 SHA256SUMS
 - NAT/ICE 已支持 candidate interface include/exclude 和 candidate CIDR include/exclude；`legacy_ice_udp` 现在会在普通 `direct_prefer` 后追加 `public_direct` 执行计划，用来排除私网、`100.64.0.0/10`、loopback、link-local 等 overlay/依赖不清的 candidate，并默认避开 natpierce、Tailscale、Docker/vEthernet、Wintun/WinkYou 等外部 overlay/虚拟接口，再尝试独立公网 ICE direct；`wink doctor` 会展示过滤配置并检查 runtime candidate 是否命中排除 CIDR
 - `auto` 模式默认启用保守 protected-direct multipath：最多保留 primary + 一条 standby，relay-only/force-relay 仍保持单路径
@@ -57,10 +57,55 @@ WinkYou = connectivity solver + secure WireGuard data plane
 - userspace `wireguard-go` 作为安全数据平面
 - `PacketTransport` 负责把选中的 packet path 绑定给 tunnel
 - 独立现场工具 `punchtest bridge` 可运行无 Wintun 的固定目标 QUIC/TCP bridge；历史现场曾用本机 `127.0.0.1:22022` 作为该 bridge 入口。当前三节点 r12 实验中，这个端口已由 A 的 `meshnode` 监听并通过 WinkYou 图路由到 C，可用 `ssh -o ProxyJump=none -p 22022 node-c-user@127.0.0.1` 访问，不应再把当前监听误认成独立 `punchtest bridge`
-- 实验性 `cmd/meshnode` 已把 direct UDP edge、peer transit、用户态 TCP service 和 cached-endpoint self-bootstrap 接到同一图运行时；这不等于 `wink up` 已采用该生命周期，也不提供透明系统 L3
+- `pkg/meshruntime` 已把 direct UDP edge、peer transit、用户态 TCP service 和 cached-endpoint self-bootstrap 接到同一图运行时；`cmd/meshnode` 现在只是保留原实验参数的薄入口。Slice 4.5 又通过 `pkg/client` adapter 让显式启用的 `wink up` 管理同一生命周期，并让 `status`/`peers` 读取统一 runtime state；这仍不提供透明系统 L3
 - Windows IPv6 TCP facade 已实现：新旗标 `--virtual-tcp-forward [VIRTUAL_IP]:PORT=NODE_ID` 只接受 IPv6 ULA `/128`，运行时把地址临时挂到 Windows loopback（ActiveStore、`SkipAsSource=true`），退出时清理。它沿用现有 fixed-target `OPEN`，可与 r12 对端兼容，但远端仍必须配置 `--tcp-target`。普通 Windows TCP 客户端可在选定端口直接运行 `ssh -6 node-b-user@fd00::b` 或 `ssh -6 node-c-user@fd00::c`；它不提供任意端口、UDP、ICMP、系统 L3 或出口节点，facade 本身也不依赖 Wintun/WireGuard
 - 2026-07-19 A-only 现场验收：candidate PID `80524`（runtime `2026-07-19T00:57:05Z`）先通过 cached self-bootstrap 恢复一跳 A-B；A-C 第一轮经普通 peer B 协调打洞超时，第二轮成功并达到 `stable`，最终 A-B/A-C 均为一跳 `protected_direct`。旧入口 `127.0.0.1:22024/22022` 与新入口 `[fd00::b]:22/[fd00::c]:22` 共四个入口完成两轮正确 SSH banner，随后保持 45 秒；独立终验中 A 的 `data_forwarded` 从 `40` 增至 `60`，`data_dropped=0`。随后普通 Windows OpenSSH 通过两个 ULA 完成实际认证，分别返回 B 的 `node-b-host` 与 C 的 `node-c-host`，退出码均为 `0`。`fd00::b/c` 仅存在于 loopback interface index `1`，均为 ActiveStore `/128`、`SkipAsSource=true`，PersistentStore 数量为 `0`，portproxy 为空。现场 Tailscale 服务和 natpierce 进程当时仍在运行，但未承载该路径：ULA 入口命中 loopback，A 到 B/C 公网端点的 UDP socket 分别使用本进程端口 `52507/62451`，并由物理以太网源 `10.0.0.10` 经网关 `10.0.0.1` 路由；natpierce 是独立的 `58606 -> 203.0.113.40` 连接。该结论是 A 节点 candidate 的现场证明，不等于三节点都已升级到 r13，也不扩大为完整 L3 能力
 - rendezvous v2 envelope 负责 capability、observation、probe、path_commit 等 session 消息
+
+### Slice 4.5：自主 mesh 的 `wink` 集成
+
+`autonomous_mesh` 默认关闭，因此旧配置、默认 strategy 顺序和原有 coordinator/WireGuard engine 保持不变。下面是类型化配置示例；示例域名和 ULA 仅用于说明格式，不是可直接连接的现场信息：
+
+```yaml
+node:
+  name: demo-a
+
+nat:
+  stun_servers:
+    - stun:stun.example.invalid:3478
+
+autonomous_mesh:
+  enabled: true
+  node_id: demo-a
+  virtual_ip: fd7a:115c:a1e0::a
+  listen: 0.0.0.0:32100
+  control_listen: 127.0.0.1:32110
+  bootstrap_peers:
+    - node_id: demo-b
+      address: mesh-b.example.invalid:32100
+  maintain_peers: [demo-b]
+  recovery_card: ./demo-a-recovery.json
+  self_bootstrap_secret_file: ./mesh.secret
+  tcp_target: 127.0.0.1:8022
+  tcp_forwards:
+    - listen: 127.0.0.1:22022
+      remote_id: demo-b
+  virtual_tcp_forwards:
+    - listen: "[fd7a:115c:a1e0::b]:22"
+      remote_id: demo-b
+```
+
+`bootstrap_peers`、`tcp_forwards` 和 `virtual_tcp_forwards` 是结构化 YAML，不暴露 `NODE=ADDRESS` 这类实验 CLI 编码。`control_listen` 必须是 loopback；它承载带随机 shutdown token 的本机优雅停止请求。`wink status --json` 不输出该 token。`wink down` 会先核对 PID 对应的进程启动身份，再发送认证请求并等待同一 instance 清理 runtime state；受管 autonomous runtime 即使传入 `--force` 也不会退回裸 PID 强杀。`--force` 只保留给没有 managed control endpoint 的 legacy 兼容路径。
+
+源码验收：
+
+```bash
+go test ./... -count=1
+go test -race ./pkg/config ./pkg/meshruntime ./pkg/processidentity ./pkg/client ./cmd/wink/cmd -count=1
+go vet ./...
+```
+
+2026-07-19 已按上述边界完成一次隔离本机 CLI 冒烟：mesh listener 关闭、control port 动态分配，第二个 `up` 被生命周期锁拒绝，`status --json` 未输出 shutdown token，认证 `down` 后进程与 state 均清理，既有现场进程保持运行。复现步骤见 [`docs/LONG-RUNNING-CLIENT.md`](./docs/LONG-RUNNING-CLIENT.md)。该集成仍是 selected-port 用户态服务和自治图生命周期，不是任意 TCP/UDP/ICMP、子网路由或出口节点；这些仍属于 Slice 5。
 
 当前真实 strategy：
 
@@ -299,6 +344,7 @@ nat:
 - [`pkg/solver/strategy/signalrelay`](./pkg/solver/strategy/signalrelay)：coordinator signal stream fallback strategy
 - [`pkg/transport`](./pkg/transport)：packet transport 抽象及适配器
 - [`pkg/tunnel`](./pkg/tunnel)：userspace WireGuard 数据平面和 per-peer transport bind
+- [`pkg/meshruntime`](./pkg/meshruntime)：Slice 1-4 自治图、peer transit、shortcut、恢复和 selected-port service 的可复用运行时；`cmd/meshnode` 与显式 opt-in 的 `wink up` 共同使用
 - [`pkg/rendezvous`](./pkg/rendezvous)：coordinator-backed rendezvous 通道与 v2 envelope 类型
 - [`pkg/probe`](./pkg/probe)：probe model/lab
 - [`deploy/quickstart`](./deploy/quickstart)：快速部署素材
@@ -326,6 +372,8 @@ wink --config <config.yaml> peers
 wink --config <config.yaml> logs
 wink --config <config.yaml> doctor
 ```
+
+受管 `autonomous_mesh` 的 `down` 始终走身份校验和认证优雅停止；默认 legacy runtime 没有 control endpoint，停止时需显式使用 `wink --config <config.yaml> down --force`。
 
 开发和回归入口：
 

@@ -109,6 +109,13 @@ func TestPeersWithRuntimeState(t *testing.T) {
 				LastInbandHeartbeatAt:  time.Date(2026, 4, 10, 12, 2, 0, 0, time.UTC),
 				LastInbandPathHealthAt: time.Date(2026, 4, 10, 12, 3, 0, 0, time.UTC),
 				LastSeen:               time.Date(2026, 4, 10, 12, 0, 0, 0, time.UTC),
+				RouteNextHop:           "node-abc",
+				RoutePath:              []string{"local", "node-abc"},
+				RouteHopCount:          1,
+				NeighborKind:           "packet",
+				ProtectedDirect:        true,
+				MaintainedState:        "healthy",
+				SelfBootstrapState:     "reachable",
 			},
 			{
 				NodeID:    "node-def",
@@ -185,6 +192,10 @@ func TestPeersWithRuntimeState(t *testing.T) {
 	}
 	if !strings.Contains(output, "Failover:   2026-04-10T12:01:00Z (active_path_rx_silence:relay/path)") {
 		t.Errorf("output should contain failover reason, got: %s", output)
+	}
+	if !strings.Contains(output, "Mesh Path:  local -> node-abc") || !strings.Contains(output, "Neighbor:   packet") ||
+		!strings.Contains(output, "Maintained: healthy") || !strings.Contains(output, "Bootstrap:  reachable") {
+		t.Errorf("output should contain autonomous route/recovery state, got: %s", output)
 	}
 
 	// Clean up for next subtest.

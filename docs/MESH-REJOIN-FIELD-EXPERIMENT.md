@@ -7,7 +7,9 @@ to coordinate C-A; A later recovered A-C and used C to coordinate A-B. A, B,
 and C now run r12 after a completed rolling migration. This is not a
 simultaneous three-node cold start, operating-system reboot/autostart, or
 public-IP-change result. The first r7 link-hold run remains an interrupted
-C-power-loss incident record, 2026-07-18.
+C-power-loss incident record, 2026-07-18. The later Slice 4.5 `wink` adapter is
+source-integrated and locally tested only; it has not replaced these field
+processes and must not be attributed to the historical results below.
 
 ## Goal and node identities
 
@@ -47,7 +49,8 @@ the signaling path used to create the second new edge.
 
 ## Implemented runtime
 
-`cmd/meshnode` provides:
+`pkg/meshruntime` provides the implementation below; `cmd/meshnode` is now a
+thin compatibility wrapper that preserves the historical field flags:
 
 - a TCP bootstrap listener with an explicit node-ID hello;
 - desired bootstrap peers with reconnect and removable ownership;
@@ -1123,9 +1126,14 @@ access. It remains a fixed-target TCP facade, not transparent L3 ingress for
 arbitrary applications and not an exit-node implementation. The next
 user-space increment is a target-aware stream protocol plus a SOCKS and/or
 `127/8` facade. Full arbitrary TCP, UDP, and ICMP participation still requires
-system packet ingress/egress such as TUN, WFP, or a WinkYou-owned driver. That
-system backend and wiring the autonomous mesh into the long-running `wink up`
-engine remain Slice 5 work.
+system packet ingress/egress such as TUN, WFP, or a WinkYou-owned driver.
+
+Slice 4.5 has since extracted this runtime to `pkg/meshruntime` and connected it
+to `wink up/down/status/peers` behind default-off typed `autonomous_mesh`
+configuration, with merge acceptance gated by its documented regression
+commands. That is source integration with local test coverage, not a rerun of this field
+experiment, not an in-place process replacement, and not OS-autostart evidence.
+The system packet backend remains Slice 5 work.
 
 ## Acceptance evidence
 

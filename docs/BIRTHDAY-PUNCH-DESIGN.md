@@ -1,6 +1,6 @@
 # 生日悖论直连改造设计（Birthday-Paradox Direct Punch）
 
-> 状态：M6 真机公网直连和 M7 无 Wintun 用户态 SSH bridge 已完成（2026-07-16），M8 记录了随后约 11 小时的无重连会话及单 stream 收尾缺陷。之后 `birthday_punch` 获胜 socket 已接入实验性 `cmd/meshnode` 图运行时并完成三节点现场 edge rotation；post-r9 源码候选又加入 recovery card 与无路由 cached self-bootstrap，但目前只有确定性本地证明，未进入 staged r9 或公网重启。长期运行的 `wink up` 与透明系统 L3 仍是独立后续工作。
+> 状态：M6 真机公网直连和 M7 无 Wintun 用户态 SSH bridge 已完成（2026-07-16），M8 记录了随后约 11 小时的无重连会话及单 stream 收尾缺陷。之后 `birthday_punch` 获胜 socket 已接入自治图运行时并完成三节点现场 edge rotation；recovery card/cached self-bootstrap 随后取得两个 r12 公网进程重入结果。Slice 4.5 已把运行时抽到 `pkg/meshruntime` 并以默认关闭的 `autonomous_mesh` 模式接入长期 `wink up/down/status/peers` 生命周期，但该 adapter 尚未替换现场进程。透明系统 L3 仍是独立后续工作。
 > 背景证据：`.live-run/` 抓包 + `implementation_plan.md` 2026-06-06 条目 + 三方审阅结论。
 
 ## 1. 为什么现在打不通（一句话）
@@ -72,7 +72,7 @@ signal+sync (M4) ───┘                                             （现
 - ✅ `m6-overlayoff-20260716-r4` 在两端 Tailscale/natpierce 都关闭时仍双端 HIT + 5/5，公网物理路由和持续状态监控均已留证。
 - ✅ `no-wintun-20260716-r1` 把命中 socket 升级为 QUIC/mTLS bridge；本机 `Tailscale=Stopped`、`natpierce_count=0`，远端 `tailscale=inactive`、`natpierce_count=0` 时，通过 `127.0.0.1:22022` 新建 SSH 仍成功。
 - 🔄 同一 v2 QUIC 会话正在做无重连长测；业务完成态已连续验证到约 10 小时 58 分，进程/会话存活超过 11 小时，但已经发现“新 stream 认证成功后短命令不退出”的收尾问题。
-- ✅ 独立 `punchtest bridge` 仍可复现实验；实验性 `cmd/meshnode` 已把同类获胜 socket 接成图中的 direct `PacketNeighbor`，但长期运行 `wink up` 和透明系统 L3 尚未接入。
+- ✅ 独立 `punchtest bridge` 仍可复现实验；`pkg/meshruntime` 已把同类获胜 socket 接成图中的 direct `PacketNeighbor`，`cmd/meshnode` 保留薄兼容入口，Slice 4.5 还把该运行时接入显式 opt-in 的 `wink up` 生命周期。该产品 adapter 尚未现场部署，透明系统 L3 也尚未接入。
 
 ## 7. 图论视角与 punch method portfolio
 
@@ -158,7 +158,7 @@ R3 首包为 `192.0.2.10:19786 -> 172.20.0.11:16048`，与 responder 的 `peer=1
 - **连接耐久**：保持同一 punch + QUIC 会话，在不重打洞的情况下测首次业务失败时间；自动重连必须关闭，否则会掩盖原会话寿命。
 - **实验性 graph runtime**：`cmd/meshnode` 已能让 solver 创建 direct edge、peer transit 和用户态 TCP service，不再只有人工 `punchtest bridge`；它仍不是长期运行的产品入口。
 - **重连生命周期**：r9 在还有 alternate route 时由普通 peer 协调修边；post-r9 在完全无 route 时可用双方 recovery card 恢复第一条边。本地源码测试已覆盖一个全新 peer runtime 从 card 回来，以及全部三 runtime 重建后“self-bootstrap 成树、普通第三节点补齐最后直边”；不能把它写成公网 NAT 或机器重启已通过。
-- **主引擎 backend**：让正常的 `wink up` 采用上述 graph、恢复与服务生命周期。这仍未完成，也不等于透明 L3 已实现。
+- **主引擎 backend**：显式 `autonomous_mesh.enabled: true` 现在会让正常的 `wink up` 采用上述 graph、恢复与 selected-port 服务生命周期，并通过统一 runtime state 支持 `status`、`peers` 和 authenticated graceful `down`。Slice 4.5 的全量测试、目标 race、全量 vet 和隔离本机 CLI 生命周期已通过；这仍不是现场 rollout，也不等于透明 L3 已实现。
 
 用户态服务入口仍需决定固定目标端口、多目标/ACL、SOCKS5/HTTP CONNECT，还是更接近虚拟局域网语义的用户态 IP 栈；不同选择会改变配置、权限、安全边界和 `wink up` 接口。在该决策完成前，不把 `netif.backend: proxy` 当作既定路线。
 

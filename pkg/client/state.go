@@ -17,7 +17,14 @@ type Engine interface {
 	OnPeerChange(handler func(peer *PeerStatus, event PeerEvent))
 }
 
+// DoneEngine is implemented by runtimes that can receive an authenticated
+// process-control shutdown request independently of the parent signal context.
+type DoneEngine interface {
+	Done() <-chan struct{}
+}
+
 type EngineStatus struct {
+	Mode           string
 	State          EngineState
 	NodeID         string
 	NodeName       string
@@ -27,12 +34,18 @@ type EngineStatus struct {
 	Backend        string
 	NATType        string
 	CoordinatorURL string
-	StartedAt      time.Time
-	Uptime         time.Duration
-	ConnectedPeers int
-	BytesSent      uint64
-	BytesRecv      uint64
-	LastError      string
+	// InfrastructureCoordinatorStarted distinguishes optional discovery/control
+	// infrastructure from ordinary trusted mesh peers that coordinate shortcut
+	// attempts or forward graph traffic.
+	InfrastructureCoordinatorStarted bool
+	MeshListen                       string
+	ControlListen                    string
+	StartedAt                        time.Time
+	Uptime                           time.Duration
+	ConnectedPeers                   int
+	BytesSent                        uint64
+	BytesRecv                        uint64
+	LastError                        string
 }
 
 type EngineState int
@@ -105,6 +118,13 @@ type PeerStatus struct {
 	LastPathEndpoint       string
 	LastPathConnType       string
 	LastPathUpdatedAt      time.Time
+	RouteNextHop           string
+	RoutePath              []string
+	RouteHopCount          int
+	NeighborKind           string
+	ProtectedDirect        bool
+	MaintainedState        string
+	SelfBootstrapState     string
 }
 
 type PeerEvent int
@@ -173,12 +193,15 @@ type ConnectionType int
 const (
 	ConnectionTypeDirect ConnectionType = iota
 	ConnectionTypeRelay
+	ConnectionTypeMeshRoute
 )
 
 func (c ConnectionType) String() string {
 	switch c {
 	case ConnectionTypeRelay:
 		return "relay"
+	case ConnectionTypeMeshRoute:
+		return "mesh_route"
 	default:
 		return "direct"
 	}

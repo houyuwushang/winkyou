@@ -35,7 +35,7 @@ wink --config node-a.yaml status
 
 - 连接失败：确认 TCP `50051` 已开放
 - auth 失败：确认 client 的 `coordinator.auth_key` 和 `WINK_AUTH_KEY` 一致
-- 看不到 peer：两台 client 必须连接同一个 coordinator，且 `wink up` 进程仍在运行
+- 看不到 peer：先用 `wink status` 看 `Mode`。`legacy` 模式下两台 client 必须连接同一个 coordinator；`autonomous_mesh` 模式下应检查 `bootstrap_peers`、`maintain_peers`、recovery-card 状态以及 `wink peers` 的 `Next Hop`/`Mesh Path`/`Maintained`/`Bootstrap` 字段。两种模式都要求对应 `wink up` 进程仍在运行
 - 已经 `State: connected` 后断开 coordinator 所在网络，peer 随后断开：先确认你断开的是否只是 coordinator 进程，而不是 natpierce/跳板/underlay 网络。当前 client 已有第一层 peer-offline 保护和 bound 后 protected-direct improvement，但如果已选 path 本身依赖 natpierce，断开 natpierce 仍会拆掉实际数据路径。详见 [`CONTROL-PLANE-RESILIENCE.md`](./CONTROL-PLANE-RESILIENCE.md)。
 
 部署建议：

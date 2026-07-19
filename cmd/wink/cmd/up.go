@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -13,6 +14,7 @@ import (
 	winkclient "winkyou/pkg/client"
 
 	"winkyou/pkg/logger"
+	"winkyou/pkg/processidentity"
 )
 
 func newUpCmd(opts *Options) *cobra.Command {
@@ -26,18 +28,25 @@ func newUpCmd(opts *Options) *cobra.Command {
 			}
 			defer log.Sync()
 
-			if state, stateErr := winkclient.LoadRuntimeState(runtimeStateKey(opts)); stateErr == nil {
-				if state.IsFresh(20 * time.Second) {
-					return fmt.Errorf("wink is already running (pid %d)", state.PID)
+			stateKey := runtimeStateKey(opts)
+			runtimeLock, err := winkclient.AcquireRuntimeStateLock(stateKey)
+			if err != nil {
+				if errors.Is(err, winkclient.ErrRuntimeStateLocked) {
+					return fmt.Errorf("wink is already starting or running for state %s", winkclient.RuntimeStatePath(stateKey))
 				}
-				if err := winkclient.RemoveRuntimeState(runtimeStateKey(opts)); err != nil {
-					return err
+				return err
+			}
+			defer func() {
+				if err := runtimeLock.Close(); err != nil {
+					log.Warn("failed to release runtime lifecycle lock", logger.Error(err))
 				}
-			} else if !errors.Is(stateErr, winkclient.ErrRuntimeStateNotFound) {
-				return stateErr
+			}()
+
+			if err := prepareRuntimeStateForStart(stateKey); err != nil {
+				return err
 			}
 
-			engine, err := winkclient.NewEngine(cfg, log, runtimeStateKey(opts))
+			engine, err := winkclient.NewEngine(cfg, log, stateKey)
 			if err != nil {
 				return err
 			}
@@ -68,8 +77,51 @@ func newUpCmd(opts *Options) *cobra.Command {
 				runtimeStatePath(opts),
 			)
 
-			<-ctx.Done()
+			if doneEngine, ok := engine.(winkclient.DoneEngine); ok {
+				if done := doneEngine.Done(); done != nil {
+					select {
+					case <-ctx.Done():
+					case <-done:
+					}
+				} else {
+					<-ctx.Done()
+				}
+			} else {
+				<-ctx.Done()
+			}
 			return engine.Stop()
 		},
 	}
+}
+
+func prepareRuntimeStateForStart(stateKey string) error {
+	state, err := winkclient.LoadRuntimeState(stateKey)
+	if errors.Is(err, winkclient.ErrRuntimeStateNotFound) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+
+	if processStartID := strings.TrimSpace(state.ProcessStartID); processStartID != "" {
+		matches, matchErr := processidentity.Matches(state.PID, processStartID)
+		if matchErr != nil {
+			return fmt.Errorf("verify existing wink process identity: %w", matchErr)
+		}
+		if matches {
+			return fmt.Errorf("wink is already running (pid %d, instance %s)", state.PID, state.InstanceID)
+		}
+		if strings.TrimSpace(state.InstanceID) == "" {
+			return fmt.Errorf("stale managed runtime state has no instance id; refusing automatic removal")
+		}
+		return winkclient.RemoveRuntimeStateIfInstance(stateKey, state.InstanceID)
+	}
+
+	if strings.TrimSpace(state.ControlEndpoint) != "" || strings.TrimSpace(state.InstanceID) != "" {
+		return fmt.Errorf("managed runtime state has no process start identity; refusing automatic removal")
+	}
+	if state.IsFresh(20 * time.Second) {
+		return fmt.Errorf("wink is already running (pid %d)", state.PID)
+	}
+	return winkclient.RemoveRuntimeState(stateKey)
 }

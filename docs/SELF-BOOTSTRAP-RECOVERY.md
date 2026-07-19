@@ -6,7 +6,10 @@ listener and no configured peer seed, recovered its first edge from bilateral
 cached endpoint information, then used that ordinary peer to coordinate its
 second direct edge. A, B, and C are now running r12 after a rolling migration.
 This is not yet a simultaneous three-node cold-start matrix, public-IP change,
-or operating-system boot/autostart result.
+or operating-system boot/autostart result. Slice 4.5 now exposes the same source
+runtime through default-off `autonomous_mesh` configuration and the normal
+`wink up/down/status/peers` lifecycle, but that adapter has not replaced these
+field processes and is not additional public-NAT evidence.
 
 ## Purpose and recovery layers
 
@@ -67,6 +70,25 @@ on every node. The relevant flags and production defaults are:
 `--self-bootstrap-secret-file` requires `--recovery-card`. The cycle must be
 longer than the active window, and both endpoint clocks must be close enough
 for their active windows to overlap.
+
+Those flags remain the `cmd/meshnode` compatibility surface. Normal `wink`
+configuration now uses typed fields rather than `NODE=ADDRESS` strings:
+
+```yaml
+autonomous_mesh:
+  enabled: true
+  node_id: demo-a
+  virtual_ip: fd7a:115c:a1e0::a
+  listen: off
+  control_listen: 127.0.0.1:32110
+  maintain_peers: [demo-b]
+  recovery_card: ./demo-a-recovery.json
+  self_bootstrap_secret_file: ./mesh.secret
+```
+
+See `LONG-RUNNING-CLIENT.md` for bootstrap-peer, TCP-facade, status, isolated
+smoke-test, and authenticated graceful-down examples. This configuration is
+source-integrated but has not been used for a field process replacement.
 
 The lexicographically smaller node ID owns normal r9 repairs that run over an
 existing alternate graph route. That ownership rule does not apply to cold
@@ -367,7 +389,12 @@ feature restores mesh connectivity and allows services to accept new
 connections; it does not preserve an existing TCP flow across a process
 restart.
 
-Finally, this work belongs to the experimental `cmd/meshnode` graph runtime.
-It does not wire the same lifecycle into the long-running `wink up` engine and
-does not provide transparent system L3 ingress/egress. Wintun, WFP, TUN, or a
-WinkYou-owned packet backend remains separate Slice 5 work.
+Finally, the graph/recovery implementation now belongs to reusable
+`pkg/meshruntime`; `cmd/meshnode` is its experimental compatibility wrapper, and
+Slice 4.5 adapts it to the long-running `wink up` lifecycle behind explicit
+`autonomous_mesh.enabled: true`. That integration has local test coverage but
+has not yet been deployed on the field topology; merge acceptance still
+requires the Slice 4.5 regression commands to pass. It does not provide
+transparent system L3
+ingress/egress. Wintun, WFP, TUN, or a WinkYou-owned packet backend remains
+separate Slice 5 work.

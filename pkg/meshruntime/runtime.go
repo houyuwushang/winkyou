@@ -1,4 +1,4 @@
-package main
+package meshruntime
 
 import (
 	"bytes"
@@ -37,7 +37,10 @@ const (
 	maxTimeDuration          = time.Duration(1<<63 - 1)
 )
 
-type runtimeConfig struct {
+// Config describes one autonomous mesh runtime. The string slices intentionally
+// retain the field-tested meshnode flag grammar so the standalone command and
+// product adapters share one validation path.
+type Config struct {
 	NodeID        string
 	VirtualIP     string
 	MeshListen    string
@@ -89,6 +92,17 @@ type runtimeConfig struct {
 	selfBootstrapHelloInterval  time.Duration
 	selfBootstrapHelloSettle    time.Duration
 	selfBootstrapRoundDelay     time.Duration
+}
+
+// runtimeConfig is retained as an internal name for the migrated implementation
+// and its white-box tests.
+type runtimeConfig = Config
+
+// Options controls process-local integration without changing mesh protocol or
+// topology configuration.
+type Options struct {
+	EventWriter   io.Writer
+	ShutdownToken string
 }
 
 func (c runtimeConfig) normalized() (runtimeConfig, error) {
@@ -254,9 +268,13 @@ type runtimeCounters struct {
 	solverForwarded  atomic.Uint64
 }
 
-type meshRuntime struct {
-	cfg runtimeConfig
-	log *eventLog
+// Runtime owns one autonomous mesh node and all of its bootstrap, recovery,
+// routed-service, control-API, and system-alias resources.
+type Runtime struct {
+	cfg           runtimeConfig
+	log           *eventLog
+	shutdownToken string
+	done          chan struct{}
 
 	node          *mesh.Node
 	shortcuts     *shortcut.Manager
@@ -283,13 +301,29 @@ type meshRuntime struct {
 	closeOnce sync.Once
 }
 
+// meshRuntime preserves the implementation's historical internal name for
+// package-local tests while callers use Runtime.
+type meshRuntime = Runtime
+
+// New builds a reusable autonomous mesh runtime. Start must be called exactly
+// once; Close is idempotent and may be retried after transient alias cleanup
+// failures.
+func New(config Config, options Options) (*Runtime, error) {
+	return newMeshRuntimeWithOptions(config, options)
+}
+
 func newMeshRuntime(config runtimeConfig, output io.Writer) (*meshRuntime, error) {
+	return newMeshRuntimeWithOptions(config, Options{EventWriter: output})
+}
+
+func newMeshRuntimeWithOptions(config runtimeConfig, options Options) (*meshRuntime, error) {
 	cfg, err := config.normalized()
 	if err != nil {
 		return nil, err
 	}
 	runtime := &meshRuntime{
-		cfg: cfg, log: newEventLog(cfg.NodeID, output), echo: newEchoService(cfg.NodeID),
+		cfg: cfg, log: newEventLog(cfg.NodeID, options.EventWriter), echo: newEchoService(cfg.NodeID),
+		shutdownToken: options.ShutdownToken, done: make(chan struct{}),
 		shortcutStatuses: make(map[string]shortcut.Status),
 	}
 	node, err := mesh.NewNode(mesh.NodeConfig{
@@ -509,6 +543,21 @@ func (r *meshRuntime) ControlAddr() string {
 	return r.cfg.ControlListen
 }
 
+var closedRuntimeDone = func() <-chan struct{} {
+	done := make(chan struct{})
+	close(done)
+	return done
+}()
+
+// Done is closed after the runtime has completed its one-shot shutdown pass.
+// A subsequent Close may still retry a transient system-alias cleanup failure.
+func (r *meshRuntime) Done() <-chan struct{} {
+	if r == nil || r.done == nil {
+		return closedRuntimeDone
+	}
+	return r.done
+}
+
 func (r *meshRuntime) handleMeshEvent(event mesh.Event) {
 	switch event.Kind {
 	case mesh.EventForwarded:
@@ -641,6 +690,7 @@ func (r *meshRuntime) Close() error {
 	closedRuntime := false
 	r.closeOnce.Do(func() {
 		closedRuntime = true
+		defer close(r.done)
 		r.mu.Lock()
 		r.closed = true
 		cancel := r.cancel

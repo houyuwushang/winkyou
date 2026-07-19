@@ -79,6 +79,9 @@ func NewEngine(cfg *config.Config, log logger.Logger, statePath string) (Engine,
 	if log == nil {
 		log = logger.Nop()
 	}
+	if merged.AutonomousMesh.Enabled {
+		return newAutonomousEngine(merged, log, statePath)
+	}
 
 	return &engine{
 		cfg:       merged,
@@ -86,6 +89,7 @@ func NewEngine(cfg *config.Config, log logger.Logger, statePath string) (Engine,
 		statePath: strings.TrimSpace(statePath),
 		peers:     make(map[string]*PeerStatus),
 		status: EngineStatus{
+			Mode:           "legacy",
 			State:          EngineStateStopped,
 			NodeName:       merged.Node.Name,
 			Backend:        merged.NetIf.Backend,
@@ -175,6 +179,7 @@ func (e *engine) Start(ctx context.Context) (err error) {
 	e.mu.Lock()
 	e.status.NodeID = reg.NodeID
 	e.status.PublicKey = privateKey.PublicKey().String()
+	e.status.InfrastructureCoordinatorStarted = true
 	e.mu.Unlock()
 
 	virtualIP, networkCIDR, err := parseVirtualNetwork(reg.VirtualIP, reg.NetworkCIDR)
@@ -230,6 +235,7 @@ func (e *engine) Start(ctx context.Context) (err error) {
 	e.status.NetworkCIDR = cloneIPNet(networkCIDR)
 	e.status.Backend = e.netif.Type()
 	e.status.CoordinatorURL = e.cfg.Coordinator.URL
+	e.status.InfrastructureCoordinatorStarted = true
 	e.status.NATType = natType.String()
 	e.status.StartedAt = time.Now()
 	e.runtimePublicEndpointHints = append([]string(nil), runtimePublicEndpointHints...)
@@ -819,6 +825,7 @@ func clonePeerStatus(peer *PeerStatus) *PeerStatus {
 	out.StandbyPathIDs = append([]string(nil), peer.StandbyPathIDs...)
 	out.LastPathDependencies = append([]string(nil), peer.LastPathDependencies...)
 	out.LastPathDetails = cloneStringMap(peer.LastPathDetails)
+	out.RoutePath = append([]string(nil), peer.RoutePath...)
 	return &out
 }
 

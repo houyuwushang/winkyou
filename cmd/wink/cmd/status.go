@@ -28,7 +28,12 @@ func newStatusCmd(opts *Options) *cobra.Command {
 			switch {
 			case stateErr == nil:
 				if asJSON {
-					return writeJSON(cmd, state)
+					visible := *state
+					// The shutdown token is local process-control material, not status
+					// output. Keep it in the on-disk runtime record for wink down but
+					// never echo it to terminals or automation logs.
+					visible.ShutdownToken = ""
+					return writeJSON(cmd, &visible)
 				}
 				printStatus(cmd, state, cfg, runtimeStatePath(opts))
 				return nil
@@ -57,16 +62,27 @@ func printStatus(cmd *cobra.Command, state *winkclient.RuntimeState, cfg *config
 
 	knownPeers := len(state.Peers)
 	connectedPeers := countPeersByState(state.Peers, winkclient.PeerStateConnected.String())
+	mode := firstNonEmpty(state.Status.Mode, "legacy")
+	coordinator := state.Status.CoordinatorURL
+	if mode != "autonomous_mesh" {
+		coordinator = firstNonEmpty(coordinator, cfg.Coordinator.URL)
+	}
 
 	cmd.Println("WinkYou Status")
 	cmd.Println("--------------")
 	cmd.Printf("State:         %s\n", strings.Title(displayState))
+	cmd.Printf("Mode:          %s\n", mode)
 	cmd.Printf("Node:          %s\n", firstNonEmpty(state.Status.NodeName, cfg.Node.Name))
 	cmd.Printf("Node ID:       %s\n", dashIfEmpty(state.Status.NodeID))
 	cmd.Printf("Backend:       %s\n", firstNonEmpty(state.Status.Backend, cfg.NetIf.Backend))
-	cmd.Printf("Coordinator:   %s\n", firstNonEmpty(state.Status.CoordinatorURL, cfg.Coordinator.URL))
+	cmd.Printf("Coordinator:   %s\n", dashIfEmpty(coordinator))
+	cmd.Printf("Infra Coord:   %s\n", formatRunning(state.Status.InfrastructureCoordinatorStarted))
 	cmd.Printf("Virtual IP:    %s\n", dashIfEmpty(state.Status.VirtualIP))
 	cmd.Printf("Network CIDR:  %s\n", dashIfEmpty(state.Status.NetworkCIDR))
+	if mode == "autonomous_mesh" {
+		cmd.Printf("Mesh Listen:   %s\n", dashIfEmpty(state.Status.MeshListen))
+		cmd.Printf("Control:       %s\n", dashIfEmpty(state.Status.ControlListen))
+	}
 	cmd.Printf("NAT Type:      %s\n", dashIfEmpty(state.Status.NATType))
 	cmd.Printf("Peers:         %d known, %d connected\n", knownPeers, connectedPeers)
 	cmd.Printf("Uptime:        %s\n", dashIfEmpty(state.Status.Uptime))
@@ -77,31 +93,84 @@ func printStatus(cmd *cobra.Command, state *winkclient.RuntimeState, cfg *config
 	cmd.Printf("State File:    %s\n", statePath)
 }
 
+func formatRunning(running bool) string {
+	if running {
+		return "running"
+	}
+	return "not started"
+}
+
 func printDisconnectedStatus(cmd *cobra.Command, cfg *config.Config) {
+	mode := "legacy"
+	node := cfg.Node.Name
+	backend := cfg.NetIf.Backend
+	coordinator := cfg.Coordinator.URL
+	virtualIP := ""
+	networkCIDR := ""
+	if cfg.AutonomousMesh.Enabled {
+		mode = "autonomous_mesh"
+		node = firstNonEmpty(cfg.Node.Name, cfg.AutonomousMesh.NodeID)
+		backend = "userspace-mesh"
+		coordinator = ""
+		virtualIP = cfg.AutonomousMesh.VirtualIP
+		if virtualIP != "" {
+			networkCIDR = virtualIP + "/128"
+		}
+	}
 	cmd.Println("WinkYou Status")
 	cmd.Println("--------------")
 	cmd.Println("State:         Not Connected")
-	cmd.Printf("Node:          %s\n", cfg.Node.Name)
-	cmd.Printf("Backend:       %s\n", cfg.NetIf.Backend)
-	cmd.Printf("Coordinator:   %s\n", dashIfEmpty(cfg.Coordinator.URL))
-	cmd.Println("Virtual IP:    -")
-	cmd.Println("Network CIDR:  -")
+	cmd.Printf("Mode:          %s\n", mode)
+	cmd.Printf("Node:          %s\n", node)
+	cmd.Printf("Backend:       %s\n", backend)
+	cmd.Printf("Coordinator:   %s\n", dashIfEmpty(coordinator))
+	cmd.Println("Infra Coord:   not started")
+	cmd.Printf("Virtual IP:    %s\n", dashIfEmpty(virtualIP))
+	cmd.Printf("Network CIDR:  %s\n", dashIfEmpty(networkCIDR))
+	if cfg.AutonomousMesh.Enabled {
+		cmd.Printf("Mesh Listen:   %s\n", dashIfEmpty(cfg.AutonomousMesh.Listen))
+		cmd.Printf("Control:       %s\n", dashIfEmpty(cfg.AutonomousMesh.ControlListen))
+	}
 	cmd.Println("NAT Type:      -")
 	cmd.Println("Peers:         0 known, 0 connected")
 	cmd.Println("Uptime:        -")
 }
 
 func disconnectedStatus(cfg *config.Config) map[string]any {
+	mode := "legacy"
+	node := cfg.Node.Name
+	backend := cfg.NetIf.Backend
+	coordinator := cfg.Coordinator.URL
+	virtualIP := ""
+	networkCIDR := ""
+	meshListen := ""
+	controlListen := ""
+	if cfg.AutonomousMesh.Enabled {
+		mode = "autonomous_mesh"
+		node = firstNonEmpty(cfg.Node.Name, cfg.AutonomousMesh.NodeID)
+		backend = "userspace-mesh"
+		coordinator = ""
+		virtualIP = cfg.AutonomousMesh.VirtualIP
+		if virtualIP != "" {
+			networkCIDR = virtualIP + "/128"
+		}
+		meshListen = cfg.AutonomousMesh.Listen
+		controlListen = cfg.AutonomousMesh.ControlListen
+	}
 	return map[string]any{
-		"state":           winkclient.EngineStateStopped.String(),
-		"node":            cfg.Node.Name,
-		"backend":         cfg.NetIf.Backend,
-		"coordinator":     cfg.Coordinator.URL,
-		"virtual_ip":      "",
-		"network_cidr":    "",
-		"nat_type":        "",
-		"known_peers":     0,
-		"connected_peers": 0,
+		"state":                              winkclient.EngineStateStopped.String(),
+		"mode":                               mode,
+		"node":                               node,
+		"backend":                            backend,
+		"coordinator":                        coordinator,
+		"infrastructure_coordinator_started": false,
+		"virtual_ip":                         virtualIP,
+		"network_cidr":                       networkCIDR,
+		"mesh_listen":                        meshListen,
+		"control_listen":                     controlListen,
+		"nat_type":                           "",
+		"known_peers":                        0,
+		"connected_peers":                    0,
 	}
 }
 

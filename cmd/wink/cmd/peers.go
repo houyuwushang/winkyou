@@ -64,6 +64,13 @@ func newPeersCmd(opts *Options) *cobra.Command {
 				cmd.Printf("  Path Role:  %s\n", dashIfEmpty(p.LastPathRole))
 				cmd.Printf("  Path Deps:  %s\n", dashIfEmpty(strings.Join(p.LastPathDependencies, ",")))
 				cmd.Printf("  Path Endpt: %s\n", dashIfEmpty(p.LastPathEndpoint))
+				cmd.Printf("  Next Hop:   %s\n", dashIfEmpty(p.RouteNextHop))
+				cmd.Printf("  Mesh Path:  %s\n", dashIfEmpty(strings.Join(p.RoutePath, " -> ")))
+				cmd.Printf("  Mesh Hops:  %d\n", p.RouteHopCount)
+				cmd.Printf("  Neighbor:   %s\n", dashIfEmpty(p.NeighborKind))
+				cmd.Printf("  Direct:     %s\n", formatBoolEnabled(p.ProtectedDirect))
+				cmd.Printf("  Maintained: %s\n", dashIfEmpty(p.MaintainedState))
+				cmd.Printf("  Bootstrap:  %s\n", dashIfEmpty(p.SelfBootstrapState))
 				cmd.Printf("  Multipath:  %s\n", formatBoolEnabled(p.MultipathEnabled))
 				if p.MultipathEnabled {
 					cmd.Printf("  Primary:    %s\n", dashIfEmpty(p.PrimaryPathID))

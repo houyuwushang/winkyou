@@ -3,14 +3,15 @@ package config
 import "time"
 
 type Config struct {
-	Node         NodeConfig         `mapstructure:"node" yaml:"node"`
-	Log          LogConfig          `mapstructure:"log" yaml:"log"`
-	Coordinator  CoordinatorConfig  `mapstructure:"coordinator" yaml:"coordinator"`
-	NetIf        NetIfConfig        `mapstructure:"netif" yaml:"netif"`
-	WireGuard    WireGuardConfig    `mapstructure:"wireguard" yaml:"wireguard"`
-	NAT          NATConfig          `mapstructure:"nat" yaml:"nat"`
-	Connectivity ConnectivityConfig `mapstructure:"connectivity" yaml:"connectivity"`
-	TCPFramed    TCPFramedConfig    `mapstructure:"tcp_framed" yaml:"tcp_framed"`
+	Node           NodeConfig           `mapstructure:"node" yaml:"node"`
+	Log            LogConfig            `mapstructure:"log" yaml:"log"`
+	Coordinator    CoordinatorConfig    `mapstructure:"coordinator" yaml:"coordinator"`
+	NetIf          NetIfConfig          `mapstructure:"netif" yaml:"netif"`
+	WireGuard      WireGuardConfig      `mapstructure:"wireguard" yaml:"wireguard"`
+	NAT            NATConfig            `mapstructure:"nat" yaml:"nat"`
+	Connectivity   ConnectivityConfig   `mapstructure:"connectivity" yaml:"connectivity"`
+	TCPFramed      TCPFramedConfig      `mapstructure:"tcp_framed" yaml:"tcp_framed"`
+	AutonomousMesh AutonomousMeshConfig `mapstructure:"autonomous_mesh" yaml:"autonomous_mesh"`
 }
 
 type NodeConfig struct {
@@ -94,6 +95,48 @@ type TCPFramedConfig struct {
 	DialAddr      string        `mapstructure:"dial_addr" yaml:"dial_addr"`
 	Role          string        `mapstructure:"role" yaml:"role"`
 	DialTimeout   time.Duration `mapstructure:"dial_timeout" yaml:"dial_timeout"`
+}
+
+// AutonomousMeshConfig describes the coordinator-independent graph runtime.
+// It is deliberately disabled by default so existing client configurations
+// retain their coordinator/WireGuard lifecycle until the runtime integration
+// explicitly opts in.
+type AutonomousMeshConfig struct {
+	Enabled                 bool                              `mapstructure:"enabled" yaml:"enabled"`
+	NodeID                  string                            `mapstructure:"node_id" yaml:"node_id"`
+	VirtualIP               string                            `mapstructure:"virtual_ip" yaml:"virtual_ip"`
+	Listen                  string                            `mapstructure:"listen" yaml:"listen"`
+	ControlListen           string                            `mapstructure:"control_listen" yaml:"control_listen"`
+	BootstrapPeers          []AutonomousMeshBootstrapPeer     `mapstructure:"bootstrap_peers" yaml:"bootstrap_peers"`
+	MaintainPeers           []string                          `mapstructure:"maintain_peers" yaml:"maintain_peers"`
+	RecoveryCard            string                            `mapstructure:"recovery_card" yaml:"recovery_card"`
+	SelfBootstrapSecretFile string                            `mapstructure:"self_bootstrap_secret_file" yaml:"self_bootstrap_secret_file"`
+	TCPTarget               string                            `mapstructure:"tcp_target" yaml:"tcp_target"`
+	TCPForwards             []AutonomousMeshTCPForward        `mapstructure:"tcp_forwards" yaml:"tcp_forwards"`
+	VirtualTCPForwards      []AutonomousMeshVirtualTCPForward `mapstructure:"virtual_tcp_forwards" yaml:"virtual_tcp_forwards"`
+}
+
+// AutonomousMeshBootstrapPeer is a typed bootstrap seed. Node identity and
+// transport address remain separate instead of exposing meshnode's CLI-only
+// NODE_ID=HOST:PORT encoding in the public configuration model.
+type AutonomousMeshBootstrapPeer struct {
+	NodeID  string `mapstructure:"node_id" yaml:"node_id"`
+	Address string `mapstructure:"address" yaml:"address"`
+}
+
+// AutonomousMeshTCPForward exposes a loopback TCP listener that routes to one
+// remote mesh node.
+type AutonomousMeshTCPForward struct {
+	Listen   string `mapstructure:"listen" yaml:"listen"`
+	RemoteID string `mapstructure:"remote_id" yaml:"remote_id"`
+}
+
+// AutonomousMeshVirtualTCPForward exposes a selected remote node through a
+// managed IPv6 ULA listener. It remains distinct from the loopback form so a
+// later runtime cannot accidentally weaken the address-lifecycle checks.
+type AutonomousMeshVirtualTCPForward struct {
+	Listen   string `mapstructure:"listen" yaml:"listen"`
+	RemoteID string `mapstructure:"remote_id" yaml:"remote_id"`
 }
 
 type TURNServerConfig struct {

@@ -6,7 +6,12 @@
   r12 after a rolling migration, while simultaneous cold start, OS autostart,
   and the public-IP-change matrix remain open; the Windows IPv6 TCP facade is
   implemented and A-only field-proven, while B/C remain r12 and a full r13
-  three-node rollout remains open
+  three-node rollout remains open. Slice 4.5 source integration is implemented:
+  the reusable runtime now lives in `pkg/meshruntime`, and an explicitly enabled
+  `autonomous_mesh` configuration selects it from `wink up` with managed
+  status/peers/graceful-down lifecycle. Slice 4.5 has passed the full test suite,
+  targeted race tests, full vet, and an isolated local CLI lifecycle smoke; it
+  has not replaced or restarted any field process
 - Date: 2026-07-19
 - Scope: control routing, graph routing, direct-edge improvement, and peer transit
 
@@ -319,6 +324,10 @@ validating the old runtime.
 4. **Shortcut solving:** carry `PREPARE/READY/FIRE` through B, invoke the current
    edge solver for A-C, install the direct edge, switch new traffic, and retain
    the transit path during a probation window.
+4.5. **Product lifecycle integration:** extract the executable graph runtime as
+   `pkg/meshruntime`, select it through a default-off typed `autonomous_mesh`
+   configuration, and adapt it to the existing `wink up/down/status/peers`
+   lifecycle without starting the legacy coordinator/WireGuard engine.
 5. **System packet backend and exits:** connect the routed transport to the
    WinkYou-owned Windows packet ingress/egress path, advertised subnets, and
    optional default-route exits.
@@ -350,14 +359,27 @@ Implementation status on 2026-07-19:
   C coordinates a new A-B edge, the temporary C-B edge is removed only after
   A-B is stable, and A then coordinates the replacement B-C edge. The graph is
   connected throughout both transitions.
-- `cmd/meshnode` provides the multi-host experimental runtime: node-ID bootstrap
-  streams, reconnect/removal control, status and ping APIs, peer-coordinated
-  shortcut initiation, real `birthday_punch` packet-neighbor handoff, and
-  fixed-target TCP forwarding through ordinary loopback listeners plus the
-  bounded Windows IPv6 ULA facade. Its three-runtime integration test executes
-  the rejoin rotation through real TCP listeners and HTTP control requests,
-  then proves direct TCP data bypasses the coordinator; the ULA facade has the
-  separate A-only field acceptance recorded above.
+- `pkg/meshruntime` now provides the reusable multi-host runtime: node-ID
+  bootstrap streams, reconnect/removal control, status and ping APIs,
+  peer-coordinated shortcut initiation, real `birthday_punch` packet-neighbor
+  handoff, fixed-target TCP forwarding, and the bounded Windows IPv6 ULA facade.
+  `cmd/meshnode` is a thin compatibility/field wrapper around that package. Its
+  three-runtime integration test executes the rejoin rotation through real TCP
+  listeners and HTTP control requests, then proves direct TCP data bypasses the
+  coordinator; the ULA facade has the separate A-only field acceptance recorded
+  above.
+- Slice 4.5 adds a typed, default-off `autonomous_mesh` block to `pkg/config` and
+  a separate autonomous `client.Engine` adapter. `client.NewEngine` keeps legacy
+  behavior unless `autonomous_mesh.enabled=true`; when enabled, `wink up` starts
+  `pkg/meshruntime` without registering an infrastructure coordinator or
+  constructing the legacy netif/WireGuard engine. Runtime-state snapshots add
+  mesh route, next-hop, neighbor, maintained-direct, and self-bootstrap fields
+  without changing the legacy `peers --json` top-level array. `wink down` uses an
+  authenticated loopback shutdown endpoint, verifies the process-start identity
+  and runtime instance, and never falls back to PID killing for a managed
+  autonomous runtime, including with `--force`. The source tests and isolated
+  local CLI lifecycle are accepted; this is not a field rollout or OS
+  service/autostart result.
 - The r9 source candidate adds event-driven maintained-direct-edge recovery.
   Symmetric `--maintain-peer` declarations elect the lexicographically smaller
   endpoint as repair owner. It selects an ordinary coordinator from an
@@ -460,9 +482,11 @@ Implementation status on 2026-07-19:
   `954/960`, and management status was `1438/1440`; every isolated failure
   recovered in the next scheduled sample. It is a completed continuity hold,
   not a zero-loss clean soak.
-- The autonomous node, routed endpoint, and shortcut manager are not yet wired
-  into the long-running `wink up` engine. Slice 5 system packet ingress/exit
-  routing remains open.
+- The autonomous node, routed endpoint, shortcut manager, recovery supervisor,
+  and selected-port TCP facade are now wired into the long-running `wink up`
+  lifecycle behind explicit opt-in. The current field processes have not been
+  replaced with that path. Slice 5 system packet ingress/exit routing remains
+  open.
 
 The routed TCP proof now has explicit directional FIN handling, a bounded
 per-flow receive queue, and ACK-based retransmission over datagram neighbors.
@@ -654,11 +678,14 @@ C-through-B service proof are recorded in `MESH-REJOIN-FIELD-EXPERIMENT.md`.
 
 ## Consequences
 
-Slices 1-4 deliberately do not edit the existing client in-band loop or claim
-production mesh operation. They establish a transport-neutral graph and data
-forwarding core plus a solver-to-neighbor promotion path that the client runtime
-can adopt later. This keeps the frozen connectivity solver/session boundary
-intact while making the missing graph behavior executable and testable.
+Slices 1-4 deliberately did not edit the existing client in-band loop or claim
+production mesh operation. They established a transport-neutral graph and data
+forwarding core plus a solver-to-neighbor promotion path. Slice 4.5 adopts that
+runtime through a separate client-engine adapter and shared runtime-state/CLI
+lifecycle; it does not merge the legacy and autonomous resource state machines.
+This keeps the frozen connectivity solver/session boundary intact while making
+the graph behavior executable through normal commands. It is still a source-
+level integration until a guarded field rollout accepts it.
 
 Run the executable Slice 1 proof with:
 
@@ -704,6 +731,49 @@ direct route `[A,C]`, `shortcut_phase=stable`, solver signals forwarded by B,
 `direct_data_bypassed_b=true`, and `transit_path_retained=true`. The
 `birthday_punch.Strategy` integration is covered separately by
 `TestStrategyRunsThroughPeerCoordinatorAndInstallsMeshShortcut`.
+
+Run the Slice 4.5 source acceptance with:
+
+```bash
+go test ./... -count=1
+go test -race ./pkg/config ./pkg/meshruntime ./pkg/processidentity ./pkg/client ./cmd/wink/cmd -count=1
+go vet ./...
+```
+
+An isolated CLI lifecycle smoke test may use the following non-field config:
+
+```yaml
+node:
+  name: demo-a
+
+autonomous_mesh:
+  enabled: true
+  node_id: demo-a
+  virtual_ip: fd7a:115c:a1e0::a
+  listen: off
+  control_listen: 127.0.0.1:0
+```
+
+Use a new config path and a new state path. In terminal one:
+
+```bash
+go run ./cmd/wink --config ./demo-autonomous.yaml --state ./demo-autonomous.runtime.json up
+```
+
+In terminal two:
+
+```bash
+go run ./cmd/wink --config ./demo-autonomous.yaml --state ./demo-autonomous.runtime.json status
+go run ./cmd/wink --config ./demo-autonomous.yaml --state ./demo-autonomous.runtime.json peers
+go run ./cmd/wink --config ./demo-autonomous.yaml --state ./demo-autonomous.runtime.json down
+```
+
+Acceptance requires `Mode: autonomous_mesh`, `Infra Coord: not started`, a
+loopback control endpoint with a dynamically assigned port, no shutdown token in
+`status --json`, and `wink down: gracefully stopped` followed by removal of the
+state file. This smoke test proves local product lifecycle only. It must not use
+the config/state path or listen ports of an existing field runtime, and it is not
+a three-host public-NAT, system-service, OS-restart, or transparent-L3 result.
 
 Run the connectivity-preserving rejoin proof with:
 

@@ -54,7 +54,7 @@ param(
     [string]$AApiBase = "http://127.0.0.1:32110",
     [string]$RemoteApiBase = "http://127.0.0.1:32110",
 
-    [string]$BUser = "chen",
+    [string]$BUser = "node-b-user",
     [string]$BHost = "127.0.0.1",
     [ValidateRange(1, 65535)]
     [int]$BPort = 22024,
@@ -1514,7 +1514,7 @@ function Invoke-SelfTest {
     Assert-SelfTest ($distribution.p50 -eq 20 -and $distribution.p95 -eq 40) "percentile calculation"
     Assert-SelfTest ((ConvertTo-NativeArgument "two words") -eq '"two words"') "native argument quoting"
 
-    $directSshArguments = @(New-SshArguments -User "chen" -HostName "127.0.0.1" -Port 22024 -RemoteCommand "hostname")
+    $directSshArguments = @(New-SshArguments -User "node-b-user" -HostName "127.0.0.1" -Port 22024 -RemoteCommand "hostname")
     Assert-SelfTest ($directSshArguments[-2] -eq "node-b-user@127.0.0.1" -and $directSshArguments[-1] -eq "hostname") "direct SSH destination uses the configured host"
     Assert-SelfTest ($directSshArguments -contains "ProxyJump=none" -and @($directSshArguments | Where-Object { $_ -like "ProxyCommand=*" }).Count -eq 0) "direct SSH explicitly disables inherited ProxyJump"
 

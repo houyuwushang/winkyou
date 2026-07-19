@@ -2,6 +2,8 @@
 
 本文给出一条从零跑通的最小路径：一台 Linux 公网服务器运行 coordinator + coturn，两台 client 加入同一个虚拟网络，并分别验证 direct path 与 relay path。
 
+这是默认 `legacy` 模式的 quickstart，不是 Slice 4.5 `autonomous_mesh` 指南。默认关闭的自治图模式不启动这里的 coordinator/WireGuard client 生命周期；它的类型化配置、独立状态文件冒烟和 graceful `wink down` 见 [`LONG-RUNNING-CLIENT.md`](./LONG-RUNNING-CLIENT.md)。该自治 CLI adapter 尚未现场部署，不能用本 quickstart 的验收结果替代。
+
 快速验证时可以直接以前台方式运行 `wink up` 并保持终端打开。长期运行请使用 [`LONG-RUNNING-CLIENT.md`](./LONG-RUNNING-CLIENT.md) 中的 systemd、Windows Task Scheduler 或 NSSM 工作流。
 
 ## 1. 前置条件

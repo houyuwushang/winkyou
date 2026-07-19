@@ -1,4 +1,4 @@
-package main
+package meshruntime
 
 import (
 	"context"
@@ -16,6 +16,10 @@ import (
 	"winkyou/pkg/mesh/shortcut"
 	"winkyou/pkg/solver"
 )
+
+// ShutdownTokenHeader carries the process-specific token for graceful local
+// shutdown. A runtime with an empty token does not register the endpoint.
+const ShutdownTokenHeader = "X-Wink-Shutdown-Token"
 
 type memberView struct {
 	NodeID       string   `json:"node_id"`
@@ -77,6 +81,15 @@ type tcpTargetView struct {
 	Source string `json:"source,omitempty"`
 }
 
+// Exported aliases make Status useful to product adapters without changing the
+// field-tested HTTP JSON schema or the internal handler implementation.
+type MemberStatus = memberView
+type RouteStatus = routeView
+type Counters = counterView
+type ShortcutStatus = shortcutView
+type TCPForwardStatus = tcpForwardView
+type TCPTargetStatus = tcpTargetView
+
 func newShortcutView(status shortcut.Status) shortcutView {
 	return shortcutView{
 		AttemptID: status.AttemptID, InitiatorID: status.InitiatorID, TargetID: status.TargetID,
@@ -110,6 +123,20 @@ type statusView struct {
 	TCPForwards      []tcpForwardView        `json:"tcp_forwards,omitempty"`
 	Counters         counterView             `json:"counters"`
 	InfrastructureUp bool                    `json:"infrastructure_coordinator_started"`
+	ShutdownEndpoint string                  `json:"shutdown_endpoint,omitempty"`
+	ShutdownToken    string                  `json:"-"`
+}
+
+type Status = statusView
+type MaintainedPeerStatus = maintainedPeerView
+
+// Status returns an immutable operational snapshot. ShutdownToken is available
+// to an in-process product adapter but is deliberately excluded from HTTP JSON.
+func (r *meshRuntime) Status() Status {
+	if r == nil {
+		return Status{}
+	}
+	return r.status()
 }
 
 func (r *meshRuntime) status() statusView {
@@ -173,7 +200,19 @@ func (r *meshRuntime) status() statusView {
 			SolverForwarded:  r.counters.solverForwarded.Load(),
 		},
 		InfrastructureUp: false,
+		ShutdownEndpoint: r.shutdownEndpoint(), ShutdownToken: r.shutdownToken,
 	}
+}
+
+func (r *meshRuntime) shutdownEndpoint() string {
+	if r == nil || r.shutdownToken == "" {
+		return ""
+	}
+	address := r.ControlAddr()
+	if address == "" {
+		return ""
+	}
+	return "http://" + address + "/v1/shutdown"
 }
 
 func startControlServer(ctx context.Context, runtime *meshRuntime, address string) (*http.Server, error) {
@@ -209,6 +248,9 @@ func (r *meshRuntime) controlMux() http.Handler {
 	mux.HandleFunc("GET /v1/status", func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, http.StatusOK, r.status())
 	})
+	if r.shutdownToken != "" {
+		mux.HandleFunc("POST /v1/shutdown", r.handleShutdown)
+	}
 	mux.HandleFunc("POST /v1/peers", r.handleAddPeer)
 	mux.HandleFunc("DELETE /v1/peers/{peerID}", r.handleRemovePeer)
 	mux.HandleFunc("DELETE /v1/neighbors/{peerID}", r.handleRemoveNeighbor)
@@ -222,6 +264,28 @@ func (r *meshRuntime) controlMux() http.Handler {
 	mux.HandleFunc("POST /v1/tcp/forwards", r.handleAddTCPForward)
 	mux.HandleFunc("DELETE /v1/tcp/forwards/{forwardID}", r.handleRemoveTCPForward)
 	return mux
+}
+
+func (r *meshRuntime) handleShutdown(w http.ResponseWriter, request *http.Request) {
+	if !requestFromLoopback(request.RemoteAddr) || request.Header.Get(ShutdownTokenHeader) != r.shutdownToken {
+		writeAPIError(w, http.StatusForbidden, fmt.Errorf("graceful shutdown is not authorized"))
+		return
+	}
+	writeJSON(w, http.StatusAccepted, map[string]any{"accepted": true})
+	go func() {
+		if err := r.Close(); err != nil && r.log != nil {
+			r.log.write("runtime_shutdown_failed", map[string]any{"error": err.Error()})
+		}
+	}()
+}
+
+func requestFromLoopback(remoteAddress string) bool {
+	host, _, err := net.SplitHostPort(strings.TrimSpace(remoteAddress))
+	if err != nil {
+		return false
+	}
+	ip := net.ParseIP(strings.TrimSpace(host))
+	return ip != nil && ip.IsLoopback()
 }
 
 type tcpTargetRequest struct {

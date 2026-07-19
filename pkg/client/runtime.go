@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"winkyou/pkg/config"
@@ -16,30 +17,41 @@ import (
 
 var ErrRuntimeStateNotFound = errors.New("client runtime state not found")
 
+var runtimeStateIOMu sync.RWMutex
+
 type RuntimeState struct {
-	Version   string              `json:"version"`
-	PID       int                 `json:"pid"`
-	StartedAt time.Time           `json:"started_at"`
-	UpdatedAt time.Time           `json:"updated_at"`
-	Status    RuntimeEngineStatus `json:"status"`
-	Peers     []RuntimePeerStatus `json:"peers"`
+	SchemaVersion   int                 `json:"schema_version,omitempty"`
+	Version         string              `json:"version"`
+	InstanceID      string              `json:"instance_id,omitempty"`
+	PID             int                 `json:"pid"`
+	ProcessStartID  string              `json:"process_start_id,omitempty"`
+	StartedAt       time.Time           `json:"started_at"`
+	UpdatedAt       time.Time           `json:"updated_at"`
+	ControlEndpoint string              `json:"control_endpoint,omitempty"`
+	ShutdownToken   string              `json:"shutdown_token,omitempty"`
+	Status          RuntimeEngineStatus `json:"status"`
+	Peers           []RuntimePeerStatus `json:"peers"`
 }
 
 type RuntimeEngineStatus struct {
-	State          string `json:"state"`
-	NodeID         string `json:"node_id"`
-	NodeName       string `json:"node_name"`
-	PublicKey      string `json:"public_key"`
-	VirtualIP      string `json:"virtual_ip"`
-	NetworkCIDR    string `json:"network_cidr"`
-	Backend        string `json:"backend"`
-	NATType        string `json:"nat_type"`
-	CoordinatorURL string `json:"coordinator_url"`
-	Uptime         string `json:"uptime"`
-	ConnectedPeers int    `json:"connected_peers"`
-	BytesSent      uint64 `json:"bytes_sent"`
-	BytesRecv      uint64 `json:"bytes_recv"`
-	LastError      string `json:"last_error,omitempty"`
+	Mode                             string `json:"mode,omitempty"`
+	State                            string `json:"state"`
+	NodeID                           string `json:"node_id"`
+	NodeName                         string `json:"node_name"`
+	PublicKey                        string `json:"public_key"`
+	VirtualIP                        string `json:"virtual_ip"`
+	NetworkCIDR                      string `json:"network_cidr"`
+	Backend                          string `json:"backend"`
+	NATType                          string `json:"nat_type"`
+	CoordinatorURL                   string `json:"coordinator_url"`
+	InfrastructureCoordinatorStarted bool   `json:"infrastructure_coordinator_started"`
+	MeshListen                       string `json:"mesh_listen,omitempty"`
+	ControlListen                    string `json:"control_listen,omitempty"`
+	Uptime                           string `json:"uptime"`
+	ConnectedPeers                   int    `json:"connected_peers"`
+	BytesSent                        uint64 `json:"bytes_sent"`
+	BytesRecv                        uint64 `json:"bytes_recv"`
+	LastError                        string `json:"last_error,omitempty"`
 }
 
 type RuntimePeerStatus struct {
@@ -83,6 +95,13 @@ type RuntimePeerStatus struct {
 	LastPathEndpoint       string            `json:"last_path_endpoint,omitempty"`
 	LastPathConnType       string            `json:"last_path_connection_type,omitempty"`
 	LastPathUpdatedAt      time.Time         `json:"last_path_updated_at,omitempty"`
+	RouteNextHop           string            `json:"route_next_hop,omitempty"`
+	RoutePath              []string          `json:"route_path,omitempty"`
+	RouteHopCount          int               `json:"route_hop_count,omitempty"`
+	NeighborKind           string            `json:"neighbor_kind,omitempty"`
+	ProtectedDirect        bool              `json:"protected_direct,omitempty"`
+	MaintainedState        string            `json:"maintained_state,omitempty"`
+	SelfBootstrapState     string            `json:"self_bootstrap_state,omitempty"`
 }
 
 func RuntimeStatePath(configPath string) string {
@@ -103,12 +122,28 @@ func RuntimeStatePath(configPath string) string {
 }
 
 func LoadRuntimeState(path string) (*RuntimeState, error) {
-	raw, err := os.ReadFile(RuntimeStatePath(path))
-	if err != nil {
+	runtimeStateIOMu.RLock()
+	defer runtimeStateIOMu.RUnlock()
+	return loadRuntimeStateUnlocked(path)
+}
+
+func loadRuntimeStateUnlocked(path string) (*RuntimeState, error) {
+	target := RuntimeStatePath(path)
+	deadline := time.Now().Add(500 * time.Millisecond)
+	var raw []byte
+	for {
+		var err error
+		raw, err = os.ReadFile(target)
+		if err == nil {
+			break
+		}
 		if errors.Is(err, os.ErrNotExist) {
 			return nil, ErrRuntimeStateNotFound
 		}
-		return nil, err
+		if !isTransientRuntimeStateReadError(err) || time.Now().After(deadline) {
+			return nil, err
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 
 	var state RuntimeState
@@ -123,21 +158,45 @@ func WriteRuntimeState(path string, state *RuntimeState) error {
 		return fmt.Errorf("client runtime state is nil")
 	}
 
-	target := RuntimeStatePath(path)
-	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
-		return err
-	}
-
 	payload, err := json.MarshalIndent(state, "", "  ")
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(target, payload, 0o644)
+	payload = append(payload, '\n')
+	runtimeStateIOMu.Lock()
+	defer runtimeStateIOMu.Unlock()
+	return atomicWriteRuntimeFile(RuntimeStatePath(path), payload, 0o600)
 }
 
 func RemoveRuntimeState(path string) error {
-	target := RuntimeStatePath(path)
-	return removePathWithRetry(target)
+	runtimeStateIOMu.Lock()
+	defer runtimeStateIOMu.Unlock()
+	return removePathWithRetry(RuntimeStatePath(path))
+}
+
+// RemoveRuntimeStateIfInstance prevents an older autonomous runtime from
+// deliberately removing a state record that already belongs to a replacement
+// process. Calls are serialized against in-process state IO; wink up also holds
+// the stable RuntimeStateLock for the full cross-process lifecycle. Legacy
+// state has no instance ID and continues to use RemoveRuntimeState.
+func RemoveRuntimeStateIfInstance(path, instanceID string) error {
+	instanceID = strings.TrimSpace(instanceID)
+	if instanceID == "" {
+		return fmt.Errorf("client runtime instance id is required")
+	}
+	runtimeStateIOMu.Lock()
+	defer runtimeStateIOMu.Unlock()
+	state, err := loadRuntimeStateUnlocked(path)
+	if errors.Is(err, ErrRuntimeStateNotFound) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if state.InstanceID != instanceID {
+		return fmt.Errorf("client runtime state belongs to replacement instance %q", state.InstanceID)
+	}
+	return removePathWithRetry(RuntimeStatePath(path))
 }
 
 func (s *RuntimeState) IsFresh(maxAge time.Duration) bool {
@@ -152,25 +211,30 @@ func (s *RuntimeState) IsFresh(maxAge time.Duration) bool {
 
 func newRuntimeStateSnapshot(status *EngineStatus, peers []*PeerStatus) *RuntimeState {
 	state := &RuntimeState{
-		Version:   version.Version,
-		PID:       os.Getpid(),
-		StartedAt: status.StartedAt,
-		UpdatedAt: time.Now(),
+		SchemaVersion: 1,
+		Version:       version.Version,
+		PID:           os.Getpid(),
+		StartedAt:     status.StartedAt,
+		UpdatedAt:     time.Now(),
 		Status: RuntimeEngineStatus{
-			State:          status.State.String(),
-			NodeID:         status.NodeID,
-			NodeName:       status.NodeName,
-			PublicKey:      status.PublicKey,
-			VirtualIP:      ipString(status.VirtualIP),
-			NetworkCIDR:    cidrString(status.NetworkCIDR),
-			Backend:        status.Backend,
-			NATType:        status.NATType,
-			CoordinatorURL: status.CoordinatorURL,
-			Uptime:         status.Uptime.String(),
-			ConnectedPeers: status.ConnectedPeers,
-			BytesSent:      status.BytesSent,
-			BytesRecv:      status.BytesRecv,
-			LastError:      status.LastError,
+			Mode:                             status.Mode,
+			State:                            status.State.String(),
+			NodeID:                           status.NodeID,
+			NodeName:                         status.NodeName,
+			PublicKey:                        status.PublicKey,
+			VirtualIP:                        ipString(status.VirtualIP),
+			NetworkCIDR:                      cidrString(status.NetworkCIDR),
+			Backend:                          status.Backend,
+			NATType:                          status.NATType,
+			CoordinatorURL:                   status.CoordinatorURL,
+			InfrastructureCoordinatorStarted: status.InfrastructureCoordinatorStarted,
+			MeshListen:                       status.MeshListen,
+			ControlListen:                    status.ControlListen,
+			Uptime:                           status.Uptime.String(),
+			ConnectedPeers:                   status.ConnectedPeers,
+			BytesSent:                        status.BytesSent,
+			BytesRecv:                        status.BytesRecv,
+			LastError:                        status.LastError,
 		},
 		Peers: make([]RuntimePeerStatus, 0, len(peers)),
 	}
@@ -220,6 +284,13 @@ func newRuntimeStateSnapshot(status *EngineStatus, peers []*PeerStatus) *Runtime
 			LastPathEndpoint:       peer.LastPathEndpoint,
 			LastPathConnType:       peer.LastPathConnType,
 			LastPathUpdatedAt:      peer.LastPathUpdatedAt,
+			RouteNextHop:           peer.RouteNextHop,
+			RoutePath:              append([]string(nil), peer.RoutePath...),
+			RouteHopCount:          peer.RouteHopCount,
+			NeighborKind:           peer.NeighborKind,
+			ProtectedDirect:        peer.ProtectedDirect,
+			MaintainedState:        peer.MaintainedState,
+			SelfBootstrapState:     peer.SelfBootstrapState,
 		})
 	}
 

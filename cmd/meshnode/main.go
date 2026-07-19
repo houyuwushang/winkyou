@@ -12,6 +12,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"winkyou/pkg/meshruntime"
 )
 
 type repeatedFlag []string
@@ -33,12 +35,14 @@ func main() {
 	var stunServers repeatedFlag
 	var tcpForwards repeatedFlag
 	var virtualTCPForwards repeatedFlag
-	cfg := runtimeConfig{}
+	var shutdownToken string
+	cfg := meshruntime.Config{}
 
 	flag.StringVar(&cfg.NodeID, "id", "", "stable mesh node ID (required)")
 	flag.StringVar(&cfg.VirtualIP, "virtual-ip", "", "virtual IP advertised in membership (virtual TCP facade requires an IPv6 ULA)")
 	flag.StringVar(&cfg.MeshListen, "mesh-listen", "127.0.0.1:32100", "bootstrap stream listen address, or 'off'")
 	flag.StringVar(&cfg.ControlListen, "control-listen", "127.0.0.1:32110", "local HTTP control listen address, or 'off'")
+	flag.StringVar(&shutdownToken, "shutdown-token", "", "token enabling loopback-only POST /v1/shutdown (disabled when empty)")
 	flag.Var(&peers, "peer", "desired bootstrap peer as NODE_ID=HOST:PORT (repeatable)")
 	flag.Var(&maintainedPeers, "maintain-peer", "peer whose protected-direct edge should be maintained (repeatable; configure both endpoints; routed repair has one owner, self-bootstrap punches on both)")
 	flag.Var(&stunServers, "stun", "STUN URL used by birthday punch (repeatable)")
@@ -55,9 +59,9 @@ func main() {
 	flag.DurationVar(&cfg.StartLead, "start-lead", time.Second, "lead time before synchronized punching")
 	flag.DurationVar(&cfg.SolveTimeout, "solve-timeout", 150*time.Second, "whole shortcut solver timeout")
 	flag.DurationVar(&cfg.AttemptTimeout, "attempt-timeout", 0, "whole shortcut protocol deadline (default: two solve windows plus probation/liveness margin)")
-	flag.DurationVar(&cfg.Probation, "probation", defaultProbation, "direct-edge probation before stable commit")
-	flag.DurationVar(&cfg.KeepAliveInterval, "keepalive", defaultKeepAliveInterval, "packet-neighbor keepalive interval")
-	flag.DurationVar(&cfg.PeerTimeout, "peer-timeout", defaultPeerTimeout, "packet-neighbor total-receive-silence timeout")
+	flag.DurationVar(&cfg.Probation, "probation", 35*time.Second, "direct-edge probation before stable commit")
+	flag.DurationVar(&cfg.KeepAliveInterval, "keepalive", time.Second, "packet-neighbor keepalive interval")
+	flag.DurationVar(&cfg.PeerTimeout, "peer-timeout", 30*time.Second, "packet-neighbor total-receive-silence timeout")
 	flag.DurationVar(&cfg.RecoveryDebounce, "recovery-debounce", 250*time.Millisecond, "topology convergence delay before direct-edge repair")
 	flag.DurationVar(&cfg.RecoveryMinBackoff, "recovery-min-backoff", 2*time.Second, "minimum automatic repair retry backoff")
 	flag.DurationVar(&cfg.RecoveryMaxBackoff, "recovery-max-backoff", time.Minute, "maximum automatic repair retry backoff")
@@ -85,7 +89,7 @@ func main() {
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	node, err := newMeshRuntime(cfg, os.Stderr)
+	node, err := meshruntime.New(cfg, meshruntime.Options{EventWriter: os.Stderr, ShutdownToken: shutdownToken})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "meshnode configuration failed: %v\n", err)
 		os.Exit(2)
@@ -95,7 +99,10 @@ func main() {
 		_ = node.Close()
 		os.Exit(1)
 	}
-	<-ctx.Done()
+	select {
+	case <-ctx.Done():
+	case <-node.Done():
+	}
 	if err := node.Close(); err != nil {
 		fmt.Fprintf(os.Stderr, "meshnode shutdown: %v\n", err)
 		os.Exit(1)

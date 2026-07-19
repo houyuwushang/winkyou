@@ -1,14 +1,100 @@
-package main
+package meshruntime
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
+
+func TestShutdownRouteRequiresConfiguredTokenAndLoopbackCaller(t *testing.T) {
+	withoutToken, err := New(Config{NodeID: "no-shutdown", MeshListen: "off", ControlListen: "off"}, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodPost, "/v1/shutdown", nil)
+	request.RemoteAddr = "127.0.0.1:50000"
+	response := httptest.NewRecorder()
+	withoutToken.controlMux().ServeHTTP(response, request)
+	if response.Code != http.StatusNotFound {
+		t.Fatalf("shutdown without configured token status = %d, want %d", response.Code, http.StatusNotFound)
+	}
+	if err := withoutToken.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	const token = "process-specific-token"
+	runtime, err := New(Config{NodeID: "authorized-shutdown", MeshListen: "off", ControlListen: "off"}, Options{ShutdownToken: token})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, test := range []struct {
+		name       string
+		remoteAddr string
+		token      string
+	}{
+		{name: "non-loopback", remoteAddr: "192.0.2.10:50000", token: token},
+		{name: "wrong token", remoteAddr: "127.0.0.1:50000", token: "wrong"},
+		{name: "missing token", remoteAddr: "[::1]:50000"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			request := httptest.NewRequest(http.MethodPost, "/v1/shutdown", nil)
+			request.RemoteAddr = test.remoteAddr
+			request.Header.Set(ShutdownTokenHeader, test.token)
+			response := httptest.NewRecorder()
+			runtime.controlMux().ServeHTTP(response, request)
+			if response.Code != http.StatusForbidden {
+				t.Fatalf("status = %d, want %d", response.Code, http.StatusForbidden)
+			}
+			select {
+			case <-runtime.Done():
+				t.Fatal("unauthorized shutdown closed runtime")
+			default:
+			}
+		})
+	}
+
+	request = httptest.NewRequest(http.MethodPost, "/v1/shutdown", nil)
+	request.RemoteAddr = "127.0.0.1:50000"
+	request.Header.Set(ShutdownTokenHeader, token)
+	response = httptest.NewRecorder()
+	runtime.controlMux().ServeHTTP(response, request)
+	if response.Code != http.StatusAccepted {
+		t.Fatalf("authorized shutdown status = %d, want %d", response.Code, http.StatusAccepted)
+	}
+	select {
+	case <-runtime.Done():
+	case <-time.After(2 * time.Second):
+		t.Fatal("authorized shutdown did not close runtime")
+	}
+}
+
+func TestStatusExposesShutdownMetadataOnlyInProcess(t *testing.T) {
+	const token = "do-not-serialize-this-token"
+	runtime, err := New(Config{NodeID: "status-shutdown", MeshListen: "off", ControlListen: "off"}, Options{ShutdownToken: token})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer runtime.Close()
+
+	status := runtime.Status()
+	if status.ShutdownToken != token {
+		t.Fatalf("shutdown token = %q, want configured token", status.ShutdownToken)
+	}
+	payload, err := json.Marshal(status)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(payload), token) || strings.Contains(string(payload), "shutdown_token") {
+		t.Fatalf("HTTP status JSON leaked shutdown token: %s", payload)
+	}
+}
 
 func TestDecodeJSONRequiresExactlyOneValue(t *testing.T) {
 	tests := []struct {

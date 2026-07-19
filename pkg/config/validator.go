@@ -183,8 +183,224 @@ func (c *Config) Validate() error {
 			return errors.New("tcp_framed.dial_timeout must be greater than zero when tcp_framed.enabled=true")
 		}
 	}
+	if err := validateAutonomousMesh(c.AutonomousMesh); err != nil {
+		return err
+	}
 
 	return nil
+}
+
+func validateAutonomousMesh(cfg AutonomousMeshConfig) error {
+	// The block is an explicit runtime opt-in. Keeping disabled values inert is
+	// important for old configurations and for staged configuration generation.
+	if !cfg.Enabled {
+		return nil
+	}
+
+	localID := strings.TrimSpace(cfg.NodeID)
+	if localID == "" {
+		return errors.New("autonomous_mesh.node_id is required when autonomous_mesh.enabled=true")
+	}
+	localIP, err := parseIPv6ULA(cfg.VirtualIP)
+	if err != nil {
+		return fmt.Errorf("invalid autonomous_mesh.virtual_ip: %q (must be a numeric IPv6 ULA)", cfg.VirtualIP)
+	}
+	if err := validateAutonomousListen("autonomous_mesh.listen", cfg.Listen); err != nil {
+		return err
+	}
+	if strings.TrimSpace(cfg.ControlListen) == "" || isDisabledListen(cfg.ControlListen) {
+		return errors.New("autonomous_mesh.control_listen is required for managed graceful shutdown")
+	}
+	if err := validateLoopbackControlAddress("autonomous_mesh.control_listen", cfg.ControlListen); err != nil {
+		return err
+	}
+
+	seenBootstrap := make(map[string]struct{}, len(cfg.BootstrapPeers))
+	for i, peer := range cfg.BootstrapPeers {
+		peerID := strings.TrimSpace(peer.NodeID)
+		if peerID == "" {
+			return fmt.Errorf("autonomous_mesh.bootstrap_peers[%d].node_id must not be empty", i)
+		}
+		if peerID == localID {
+			return fmt.Errorf("autonomous_mesh.bootstrap_peers[%d].node_id must not equal autonomous_mesh.node_id", i)
+		}
+		if _, exists := seenBootstrap[peerID]; exists {
+			return fmt.Errorf("duplicate autonomous_mesh.bootstrap_peers[%d].node_id: %q", i, peer.NodeID)
+		}
+		seenBootstrap[peerID] = struct{}{}
+		if err := validateHostPort(fmt.Sprintf("autonomous_mesh.bootstrap_peers[%d].address", i), peer.Address); err != nil {
+			return err
+		}
+	}
+
+	seenMaintained := make(map[string]struct{}, len(cfg.MaintainPeers))
+	for i, rawPeerID := range cfg.MaintainPeers {
+		peerID := strings.TrimSpace(rawPeerID)
+		if peerID == "" {
+			return fmt.Errorf("autonomous_mesh.maintain_peers[%d] must not be empty", i)
+		}
+		if peerID == localID {
+			return fmt.Errorf("autonomous_mesh.maintain_peers[%d] must not equal autonomous_mesh.node_id", i)
+		}
+		if _, exists := seenMaintained[peerID]; exists {
+			return fmt.Errorf("duplicate autonomous_mesh.maintain_peers[%d]: %q", i, rawPeerID)
+		}
+		seenMaintained[peerID] = struct{}{}
+	}
+
+	recoveryCard := strings.TrimSpace(cfg.RecoveryCard)
+	secretFile := strings.TrimSpace(cfg.SelfBootstrapSecretFile)
+	if recoveryCard != "" && len(cfg.MaintainPeers) == 0 {
+		return errors.New("autonomous_mesh.recovery_card requires at least one autonomous_mesh.maintain_peers entry")
+	}
+	if secretFile != "" && recoveryCard == "" {
+		return errors.New("autonomous_mesh.self_bootstrap_secret_file requires autonomous_mesh.recovery_card")
+	}
+
+	if target := strings.TrimSpace(cfg.TCPTarget); target != "" {
+		if _, err := validateLoopbackTCPAddress("autonomous_mesh.tcp_target", target); err != nil {
+			return err
+		}
+	}
+
+	seenListeners := make(map[string]struct{}, len(cfg.TCPForwards)+len(cfg.VirtualTCPForwards))
+	for i, forward := range cfg.TCPForwards {
+		remoteID := strings.TrimSpace(forward.RemoteID)
+		if err := validateAutonomousRemoteID(
+			fmt.Sprintf("autonomous_mesh.tcp_forwards[%d].remote_id", i), localID, remoteID,
+		); err != nil {
+			return err
+		}
+		key, err := validateLoopbackTCPAddress(
+			fmt.Sprintf("autonomous_mesh.tcp_forwards[%d].listen", i), forward.Listen,
+		)
+		if err != nil {
+			return err
+		}
+		if _, exists := seenListeners[key]; exists {
+			return fmt.Errorf("duplicate autonomous mesh TCP listener: %q", forward.Listen)
+		}
+		seenListeners[key] = struct{}{}
+	}
+	for i, forward := range cfg.VirtualTCPForwards {
+		remoteID := strings.TrimSpace(forward.RemoteID)
+		if err := validateAutonomousRemoteID(
+			fmt.Sprintf("autonomous_mesh.virtual_tcp_forwards[%d].remote_id", i), localID, remoteID,
+		); err != nil {
+			return err
+		}
+		virtualIP, key, err := validateVirtualTCPAddress(
+			fmt.Sprintf("autonomous_mesh.virtual_tcp_forwards[%d].listen", i), forward.Listen,
+		)
+		if err != nil {
+			return err
+		}
+		if virtualIP == localIP {
+			return fmt.Errorf("autonomous_mesh.virtual_tcp_forwards[%d].listen uses this node's virtual IP %s", i, localIP)
+		}
+		if _, exists := seenListeners[key]; exists {
+			return fmt.Errorf("duplicate autonomous mesh TCP listener: %q", forward.Listen)
+		}
+		seenListeners[key] = struct{}{}
+	}
+
+	return nil
+}
+
+func validateAutonomousListen(field, value string) error {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "", "off", "none", "-":
+		return nil
+	default:
+		return validateHostPort(field, value)
+	}
+}
+
+func isDisabledListen(value string) bool {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "off", "none", "-":
+		return true
+	default:
+		return false
+	}
+}
+
+func validateAutonomousRemoteID(field, localID, remoteID string) error {
+	if remoteID == "" {
+		return fmt.Errorf("%s must not be empty", field)
+	}
+	if remoteID == localID {
+		return fmt.Errorf("%s must not equal autonomous_mesh.node_id", field)
+	}
+	return nil
+}
+
+func validateLoopbackTCPAddress(field, value string) (string, error) {
+	if err := validateHostPort(field, value); err != nil {
+		return "", err
+	}
+	host, portText, _ := net.SplitHostPort(strings.TrimSpace(value))
+	host = strings.TrimSpace(host)
+	if strings.EqualFold(host, "localhost") {
+		return net.JoinHostPort("localhost", canonicalPort(portText)), nil
+	}
+	ip := net.ParseIP(host)
+	if ip == nil || !ip.IsLoopback() {
+		return "", fmt.Errorf("invalid %s: %q (host must be loopback)", field, value)
+	}
+	return net.JoinHostPort(ip.String(), canonicalPort(portText)), nil
+}
+
+func validateVirtualTCPAddress(field, value string) (netip.Addr, string, error) {
+	host, portText, err := net.SplitHostPort(strings.TrimSpace(value))
+	if err != nil {
+		return netip.Addr{}, "", fmt.Errorf("invalid %s: %q", field, value)
+	}
+	virtualIP, err := parseIPv6ULA(host)
+	if err != nil {
+		return netip.Addr{}, "", fmt.Errorf("invalid %s: %q (must use a numeric IPv6 ULA)", field, value)
+	}
+	port, err := strconv.Atoi(strings.TrimSpace(portText))
+	if err != nil || port <= 0 || port > 65535 {
+		return netip.Addr{}, "", fmt.Errorf("invalid %s: %q", field, value)
+	}
+	return virtualIP, netip.AddrPortFrom(virtualIP, uint16(port)).String(), nil
+}
+
+func validateLoopbackControlAddress(field, value string) error {
+	host, portText, err := net.SplitHostPort(strings.TrimSpace(value))
+	if err != nil {
+		return fmt.Errorf("invalid %s: %q", field, value)
+	}
+	host = strings.TrimSpace(host)
+	if !strings.EqualFold(host, "localhost") {
+		ip := net.ParseIP(host)
+		if ip == nil || !ip.IsLoopback() {
+			return fmt.Errorf("invalid %s: %q (host must be loopback)", field, value)
+		}
+	}
+	port, err := strconv.Atoi(strings.TrimSpace(portText))
+	if err != nil || port < 0 || port > 65535 {
+		return fmt.Errorf("invalid %s: %q", field, value)
+	}
+	return nil
+}
+
+func parseIPv6ULA(value string) (netip.Addr, error) {
+	address, err := netip.ParseAddr(strings.TrimSpace(value))
+	if err != nil || !address.Is6() || address.Zone() != "" {
+		return netip.Addr{}, errors.New("not a numeric IPv6 address")
+	}
+	bits := address.As16()
+	if bits[0]&0xfe != 0xfc {
+		return netip.Addr{}, errors.New("not an IPv6 ULA")
+	}
+	return address, nil
+}
+
+func canonicalPort(value string) string {
+	port, _ := strconv.Atoi(strings.TrimSpace(value))
+	return strconv.Itoa(port)
 }
 
 func validateHostPort(field, value string) error {

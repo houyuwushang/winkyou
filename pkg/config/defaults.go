@@ -32,6 +32,8 @@ const (
 	defaultTCPFramedListenAddr   = "0.0.0.0:0"
 	defaultTCPFramedRole         = "auto"
 	defaultTCPFramedDialTime     = 5 * time.Second
+	defaultAutonomousMeshListen  = "off"
+	defaultAutonomousControl     = "127.0.0.1:32110"
 )
 
 var defaultConnectivityStrategyOrder = []string{"legacy_ice_udp", "relay_only", "signal_relay"}
@@ -89,6 +91,11 @@ func Default() Config {
 			ListenAddr:  defaultTCPFramedListenAddr,
 			Role:        defaultTCPFramedRole,
 			DialTimeout: defaultTCPFramedDialTime,
+		},
+		AutonomousMesh: AutonomousMeshConfig{
+			Enabled:       false,
+			Listen:        defaultAutonomousMeshListen,
+			ControlListen: defaultAutonomousControl,
 		},
 	}
 }

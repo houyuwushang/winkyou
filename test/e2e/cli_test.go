@@ -310,8 +310,10 @@ func TestSingleNodeLifecycle(t *testing.T) {
 		t.Errorf("peers count = %d, want 0", len(peersJSON))
 	}
 
-	// 5. Run `wink down` to stop.
-	downOut, err := runWinkBin(t, 15*time.Second, "down", "--config", cfgPath)
+	// 5. This fixture runs the legacy engine, whose PID-only compatibility
+	// shutdown now requires explicit force. Managed autonomous runtimes still
+	// use authenticated graceful shutdown even when --force is present.
+	downOut, err := runWinkBin(t, 15*time.Second, "down", "--config", cfgPath, "--force")
 	if err != nil {
 		t.Fatalf("wink down error: %v\nOutput: %s", err, downOut)
 	}
