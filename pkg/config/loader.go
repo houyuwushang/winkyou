@@ -109,6 +109,7 @@ func setDefaults(v *viper.Viper, cfg Config) {
 	v.SetDefault("autonomous_mesh.bootstrap_peers", cfg.AutonomousMesh.BootstrapPeers)
 	v.SetDefault("autonomous_mesh.maintain_peers", cfg.AutonomousMesh.MaintainPeers)
 	v.SetDefault("autonomous_mesh.recovery_card", cfg.AutonomousMesh.RecoveryCard)
+	v.SetDefault("autonomous_mesh.recovery_debounce", cfg.AutonomousMesh.RecoveryDebounce)
 	v.SetDefault("autonomous_mesh.self_bootstrap_secret_file", cfg.AutonomousMesh.SelfBootstrapSecretFile)
 	v.SetDefault("autonomous_mesh.tcp_target", cfg.AutonomousMesh.TCPTarget)
 	v.SetDefault("autonomous_mesh.tcp_forwards", cfg.AutonomousMesh.TCPForwards)

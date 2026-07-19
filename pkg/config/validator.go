@@ -256,6 +256,9 @@ func validateAutonomousMesh(cfg AutonomousMeshConfig) error {
 	if secretFile != "" && recoveryCard == "" {
 		return errors.New("autonomous_mesh.self_bootstrap_secret_file requires autonomous_mesh.recovery_card")
 	}
+	if cfg.RecoveryDebounce <= 0 {
+		return errors.New("autonomous_mesh.recovery_debounce must be greater than zero when autonomous_mesh.enabled=true")
+	}
 
 	if target := strings.TrimSpace(cfg.TCPTarget); target != "" {
 		if _, err := validateLoopbackTCPAddress("autonomous_mesh.tcp_target", target); err != nil {

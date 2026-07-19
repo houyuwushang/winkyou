@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"winkyou/pkg/config"
 )
@@ -19,6 +20,9 @@ func TestDefaultAutonomousMeshIsDisabled(t *testing.T) {
 	}
 	if cfg.AutonomousMesh.ControlListen != "127.0.0.1:32110" {
 		t.Fatalf("default autonomous_mesh.control_listen = %q, want 127.0.0.1:32110", cfg.AutonomousMesh.ControlListen)
+	}
+	if cfg.AutonomousMesh.RecoveryDebounce != 250*time.Millisecond {
+		t.Fatalf("default autonomous_mesh.recovery_debounce = %s, want 250ms", cfg.AutonomousMesh.RecoveryDebounce)
 	}
 	if err := cfg.Validate(); err != nil {
 		t.Fatalf("default Validate() error = %v", err)
@@ -52,6 +56,7 @@ autonomous_mesh:
       address: 203.0.113.2:32100
   maintain_peers: [B, C]
   recovery_card: A-recovery.json
+  recovery_debounce: 500ms
   self_bootstrap_secret_file: mesh.secret
   tcp_target: 127.0.0.1:22
   tcp_forwards:
@@ -78,6 +83,9 @@ autonomous_mesh:
 	}
 	if len(mesh.MaintainPeers) != 2 || mesh.MaintainPeers[0] != "B" || mesh.MaintainPeers[1] != "C" {
 		t.Fatalf("maintain peers = %#v", mesh.MaintainPeers)
+	}
+	if mesh.RecoveryDebounce != 500*time.Millisecond {
+		t.Fatalf("recovery debounce = %s, want 500ms", mesh.RecoveryDebounce)
 	}
 	if len(mesh.TCPForwards) != 1 || mesh.TCPForwards[0].Listen != "127.0.0.1:22024" || mesh.TCPForwards[0].RemoteID != "B" {
 		t.Fatalf("TCP forwards = %#v", mesh.TCPForwards)
@@ -233,6 +241,13 @@ func TestValidateAutonomousMeshRejectsInvalidFields(t *testing.T) {
 			wantErr: "self_bootstrap_secret_file requires autonomous_mesh.recovery_card",
 		},
 		{
+			name: "non-positive recovery debounce",
+			mutate: func(cfg *config.Config) {
+				cfg.AutonomousMesh.RecoveryDebounce = 0
+			},
+			wantErr: "recovery_debounce must be greater than zero",
+		},
+		{
 			name: "non-loopback target",
 			mutate: func(cfg *config.Config) {
 				cfg.AutonomousMesh.TCPTarget = "10.0.0.1:22"
@@ -312,6 +327,7 @@ func validAutonomousConfig() config.Config {
 		},
 		MaintainPeers:           []string{"B", "C"},
 		RecoveryCard:            "A-recovery.json",
+		RecoveryDebounce:        250 * time.Millisecond,
 		SelfBootstrapSecretFile: "mesh.secret",
 		TCPTarget:               "127.0.0.1:22",
 		TCPForwards: []config.AutonomousMeshTCPForward{

@@ -110,6 +110,7 @@ type AutonomousMeshConfig struct {
 	BootstrapPeers          []AutonomousMeshBootstrapPeer     `mapstructure:"bootstrap_peers" yaml:"bootstrap_peers"`
 	MaintainPeers           []string                          `mapstructure:"maintain_peers" yaml:"maintain_peers"`
 	RecoveryCard            string                            `mapstructure:"recovery_card" yaml:"recovery_card"`
+	RecoveryDebounce        time.Duration                     `mapstructure:"recovery_debounce" yaml:"recovery_debounce"`
 	SelfBootstrapSecretFile string                            `mapstructure:"self_bootstrap_secret_file" yaml:"self_bootstrap_secret_file"`
 	TCPTarget               string                            `mapstructure:"tcp_target" yaml:"tcp_target"`
 	TCPForwards             []AutonomousMeshTCPForward        `mapstructure:"tcp_forwards" yaml:"tcp_forwards"`

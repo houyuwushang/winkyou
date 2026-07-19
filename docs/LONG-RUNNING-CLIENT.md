@@ -57,6 +57,7 @@ autonomous_mesh:
   maintain_peers:
     - demo-b
   recovery_card: ./demo-a-recovery.json
+  recovery_debounce: 500ms
   self_bootstrap_secret_file: ./mesh.secret
 
   tcp_target: 127.0.0.1:8022
@@ -74,6 +75,7 @@ autonomous_mesh:
 - `virtual_ip` 当前必须显式填写 numeric IPv6 ULA。它是成员记录和 selected-port facade 使用的节点地址，不表示已经存在透明系统 L3。
 - `listen` 是可选 bootstrap stream listener，可设为 `off`；`bootstrap_peers` 是类型化初始 seed，不是永久数据 relay。
 - `maintain_peers` 应在成对节点上对称声明。配置了 `recovery_card` 时至少要有一个 maintained peer；secret 文件是可选的当前可信节点认证输入。
+- `recovery_debounce` 控制拓扑收敛后启动直连边修复前的等待时间，默认 `250ms`；现场迁移可显式填写 `500ms` 以保持原实验进程的行为。
 - `control_listen` 在 enabled 模式下必填且必须是 loopback。`127.0.0.1:0` 适合本地冒烟，由 runtime state 记录实际端口；长期服务应使用经过冲突检查的固定 loopback 端口。
 - `tcp_target` 和普通 `tcp_forwards` 必须使用 loopback；`virtual_tcp_forwards` 必须使用远端成员的 ULA。三类字段仍是 fixed-target/selected-port 用户态 facade。
 - autonomous engine 复用 `nat.stun_servers`，但不会构造 legacy coordinator client、netif/Wintun 或 WireGuard tunnel。旧字段仍被加载以保持配置兼容，不应把它们的存在误认为本次 autonomous runtime 已使用。

@@ -206,6 +206,17 @@ func autonomousEngineTestConfig(nodeID, virtualIP string) config.Config {
 	cfg.AutonomousMesh = config.AutonomousMeshConfig{
 		Enabled: true, NodeID: nodeID, VirtualIP: virtualIP,
 		Listen: "off", ControlListen: "127.0.0.1:0",
+		RecoveryDebounce: 250 * time.Millisecond,
 	}
 	return cfg
+}
+
+func TestAutonomousEngineRuntimeConfigPropagatesRecoveryDebounce(t *testing.T) {
+	cfg := autonomousEngineTestConfig("A", "fd7a:115c:a1e0::a")
+	cfg.AutonomousMesh.RecoveryDebounce = 500 * time.Millisecond
+
+	engine := autonomousEngine{cfg: cfg}
+	if got := engine.runtimeConfig().RecoveryDebounce; got != 500*time.Millisecond {
+		t.Fatalf("runtime recovery debounce = %s, want 500ms", got)
+	}
 }

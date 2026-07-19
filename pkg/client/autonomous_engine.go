@@ -309,7 +309,8 @@ func (e *autonomousEngine) runtimeConfig() meshruntime.Config {
 		InitialPeers: initialPeers, MaintainedPeers: append([]string(nil), mesh.MaintainPeers...),
 		STUNServers: append([]string(nil), e.cfg.NAT.STUNServers...),
 		TCPTarget:   mesh.TCPTarget, TCPForwards: tcpForwards, VirtualTCPForwards: virtualTCPForwards,
-		RecoveryCardPath: mesh.RecoveryCard, SelfBootstrapSecretFile: mesh.SelfBootstrapSecretFile,
+		RecoveryCardPath: mesh.RecoveryCard, RecoveryDebounce: mesh.RecoveryDebounce,
+		SelfBootstrapSecretFile: mesh.SelfBootstrapSecretFile,
 	}
 }
 
