@@ -305,11 +305,25 @@ trusted node on that route is the attempt-scoped coordinator.
 
 The post-r9 source candidate adds a lower recovery layer for the case where a
 pair has neither a direct neighbor nor any graph route. Each endpoint persists
-its own last successful local bind port, NAT port model, and the peer's observed
-public UDP endpoint. Both endpoints derive the same pair schedule and punch in
-the same bounded window; lower-node-ID ownership is deliberately not used for
-this bilateral operation. A pair-key HMAC HELLO checks the expected node ID
-before the winning UDP socket becomes a packet neighbor.
+its own last successful local bind port, NAT port model, and a bounded history
+of the peer's observed public UDP endpoints. Both endpoints derive the same
+pair schedule and punch in the same bounded window; lower-node-ID ownership is
+deliberately not used for this bilateral operation. A pair-key HMAC HELLO
+checks the expected node ID before the exact winning UDP socket becomes a
+packet neighbor.
+
+Recovery Candidate Portfolio v1 consumes the existing card history without a
+schema or protocol change. It deterministically groups public IPv4 endpoints
+by remote IP, retains at most four groups and four historical ports per group,
+and merges the ports of one IP into a single bounded punch. Each pair attempts
+at most one group per pair window. The absolute pair-window ordinal and the
+complementary selector/receiver roles form the two axes of a bounded `4 x 4`
+schedule, covering every retained rank combination within 16 windows even
+when the two stable portfolios order their working endpoints differently and
+both endpoints participate throughout the sweep. With the default one-minute
+cycle this is roughly a 16-minute worst-case sweep. Failed-attempt counts
+remain process-local diagnostics and do not drive selection. A restart
+therefore retains the absolute schedule phase without persisting a penalty.
 
 Self-bootstrap stops once any graph route appears. Its job is to recreate the
 first usable edge; the normal r9 controller can then use that edge and ordinary
@@ -320,8 +334,8 @@ edge.
 Production cached bootstrap currently accepts IPv4 global-unicast candidates
 after excluding private, loopback, link-local, and `100.64.0.0/10` addresses.
 It therefore does not silently reuse natpierce, Tailscale, or ordinary private
-overlay addresses. IPv6, LAN discovery, special-use IPv4 classification, and
-multi-candidate rotation remain later discovery work.
+overlay addresses. IPv6, LAN discovery, PCP/NAT-PMP/UPnP, special-use IPv4
+classification, and endpoint-local-bind history association remain v2 work.
 
 No-secret mode derives pair material from public node IDs and is suitable only
 for the trusted-node functional experiment. A provisioned shared secret rejects
@@ -446,6 +460,13 @@ Implementation status on 2026-07-19:
   rejection also have deterministic coverage. The loopback paths use a
   test-only non-public-address seam. The staged r9 binaries predate this slice;
   r12 later supplied the narrower public-NAT process-rejoin results below.
+- Recovery Candidate Portfolio v1 is bounded to the existing recovery-card
+  format: no relay, coordinator, protocol, or schema dependency is added. Its
+  source/isolation acceptance target covers deterministic IP grouping and
+  caps, same-IP historical-port merging, one group per pair window,
+  restart-stable cross-product coverage for asymmetric candidate ranks, and
+  usable-older-group loopback recovery.
+  This portfolio has no independent field-acceptance claim.
 - r12 quarantines solver/self-bootstrap packet attachments from topology until
   exact-handle promotion, reconciles COMMIT/STABLE for the whole probation
   deadline, and starts routed-message and topology revisions at a fresh high
@@ -641,9 +662,12 @@ permanent data relay.
 
 The post-r9 source candidate adds a second last-resort input: a persistent
 recovery card populated by successful direct edges. When no route exists, both
-endpoints can use the cached public IPv4 endpoint, deterministic pair window,
-and direct punch/HELLO to recreate an edge without first receiving fresh solver
-metadata. Once that edge exists, normal r9 peer-coordinated recovery resumes.
+endpoints can use a bounded portfolio of cached public IPv4 endpoint groups,
+the deterministic pair window, and direct punch/HELLO to recreate an edge
+without first receiving fresh solver metadata. Ports for one remote IP share a
+bounded attempt, while different IP groups follow a role-complementary,
+absolute-window cross-product schedule. Once that edge exists, normal r9
+peer-coordinated recovery resumes.
 The feature is absent from the staged r9 binaries. r12 has public-NAT zero-seed
 process-rejoin results on C and A and a completed rolling three-node deployment;
 public-IP change, simultaneous cold start, OS reboot, and autostart coverage

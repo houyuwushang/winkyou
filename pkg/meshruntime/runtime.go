@@ -671,7 +671,13 @@ func (r *meshRuntime) handleSelfBootstrapEvent(event selfhosted.Event) {
 	}
 	r.log.write("selfbootstrap_state", map[string]any{
 		"peer_id": event.PeerID, "state": event.State, "attempt_id": event.AttemptID,
-		"candidate": event.Candidate, "error": errorString(event.Err),
+		"candidate": event.Candidate, "candidate_group": event.CandidateGroup,
+		"candidate_index": event.CandidateIndex, "candidate_total": event.CandidateTotal,
+		"candidate_endpoints": event.CandidateEndpoints, "candidate_failures": event.CandidateFailures,
+		"attempt_window_ordinal": event.AttemptWindowOrdinal,
+		"attempt_window_start":   event.AttemptWindowStart, "attempt_window_end": event.AttemptWindowEnd,
+		"punch_method": event.PunchMethod, "learned_remote": event.LearnedRemote,
+		"failure_stage": event.FailureStage, "error": errorString(event.Err),
 	})
 }
 

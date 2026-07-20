@@ -2,6 +2,7 @@ package selfhosted
 
 import (
 	"context"
+	"crypto/rand"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -42,23 +43,45 @@ const (
 )
 
 type PeerStatus struct {
-	PeerID        string    `json:"peer_id"`
-	State         State     `json:"state"`
-	Candidate     string    `json:"candidate,omitempty"`
-	AttemptID     string    `json:"attempt_id,omitempty"`
-	Attempts      uint64    `json:"attempts"`
-	LastAttemptAt time.Time `json:"last_attempt_at,omitempty"`
-	NextAttemptAt time.Time `json:"next_attempt_at,omitempty"`
-	LastSuccessAt time.Time `json:"last_success_at,omitempty"`
-	LastError     string    `json:"last_error,omitempty"`
+	PeerID               string    `json:"peer_id"`
+	State                State     `json:"state"`
+	Candidate            string    `json:"candidate,omitempty"`
+	CandidateGroup       string    `json:"candidate_group,omitempty"`
+	CandidateIndex       int       `json:"candidate_index,omitempty"`
+	CandidateTotal       int       `json:"candidate_total,omitempty"`
+	CandidateEndpoints   int       `json:"candidate_endpoints,omitempty"`
+	CandidateFailures    uint32    `json:"candidate_failures,omitempty"`
+	AttemptID            string    `json:"attempt_id,omitempty"`
+	AttemptWindowOrdinal int64     `json:"attempt_window_ordinal,omitempty"`
+	AttemptWindowStart   time.Time `json:"attempt_window_start,omitempty"`
+	AttemptWindowEnd     time.Time `json:"attempt_window_end,omitempty"`
+	Attempts             uint64    `json:"attempts"`
+	LastAttemptAt        time.Time `json:"last_attempt_at,omitempty"`
+	NextAttemptAt        time.Time `json:"next_attempt_at,omitempty"`
+	LastSuccessAt        time.Time `json:"last_success_at,omitempty"`
+	PunchMethod          string    `json:"punch_method,omitempty"`
+	LearnedRemote        string    `json:"learned_remote,omitempty"`
+	FailureStage         string    `json:"failure_stage,omitempty"`
+	LastError            string    `json:"last_error,omitempty"`
 }
 
 type Event struct {
-	At        time.Time
-	PeerID    string
-	State     State
-	AttemptID string
-	Candidate string
+	At                   time.Time
+	PeerID               string
+	State                State
+	AttemptID            string
+	Candidate            string
+	CandidateGroup       string
+	CandidateIndex       int
+	CandidateTotal       int
+	CandidateEndpoints   int
+	CandidateFailures    uint32
+	AttemptWindowOrdinal int64
+	AttemptWindowStart   time.Time
+	AttemptWindowEnd     time.Time
+	PunchMethod          string
+	LearnedRemote        string
+	FailureStage         string
 	// StableNeighbor identifies the exact packet-neighbor generation installed
 	// after the cached-endpoint punch and authenticated peer hello completed.
 	// It is intentionally populated only for StateAttached events.
@@ -194,16 +217,43 @@ func (c Config) normalized() (Config, error) {
 }
 
 type peerRuntime struct {
-	id            string
-	key           [32]byte
-	wake          chan struct{}
-	attemptCancel context.CancelFunc
-	lastWindow    time.Time
-	lastCandidate string
+	id                     string
+	key                    [32]byte
+	wake                   chan struct{}
+	attemptCancel          context.CancelCauseFunc
+	lastAttemptWindow      time.Time
+	candidateFailures      map[string]uint32
+	resetCandidateFailures atomic.Bool
 }
 
+func (p *peerRuntime) consumeCandidateFailureReset() bool {
+	if p == nil || !p.resetCandidateFailures.Swap(false) {
+		return false
+	}
+	clear(p.candidateFailures)
+	return true
+}
+
+type candidateSelection struct {
+	Group         candidateGroup
+	Index         int
+	Total         int
+	Failures      uint32
+	WindowOrdinal int64
+}
+
+type candidateAttemptError struct {
+	stage    string
+	penalize bool
+	err      error
+}
+
+func (e *candidateAttemptError) Error() string { return e.err.Error() }
+func (e *candidateAttemptError) Unwrap() error { return e.err }
+
 type Engine struct {
-	cfg Config
+	cfg    Config
+	bootID string
 
 	mu         sync.Mutex
 	peers      map[string]*peerRuntime
@@ -222,8 +272,12 @@ func New(config Config) (*Engine, error) {
 	if err != nil {
 		return nil, err
 	}
+	bootID, err := newEngineBootID()
+	if err != nil {
+		return nil, err
+	}
 	engine := &Engine{
-		cfg: cfg, peers: make(map[string]*peerRuntime, len(cfg.PeerIDs)),
+		cfg: cfg, bootID: bootID, peers: make(map[string]*peerRuntime, len(cfg.PeerIDs)),
 		statuses: make(map[string]PeerStatus, len(cfg.PeerIDs)),
 	}
 	for _, peerID := range cfg.PeerIDs {
@@ -231,10 +285,28 @@ func New(config Config) (*Engine, error) {
 		if err != nil {
 			return nil, err
 		}
-		engine.peers[peerID] = &peerRuntime{id: peerID, key: key, wake: make(chan struct{}, 1)}
+		engine.peers[peerID] = &peerRuntime{
+			id: peerID, key: key, wake: make(chan struct{}, 1),
+			candidateFailures: make(map[string]uint32),
+		}
 		engine.statuses[peerID] = PeerStatus{PeerID: peerID, State: StateWaitingHint}
 	}
 	return engine, nil
+}
+
+func newEngineBootID() (string, error) {
+	var raw [16]byte
+	if _, err := rand.Read(raw[:]); err != nil {
+		return "", fmt.Errorf("selfbootstrap: create engine boot ID: %w", err)
+	}
+	return fmt.Sprintf("%x", raw), nil
+}
+
+func (e *Engine) nextAttemptID(peerID string, windowStart time.Time) string {
+	return fmt.Sprintf(
+		"selfboot-%s-%s-%s-%d-%d",
+		e.cfg.Node.NodeID(), peerID, e.bootID, windowStart.Unix(), e.sequence.Add(1),
+	)
 }
 
 func (e *Engine) Start(parent context.Context) error {
@@ -302,7 +374,7 @@ func (e *Engine) Notify() {
 	}
 	type peerAttempt struct {
 		peer   *peerRuntime
-		cancel context.CancelFunc
+		cancel context.CancelCauseFunc
 	}
 	e.mu.Lock()
 	if e.closed {
@@ -319,7 +391,7 @@ func (e *Engine) Notify() {
 		// engine lock so topology and neighbor-close callbacks cannot create a
 		// lock-order cycle with Snapshot, Close, or an attempt teardown.
 		if attempt.cancel != nil && e.reachable(attempt.peer.id) {
-			attempt.cancel()
+			attempt.cancel(ErrAlreadyReachable)
 		}
 		select {
 		case attempt.peer.wake <- struct{}{}:
@@ -354,7 +426,7 @@ func (e *Engine) Close() {
 	e.closed = true
 	cancel := e.cancel
 	unregister := e.unregister
-	var attemptCancels []context.CancelFunc
+	var attemptCancels []context.CancelCauseFunc
 	for _, peer := range e.peers {
 		if peer.attemptCancel != nil {
 			attemptCancels = append(attemptCancels, peer.attemptCancel)
@@ -368,7 +440,7 @@ func (e *Engine) Close() {
 		cancel()
 	}
 	for _, stop := range attemptCancels {
-		stop()
+		stop(context.Canceled)
 	}
 	e.wg.Wait()
 }
@@ -378,11 +450,15 @@ func (e *Engine) runPeer(ctx context.Context, peer *peerRuntime) {
 		if ctx.Err() != nil {
 			return
 		}
+		if peer.consumeCandidateFailureReset() {
+			e.setStatus(peer.id, func(status *PeerStatus) { status.CandidateFailures = 0 })
+		}
 		if e.reachable(peer.id) {
 			e.setStatus(peer.id, func(status *PeerStatus) {
 				status.State = StateReachable
 				status.AttemptID = ""
 				status.NextAttemptAt = time.Time{}
+				status.FailureStage = ""
 				status.LastError = ""
 			})
 			if !waitForWake(ctx, peer.wake, 30*time.Second) {
@@ -393,19 +469,21 @@ func (e *Engine) runPeer(ctx context.Context, peer *peerRuntime) {
 
 		card, err := e.cfg.Store.Load()
 		if err != nil {
-			e.setFailure(peer.id, "", fmt.Errorf("load recovery card: %w", err))
+			e.setFailure(peer, candidateSelection{}, "card_load", fmt.Errorf("load recovery card: %w", err))
 			if !waitForWake(ctx, peer.wake, e.cfg.AttemptCycle) {
 				return
 			}
 			continue
 		}
-		candidate, peerCard, ok := selectCandidate(card, peer.id, e.cfg.AllowNonPublic)
-		if !ok {
+		peerCard, found := recoveryPeer(card, peer.id)
+		portfolio := buildCandidatePortfolio(peerCard, e.cfg.AllowNonPublic)
+		if !found || len(portfolio.Groups) == 0 {
 			e.setStatus(peer.id, func(status *PeerStatus) {
 				status.State = StateWaitingHint
-				status.Candidate = ""
+				clearCandidateStatus(status)
 				status.AttemptID = ""
 				status.NextAttemptAt = time.Time{}
+				status.FailureStage = ""
 				status.LastError = ErrNoCandidate.Error()
 			})
 			if !waitForWake(ctx, peer.wake, 30*time.Second) {
@@ -415,19 +493,33 @@ func (e *Engine) runPeer(ctx context.Context, peer *peerRuntime) {
 		}
 
 		now := e.cfg.Now()
-		windowStart, windowEnd, active := attemptWindow(peer.key, now, e.cfg.AttemptCycle, e.cfg.AttemptWindow)
-		candidateKey := candidate.AddrPort
-		alreadyTried := peer.lastWindow.Equal(windowStart) && peer.lastCandidate == candidateKey
+		windowStart, windowEnd, active, windowOrdinal := attemptWindowDetails(
+			peer.key, now, e.cfg.AttemptCycle, e.cfg.AttemptWindow,
+		)
+		role := selfBootstrapPunchRole(e.cfg.Node.NodeID(), peer.id)
+		selection, _ := selectRecoveryCandidate(peer, portfolio, windowOrdinal, role)
+		alreadyTried := peer.lastAttemptWindow.Equal(windowStart)
 		minimumRemaining := e.cfg.HelloTimeout + e.cfg.PunchGrace + time.Second
 		if !active || alreadyTried || windowEnd.Sub(now) <= minimumRemaining {
 			next := windowStart
+			nextOrdinal := windowOrdinal
 			if active || !now.Before(windowStart) {
 				next = windowStart.Add(e.cfg.AttemptCycle)
+				nextOrdinal++
 			}
+			planned, _ := selectRecoveryCandidate(peer, portfolio, nextOrdinal, role)
 			e.setStatus(peer.id, func(status *PeerStatus) {
 				status.State = StateScheduled
-				status.Candidate = candidate.AddrPort
 				status.AttemptID = ""
+				if !alreadyTried {
+					applyCandidateSelection(status, planned)
+					status.AttemptWindowStart = next
+					status.AttemptWindowEnd = next.Add(e.cfg.AttemptWindow)
+					status.PunchMethod = ""
+					status.LearnedRemote = ""
+					status.FailureStage = ""
+					status.LastError = ""
+				}
 				status.NextAttemptAt = next
 			})
 			if !waitUntilOrWake(ctx, peer.wake, next, e.cfg.Now) {
@@ -436,15 +528,25 @@ func (e *Engine) runPeer(ctx context.Context, peer *peerRuntime) {
 			continue
 		}
 
-		peer.lastWindow, peer.lastCandidate = windowStart, candidateKey
-		if err := e.runAttempt(ctx, peer, card, peerCard, candidate, windowStart, windowEnd); err != nil {
+		// A pair gets at most one candidate group per deterministic window. The
+		// absolute window ordinal and complementary roles choose one coordinate
+		// in the bounded candidate cross-product, so asymmetric local histories
+		// still meet without either endpoint running ahead independently.
+		peer.lastAttemptWindow = windowStart
+		if err := e.runAttempt(ctx, peer, card, peerCard, selection, windowStart, windowEnd); err != nil {
 			if ctx.Err() != nil {
 				return
 			}
 			if errors.Is(err, ErrAlreadyReachable) {
+				e.setSuperseded(peer, selection)
 				continue
 			}
-			e.setFailure(peer.id, candidate.AddrPort, err)
+			stage, penalize := candidateFailureInfo(err)
+			if penalize {
+				peer.candidateFailures[selection.Group.ID]++
+				selection.Failures = peer.candidateFailures[selection.Group.ID]
+			}
+			e.setFailure(peer, selection, stage, err)
 		}
 	}
 }
@@ -454,57 +556,82 @@ func (e *Engine) runAttempt(
 	peer *peerRuntime,
 	card recoverycard.Card,
 	peerCard recoverycard.Peer,
-	candidate recoverycard.Endpoint,
+	selection candidateSelection,
 	windowStart, windowEnd time.Time,
 ) error {
 	if e.reachable(peer.id) {
 		return ErrAlreadyReachable
 	}
-	address, err := netip.ParseAddrPort(candidate.AddrPort)
-	if err != nil {
-		return err
+	if len(selection.Group.Anchors) == 0 {
+		return newCandidateAttemptError("candidate", false, fmt.Errorf("selfbootstrap: selected candidate group has no endpoint anchors"))
 	}
-	attemptID := fmt.Sprintf("selfboot-%s-%s-%d-%d", e.cfg.Node.NodeID(), peer.id, windowStart.Unix(), e.sequence.Add(1))
-	attemptCtx, cancel := context.WithDeadline(parent, windowEnd)
+	candidate := selection.Group.Anchors[0].Endpoint
+	punchConfig := e.punchConfig(peer.key, card, peerCard, selection.Group)
+	attemptID := e.nextAttemptID(peer.id, windowStart)
+	deadlineCtx, stopDeadline := context.WithDeadline(parent, windowEnd)
+	attemptCtx, cancel := context.WithCancelCause(deadlineCtx)
 	e.mu.Lock()
 	peer.attemptCancel = cancel
 	e.mu.Unlock()
 	defer func() {
-		cancel()
+		cancel(nil)
+		stopDeadline()
 		e.mu.Lock()
 		peer.attemptCancel = nil
 		e.mu.Unlock()
 	}()
+	// Close the topology-notification gap between runPeer's reachability check
+	// and publishing attemptCancel. A route that appeared in that interval may
+	// already have fired its notification before there was a cancel function.
+	if e.reachable(peer.id) {
+		cancel(ErrAlreadyReachable)
+		return ErrAlreadyReachable
+	}
 
 	e.setStatus(peer.id, func(status *PeerStatus) {
 		status.State = StatePunching
-		status.Candidate = candidate.AddrPort
+		applyCandidateSelection(status, selection)
 		status.AttemptID = attemptID
+		status.AttemptWindowStart = windowStart
+		status.AttemptWindowEnd = windowEnd
 		status.Attempts++
 		status.LastAttemptAt = e.cfg.Now().UTC()
 		status.NextAttemptAt = time.Time{}
+		status.PunchMethod = punchConfig.Method
+		status.LearnedRemote = ""
+		status.FailureStage = ""
 		status.LastError = ""
 	})
 	e.emit(peer.id, StatePunching, attemptID, candidate.AddrPort, nil)
 
 	punchDeadline := windowEnd.Add(-e.cfg.HelloTimeout)
 	if !punchDeadline.After(e.cfg.Now()) {
-		return fmt.Errorf("selfbootstrap: attempt window has no punch time remaining")
+		return newCandidateAttemptError("window", false, fmt.Errorf("selfbootstrap: attempt window has no punch time remaining"))
 	}
 	punchCtx, stopPunch := context.WithDeadline(attemptCtx, punchDeadline)
-	result, err := e.cfg.Punch(punchCtx, e.punchConfig(peer.key, card, peerCard, candidate, address))
+	result, err := e.cfg.Punch(punchCtx, punchConfig)
 	stopPunch()
+	if errors.Is(context.Cause(attemptCtx), ErrAlreadyReachable) {
+		if result != nil && result.Conn != nil {
+			_ = result.Conn.Close()
+		}
+		return ErrAlreadyReachable
+	}
 	if err != nil {
 		if e.reachable(peer.id) {
 			return ErrAlreadyReachable
 		}
-		return fmt.Errorf("selfbootstrap: punch %s: %w", candidate.AddrPort, err)
+		// Only a punch deadline is negative reachability evidence. Immediate
+		// bind/socket/configuration failures are local and must not make a remote
+		// candidate look worse, even though the absolute schedule will advance.
+		penalize := errors.Is(err, context.DeadlineExceeded)
+		return newCandidateAttemptError("punch", penalize, fmt.Errorf("selfbootstrap: punch %s: %w", candidate.AddrPort, err))
 	}
 	if result == nil || result.Conn == nil || result.RemoteAddr == nil || result.LocalAddr == nil {
 		if result != nil && result.Conn != nil {
 			_ = result.Conn.Close()
 		}
-		return fmt.Errorf("selfbootstrap: punch returned an incomplete result")
+		return newCandidateAttemptError("punch", false, fmt.Errorf("selfbootstrap: punch returned an incomplete result"))
 	}
 	conn := result.Connected()
 	owned := true
@@ -521,11 +648,14 @@ func (e *Engine) runAttempt(
 		Interval: e.cfg.HelloInterval, Settle: e.cfg.HelloSettle,
 	})
 	stopHello()
+	if errors.Is(context.Cause(attemptCtx), ErrAlreadyReachable) {
+		return ErrAlreadyReachable
+	}
 	if err != nil {
 		if e.reachable(peer.id) {
 			return ErrAlreadyReachable
 		}
-		return fmt.Errorf("selfbootstrap: peer hello: %w", err)
+		return newCandidateAttemptError("peer_hello", true, fmt.Errorf("selfbootstrap: peer hello: %w", err))
 	}
 	if e.reachable(peer.id) {
 		return ErrAlreadyReachable
@@ -539,11 +669,20 @@ func (e *Engine) runAttempt(
 	// using a half-installed self-bootstrap edge as transit.
 	neighborConfig.DeferAdvertisement = true
 	configuredOnClose := neighborConfig.OnClose
+	closeEvent := e.event(peer.id, StateScheduled, attemptID, candidate.AddrPort, mesh.NeighborHandle{}, nil)
+	closeEvent.LearnedRemote = result.RemoteAddr.String()
+	closeEvent.FailureStage = "neighbor_closed"
 	neighborConfig.OnClose = func(peerID string, cause error) {
 		if configuredOnClose != nil {
 			configuredOnClose(peerID, cause)
 		}
-		e.emit(peerID, StateScheduled, attemptID, candidate.AddrPort, cause)
+		if e.cfg.OnEvent != nil {
+			event := closeEvent
+			event.At = e.cfg.Now().UTC()
+			event.PeerID = peerID
+			event.Err = cause
+			e.cfg.OnEvent(event)
+		}
 		e.Notify()
 	}
 	packetTransport := iceadapter.New(conn, PathID)
@@ -553,11 +692,11 @@ func (e *Engine) runAttempt(
 		if e.reachable(peer.id) {
 			return ErrAlreadyReachable
 		}
-		return fmt.Errorf("selfbootstrap: attach packet neighbor: %w", err)
+		return newCandidateAttemptError("install", false, fmt.Errorf("selfbootstrap: attach packet neighbor: %w", err))
 	}
 	if !e.cfg.Node.PromoteNeighborHandle(neighborHandle) {
 		_ = e.cfg.Node.RemoveNeighborHandle(neighborHandle)
-		return fmt.Errorf("selfbootstrap: authenticated packet neighbor changed before promotion")
+		return newCandidateAttemptError("promote", false, fmt.Errorf("selfbootstrap: authenticated packet neighbor changed before promotion"))
 	}
 
 	succeededAt := e.cfg.Now().UTC()
@@ -565,12 +704,17 @@ func (e *Engine) runAttempt(
 		status.State = StateAttached
 		status.LastSuccessAt = succeededAt
 		status.NextAttemptAt = time.Time{}
+		status.LearnedRemote = result.RemoteAddr.String()
+		status.CandidateFailures = 0
+		status.FailureStage = ""
 		status.LastError = ""
 	})
+	delete(peer.candidateFailures, selection.Group.ID)
 	e.emitAttached(peer.id, attemptID, result.RemoteAddr.String(), neighborHandle, nil)
 	observation := Observation{
 		PeerID: peer.id, RemoteAddr: result.RemoteAddr, LocalAddr: result.LocalAddr,
-		Source: "selfbootstrap", RemoteNAT: candidate.NAT, LocalNAT: card.LocalNAT, At: succeededAt,
+		Source: "selfbootstrap", RemoteNAT: learnedRemoteNAT(peerCard, result.RemoteAddr),
+		LocalNAT: card.LocalNAT, At: succeededAt,
 	}
 	if err := e.Observe(observation); err != nil {
 		e.emitAttached(peer.id, attemptID, result.RemoteAddr.String(), neighborHandle, fmt.Errorf("persist successful endpoint: %w", err))
@@ -582,18 +726,33 @@ func (e *Engine) punchConfig(
 	key [32]byte,
 	card recoverycard.Card,
 	peer recoverycard.Peer,
-	candidate recoverycard.Endpoint,
-	address netip.AddrPort,
+	group candidateGroup,
 ) puncher.Config {
+	primary := group.Anchors[0]
+	candidate := primary.Endpoint
 	pattern := toNATPattern(candidate.NAT.Pattern)
 	report := nat.PortAllocationReport{Pattern: pattern, Delta: candidate.NAT.Delta}
-	targets := []int{int(address.Port())}
+	targets := make([]int, 0, len(group.Anchors)+e.cfg.PredictSpan+3)
+	seenTargets := make(map[int]struct{}, cap(targets))
+	appendTarget := func(port int) {
+		if port < 1 || port > 65535 {
+			return
+		}
+		if _, exists := seenTargets[port]; exists {
+			return
+		}
+		seenTargets[port] = struct{}{}
+		targets = append(targets, port)
+	}
+	for _, anchor := range group.Anchors {
+		appendTarget(int(anchor.AddrPort.Port()))
+	}
 	sockets := e.cfg.SocketCount
 	birthdayN := e.cfg.BirthdayTargets
 	method := "cached_birthday"
 	if pattern == nat.PortAllocationPreserving || pattern == nat.PortAllocationSequential {
-		if predicted := report.PredictMappedPorts(int(address.Port()), e.cfg.PredictSpan); len(predicted) > 0 {
-			targets = predicted
+		for _, predicted := range report.PredictMappedPorts(int(primary.AddrPort.Port()), e.cfg.PredictSpan) {
+			appendTarget(predicted)
 		}
 		sockets = e.cfg.PredictSockets
 		birthdayN = 0
@@ -604,7 +763,7 @@ func (e *Engine) punchConfig(
 		localPort = int(peer.LastSuccessfulLocalBindPort)
 	}
 	return puncher.Config{
-		RemoteIP: net.IP(address.Addr().AsSlice()), TargetPorts: targets,
+		RemoteIP: net.IP(group.IP.AsSlice()), TargetPorts: targets,
 		Session: pairSession(key), Role: selfBootstrapPunchRole(e.cfg.Node.NodeID(), peer.NodeID),
 		SocketCount: sockets, LocalPort: localPort,
 		BirthdayN: birthdayN, BirthdayLo: e.cfg.BirthdayLo, BirthdayHi: e.cfg.BirthdayHi,
@@ -638,36 +797,91 @@ func (e *Engine) setStatus(peerID string, update func(*PeerStatus)) {
 	e.mu.Unlock()
 }
 
-func (e *Engine) setFailure(peerID, candidate string, err error) {
-	next := nextAttemptWindow(e.peers[peerID].key, e.cfg.Now(), e.cfg.AttemptCycle, e.cfg.AttemptWindow)
-	e.setStatus(peerID, func(status *PeerStatus) {
+func (e *Engine) setFailure(peer *peerRuntime, selection candidateSelection, stage string, err error) {
+	next := nextAttemptWindow(peer.key, e.cfg.Now(), e.cfg.AttemptCycle, e.cfg.AttemptWindow)
+	failedAttemptID := ""
+	e.setStatus(peer.id, func(status *PeerStatus) {
+		failedAttemptID = status.AttemptID
 		status.State = StateScheduled
-		status.Candidate = candidate
+		if selection.Total > 0 {
+			applyCandidateSelection(status, selection)
+		} else {
+			clearCandidateStatus(status)
+		}
 		status.AttemptID = ""
 		status.NextAttemptAt = next
+		status.FailureStage = stage
 		status.LastError = compactError(err)
 	})
-	e.emit(peerID, StateScheduled, "", candidate, err)
+	candidate := ""
+	if len(selection.Group.Anchors) > 0 {
+		candidate = selection.Group.Anchors[0].Endpoint.AddrPort
+	}
+	e.emit(peer.id, StateScheduled, failedAttemptID, candidate, err)
+}
+
+func (e *Engine) setSuperseded(peer *peerRuntime, selection candidateSelection) {
+	stillReachable := e.reachable(peer.id)
+	next := nextAttemptWindow(peer.key, e.cfg.Now(), e.cfg.AttemptCycle, e.cfg.AttemptWindow)
+	state := StateScheduled
+	if stillReachable {
+		state = StateReachable
+	}
+	attemptID := ""
+	e.setStatus(peer.id, func(status *PeerStatus) {
+		attemptID = status.AttemptID
+		if attemptID == "" {
+			return
+		}
+		status.State = state
+		status.AttemptID = ""
+		status.FailureStage = "superseded_route"
+		status.LastError = ""
+		if stillReachable {
+			status.NextAttemptAt = time.Time{}
+		} else {
+			status.NextAttemptAt = next
+		}
+	})
+	if attemptID == "" {
+		return
+	}
+	candidate := ""
+	if len(selection.Group.Anchors) > 0 {
+		candidate = selection.Group.Anchors[0].Endpoint.AddrPort
+	}
+	e.emit(peer.id, state, attemptID, candidate, nil)
 }
 
 func (e *Engine) emit(peerID string, state State, attemptID, candidate string, err error) {
 	if e.cfg.OnEvent == nil {
 		return
 	}
-	e.cfg.OnEvent(Event{
-		At: e.cfg.Now().UTC(), PeerID: peerID, State: state,
-		AttemptID: attemptID, Candidate: candidate, Err: err,
-	})
+	e.cfg.OnEvent(e.event(peerID, state, attemptID, candidate, mesh.NeighborHandle{}, err))
 }
 
 func (e *Engine) emitAttached(peerID, attemptID, candidate string, handle mesh.NeighborHandle, err error) {
 	if e.cfg.OnEvent == nil {
 		return
 	}
-	e.cfg.OnEvent(Event{
-		At: e.cfg.Now().UTC(), PeerID: peerID, State: StateAttached,
-		AttemptID: attemptID, Candidate: candidate, StableNeighbor: handle, Err: err,
-	})
+	e.cfg.OnEvent(e.event(peerID, StateAttached, attemptID, candidate, handle, err))
+}
+
+func (e *Engine) event(peerID string, state State, attemptID, candidate string, handle mesh.NeighborHandle, err error) Event {
+	e.mu.Lock()
+	status := e.statuses[peerID]
+	e.mu.Unlock()
+	return Event{
+		At: e.cfg.Now().UTC(), PeerID: peerID, State: state,
+		AttemptID: attemptID, Candidate: candidate,
+		CandidateGroup: status.CandidateGroup, CandidateIndex: status.CandidateIndex,
+		CandidateTotal: status.CandidateTotal, CandidateEndpoints: status.CandidateEndpoints,
+		CandidateFailures:    status.CandidateFailures,
+		AttemptWindowOrdinal: status.AttemptWindowOrdinal,
+		AttemptWindowStart:   status.AttemptWindowStart, AttemptWindowEnd: status.AttemptWindowEnd,
+		PunchMethod: status.PunchMethod, LearnedRemote: status.LearnedRemote,
+		FailureStage: status.FailureStage, StableNeighbor: handle, Err: err,
+	}
 }
 
 func compactError(err error) string {
@@ -681,28 +895,127 @@ func compactError(err error) string {
 	return text
 }
 
-func selectCandidate(card recoverycard.Card, peerID string, allowNonPublic bool) (recoverycard.Endpoint, recoverycard.Peer, bool) {
+func recoveryPeer(card recoverycard.Card, peerID string) (recoverycard.Peer, bool) {
 	for _, peer := range card.Peers {
-		if peer.NodeID != peerID {
+		if peer.NodeID == peerID {
+			return peer, true
+		}
+	}
+	return recoverycard.Peer{}, false
+}
+
+func learnedRemoteNAT(peer recoverycard.Peer, remote net.Addr) recoverycard.NATModel {
+	learned, err := addrPortFromNetAddr(remote)
+	if err != nil {
+		return recoverycard.NATModel{Pattern: recoverycard.PortPatternUnknown}
+	}
+	var newestSameIP recoverycard.Endpoint
+	for _, endpoint := range peer.Endpoints {
+		address, ok := candidateAddrPort(endpoint.AddrPort, true)
+		if !ok || address.Addr() != learned.Addr() {
 			continue
 		}
-		endpoints := append([]recoverycard.Endpoint(nil), peer.Endpoints...)
-		sort.SliceStable(endpoints, func(i, j int) bool {
-			return endpoints[i].LastSuccessAt.After(endpoints[j].LastSuccessAt)
-		})
-		for _, endpoint := range endpoints {
-			address, err := netip.ParseAddrPort(endpoint.AddrPort)
-			if err != nil || !address.Addr().Is4() || address.Port() == 0 {
-				continue
-			}
-			if !allowNonPublic && !isPublicIPv4(address.Addr()) {
-				continue
-			}
-			return endpoint, peer, true
+		if address == learned {
+			return endpoint.NAT
 		}
-		return recoverycard.Endpoint{}, peer, false
+		if newestSameIP.LastSuccessAt.IsZero() || endpoint.LastSuccessAt.After(newestSameIP.LastSuccessAt) {
+			newestSameIP = endpoint
+		}
 	}
-	return recoverycard.Endpoint{}, recoverycard.Peer{}, false
+	if !newestSameIP.LastSuccessAt.IsZero() {
+		return newestSameIP.NAT
+	}
+	return recoverycard.NATModel{Pattern: recoverycard.PortPatternUnknown}
+}
+
+func selectRecoveryCandidate(
+	peer *peerRuntime,
+	portfolio candidatePortfolio,
+	windowOrdinal int64,
+	role puncher.Role,
+) (candidateSelection, bool) {
+	if peer == nil || len(portfolio.Groups) == 0 {
+		return candidateSelection{}, false
+	}
+	activeGroups := make(map[string]struct{}, len(portfolio.Groups))
+	for _, group := range portfolio.Groups {
+		activeGroups[group.ID] = struct{}{}
+	}
+	for id := range peer.candidateFailures {
+		if _, active := activeGroups[id]; !active {
+			delete(peer.candidateFailures, id)
+		}
+	}
+
+	selected := recoveryCandidateScheduleIndex(windowOrdinal, role, len(portfolio.Groups))
+	selectedFailures := peer.candidateFailures[portfolio.Groups[selected].ID]
+	return candidateSelection{
+		Group: portfolio.Groups[selected], Index: selected + 1,
+		Total: len(portfolio.Groups), Failures: selectedFailures, WindowOrdinal: windowOrdinal,
+	}, true
+}
+
+// recoveryCandidateScheduleIndex maps an absolute pair-window ordinal onto one
+// axis of a 4x4 cross-product. The selector advances on the fast axis and the
+// receiver on the slow axis. Every 16 consecutive windows therefore cover all
+// retained rank combinations, even when the two cards rank the working remote
+// endpoint differently. Smaller portfolios repeat their ranks via modulo.
+func recoveryCandidateScheduleIndex(windowOrdinal int64, role puncher.Role, groupCount int) int {
+	if groupCount <= 1 {
+		return 0
+	}
+	const scheduleSize = int64(maxCandidateGroups * maxCandidateGroups)
+	phase := windowOrdinal % scheduleSize
+	if phase < 0 {
+		phase += scheduleSize
+	}
+	coordinate := phase % int64(maxCandidateGroups)
+	if role == puncher.RoleReceiver {
+		coordinate = phase / int64(maxCandidateGroups)
+	}
+	return int(coordinate) % groupCount
+}
+
+func applyCandidateSelection(status *PeerStatus, selection candidateSelection) {
+	if status == nil || len(selection.Group.Anchors) == 0 {
+		return
+	}
+	status.Candidate = selection.Group.Anchors[0].Endpoint.AddrPort
+	status.CandidateGroup = selection.Group.ID
+	status.CandidateIndex = selection.Index
+	status.CandidateTotal = selection.Total
+	status.CandidateEndpoints = len(selection.Group.Anchors)
+	status.CandidateFailures = selection.Failures
+	status.AttemptWindowOrdinal = selection.WindowOrdinal
+}
+
+func clearCandidateStatus(status *PeerStatus) {
+	if status == nil {
+		return
+	}
+	status.Candidate = ""
+	status.CandidateGroup = ""
+	status.CandidateIndex = 0
+	status.CandidateTotal = 0
+	status.CandidateEndpoints = 0
+	status.CandidateFailures = 0
+	status.AttemptWindowOrdinal = 0
+	status.AttemptWindowStart = time.Time{}
+	status.AttemptWindowEnd = time.Time{}
+	status.PunchMethod = ""
+	status.LearnedRemote = ""
+}
+
+func newCandidateAttemptError(stage string, penalize bool, err error) error {
+	return &candidateAttemptError{stage: stage, penalize: penalize, err: err}
+}
+
+func candidateFailureInfo(err error) (string, bool) {
+	var attemptErr *candidateAttemptError
+	if errors.As(err, &attemptErr) {
+		return attemptErr.stage, attemptErr.penalize
+	}
+	return "attempt", false
 }
 
 var carrierGradeNAT = netip.MustParsePrefix("100.64.0.0/10")
@@ -727,6 +1040,11 @@ func toNATPattern(pattern recoverycard.PortPattern) nat.PortAllocationPattern {
 }
 
 func attemptWindow(key [32]byte, now time.Time, cycle, active time.Duration) (time.Time, time.Time, bool) {
+	start, end, activeNow, _ := attemptWindowDetails(key, now, cycle, active)
+	return start, end, activeNow
+}
+
+func attemptWindowDetails(key [32]byte, now time.Time, cycle, active time.Duration) (time.Time, time.Time, bool, int64) {
 	cycleNanos := cycle.Nanoseconds()
 	offset := int64(binary.BigEndian.Uint64(key[:8]) % uint64(cycleNanos))
 	nowNanos := now.UnixNano()
@@ -737,7 +1055,7 @@ func attemptWindow(key [32]byte, now time.Time, cycle, active time.Duration) (ti
 	}
 	start := time.Unix(0, index*cycleNanos+offset).In(now.Location())
 	end := start.Add(active)
-	return start, end, !now.Before(start) && now.Before(end)
+	return start, end, !now.Before(start) && now.Before(end), index
 }
 
 func nextAttemptWindow(key [32]byte, now time.Time, cycle, active time.Duration) time.Time {
@@ -886,6 +1204,7 @@ func (e *Engine) Observe(observation Observation) error {
 		return nil
 	})
 	if err == nil {
+		e.peers[peerID].resetCandidateFailures.Store(true)
 		e.Notify()
 	}
 	return err

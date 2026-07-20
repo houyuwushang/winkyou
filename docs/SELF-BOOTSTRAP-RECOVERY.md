@@ -7,7 +7,9 @@ completed a C -> B -> A rolling replacement with the normal managed
 no configured seed or infrastructure coordinator and converged to two one-hop
 protected packet edges per node. This is still not a simultaneous three-node
 cold-start matrix, public-IP change, or operating-system boot/autostart result;
-see `SLICE-4.5-FIELD-ROLLOUT-2026-07-19.md`.
+see `SLICE-4.5-FIELD-ROLLOUT-2026-07-19.md`. Recovery Candidate Portfolio v1
+is a source and isolated-test extension to this behavior; no separate field
+acceptance is claimed for candidate rotation.
 
 ## Purpose and recovery layers
 
@@ -101,7 +103,8 @@ node ID, successful local bind ports, the observed local NAT port-allocation
 model, and a bounded history of successful remote endpoints for each
 configured maintained peer. Writes use an atomic replacement; corrupt,
 unsupported-version, and wrong-node files are rejected instead of guessed.
-The card is state, not a credential, and is not encrypted.
+The card retains at most 64 endpoint records per peer. It is state, not a
+credential, and is not encrypted.
 
 The post-r9 runtime updates the card when:
 
@@ -114,9 +117,31 @@ A missing card is not a startup error. The peer remains in `waiting_hint` and
 no neighbor is invented. An invalid existing card is a startup error so the
 operator cannot silently rely on ambiguous recovery state.
 
-The current selector retains bounded endpoint history but attempts only the
-newest usable endpoint for a peer. Older entries are diagnostic history, not a
-fallback rotation policy yet.
+### Recovery Candidate Portfolio v1
+
+The v1 selector turns that bounded history into a deterministic portfolio
+without changing the recovery-card schema:
+
+- accept the existing public-IPv4 candidate class and group usable records by
+  remote IP;
+- deterministically retain at most four IP groups and at most four historical
+  ports in each group;
+- merge all selected ports for one IP into one bounded punch attempt; and
+- use the absolute pair-window ordinal and complementary selector/receiver
+  roles as the two axes of a bounded `4 x 4` group schedule. Every 16
+  consecutive windows cover every retained rank combination while the two
+  portfolios remain stable and both endpoints participate, so asymmetric card
+  histories cannot remain phase-locked. Each pair attempts at most one group
+  in one window. With the default one-minute cycle, a full 16-slot sweep takes
+  roughly 16 minutes once bilateral recovery is running.
+
+Negative attempt results are deliberately not persisted and do not drive the
+schedule; process-local counts are diagnostics only. Selection comes from the
+absolute window ordinal, so a process restart retains the same cross-product
+phase without card-schema state. A restart inside an already-active window can
+repeat that window's combination because the one-attempt latch is process
+local, but the next absolute window still advances deterministically. The
+portfolio adds no relay, coordinator, protocol message, or card-schema field.
 
 ### First migration from r7, r8, or the staged r9 build
 
@@ -153,10 +178,11 @@ SHA-256 hashes before execution.
 Self-bootstrap runs only while the maintained peer has neither a direct
 neighbor nor any graph route. For each such peer it:
 
-1. loads the newest cached IPv4 candidate;
+1. builds the bounded public-IPv4 portfolio and selects one IP group for the
+   current pair window;
 2. derives the same pair key, punch session, and absolute attempt window on
    both endpoints;
-3. tries the cached endpoint first;
+3. merges the selected group's historical ports into one bounded punch;
 4. uses bounded prediction for preserving/sequential port models, or combines
    the cached port with a fresh birthday spray for unknown/random models;
 5. learns the peer's actual source address from a successful inbound punch;
@@ -184,6 +210,27 @@ back to the card.
 Acceptance must still inspect the node's neighbor kind and one-hop route and
 hold them for at least the configured liveness window. State transitions are
 also logged as `selfbootstrap_state` events.
+
+Portfolio status and events expose enough detail to distinguish selection,
+punching, authentication, and promotion failures:
+
+| Field | Meaning |
+| --- | --- |
+| `candidate_group` | Stable identity of the selected remote-IP group |
+| `candidate_index` / `candidate_total` | Selected group position and number of retained groups |
+| `candidate_endpoints` | Number of historical `IP:port` endpoints merged into this attempt |
+| `candidate_failures` | Process-local punch-deadline/HELLO negative-evidence count for this group; immediate local punch errors are excluded |
+| `punch_method` | Bounded punch strategy chosen for the group |
+| `learned_remote` | Actual remote source learned from the punch winner, when present |
+| `attempt_window_ordinal` | Shared absolute pair-window coordinate used by the `4 x 4` schedule |
+| `attempt_window_start` / `attempt_window_end` | Absolute pair-window boundaries |
+| `failure_stage` | Last terminal phase, such as punch, HELLO, promotion, or `superseded_route` |
+
+These fields are observability, not a new coordination protocol. A successful
+edge still requires a punch winner, pair-key HMAC HELLO/ACK, and promotion of
+the exact attached neighbor handle. Attempt IDs include a random engine boot
+component, so a process restarted inside the same active window does not reuse
+the previous generation's log identity.
 
 ### r12 topology and restart hardening
 
@@ -244,8 +291,10 @@ field-derived bounded profile, not a connectivity guarantee. Firewall policy,
 carrier filtering, clock skew, or an exhausted attempt window can still make a
 pair fail and retry in a later cycle.
 
-IPv6 cached bootstrap, LAN discovery, PCP/NAT-PMP/UPnP, multi-candidate
-rotation, and an optional external directory remain future discovery methods.
+Portfolio v1 only rotates retained public-IPv4 groups. IPv6 cached bootstrap,
+LAN discovery, PCP/NAT-PMP/UPnP, an optional external directory, and historical
+association between a remote endpoint and the local bind that produced it
+remain v2 discovery/recovery work.
 
 ## Security boundary
 
@@ -287,6 +336,12 @@ The local source tests prove:
   direct edge to a stable full triangle. The final shortcut uses the injected
   deterministic `runtimeTestStrategy` over a real UDP test broker, so this
   proves lifecycle composition rather than a fresh public-NAT birthday punch.
+
+Recovery Candidate Portfolio v1 has a narrower source/isolation acceptance
+target: deterministic public-IPv4 grouping and caps, same-IP port merging,
+one-group-per-pair-window enforcement, restart-stable `4 x 4` cross-product
+coverage for asymmetric ranks, and loopback recovery using a usable older IP
+group. Passing that target does not constitute public-NAT field acceptance.
 
 The single-replacement and full-three-runtime tests each passed five repeated
 runs and the race detector. Those cases remain in-process deterministic source
