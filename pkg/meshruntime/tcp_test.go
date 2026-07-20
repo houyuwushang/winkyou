@@ -205,6 +205,145 @@ func TestVirtualTCPAcceptPolicyRequiresCurrentDataRoute(t *testing.T) {
 	}
 }
 
+func TestLoopbackTCPForwardAcceptPolicyUsesCurrentDataRoute(t *testing.T) {
+	t.Run("accepts multi-hop data route", func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
+		defer cancel()
+		openEvents := make(chan mesh.DataEvent, 1)
+		nodeA, err := mesh.NewNode(mesh.NodeConfig{
+			NodeID: "A", Lease: time.Second, RefreshInterval: 20 * time.Millisecond,
+			OnDataEvent: func(event mesh.DataEvent) {
+				if event.Frame.Type == mesh.DataTypeStreamOpen {
+					select {
+					case openEvents <- event:
+					default:
+					}
+				}
+			},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		nodeB, err := mesh.NewNode(mesh.NodeConfig{
+			NodeID: "B", Lease: time.Second, RefreshInterval: 20 * time.Millisecond,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		nodeC, err := mesh.NewNode(mesh.NodeConfig{
+			NodeID: "C", Lease: time.Second, RefreshInterval: 20 * time.Millisecond,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() {
+			_ = nodeA.Close()
+			_ = nodeB.Close()
+			_ = nodeC.Close()
+		})
+		runtime, err := newTCPRuntime(runtimeConfig{
+			NodeID: "A", TCPFrameTimeout: 250 * time.Millisecond,
+			tcpForwardSpecs: []tcpForwardSpec{{Listen: "127.0.0.1:0", RemoteID: "B"}},
+		}, nodeA)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = runtime.Close() })
+		for _, node := range []*mesh.Node{nodeA, nodeB, nodeC} {
+			if err := node.Start(ctx); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := runtime.Start(ctx, nil); err != nil {
+			t.Fatal(err)
+		}
+		tcpTestAttachDualStreamPair(t, nodeA, nodeC)
+		tcpTestAttachDualStreamPair(t, nodeC, nodeB)
+		tcpTestWait(t, func() bool {
+			forward, forwardOK := nodeA.DataRoute("B")
+			reverse, reverseOK := nodeB.DataRoute("A")
+			return forwardOK && reverseOK &&
+				forward.NextHop == "C" && forward.HopCount == 2 &&
+				reverse.NextHop == "C" && reverse.HopCount == 2
+		})
+
+		forwards := runtime.Snapshot()
+		if len(forwards) != 1 {
+			t.Fatalf("loopback forwards = %+v, want one", forwards)
+		}
+		conn, err := net.DialTimeout("tcp", forwards[0].Listen, time.Second)
+		if err != nil {
+			t.Fatalf("dial multi-hop loopback forward: %v", err)
+		}
+		defer conn.Close()
+		select {
+		case event := <-openEvents:
+			if event.Kind != mesh.EventForwarded || event.Frame.Destination != "B" {
+				t.Fatalf("multi-hop OPEN event = %+v", event)
+			}
+		case <-ctx.Done():
+			t.Fatalf("multi-hop route did not accept the loopback connection: %v", ctx.Err())
+		}
+	})
+
+	t.Run("rejects without data route before stream open", func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		openEvents := make(chan mesh.DataEvent, 1)
+		nodeA, err := mesh.NewNode(mesh.NodeConfig{
+			NodeID: "A",
+			OnDataEvent: func(event mesh.DataEvent) {
+				if event.Frame.Type == mesh.DataTypeStreamOpen {
+					select {
+					case openEvents <- event:
+					default:
+					}
+				}
+			},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = nodeA.Close() })
+		runtime, err := newTCPRuntime(runtimeConfig{
+			NodeID: "A", TCPFrameTimeout: 250 * time.Millisecond,
+			tcpForwardSpecs: []tcpForwardSpec{{Listen: "127.0.0.1:0", RemoteID: "B"}},
+		}, nodeA)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = runtime.Close() })
+		if err := nodeA.Start(ctx); err != nil {
+			t.Fatal(err)
+		}
+		if err := runtime.Start(ctx, nil); err != nil {
+			t.Fatal(err)
+		}
+		forwards := runtime.Snapshot()
+		if len(forwards) != 1 {
+			t.Fatalf("loopback forwards = %+v, want one", forwards)
+		}
+		conn, err := net.DialTimeout("tcp", forwards[0].Listen, time.Second)
+		if err != nil {
+			t.Fatalf("dial route-gated loopback forward: %v", err)
+		}
+		defer conn.Close()
+		if err := conn.SetReadDeadline(time.Now().Add(time.Second)); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := conn.Read(make([]byte, 1)); err == nil {
+			t.Fatal("route-gated loopback connection remained open without a data route")
+		} else if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+			t.Fatalf("route-gated loopback connection was not closed promptly: %v", err)
+		}
+		select {
+		case event := <-openEvents:
+			t.Fatalf("route rejection emitted StreamOpen: %+v", event)
+		default:
+		}
+	})
+}
+
 func TestTCPRuntimeConfiguredStateIsImmutable(t *testing.T) {
 	target := tcpTestListener(t)
 	runtime := newTCPTestRuntime(t, runtimeConfig{
@@ -464,6 +603,21 @@ func tcpTestConnPair(t *testing.T) (net.Conn, net.Conn) {
 		t.Fatal(err)
 	}
 	return client, server
+}
+
+func tcpTestAttachDualStreamPair(t *testing.T, left, right *mesh.Node) {
+	t.Helper()
+	leftControl, rightControl := tcpTestConnPair(t)
+	leftData, rightData := tcpTestConnPair(t)
+	if err := left.AttachStreams(right.NodeID(), leftControl, leftData); err != nil {
+		_ = rightControl.Close()
+		_ = rightData.Close()
+		t.Fatalf("attach %s-%s left streams: %v", left.NodeID(), right.NodeID(), err)
+	}
+	if err := right.AttachStreams(left.NodeID(), rightControl, rightData); err != nil {
+		_ = left.RemoveNeighbor(right.NodeID())
+		t.Fatalf("attach %s-%s right streams: %v", left.NodeID(), right.NodeID(), err)
+	}
 }
 
 func tcpTestWait(t *testing.T, condition func() bool) {

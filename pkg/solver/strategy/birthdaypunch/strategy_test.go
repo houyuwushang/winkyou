@@ -169,6 +169,18 @@ func TestExecuteInitiatorProtectedDirect(t *testing.T) {
 	if gotCfg.LocalPort != 5000 {
 		t.Fatalf("punch local port = %d, want advertised preserving port 5000", gotCfg.LocalPort)
 	}
+	if gotCfg.Role != puncher.RoleSelector {
+		t.Fatalf("initiator punch role = %v, want selector", gotCfg.Role)
+	}
+}
+
+func TestPunchRolesAreComplementary(t *testing.T) {
+	if got := punchRole(true); got != puncher.RoleSelector {
+		t.Fatalf("initiator role = %v, want selector", got)
+	}
+	if got := punchRole(false); got != puncher.RoleReceiver {
+		t.Fatalf("target role = %v, want receiver", got)
+	}
 }
 
 func TestExecuteRejectsClosed(t *testing.T) {

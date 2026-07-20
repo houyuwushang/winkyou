@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"math/rand"
 	"net"
+	"sync"
 	"testing"
 	"time"
 )
@@ -62,6 +63,9 @@ func TestBirthdayTargetsClampsToRange(t *testing.T) {
 
 func TestPunchValidatesConfig(t *testing.T) {
 	ctx := context.Background()
+	if _, err := Punch(ctx, Config{RemoteIP: net.IPv4(127, 0, 0, 1), TargetPorts: []int{80}, Role: Role(99)}); err == nil {
+		t.Fatal("expected error for invalid role")
+	}
 	if _, err := Punch(ctx, Config{RemoteIP: net.IPv4(127, 0, 0, 1)}); err == nil {
 		t.Fatal("expected error for missing target ports")
 	}
@@ -285,7 +289,7 @@ func TestPunchReaderKeepsAckingAfterReportingHit(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		punchReader(ctx, readerConn, Config{Session: session, Method: "test"}, resultCh, &peerSet{m: make(map[string]*net.UDPAddr)})
+		punchReader(ctx, readerConn, Config{Session: session, Method: "test"}, resultCh, &peerSet{m: make(map[string]*net.UDPAddr)}, newPunchEvents(1))
 	}()
 
 	readerAddr := readerConn.LocalAddr().(*net.UDPAddr)
@@ -325,6 +329,405 @@ func TestPunchReaderKeepsAckingAfterReportingHit(t *testing.T) {
 	case <-done:
 	case <-time.After(time.Second):
 		t.Fatal("reader did not stop after cancellation")
+	}
+}
+
+func TestCoordinatedRolesConvergeCrossedWinners(t *testing.T) {
+	session := [8]byte{4, 2, 4, 2, 6, 4, 2, 1}
+	a0 := listenTestUDP(t)
+	a1 := listenTestUDP(t)
+	b0 := listenTestUDP(t)
+	b1 := listenTestUDP(t)
+	all := []*net.UDPConn{a0, a1, b0, b1}
+	for _, conn := range all {
+		defer conn.Close()
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	selectorConfig := Config{Session: session, Role: RoleSelector, Method: "coordinated-test", RoundDelay: 10 * time.Millisecond}
+	receiverConfig := Config{Session: session, Role: RoleReceiver, Method: "coordinated-test", RoundDelay: 10 * time.Millisecond}
+	selectorResults := make(chan *Result, 2)
+	receiverResults := make(chan *Result, 2)
+	selectorEvents := newPunchEvents(2)
+	receiverEvents := newPunchEvents(2)
+
+	var readers sync.WaitGroup
+	startReader := func(conn *net.UDPConn, config Config, results chan<- *Result, events *punchEvents) {
+		readers.Add(1)
+		go func() {
+			defer readers.Done()
+			punchReader(ctx, conn, config, results, &peerSet{m: make(map[string]*net.UDPAddr)}, events)
+		}()
+	}
+	startReader(a0, selectorConfig, selectorResults, selectorEvents)
+	startReader(a1, selectorConfig, selectorResults, selectorEvents)
+	startReader(b0, receiverConfig, receiverResults, receiverEvents)
+	startReader(b1, receiverConfig, receiverResults, receiverEvents)
+
+	selectorDone := make(chan *Result, 1)
+	receiverDone := make(chan *Result, 1)
+	go func() {
+		result, _ := chooseResult(ctx, selectorConfig, selectorResults, selectorEvents)
+		selectorDone <- result
+	}()
+	go func() {
+		result, _ := chooseResult(ctx, receiverConfig, receiverResults, receiverEvents)
+		receiverDone <- result
+	}()
+
+	// Manufacture the exact crossed-first-hit race from the field run. The
+	// selector sees A0<->B0 first, while the receiver's legacy result channel
+	// sees B1<->A1 first. Only SELECT/ACK/DONE may decide the receiver winner.
+	writePunchTestPacket(t, b0, a0, punchPacket{Kind: punchAck, Session: session, Nonce: [8]byte{1}})
+	writePunchTestPacket(t, a1, b1, punchPacket{Kind: punchAck, Session: session, Nonce: [8]byte{2}})
+
+	selector := waitPunchResult(t, selectorDone)
+	receiver := waitPunchResult(t, receiverDone)
+	if selector.Conn != a0 || !udpAddrEqual(selector.RemoteAddr, udpAddrOf(b0)) {
+		t.Fatalf("selector tuple = %v -> %v, want A0 -> B0", selector.LocalAddr, selector.RemoteAddr)
+	}
+	if receiver.Conn != b0 || !udpAddrEqual(receiver.RemoteAddr, udpAddrOf(a0)) {
+		t.Fatalf("receiver tuple = %v -> %v, want B0 -> A0; crossed local hit on B1 must not win", receiver.LocalAddr, receiver.RemoteAddr)
+	}
+	select {
+	case legacyHit := <-receiverResults:
+		if legacyHit.Conn != b1 {
+			t.Fatalf("manufactured receiver first hit used %v, want B1", legacyHit.LocalAddr)
+		}
+	default:
+		t.Fatal("receiver did not observe the manufactured crossed legacy hit")
+	}
+
+	// Match Punch teardown: readers stop, deadlines are cleared, and every loser
+	// closes. The reciprocal winners must still carry application datagrams in
+	// both directions after that teardown.
+	cancel()
+	readers.Wait()
+	_ = a1.Close()
+	_ = b1.Close()
+	_ = selector.Conn.SetDeadline(time.Time{})
+	_ = receiver.Conn.SetDeadline(time.Time{})
+	assertPunchData(t, selector.Connected(), receiver.Connected(), "selector-to-receiver")
+	assertPunchData(t, receiver.Connected(), selector.Connected(), "receiver-to-selector")
+}
+
+func TestCoordinatedPunchPairEndToEnd(t *testing.T) {
+	session := [8]byte{7, 1, 7, 2, 7, 3, 7, 4}
+	aPort := reserveTestUDPPort(t)
+	bPort := reserveTestUDPPort(t)
+	for bPort == aPort {
+		bPort = reserveTestUDPPort(t)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	type outcome struct {
+		result *Result
+		err    error
+	}
+	outcomes := make(chan outcome, 2)
+	run := func(role Role, localPort, remotePort int) {
+		result, err := Punch(ctx, Config{
+			RemoteIP: net.IPv4(127, 0, 0, 1), TargetPorts: []int{remotePort},
+			Session: session, Role: role, LocalPort: localPort,
+			Burst: 1, RoundDelay: 10 * time.Millisecond, GracePeriod: 30 * time.Millisecond,
+			Method: "coordinated-e2e",
+		})
+		outcomes <- outcome{result: result, err: err}
+	}
+	go run(RoleReceiver, bPort, aPort)
+	go run(RoleSelector, aPort, bPort)
+
+	var selector, receiver *Result
+	for range 2 {
+		select {
+		case got := <-outcomes:
+			if got.err != nil || got.result == nil {
+				t.Fatalf("coordinated Punch outcome = %+v, %v", got.result, got.err)
+			}
+			switch got.result.LocalAddr.Port {
+			case aPort:
+				selector = got.result
+			case bPort:
+				receiver = got.result
+			default:
+				t.Fatalf("unexpected local winner port %d", got.result.LocalAddr.Port)
+			}
+		case <-ctx.Done():
+			t.Fatalf("coordinated Punch pair timed out: %v", ctx.Err())
+		}
+	}
+	if selector == nil || receiver == nil || selector.RemoteAddr.Port != bPort || receiver.RemoteAddr.Port != aPort {
+		t.Fatalf("non-reciprocal coordinated results: selector=%+v receiver=%+v", selector, receiver)
+	}
+	defer selector.Conn.Close()
+	defer receiver.Conn.Close()
+	assertPunchData(t, selector.Connected(), receiver.Connected(), "full-punch-selector-to-receiver")
+	assertPunchData(t, receiver.Connected(), selector.Connected(), "full-punch-receiver-to-selector")
+}
+
+func TestReceiverOnlyAcknowledgesAdoptedTupleAndToken(t *testing.T) {
+	session := [8]byte{6, 2, 6, 4, 3, 3, 8, 3}
+	token := [8]byte{1, 3, 3, 7}
+	wrongToken := [8]byte{9, 9, 9}
+	receiver0 := listenTestUDP(t)
+	receiver1 := listenTestUDP(t)
+	selector := listenTestUDP(t)
+	wrongSource := listenTestUDP(t)
+	for _, conn := range []*net.UDPConn{receiver0, receiver1, selector, wrongSource} {
+		defer conn.Close()
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	config := Config{Session: session, Role: RoleReceiver, Method: "receiver-state-test"}
+	events := newPunchEvents(2)
+	results := make(chan *Result, 2)
+	var readers sync.WaitGroup
+	for _, conn := range []*net.UDPConn{receiver0, receiver1} {
+		readers.Add(1)
+		go func(conn *net.UDPConn) {
+			defer readers.Done()
+			punchReader(ctx, conn, config, results, &peerSet{m: make(map[string]*net.UDPAddr)}, events)
+		}(conn)
+	}
+
+	writePunchTestPacket(t, selector, receiver0, punchPacket{Kind: punchSelect, Session: session, Nonce: token})
+	readPunchTestPacket(t, selector, punchSelectAck, token)
+
+	// A competing local socket/source/token must not receive SELECT_ACK.
+	writePunchTestPacket(t, wrongSource, receiver1, punchPacket{Kind: punchSelect, Session: session, Nonce: wrongToken})
+	expectNoPunchTestPacket(t, wrongSource)
+	// DONE must match both the adopted token and exact remote source.
+	writePunchTestPacket(t, selector, receiver0, punchPacket{Kind: punchDone, Session: session, Nonce: wrongToken})
+	expectNoPunchTestPacket(t, selector)
+	writePunchTestPacket(t, wrongSource, receiver0, punchPacket{Kind: punchDone, Session: session, Nonce: token})
+	expectNoPunchTestPacket(t, wrongSource)
+
+	writePunchTestPacket(t, selector, receiver0, punchPacket{Kind: punchDone, Session: session, Nonce: token})
+	readPunchTestPacket(t, selector, punchDoneAck, token)
+	winner := receiveWinner(ctx, config, events)
+	if winner == nil || winner.Conn != receiver0 || !udpAddrEqual(winner.RemoteAddr, udpAddrOf(selector)) {
+		t.Fatalf("receiver winner = %+v, want receiver0 <-> selector", winner)
+	}
+
+	// Punch keeps readers alive for GracePeriod after commit. Matching duplicate
+	// control packets must continue receiving ACKs during that interval.
+	writePunchTestPacket(t, selector, receiver0, punchPacket{Kind: punchSelect, Session: session, Nonce: token})
+	readPunchTestPacket(t, selector, punchSelectAck, token)
+	writePunchTestPacket(t, selector, receiver0, punchPacket{Kind: punchDone, Session: session, Nonce: token})
+	readPunchTestPacket(t, selector, punchDoneAck, token)
+
+	cancel()
+	readers.Wait()
+}
+
+func TestSelectorRetransmitsControlUntilAcknowledged(t *testing.T) {
+	tests := []struct {
+		name      string
+		request   punchKind
+		response  punchKind
+		repliesOf func(*punchEvents) <-chan punchEvent
+	}{
+		{name: "select", request: punchSelect, response: punchSelectAck, repliesOf: func(events *punchEvents) <-chan punchEvent { return events.selectAck }},
+		{name: "done", request: punchDone, response: punchDoneAck, repliesOf: func(events *punchEvents) <-chan punchEvent { return events.doneAck }},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			session := [8]byte{8, 5, 3, 0, 9, 7, 5, byte(test.request)}
+			token := [8]byte{2, 7, 1, 8, 2, 8, byte(test.request)}
+			selector := listenTestUDP(t)
+			defer selector.Close()
+			peer := listenTestUDP(t)
+			defer peer.Close()
+
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			defer cancel()
+			config := Config{Session: session, Role: RoleSelector, Method: "retransmit-test", RoundDelay: 20 * time.Millisecond}
+			events := newPunchEvents(1)
+			readerDone := make(chan struct{})
+			go func() {
+				defer close(readerDone)
+				punchReader(ctx, selector, config, make(chan *Result, 1), &peerSet{m: make(map[string]*net.UDPAddr)}, events)
+			}()
+
+			exchanged := make(chan bool, 1)
+			result := &Result{Conn: selector, LocalAddr: udpAddrOf(selector), RemoteAddr: udpAddrOf(peer), Method: config.Method}
+			go func() {
+				exchanged <- exchangeControl(ctx, config, test.repliesOf(events), result, test.request, token)
+			}()
+
+			// Drop the first request and answer only the retransmission.
+			first, _ := readRawPunchTestPacket(t, peer)
+			if first.Kind != test.request || first.Nonce != token {
+				t.Fatalf("first request = %#v, want kind=%d token=%x", first, test.request, token)
+			}
+			second, source := readRawPunchTestPacket(t, peer)
+			if second.Kind != test.request || second.Nonce != token {
+				t.Fatalf("retransmission = %#v, want kind=%d token=%x", second, test.request, token)
+			}
+			if _, err := peer.WriteToUDP(encodePunch(punchPacket{Kind: test.response, Session: session, Nonce: token}), source); err != nil {
+				t.Fatal(err)
+			}
+			select {
+			case ok := <-exchanged:
+				if !ok {
+					t.Fatal("control exchange failed after valid retransmission response")
+				}
+			case <-time.After(time.Second):
+				t.Fatal("control exchange did not accept retransmission response")
+			}
+			cancel()
+			<-readerDone
+		})
+	}
+}
+
+func TestCommittedReceiverResultWinsContextRace(t *testing.T) {
+	local := listenTestUDP(t)
+	defer local.Close()
+	remote := listenTestUDP(t)
+	defer remote.Close()
+	events := newPunchEvents(1)
+	event := punchEvent{conn: local, remote: udpAddrOf(remote), token: [8]byte{5, 4, 3, 2, 1}}
+	if !events.adoptReceiverSelection(event) || !events.commitReceiverSelection(event) {
+		t.Fatal("could not prepare committed receiver selection")
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	result := receiveWinner(ctx, Config{Role: RoleReceiver, Method: "deadline-race"}, events)
+	if result == nil || result.Conn != local || !udpAddrEqual(result.RemoteAddr, udpAddrOf(remote)) {
+		t.Fatalf("committed result lost to context cancellation: %+v", result)
+	}
+}
+
+func TestQueuedControlAckWinsContextRace(t *testing.T) {
+	local := listenTestUDP(t)
+	defer local.Close()
+	remote := listenTestUDP(t)
+	defer remote.Close()
+	token := [8]byte{7, 7, 1}
+	replies := make(chan punchEvent, 1)
+	replies <- punchEvent{conn: local, remote: udpAddrOf(remote), token: token}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	result := &Result{Conn: local, LocalAddr: udpAddrOf(local), RemoteAddr: udpAddrOf(remote)}
+	if !exchangeControl(ctx, Config{Role: RoleSelector, RoundDelay: time.Millisecond}, replies, result, punchDone, token) {
+		t.Fatal("queued exact DONE_ACK lost to context cancellation")
+	}
+}
+
+func listenTestUDP(t *testing.T) *net.UDPConn {
+	t.Helper()
+	conn, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return conn
+}
+
+func reserveTestUDPPort(t *testing.T) int {
+	t.Helper()
+	conn := listenTestUDP(t)
+	port := udpAddrOf(conn).Port
+	if err := conn.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return port
+}
+
+func udpAddrOf(conn *net.UDPConn) *net.UDPAddr {
+	addr, _ := conn.LocalAddr().(*net.UDPAddr)
+	return addr
+}
+
+func writePunchTestPacket(t *testing.T, source, destination *net.UDPConn, packet punchPacket) {
+	t.Helper()
+	if _, err := source.WriteToUDP(encodePunch(packet), udpAddrOf(destination)); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func readPunchTestPacket(t *testing.T, conn *net.UDPConn, kind punchKind, token [8]byte) {
+	t.Helper()
+	if err := conn.SetReadDeadline(time.Now().Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	buffer := make([]byte, maxPunchPacket)
+	n, _, err := conn.ReadFromUDP(buffer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	packet, ok := decodePunch(buffer[:n])
+	if !ok || packet.Kind != kind || packet.Nonce != token {
+		t.Fatalf("control response = %#v decoded=%t, want kind=%d token=%x", packet, ok, kind, token)
+	}
+}
+
+func readRawPunchTestPacket(t *testing.T, conn *net.UDPConn) (punchPacket, *net.UDPAddr) {
+	t.Helper()
+	if err := conn.SetReadDeadline(time.Now().Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	buffer := make([]byte, maxPunchPacket)
+	n, source, err := conn.ReadFromUDP(buffer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	packet, ok := decodePunch(buffer[:n])
+	if !ok {
+		t.Fatalf("could not decode control packet from %v", source)
+	}
+	return packet, source
+}
+
+func expectNoPunchTestPacket(t *testing.T, conn *net.UDPConn) {
+	t.Helper()
+	if err := conn.SetReadDeadline(time.Now().Add(100 * time.Millisecond)); err != nil {
+		t.Fatal(err)
+	}
+	buffer := make([]byte, maxPunchPacket)
+	if n, source, err := conn.ReadFromUDP(buffer); err == nil {
+		packet, _ := decodePunch(buffer[:n])
+		t.Fatalf("unexpected response from %v: %#v", source, packet)
+	} else {
+		var networkError net.Error
+		if !errors.As(err, &networkError) || !networkError.Timeout() {
+			t.Fatalf("wait for absent response: %v", err)
+		}
+	}
+}
+
+func waitPunchResult(t *testing.T, result <-chan *Result) *Result {
+	t.Helper()
+	select {
+	case value := <-result:
+		if value == nil {
+			t.Fatal("coordinated winner selection returned nil")
+		}
+		return value
+	case <-time.After(2 * time.Second):
+		t.Fatal("coordinated winner selection timed out")
+		return nil
+	}
+}
+
+func assertPunchData(t *testing.T, source, destination *ConnectedConn, payload string) {
+	t.Helper()
+	if err := destination.SetReadDeadline(time.Now().Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := source.Write([]byte(payload)); err != nil {
+		t.Fatal(err)
+	}
+	buffer := make([]byte, 128)
+	n, err := destination.Read(buffer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := string(buffer[:n]); got != payload {
+		t.Fatalf("received %q, want %q", got, payload)
 	}
 }
 

@@ -57,6 +57,9 @@ param(
     [ValidateRange(1, 180)]
     [int]$CommandTimeoutSeconds = 9,
 
+    [ValidateRange(0, 30000)]
+    [int]$OutputCloseGraceMilliseconds = 5000,
+
     [string]$AApiBase = "http://127.0.0.1:32110",
     [string]$RemoteApiBase = "http://127.0.0.1:32110",
 
@@ -369,8 +372,8 @@ function Complete-CapturedProcess {
     param(
         [object]$Handle,
         [int]$TimeoutMilliseconds,
-        [ValidateRange(0, 5000)]
-        [int]$OutputCloseGraceMilliseconds = 500
+        [ValidateRange(0, 30000)]
+        [int]$OutputCloseGraceMilliseconds = 5000
     )
 
     if ($null -ne $Handle.StartError) {
@@ -380,6 +383,8 @@ function Complete-CapturedProcess {
             complete_output_line = $false
             terminated_after_complete_output = $false
             transport_close_anomaly = $false
+            known_windows_close_warning = $false
+            output_to_exit_ms = $null
             exit_code = -1
             stdout = ""
             stderr = $Handle.StartError
@@ -391,19 +396,37 @@ function Complete-CapturedProcess {
     $timedOut = $false
     $completeOutputLine = $false
     $terminatedAfterCompleteOutput = $false
+    $outputObservedMilliseconds = $null
+    $outputToExitMilliseconds = $null
     try {
         if ($Handle.CompleteOnOutputLine) {
             while ($true) {
                 if ($Handle.StdoutLineTask.IsCompleted) {
-                    $completeOutputLine = $true
-                    if (-not $process.WaitForExit($OutputCloseGraceMilliseconds)) {
-                        $terminatedAfterCompleteOutput = $true
-                        try { $process.Kill() } catch { }
-                        [void]$process.WaitForExit(2000)
-                    } else {
-                        $process.WaitForExit()
+                    $completedLine = $null
+                    try { $completedLine = $Handle.StdoutLineTask.Result } catch { }
+                    # ReadLineAsync also completes with $null at EOF. Only an
+                    # actual non-empty business-response line is eligible for
+                    # the output-aware close grace path.
+                    if (-not [string]::IsNullOrWhiteSpace([string]$completedLine)) {
+                        $completeOutputLine = $true
+                        $outputObservedMilliseconds = $Handle.Stopwatch.Elapsed.TotalMilliseconds
+                        if (-not $process.WaitForExit($OutputCloseGraceMilliseconds)) {
+                            $terminatedAfterCompleteOutput = $true
+                            try { $process.Kill() } catch { }
+                            [void]$process.WaitForExit(2000)
+                        } else {
+                            $process.WaitForExit()
+                        }
+                        $outputToExitMilliseconds = [math]::Max(
+                            0,
+                            $Handle.Stopwatch.Elapsed.TotalMilliseconds - $outputObservedMilliseconds
+                        )
+                        break
                     }
-                    break
+                    if ($process.HasExited) {
+                        $process.WaitForExit()
+                        break
+                    }
                 }
                 $remaining = $TimeoutMilliseconds - [int]$Handle.Stopwatch.ElapsedMilliseconds
                 if ($remaining -le 0) {
@@ -466,14 +489,15 @@ function Complete-CapturedProcess {
         $exitCode = if ($timedOut -or $terminatedAfterCompleteOutput) { -1 } else { $process.ExitCode }
         $knownWindowsCloseError = (-not [string]::IsNullOrWhiteSpace($stderr) -and
             $stderr -match 'close\s+-\s+IO is still pending on closed socket')
-        $transportCloseAnomaly = ($completeOutputLine -and
-            ($terminatedAfterCompleteOutput -or ($exitCode -ne 0 -and $knownWindowsCloseError)))
+        $transportCloseAnomaly = ($completeOutputLine -and $terminatedAfterCompleteOutput)
         return [pscustomobject][ordered]@{
             ok = (-not $timedOut -and -not $terminatedAfterCompleteOutput -and $exitCode -eq 0)
             timed_out = $timedOut
             complete_output_line = $completeOutputLine
             terminated_after_complete_output = $terminatedAfterCompleteOutput
             transport_close_anomaly = $transportCloseAnomaly
+            known_windows_close_warning = $knownWindowsCloseError
+            output_to_exit_ms = if ($null -eq $outputToExitMilliseconds) { $null } else { [math]::Round($outputToExitMilliseconds, 3) }
             exit_code = $exitCode
             stdout = $stdout
             stderr = $stderr
@@ -1177,7 +1201,7 @@ function Invoke-StatusSample {
     }
 
     foreach ($nodeID in $script:Nodes.Keys) {
-        $result = Complete-CapturedProcess -Handle $handles[$nodeID] -TimeoutMilliseconds ($CommandTimeoutSeconds * 1000)
+        $result = Complete-CapturedProcess -Handle $handles[$nodeID] -TimeoutMilliseconds ($CommandTimeoutSeconds * 1000) -OutputCloseGraceMilliseconds $OutputCloseGraceMilliseconds
         $timestamp = [DateTimeOffset]::UtcNow
         $isSsh = ($script:Nodes[$nodeID].Access -eq "ssh")
         $succeeded = Test-ProcessResultOutputCandidate -Result $result -IsSsh:$isSsh
@@ -1217,7 +1241,10 @@ function Invoke-StatusSample {
             raw_transport_ok = $result.ok
             transport_timed_out = $result.timed_out
             complete_output_line = $result.complete_output_line
+            terminated_after_complete_output = $result.terminated_after_complete_output
             transport_close_anomaly = $result.transport_close_anomaly
+            known_windows_close_warning = $result.known_windows_close_warning
+            output_to_exit_ms = $result.output_to_exit_ms
             accepted_after_transport_close_anomaly = ($succeeded -and $result.transport_close_anomaly)
             transport_stderr = Limit-Text -Value $result.stderr -MaximumLength 512
             error = Limit-Text -Value $errorText
@@ -1273,7 +1300,7 @@ function Invoke-PingRound {
         # Keep the soak observational and low disturbance. In particular, two
         # simultaneous B probes would open two routed SSH flows over A-B while
         # the status and hostname probes may already use that same edge.
-        $result = Complete-CapturedProcess -Handle $handle -TimeoutMilliseconds ($CommandTimeoutSeconds * 1000)
+        $result = Complete-CapturedProcess -Handle $handle -TimeoutMilliseconds ($CommandTimeoutSeconds * 1000) -OutputCloseGraceMilliseconds $OutputCloseGraceMilliseconds
         $completedUtc = [DateTimeOffset]::UtcNow
         $startedUtc = $handle.StartedUtc
         $isSsh = ($script:Nodes[$sourceID].Access -eq "ssh")
@@ -1335,7 +1362,10 @@ function Invoke-PingRound {
                 raw_transport_ok = $result.ok
                 transport_timed_out = $result.timed_out
                 complete_output_line = $result.complete_output_line
+                terminated_after_complete_output = $result.terminated_after_complete_output
                 transport_close_anomaly = $result.transport_close_anomaly
+                known_windows_close_warning = $result.known_windows_close_warning
+                output_to_exit_ms = $result.output_to_exit_ms
                 accepted_after_transport_close_anomaly = ($succeeded -and $result.transport_close_anomaly)
                 transport_stderr = Limit-Text -Value $result.stderr -MaximumLength 512
                 error = Limit-Text -Value $errorText
@@ -1357,7 +1387,7 @@ function Invoke-DirectSshProbe {
     $authentication = Get-SshAuthenticationConfiguration -AskPassPath $BAskPassPath -PasswordEnvironmentVariable $BPasswordEnvironmentVariable
     $arguments = New-SshArguments -User $BUser -HostName $BHost -Port $BPort -ProxyCommand $BProxyCommand -RemoteCommand "hostname" -UseAskPass:$authentication.UseAskPass
     $handle = Start-CapturedProcess -FilePath $SshExecutable -Arguments $arguments -EnvironmentVariables $authentication.EnvironmentVariables -CompleteOnOutputLine
-    $result = Complete-CapturedProcess -Handle $handle -TimeoutMilliseconds ($CommandTimeoutSeconds * 1000)
+    $result = Complete-CapturedProcess -Handle $handle -TimeoutMilliseconds ($CommandTimeoutSeconds * 1000) -OutputCloseGraceMilliseconds $OutputCloseGraceMilliseconds
     $timestamp = [DateTimeOffset]::UtcNow
     $hostnameLines = @($result.stdout -split '\r?\n' | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
     $hostname = if ($hostnameLines.Count -eq 1) { Limit-Text -Value $hostnameLines[0] -MaximumLength 256 } else { "" }
@@ -1395,7 +1425,10 @@ function Invoke-DirectSshProbe {
             raw_transport_ok = $result.ok
             transport_timed_out = $result.timed_out
             complete_output_line = $result.complete_output_line
+            terminated_after_complete_output = $result.terminated_after_complete_output
             transport_close_anomaly = $result.transport_close_anomaly
+            known_windows_close_warning = $result.known_windows_close_warning
+            output_to_exit_ms = $result.output_to_exit_ms
             accepted_after_transport_close_anomaly = ($succeeded -and $result.transport_close_anomaly)
             stderr = Limit-Text -Value $result.stderr -MaximumLength 512
             error = Limit-Text -Value $errorText
@@ -1701,6 +1734,7 @@ function New-BackgroundMonitorArguments {
         "-SshIntervalSeconds", [string]$SshIntervalSeconds,
         "-PingTimeoutSeconds", [string]$PingTimeoutSeconds,
         "-CommandTimeoutSeconds", [string]$CommandTimeoutSeconds,
+        "-OutputCloseGraceMilliseconds", [string]$OutputCloseGraceMilliseconds,
         "-AApiBase", $AApiBase,
         "-RemoteApiBase", $RemoteApiBase,
         "-BUser", $BUser,
@@ -1895,13 +1929,20 @@ function Invoke-SelfTest {
     }
     Assert-SelfTest ($truncatedLineResult.transport_close_anomaly -and $truncatedJsonRejected) "truncated JSON is rejected even when an SSH output line arrived"
 
+    $emptyWarningCommand = '[Console]::Error.WriteLine(''close - IO is still pending on closed socket''); exit 255'
+    $emptyWarningHandle = Start-CapturedProcess -FilePath $selfTestHost -Arguments @("-NoLogo", "-NoProfile", "-NonInteractive", "-Command", $emptyWarningCommand) -CompleteOnOutputLine
+    $emptyWarningResult = Complete-CapturedProcess -Handle $emptyWarningHandle -TimeoutMilliseconds 3000 -OutputCloseGraceMilliseconds 100
+    Assert-SelfTest (-not $emptyWarningResult.complete_output_line -and -not $emptyWarningResult.transport_close_anomaly -and $emptyWarningResult.known_windows_close_warning) "EOF plus the known Windows warning is not classified as complete output"
+
     $backgroundArguments = @(New-BackgroundMonitorArguments -RunDirectory "self-test-output")
     $bHostIndex = [Array]::IndexOf($backgroundArguments, "-BHost")
     $bProxyIndex = [Array]::IndexOf($backgroundArguments, "-BProxyCommand")
     $cHostIndex = [Array]::IndexOf($backgroundArguments, "-CHost")
     $cProxyIndex = [Array]::IndexOf($backgroundArguments, "-CProxyCommand")
+    $outputCloseGraceIndex = [Array]::IndexOf($backgroundArguments, "-OutputCloseGraceMilliseconds")
     Assert-SelfTest ($bHostIndex -ge 0 -and $bProxyIndex -ge 0 -and $cHostIndex -ge 0 -and $cProxyIndex -ge 0) "background monitor passes all SSH access parameter names"
     Assert-SelfTest ($backgroundArguments[$bHostIndex + 1] -eq $BHost -and $backgroundArguments[$bProxyIndex + 1] -eq $BProxyCommand -and $backgroundArguments[$cHostIndex + 1] -eq $CHost -and $backgroundArguments[$cProxyIndex + 1] -eq $CProxyCommand) "background monitor preserves all SSH access parameter values"
+    Assert-SelfTest ($outputCloseGraceIndex -ge 0 -and $backgroundArguments[$outputCloseGraceIndex + 1] -eq [string]$OutputCloseGraceMilliseconds) "background monitor preserves the output close grace"
     foreach ($parameterName in @("-BAskPassPath", "-BPasswordEnvironmentVariable", "-CAskPassPath", "-CPasswordEnvironmentVariable")) {
         Assert-SelfTest ([Array]::IndexOf($backgroundArguments, $parameterName) -ge 0) "background monitor passes $parameterName"
     }

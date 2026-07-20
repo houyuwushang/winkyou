@@ -273,15 +273,11 @@ func (r *tcpRuntime) addForwardLocked(id, listen, remoteID, source string, virtu
 		}
 		return tcpForwardView{}, fmt.Errorf("%w: listener %s belongs to %s", ErrTCPForwardConflict, listen, existing.id)
 	}
-	var listener *routed.TCPListener
-	var err error
+	acceptPolicy := r.dataRouteAcceptPolicy(remoteID)
 	if virtualIP.IsValid() {
-		listener, err = r.forwarder.StartListenerWithPolicy(
-			r.runtimeCtx, listen, remoteID, r.virtualTCPAcceptPolicy(remoteID, virtualIP),
-		)
-	} else {
-		listener, err = r.forwarder.StartListener(r.runtimeCtx, listen, remoteID)
+		acceptPolicy = r.virtualTCPAcceptPolicy(remoteID, virtualIP)
 	}
+	listener, err := r.forwarder.StartListenerWithPolicy(r.runtimeCtx, listen, remoteID, acceptPolicy)
 	if err != nil {
 		return tcpForwardView{}, err
 	}
@@ -307,7 +303,20 @@ func (r *tcpRuntime) addForwardLocked(id, listen, remoteID, source string, virtu
 	return active.view(), nil
 }
 
+func (r *tcpRuntime) dataRouteAcceptPolicy(remoteID string) func() error {
+	return func() error {
+		if r == nil || r.node == nil {
+			return ErrTCPRuntimeClosed
+		}
+		if _, ok := r.node.DataRoute(remoteID); !ok {
+			return fmt.Errorf("routed TCP remote %s has no current mesh data route", remoteID)
+		}
+		return nil
+	}
+}
+
 func (r *tcpRuntime) virtualTCPAcceptPolicy(remoteID string, virtualIP netip.Addr) func() error {
+	dataRoutePolicy := r.dataRouteAcceptPolicy(remoteID)
 	return func() error {
 		if r == nil || r.node == nil {
 			return ErrTCPRuntimeClosed
@@ -330,9 +339,7 @@ func (r *tcpRuntime) virtualTCPAcceptPolicy(remoteID string, virtualIP netip.Add
 		case matches[0] != remoteID:
 			err = fmt.Errorf("virtual TCP address %s belongs to member %s, not configured remote %s", virtualIP, matches[0], remoteID)
 		default:
-			if _, ok := r.node.DataRoute(remoteID); !ok {
-				err = fmt.Errorf("virtual TCP remote %s has no current mesh data route", remoteID)
-			}
+			err = dataRoutePolicy()
 		}
 		if err != nil {
 			r.mu.Lock()

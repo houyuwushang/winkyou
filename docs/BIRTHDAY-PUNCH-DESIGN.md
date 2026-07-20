@@ -22,7 +22,7 @@
 
 **目标**
 - 双方对称 NAT 时，用「多源 socket + 端口预测 + 同步触发」建立可用 UDP 直连；获胜 socket 可交给现有 WireGuard 路径，也可交给不依赖 Wintun 的用户态数据面。
-- 作为**新 strategy** 与现有 `public_direct`/`relay_only`/`signal_relay` **并存**，不推倒 pion 那条路径；auto 模式在对称×对称时优先尝试。
+- 作为**新 strategy** 与现有 `public_direct`/`relay_only`/`signal_relay` **并存**，不推倒 pion 那条路径。legacy client/session portfolio 只有显式把 `birthday_punch` 放入 `connectivity.strategy_order` 才会启用；当前 `autonomous_mesh` edge solver 则直接使用它。
 
 **非目标**
 - 不追求 100% 成功——双对称纯直连是物理上的概率事件，**relay 永远是兜底**。
@@ -48,7 +48,7 @@ signal+sync (M4) ───┘                                             （现
 ```
 
 - **数据面移交是可插入的**：puncher 保留获胜的原始 `*net.UDPConn`。现有 `iceadapter.New(conn, pathID)` 可把它变成 `PacketTransport`；M7 则把同一 socket 直接交给 `pkg/dataplane/portforward`，用 QUIC 可靠流承载 TCP 转发。后者完全不初始化 WireGuard、Wintun 或 `wink0`。
-- **strategy 封装**：实现 `solver.Strategy`，注册进现有 portfolio，`auto` 模式在对称×对称时排到 `public_direct` 前。
+- **strategy 封装**：实现 `solver.Strategy` 并注册进现有 portfolio。legacy `auto` 当前仍严格遵循显式 `connectivity.strategy_order`，没有按 NAT 类型自动把它排到 `public_direct` 前；`autonomous_mesh` 当前独立固定选择 `birthday_punch`，尚未接入完整 strategy portfolio。
 
 ## 5. 里程碑
 

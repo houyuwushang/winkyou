@@ -37,8 +37,9 @@ func runBridge(args []string) {
 	punchDuration := fs.Duration("duration", 60*time.Second, "punch attempt window")
 	fs.Parse(args)
 
-	if *role != "initiator" && *role != "responder" {
-		fatalUsage("bridge: --role must be initiator or responder")
+	selectionRole, err := punchRoleForCLI(*role)
+	if err != nil {
+		fatalUsage("bridge: " + err.Error())
 	}
 	ip := net.ParseIP(strings.TrimSpace(*remoteIP))
 	if ip == nil || ip.To4() == nil {
@@ -52,6 +53,7 @@ func runBridge(args []string) {
 	cfg := puncher.Config{
 		RemoteIP:    ip.To4(),
 		Session:     sessionKey(*session),
+		Role:        selectionRole,
 		SocketCount: *sockets,
 		Burst:       *burst,
 		LocalPort:   *localPort,

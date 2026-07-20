@@ -10,6 +10,18 @@ import (
 	"time"
 )
 
+// Role controls whether Punch uses the legacy independent first-hit behavior
+// or the coordinated winner protocol. The zero value deliberately preserves
+// legacy behavior for existing callers; production peers should configure one
+// selector and one receiver for every attempt.
+type Role uint8
+
+const (
+	RoleLegacy Role = iota
+	RoleSelector
+	RoleReceiver
+)
+
 // Config controls one punch attempt against a single peer.
 type Config struct {
 	// RemoteIP is the peer's public IPv4 address.
@@ -21,6 +33,12 @@ type Config struct {
 	// callers that reuse a stable pair value must authenticate the resulting
 	// socket separately with fresh challenge material.
 	Session [8]byte
+	// Role selects the cross-peer winner protocol. RoleLegacy preserves the old
+	// API behavior and interoperates with callers that do not set this field.
+	// Coordinated attempts require exactly one RoleSelector and one RoleReceiver;
+	// mixed legacy/coordinated peers time out instead of silently accepting
+	// independently selected sockets.
+	Role Role
 	// SocketCount is how many local source sockets to open (birthday-paradox
 	// width). Defaults to 256.
 	SocketCount int
@@ -68,11 +86,101 @@ const (
 	gracePeriod = 3 * time.Second
 )
 
-// Punch opens SocketCount source sockets, punches RemoteIP:TargetPorts from each,
-// learns the peer's real source from inbound probes (acking them), and returns
-// the first socket that receives an ack, proving its probe reached the peer, i.e.
-// a bidirectional path. It returns an error if no path is punched before ctx is
-// done.
+type punchEvent struct {
+	conn   *net.UDPConn
+	remote *net.UDPAddr
+	token  [8]byte
+}
+
+type punchEvents struct {
+	selectReceived chan punchEvent
+	selectAck      chan punchEvent
+	doneReceived   chan punchEvent
+	doneAck        chan punchEvent
+
+	receiverMu        sync.Mutex
+	receiverSelection *punchEvent
+	receiverCommitted bool
+}
+
+func newPunchEvents(size int) *punchEvents {
+	if size < 1 {
+		size = 1
+	}
+	return &punchEvents{
+		selectReceived: make(chan punchEvent, size),
+		selectAck:      make(chan punchEvent, size),
+		doneReceived:   make(chan punchEvent, size),
+		doneAck:        make(chan punchEvent, size),
+	}
+}
+
+// adoptReceiverSelection atomically chooses the only tuple/token that this
+// receiver will acknowledge. Repeated SELECTs for that exact selection are
+// acknowledged; competing sockets, sources, and tokens are ignored.
+func (e *punchEvents) adoptReceiverSelection(event punchEvent) bool {
+	if e == nil || event.conn == nil || event.remote == nil {
+		return false
+	}
+	e.receiverMu.Lock()
+	defer e.receiverMu.Unlock()
+	if e.receiverSelection != nil {
+		return samePunchEvent(*e.receiverSelection, event)
+	}
+	selected := punchEvent{conn: event.conn, remote: cloneUDPAddr(event.remote), token: event.token}
+	select {
+	case e.selectReceived <- selected:
+		e.receiverSelection = &selected
+		return true
+	default:
+		return false
+	}
+}
+
+// commitReceiverSelection records DONE only for the tuple/token previously
+// adopted by SELECT. It returns true for matching duplicates so the reader can
+// keep acknowledging retransmissions throughout the grace period.
+func (e *punchEvents) commitReceiverSelection(event punchEvent) bool {
+	if e == nil || event.conn == nil || event.remote == nil {
+		return false
+	}
+	e.receiverMu.Lock()
+	defer e.receiverMu.Unlock()
+	if e.receiverSelection == nil || !samePunchEvent(*e.receiverSelection, event) {
+		return false
+	}
+	if e.receiverCommitted {
+		return true
+	}
+	committed := punchEvent{conn: event.conn, remote: cloneUDPAddr(event.remote), token: event.token}
+	select {
+	case e.doneReceived <- committed:
+		e.receiverCommitted = true
+		return true
+	default:
+		return false
+	}
+}
+
+func (e *punchEvents) committedReceiverResult(method string) *Result {
+	if e == nil {
+		return nil
+	}
+	e.receiverMu.Lock()
+	defer e.receiverMu.Unlock()
+	if !e.receiverCommitted || e.receiverSelection == nil {
+		return nil
+	}
+	selected := *e.receiverSelection
+	local, _ := selected.conn.LocalAddr().(*net.UDPAddr)
+	return &Result{Conn: selected.conn, LocalAddr: cloneUDPAddr(local), RemoteAddr: cloneUDPAddr(selected.remote), Method: method}
+}
+
+// Punch opens SocketCount source sockets and learns the peer's real source from
+// inbound probes. RoleLegacy returns the first socket that receives an ACK.
+// Coordinated roles additionally run SELECT/ACK/DONE/DONE_ACK so both endpoints
+// retain one reciprocal socket tuple after all losers close. It returns an error
+// if discovery and, when configured, tuple selection do not finish before ctx.
 func Punch(ctx context.Context, cfg Config) (*Result, error) {
 	if ctx == nil {
 		return nil, fmt.Errorf("puncher: context is required")
@@ -91,6 +199,9 @@ func Punch(ctx context.Context, cfg Config) (*Result, error) {
 	}
 	if cfg.GracePeriod <= 0 {
 		cfg.GracePeriod = gracePeriod
+	}
+	if cfg.Role != RoleLegacy && cfg.Role != RoleSelector && cfg.Role != RoleReceiver {
+		return nil, fmt.Errorf("puncher: invalid role %d", cfg.Role)
 	}
 	if len(cfg.TargetPorts) == 0 && cfg.BirthdayN <= 0 {
 		return nil, fmt.Errorf("puncher: no target ports")
@@ -156,29 +267,36 @@ func Punch(ctx context.Context, cfg Config) (*Result, error) {
 		return nil, fmt.Errorf("puncher: no path punched: %w", err)
 	}
 
-	loopCtx, cancel := context.WithCancel(ctx)
-	defer cancel()
+	readerCtx, cancelReaders := context.WithCancel(ctx)
+	senderCtx, cancelSenders := context.WithCancel(readerCtx)
+	defer cancelReaders()
+	defer cancelSenders()
 
 	resultCh := make(chan *Result, len(sockets))
-	var wg sync.WaitGroup
+	events := newPunchEvents(len(sockets))
+	var readerWG sync.WaitGroup
+	var senderWG sync.WaitGroup
 	for _, conn := range sockets {
 		// A learned endpoint belongs to this exact source socket/NAT mapping.
 		// Sharing it across sockets can make the two peers retain different
 		// winning tuples after all losing sockets are closed.
 		learned := &peerSet{m: make(map[string]*net.UDPAddr)}
-		wg.Add(2)
-		go func(c *net.UDPConn) { defer wg.Done(); punchReader(loopCtx, c, cfg, resultCh, learned) }(conn)
-		go func(c *net.UDPConn) { defer wg.Done(); punchSender(loopCtx, c, cfg, learned) }(conn)
+		readerWG.Add(1)
+		senderWG.Add(1)
+		go func(c *net.UDPConn) { defer readerWG.Done(); punchReader(readerCtx, c, cfg, resultCh, learned, events) }(conn)
+		go func(c *net.UDPConn) { defer senderWG.Done(); punchSender(senderCtx, c, cfg, learned) }(conn)
 	}
 
-	var result *Result
-	select {
-	case result = <-resultCh:
-	case <-loopCtx.Done():
-		select {
-		case result = <-resultCh:
-		default:
-		}
+	result, selectionErr := chooseResult(readerCtx, cfg, resultCh, events)
+
+	if result != nil && cfg.Role != RoleLegacy {
+		// Once the coordinated tuple is committed, ordinary discovery probes are
+		// no longer useful. Stop every sender before the grace window while the
+		// readers remain alive to consume in-flight probes and answer duplicate
+		// SELECT/DONE packets. Otherwise WPK1 discovery frames can remain queued on
+		// the winning socket and become the first apparent data-plane datagram.
+		cancelSenders()
+		senderWG.Wait()
 	}
 
 	if result != nil {
@@ -186,12 +304,14 @@ func Punch(ctx context.Context, cfg Config) (*Result, error) {
 		// own handshake before teardown.
 		select {
 		case <-time.After(cfg.GracePeriod):
-		case <-loopCtx.Done():
+		case <-readerCtx.Done():
 		}
 	}
 
-	cancel()
-	wg.Wait()
+	cancelReaders()
+	cancelSenders()
+	readerWG.Wait()
+	senderWG.Wait()
 	if result != nil {
 		// punchReader uses short read deadlines to poll ctx. Do not leak the last
 		// (normally already expired) deadline into the data-plane connection.
@@ -207,6 +327,9 @@ func Punch(ctx context.Context, cfg Config) (*Result, error) {
 	}
 
 	if result == nil {
+		if selectionErr != nil {
+			return nil, selectionErr
+		}
 		if err := ctx.Err(); err != nil {
 			return nil, fmt.Errorf("puncher: no path punched: %w", err)
 		}
@@ -215,10 +338,133 @@ func Punch(ctx context.Context, cfg Config) (*Result, error) {
 	return result, nil
 }
 
+func chooseResult(ctx context.Context, cfg Config, resultCh <-chan *Result, events *punchEvents) (*Result, error) {
+	switch cfg.Role {
+	case RoleSelector:
+		return selectWinner(ctx, cfg, resultCh, events)
+	case RoleReceiver:
+		return receiveWinner(ctx, cfg, events), nil
+	default:
+		select {
+		case result := <-resultCh:
+			return result, nil
+		case <-ctx.Done():
+			select {
+			case result := <-resultCh:
+				return result, nil
+			default:
+				return nil, nil
+			}
+		}
+	}
+}
+
+func selectWinner(ctx context.Context, cfg Config, resultCh <-chan *Result, events *punchEvents) (*Result, error) {
+	var result *Result
+	select {
+	case result = <-resultCh:
+	case <-ctx.Done():
+		return nil, nil
+	}
+	if result == nil || result.Conn == nil || result.RemoteAddr == nil {
+		return nil, nil
+	}
+
+	token, err := randSelectionToken()
+	if err != nil {
+		return nil, fmt.Errorf("puncher: create selection token: %w", err)
+	}
+	if !exchangeControl(ctx, cfg, events.selectAck, result, punchSelect, token) {
+		return nil, nil
+	}
+	if !exchangeControl(ctx, cfg, events.doneAck, result, punchDone, token) {
+		return nil, nil
+	}
+	return result, nil
+}
+
+func receiveWinner(ctx context.Context, cfg Config, events *punchEvents) *Result {
+	var selected punchEvent
+	select {
+	case selected = <-events.selectReceived:
+	case <-ctx.Done():
+		return events.committedReceiverResult(cfg.Method)
+	}
+	if selected.conn == nil || selected.remote == nil {
+		return nil
+	}
+	for {
+		select {
+		case event := <-events.doneReceived:
+			if samePunchEvent(event, selected) {
+				local, _ := selected.conn.LocalAddr().(*net.UDPAddr)
+				return &Result{Conn: selected.conn, LocalAddr: local, RemoteAddr: cloneUDPAddr(selected.remote), Method: cfg.Method}
+			}
+		case <-ctx.Done():
+			return events.committedReceiverResult(cfg.Method)
+		}
+	}
+}
+
+func exchangeControl(
+	ctx context.Context,
+	cfg Config,
+	replies <-chan punchEvent,
+	result *Result,
+	kind punchKind,
+	token [8]byte,
+) bool {
+	interval := cfg.RoundDelay
+	if interval <= 0 || interval > readPollInterval {
+		interval = readPollInterval
+	}
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	send := func() {
+		packet := encodePunch(punchPacket{Kind: kind, Session: cfg.Session, Nonce: token})
+		_, _ = result.Conn.WriteToUDP(packet, result.RemoteAddr)
+	}
+	send()
+	for {
+		select {
+		case event := <-replies:
+			if event.conn == result.Conn && udpAddrEqual(event.remote, result.RemoteAddr) && event.token == token {
+				return true
+			}
+		case <-ticker.C:
+			send()
+		case <-ctx.Done():
+			// Preserve a reply that raced the deadline. The packet reader queues
+			// the exact tuple/token event before the peer can observe success.
+			select {
+			case event := <-replies:
+				return event.conn == result.Conn && udpAddrEqual(event.remote, result.RemoteAddr) && event.token == token
+			default:
+				return false
+			}
+		}
+	}
+}
+
+func samePunchEvent(left, right punchEvent) bool {
+	return left.conn == right.conn && left.token == right.token && udpAddrEqual(left.remote, right.remote)
+}
+
+func udpAddrEqual(left, right *net.UDPAddr) bool {
+	return left != nil && right != nil && left.Port == right.Port && left.IP.Equal(right.IP)
+}
+
+func cloneUDPAddr(addr *net.UDPAddr) *net.UDPAddr {
+	if addr == nil {
+		return nil
+	}
+	return &net.UDPAddr{IP: append(net.IP(nil), addr.IP...), Port: addr.Port, Zone: addr.Zone}
+}
+
 // punchReader receives on one socket: it acks inbound probes (learning the
 // peer's real source and feeding it back to the senders) and reports a hit when
 // it receives an ack.
-func punchReader(ctx context.Context, conn *net.UDPConn, cfg Config, resultCh chan<- *Result, learned *peerSet) {
+func punchReader(ctx context.Context, conn *net.UDPConn, cfg Config, resultCh chan<- *Result, learned *peerSet, events *punchEvents) {
 	buf := make([]byte, maxPunchPacket)
 	reported := false
 	for {
@@ -266,7 +512,42 @@ func punchReader(ctx context.Context, conn *net.UDPConn, cfg Config, resultCh ch
 				default:
 				}
 			}
+		case punchSelect:
+			if cfg.Role != RoleReceiver || events == nil {
+				continue
+			}
+			event := punchEvent{conn: conn, remote: cloneUDPAddr(src), token: pkt.Nonce}
+			if !events.adoptReceiverSelection(event) {
+				continue
+			}
+			ack := encodePunch(punchPacket{Kind: punchSelectAck, Session: cfg.Session, Nonce: pkt.Nonce})
+			_, _ = conn.WriteToUDP(ack, src)
+		case punchSelectAck:
+			if cfg.Role == RoleSelector && events != nil {
+				nonblockingPunchEvent(events.selectAck, punchEvent{conn: conn, remote: cloneUDPAddr(src), token: pkt.Nonce})
+			}
+		case punchDone:
+			if cfg.Role != RoleReceiver || events == nil {
+				continue
+			}
+			event := punchEvent{conn: conn, remote: cloneUDPAddr(src), token: pkt.Nonce}
+			if !events.commitReceiverSelection(event) {
+				continue
+			}
+			ack := encodePunch(punchPacket{Kind: punchDoneAck, Session: cfg.Session, Nonce: pkt.Nonce})
+			_, _ = conn.WriteToUDP(ack, src)
+		case punchDoneAck:
+			if cfg.Role == RoleSelector && events != nil {
+				nonblockingPunchEvent(events.doneAck, punchEvent{conn: conn, remote: cloneUDPAddr(src), token: pkt.Nonce})
+			}
 		}
+	}
+}
+
+func nonblockingPunchEvent(destination chan<- punchEvent, event punchEvent) {
+	select {
+	case destination <- event:
+	default:
 	}
 }
 

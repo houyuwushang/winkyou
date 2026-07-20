@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"winkyou/pkg/mesh"
+	"winkyou/pkg/nat/puncher"
 	"winkyou/pkg/recoverycard"
 )
 
@@ -134,6 +135,15 @@ func TestAttemptWindowIsPairDeterministic(t *testing.T) {
 	rightStart, rightEnd, rightActive := attemptWindow(right, now, time.Minute, 45*time.Second)
 	if !leftStart.Equal(rightStart) || !leftEnd.Equal(rightEnd) || leftActive != rightActive {
 		t.Fatalf("pair windows differ: left=%s..%s/%t right=%s..%s/%t", leftStart, leftEnd, leftActive, rightStart, rightEnd, rightActive)
+	}
+}
+
+func TestSelfBootstrapPunchRolesAreComplementary(t *testing.T) {
+	if got := selfBootstrapPunchRole("A", "B"); got != puncher.RoleSelector {
+		t.Fatalf("A -> B role = %v, want selector", got)
+	}
+	if got := selfBootstrapPunchRole("B", "A"); got != puncher.RoleReceiver {
+		t.Fatalf("B -> A role = %v, want receiver", got)
 	}
 }
 

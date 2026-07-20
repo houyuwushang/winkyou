@@ -27,8 +27,19 @@ const (
 	// sender's real post-NAT source address from it.
 	punchProbe punchKind = 1
 	// punchAck means "I received your probe"; receiving one proves the sender's
-	// probe reached the peer, i.e. a bidirectional path exists.
+	// probe reached the peer. In legacy mode this is also the winner signal; in
+	// coordinated mode it is only a candidate tuple.
 	punchAck punchKind = 2
+	// punchSelect asks the receiver to retain the exact local socket and remote
+	// address on which this packet arrived. Nonce is the selection transaction.
+	punchSelect punchKind = 3
+	// punchSelectAck confirms that the receiver observed punchSelect on that
+	// reciprocal tuple.
+	punchSelectAck punchKind = 4
+	// punchDone commits the selected tuple after punchSelectAck.
+	punchDone punchKind = 5
+	// punchDoneAck confirms that both endpoints committed the same tuple.
+	punchDoneAck punchKind = 6
 )
 
 // punchPacket is the decoded form of a punch datagram.
@@ -66,4 +77,10 @@ func randNonce() [8]byte {
 	// back to a zero nonce, which is still valid on the wire.
 	_, _ = rand.Read(n[:])
 	return n
+}
+
+func randSelectionToken() ([8]byte, error) {
+	var token [8]byte
+	_, err := rand.Read(token[:])
+	return token, err
 }

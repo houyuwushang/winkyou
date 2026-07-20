@@ -605,10 +605,18 @@ func (e *Engine) punchConfig(
 	}
 	return puncher.Config{
 		RemoteIP: net.IP(address.Addr().AsSlice()), TargetPorts: targets,
-		Session: pairSession(key), SocketCount: sockets, LocalPort: localPort,
+		Session: pairSession(key), Role: selfBootstrapPunchRole(e.cfg.Node.NodeID(), peer.NodeID),
+		SocketCount: sockets, LocalPort: localPort,
 		BirthdayN: birthdayN, BirthdayLo: e.cfg.BirthdayLo, BirthdayHi: e.cfg.BirthdayHi,
 		Burst: 1, RoundDelay: e.cfg.RoundDelay, Method: method, GracePeriod: e.cfg.PunchGrace,
 	}
+}
+
+func selfBootstrapPunchRole(localID, peerID string) puncher.Role {
+	if localID < peerID {
+		return puncher.RoleSelector
+	}
+	return puncher.RoleReceiver
 }
 
 func (e *Engine) reachable(peerID string) bool {

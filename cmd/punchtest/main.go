@@ -155,6 +155,11 @@ func runPunch(args []string) {
 	duration := fs.Duration("duration", 25*time.Second, "punch attempt window")
 	fs.Parse(args)
 
+	selectionRole, err := punchRoleForCLI(*role)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "punch:", err)
+		os.Exit(2)
+	}
 	ip := net.ParseIP(strings.TrimSpace(*remoteIP))
 	if ip == nil || ip.To4() == nil {
 		fmt.Fprintln(os.Stderr, "punch: --remote-ip must be IPv4")
@@ -164,6 +169,7 @@ func runPunch(args []string) {
 	cfg := puncher.Config{
 		RemoteIP:    ip.To4(),
 		Session:     sessionKey(*session),
+		Role:        selectionRole,
 		SocketCount: *sockets,
 		Burst:       *burst,
 		LocalPort:   *localPort,
@@ -202,6 +208,17 @@ func runPunch(args []string) {
 	if err := verifyDataPlane(conn, *role); err != nil {
 		fmt.Printf("[data] verification error: %v\n", err)
 		os.Exit(1)
+	}
+}
+
+func punchRoleForCLI(role string) (puncher.Role, error) {
+	switch strings.ToLower(strings.TrimSpace(role)) {
+	case "initiator":
+		return puncher.RoleSelector, nil
+	case "responder":
+		return puncher.RoleReceiver, nil
+	default:
+		return puncher.RoleLegacy, fmt.Errorf("--role must be initiator or responder")
 	}
 }
 

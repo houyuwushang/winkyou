@@ -6,7 +6,29 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"winkyou/pkg/nat/puncher"
 )
+
+func TestPunchRoleForCLI(t *testing.T) {
+	tests := []struct {
+		input string
+		want  puncher.Role
+	}{
+		{input: "initiator", want: puncher.RoleSelector},
+		{input: "responder", want: puncher.RoleReceiver},
+		{input: " Initiator ", want: puncher.RoleSelector},
+	}
+	for _, test := range tests {
+		got, err := punchRoleForCLI(test.input)
+		if err != nil || got != test.want {
+			t.Fatalf("punchRoleForCLI(%q) = %v, %v; want %v", test.input, got, err, test.want)
+		}
+	}
+	if got, err := punchRoleForCLI("legacy"); err == nil || got != puncher.RoleLegacy {
+		t.Fatalf("invalid role = %v, %v; want legacy sentinel plus error", got, err)
+	}
+}
 
 func TestLoadBridgeSecretHex(t *testing.T) {
 	want := bytes.Repeat([]byte{0x4d}, 32)

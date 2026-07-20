@@ -165,6 +165,7 @@ func (s *Strategy) Execute(ctx context.Context, sess solver.SessionIO, plan solv
 		RemoteIP:    remote.IP,
 		TargetPorts: pp.Targets,
 		Session:     sessionKey(input.SessionID),
+		Role:        punchRole(input.Initiator),
 		SocketCount: pp.SocketCount,
 		LocalPort:   localPort,
 		BirthdayN:   pp.BirthdayN,
@@ -211,6 +212,13 @@ func (s *Strategy) Execute(ctx context.Context, sess solver.SessionIO, plan solv
 			},
 		},
 	}, nil
+}
+
+func punchRole(initiator bool) puncher.Role {
+	if initiator {
+		return puncher.RoleSelector
+	}
+	return puncher.RoleReceiver
 }
 
 func ipString(ip net.IP) string {
