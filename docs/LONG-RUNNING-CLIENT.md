@@ -2,7 +2,7 @@
 
 本文说明当前可用的长期运行方式。现阶段不引入新的 service 框架；`wink up` 仍是前台 client 进程，Linux 交给 systemd 管理，Windows 先使用管理员启动项、Task Scheduler 或 NSSM 管理。
 
-源码现在包含两个显式运行模式：默认的 `legacy` coordinator/WireGuard engine，以及默认关闭的 `autonomous_mesh` graph engine。只有配置 `autonomous_mesh.enabled: true` 才会选择后者。该 Slice 4.5 接入已通过全量测试、目标 race、全量 vet、隔离本机 CLI 生命周期，以及 2026-07-19 的 C -> B -> A 三节点 `wink up` 滚动现场验收。三个节点均以 zero seed、无基础设施 coordinator、每节点两条一跳 `protected_direct` packet edge 运行。2026-07-20 又只强杀 A 的 WinkYou 进程并保留 B/C：外部测试 watchdog 单次拉起的新 A 无人工清理接管两个原有 ULA 地址行，恢复直连三角并保持 120 秒。详细冻结构建和验收边界见 [`SLICE-4.5-FIELD-ROLLOUT-2026-07-19.md`](./SLICE-4.5-FIELD-ROLLOUT-2026-07-19.md) 和 [`VIRTUAL-TCP-ALIAS-CRASH-RECOVERY-2026-07-20.md`](./VIRTUAL-TCP-ALIAS-CRASH-RECOVERY-2026-07-20.md)。systemd、Task Scheduler、NSSM、整机重启、三节点同时冷启动和公网 IP 变化仍未完成现场验收。
+源码现在包含两个显式运行模式：默认的 `legacy` coordinator/WireGuard engine，以及默认关闭的 `autonomous_mesh` graph engine。只有配置 `autonomous_mesh.enabled: true` 才会选择后者。该 Slice 4.5 接入已通过全量测试、目标 race、全量 vet、隔离本机 CLI 生命周期，以及 2026-07-19 的 C -> B -> A 三节点 `wink up` 滚动现场验收。三个节点均以 zero seed、无基础设施 coordinator、每节点两条一跳 `protected_direct` packet edge 运行。2026-07-20 先证明新 A generation 可接管硬崩溃遗留的 ULA alias，随后完成 A-only Task Scheduler + child-supervisor 现场迁入：强杀 Wink child 后自动重建 runtime 和直连三角，并通过保持与业务探针。详细边界见 [`SLICE-4.5-FIELD-ROLLOUT-2026-07-19.md`](./SLICE-4.5-FIELD-ROLLOUT-2026-07-19.md)、[`VIRTUAL-TCP-ALIAS-CRASH-RECOVERY-2026-07-20.md`](./VIRTUAL-TCP-ALIAS-CRASH-RECOVERY-2026-07-20.md) 和 [`WINDOWS-SUPERVISOR-FIELD-2026-07-20.md`](./WINDOWS-SUPERVISOR-FIELD-2026-07-20.md)。systemd、A 整机重启、B/C 托管、三节点同时冷启动和公网 IP 变化仍未完成现场验收。
 
 A 的四个 SSH facade 都返回了完整的预期 stdout 或状态 JSON。最初的独立探针在输出留证后立即终止本地 ssh，因此本身不能证明 client-side close；随后 120 秒 output-aware monitor 给每个客户端 500ms 收尾窗口，44 个 SSH 承载的 status/ping/hostname 探针全部自然返回 exit code `0`，同时 Win32-OpenSSH 仍打印 `close - IO is still pending on closed socket`。该字符串应作为客户端关闭警告单独留证，不能单凭它认定 WinkYou stream/FIN 失败；历史 M8 第 627 条真正不退出仍是独立回归测试项。
 
@@ -246,23 +246,55 @@ TUN/WireGuard userspace 后端通常需要 `/dev/net/tun` 和 `CAP_NET_ADMIN`。
 
 ## Windows 启动项
 
-Windows legacy Wintun/TUN 和 autonomous `virtual_tcp_forwards` 的临时 ULA alias 都需要相应管理员权限；不配置 virtual facade 的 autonomous graph/loopback TCP 模式不因自身而要求 Wintun。alias ownership 已证明受监督的 A 进程可以在异常退出后安全重启，但它本身不是 supervisor。本次独立 watchdog 只是验收器，下面的 Task Scheduler 示例也只配置登录启动，不保证崩溃后自动拉起。Task Scheduler/NSSM 的正式 restart policy、整机重启后的实际重入，以及 B/C 的等价托管仍需分别现场验收：
+Windows legacy Wintun/TUN 和 autonomous `virtual_tcp_forwards` 的临时 ULA alias 都需要相应管理员权限；不配置 virtual facade 的 autonomous graph/loopback TCP 模式不因自身而要求 Wintun。源码现在提供一个 Task Scheduler 安装器和一个小型 PowerShell child supervisor。2026-07-20 已在 A 上完成真实进程强杀验收：任务中的 supervisor 保持运行，在约 5 秒后拉起新 Wink child，强杀后约 9.1 秒内观测到新 runtime state，约 91 秒观测到直连三角恢复并继续保持。整机重启、B/C 等价托管、三节点同时冷启动和公网 IP 变化仍未验收；现场细节见 [`WINDOWS-SUPERVISOR-FIELD-2026-07-20.md`](./WINDOWS-SUPERVISOR-FIELD-2026-07-20.md)。
 
 ### Task Scheduler
 
-以管理员 PowerShell 执行：
+先运行不修改系统的自测：
 
 ```powershell
-$WinkExe = "C:\Program Files\WinkYou\wink.exe"
-$Config = "$env:APPDATA\wink\config.yaml"
-$State = "$env:APPDATA\wink\wink.runtime.json"
-$Args = "--config `"$Config`" --state `"$State`" up"
-
-$Action = New-ScheduledTaskAction -Execute $WinkExe -Argument $Args
-$Trigger = New-ScheduledTaskTrigger -AtLogOn
-$Principal = New-ScheduledTaskPrincipal -UserId $env:USERNAME -RunLevel Highest
-Register-ScheduledTask -TaskName "WinkYou" -Action $Action -Trigger $Trigger -Principal $Principal -Description "Start WinkYou client at logon"
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\install-wink-supervised-task.ps1 -SelfTest
 ```
+
+再以管理员 PowerShell 安装。先把二进制和 supervisor 复制到管理员保护的稳定目录，把配置和状态目录放到受保护的 ProgramData 子目录；不要让 `SYSTEM` 启动项直接执行普通用户可修改的 checkout 文件。下面使用 SID，避免 Windows 显示语言影响 `icacls`：
+
+```powershell
+$InstallDir = "C:\Program Files\WinkYou"
+$DataDir = "C:\ProgramData\WinkYou"
+New-Item -ItemType Directory -Path $InstallDir, $DataDir -Force
+icacls $InstallDir /setowner "*S-1-5-32-544"
+if ($LASTEXITCODE -ne 0) { throw "failed to set owner on $InstallDir" }
+icacls $DataDir /setowner "*S-1-5-32-544"
+if ($LASTEXITCODE -ne 0) { throw "failed to set owner on $DataDir" }
+icacls $InstallDir /inheritance:r /grant:r "*S-1-5-18:(OI)(CI)F" "*S-1-5-32-544:(OI)(CI)F" "*S-1-5-32-545:(OI)(CI)RX"
+if ($LASTEXITCODE -ne 0) { throw "failed to protect $InstallDir" }
+icacls $DataDir /inheritance:r /grant:r "*S-1-5-18:(OI)(CI)F" "*S-1-5-32-544:(OI)(CI)F"
+if ($LASTEXITCODE -ne 0) { throw "failed to protect $DataDir" }
+Copy-Item ".\path\to\wink.exe" "$InstallDir\wink.exe"
+Copy-Item ".\scripts\run-wink-supervisor.ps1" "$InstallDir\run-wink-supervisor.ps1"
+Copy-Item ".\path\to\config.yaml" "$DataDir\config.yaml"
+```
+
+安装器会检查 `wink.exe`、supervisor 和配置文件自身及直接父目录，working directory、state/log/stop/lock 目录，以及已经存在的运行时文件的 owner 和 ACL。默认只信任 `SYSTEM`、内置 `Administrators` 与 `TrustedInstaller` 作为 owner 或可写主体；普通 `Users` 的只读/执行权限可以保留，任何其他主体的写权限或不可解析的可写 ACE 都会拒绝创建 `SYSTEM` 任务。这也防止普通用户预建 stop/lock 或读取 shutdown token。`-AllowUnsafeSystemPaths` 只用于所有本机账号都可信的隔离开发机，或由操作者另行审计过的自定义 ACL，不是默认生产安装方式。所有路径都会规范化成绝对路径；运行配置中的日志、recovery card、secret 等路径也应使用绝对路径，因为任务运行身份是 `SYSTEM`：
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\install-wink-supervised-task.ps1 `
+  -TaskName "WinkYou-A" `
+  -WinkExe "C:\Program Files\WinkYou\wink.exe" `
+  -Config "C:\ProgramData\WinkYou\config.yaml" `
+  -State "C:\ProgramData\WinkYou\wink.runtime.json" `
+  -WorkingDirectory "C:\Program Files\WinkYou" `
+  -SupervisorScript "C:\Program Files\WinkYou\run-wink-supervisor.ps1" `
+  -StartNow
+```
+
+任务 action 不是直接运行 `wink.exe`，而是用 Windows PowerShell 启动 [`run-wink-supervisor.ps1`](../scripts/run-wink-supervisor.ps1)。Task Scheduler 负责 `AtStartup`、`SYSTEM`/最高权限、`MultipleInstances=IgnoreNew` 和无限执行时长；supervisor 等待 Wink child，异常退出后按 `5s -> 10s -> ... -> 60s` 有界退避重启，连续稳定运行五分钟后重置失败计数。独立的 `.supervisor.lock` 还会拒绝手工启动的第二个 supervisor，runtime lock 则继续拒绝第二个 Wink runtime。正常 `wink down` 让 child 返回 `0`，supervisor 也返回 `0`，不会重启。
+
+现场先尝试了让 Task Scheduler 直接运行 Wink，并设置原生 `RestartOnFailure`。强杀 action 后任务记录 `0xFFFFFFFF` 并变成 Ready，但三分钟内没有重启，因此该路径在当前 Windows 主机上明确不作为产品承诺。安装器仍配置少量外层失败重试，但它只是未验收的 best-effort 设置，不能作为 supervisor 自身恢复承诺；真正通过验收的是存活 supervisor 对 Wink child 的秒级重启。
+
+如果旧的前台 `wink up` 还在运行，不要直接加 `-StartNow`：先完成一次正常 `wink down`，再启动任务。安装器会根据 runtime state 拒绝明显仍存活的 PID，`wink up` 自身的 runtime lock 继续作为权威的并发保护。
+
+安装器默认也不会覆盖任何同名任务。只有旧任务可识别为 WinkYou 管理的 supervisor、已经按下文流程停到非 Running 状态，并且显式传入 `-Force` 时才允许重装；无关同名任务和仍在运行的旧 supervisor 都会被拒绝。
 
 配置文件建议：
 
@@ -271,22 +303,76 @@ log:
   level: info
   format: text
   output: file
-  file: C:\Users\<you>\AppData\Roaming\wink\wink.log
+  file: C:\ProgramData\WinkYou\wink.log
 ```
 
-查看：
+查看和 `down` 应在管理员 PowerShell 中使用已安装二进制的绝对路径，避免误用 checkout 中的另一个版本：
 
 ```powershell
-wink --config "$env:APPDATA\wink\config.yaml" --state "$env:APPDATA\wink\wink.runtime.json" status
-wink --config "$env:APPDATA\wink\config.yaml" --state "$env:APPDATA\wink\wink.runtime.json" peers
-wink --config "$env:APPDATA\wink\config.yaml" --state "$env:APPDATA\wink\wink.runtime.json" logs --tail 200
+Get-ScheduledTask -TaskName "WinkYou-A"
+Get-ScheduledTaskInfo -TaskName "WinkYou-A"
+Test-Path "C:\ProgramData\WinkYou\wink.runtime.json.supervisor.stop"
+Get-Content "C:\ProgramData\WinkYou\wink.runtime.json.supervisor.log" -Tail 50
+$Wink = "C:\Program Files\WinkYou\wink.exe"
+& $Wink --config "C:\ProgramData\WinkYou\config.yaml" --state "C:\ProgramData\WinkYou\wink.runtime.json" status
+& $Wink --config "C:\ProgramData\WinkYou\config.yaml" --state "C:\ProgramData\WinkYou\wink.runtime.json" peers
+& $Wink --config "C:\ProgramData\WinkYou\config.yaml" --state "C:\ProgramData\WinkYou\wink.runtime.json" logs --tail 200
 ```
 
-停止：
+临时停止时先禁用任务并写入 stop marker，再在有界循环中使用认证的 graceful down。supervisor 在退避、启动前和 child 运行期间都会观察 marker；循环允许第一次 `down` 恰好命中旧 state。只有任务不再 Running 且 runtime state 中没有仍存活的 PID 才算停稳；超时要保留 marker 并排查，不能直接注销任务：
 
 ```powershell
-wink --config "$env:APPDATA\wink\config.yaml" --state "$env:APPDATA\wink\wink.runtime.json" down --force
-Unregister-ScheduledTask -TaskName "WinkYou" -Confirm:$false
+$Task = "WinkYou-A"
+$Wink = "C:\Program Files\WinkYou\wink.exe"
+$Config = "C:\ProgramData\WinkYou\config.yaml"
+$State = "C:\ProgramData\WinkYou\wink.runtime.json"
+$StopFile = $State + ".supervisor.stop"
+Disable-ScheduledTask -TaskName $Task
+New-Item -ItemType File -Path $StopFile -Force
+$Deadline = (Get-Date).AddSeconds(90)
+do {
+  & $Wink --config $Config --state $State down 2>$null
+  $RuntimeAlive = Test-Path $State
+  if ($RuntimeAlive) {
+    try {
+      $Runtime = Get-Content $State -Raw | ConvertFrom-Json
+      $RuntimeProcess = Get-Process -Id ([int]$Runtime.pid) -ErrorAction SilentlyContinue
+      $RuntimeAlive = $null -ne $RuntimeProcess -and
+        $RuntimeProcess.StartTime.ToUniversalTime().ToFileTimeUtc().ToString() -eq
+          [string]$Runtime.process_start_id
+    } catch { $RuntimeAlive = $true }
+  }
+  $TaskRunning = (Get-ScheduledTask -TaskName $Task).State -eq "Running"
+  if (-not $TaskRunning -and -not $RuntimeAlive) { break }
+  Start-Sleep -Seconds 1
+} while ((Get-Date) -lt $Deadline)
+if ($TaskRunning -or $RuntimeAlive) {
+  throw "WinkYou did not stop within 90 seconds; keep $StopFile and inspect the supervisor log"
+}
+```
+
+恢复时必须先确认旧 task action 已经退出，然后先删除 marker、再启用并显式启动任务。即使 `StartWhenAvailable` 在 Enable 时已经触发，task 的 `IgnoreNew` 和 supervisor lock 也只会保留一个实例：
+
+```powershell
+$Task = "WinkYou-A"
+$StopFile = "C:\ProgramData\WinkYou\wink.runtime.json.supervisor.stop"
+if ((Get-ScheduledTask -TaskName $Task).State -eq "Running") {
+  throw "the old supervisor is still running"
+}
+Remove-Item $StopFile -Force -ErrorAction SilentlyContinue
+Enable-ScheduledTask -TaskName $Task
+Start-ScheduledTask -TaskName $Task
+```
+
+永久移除是另一条流程：先完成上面的受控停止，并要求 runtime state 已由 graceful down 删除；如果 state 仍在，说明可能留下可恢复的 crash residue，应先恢复一次、等待新 generation 接管，再重新执行受控停止，不能直接注销：
+
+```powershell
+$Task = "WinkYou-A"
+$State = "C:\ProgramData\WinkYou\wink.runtime.json"
+if ((Get-ScheduledTask -TaskName $Task).State -eq "Running") { throw "task is still running" }
+if (Test-Path $State) { throw "runtime state remains; recover once and stop gracefully before uninstall" }
+Unregister-ScheduledTask -TaskName $Task -Confirm:$false
+Remove-Item ($State + ".supervisor.stop"), ($State + ".supervisor.lock") -Force -ErrorAction SilentlyContinue
 ```
 
 ### NSSM
@@ -294,10 +380,10 @@ Unregister-ScheduledTask -TaskName "WinkYou" -Confirm:$false
 如果偏好 Windows service 管理器，可用 NSSM 包装前台命令：
 
 ```powershell
-nssm install WinkYou "C:\Program Files\WinkYou\wink.exe" "--config `"$env:APPDATA\wink\config.yaml`" --state `"$env:APPDATA\wink\wink.runtime.json`" up"
+nssm install WinkYou "C:\Program Files\WinkYou\wink.exe" "--config `"C:\ProgramData\WinkYou\config.yaml`" --state `"C:\ProgramData\WinkYou\wink.runtime.json`" up"
 nssm set WinkYou AppDirectory "C:\Program Files\WinkYou"
-nssm set WinkYou AppStdout "$env:APPDATA\wink\wink.stdout.log"
-nssm set WinkYou AppStderr "$env:APPDATA\wink\wink.stderr.log"
+nssm set WinkYou AppStdout "C:\ProgramData\WinkYou\wink.stdout.log"
+nssm set WinkYou AppStderr "C:\ProgramData\WinkYou\wink.stderr.log"
 nssm start WinkYou
 ```
 

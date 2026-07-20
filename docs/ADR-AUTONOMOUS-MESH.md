@@ -13,9 +13,15 @@
   rollout. A later hard-crash experiment killed only the A WinkYou process,
   retained B/C, and proved that a new A generation could safely adopt its two
   existing loopback ULA rows and restore the direct triangle without operator
-  cleanup. Simultaneous cold start, OS autostart/reboot, and the public-IP-change
-  matrix remain open; see `SLICE-4.5-FIELD-ROLLOUT-2026-07-19.md` and
-  `VIRTUAL-TCP-ALIAS-CRASH-RECOVERY-2026-07-20.md`
+  cleanup. A then completed an A-only field migration to an installed Task
+  Scheduler child supervisor; after a second forced Wink-child exit, a new
+  generation was observed within about 9.1 seconds and the restored direct
+  triangle was observed in about 91 seconds without restarting B/C.
+  Simultaneous cold start, machine reboot, B/C supervision, and the
+  public-IP-change matrix remain open; see
+  `SLICE-4.5-FIELD-ROLLOUT-2026-07-19.md`,
+  `VIRTUAL-TCP-ALIAS-CRASH-RECOVERY-2026-07-20.md`, and
+  `WINDOWS-SUPERVISOR-FIELD-2026-07-20.md`
 - Date: 2026-07-19
 - Scope: control routing, graph routing, direct-edge improvement, and peer transit
 
@@ -516,10 +522,10 @@ Implementation status on 2026-07-19:
 - The autonomous node, routed endpoint, shortcut manager, recovery supervisor,
   and selected-port TCP facade are now wired into the long-running `wink up`
   lifecycle behind explicit opt-in. All three field processes have been
-  replaced with that path, and A has additionally passed a process hard-crash
-  and same-mapping alias-recovery experiment. OS-level supervision and reboot
-  acceptance remain open. Slice 5 system packet ingress/exit routing remains
-  open.
+  replaced with that path. A has additionally passed same-mapping alias
+  recovery and Task Scheduler child-supervisor process-crash experiments.
+  Machine reboot and equivalent B/C supervision remain open. Slice 5 system
+  packet ingress/exit routing remains open.
 
 The routed TCP proof now has explicit directional FIN handling, a bounded
 per-flow receive queue, and ACK-based retransmission over datagram neighbors.
@@ -720,8 +726,10 @@ This keeps the frozen connectivity solver/session boundary intact while making
 the graph behavior executable through normal commands. The guarded 2026-07-19
 C -> B -> A product rollout accepted that integration on all three field nodes;
 the 2026-07-20 A-process hard-crash accepted same-scope, same-mapping runtime and
-ULA alias recovery while B/C remained online. OS autostart/reboot, simultaneous
-cold start, and public-IP-change recovery are still separate acceptance work.
+ULA alias recovery while B/C remained online. The subsequent A child-supervisor
+test accepted automatic process re-entry and direct-triangle restoration, but
+machine reboot, B/C supervision, simultaneous cold start, and public-IP-change
+recovery are still separate acceptance work.
 
 Run the executable Slice 1 proof with:
 

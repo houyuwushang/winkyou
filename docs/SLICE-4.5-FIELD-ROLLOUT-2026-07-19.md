@@ -110,6 +110,20 @@ cleanup or infrastructure coordinator was used. Details and remaining safety
 boundaries are recorded in
 [VIRTUAL-TCP-ALIAS-CRASH-RECOVERY-2026-07-20.md](./VIRTUAL-TCP-ALIAS-CRASH-RECOVERY-2026-07-20.md).
 
+## 2026-07-20 A child-supervisor follow-up
+
+A subsequently completed an A-only field migration to an installed `SYSTEM`
+Task Scheduler action that runs the repository's PowerShell child supervisor. A direct-action
+`RestartOnFailure` attempt was explicitly rejected after a forced Wink exit
+left the task Ready for more than three minutes without a replacement process.
+With the two-process design, force-terminating Wink child PID `46236` left
+supervisor PID `76400` alive; it started PID `10992` after five seconds, the new
+state appeared about 9.1 seconds after the kill, and the direct triangle
+returned in about 91 seconds. The same process pair and direct triangle then
+held for about 149 seconds with successful direct A-to-B/A-to-C pings and both
+ULA TCP facades. Details are in
+[WINDOWS-SUPERVISOR-FIELD-2026-07-20.md](./WINDOWS-SUPERVISOR-FIELD-2026-07-20.md).
+
 ## Evidence boundary and remaining work
 
 Detailed process results, status snapshots, recovery cards, wrapper logs, and
@@ -121,9 +135,9 @@ committed.
 
 The next field acceptance matrix remains:
 
-1. install and verify OS autostart/process supervision on all three nodes (the
-   A alias layer now tolerates hard process exit, but the test watchdog is not a
-   production supervisor);
+1. install and verify equivalent process supervision on B and C; A process
+   supervision is accepted, but its `AtStartup` trigger still needs a real
+   machine-reboot test;
 2. reboot each machine and verify managed rejoin;
 3. perform a simultaneous three-node cold start; and
 4. exercise one or more real public-IP changes; and

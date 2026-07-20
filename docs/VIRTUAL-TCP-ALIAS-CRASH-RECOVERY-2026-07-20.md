@@ -149,8 +149,10 @@ adopted and may require one-time operator cleanup after upgrading an older
 build.
 
 This change makes a supervised process restart viable but does not itself
-provide a supervisor. The next operations step is to install and validate a
-restart policy on A, then B and C, before separately exercising OS reboot,
-simultaneous cold start, public-IP change, and longer retention. The facade
-remains selected-port userspace TCP and does not add arbitrary TCP, UDP, ICMP,
-subnet routing, exit-node routing, Wintun, or WireGuard.
+provide a supervisor. Later on 2026-07-20, A completed an A-only field migration
+to the repository's Task Scheduler child supervisor and passed a second
+forced-child-exit test; see
+`WINDOWS-SUPERVISOR-FIELD-2026-07-20.md`. B/C supervision, OS reboot,
+simultaneous cold start, public-IP change, and longer retention remain open.
+The facade remains selected-port userspace TCP and does not add arbitrary TCP,
+UDP, ICMP, subnet routing, exit-node routing, Wintun, or WireGuard.
