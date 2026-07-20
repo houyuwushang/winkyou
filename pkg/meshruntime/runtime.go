@@ -87,6 +87,7 @@ type Config struct {
 	strategyFactory             shortcut.StrategyFactory
 	tcpForwardSpecs             []tcpForwardSpec
 	virtualAliasManager         virtualAliasManager
+	virtualAliasOwnership       *VirtualAliasOwnership
 	selfBootstrapAllowNonPublic bool
 	selfBootstrapPunchGrace     time.Duration
 	selfBootstrapHelloInterval  time.Duration
@@ -101,8 +102,20 @@ type runtimeConfig = Config
 // Options controls process-local integration without changing mesh protocol or
 // topology configuration.
 type Options struct {
-	EventWriter   io.Writer
-	ShutdownToken string
+	EventWriter           io.Writer
+	ShutdownToken         string
+	VirtualAliasOwnership *VirtualAliasOwnership
+}
+
+// VirtualAliasOwnership identifies one process generation within a stable
+// autonomous runtime. On Windows it lets virtual TCP loopback aliases survive
+// a hard process exit without allowing unrelated Wink instances to adopt them.
+type VirtualAliasOwnership struct {
+	Scope          string
+	InstanceID     string
+	PID            int
+	ProcessStartID string
+	StoreDir       string
 }
 
 func (c runtimeConfig) normalized() (runtimeConfig, error) {
@@ -320,6 +333,10 @@ func newMeshRuntimeWithOptions(config runtimeConfig, options Options) (*meshRunt
 	cfg, err := config.normalized()
 	if err != nil {
 		return nil, err
+	}
+	if options.VirtualAliasOwnership != nil {
+		ownership := *options.VirtualAliasOwnership
+		cfg.virtualAliasOwnership = &ownership
 	}
 	runtime := &meshRuntime{
 		cfg: cfg, log: newEventLog(cfg.NodeID, options.EventWriter), echo: newEchoService(cfg.NodeID),

@@ -82,6 +82,34 @@ and a separate PowerShell dynamic-scope audit. This incident is useful evidence
 that the pre-mutation gate failed closed; it is not a failed mesh recovery
 attempt.
 
+## 2026-07-20 tuple-convergence follow-up
+
+The overnight soak exposed a crossed-winner UDP tuple race rather than a
+permission failure. The selector/receiver commit protocol, route-gated TCP
+facades, monitor correction, guarded three-node cohort upgrade, six-direction
+one-hop probes, and post-commit field result are recorded in
+[TUPLE-CONVERGENCE-FIELD-FIX-2026-07-20.md](./TUPLE-CONVERGENCE-FIELD-FIX-2026-07-20.md).
+
+## 2026-07-20 A-process crash-recovery follow-up
+
+The next experiment correctly used A, the operator-controlled Windows node, as
+the only down node. The first hard-crash attempt exposed that legacy markerless
+ULA aliases survived process death and therefore blocked a safe restart with
+`address already exists`; this was an alias-lifecycle gap, not a permission
+failure. The managed owned alias path now journals stable runtime scope, the
+complete virtual-forward mapping set, process generation, random ownership
+token, and Windows address-row creation timestamp under a machine-wide
+per-address lock.
+
+With that source deployed, only A PID `75160` was hard-killed while B and C
+remained running. Both ULA rows stayed in place during a deliberate 40-second
+outage. An independent test watchdog launched one new generation, PID `71440`,
+which adopted the unchanged rows, restored the full direct triangle about 112
+seconds after publishing its state, and held it for 120 seconds. No manual alias
+cleanup or infrastructure coordinator was used. Details and remaining safety
+boundaries are recorded in
+[VIRTUAL-TCP-ALIAS-CRASH-RECOVERY-2026-07-20.md](./VIRTUAL-TCP-ALIAS-CRASH-RECOVERY-2026-07-20.md).
+
 ## Evidence boundary and remaining work
 
 Detailed process results, status snapshots, recovery cards, wrapper logs, and
@@ -93,7 +121,9 @@ committed.
 
 The next field acceptance matrix remains:
 
-1. install and verify OS autostart/process supervision on all three nodes;
+1. install and verify OS autostart/process supervision on all three nodes (the
+   A alias layer now tolerates hard process exit, but the test watchdog is not a
+   production supervisor);
 2. reboot each machine and verify managed rejoin;
 3. perform a simultaneous three-node cold start; and
 4. exercise one or more real public-IP changes; and

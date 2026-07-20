@@ -2,6 +2,9 @@ package meshruntime
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
@@ -149,7 +152,22 @@ func newTCPRuntime(config runtimeConfig, node *mesh.Node) (*tcpRuntime, error) {
 		}
 		aliasManager = config.virtualAliasManager
 		if aliasManager == nil {
-			aliasManager, err = ipalias.NewLoopbackManager()
+			if config.virtualAliasOwnership == nil {
+				aliasManager, err = ipalias.NewLoopbackManager()
+			} else {
+				fingerprint, fingerprintErr := virtualTCPConfigFingerprint(config.tcpForwardSpecs)
+				if fingerprintErr != nil {
+					_ = forwarder.Close()
+					_ = endpoint.Close()
+					return nil, fingerprintErr
+				}
+				ownership := config.virtualAliasOwnership
+				aliasManager, err = ipalias.NewOwnedLoopbackManager(ipalias.OwnershipOptions{
+					Scope: ownership.Scope, InstanceID: ownership.InstanceID, PID: ownership.PID,
+					ProcessStartID: ownership.ProcessStartID, ConfigFingerprint: fingerprint,
+					StoreDir: ownership.StoreDir,
+				})
+			}
 			if err != nil {
 				_ = forwarder.Close()
 				_ = endpoint.Close()
@@ -164,6 +182,33 @@ func newTCPRuntime(config runtimeConfig, node *mesh.Node) (*tcpRuntime, error) {
 		listeners: make(map[string]*activeTCPForward), configuredIDs: make(map[string]struct{}),
 		configuredListens: make(map[string]string), aliasManager: aliasManager,
 	}, nil
+}
+
+func virtualTCPConfigFingerprint(specs []tcpForwardSpec) (string, error) {
+	entries := make([]string, 0, len(specs))
+	for _, spec := range specs {
+		if !spec.VirtualIP.IsValid() {
+			continue
+		}
+		virtualIP, port, err := parseVirtualTCPListen(spec.Listen)
+		if err != nil {
+			return "", fmt.Errorf("fingerprint virtual TCP listener %q: %w", spec.Listen, err)
+		}
+		if virtualIP != spec.VirtualIP {
+			return "", fmt.Errorf("fingerprint virtual TCP listener %q: parsed address %s does not match %s", spec.Listen, virtualIP, spec.VirtualIP)
+		}
+		entries = append(entries, netip.AddrPortFrom(virtualIP, port).String()+"="+strings.TrimSpace(spec.RemoteID))
+	}
+	sort.Strings(entries)
+	payload, err := json.Marshal(struct {
+		Version int      `json:"version"`
+		Entries []string `json:"entries"`
+	}{Version: 1, Entries: entries})
+	if err != nil {
+		return "", fmt.Errorf("encode virtual TCP ownership fingerprint: %w", err)
+	}
+	sum := sha256.Sum256(payload)
+	return hex.EncodeToString(sum[:]), nil
 }
 
 func (r *tcpRuntime) Start(ctx context.Context, log *eventLog) error {

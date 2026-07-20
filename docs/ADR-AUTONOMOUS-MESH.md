@@ -10,9 +10,12 @@
   complete command output through all four A entry points. A follow-up 120-second
   monitor then observed all 44 SSH-carried probes exit with code zero despite a
   recurring Win32-OpenSSH close warning; no stream hang was reproduced in this
-  rollout. Simultaneous cold start, OS autostart/reboot, and the public-IP-change
-  matrix remain open; see
-  `SLICE-4.5-FIELD-ROLLOUT-2026-07-19.md`
+  rollout. A later hard-crash experiment killed only the A WinkYou process,
+  retained B/C, and proved that a new A generation could safely adopt its two
+  existing loopback ULA rows and restore the direct triangle without operator
+  cleanup. Simultaneous cold start, OS autostart/reboot, and the public-IP-change
+  matrix remain open; see `SLICE-4.5-FIELD-ROLLOUT-2026-07-19.md` and
+  `VIRTUAL-TCP-ALIAS-CRASH-RECOVERY-2026-07-20.md`
 - Date: 2026-07-19
 - Scope: control routing, graph routing, direct-edge improvement, and peer transit
 
@@ -211,11 +214,18 @@ mesh service access, not completion of Slice 5 transparent L3.
 
 The driver-free increment is implemented as
 `--virtual-tcp-forward [VIRTUAL_IP]:PORT=NODE_ID`. It accepts only an IPv6 ULA
-host address (`/128`). While the listener is active, `meshnode` temporarily
+host address (`/128`). While the listener is active, the runtime temporarily
 adds that address to the Windows loopback with ActiveStore lifetime and
-`SkipAsSource=true`, then removes the alias during shutdown. Alias ownership and
-cleanup are part of the facade lifecycle; this is not a durable system address
-assignment.
+`SkipAsSource=true`, then removes the alias during verified graceful shutdown.
+The low-level `meshnode` path retains that process-local lifecycle. Managed
+autonomous `wink up` additionally persists a machine-wide, per-address ownership
+journal and holds an OS lifecycle lock. After an abnormal exit, an externally
+restarted process may adopt the existing row only when its cleaned absolute
+state path, node ID, and complete virtual-forward mapping set produce the same
+scope and fingerprint, the previous process generation is dead, and both the
+address shape and Windows row-creation timestamp still match the journal. All
+unverifiable or conflicting cases fail closed. This is crash-safe lifecycle
+ownership, not a durable system address assignment or an in-process supervisor.
 
 The facade deliberately keeps the existing fixed-target stream protocol. Its
 `OPEN` frame still carries no caller-selected host or port, so it remains wire
@@ -267,6 +277,19 @@ with code zero, while Win32-OpenSSH still printed its known pending-I/O close
 warning. That warning alone is not evidence of a WinkYou FIN defect. See
 `SLICE-4.5-FIELD-ROLLOUT-2026-07-19.md`. Neither result broadens the facade into
 system L3, arbitrary TCP ports, UDP, ICMP, subnet routing, or exit-node support.
+
+The 2026-07-20 A-process crash acceptance then used the managed owned alias
+path. Only A was hard-killed; B and C retained their process generations and
+direct edge. During the deliberate 40-second A outage, both ULA rows and
+journals remained, while Windows released the runtime and per-address locks.
+An independent test watchdog launched the new A generation once; it adopted
+both unchanged row identities, restored the direct triangle in about 112
+seconds, and held it for 120 seconds. No manual address cleanup or
+infrastructure coordinator was used. Six directed mesh ping paths and both ULA
+SSH facades completed after recovery, although transient active-ping loss means
+this is not a zero-loss or SLA claim. See
+`VIRTUAL-TCP-ALIAS-CRASH-RECOVERY-2026-07-20.md` for the exact evidence and
+fail-closed boundary.
 
 ### 12. Use bilateral recovery cards only when the graph has no route
 
@@ -492,8 +515,10 @@ Implementation status on 2026-07-19:
   not a zero-loss clean soak.
 - The autonomous node, routed endpoint, shortcut manager, recovery supervisor,
   and selected-port TCP facade are now wired into the long-running `wink up`
-  lifecycle behind explicit opt-in. The current field processes have not been
-  replaced with that path. Slice 5 system packet ingress/exit routing remains
+  lifecycle behind explicit opt-in. All three field processes have been
+  replaced with that path, and A has additionally passed a process hard-crash
+  and same-mapping alias-recovery experiment. OS-level supervision and reboot
+  acceptance remain open. Slice 5 system packet ingress/exit routing remains
   open.
 
 The routed TCP proof now has explicit directional FIN handling, a bounded
@@ -694,8 +719,9 @@ lifecycle; it does not merge the legacy and autonomous resource state machines.
 This keeps the frozen connectivity solver/session boundary intact while making
 the graph behavior executable through normal commands. The guarded 2026-07-19
 C -> B -> A product rollout accepted that integration on all three field nodes;
-OS autostart/reboot, simultaneous cold start, and public-IP-change recovery are
-still separate acceptance work.
+the 2026-07-20 A-process hard-crash accepted same-scope, same-mapping runtime and
+ULA alias recovery while B/C remained online. OS autostart/reboot, simultaneous
+cold start, and public-IP-change recovery are still separate acceptance work.
 
 Run the executable Slice 1 proof with:
 

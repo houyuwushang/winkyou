@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -218,5 +219,91 @@ func TestAutonomousEngineRuntimeConfigPropagatesRecoveryDebounce(t *testing.T) {
 	engine := autonomousEngine{cfg: cfg}
 	if got := engine.runtimeConfig().RecoveryDebounce; got != 500*time.Millisecond {
 		t.Fatalf("runtime recovery debounce = %s, want 500ms", got)
+	}
+}
+
+func TestAutonomousEngineVirtualAliasOwnershipScopeIsStable(t *testing.T) {
+	cfg := autonomousEngineTestConfig("A", "fd7a:115c:a1e0::a")
+	cfg.AutonomousMesh.VirtualTCPForwards = []config.AutonomousMeshVirtualTCPForward{{
+		Listen: "[fd7a:115c:a1e0::b]:22", RemoteID: "B",
+	}}
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "wink.yaml")
+	firstValue, err := newAutonomousEngine(cfg, logger.Nop(), configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondValue, err := newAutonomousEngine(cfg, logger.Nop(), filepath.Join(dir, "wink.runtime.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	first := firstValue.(*autonomousEngine)
+	second := secondValue.(*autonomousEngine)
+	firstOwnership, err := first.virtualAliasOwnership()
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondOwnership, err := second.virtualAliasOwnership()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if firstOwnership == nil || secondOwnership == nil {
+		t.Fatalf("virtual alias ownership = %+v / %+v", firstOwnership, secondOwnership)
+	}
+	if firstOwnership.Scope != secondOwnership.Scope {
+		t.Fatalf("equivalent runtime-state paths produced different scopes: %q / %q", firstOwnership.Scope, secondOwnership.Scope)
+	}
+	if firstOwnership.InstanceID == secondOwnership.InstanceID {
+		t.Fatalf("process generations reused instance ID %q", firstOwnership.InstanceID)
+	}
+	if firstOwnership.PID != os.Getpid() || firstOwnership.ProcessStartID != first.processStartID {
+		t.Fatalf("ownership process identity = %+v, want pid %d start %q", firstOwnership, os.Getpid(), first.processStartID)
+	}
+
+	differentPathValue, err := newAutonomousEngine(cfg, logger.Nop(), filepath.Join(dir, "other.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	differentPath, err := differentPathValue.(*autonomousEngine).virtualAliasOwnership()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if differentPath.Scope == firstOwnership.Scope {
+		t.Fatal("different runtime-state path reused ownership scope")
+	}
+	differentNodeCfg := cfg
+	differentNodeCfg.AutonomousMesh.NodeID = "Z"
+	differentNodeValue, err := newAutonomousEngine(differentNodeCfg, logger.Nop(), configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	differentNode, err := differentNodeValue.(*autonomousEngine).virtualAliasOwnership()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if differentNode.Scope == firstOwnership.Scope {
+		t.Fatal("different node ID reused ownership scope")
+	}
+}
+
+func TestAutonomousEngineVirtualAliasOwnershipRequiresStateAndForwards(t *testing.T) {
+	cfg := autonomousEngineTestConfig("A", "fd7a:115c:a1e0::a")
+	cfg.AutonomousMesh.VirtualTCPForwards = []config.AutonomousMeshVirtualTCPForward{{
+		Listen: "[fd7a:115c:a1e0::b]:22", RemoteID: "B",
+	}}
+	withoutStateValue, err := newAutonomousEngine(cfg, logger.Nop(), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ownership, err := withoutStateValue.(*autonomousEngine).virtualAliasOwnership(); err != nil || ownership != nil {
+		t.Fatalf("ownership without state = %+v error=%v, want nil", ownership, err)
+	}
+	cfg.AutonomousMesh.VirtualTCPForwards = nil
+	withoutForwardValue, err := newAutonomousEngine(cfg, logger.Nop(), filepath.Join(t.TempDir(), "wink.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ownership, err := withoutForwardValue.(*autonomousEngine).virtualAliasOwnership(); err != nil || ownership != nil {
+		t.Fatalf("ownership without virtual forwards = %+v error=%v, want nil", ownership, err)
 	}
 }

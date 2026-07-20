@@ -33,6 +33,7 @@ type fakeAddressProbe struct {
 	loopbackErr error
 	present     map[netip.Addr]bool
 	checks      int
+	state       func(interfaceIndex int, addr netip.Addr, check int) (aliasAddressState, error)
 	check       func(interfaceIndex int, addr netip.Addr, check int) (bool, error)
 }
 
@@ -43,12 +44,26 @@ func (f *fakeAddressProbe) LoopbackInterfaceIndex() (int, error) {
 	return f.index, nil
 }
 
-func (f *fakeAddressProbe) AddressPresent(interfaceIndex int, addr netip.Addr) (bool, error) {
+func (f *fakeAddressProbe) AddressState(interfaceIndex int, addr netip.Addr) (aliasAddressState, error) {
 	f.checks++
-	if f.check != nil {
-		return f.check(interfaceIndex, addr, f.checks)
+	if f.state != nil {
+		return f.state(interfaceIndex, addr, f.checks)
 	}
-	return f.present[addr], nil
+	if f.check != nil {
+		present, err := f.check(interfaceIndex, addr, f.checks)
+		if err != nil || !present {
+			return aliasAddressState{}, err
+		}
+		return fakePresentAddressState(addr), nil
+	}
+	if !f.present[addr] {
+		return aliasAddressState{}, nil
+	}
+	return fakePresentAddressState(addr), nil
+}
+
+func fakePresentAddressState(addr netip.Addr) aliasAddressState {
+	return aliasAddressState{Present: true, PrefixLength: 128, SkipAsSource: true, RowCreationID: "fake-" + addr.String()}
 }
 
 func newFakeProbe() *fakeAddressProbe {

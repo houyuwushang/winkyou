@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net"
 	"net/netip"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -94,6 +95,43 @@ func TestNormalizeVirtualTCPConfigUsesIPv6ULAAndExplicitRemote(t *testing.T) {
 	}
 }
 
+func TestVirtualTCPConfigFingerprintIsCanonicalAndComplete(t *testing.T) {
+	base := []tcpForwardSpec{
+		{Listen: "[fd00:0:0:0:0:0:0:c]:443", RemoteID: " C ", VirtualIP: netip.MustParseAddr("fd00::c")},
+		{Listen: "[fd00::b]:22", RemoteID: "B", VirtualIP: netip.MustParseAddr("fd00::b")},
+		{Listen: "127.0.0.1:8080", RemoteID: "D"},
+	}
+	want, err := virtualTCPConfigFingerprint(base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	equivalent := []tcpForwardSpec{
+		{Listen: "[fd00:0:0:0:0:0:0:b]:22", RemoteID: " B ", VirtualIP: netip.MustParseAddr("fd00::b")},
+		{Listen: "[fd00::c]:443", RemoteID: "C", VirtualIP: netip.MustParseAddr("fd00::c")},
+	}
+	if got, err := virtualTCPConfigFingerprint(equivalent); err != nil || got != want {
+		t.Fatalf("equivalent fingerprint = %q error=%v, want %q", got, err, want)
+	}
+
+	changes := map[string][]tcpForwardSpec{
+		"address": {{Listen: "[fd00::d]:443", RemoteID: "C", VirtualIP: netip.MustParseAddr("fd00::d")}, base[1]},
+		"port":    {{Listen: "[fd00::c]:444", RemoteID: "C", VirtualIP: netip.MustParseAddr("fd00::c")}, base[1]},
+		"remote":  {{Listen: "[fd00::c]:443", RemoteID: "D", VirtualIP: netip.MustParseAddr("fd00::c")}, base[1]},
+		"removed": {base[1]},
+	}
+	for name, specs := range changes {
+		t.Run(name, func(t *testing.T) {
+			got, err := virtualTCPConfigFingerprint(specs)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got == want {
+				t.Fatalf("changed configuration retained fingerprint %q", got)
+			}
+		})
+	}
+}
+
 func TestVirtualTCPForwardAliasFailureClosesManager(t *testing.T) {
 	wantErr := errors.New("alias add failed")
 	cleanupErr := errors.New("alias cleanup failed")
@@ -119,6 +157,23 @@ func TestVirtualTCPForwardAliasFailureClosesManager(t *testing.T) {
 	}
 	if aliases.closeCalls != 2 {
 		t.Fatalf("alias Close calls after retry = %d, want 2", aliases.closeCalls)
+	}
+}
+
+func TestNewTCPRuntimeUsesOwnedAliasManagerWhenContextProvided(t *testing.T) {
+	node, err := mesh.NewNode(mesh.NodeConfig{NodeID: "A"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = node.Close() })
+	_, err = newTCPRuntime(runtimeConfig{
+		NodeID: "A", virtualAliasOwnership: &VirtualAliasOwnership{},
+		tcpForwardSpecs: []tcpForwardSpec{{
+			Listen: "[fd00::b]:22", RemoteID: "B", VirtualIP: netip.MustParseAddr("fd00::b"),
+		}},
+	}, node)
+	if err == nil || !strings.Contains(err.Error(), "ownership scope is required") {
+		t.Fatalf("newTCPRuntime(invalid ownership) error = %v, want owned-manager validation", err)
 	}
 }
 

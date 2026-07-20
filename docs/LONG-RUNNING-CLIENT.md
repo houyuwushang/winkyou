@@ -2,7 +2,7 @@
 
 本文说明当前可用的长期运行方式。现阶段不引入新的 service 框架；`wink up` 仍是前台 client 进程，Linux 交给 systemd 管理，Windows 先使用管理员启动项、Task Scheduler 或 NSSM 管理。
 
-源码现在包含两个显式运行模式：默认的 `legacy` coordinator/WireGuard engine，以及默认关闭的 `autonomous_mesh` graph engine。只有配置 `autonomous_mesh.enabled: true` 才会选择后者。该 Slice 4.5 接入已通过全量测试、目标 race、全量 vet、隔离本机 CLI 生命周期，以及 2026-07-19 的 C -> B -> A 三节点 `wink up` 滚动现场验收。三个节点均以 zero seed、无基础设施 coordinator、每节点两条一跳 `protected_direct` packet edge 运行；详细冻结构建和验收边界见 [`SLICE-4.5-FIELD-ROLLOUT-2026-07-19.md`](./SLICE-4.5-FIELD-ROLLOUT-2026-07-19.md)。systemd、Task Scheduler、NSSM、整机重启、三节点同时冷启动和公网 IP 变化仍未完成现场验收。
+源码现在包含两个显式运行模式：默认的 `legacy` coordinator/WireGuard engine，以及默认关闭的 `autonomous_mesh` graph engine。只有配置 `autonomous_mesh.enabled: true` 才会选择后者。该 Slice 4.5 接入已通过全量测试、目标 race、全量 vet、隔离本机 CLI 生命周期，以及 2026-07-19 的 C -> B -> A 三节点 `wink up` 滚动现场验收。三个节点均以 zero seed、无基础设施 coordinator、每节点两条一跳 `protected_direct` packet edge 运行。2026-07-20 又只强杀 A 的 WinkYou 进程并保留 B/C：外部测试 watchdog 单次拉起的新 A 无人工清理接管两个原有 ULA 地址行，恢复直连三角并保持 120 秒。详细冻结构建和验收边界见 [`SLICE-4.5-FIELD-ROLLOUT-2026-07-19.md`](./SLICE-4.5-FIELD-ROLLOUT-2026-07-19.md) 和 [`VIRTUAL-TCP-ALIAS-CRASH-RECOVERY-2026-07-20.md`](./VIRTUAL-TCP-ALIAS-CRASH-RECOVERY-2026-07-20.md)。systemd、Task Scheduler、NSSM、整机重启、三节点同时冷启动和公网 IP 变化仍未完成现场验收。
 
 A 的四个 SSH facade 都返回了完整的预期 stdout 或状态 JSON。最初的独立探针在输出留证后立即终止本地 ssh，因此本身不能证明 client-side close；随后 120 秒 output-aware monitor 给每个客户端 500ms 收尾窗口，44 个 SSH 承载的 status/ping/hostname 探针全部自然返回 exit code `0`，同时 Win32-OpenSSH 仍打印 `close - IO is still pending on closed socket`。该字符串应作为客户端关闭警告单独留证，不能单凭它认定 WinkYou stream/FIN 失败；历史 M8 第 627 条真正不退出仍是独立回归测试项。
 
@@ -20,6 +20,10 @@ wink --config <config.yaml> doctor
 ```
 
 `wink up` 会保持运行并持续刷新 runtime state。`status`、`peers`、`doctor` 读取同一份 runtime state。autonomous runtime 会把随机 instance ID、进程启动身份、随机 shutdown token 和实际 loopback control endpoint 写入权限收紧且原子替换的状态文件；稳定的 `.runtime.json.lock` sidecar 在整个进程生命周期持有 OS 文件锁，阻止同一路径双重启动，进程异常退出时由操作系统释放。`status --json` 会删除 token 后再输出。
+
+Windows managed autonomous `wink up` 的 `virtual_tcp_forwards` 还使用第二套、独立于 runtime lock 的机器级 alias ownership：每个 ULA 在 `%ProgramData%\WinkYou\system-ingress-ipalias` 下有 durable marker 和永不删除的 lock sidecar。marker 绑定由清理后的绝对 state 路径加 node ID 派生的稳定 scope、完整 virtual-forward 映射集指纹、PID/进程启动身份/instance、随机 token，以及 Windows 地址行创建时间戳。进程崩溃后，只有 scope 和映射集相同、旧进程已死、地址仍为 loopback ActiveStore `/128` 且 `SkipAsSource=true`、地址行未被替换时，新进程才会原位接管。marker 缺失、映射变化、旧进程仍活着或地址行无法验证都会 fail closed，绝不会把未知地址当成自己的地址删除。旧版本留下的 markerless alias 需要先由运维确认并做一次清理。
+
+异常退出时，操作系统会释放 `.runtime.json.lock` 和 alias byte-range locks，但 ActiveStore alias、旧 runtime state 和 ownership marker 会保留；WinkYou 不会在进程死亡后自己拉起自己，必须由外部 supervisor 使用相同 state 路径、node ID 和 virtual-forward 映射集重新启动。地址已经因整机重启而消失但 marker 仍匹配时，源码允许重新创建；该分支有单元测试，但整机重启尚未完成现场验收。
 
 `wink down` 对 autonomous runtime 先核对 runtime state 中的 PID、进程启动身份和 instance ID，再发送带 token 的 loopback `POST /v1/shutdown`，等待运行时关闭 listener、TCP facade、地址别名并删除自己的状态文件。优雅停止失败时命令返回错误且保留状态，便于排查；即使显式传入 `wink down --force`，受管 autonomous runtime 也不会退回裸 PID 强杀。没有 managed control endpoint 的 legacy runtime 只能使用兼容 PID 停止路径；现在必须显式传入 `--force`，终止失败或无法确认退出时会保留状态并返回错误。
 
@@ -242,7 +246,7 @@ TUN/WireGuard userspace 后端通常需要 `/dev/net/tun` 和 `CAP_NET_ADMIN`。
 
 ## Windows 启动项
 
-Windows legacy Wintun/TUN 和 autonomous `virtual_tcp_forwards` 的临时 ULA alias 都需要相应管理员权限；不配置 virtual facade 的 autonomous graph/loopback TCP 模式不因自身而要求 Wintun。当前建议两种进程托管方式，但启用 autonomous 自动启动前仍应先完成上面的独立状态文件冒烟：
+Windows legacy Wintun/TUN 和 autonomous `virtual_tcp_forwards` 的临时 ULA alias 都需要相应管理员权限；不配置 virtual facade 的 autonomous graph/loopback TCP 模式不因自身而要求 Wintun。alias ownership 已证明受监督的 A 进程可以在异常退出后安全重启，但它本身不是 supervisor。本次独立 watchdog 只是验收器，下面的 Task Scheduler 示例也只配置登录启动，不保证崩溃后自动拉起。Task Scheduler/NSSM 的正式 restart policy、整机重启后的实际重入，以及 B/C 的等价托管仍需分别现场验收：
 
 ### Task Scheduler
 

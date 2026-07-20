@@ -190,6 +190,29 @@ func TestMeshRuntimeCloseRetriesPendingVirtualAliasCleanup(t *testing.T) {
 	}
 }
 
+func TestMeshRuntimeCopiesVirtualAliasOwnershipOptions(t *testing.T) {
+	aliases := &fakeVirtualAliasManager{}
+	ownership := &VirtualAliasOwnership{
+		Scope: "scope-a", InstanceID: "instance-a", PID: 42,
+		ProcessStartID: "process-start-a", StoreDir: "ownership-store",
+	}
+	runtime, err := newMeshRuntimeWithOptions(runtimeConfig{
+		NodeID: "A", VirtualIP: "fd00::a", MeshListen: "off", ControlListen: "off",
+		VirtualTCPForwards: []string{"[fd00::b]:22=B"}, virtualAliasManager: aliases,
+	}, Options{VirtualAliasOwnership: ownership})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = runtime.Close() })
+	ownership.Scope = "mutated"
+	ownership.InstanceID = "mutated"
+	got := runtime.cfg.virtualAliasOwnership
+	if got == nil || got.Scope != "scope-a" || got.InstanceID != "instance-a" || got.PID != 42 ||
+		got.ProcessStartID != "process-start-a" || got.StoreDir != "ownership-store" {
+		t.Fatalf("copied virtual alias ownership = %+v", got)
+	}
+}
+
 func TestMeshRuntimeConcurrentCloseSerializesVirtualAliasCleanup(t *testing.T) {
 	aliases := &fakeVirtualAliasManager{closeErrs: []error{errors.New("transient alias cleanup failure")}}
 	runtime, err := newMeshRuntime(runtimeConfig{

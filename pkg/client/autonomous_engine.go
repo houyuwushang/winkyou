@@ -7,6 +7,9 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"os"
+	"path/filepath"
+	goruntime "runtime"
 	"sort"
 	"strings"
 	"sync"
@@ -126,9 +129,13 @@ func (e *autonomousEngine) Start(ctx context.Context) (err error) {
 		e.notifyStatus()
 	}()
 
+	virtualAliasOwnership, err := e.virtualAliasOwnership()
+	if err != nil {
+		return err
+	}
 	runtime, err := meshruntime.New(e.runtimeConfig(), meshruntime.Options{
-		EventWriter:   autonomousEventWriter{log: e.log},
-		ShutdownToken: e.shutdownToken,
+		EventWriter: autonomousEventWriter{log: e.log}, ShutdownToken: e.shutdownToken,
+		VirtualAliasOwnership: virtualAliasOwnership,
 	})
 	if err != nil {
 		return err
@@ -156,6 +163,25 @@ func (e *autonomousEngine) Start(ctx context.Context) (err error) {
 	e.notifyStatus()
 	cleanup = false
 	return nil
+}
+
+func (e *autonomousEngine) virtualAliasOwnership() (*meshruntime.VirtualAliasOwnership, error) {
+	if e == nil || strings.TrimSpace(e.statePath) == "" || len(e.cfg.AutonomousMesh.VirtualTCPForwards) == 0 {
+		return nil, nil
+	}
+	statePath, err := filepath.Abs(RuntimeStatePath(e.statePath))
+	if err != nil {
+		return nil, fmt.Errorf("client autonomous mesh: resolve virtual alias ownership state path: %w", err)
+	}
+	statePath = filepath.Clean(statePath)
+	if goruntime.GOOS == "windows" {
+		statePath = strings.ToLower(statePath)
+	}
+	nodeID := strings.TrimSpace(e.cfg.AutonomousMesh.NodeID)
+	return &meshruntime.VirtualAliasOwnership{
+		Scope:      "runtime_state=" + statePath + "\nnode_id=" + nodeID,
+		InstanceID: e.instanceID, PID: os.Getpid(), ProcessStartID: e.processStartID,
+	}, nil
 }
 
 func (e *autonomousEngine) Stop() error {
