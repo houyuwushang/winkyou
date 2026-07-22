@@ -12,11 +12,13 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"winkyou/pkg/bootstrap/selfhosted"
 	"winkyou/pkg/mesh/shortcut"
 	"winkyou/pkg/nat/puncher"
 	"winkyou/pkg/solver"
@@ -25,6 +27,26 @@ import (
 )
 
 const runtimeTestStrategyName = "runtime_test_direct"
+
+func TestSelfBootstrapEventLogIncludesStableUnderlayBindingEvidence(t *testing.T) {
+	var output bytes.Buffer
+	runtime := &meshRuntime{log: newEventLog("A", &output)}
+	runtime.handleSelfBootstrapEvent(selfhosted.Event{
+		PeerID: "B", State: selfhosted.StateAttached, AttemptID: "attempt-1",
+		LocalBindIP: "192.0.2.50", LocalBindInterface: "Ethernet", LocalBindAddr: "192.0.2.50:42000",
+	})
+	var record map[string]any
+	if err := json.Unmarshal(output.Bytes(), &record); err != nil {
+		t.Fatalf("decode event log: %v", err)
+	}
+	for key, want := range map[string]string{
+		"local_bind_ip": "192.0.2.50", "local_bind_interface": "Ethernet", "local_bind_addr": "192.0.2.50:42000",
+	} {
+		if got := record[key]; got != want {
+			t.Fatalf("event log %s = %#v, want %q; record=%v", key, got, want, record)
+		}
+	}
+}
 
 func TestRuntimeConfigUsesFieldLivenessDefaults(t *testing.T) {
 	cfg, err := (runtimeConfig{NodeID: "A", MeshListen: "off", ControlListen: "off"}).normalized()
@@ -50,6 +72,35 @@ func TestRuntimeConfigUsesFieldLivenessDefaults(t *testing.T) {
 	if cfg.TCPFrameTimeout != wantFrameTimeout {
 		t.Fatalf("TCP frame timeout default = %s, want %s", cfg.TCPFrameTimeout, wantFrameTimeout)
 	}
+}
+
+func TestRuntimeConfigResolvesPunchInterfaceOnceAndFailsClosed(t *testing.T) {
+	if _, err := (runtimeConfig{
+		NodeID: "A", MeshListen: "off", ControlListen: "off", PunchInterface: "winkyou-interface-that-does-not-exist",
+	}).normalized(); err == nil || !strings.Contains(err.Error(), "punch interface") {
+		t.Fatalf("missing punch interface error = %v", err)
+	}
+
+	interfaces, err := net.Interfaces()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, iface := range interfaces {
+		if iface.Flags&net.FlagUp == 0 || iface.Flags&net.FlagLoopback != 0 {
+			continue
+		}
+		cfg, err := (runtimeConfig{
+			NodeID: "A", MeshListen: "off", ControlListen: "off", PunchInterface: iface.Name,
+		}).normalized()
+		if err != nil {
+			continue
+		}
+		if cfg.punchBinding == nil || cfg.punchBinding.InterfaceName != iface.Name || cfg.punchBinding.InterfaceIndex != iface.Index {
+			t.Fatalf("resolved punch binding = %+v, want %s index %d", cfg.punchBinding, iface.Name, iface.Index)
+		}
+		return
+	}
+	t.Skip("host has no active non-loopback interface with a usable IPv4 address")
 }
 
 func TestRuntimeConfigTCPFrameTimeoutCoversAsymmetricFailureWindow(t *testing.T) {

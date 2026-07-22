@@ -7,8 +7,11 @@ import (
 	"math/rand"
 	"net"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
+
+	"winkyou/pkg/netutil"
 )
 
 func TestEncodeDecodePunchRoundTrip(t *testing.T) {
@@ -210,6 +213,74 @@ func TestPunchHitsResponder(t *testing.T) {
 	res.Conn.Close()
 	peer.Close()
 	<-done
+}
+
+func TestPunchBindingUsesExactLocalInterfaceIP(t *testing.T) {
+	binding := testPunchBinding(t)
+	peer, err := net.ListenUDP("udp4", &net.UDPAddr{IP: binding.LocalIP, Port: 0})
+	if err != nil {
+		t.Fatalf("peer listen on %s: %v", binding.LocalIP, err)
+	}
+	peerPort := peer.LocalAddr().(*net.UDPAddr).Port
+	session := [8]byte{7, 7, 2, 2, 6, 6, 1, 1}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		buf := make([]byte, maxPunchPacket)
+		for {
+			_ = peer.SetReadDeadline(time.Now().Add(2 * time.Second))
+			n, src, readErr := peer.ReadFromUDP(buf)
+			if readErr != nil {
+				return
+			}
+			packet, ok := decodePunch(buf[:n])
+			if !ok || packet.Session != session || packet.Kind != punchProbe {
+				continue
+			}
+			_, _ = peer.WriteToUDP(encodePunch(punchPacket{Kind: punchAck, Session: session, Nonce: packet.Nonce}), src)
+		}
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	result, err := Punch(ctx, Config{
+		RemoteIP: binding.LocalIP, TargetPorts: []int{peerPort}, Session: session,
+		SocketCount: 2, RoundDelay: 20 * time.Millisecond, GracePeriod: 10 * time.Millisecond,
+		Binding: binding,
+	})
+	if err != nil {
+		_ = peer.Close()
+		<-done
+		if errors.Is(err, syscall.EPERM) {
+			t.Skipf("platform requires additional privilege for interface binding: %v", err)
+		}
+		t.Fatalf("Punch() error = %v", err)
+	}
+	if result.LocalAddr == nil || !result.LocalAddr.IP.Equal(binding.LocalIP) {
+		t.Fatalf("Punch() local = %v, want source IP %s", result.LocalAddr, binding.LocalIP)
+	}
+	_ = result.Conn.Close()
+	_ = peer.Close()
+	<-done
+}
+
+func testPunchBinding(t *testing.T) *netutil.UDPBinding {
+	t.Helper()
+	interfaces, err := net.Interfaces()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, iface := range interfaces {
+		if iface.Flags&net.FlagUp == 0 || iface.Flags&net.FlagLoopback != 0 {
+			continue
+		}
+		binding, err := netutil.ResolveUDPBinding(iface.Name)
+		if err == nil {
+			return binding
+		}
+	}
+	t.Skip("host has no active non-loopback interface with a usable IPv4 address")
+	return nil
 }
 
 func TestPunchTimesOutWithNoPeer(t *testing.T) {

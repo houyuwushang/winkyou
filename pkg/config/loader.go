@@ -75,6 +75,7 @@ func setDefaults(v *viper.Viper, cfg Config) {
 	v.SetDefault("nat.candidate_port_min", cfg.NAT.CandidatePortMin)
 	v.SetDefault("nat.candidate_port_max", cfg.NAT.CandidatePortMax)
 	v.SetDefault("nat.stun_servers", cfg.NAT.STUNServers)
+	v.SetDefault("nat.punch_interface", cfg.NAT.PunchInterface)
 	v.SetDefault("nat.turn_servers", cfg.NAT.TURNServers)
 	v.SetDefault("nat.nat1to1_ips", cfg.NAT.NAT1To1IPs)
 	v.SetDefault("nat.nat1to1_candidate_type", cfg.NAT.NAT1To1CandidateType)

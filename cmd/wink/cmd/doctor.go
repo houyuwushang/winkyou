@@ -22,6 +22,7 @@ import (
 	winkclient "winkyou/pkg/client"
 	"winkyou/pkg/config"
 	"winkyou/pkg/nat"
+	"winkyou/pkg/netutil"
 	"winkyou/pkg/solver"
 	"winkyou/pkg/solver/strategy/legacyice"
 	"winkyou/pkg/solver/strategy/relayonly"
@@ -251,6 +252,10 @@ func defaultSTUNProbe(ctx context.Context, cfg *config.Config) doctorCheck {
 }
 
 func defaultSTUNProbeWithReport(ctx context.Context, cfg *config.Config) (doctorCheck, *nat.STUNMappingReport) {
+	binding, err := netutil.ResolveUDPBinding(cfg.NAT.PunchInterface)
+	if err != nil {
+		return warnCheck("nat", "stun", "configured punch interface is unavailable: "+err.Error(), "fix nat.punch_interface or restore that interface and its IPv4 address"), nil
+	}
 	servers, err := nat.PublicDirectSTUNServerURLs(nat.ICEConfig{
 		STUNServers: cfg.NAT.STUNServers,
 		TURNServers: doctorNATTURNServers(cfg.NAT.TURNServers),
@@ -267,12 +272,13 @@ func defaultSTUNProbeWithReport(ctx context.Context, cfg *config.Config) (doctor
 		return warnCheck("nat", "stun", "no usable STUN server configured", "remove empty nat.stun_servers entries or configure a reachable STUN/UDP TURN server"), nil
 	}
 	probeCtx, cancel := context.WithTimeout(ctx, stunMappingProbeTimeout(len(servers)))
-	report, err := nat.ProbeSTUNMapping(probeCtx, servers)
+	report, err := nat.ProbeSTUNMappingBound(probeCtx, servers, binding)
 	cancel()
+	bindingEvidence := formatSTUNBindingEvidence(binding)
 	if err != nil {
-		return warnCheck("nat", "stun", "all STUN probes failed: "+formatSTUNMappingReport(report), "configure a reachable STUN server near both peers, or use TURN/relay_only"), &report
+		return warnCheck("nat", "stun", "all STUN probes failed: "+bindingEvidence+formatSTUNMappingReport(report), "configure a reachable STUN server near both peers, or use TURN/relay_only"), &report
 	}
-	message := fmt.Sprintf("nat_type=%s %s", report.NATType.String(), formatSTUNMappingReport(report))
+	message := fmt.Sprintf("nat_type=%s %s%s", report.NATType.String(), bindingEvidence, formatSTUNMappingReport(report))
 	hintSuggestion := publicEndpointHintSuggestion(report, cfg.NAT)
 	if report.NATType == nat.NATTypeSymmetric {
 		suggestion := "public direct may fail with endpoint-dependent mappings; compare natpierce endpoints, use auto_public_endpoint_hints plus a small public_endpoint_hint_port_window for best-effort probing, configure proven public_endpoint_hints if available, or use relay_only fallback"
@@ -284,6 +290,13 @@ func defaultSTUNProbeWithReport(ctx context.Context, cfg *config.Config) (doctor
 	check := okCheck("nat", "stun", message)
 	check.Suggestion = hintSuggestion
 	return check, &report
+}
+
+func formatSTUNBindingEvidence(binding *netutil.UDPBinding) string {
+	if binding == nil {
+		return ""
+	}
+	return fmt.Sprintf("local_bind_interface=%s local_bind_ip=%s ", binding.InterfaceName, binding.LocalIP)
 }
 
 func stunMappingProbeTimeout(serverCount int) time.Duration {

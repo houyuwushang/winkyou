@@ -3,6 +3,7 @@ package config_test
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -77,6 +78,25 @@ func TestLoadValidFile(t *testing.T) {
 	}
 	if len(cfg.NAT.PublicDirectTrustedCIDRs) != 1 || cfg.NAT.PublicDirectTrustedCIDRs[0] != "198.18.0.0/15" {
 		t.Fatalf("public direct trusted CIDRs = %#v, want 198.18.0.0/15", cfg.NAT.PublicDirectTrustedCIDRs)
+	}
+}
+
+func TestLoadAndValidatePunchInterface(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "wink.yaml")
+	if err := os.WriteFile(path, []byte("nat:\n  punch_interface: Ethernet 2\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if cfg.NAT.PunchInterface != "Ethernet 2" {
+		t.Fatalf("nat.punch_interface = %q, want Ethernet 2", cfg.NAT.PunchInterface)
+	}
+
+	cfg.NAT.PunchInterface = " Ethernet 2 "
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "nat.punch_interface") {
+		t.Fatalf("Validate() whitespace error = %v", err)
 	}
 }
 

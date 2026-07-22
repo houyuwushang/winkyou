@@ -3,6 +3,7 @@ package cmd
 import (
 	"bytes"
 	"encoding/json"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -11,6 +12,8 @@ import (
 
 	winkclient "winkyou/pkg/client"
 	"winkyou/pkg/config"
+	"winkyou/pkg/nat"
+	"winkyou/pkg/netutil"
 )
 
 func TestDebugDefaultBehaviorWithoutExplicitConfigPath(t *testing.T) {
@@ -214,6 +217,38 @@ coordinator:
 	assertContains(t, output, "Runtime State:      no")
 	assertContains(t, output, "State:              not connected (no runtime state file)")
 	assertContains(t, output, "Known Peers:        0")
+}
+
+func TestPortAllocOutputIncludesPinnedUnderlayEvidence(t *testing.T) {
+	binding := &netutil.UDPBinding{InterfaceName: "Ethernet", InterfaceIndex: 7, LocalIP: net.IPv4(192, 0, 2, 50)}
+	report := nat.PortAllocationReport{
+		Pattern: nat.PortAllocationPreserving, MappedIP: net.IPv4(198, 51, 100, 2), StableIP: true,
+		Samples: []nat.PortAllocationSample{{
+			Server: "stun.example:3478", LocalIP: net.IPv4(192, 0, 2, 50), LocalPort: 42000,
+			MappedIP: net.IPv4(198, 51, 100, 2), MappedPort: 42000,
+		}},
+	}
+	out := portAllocOutputFromReport([]string{"stun.example:3478"}, report, binding)
+	if out.LocalBindInterface != "Ethernet" || out.LocalBindIP != "192.0.2.50" {
+		t.Fatalf("port allocation binding = %q/%q", out.LocalBindInterface, out.LocalBindIP)
+	}
+	if len(out.Samples) != 1 || out.Samples[0].LocalIP != "192.0.2.50" {
+		t.Fatalf("port allocation sample evidence = %+v", out.Samples)
+	}
+}
+
+func TestDebugPortAllocFailsClosedForMissingPunchInterface(t *testing.T) {
+	configPath := writeDebugConfig(t, `
+nat:
+  punch_interface: winkyou-interface-that-does-not-exist
+`)
+	cmd := newDebugCmd(&Options{ConfigPath: configPath})
+	cmd.SetOut(new(bytes.Buffer))
+	cmd.SetErr(new(bytes.Buffer))
+	cmd.SetArgs([]string{"port-alloc", "127.0.0.1:9"})
+	if err := cmd.Execute(); err == nil || !strings.Contains(err.Error(), "winkyou-interface-that-does-not-exist") {
+		t.Fatalf("debug port-alloc missing interface error = %v", err)
+	}
 }
 
 func TestDebugUsesExplicitRuntimeStatePath(t *testing.T) {

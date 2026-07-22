@@ -10,6 +10,8 @@ import (
 	"fmt"
 	"net"
 	"strings"
+
+	"winkyou/pkg/netutil"
 )
 
 // PortAllocationPattern classifies how a NAT assigns external (mapped) UDP ports
@@ -61,6 +63,7 @@ type PortAllocationSample struct {
 	Index      int          `json:"index"`
 	Server     string       `json:"server,omitempty"`
 	ServerAddr *net.UDPAddr `json:"server_addr,omitempty"`
+	LocalIP    net.IP       `json:"local_ip,omitempty"`
 	LocalPort  int          `json:"local_port"`
 	MappedIP   net.IP       `json:"mapped_ip"`
 	MappedPort int          `json:"mapped_port"`
@@ -97,7 +100,13 @@ type PortAllocationReport struct {
 // allocation behavior. Probes are serial so the observed order reflects the
 // NAT's mapping-creation order (required to measure a sequential delta).
 func ProbePortAllocation(ctx context.Context, server string, samples int) (PortAllocationReport, error) {
-	return probePortAllocation(ctx, []string{server}, samples)
+	return ProbePortAllocationBound(ctx, server, samples, nil)
+}
+
+// ProbePortAllocationBound is ProbePortAllocation with an optional,
+// already-resolved underlay binding.
+func ProbePortAllocationBound(ctx context.Context, server string, samples int, binding *netutil.UDPBinding) (PortAllocationReport, error) {
+	return probePortAllocation(ctx, []string{server}, samples, binding)
 }
 
 // ProbePortAllocationWithMapping combines two complementary observations:
@@ -113,6 +122,13 @@ func ProbePortAllocation(ctx context.Context, server string, samples int) (PortA
 // allocation probes succeed, the report remains usable with MappingNATType set
 // to unknown and MappingError populated.
 func ProbePortAllocationWithMapping(ctx context.Context, servers []string, samples int) (PortAllocationReport, error) {
+	return ProbePortAllocationWithMappingBound(ctx, servers, samples, nil)
+}
+
+// ProbePortAllocationWithMappingBound is ProbePortAllocationWithMapping with
+// one optional underlay binding reused by both the shared mapping socket and
+// every fresh allocation-sample socket.
+func ProbePortAllocationWithMappingBound(ctx context.Context, servers []string, samples int, binding *netutil.UDPBinding) (PortAllocationReport, error) {
 	servers = normalizeSTUNServers(servers)
 	if len(servers) == 0 {
 		return PortAllocationReport{}, fmt.Errorf("nat: no STUN servers configured")
@@ -121,10 +137,10 @@ func ProbePortAllocationWithMapping(ctx context.Context, servers []string, sampl
 	mapping := STUNMappingReport{NATType: NATTypeUnknown}
 	var mappingErr error
 	if len(servers) > 1 {
-		mapping, mappingErr = ProbeSTUNMapping(ctx, servers)
+		mapping, mappingErr = ProbeSTUNMappingBound(ctx, servers, binding)
 	}
 
-	report, err := probePortAllocation(ctx, servers, samples)
+	report, err := probePortAllocation(ctx, servers, samples, binding)
 	if err != nil {
 		return report, err
 	}
@@ -136,7 +152,7 @@ func ProbePortAllocationWithMapping(ctx context.Context, servers []string, sampl
 	return report, nil
 }
 
-func probePortAllocation(ctx context.Context, servers []string, samples int) (PortAllocationReport, error) {
+func probePortAllocation(ctx context.Context, servers []string, samples int, binding *netutil.UDPBinding) (PortAllocationReport, error) {
 	servers = normalizeSTUNServers(servers)
 	if len(servers) == 0 {
 		return PortAllocationReport{}, fmt.Errorf("nat: no STUN servers configured")
@@ -158,7 +174,7 @@ func probePortAllocation(ctx context.Context, servers []string, samples int) (Po
 			break
 		}
 		server := servers[i%len(servers)]
-		res, err := ProbeSTUN(ctx, server)
+		res, err := ProbeSTUNBound(ctx, server, binding)
 		if err != nil {
 			if firstErr == nil {
 				firstErr = err
@@ -172,6 +188,7 @@ func probePortAllocation(ctx context.Context, servers []string, samples int) (Po
 			Index:      i,
 			Server:     server,
 			ServerAddr: cloneUDPAddr(res.ServerAddr),
+			LocalIP:    append(net.IP(nil), res.LocalAddr.IP...),
 			LocalPort:  res.LocalAddr.Port,
 			MappedIP:   append(net.IP(nil), res.MappedAddr.IP...),
 			MappedPort: res.MappedAddr.Port,

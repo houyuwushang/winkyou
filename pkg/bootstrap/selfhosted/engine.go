@@ -19,6 +19,7 @@ import (
 	"winkyou/pkg/mesh"
 	"winkyou/pkg/nat"
 	"winkyou/pkg/nat/puncher"
+	"winkyou/pkg/netutil"
 	"winkyou/pkg/recoverycard"
 	"winkyou/pkg/transport/iceadapter"
 )
@@ -61,6 +62,9 @@ type PeerStatus struct {
 	LastSuccessAt        time.Time `json:"last_success_at,omitempty"`
 	PunchMethod          string    `json:"punch_method,omitempty"`
 	LearnedRemote        string    `json:"learned_remote,omitempty"`
+	LocalBindIP          string    `json:"local_bind_ip,omitempty"`
+	LocalBindInterface   string    `json:"local_bind_interface,omitempty"`
+	LocalBindAddr        string    `json:"local_bind_addr,omitempty"`
 	FailureStage         string    `json:"failure_stage,omitempty"`
 	LastError            string    `json:"last_error,omitempty"`
 }
@@ -81,6 +85,9 @@ type Event struct {
 	AttemptWindowEnd     time.Time
 	PunchMethod          string
 	LearnedRemote        string
+	LocalBindIP          string
+	LocalBindInterface   string
+	LocalBindAddr        string
 	FailureStage         string
 	// StableNeighbor identifies the exact packet-neighbor generation installed
 	// after the cached-endpoint punch and authenticated peer hello completed.
@@ -116,6 +123,8 @@ type Config struct {
 	PredictSockets  int
 	PredictSpan     int
 	AllowNonPublic  bool
+	PunchInterface  string
+	Binding         *netutil.UDPBinding
 	Punch           PunchFunc
 	Now             func() time.Time
 	OnEvent         func(Event)
@@ -189,6 +198,21 @@ func (c Config) normalized() (Config, error) {
 	if c.Punch == nil {
 		c.Punch = puncher.Punch
 	}
+	c.PunchInterface = strings.TrimSpace(c.PunchInterface)
+	if c.Binding != nil {
+		if c.PunchInterface != "" && c.PunchInterface != c.Binding.InterfaceName {
+			return Config{}, fmt.Errorf("selfbootstrap: configured punch interface %q does not match resolved interface %q", c.PunchInterface, c.Binding.InterfaceName)
+		}
+		if c.PunchInterface == "" {
+			c.PunchInterface = c.Binding.InterfaceName
+		}
+	} else {
+		binding, err := netutil.ResolveUDPBinding(c.PunchInterface)
+		if err != nil {
+			return Config{}, fmt.Errorf("selfbootstrap: resolve punch interface: %w", err)
+		}
+		c.Binding = binding
+	}
 	if c.Now == nil {
 		c.Now = time.Now
 	}
@@ -223,6 +247,7 @@ type peerRuntime struct {
 	attemptCancel          context.CancelCauseFunc
 	lastAttemptWindow      time.Time
 	candidateFailures      map[string]uint32
+	punchDeadlineMisses    map[string]uint32
 	resetCandidateFailures atomic.Bool
 }
 
@@ -231,15 +256,17 @@ func (p *peerRuntime) consumeCandidateFailureReset() bool {
 		return false
 	}
 	clear(p.candidateFailures)
+	clear(p.punchDeadlineMisses)
 	return true
 }
 
 type candidateSelection struct {
-	Group         candidateGroup
-	Index         int
-	Total         int
-	Failures      uint32
-	WindowOrdinal int64
+	Group               candidateGroup
+	Index               int
+	Total               int
+	Failures            uint32
+	PunchDeadlineMisses uint32
+	WindowOrdinal       int64
 }
 
 type candidateAttemptError struct {
@@ -287,9 +314,13 @@ func New(config Config) (*Engine, error) {
 		}
 		engine.peers[peerID] = &peerRuntime{
 			id: peerID, key: key, wake: make(chan struct{}, 1),
-			candidateFailures: make(map[string]uint32),
+			candidateFailures:   make(map[string]uint32),
+			punchDeadlineMisses: make(map[string]uint32),
 		}
-		engine.statuses[peerID] = PeerStatus{PeerID: peerID, State: StateWaitingHint}
+		engine.statuses[peerID] = PeerStatus{
+			PeerID: peerID, State: StateWaitingHint,
+			LocalBindIP: bindingIP(cfg.Binding), LocalBindInterface: cfg.PunchInterface,
+		}
 	}
 	return engine, nil
 }
@@ -542,10 +573,7 @@ func (e *Engine) runPeer(ctx context.Context, peer *peerRuntime) {
 				continue
 			}
 			stage, penalize := candidateFailureInfo(err)
-			if penalize {
-				peer.candidateFailures[selection.Group.ID]++
-				selection.Failures = peer.candidateFailures[selection.Group.ID]
-			}
+			recordCandidateFailure(peer, &selection, stage, penalize)
 			e.setFailure(peer, selection, stage, err)
 		}
 	}
@@ -566,7 +594,7 @@ func (e *Engine) runAttempt(
 		return newCandidateAttemptError("candidate", false, fmt.Errorf("selfbootstrap: selected candidate group has no endpoint anchors"))
 	}
 	candidate := selection.Group.Anchors[0].Endpoint
-	punchConfig := e.punchConfig(peer.key, card, peerCard, selection.Group)
+	punchConfig := e.punchConfig(peer.key, card, peerCard, selection.Group, selection.PunchDeadlineMisses)
 	attemptID := e.nextAttemptID(peer.id, windowStart)
 	deadlineCtx, stopDeadline := context.WithDeadline(parent, windowEnd)
 	attemptCtx, cancel := context.WithCancelCause(deadlineCtx)
@@ -599,6 +627,9 @@ func (e *Engine) runAttempt(
 		status.NextAttemptAt = time.Time{}
 		status.PunchMethod = punchConfig.Method
 		status.LearnedRemote = ""
+		status.LocalBindIP = bindingIP(e.cfg.Binding)
+		status.LocalBindInterface = e.cfg.PunchInterface
+		status.LocalBindAddr = ""
 		status.FailureStage = ""
 		status.LastError = ""
 	})
@@ -633,6 +664,11 @@ func (e *Engine) runAttempt(
 		}
 		return newCandidateAttemptError("punch", false, fmt.Errorf("selfbootstrap: punch returned an incomplete result"))
 	}
+	e.setStatus(peer.id, func(status *PeerStatus) {
+		status.LocalBindIP = bindingIP(e.cfg.Binding)
+		status.LocalBindInterface = e.cfg.PunchInterface
+		status.LocalBindAddr = result.LocalAddr.String()
+	})
 	conn := result.Connected()
 	owned := true
 	defer func() {
@@ -705,11 +741,15 @@ func (e *Engine) runAttempt(
 		status.LastSuccessAt = succeededAt
 		status.NextAttemptAt = time.Time{}
 		status.LearnedRemote = result.RemoteAddr.String()
+		status.LocalBindIP = bindingIP(e.cfg.Binding)
+		status.LocalBindInterface = e.cfg.PunchInterface
+		status.LocalBindAddr = result.LocalAddr.String()
 		status.CandidateFailures = 0
 		status.FailureStage = ""
 		status.LastError = ""
 	})
 	delete(peer.candidateFailures, selection.Group.ID)
+	delete(peer.punchDeadlineMisses, selection.Group.ID)
 	e.emitAttached(peer.id, attemptID, result.RemoteAddr.String(), neighborHandle, nil)
 	observation := Observation{
 		PeerID: peer.id, RemoteAddr: result.RemoteAddr, LocalAddr: result.LocalAddr,
@@ -727,6 +767,7 @@ func (e *Engine) punchConfig(
 	card recoverycard.Card,
 	peer recoverycard.Peer,
 	group candidateGroup,
+	punchDeadlineMisses uint32,
 ) puncher.Config {
 	primary := group.Anchors[0]
 	candidate := primary.Endpoint
@@ -754,9 +795,19 @@ func (e *Engine) punchConfig(
 		for _, predicted := range report.PredictMappedPorts(int(primary.AddrPort.Port()), e.cfg.PredictSpan) {
 			appendTarget(predicted)
 		}
-		sockets = e.cfg.PredictSockets
-		birthdayN = 0
-		method = "cached_predictive"
+		if punchDeadlineMisses <= 0 {
+			sockets = e.cfg.PredictSockets
+			birthdayN = 0
+			method = "cached_predictive"
+		} else {
+			// A sequential allocation is only cheap to predict while the cached
+			// anchor is fresh. Each failed attempt can itself consume many new NAT
+			// mappings, so repeatedly searching the same narrow forward span makes
+			// the next attempt fall even farther behind. Preserve the inexpensive
+			// predicted targets, but escalate to full birthday coverage after one
+			// deadline-confirmed miss.
+			method = "cached_predictive_birthday_fallback"
+		}
 	}
 	localPort := 0
 	if card.LocalNAT.Pattern == recoverycard.PortPatternPreserving {
@@ -768,6 +819,7 @@ func (e *Engine) punchConfig(
 		SocketCount: sockets, LocalPort: localPort,
 		BirthdayN: birthdayN, BirthdayLo: e.cfg.BirthdayLo, BirthdayHi: e.cfg.BirthdayHi,
 		Burst: 1, RoundDelay: e.cfg.RoundDelay, Method: method, GracePeriod: e.cfg.PunchGrace,
+		Binding: e.cfg.Binding,
 	}
 }
 
@@ -880,8 +932,16 @@ func (e *Engine) event(peerID string, state State, attemptID, candidate string, 
 		AttemptWindowOrdinal: status.AttemptWindowOrdinal,
 		AttemptWindowStart:   status.AttemptWindowStart, AttemptWindowEnd: status.AttemptWindowEnd,
 		PunchMethod: status.PunchMethod, LearnedRemote: status.LearnedRemote,
+		LocalBindIP: status.LocalBindIP, LocalBindInterface: status.LocalBindInterface, LocalBindAddr: status.LocalBindAddr,
 		FailureStage: status.FailureStage, StableNeighbor: handle, Err: err,
 	}
+}
+
+func bindingIP(binding *netutil.UDPBinding) string {
+	if binding == nil || binding.LocalIP == nil {
+		return ""
+	}
+	return binding.LocalIP.String()
 }
 
 func compactError(err error) string {
@@ -946,12 +1006,19 @@ func selectRecoveryCandidate(
 			delete(peer.candidateFailures, id)
 		}
 	}
+	for id := range peer.punchDeadlineMisses {
+		if _, active := activeGroups[id]; !active {
+			delete(peer.punchDeadlineMisses, id)
+		}
+	}
 
 	selected := recoveryCandidateScheduleIndex(windowOrdinal, role, len(portfolio.Groups))
 	selectedFailures := peer.candidateFailures[portfolio.Groups[selected].ID]
+	selectedPunchDeadlineMisses := peer.punchDeadlineMisses[portfolio.Groups[selected].ID]
 	return candidateSelection{
 		Group: portfolio.Groups[selected], Index: selected + 1,
-		Total: len(portfolio.Groups), Failures: selectedFailures, WindowOrdinal: windowOrdinal,
+		Total: len(portfolio.Groups), Failures: selectedFailures,
+		PunchDeadlineMisses: selectedPunchDeadlineMisses, WindowOrdinal: windowOrdinal,
 	}, true
 }
 
@@ -1016,6 +1083,25 @@ func candidateFailureInfo(err error) (string, bool) {
 		return attemptErr.stage, attemptErr.penalize
 	}
 	return "attempt", false
+}
+
+func recordCandidateFailure(peer *peerRuntime, selection *candidateSelection, stage string, penalize bool) {
+	if peer == nil || selection == nil || !penalize || selection.Group.ID == "" {
+		return
+	}
+	if peer.candidateFailures == nil {
+		peer.candidateFailures = make(map[string]uint32)
+	}
+	peer.candidateFailures[selection.Group.ID]++
+	selection.Failures = peer.candidateFailures[selection.Group.ID]
+	if stage != "punch" {
+		return
+	}
+	if peer.punchDeadlineMisses == nil {
+		peer.punchDeadlineMisses = make(map[string]uint32)
+	}
+	peer.punchDeadlineMisses[selection.Group.ID]++
+	selection.PunchDeadlineMisses = peer.punchDeadlineMisses[selection.Group.ID]
 }
 
 var carrierGradeNAT = netip.MustParsePrefix("100.64.0.0/10")

@@ -57,6 +57,7 @@ type NATConfig struct {
 	CandidatePortMin             int                `mapstructure:"candidate_port_min" yaml:"candidate_port_min"`
 	CandidatePortMax             int                `mapstructure:"candidate_port_max" yaml:"candidate_port_max"`
 	STUNServers                  []string           `mapstructure:"stun_servers" yaml:"stun_servers"`
+	PunchInterface               string             `mapstructure:"punch_interface" yaml:"punch_interface"`
 	TURNServers                  []TURNServerConfig `mapstructure:"turn_servers" yaml:"turn_servers"`
 	ForceRelay                   bool               `mapstructure:"force_relay" yaml:"force_relay"`
 	CandidateInterfaceInclude    []string           `mapstructure:"candidate_interface_include" yaml:"candidate_interface_include"`

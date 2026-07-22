@@ -16,6 +16,7 @@ import (
 
 	"winkyou/pkg/mesh"
 	"winkyou/pkg/nat/puncher"
+	"winkyou/pkg/netutil"
 	"winkyou/pkg/recoverycard"
 )
 
@@ -61,6 +62,16 @@ func TestEnginesRecoverDirectEdgeWithoutRouteOrCoordinator(t *testing.T) {
 	}
 	if !nodeA.HasNeighbor("B") || !nodeB.HasNeighbor("A") {
 		t.Fatal("self-bootstrap edge did not survive packet-neighbor liveness")
+	}
+	for label, engine := range map[string]*Engine{"A": engineA, "B": engineB} {
+		status := engine.Snapshot()
+		if len(status) != 1 || status[0].LocalBindAddr == "" || status[0].LocalBindIP != "" || status[0].LocalBindInterface != "" {
+			t.Fatalf("%s unbound status must expose only the winning socket, not explicit-binding evidence: %+v", label, status)
+		}
+		event := engine.event(status[0].PeerID, StateAttached, "test", "", mesh.NeighborHandle{}, nil)
+		if event.LocalBindIP != status[0].LocalBindIP || event.LocalBindAddr != status[0].LocalBindAddr {
+			t.Fatalf("%s attached event lost local binding: status=%+v event=%+v", label, status[0], event)
+		}
 	}
 
 	cardA, err := storeA.Load()
@@ -193,7 +204,10 @@ func TestRecoveryCandidateScheduleCoversAsymmetricRanksAcrossRestart(t *testing.
 					ordinal := firstOrdinal + offset
 					// Recreate both process-local runtimes every window. Selection must
 					// remain an absolute pair-window function rather than reset to rank 1.
-					selectorPeer := &peerRuntime{candidateFailures: map[string]uint32{"8.8.8.8": 99, "retired": 99}}
+					selectorPeer := &peerRuntime{
+						candidateFailures:   map[string]uint32{"8.8.8.8": 99, "retired": 99},
+						punchDeadlineMisses: map[string]uint32{"8.8.8.8": 1, "retired": 1},
+					}
 					receiverPeer := &peerRuntime{candidateFailures: map[string]uint32{"9.9.9.9": 77}}
 					selector, selectorOK := selectRecoveryCandidate(selectorPeer, selectorPortfolio, ordinal, puncher.RoleSelector)
 					receiver, receiverOK := selectRecoveryCandidate(receiverPeer, receiverPortfolio, ordinal, puncher.RoleReceiver)
@@ -207,6 +221,9 @@ func TestRecoveryCandidateScheduleCoversAsymmetricRanksAcrossRestart(t *testing.
 					}
 					if _, retained := selectorPeer.candidateFailures["retired"]; retained {
 						t.Fatal("failure evidence for a group outside the bounded portfolio was retained")
+					}
+					if _, retained := selectorPeer.punchDeadlineMisses["retired"]; retained {
+						t.Fatal("punch deadline evidence for a group outside the bounded portfolio was retained")
 					}
 				}
 				wantPairs := selectorCount * receiverCount
@@ -453,6 +470,10 @@ func TestPunchConfigMergesHistoricalPortsWithPrimaryPrediction(t *testing.T) {
 	engine, err := New(Config{
 		Node: node, Store: store, PeerIDs: []string{"B"},
 		PredictSockets: 7, PredictSpan: 2,
+		PunchInterface: "Ethernet-test",
+		Binding: &netutil.UDPBinding{
+			InterfaceName: "Ethernet-test", InterfaceIndex: 7, LocalIP: net.IPv4(192, 0, 2, 50),
+		},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -471,7 +492,7 @@ func TestPunchConfigMergesHistoricalPortsWithPrimaryPrediction(t *testing.T) {
 	portfolio := buildCandidatePortfolio(peer, false)
 	config := engine.punchConfig([32]byte{}, recoverycard.Card{
 		LocalNAT: recoverycard.NATModel{Pattern: recoverycard.PortPatternPreserving},
-	}, peer, portfolio.Groups[0])
+	}, peer, portfolio.Groups[0], 0)
 
 	wantTargets := []int{40000, 39990, 39996, 39998, 40002, 40004}
 	if !slices.Equal(config.TargetPorts, wantTargets) {
@@ -482,6 +503,46 @@ func TestPunchConfigMergesHistoricalPortsWithPrimaryPrediction(t *testing.T) {
 	}
 	if config.Method != "cached_predictive" || config.BirthdayN != 0 || config.SocketCount != 7 || config.LocalPort != 42000 {
 		t.Fatalf("predictive portfolio config = %+v", config)
+	}
+	if config.Binding == nil || config.Binding.InterfaceName != "Ethernet-test" || !config.Binding.LocalIP.Equal(net.IPv4(192, 0, 2, 50)) {
+		t.Fatalf("predictive portfolio binding = %+v", config.Binding)
+	}
+	fallback := engine.punchConfig([32]byte{}, recoverycard.Card{
+		LocalNAT: recoverycard.NATModel{Pattern: recoverycard.PortPatternRandom},
+	}, peer, portfolio.Groups[0], 1)
+	if !slices.Equal(fallback.TargetPorts, wantTargets) || fallback.Method != "cached_predictive_birthday_fallback" ||
+		fallback.BirthdayN != 48 || fallback.SocketCount != 128 || fallback.LocalPort != 0 {
+		t.Fatalf("predictive fallback portfolio config = %+v", fallback)
+	}
+	status := engine.Snapshot()
+	if len(status) != 1 || status[0].LocalBindIP != "192.0.2.50" || status[0].LocalBindInterface != "Ethernet-test" {
+		t.Fatalf("initial self-bootstrap binding status = %+v", status)
+	}
+	event := engine.event("B", StatePunching, "attempt", "8.8.8.8:40000", mesh.NeighborHandle{}, nil)
+	if event.LocalBindIP != "192.0.2.50" || event.LocalBindInterface != "Ethernet-test" {
+		t.Fatalf("self-bootstrap binding event = %+v", event)
+	}
+}
+
+func TestCandidateFailureEscalatesBirthdayOnlyAfterPunchDeadline(t *testing.T) {
+	const groupID = "8.8.8.8"
+	peer := &peerRuntime{
+		candidateFailures:   make(map[string]uint32),
+		punchDeadlineMisses: make(map[string]uint32),
+	}
+	selection := candidateSelection{Group: candidateGroup{ID: groupID}}
+
+	recordCandidateFailure(peer, &selection, "peer_hello", true)
+	if selection.Failures != 1 || selection.PunchDeadlineMisses != 0 || peer.punchDeadlineMisses[groupID] != 0 {
+		t.Fatalf("HELLO negative evidence enabled birthday fallback: selection=%+v peer=%+v", selection, peer.punchDeadlineMisses)
+	}
+	recordCandidateFailure(peer, &selection, "punch", false)
+	if selection.Failures != 1 || selection.PunchDeadlineMisses != 0 {
+		t.Fatalf("non-penalized local punch error changed fallback state: %+v", selection)
+	}
+	recordCandidateFailure(peer, &selection, "punch", true)
+	if selection.Failures != 2 || selection.PunchDeadlineMisses != 1 || peer.punchDeadlineMisses[groupID] != 1 {
+		t.Fatalf("deadline-confirmed punch miss did not enable birthday fallback: selection=%+v peer=%+v", selection, peer.punchDeadlineMisses)
 	}
 }
 
@@ -553,6 +614,7 @@ func TestObservationRejectsUnconfiguredPeerAndPersistsConfiguredPeer(t *testing.
 	defer engine.Close()
 	runtimePeer := engine.peers["B"]
 	runtimePeer.candidateFailures["203.0.113.8"] = 3
+	runtimePeer.punchDeadlineMisses["203.0.113.8"] = 1
 	now := time.Now().UTC()
 	observation := Observation{
 		PeerID: "C", RemoteAddr: &net.UDPAddr{IP: net.IPv4(203, 0, 113, 8), Port: 45000},
@@ -569,8 +631,8 @@ func TestObservationRejectsUnconfiguredPeerAndPersistsConfiguredPeer(t *testing.
 	if err := engine.Observe(observation); err != nil {
 		t.Fatal(err)
 	}
-	if !runtimePeer.consumeCandidateFailureReset() || len(runtimePeer.candidateFailures) != 0 {
-		t.Fatalf("verified observation did not reset candidate failure diagnostics: %v", runtimePeer.candidateFailures)
+	if !runtimePeer.consumeCandidateFailureReset() || len(runtimePeer.candidateFailures) != 0 || len(runtimePeer.punchDeadlineMisses) != 0 {
+		t.Fatalf("verified observation did not reset candidate failure diagnostics: failures=%v punch_misses=%v", runtimePeer.candidateFailures, runtimePeer.punchDeadlineMisses)
 	}
 	card, err := store.Load()
 	if err != nil {

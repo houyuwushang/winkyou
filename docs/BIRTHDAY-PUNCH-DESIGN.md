@@ -106,6 +106,26 @@ signal+sync (M4) ───┘                                             （现
 - **M9** `cmd/meshnode`：shortcut manager 将 `birthday_punch` 获胜 socket 交给 `iceadapter`，安装成可参与 link-state routing 的 direct `PacketNeighbor`；普通 peer 可承载协调消息和正常 graph transit。
 - **M10** `pkg/recoverycard` + `pkg/bootstrap/selfhosted`：post-r9 源码候选持久化成功端点，在没有 neighbor/route 时让双端按 pair window 直接 punch；第一条边恢复后由 r9 maintained-edge controller 补齐其余 direct edge。详细边界见 [`SELF-BOOTSTRAP-RECOVERY.md`](./SELF-BOOTSTRAP-RECOVERY.md)。
 
+### 8.1.1 显式绑定打洞 underlay
+
+产品配置可选字段 `nat.punch_interface` 用接口名固定 `birthday_punch` 和 cached self-bootstrap 使用的 underlay：
+
+```yaml
+nat:
+  punch_interface: Ethernet  # 必须替换为本机精确名称；Linux 常见为 eth0
+  stun_servers:
+    - stun:stun.cloudflare.com:3478
+    - stun:stun.l.google.com:19302
+```
+
+启用后，运行时先把接口名解析为精确的 interface index 和可用单播 IPv4；接口不存在、已 down 或没有可用 IPv4 时启动/本轮求解直接失败，不回退到系统默认路由。所有同 socket mapping probe、fresh-socket port-allocation probe 和 punch socket 都绑定该源 IP；Windows 还在 bind 前设置 `IP_UNICAST_IF`，Linux 使用 `SO_BINDTODEVICE`（权限不足会显式失败）。未配置时保持原来的系统路由选择行为，且 `local_bind_ip` / `local_bind_interface` 证据留空，不能把 wildcard socket 地址误当成实际出口。显式配置时，`birthday_punch` 的 `PathSummary.Details` 与 self-bootstrap status/event 日志使用同名证据 `local_bind_ip`、`local_bind_interface`；self-bootstrap 另记录获胜 socket 的 `local_bind_addr`。
+
+`wink debug port-alloc` 和 `wink doctor` 的 STUN mapping 检查也读取同一字段并使用 bound probe；前者的 JSON/文本结果、后者的 STUN check message 会明确输出 `local_bind_interface` 和 `local_bind_ip`。因此可在不启动 normal runtime 的情况下先做只读 underlay STUN 探测；配置文件无法加载或显式接口无法解析时不会静默退回默认路由。
+
+这个开关只保证“操作员指定的 underlay 被执行且可观测”，不能单独证明该接口就是物理 WAN，也不能证明路径中不存在上游 VPN/overlay。现场验收仍必须冻结预期接口/IP，并结合路由、接口类型和对端抓包判定。
+
+cached self-bootstrap 对 preserving/sequential 端口模型先进行一次低成本窄预测；如果该候选组发生一次由 punch deadline 确认的失败，后续窗口会保留预测目标并升级为 `cached_predictive_birthday_fallback`。这是必要的退化闭环：一次大规模打洞本身就可能消耗大量顺序 NAT 映射，若永远围绕旧 anchor 搜固定 span，下一轮只会落后得更多。升级仍发生在同一个 pair session、互补 selector/receiver 角色和单个 `Punch` 内，不会引入第二条并行 owner 路径。
+
 ### 8.2 puncher 在真机迭代中补齐的 4 个关键机制
 
 1. **端点学习闭环**（`peerSet`）：任一 socket 收到对端 probe → 记住其真实源地址 → 所有 sender 下一轮直接回打它。**一端打准，双方即锁定**，不依赖两端都预测准。这是 §7 图论"用收到的包反推对端位置"的落地。

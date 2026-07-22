@@ -8,6 +8,8 @@ import (
 	"net"
 	"sync"
 	"time"
+
+	"winkyou/pkg/netutil"
 )
 
 // Role controls whether Punch uses the legacy independent first-hit behavior
@@ -53,6 +55,10 @@ type Config struct {
 	// source port stays fixed and matches the target a symmetric peer punched,
 	// which the symmetric peer's address-and-port-dependent NAT will accept.
 	LocalPort int
+	// Binding pins every source socket to one already-resolved underlay
+	// interface and IPv4 source. Nil preserves the operating system's default
+	// route selection.
+	Binding *netutil.UDPBinding
 	// BirthdayN, when > 0, makes each socket additionally spray BirthdayN FRESH
 	// random ports in [BirthdayLo,BirthdayHi] every round. TargetPorts are still
 	// sent first when present. That lets a restart attempt try the last observed
@@ -232,10 +238,11 @@ func Punch(ctx context.Context, cfg Config) (*Result, error) {
 	}
 
 	var sockets []*net.UDPConn
+	var socketErr error
 	if cfg.LocalPort > 0 {
 		// Fixed local port: a single preserving-NAT socket whose public source
 		// port stays constant so a symmetric peer's NAT accepts it.
-		conn, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4zero, Port: cfg.LocalPort})
+		conn, err := netutil.ListenUDP4(ctx, cfg.Binding, cfg.LocalPort)
 		if err != nil {
 			return nil, fmt.Errorf("puncher: bind fixed local port %d: %w", cfg.LocalPort, err)
 		}
@@ -246,9 +253,10 @@ func Punch(ctx context.Context, cfg Config) (*Result, error) {
 			if ctx.Err() != nil {
 				break
 			}
-			conn, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4zero, Port: 0})
+			conn, err := netutil.ListenUDP4(ctx, cfg.Binding, 0)
 			if err != nil {
 				// Best-effort: stop opening more once the fd limit is hit.
+				socketErr = err
 				break
 			}
 			sockets = append(sockets, conn)
@@ -257,6 +265,9 @@ func Punch(ctx context.Context, cfg Config) (*Result, error) {
 	if len(sockets) == 0 {
 		if err := ctx.Err(); err != nil {
 			return nil, fmt.Errorf("puncher: no path punched: %w", err)
+		}
+		if socketErr != nil {
+			return nil, fmt.Errorf("puncher: could not open any source socket: %w", socketErr)
 		}
 		return nil, fmt.Errorf("puncher: could not open any source socket")
 	}

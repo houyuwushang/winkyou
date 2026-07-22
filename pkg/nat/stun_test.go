@@ -6,6 +6,8 @@ import (
 	"net"
 	"testing"
 	"time"
+
+	"winkyou/pkg/netutil"
 )
 
 // --- STUN response parsing tests ---
@@ -158,6 +160,34 @@ func TestProbeSTUNLocalServer(t *testing.T) {
 	}
 	if result.MappedAddr == nil || !result.MappedAddr.IP.Equal(net.IPv4(198, 51, 100, 42)) || result.MappedAddr.Port != 33333 {
 		t.Fatalf("MappedAddr = %v, want 198.51.100.42:33333", result.MappedAddr)
+	}
+}
+
+func TestBoundSTUNMappingAndAllocationUseExactInterfaceSource(t *testing.T) {
+	binding := testUnderlayBinding(t)
+	s1 := startFakeSTUNServerAt(t, binding.LocalIP, net.IPv4(203, 0, 113, 1), 41001)
+	defer s1.Close()
+	s2 := startFakeSTUNServerAt(t, binding.LocalIP, net.IPv4(203, 0, 113, 1), 42002)
+	defer s2.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	report, err := ProbePortAllocationWithMappingBound(ctx, []string{s1.LocalAddr().String(), s2.LocalAddr().String()}, 4, binding)
+	if err != nil {
+		t.Fatalf("ProbePortAllocationWithMappingBound() error = %v", err)
+	}
+	if len(report.MappingProbes) != 2 || len(report.Samples) != 4 {
+		t.Fatalf("bound report probes/samples = %d/%d, want 2/4", len(report.MappingProbes), len(report.Samples))
+	}
+	for i, probe := range report.MappingProbes {
+		if probe.LocalAddr == nil || !probe.LocalAddr.IP.Equal(binding.LocalIP) {
+			t.Fatalf("mapping probe %d local = %v, want source %s", i, probe.LocalAddr, binding.LocalIP)
+		}
+	}
+	for i, sample := range report.Samples {
+		if !sample.LocalIP.Equal(binding.LocalIP) {
+			t.Fatalf("allocation sample %d local IP = %v, want %s", i, sample.LocalIP, binding.LocalIP)
+		}
 	}
 }
 
@@ -594,7 +624,12 @@ func TestICEAgentGatherCandidatesWithSTUN(t *testing.T) {
 // Requests with a fixed XOR-MAPPED-ADDRESS.
 func startFakeSTUNServer(t *testing.T, mappedIP net.IP, mappedPort int) net.PacketConn {
 	t.Helper()
-	conn, err := net.ListenPacket("udp4", "127.0.0.1:0")
+	return startFakeSTUNServerAt(t, net.IPv4(127, 0, 0, 1), mappedIP, mappedPort)
+}
+
+func startFakeSTUNServerAt(t *testing.T, localIP, mappedIP net.IP, mappedPort int) net.PacketConn {
+	t.Helper()
+	conn, err := net.ListenPacket("udp4", net.JoinHostPort(localIP.String(), "0"))
 	if err != nil {
 		t.Fatalf("fake STUN server listen: %v", err)
 	}
@@ -619,6 +654,25 @@ func startFakeSTUNServer(t *testing.T, mappedIP net.IP, mappedPort int) net.Pack
 	}()
 
 	return conn
+}
+
+func testUnderlayBinding(t *testing.T) *netutil.UDPBinding {
+	t.Helper()
+	interfaces, err := net.Interfaces()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, iface := range interfaces {
+		if iface.Flags&net.FlagUp == 0 || iface.Flags&net.FlagLoopback != 0 {
+			continue
+		}
+		binding, err := netutil.ResolveUDPBinding(iface.Name)
+		if err == nil {
+			return binding
+		}
+	}
+	t.Skip("host has no active non-loopback interface with a usable IPv4 address")
+	return nil
 }
 
 // buildFakeBindingResponse constructs a STUN Binding Response with an

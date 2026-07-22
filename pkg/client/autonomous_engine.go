@@ -333,8 +333,8 @@ func (e *autonomousEngine) runtimeConfig() meshruntime.Config {
 		NodeID: mesh.NodeID, VirtualIP: mesh.VirtualIP,
 		MeshListen: mesh.Listen, ControlListen: mesh.ControlListen,
 		InitialPeers: initialPeers, MaintainedPeers: append([]string(nil), mesh.MaintainPeers...),
-		STUNServers: append([]string(nil), e.cfg.NAT.STUNServers...),
-		TCPTarget:   mesh.TCPTarget, TCPForwards: tcpForwards, VirtualTCPForwards: virtualTCPForwards,
+		STUNServers: append([]string(nil), e.cfg.NAT.STUNServers...), PunchInterface: e.cfg.NAT.PunchInterface,
+		TCPTarget: mesh.TCPTarget, TCPForwards: tcpForwards, VirtualTCPForwards: virtualTCPForwards,
 		RecoveryCardPath: mesh.RecoveryCard, RecoveryDebounce: mesh.RecoveryDebounce,
 		SelfBootstrapSecretFile: mesh.SelfBootstrapSecretFile,
 	}

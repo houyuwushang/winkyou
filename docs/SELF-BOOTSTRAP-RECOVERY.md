@@ -5,11 +5,13 @@ executable rejoins first accepted on C and A using r12. Slice 4.5 subsequently
 completed a C -> B -> A rolling replacement with the normal managed
 `wink up/down/status/peers` lifecycle. All three product runtimes started with
 no configured seed or infrastructure coordinator and converged to two one-hop
-protected packet edges per node. This is still not a simultaneous three-node
-cold-start matrix, public-IP change, or operating-system boot/autostart result;
-see `SLICE-4.5-FIELD-ROLLOUT-2026-07-19.md`. Recovery Candidate Portfolio v1
-is a source and isolated-test extension to this behavior; no separate field
-acceptance is claimed for candidate rotation.
+protected packet edges per node. On 2026-07-22, an isolated A-B run additionally
+accepted Recovery Candidate Portfolio v1 over explicitly bound non-OpenVPN
+underlays and carried two SSH sessions across the resulting one-hop edge. This
+is still not a simultaneous three-node cold-start matrix, public-IP change, or
+operating-system boot/autostart result; see
+`SLICE-4.5-FIELD-ROLLOUT-2026-07-19.md` and
+`RANK2X3-FIELD-PREFLIGHT-2026-07-22.md`.
 
 ## Purpose and recovery layers
 
@@ -39,18 +41,21 @@ infrastructure relay a product dependency.
 
 Configure the maintained pair symmetrically. Use one recovery-card file per
 node and, when authentication matters, provision the same secret contents to
-both endpoints:
+both endpoints. The Linux example below uses `eth0`; replace it with the exact
+local interface name (`Ethernet` is a common Windows name):
 
 ```text
 # node A
 meshnode --id A \
   --maintain-peer B \
+  --punch-interface eth0 \
   --recovery-card /var/lib/winkyou/A-recovery.json \
   --self-bootstrap-secret-file /var/lib/winkyou/self-bootstrap.secret
 
 # node B
 meshnode --id B \
   --maintain-peer A \
+  --punch-interface eth0 \
   --recovery-card /var/lib/winkyou/B-recovery.json \
   --self-bootstrap-secret-file /var/lib/winkyou/self-bootstrap.secret
 ```
@@ -61,6 +66,7 @@ on every node. The relevant flags and production defaults are:
 | Flag | Meaning | Default |
 | --- | --- | --- |
 | `--recovery-card PATH` | Enable persistent cached-endpoint self-bootstrap | disabled |
+| `--punch-interface NAME` | Pin birthday/self-bootstrap STUN, probes, and punches to one IPv4 underlay | OS route selection |
 | `--self-bootstrap-secret-file PATH` | Shared secret used to derive pair-specific punch and HELLO keys | none |
 | `--self-bootstrap-window DURATION` | Active cached-endpoint punch window | `45s` |
 | `--self-bootstrap-cycle DURATION` | Pair-deterministic interval between windows | `1m` |
@@ -75,6 +81,9 @@ Those flags remain the `cmd/meshnode` compatibility surface. Normal `wink`
 configuration now uses typed fields rather than `NODE=ADDRESS` strings:
 
 ```yaml
+nat:
+  punch_interface: eth0
+
 autonomous_mesh:
   enabled: true
   node_id: demo-a
@@ -85,6 +94,20 @@ autonomous_mesh:
   recovery_card: ./demo-a-recovery.json
   self_bootstrap_secret_file: ./mesh.secret
 ```
+
+`nat.punch_interface` is optional. If set, startup resolves the exact interface
+name, index, and one usable IPv4 source. Every birthday-punch and cached
+self-bootstrap mapping/probe/punch socket must use that binding; an absent,
+down, address-less, or unenforceable interface is an error rather than a
+fallback to the default route. Windows uses `IP_UNICAST_IF` plus the exact
+source address, while Linux uses `SO_BINDTODEVICE` plus the source address.
+Leaving the field empty preserves the earlier OS-selected routing behavior.
+
+This setting proves that WinkYou used the operator-selected adapter. It does
+not identify an adapter as a physical WAN by name and cannot rule out an
+upstream tunnel on its own. Strict field acceptance must freeze the expected
+interface and source IP, reject known VPN/TAP adapters, and match the runtime
+binding evidence.
 
 See `LONG-RUNNING-CLIENT.md` for bootstrap-peer, TCP-facade, status, isolated
 smoke-test, and authenticated graceful-down examples. The same typed
@@ -183,8 +206,11 @@ neighbor nor any graph route. For each such peer it:
 2. derives the same pair key, punch session, and absolute attempt window on
    both endpoints;
 3. merges the selected group's historical ports into one bounded punch;
-4. uses bounded prediction for preserving/sequential port models, or combines
-   the cached port with a fresh birthday spray for unknown/random models;
+4. starts with bounded prediction for preserving/sequential port models; after
+   one deadline-confirmed miss for that candidate group, it retains the
+   predictions and upgrades later windows to a birthday spray so attempts do
+   not chase an increasingly stale sequential anchor forever. Unknown/random
+   models use cached targets plus birthday coverage immediately;
 5. learns the peer's actual source address from a successful inbound punch;
 6. exchanges a pair-key HMAC-protected node-ID HELLO/ACK; and
 7. hands the exact winning UDP socket to a `PacketNeighbor` under path ID
@@ -222,6 +248,8 @@ punching, authentication, and promotion failures:
 | `candidate_failures` | Process-local punch-deadline/HELLO negative-evidence count for this group; immediate local punch errors are excluded |
 | `punch_method` | Bounded punch strategy chosen for the group |
 | `learned_remote` | Actual remote source learned from the punch winner, when present |
+| `local_bind_ip` / `local_bind_interface` | Resolved source IPv4 and interface used for this attempt; omitted when no explicit binding is configured |
+| `local_bind_addr` | Winning local UDP `IP:port`, present after a socket wins |
 | `attempt_window_ordinal` | Shared absolute pair-window coordinate used by the `4 x 4` schedule |
 | `attempt_window_start` / `attempt_window_end` | Absolute pair-window boundaries |
 | `failure_stage` | Last terminal phase, such as punch, HELLO, promotion, or `superseded_route` |

@@ -3,6 +3,7 @@ package cmd
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"strings"
 	"time"
@@ -10,6 +11,7 @@ import (
 	winkclient "winkyou/pkg/client"
 	"winkyou/pkg/config"
 	"winkyou/pkg/nat"
+	"winkyou/pkg/netutil"
 
 	"github.com/spf13/cobra"
 )
@@ -64,6 +66,7 @@ func newDebugCmd(opts *Options) *cobra.Command {
 type portAllocSampleJSON struct {
 	Server     string `json:"server,omitempty"`
 	ServerAddr string `json:"server_addr,omitempty"`
+	LocalIP    string `json:"local_ip,omitempty"`
 	LocalPort  int    `json:"local_port"`
 	MappedIP   string `json:"mapped_ip"`
 	MappedPort int    `json:"mapped_port"`
@@ -79,20 +82,22 @@ type portAllocMappingProbeJSON struct {
 
 type portAllocOutput struct {
 	// Server is kept for compatibility with the original single-STUN JSON.
-	Server        string                      `json:"server"`
-	Servers       []string                    `json:"servers"`
-	MappingType   string                      `json:"mapping_type"`
-	MappingError  string                      `json:"mapping_error,omitempty"`
-	MappingProbes []portAllocMappingProbeJSON `json:"mapping_probes,omitempty"`
-	SampleCount   int                         `json:"sample_count"`
-	Pattern       string                      `json:"pattern"`
-	Delta         int                         `json:"delta"`
-	MappedIP      string                      `json:"mapped_ip"`
-	StableIP      bool                        `json:"stable_ip"`
-	Confidence    float64                     `json:"confidence"`
-	Predictable   bool                        `json:"predictable"`
-	Samples       []portAllocSampleJSON       `json:"samples"`
-	Predicted     []int                       `json:"predicted_targets,omitempty"`
+	Server             string                      `json:"server"`
+	Servers            []string                    `json:"servers"`
+	LocalBindInterface string                      `json:"local_bind_interface,omitempty"`
+	LocalBindIP        string                      `json:"local_bind_ip,omitempty"`
+	MappingType        string                      `json:"mapping_type"`
+	MappingError       string                      `json:"mapping_error,omitempty"`
+	MappingProbes      []portAllocMappingProbeJSON `json:"mapping_probes,omitempty"`
+	SampleCount        int                         `json:"sample_count"`
+	Pattern            string                      `json:"pattern"`
+	Delta              int                         `json:"delta"`
+	MappedIP           string                      `json:"mapped_ip"`
+	StableIP           bool                        `json:"stable_ip"`
+	Confidence         float64                     `json:"confidence"`
+	Predictable        bool                        `json:"predictable"`
+	Samples            []portAllocSampleJSON       `json:"samples"`
+	Predicted          []int                       `json:"predicted_targets,omitempty"`
 }
 
 // newDebugPortAllocCmd probes the NAT's external-port allocation pattern, which
@@ -110,12 +115,16 @@ func newDebugPortAllocCmd(opts *Options) *cobra.Command {
 		Short: "Probe the NAT external-port allocation pattern (hole-punch prediction)",
 		Args:  cobra.MaximumNArgs(16),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			cfg, cfgErr := loadConfig(opts)
+			if cfgErr != nil {
+				return fmt.Errorf("load config for punch-interface-aware probe: %w", cfgErr)
+			}
 			servers := append([]string(nil), stunServer...)
 			if len(servers) == 0 {
 				servers = append(servers, args...)
 			}
 			if len(servers) == 0 {
-				if cfg, err := loadConfig(opts); err == nil && len(cfg.NAT.STUNServers) > 0 {
+				if len(cfg.NAT.STUNServers) > 0 {
 					servers = append(servers, cfg.NAT.STUNServers...)
 				}
 			}
@@ -126,13 +135,19 @@ func newDebugPortAllocCmd(opts *Options) *cobra.Command {
 
 			ctx, cancel := context.WithTimeout(cmd.Context(), 45*time.Second)
 			defer cancel()
+			var binding *netutil.UDPBinding
+			resolved, resolveErr := netutil.ResolveUDPBinding(cfg.NAT.PunchInterface)
+			if resolveErr != nil {
+				return resolveErr
+			}
+			binding = resolved
 
-			report, err := nat.ProbePortAllocationWithMapping(ctx, servers, samples)
+			report, err := nat.ProbePortAllocationWithMappingBound(ctx, servers, samples, binding)
 			if err != nil {
 				return err
 			}
 
-			out := portAllocOutputFromReport(servers, report)
+			out := portAllocOutputFromReport(servers, report, binding)
 			if asJSON {
 				return writeJSON(cmd, out)
 			}
@@ -147,7 +162,7 @@ func newDebugPortAllocCmd(opts *Options) *cobra.Command {
 	return cmd
 }
 
-func portAllocOutputFromReport(servers []string, report nat.PortAllocationReport) *portAllocOutput {
+func portAllocOutputFromReport(servers []string, report nat.PortAllocationReport, binding *netutil.UDPBinding) *portAllocOutput {
 	predictable := report.Pattern == nat.PortAllocationSequential || report.Pattern == nat.PortAllocationPreserving
 
 	out := &portAllocOutput{
@@ -160,6 +175,10 @@ func portAllocOutputFromReport(servers []string, report nat.PortAllocationReport
 		StableIP:     report.StableIP,
 		Confidence:   report.Confidence,
 		Predictable:  predictable,
+	}
+	if binding != nil {
+		out.LocalBindInterface = binding.InterfaceName
+		out.LocalBindIP = binding.LocalIP.String()
 	}
 	if len(servers) > 0 {
 		out.Server = servers[0]
@@ -182,11 +201,16 @@ func portAllocOutputFromReport(servers []string, report nat.PortAllocationReport
 	}
 	for _, s := range report.Samples {
 		ip := ""
+		localIP := ""
 		if s.MappedIP != nil {
 			ip = s.MappedIP.String()
 		}
+		if s.LocalIP != nil {
+			localIP = s.LocalIP.String()
+		}
 		out.Samples = append(out.Samples, portAllocSampleJSON{
 			Server:     s.Server,
+			LocalIP:    localIP,
 			LocalPort:  s.LocalPort,
 			MappedIP:   ip,
 			MappedPort: s.MappedPort,
@@ -206,6 +230,9 @@ func printPortAllocOutput(cmd *cobra.Command, out *portAllocOutput) {
 	cmd.Println("NAT Port Allocation Probe")
 	cmd.Println("-------------------------")
 	cmd.Printf("STUN Servers: %s\n", strings.Join(out.Servers, ", "))
+	if out.LocalBindInterface != "" || out.LocalBindIP != "" {
+		cmd.Printf("Underlay:     %s (%s)\n", dashIfEmpty(out.LocalBindInterface), dashIfEmpty(out.LocalBindIP))
+	}
 	cmd.Printf("Mapping:      %s\n", out.MappingType)
 	if out.MappingError != "" {
 		cmd.Printf("Mapping note: %s\n", out.MappingError)
@@ -233,7 +260,7 @@ func printPortAllocOutput(cmd *cobra.Command, out *portAllocOutput) {
 	if len(out.Samples) > 0 {
 		cmd.Println("Allocation samples (server, local -> mapped):")
 		for _, s := range out.Samples {
-			cmd.Printf("  %s [%s]: %d -> %s:%d\n", s.Server, dashIfEmpty(s.ServerAddr), s.LocalPort, s.MappedIP, s.MappedPort)
+			cmd.Printf("  %s [%s]: %s:%d -> %s:%d\n", s.Server, dashIfEmpty(s.ServerAddr), dashIfEmpty(s.LocalIP), s.LocalPort, s.MappedIP, s.MappedPort)
 		}
 	}
 	if len(out.Predicted) > 0 {

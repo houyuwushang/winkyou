@@ -12,6 +12,7 @@ import (
 
 	"winkyou/pkg/nat"
 	"winkyou/pkg/nat/puncher"
+	"winkyou/pkg/netutil"
 	"winkyou/pkg/solver"
 	"winkyou/pkg/transport/iceadapter"
 )
@@ -34,7 +35,12 @@ type localEndpoint struct {
 }
 
 type Config struct {
-	STUNServers     []string
+	STUNServers    []string
+	PunchInterface string
+	// Binding is an optional pre-resolved PunchInterface used by a long-running
+	// owner such as meshruntime. Ordinary callers leave it nil and the strategy
+	// resolves PunchInterface once at the start of Execute.
+	Binding         *netutil.UDPBinding
 	ProbeSamples    int
 	EndpointTimeout time.Duration
 	PunchTimeout    time.Duration
@@ -125,7 +131,11 @@ func (s *Strategy) Execute(ctx context.Context, sess solver.SessionIO, plan solv
 	input := s.input
 	s.mu.Unlock()
 
-	local, err := s.probeLocal(ctx)
+	binding, err := s.resolveBinding()
+	if err != nil {
+		return solver.Result{}, fmt.Errorf("birthdaypunch: resolve punch interface: %w", err)
+	}
+	local, err := s.probeLocal(ctx, binding)
 	if err != nil {
 		return solver.Result{}, fmt.Errorf("birthdaypunch: probe local endpoint: %w", err)
 	}
@@ -174,6 +184,7 @@ func (s *Strategy) Execute(ctx context.Context, sess solver.SessionIO, plan solv
 		Burst:       1,
 		RoundDelay:  pp.RoundDelay,
 		Method:      pp.Method,
+		Binding:     binding,
 	})
 	if err != nil {
 		return solver.Result{}, fmt.Errorf("birthdaypunch: punch failed: %w", err)
@@ -184,6 +195,7 @@ func (s *Strategy) Execute(ctx context.Context, sess solver.SessionIO, plan solv
 		}
 		return solver.Result{}, fmt.Errorf("birthdaypunch: punch returned an incomplete result")
 	}
+	localBindIP, localBindInterface, localBindInterfaceIndex := bindingEvidence(binding)
 
 	conn := res.Connected()
 	return solver.Result{
@@ -196,22 +208,32 @@ func (s *Strategy) Execute(ctx context.Context, sess solver.SessionIO, plan solv
 			Dependencies:   nil, // independent public direct: no coordinator/relay dependency
 			Metrics:        map[string]string{"transport": StrategyName},
 			Details: map[string]string{
-				"strategy":             StrategyName,
-				"mode":                 "birthday_punch",
-				"punch_method":         pp.Method,
-				"local_addr":           conn.LocalAddr().String(),
-				"local_public_ip":      ipString(local.IP),
-				"local_observed_port":  strconv.Itoa(local.ObservedPort),
-				"local_nat_pattern":    local.Pattern.String(),
-				"local_nat_delta":      strconv.Itoa(local.Delta),
-				"remote_addr":          conn.RemoteAddr().String(),
-				"remote_public_ip":     ipString(remote.IP),
-				"remote_observed_port": strconv.Itoa(remote.ObservedPort),
-				"remote_nat_pattern":   remote.Pattern.String(),
-				"remote_nat_delta":     strconv.Itoa(remote.Delta),
+				"strategy":                   StrategyName,
+				"mode":                       "birthday_punch",
+				"punch_method":               pp.Method,
+				"local_addr":                 conn.LocalAddr().String(),
+				"local_bind_ip":              localBindIP,
+				"local_bind_interface":       localBindInterface,
+				"local_bind_interface_index": localBindInterfaceIndex,
+				"local_public_ip":            ipString(local.IP),
+				"local_observed_port":        strconv.Itoa(local.ObservedPort),
+				"local_nat_pattern":          local.Pattern.String(),
+				"local_nat_delta":            strconv.Itoa(local.Delta),
+				"remote_addr":                conn.RemoteAddr().String(),
+				"remote_public_ip":           ipString(remote.IP),
+				"remote_observed_port":       strconv.Itoa(remote.ObservedPort),
+				"remote_nat_pattern":         remote.Pattern.String(),
+				"remote_nat_delta":           strconv.Itoa(remote.Delta),
 			},
 		},
 	}, nil
+}
+
+func bindingEvidence(binding *netutil.UDPBinding) (localIP, interfaceName, interfaceIndex string) {
+	if binding == nil {
+		return "", "", ""
+	}
+	return ipString(binding.LocalIP), binding.InterfaceName, strconv.Itoa(binding.InterfaceIndex)
 }
 
 func punchRole(initiator bool) puncher.Role {
@@ -287,14 +309,25 @@ func (s *Strategy) Close() error {
 	return nil
 }
 
-func (s *Strategy) probeLocal(ctx context.Context) (localEndpoint, error) {
+func (s *Strategy) resolveBinding() (*netutil.UDPBinding, error) {
+	configured := strings.TrimSpace(s.cfg.PunchInterface)
+	if s.cfg.Binding != nil {
+		if configured != "" && configured != s.cfg.Binding.InterfaceName {
+			return nil, fmt.Errorf("configured interface %q does not match resolved interface %q", configured, s.cfg.Binding.InterfaceName)
+		}
+		return s.cfg.Binding, nil
+	}
+	return netutil.ResolveUDPBinding(configured)
+}
+
+func (s *Strategy) probeLocal(ctx context.Context, binding *netutil.UDPBinding) (localEndpoint, error) {
 	if s.cfg.localEndpointFunc != nil {
 		return s.cfg.localEndpointFunc(ctx)
 	}
 	if len(s.cfg.STUNServers) == 0 {
 		return localEndpoint{}, fmt.Errorf("no STUN servers configured")
 	}
-	report, err := nat.ProbePortAllocationWithMapping(ctx, s.cfg.STUNServers, s.cfg.ProbeSamples)
+	report, err := nat.ProbePortAllocationWithMappingBound(ctx, s.cfg.STUNServers, s.cfg.ProbeSamples, binding)
 	if err != nil {
 		return localEndpoint{}, err
 	}

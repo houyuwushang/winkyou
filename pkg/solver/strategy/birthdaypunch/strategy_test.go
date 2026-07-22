@@ -9,6 +9,7 @@ import (
 
 	"winkyou/pkg/nat"
 	"winkyou/pkg/nat/puncher"
+	"winkyou/pkg/netutil"
 	"winkyou/pkg/solver"
 )
 
@@ -50,6 +51,10 @@ func TestExecuteInitiatorProtectedDirect(t *testing.T) {
 		gotCfg   puncher.Config
 	)
 	s := New(Config{
+		PunchInterface: "Ethernet-test",
+		Binding: &netutil.UDPBinding{
+			InterfaceName: "Ethernet-test", InterfaceIndex: 7, LocalIP: net.IPv4(192, 0, 2, 50),
+		},
 		StartLead:       10 * time.Millisecond,
 		EndpointTimeout: 3 * time.Second,
 		localEndpointFunc: func(ctx context.Context) (localEndpoint, error) {
@@ -114,13 +119,16 @@ func TestExecuteInitiatorProtectedDirect(t *testing.T) {
 			t.Fatalf("summary is not protected_direct: %+v", res.Summary)
 		}
 		wantDetails := map[string]string{
-			"local_public_ip":      "1.2.3.4",
-			"local_observed_port":  "5000",
-			"local_nat_pattern":    "preserving",
-			"remote_public_ip":     "9.8.7.6",
-			"remote_observed_port": "6000",
-			"remote_nat_pattern":   "sequential",
-			"remote_nat_delta":     "1",
+			"local_bind_ip":              "192.0.2.50",
+			"local_bind_interface":       "Ethernet-test",
+			"local_bind_interface_index": "7",
+			"local_public_ip":            "1.2.3.4",
+			"local_observed_port":        "5000",
+			"local_nat_pattern":          "preserving",
+			"remote_public_ip":           "9.8.7.6",
+			"remote_observed_port":       "6000",
+			"remote_nat_pattern":         "sequential",
+			"remote_nat_delta":           "1",
 		}
 		for key, want := range wantDetails {
 			if got := res.Summary.Details[key]; got != want {
@@ -151,6 +159,9 @@ func TestExecuteInitiatorProtectedDirect(t *testing.T) {
 	// Punch must target the peer's IP and its predicted ports around 6000.
 	gotCfgMu.Lock()
 	defer gotCfgMu.Unlock()
+	if gotCfg.Binding == nil || gotCfg.Binding.InterfaceName != "Ethernet-test" || !gotCfg.Binding.LocalIP.Equal(net.IPv4(192, 0, 2, 50)) {
+		t.Fatalf("punch binding = %+v, want resolved Ethernet-test/192.0.2.50", gotCfg.Binding)
+	}
 	if gotCfg.RemoteIP.String() != "9.8.7.6" {
 		t.Fatalf("punch RemoteIP = %v, want 9.8.7.6", gotCfg.RemoteIP)
 	}
@@ -171,6 +182,18 @@ func TestExecuteInitiatorProtectedDirect(t *testing.T) {
 	}
 	if gotCfg.Role != puncher.RoleSelector {
 		t.Fatalf("initiator punch role = %v, want selector", gotCfg.Role)
+	}
+}
+
+func TestBindingEvidenceRequiresExplicitBinding(t *testing.T) {
+	if ip, name, index := bindingEvidence(nil); ip != "" || name != "" || index != "" {
+		t.Fatalf("nil binding evidence = %q/%q/%q, want omitted fields", ip, name, index)
+	}
+	binding := &netutil.UDPBinding{
+		InterfaceName: "Ethernet-test", InterfaceIndex: 7, LocalIP: net.IPv4(192, 0, 2, 50),
+	}
+	if ip, name, index := bindingEvidence(binding); ip != "192.0.2.50" || name != "Ethernet-test" || index != "7" {
+		t.Fatalf("explicit binding evidence = %q/%q/%q", ip, name, index)
 	}
 }
 

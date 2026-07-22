@@ -72,6 +72,8 @@ node:
   name: demo-a
 
 nat:
+  # Optional; replace with the exact local name (Windows: Ethernet, Linux: eth0).
+  # punch_interface: Ethernet
   stun_servers:
     - stun:stun.example.invalid:3478
 
@@ -95,6 +97,13 @@ autonomous_mesh:
     - listen: "[fd7a:115c:a1e0::b]:22"
       remote_id: demo-b
 ```
+
+`nat.punch_interface` 是可选项。配置后，WinkYou 会把接口名解析成一个明确的
+IPv4 源地址，并要求 birthday-punch 与 cached self-bootstrap 的
+STUN/probe/punch socket 同时绑定该接口和源地址；无法执行时直接失败，不回退到
+系统默认路由。留空则保持原来的操作系统选路行为。这个字段只约束实际发包出口，
+不能仅凭接口名证明它就是物理 WAN；严格现场证据仍需排除 OpenVPN/TAP 等外部
+overlay，并核对 `local_bind_ip` / `local_bind_interface`。
 
 `bootstrap_peers`、`tcp_forwards` 和 `virtual_tcp_forwards` 是结构化 YAML，不暴露 `NODE=ADDRESS` 这类实验 CLI 编码。`control_listen` 必须是 loopback；它承载带随机 shutdown token 的本机优雅停止请求。`wink status --json` 不输出该 token。`wink down` 会先核对 PID 对应的进程启动身份，再发送认证请求并等待同一 instance 清理 runtime state；受管 autonomous runtime 即使传入 `--force` 也不会退回裸 PID 强杀。`--force` 只保留给没有 managed control endpoint 的 legacy 兼容路径。
 

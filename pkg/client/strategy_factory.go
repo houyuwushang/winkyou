@@ -112,8 +112,9 @@ func (e *engine) strategyFactoriesForOrder() []strategyFactory {
 
 func (e *engine) birthdayPunchStrategyConfig() birthdaypunch.Config {
 	return birthdaypunch.Config{
-		STUNServers:  append([]string(nil), e.cfg.NAT.STUNServers...),
-		PunchTimeout: e.iceConnectTimeout(),
+		STUNServers:    append([]string(nil), e.cfg.NAT.STUNServers...),
+		PunchInterface: e.cfg.NAT.PunchInterface,
+		PunchTimeout:   e.iceConnectTimeout(),
 	}
 }
 

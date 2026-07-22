@@ -18,6 +18,7 @@ import (
 	"winkyou/pkg/bootstrap/selfhosted"
 	"winkyou/pkg/mesh"
 	"winkyou/pkg/mesh/shortcut"
+	"winkyou/pkg/netutil"
 	"winkyou/pkg/peercontrol"
 	"winkyou/pkg/recoverycard"
 	"winkyou/pkg/solver"
@@ -52,8 +53,11 @@ type Config struct {
 	// both peers to transmit in the same deterministic window.
 	MaintainedPeers []string
 	STUNServers     []string
-	TCPTarget       string
-	TCPForwards     []string
+	// PunchInterface pins birthday probing/punching and cached self-bootstrap
+	// punch sockets to one operator-selected IPv4 underlay.
+	PunchInterface string
+	TCPTarget      string
+	TCPForwards    []string
 	// VirtualTCPForwards exposes selected remote services on their advertised
 	// ULA addresses. The Windows implementation temporarily owns /128 aliases
 	// on the loopback interface; it is a TCP facade, not a packet interface.
@@ -93,6 +97,7 @@ type Config struct {
 	selfBootstrapHelloInterval  time.Duration
 	selfBootstrapHelloSettle    time.Duration
 	selfBootstrapRoundDelay     time.Duration
+	punchBinding                *netutil.UDPBinding
 }
 
 // runtimeConfig is retained as an internal name for the migrated implementation
@@ -210,12 +215,18 @@ func (c runtimeConfig) normalized() (runtimeConfig, error) {
 	if c.strategyName == "" {
 		c.strategyName = birthdaypunch.StrategyName
 	}
+	c.PunchInterface = strings.TrimSpace(c.PunchInterface)
+	binding, err := netutil.ResolveUDPBinding(c.PunchInterface)
+	if err != nil {
+		return runtimeConfig{}, fmt.Errorf("punch interface: %w", err)
+	}
+	c.punchBinding = binding
 	if err := normalizeTCPConfig(&c); err != nil {
 		return runtimeConfig{}, err
 	}
 	if c.strategyFactory == nil {
 		strategyConfig := birthdaypunch.Config{
-			STUNServers: append([]string(nil), c.STUNServers...), ProbeSamples: c.ProbeSamples,
+			STUNServers: append([]string(nil), c.STUNServers...), PunchInterface: c.PunchInterface, Binding: c.punchBinding, ProbeSamples: c.ProbeSamples,
 			EndpointTimeout: c.EndpointTimeout, PunchTimeout: c.PunchTimeout, StartLead: c.StartLead,
 		}
 		c.strategyFactory = func(shortcut.AttemptSpec) (solver.Strategy, error) {
@@ -404,8 +415,9 @@ func newMeshRuntimeWithOptions(config runtimeConfig, options Options) (*meshRunt
 			AttemptCycle: cfg.SelfBootstrapCycle, HelloTimeout: cfg.SelfBootstrapHelloTimeout,
 			AllowNonPublic: cfg.selfBootstrapAllowNonPublic, PunchGrace: cfg.selfBootstrapPunchGrace,
 			HelloInterval: cfg.selfBootstrapHelloInterval, HelloSettle: cfg.selfBootstrapHelloSettle,
-			RoundDelay: cfg.selfBootstrapRoundDelay,
-			OnEvent:    runtime.handleSelfBootstrapEvent,
+			RoundDelay:     cfg.selfBootstrapRoundDelay,
+			PunchInterface: cfg.PunchInterface, Binding: cfg.punchBinding,
+			OnEvent: runtime.handleSelfBootstrapEvent,
 		})
 		if err != nil {
 			_ = manager.Close()
@@ -677,7 +689,9 @@ func (r *meshRuntime) handleSelfBootstrapEvent(event selfhosted.Event) {
 		"attempt_window_ordinal": event.AttemptWindowOrdinal,
 		"attempt_window_start":   event.AttemptWindowStart, "attempt_window_end": event.AttemptWindowEnd,
 		"punch_method": event.PunchMethod, "learned_remote": event.LearnedRemote,
-		"failure_stage": event.FailureStage, "error": errorString(event.Err),
+		"local_bind_ip": event.LocalBindIP, "local_bind_interface": event.LocalBindInterface,
+		"local_bind_addr": event.LocalBindAddr,
+		"failure_stage":   event.FailureStage, "error": errorString(event.Err),
 	})
 }
 

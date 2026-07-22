@@ -46,6 +46,7 @@ func main() {
 	flag.Var(&peers, "peer", "desired bootstrap peer as NODE_ID=HOST:PORT (repeatable)")
 	flag.Var(&maintainedPeers, "maintain-peer", "peer whose protected-direct edge should be maintained (repeatable; configure both endpoints; routed repair has one owner, self-bootstrap punches on both)")
 	flag.Var(&stunServers, "stun", "STUN URL used by birthday punch (repeatable)")
+	flag.StringVar(&cfg.PunchInterface, "punch-interface", "", "optional interface name that must carry every birthday/self-bootstrap UDP socket")
 	flag.StringVar(&cfg.TCPTarget, "tcp-target", "", "fixed local TCP target exposed to mesh peers, e.g. 127.0.0.1:22")
 	flag.Var(&tcpForwards, "tcp-forward", "loopback listener and remote node as LISTEN=NODE_ID (repeatable)")
 	flag.Var(&virtualTCPForwards, "virtual-tcp-forward", "managed ULA listener and remote node as [VIRTUAL_IP]:PORT=NODE_ID (repeatable; Windows, administrator required)")

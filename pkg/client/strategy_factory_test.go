@@ -50,6 +50,17 @@ func TestStrategyResolverLocalCapabilityComesFromRegistry(t *testing.T) {
 	}
 }
 
+func TestBirthdayPunchFactoryPropagatesPunchInterface(t *testing.T) {
+	cfg := config.Default()
+	cfg.NAT.PunchInterface = "Ethernet-underlay"
+	eng := &engine{cfg: cfg}
+
+	got := eng.birthdayPunchStrategyConfig()
+	if got.PunchInterface != "Ethernet-underlay" {
+		t.Fatalf("birthday punch interface = %q, want Ethernet-underlay", got.PunchInterface)
+	}
+}
+
 func TestStrategyResolverResolveNegotiatedIntersection(t *testing.T) {
 	resolver := newStrategyResolver([]strategyFactory{
 		{name: "legacy_ice_udp", build: func() solver.Strategy { return resolverStrategy{name: "legacy_ice_udp"} }},

@@ -15,6 +15,7 @@ import (
 	winkclient "winkyou/pkg/client"
 	"winkyou/pkg/config"
 	"winkyou/pkg/nat"
+	"winkyou/pkg/netutil"
 	"winkyou/pkg/solver"
 )
 
@@ -217,6 +218,26 @@ func TestDefaultSTUNProbeUsesUDPTURNAsPublicDirectHint(t *testing.T) {
 	}
 	if !strings.Contains(check.Suggestion, `nat.public_endpoint_hints=["198.51.100.44:45678"]`) {
 		t.Fatalf("defaultSTUNProbe() suggestion = %q, want public endpoint hint", check.Suggestion)
+	}
+}
+
+func TestDefaultSTUNProbeFailsClosedForMissingPunchInterface(t *testing.T) {
+	cfg := config.Default()
+	cfg.NAT.PunchInterface = "winkyou-interface-that-does-not-exist"
+	check := defaultSTUNProbe(context.Background(), &cfg)
+	if check.Status != doctorWarn || !strings.Contains(check.Message, "configured punch interface is unavailable") ||
+		!strings.Contains(check.Message, "winkyou-interface-that-does-not-exist") {
+		t.Fatalf("defaultSTUNProbe() = %#v, want explicit binding warning", check)
+	}
+}
+
+func TestFormatSTUNBindingEvidence(t *testing.T) {
+	binding := &netutil.UDPBinding{InterfaceName: "Ethernet", InterfaceIndex: 7, LocalIP: net.IPv4(192, 0, 2, 50)}
+	if got := formatSTUNBindingEvidence(binding); got != "local_bind_interface=Ethernet local_bind_ip=192.0.2.50 " {
+		t.Fatalf("formatSTUNBindingEvidence() = %q", got)
+	}
+	if got := formatSTUNBindingEvidence(nil); got != "" {
+		t.Fatalf("formatSTUNBindingEvidence(nil) = %q", got)
 	}
 }
 

@@ -8,6 +8,8 @@ import (
 	"net"
 	"strings"
 	"time"
+
+	"winkyou/pkg/netutil"
 )
 
 // stunDefaultTimeout is the per-request timeout when the caller's context
@@ -33,6 +35,12 @@ type stunResult struct {
 //
 // serverAddr can be in "stun:host:port" or "host:port" format.
 func stunBind(ctx context.Context, serverAddr string) (*stunResult, error) {
+	return stunBindBound(ctx, serverAddr, nil)
+}
+
+// stunBindBound is stunBind with an optional, already-resolved underlay
+// binding. A non-nil binding is enforced when the socket is created.
+func stunBindBound(ctx context.Context, serverAddr string, binding *netutil.UDPBinding) (*stunResult, error) {
 	host, port, err := parseSTUNAddr(serverAddr)
 	if err != nil {
 		return nil, err
@@ -45,8 +53,7 @@ func stunBind(ctx context.Context, serverAddr string) (*stunResult, error) {
 		return nil, fmt.Errorf("stun: resolve %q: %w", addrStr, err)
 	}
 
-	// Open a UDP socket bound to any local address.
-	conn, err := net.ListenPacket("udp4", ":0")
+	conn, err := netutil.ListenUDP4(ctx, binding, 0)
 	if err != nil {
 		return nil, fmt.Errorf("stun: listen: %w", err)
 	}

@@ -222,6 +222,16 @@ func TestAutonomousEngineRuntimeConfigPropagatesRecoveryDebounce(t *testing.T) {
 	}
 }
 
+func TestAutonomousEngineRuntimeConfigPropagatesPunchInterface(t *testing.T) {
+	cfg := autonomousEngineTestConfig("A", "fd7a:115c:a1e0::a")
+	cfg.NAT.PunchInterface = "Ethernet-underlay"
+
+	engine := autonomousEngine{cfg: cfg}
+	if got := engine.runtimeConfig().PunchInterface; got != "Ethernet-underlay" {
+		t.Fatalf("runtime punch interface = %q, want Ethernet-underlay", got)
+	}
+}
+
 func TestAutonomousEngineVirtualAliasOwnershipScopeIsStable(t *testing.T) {
 	cfg := autonomousEngineTestConfig("A", "fd7a:115c:a1e0::a")
 	cfg.AutonomousMesh.VirtualTCPForwards = []config.AutonomousMeshVirtualTCPForward{{

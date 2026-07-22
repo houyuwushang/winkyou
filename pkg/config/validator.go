@@ -69,6 +69,9 @@ func (c *Config) Validate() error {
 			return fmt.Errorf("nat.stun_servers[%d] must not be empty", i)
 		}
 	}
+	if c.NAT.PunchInterface != strings.TrimSpace(c.NAT.PunchInterface) {
+		return errors.New("nat.punch_interface must not have leading or trailing whitespace")
+	}
 	if c.NAT.GatherTimeout <= 0 {
 		return errors.New("nat.gather_timeout must be greater than zero")
 	}

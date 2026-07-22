@@ -7,6 +7,8 @@ import (
 	"net/netip"
 	"slices"
 	"strings"
+
+	"winkyou/pkg/netutil"
 )
 
 // STUNProbeResult is the public outcome of a STUN binding probe.
@@ -35,7 +37,13 @@ type STUNMappingReport struct {
 
 // ProbeSTUN performs a single STUN binding probe against serverAddr.
 func ProbeSTUN(ctx context.Context, serverAddr string) (*STUNProbeResult, error) {
-	result, err := stunBind(ctx, serverAddr)
+	return ProbeSTUNBound(ctx, serverAddr, nil)
+}
+
+// ProbeSTUNBound performs a STUN binding probe on an optional, already-resolved
+// underlay interface. Existing callers should keep using ProbeSTUN.
+func ProbeSTUNBound(ctx context.Context, serverAddr string, binding *netutil.UDPBinding) (*STUNProbeResult, error) {
+	result, err := stunBindBound(ctx, serverAddr, binding)
 	if err != nil {
 		return nil, err
 	}
@@ -49,12 +57,18 @@ func ProbeSTUN(ctx context.Context, serverAddr string) (*STUNProbeResult, error)
 // ProbeSTUNMapping probes all servers from one UDP socket and classifies the
 // observed mapping stability conservatively.
 func ProbeSTUNMapping(ctx context.Context, servers []string) (STUNMappingReport, error) {
+	return ProbeSTUNMappingBound(ctx, servers, nil)
+}
+
+// ProbeSTUNMappingBound probes all servers from one UDP socket pinned to an
+// optional, already-resolved underlay interface.
+func ProbeSTUNMappingBound(ctx context.Context, servers []string, binding *netutil.UDPBinding) (STUNMappingReport, error) {
 	report := STUNMappingReport{NATType: NATTypeUnknown}
 	if len(servers) == 0 {
 		return report, fmt.Errorf("nat: no STUN servers configured")
 	}
 
-	conn, err := net.ListenPacket("udp4", ":0")
+	conn, err := netutil.ListenUDP4(ctx, binding, 0)
 	if err != nil {
 		return report, fmt.Errorf("nat: listen: %w", err)
 	}
