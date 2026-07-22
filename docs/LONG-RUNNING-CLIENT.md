@@ -1,5 +1,7 @@
 # WinkYou 长期运行客户端
 
+> **2026-07-22 暂停告警：** 本文的通用托管方法不构成重新启用 `autonomous_mesh` cached self-bootstrap 的授权。后续现场构建在失联恢复时引发严重 UDP 五元组/出口会话风暴；该方向短期暂停，`WinkYou-A` 计划任务必须保持禁用，stop marker 必须保留。legacy 模式与自治恢复应分开评估。详见 [`INCIDENT-2026-07-22-SELF-BOOTSTRAP-UDP-STORM.md`](./INCIDENT-2026-07-22-SELF-BOOTSTRAP-UDP-STORM.md)。
+
 本文说明当前可用的长期运行方式。现阶段不引入新的 service 框架；`wink up` 仍是前台 client 进程，Linux 交给 systemd 管理，Windows 先使用管理员启动项、Task Scheduler 或 NSSM 管理。
 
 源码现在包含两个显式运行模式：默认的 `legacy` coordinator/WireGuard engine，以及默认关闭的 `autonomous_mesh` graph engine。只有配置 `autonomous_mesh.enabled: true` 才会选择后者。该 Slice 4.5 接入已通过全量测试、目标 race、全量 vet、隔离本机 CLI 生命周期，以及 2026-07-19 的 C -> B -> A 三节点 `wink up` 滚动现场验收。三个节点均以 zero seed、无基础设施 coordinator、每节点两条一跳 `protected_direct` packet edge 运行。2026-07-20 先证明新 A generation 可接管硬崩溃遗留的 ULA alias，随后完成 A-only Task Scheduler + child-supervisor 现场迁入：强杀 Wink child 后自动重建 runtime 和直连三角，并通过保持与业务探针。详细边界见 [`SLICE-4.5-FIELD-ROLLOUT-2026-07-19.md`](./SLICE-4.5-FIELD-ROLLOUT-2026-07-19.md)、[`VIRTUAL-TCP-ALIAS-CRASH-RECOVERY-2026-07-20.md`](./VIRTUAL-TCP-ALIAS-CRASH-RECOVERY-2026-07-20.md) 和 [`WINDOWS-SUPERVISOR-FIELD-2026-07-20.md`](./WINDOWS-SUPERVISOR-FIELD-2026-07-20.md)。systemd、A 整机重启、B/C 托管、三节点同时冷启动和公网 IP 变化仍未完成现场验收。

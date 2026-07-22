@@ -1,5 +1,7 @@
 # 生日悖论直连改造设计（Birthday-Paradox Direct Punch）
 
+> **暂停告警（2026-07-22）：** 产品化 cached self-bootstrap 在失联重试中造成 UDP 五元组/出口会话风暴。该方向短期暂停，当前实现为 **NO-GO**，不得在办公网、生产网或未经外部限流的公网启用。早期真机直连成功只证明算法可行，不代表长期自治恢复具备资源安全性。事故计算与恢复门禁见 [`INCIDENT-2026-07-22-SELF-BOOTSTRAP-UDP-STORM.md`](./INCIDENT-2026-07-22-SELF-BOOTSTRAP-UDP-STORM.md)。
+>
 > 状态：M6 真机公网直连和 M7 无 Wintun 用户态 SSH bridge 已完成（2026-07-16），M8 记录了随后约 11 小时的无重连会话及单 stream 收尾缺陷。之后 `birthday_punch` 获胜 socket 已接入自治图运行时并完成三节点现场 edge rotation；recovery card/cached self-bootstrap 随后取得 r12 公网进程重入结果。Slice 4.5 已把运行时抽到 `pkg/meshruntime`，并在 2026-07-19 完成 C -> B -> A 三节点产品 `wink up` 滚动现场部署：三者均 zero seed、无基础设施 coordinator，并各有两条一跳 `protected_direct` packet edge。透明系统 L3、OS 自启动/重启、同时冷启动和公网 IP 变化仍是后续工作。
 > 背景证据：`.live-run/` 抓包 + `implementation_plan.md` 2026-06-06 条目 + 三方审阅结论。
 

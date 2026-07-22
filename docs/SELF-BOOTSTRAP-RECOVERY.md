@@ -1,5 +1,12 @@
 # Cached-endpoint self-bootstrap and recovery cards
 
+> **PAUSED / NO-GO (2026-07-22):** the productized cached self-bootstrap loop
+> caused a UDP tuple/session storm while retrying unreachable peers. This work
+> is paused for the short term. Do not enable, deploy, or field-test it on an
+> office or production network. See
+> [`INCIDENT-2026-07-22-SELF-BOOTSTRAP-UDP-STORM.md`](./INCIDENT-2026-07-22-SELF-BOOTSTRAP-UDP-STORM.md)
+> for the calculation, root cause, shutdown state, and mandatory re-entry gates.
+
 Status: implemented and locally covered, with real public-NAT zero-seed
 executable rejoins first accepted on C and A using r12. Slice 4.5 subsequently
 completed a C -> B -> A rolling replacement with the normal managed

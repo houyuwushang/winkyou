@@ -8,6 +8,122 @@ WinkYou = connectivity solver + secure WireGuard data plane
 
 项目不再以固定 ICE/TURN 流程作为架构中心。ICE、TURN relay、未来的 QUIC/TCP/proxy 路径都应被视为连接求解器可选择的候选路径；真正承载数据的是统一的 `transport.PacketTransport` 边界和 userspace `wireguard-go` 数据平面。
 
+## 紧急停机：self-bootstrap 流量风暴
+
+> **2026-07-22 安全告警：不要在办公网、生产网或未经限流的公网重新启用当前 Windows A 节点。**
+>
+> 现场使用 `880936b` 构建时，一个失联 peer 的 cached self-bootstrap 会在约 45 秒的窗口内创建 128 个 UDP socket，并以约 300 ms 的周期向数十个候选端点发包。多个 peer 的窗口重叠后会持续制造大量 UDP 五元组；本机看到的是 128–256 个 socket，但 NAT、防火墙或出口设备会为不同目标建立并保留更多 conntrack/session 状态。2026-07-22 现场外部观测约 40 万并发状态，并造成公司网络故障。该构建在完成下面的 P0 修复和隔离验收前视为 **NO-GO**。
+>
+> **项目决定：cached self-bootstrap / autonomous birthday recovery 短期暂停，不安排修复、现场测试或重新部署。** 当前成果和事故分析保留，后续只有在重新立项并满足限流、退避、熔断及隔离验收门禁后才允许继续。约 40 万状态的计算、代码根因和恢复门禁详见 [`docs/INCIDENT-2026-07-22-SELF-BOOTSTRAP-UDP-STORM.md`](./docs/INCIDENT-2026-07-22-SELF-BOOTSTRAP-UDP-STORM.md)。
+
+当前 A 节点的自动启动链路如下：
+
+```text
+Task Scheduler: \WinkYou-A
+  -> D:\workspace\winkyou\scripts\run-wink-supervisor.ps1
+  -> D:\workspace\winkyou\.live-run\runs\rank2x3-physical-v2-20260722-r1\artifacts\wink-windows-amd64-880936b.exe
+
+config:
+  D:\workspace\winkyou\.live-run\runs\rank2x3-physical-v2-20260722-r1\normal\A\A.yaml
+state:
+  D:\workspace\winkyou\.live-run\runs\rank2x3-physical-v2-20260722-r1\normal\A\A.runtime.json
+stop marker:
+  D:\workspace\winkyou\.live-run\runs\rank2x3-physical-v2-20260722-r1\normal\A\A.runtime.json.supervisor.stop
+```
+
+图形界面入口：按 `Win+R`，运行 `taskschd.msc`，进入“任务计划程序库”，找到 `WinkYou-A`。紧急情况下必须先点“禁用”，再点“结束”；只点“结束”或只在任务管理器结束 child 都可能被重新拉起。命令行流程仍以下面的精确路径版本为准。
+
+只结束 `wink-*.exe` **不够**：supervisor 会自动拉起新 child。紧急情况下应在 **管理员 PowerShell** 中执行下面整段，先写 stop marker，再禁用并停止计划任务，最后只按精确路径清理残留进程：
+
+```powershell
+$taskName = 'WinkYou-A'
+$taskPath = '\'
+$root = 'D:\workspace\winkyou\.live-run\runs\rank2x3-physical-v2-20260722-r1'
+$statePath = Join-Path $root 'normal\A\A.runtime.json'
+$stopPath = $statePath + '.supervisor.stop'
+$expectedExe = Join-Path $root 'artifacts\wink-windows-amd64-880936b.exe'
+$supervisorScript = 'D:\workspace\winkyou\scripts\run-wink-supervisor.ps1'
+
+# 1. 先阻止 supervisor 和 Task Scheduler 再次拉起进程。
+[IO.File]::WriteAllText(
+    $stopPath,
+    "emergency-stop: $([DateTimeOffset]::Now.ToString('o'))`n",
+    [Text.UTF8Encoding]::new($false)
+)
+Disable-ScheduledTask -TaskPath $taskPath -TaskName $taskName -ErrorAction Stop |
+    Out-Null
+Stop-ScheduledTask -TaskPath $taskPath -TaskName $taskName -ErrorAction SilentlyContinue
+Start-Sleep -Seconds 2
+
+# 2. 只清理路径和命令行都匹配本次部署的残留进程，避免误杀其他 PowerShell。
+$owned = @(
+    Get-CimInstance Win32_Process |
+        Where-Object {
+            [int]$_.ProcessId -ne $PID -and (
+                ($_.ExecutablePath -and
+                    [IO.Path]::GetFullPath($_.ExecutablePath) -ieq
+                    [IO.Path]::GetFullPath($expectedExe)) -or
+                ($_.Name -ieq 'powershell.exe' -and
+                    $_.CommandLine -like ('*' + $supervisorScript + '*') -and
+                    $_.CommandLine -like ('*' + $statePath + '*'))
+            )
+        }
+)
+$owned | ForEach-Object {
+    Stop-Process -Id ([int]$_.ProcessId) -Force -ErrorAction Stop
+}
+Start-Sleep -Seconds 3
+
+# 3. 验收：任务必须 Disabled，部署进程和三个现场监听必须为空。
+$task = Get-ScheduledTask -TaskPath $taskPath -TaskName $taskName
+$remaining = @(
+    Get-CimInstance Win32_Process |
+        Where-Object {
+            [int]$_.ProcessId -ne $PID -and (
+                ($_.ExecutablePath -and
+                    [IO.Path]::GetFullPath($_.ExecutablePath) -ieq
+                    [IO.Path]::GetFullPath($expectedExe)) -or
+                ($_.Name -ieq 'powershell.exe' -and
+                    $_.CommandLine -like ('*' + $supervisorScript + '*') -and
+                    $_.CommandLine -like ('*' + $statePath + '*'))
+            )
+        }
+)
+$listeners = @(
+    Get-NetTCPConnection -LocalPort 22022,22024,32110 -State Listen `
+        -ErrorAction SilentlyContinue
+)
+
+[pscustomobject]@{
+    TaskState         = [string]$task.State
+    TaskEnabled       = [bool]$task.Settings.Enabled
+    StopMarkerPresent = Test-Path -LiteralPath $stopPath
+    RemainingProcess  = $remaining.Count
+    RemainingListener = $listeners.Count
+}
+
+if ($task.State -ne 'Disabled' -or $remaining.Count -ne 0 -or
+    $listeners.Count -ne 0) {
+    throw 'WinkYou-A emergency stop is incomplete'
+}
+```
+
+当前现场已于 `2026-07-22 15:30:30 +08:00` 执行上述停机：任务为 `Disabled`，stop marker 存在，相关进程以及 `22022/22024/32110` 监听均为零。不要删除 stop marker，也不要手动 `Start-ScheduledTask`；单独启动 child 同样不安全。
+
+源进程停止后，出口 NAT/防火墙上已经建立的 UDP conntrack/session 不一定立即消失，会按设备的 UDP idle timeout 逐步老化。如果业务网络仍未恢复，应让网管先通过 DHCP/ARP/终端地址核实故障主机的当前源 IP，再只清理该源的 UDP 会话；不要为了本事故重启整台防火墙、清空全局会话表或扩大到无关终端。2026-07-22 本次 Wink 日志里的物理出口源地址为 `10.3.9.11`，它只能作为排查线索，不能代替现场地址核验。
+
+重新启用前至少完成以下 P0 修复：
+
+1. 给整个节点的 heavyweight punch 加全局 single-flight/semaphore，禁止多个 peer 同时各自启动 128-socket punch。
+2. 把 socket 数、目标数、窗口和周期改成可配置且带保守硬上限；失败后使用指数退避和抖动，不能每分钟长期运行约 45 秒。
+3. 对 UDP 发包做节点级 packets-per-second 和新目标/五元组速率限制；`WSAENOBUFS`、临时错误或连续写失败必须立即停止本轮并进入 local-resource backoff，不能忽略错误继续发包。
+4. punch packet nonce 不得每包调用 OS CSPRNG；保留一次安全随机 seed，再使用每 socket PRNG 或计数器。握手和认证材料仍使用密码学随机数。
+5. 健康邻居的 keepalive 不得因单次临时 `WSAENOBUFS` 立即拆边；应使用有限重试和连续错误阈值，避免“打洞过载 -> 健康边被拆 -> 更多打洞”的正反馈。
+6. 取消 punch 时主动设置 deadline/关闭 socket，等待所有 sender/reader 退出；增加 goroutine、socket、句柄和发包速率的运行时指标与 kill switch。
+7. 先在隔离网络完成单 peer、多 peer、失联 24 小时和故障注入验收，并在出口设备上同时核对 conntrack/session 数；测试期间设置外部限速。办公网只允许经过评审的小流量 canary。
+
+修复完成后也不能直接删除标记并恢复任务。应先冻结新二进制 SHA-256、确认配置中的限流值、在隔离环境通过门禁，再由两人复核执行 `Remove-Item $stopPath`、`Enable-ScheduledTask` 和 `Start-ScheduledTask`。恢复后若 UDP socket、句柄、线程、CPU、发包率或出口 session 任一超过门限，立即重新执行紧急停机。
+
 ## 当前状态
 
 当前代码已经完成 Phase 3B code health、Phase 4A `relay_only` 冻结，并进入 protected direct multipath、非 UDP PacketTransport alpha 验证和 v0.1 运维闭环。

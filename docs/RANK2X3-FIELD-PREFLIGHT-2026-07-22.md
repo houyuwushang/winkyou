@@ -1,5 +1,12 @@
 # Rank-2 x Rank-3 field preflight (2026-07-22)
 
+> **SUPERSEDED / PAUSED:** later on 2026-07-22, the managed A build generated
+> a severe UDP tuple/session storm during cached self-bootstrap. The earlier
+> isolated A-B gate below remains historical connectivity evidence, but is not
+> authorization to continue the transaction or restart any managed node. The
+> autonomous birthday-recovery work is paused for the short term. See
+> [`INCIDENT-2026-07-22-SELF-BOOTSTRAP-UDP-STORM.md`](./INCIDENT-2026-07-22-SELF-BOOTSTRAP-UDP-STORM.md).
+
 Status: **NO-GO for the full rank-2 x rank-3 transaction, but the isolated A-B
 physical-underlay gate has passed**. The existing A-B-C mesh remains online and
 B is manageable through WinkYou without natpierce. The persistent-task

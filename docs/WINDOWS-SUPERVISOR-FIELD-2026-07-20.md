@@ -1,5 +1,13 @@
 # Windows Child-Supervisor Field Acceptance (2026-07-20)
 
+> **Operational warning (2026-07-22):** this document is historical process-
+> recovery evidence, not authorization to enable `WinkYou-A`. A later managed
+> autonomous build caused a severe UDP tuple/session storm, and the supervisor
+> repeatedly restarting a stopped child defeats process-only emergency action.
+> The task must remain disabled and its stop marker must remain present while
+> autonomous birthday recovery is paused. See
+> [`INCIDENT-2026-07-22-SELF-BOOTSTRAP-UDP-STORM.md`](./INCIDENT-2026-07-22-SELF-BOOTSTRAP-UDP-STORM.md).
+
 Status: accepted for an A-only Wink process crash while B and C remained
 running. The accepted path uses a Task Scheduler action that runs the bundled
 PowerShell child supervisor; it does not rely on Task Scheduler directly
