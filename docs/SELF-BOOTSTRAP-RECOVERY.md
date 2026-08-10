@@ -46,10 +46,10 @@ infrastructure relay a product dependency.
 
 ## Configuration
 
-Configure the maintained pair symmetrically. Use one recovery-card file per
-node and, when authentication matters, provision the same secret contents to
-both endpoints. The Linux example below uses `eth0`; replace it with the exact
-local interface name (`Ethernet` is a common Windows name):
+The syntax below is retained only as historical design evidence. Current
+`meshnode` binaries reject `--maintain-peer` and `--recovery-card` before
+constructing a runtime, so these commands must not be used as deployment
+instructions:
 
 ```text
 # node A
@@ -72,20 +72,21 @@ on every node. The relevant flags and production defaults are:
 
 | Flag | Meaning | Default |
 | --- | --- | --- |
-| `--recovery-card PATH` | Enable persistent cached-endpoint self-bootstrap | disabled |
+| `--maintain-peer NODE_ID` | Rejected while autonomous birthday recovery is paused | none |
+| `--recovery-card PATH` | Rejected while cached self-bootstrap is paused | disabled |
 | `--punch-interface NAME` | Pin birthday/self-bootstrap STUN, probes, and punches to one IPv4 underlay | OS route selection |
 | `--self-bootstrap-secret-file PATH` | Shared secret used to derive pair-specific punch and HELLO keys | none |
 | `--self-bootstrap-window DURATION` | Active cached-endpoint punch window | `45s` |
 | `--self-bootstrap-cycle DURATION` | Pair-deterministic interval between windows | `1m` |
 | `--self-bootstrap-hello-timeout DURATION` | Reserve at the end of a window for peer identity HELLO | `8s` |
 
-`--recovery-card` requires at least one `--maintain-peer`.
-`--self-bootstrap-secret-file` requires `--recovery-card`. The cycle must be
-longer than the active window, and both endpoint clocks must be close enough
-for their active windows to overlap.
+Before the pause, `--recovery-card` required at least one `--maintain-peer`, and
+`--self-bootstrap-secret-file` required `--recovery-card`. These compatibility
+flags remain visible so existing scripts fail with an explicit pause error
+rather than an unknown-flag error.
 
-Those flags remain the `cmd/meshnode` compatibility surface. Normal `wink`
-configuration now uses typed fields rather than `NODE=ADDRESS` strings:
+The equivalent historical `wink` configuration is shown below for schema
+reference. Current config validation rejects it because `recovery_card` is set:
 
 ```yaml
 nat:

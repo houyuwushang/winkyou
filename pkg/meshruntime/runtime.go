@@ -38,6 +38,10 @@ const (
 	maxTimeDuration          = time.Duration(1<<63 - 1)
 )
 
+// ErrAutonomousBirthdayRecoveryPaused prevents production callers from starting
+// the recovery loop until the incident's resource-safety gates are satisfied.
+var ErrAutonomousBirthdayRecoveryPaused = errors.New("autonomous birthday recovery is paused; see docs/INCIDENT-2026-07-22-SELF-BOOTSTRAP-UDP-STORM.md")
+
 // Config describes one autonomous mesh runtime. The string slices intentionally
 // retain the field-tested meshnode flag grammar so the standalone command and
 // product adapters share one validation path.
@@ -333,6 +337,9 @@ type meshRuntime = Runtime
 // once; Close is idempotent and may be retried after transient alias cleanup
 // failures.
 func New(config Config, options Options) (*Runtime, error) {
+	if len(config.MaintainedPeers) > 0 || strings.TrimSpace(config.RecoveryCardPath) != "" {
+		return nil, ErrAutonomousBirthdayRecoveryPaused
+	}
 	return newMeshRuntimeWithOptions(config, options)
 }
 

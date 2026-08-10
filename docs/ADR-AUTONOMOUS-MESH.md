@@ -1,5 +1,11 @@
 # ADR: Autonomous Mesh Control and Peer Transit
 
+> **PAUSED / NO-GO (2026-07-22):** the automatic maintained-edge and cached
+> self-bootstrap paths described in this historical ADR are disabled at the
+> product boundary after the UDP tuple/session storm. Current binaries reject
+> `maintain_peers` / `--maintain-peer` and `recovery_card` / `--recovery-card`.
+> See [`INCIDENT-2026-07-22-SELF-BOOTSTRAP-UDP-STORM.md`](./INCIDENT-2026-07-22-SELF-BOOTSTRAP-UDP-STORM.md).
+
 - Status: accepted; Slices 1-4, the three-host edge rotation, direct routed SSH,
   a two-hour continuity hold, dynamic user-space service access, and the r12
   cached-endpoint public-NAT zero-seed rejoins are field-proven. Slice 4.5 now

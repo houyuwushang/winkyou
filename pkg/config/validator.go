@@ -262,6 +262,9 @@ func validateAutonomousMesh(cfg AutonomousMeshConfig) error {
 	if cfg.RecoveryDebounce <= 0 {
 		return errors.New("autonomous_mesh.recovery_debounce must be greater than zero when autonomous_mesh.enabled=true")
 	}
+	if len(cfg.MaintainPeers) > 0 || recoveryCard != "" {
+		return errors.New("autonomous_mesh.maintain_peers and recovery_card are unavailable while autonomous birthday recovery is paused; see docs/INCIDENT-2026-07-22-SELF-BOOTSTRAP-UDP-STORM.md")
+	}
 
 	if target := strings.TrimSpace(cfg.TCPTarget); target != "" {
 		if _, err := validateLoopbackTCPAddress("autonomous_mesh.tcp_target", target); err != nil {
