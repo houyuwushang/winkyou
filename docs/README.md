@@ -25,6 +25,7 @@ When documents disagree, treat `CONNECTIVITY-SOLVER-BASELINE.md` as the source o
 ## Operator Docs
 
 - Phase 1a machine-wide governor namespace and setup command: [`MACHINE-SAFETY-NAMESPACE.md`](./MACHINE-SAFETY-NAMESPACE.md)
+- Phase 1a explicit, lower per-user scope boundary: [`USER-ACKNOWLEDGED-SCOPE.md`](./USER-ACKNOWLEDGED-SCOPE.md)
 - Phase 1a bounded cancellation and I/O drain contract: [`CANCELLATION-DRAIN-CONTRACT.md`](./CANCELLATION-DRAIN-CONTRACT.md)
 - Phase 1a no-packet first-run report: [`PASSIVE-DIAGNOSE.md`](./PASSIVE-DIAGNOSE.md)
 - Self-host quickstart: [`SELFHOST-QUICKSTART.md`](./SELFHOST-QUICKSTART.md)

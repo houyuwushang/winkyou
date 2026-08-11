@@ -636,6 +636,20 @@ func InspectMachineSafetyTrip() SafetyTripStatus {
 	return newSafetyTripStore(namespace.Path).status()
 }
 
+// InspectUserAcknowledgedSafetyTrip reads the canonical per-user state without
+// acquiring its owner lock or modifying the namespace.
+func InspectUserAcknowledgedSafetyTrip() SafetyTripStatus {
+	namespace := InspectUserAcknowledgedNamespace()
+	if !namespace.Ready {
+		return SafetyTripStatus{
+			State:            SafetyTripUnavailable,
+			BlocksActiveWork: true,
+			Detail:           namespace.Detail,
+		}
+	}
+	return newSafetyTripStore(namespace.Path).status()
+}
+
 // ResetMachineSafetyTrip clears one exact observed trip. It requires machine
 // elevation and exclusive namespace ownership, so a running official governor
 // or a newer trip cannot be reset accidentally.

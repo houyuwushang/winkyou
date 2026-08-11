@@ -19,6 +19,7 @@ var (
 	ErrDuplicateAttempt         = errors.New("attempt id is already active")
 	ErrInvalidRequest           = errors.New("invalid governor request")
 	ErrCancellationDrainTimeout = errors.New("attempt cancellation drain timed out")
+	ErrRestrictedScopeRequired  = errors.New("user-acknowledged profile requires the restricted governor capability")
 )
 
 const maxAttemptDrainRegistrations = 8
@@ -78,6 +79,13 @@ type Governor struct {
 // requested may be nil to use the compiled profile ceiling. A non-nil value can
 // only lower that ceiling.
 func New(owner *Owner, profile Profile, requested *Limits) (*Governor, error) {
+	if profile == ProfilePhase1UserAcknowledged {
+		return nil, ErrRestrictedScopeRequired
+	}
+	return newGovernor(owner, profile, requested)
+}
+
+func newGovernor(owner *Owner, profile Profile, requested *Limits) (*Governor, error) {
 	if owner == nil || !owner.usable() {
 		return nil, fmt.Errorf("%w: namespace owner is missing or closed", ErrInvalidRequest)
 	}
