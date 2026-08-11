@@ -117,6 +117,68 @@ func TestGovernorReservesAndReleasesHierarchy(t *testing.T) {
 	}
 }
 
+func TestAttemptLeaseTripBindsPeerAndAttemptIdentity(t *testing.T) {
+	governor := newTestGovernor(t, ProfilePhase1Machine, nil)
+	peer, err := governor.AcquirePeer("peer-bound")
+	if err != nil {
+		t.Fatalf("acquire peer: %v", err)
+	}
+	attempt, err := peer.AcquireAttempt(context.Background(), testAttempt("attempt-bound"))
+	if err != nil {
+		t.Fatalf("acquire attempt: %v", err)
+	}
+
+	status, err := attempt.Trip(SafetyTripEvent{
+		Reason:    SafetyTripHardLimit,
+		Detail:    "probeio test",
+		PeerID:    "spoofed-peer",
+		AttemptID: "spoofed-attempt",
+	})
+	if err != nil {
+		t.Fatalf("trip attempt: %v", err)
+	}
+	if status.State != SafetyTripTripped {
+		t.Fatalf("trip state = %q, want %q", status.State, SafetyTripTripped)
+	}
+	if status.Record.PeerID != "peer-bound" || status.Record.AttemptID != "attempt-bound" {
+		t.Fatalf("trip identity = %q/%q, want peer-bound/attempt-bound", status.Record.PeerID, status.Record.AttemptID)
+	}
+	select {
+	case <-attempt.Done():
+	default:
+		t.Fatal("trip did not close attempt lease")
+	}
+}
+
+func TestClosedAttemptLeaseCannotTripGovernor(t *testing.T) {
+	governor := newTestGovernor(t, ProfilePhase1Machine, nil)
+	peer, err := governor.AcquirePeer("peer-closed")
+	if err != nil {
+		t.Fatalf("acquire peer: %v", err)
+	}
+	attempt, err := peer.AcquireAttempt(context.Background(), testAttempt("attempt-closed"))
+	if err != nil {
+		t.Fatalf("acquire attempt: %v", err)
+	}
+	if err := attempt.Close(); err != nil {
+		t.Fatalf("close attempt: %v", err)
+	}
+
+	status, err := attempt.Trip(SafetyTripEvent{
+		Reason: SafetyTripHardLimit,
+		Detail: "must be rejected",
+	})
+	if !errors.Is(err, ErrLeaseClosed) {
+		t.Fatalf("trip error = %v, want ErrLeaseClosed", err)
+	}
+	if status.BlocksActiveWork {
+		t.Fatalf("closed attempt changed safety status: %+v", status)
+	}
+	if snapshot := governor.Snapshot(); snapshot.SafetyTrip.BlocksActiveWork {
+		t.Fatalf("governor tripped from closed capability: %+v", snapshot.SafetyTrip)
+	}
+}
+
 func TestGovernorConfigurationCanLowerButNotRaiseHardLimits(t *testing.T) {
 	hard, err := HardLimits(ProfilePhase1Machine)
 	if err != nil {
