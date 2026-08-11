@@ -114,6 +114,11 @@ from this path. The next active-I/O slice must separately review same-socket
 STUN and test-only pairing, route all socket creation through `probeio`, and add
 per-user trip/reset operator semantics before sending any packet.
 
+The pairing work is now bounded by
+[`TEST-ONLY-PAIRING-MINI-SPEC.md`](./TEST-ONLY-PAIRING-MINI-SPEC.md). That
+document remains Draft: before security review it permits only an in-memory
+simulation and explicitly forbids cryptographic or network adapters.
+
 ## Persistence and removal
 
 Creating the namespace does not persist activation. The files remain so later
