@@ -152,8 +152,8 @@ func runShortcut(ctx context.Context, payload []byte) (result, error) {
 	}
 	var initialRoute mesh.Route
 	if err := waitFor(ctx, func() bool {
-		forward, forwardOK := nodeA.Route("C")
-		reverse, reverseOK := nodeC.Route("A")
+		forward, forwardOK := nodeA.DataRoute("C")
+		reverse, reverseOK := nodeC.DataRoute("A")
 		if forwardOK && reverseOK && slices.Equal(forward.Path, []string{"A", "B", "C"}) &&
 			slices.Equal(reverse.Path, []string{"C", "B", "A"}) {
 			initialRoute = forward
@@ -200,31 +200,17 @@ func runShortcut(ctx context.Context, payload []byte) (result, error) {
 	factory := func(spec shortcut.AttemptSpec) (solver.Strategy, error) {
 		return newDemoEdgeStrategy(spec, broker), nil
 	}
-	managerConfig := func(node *mesh.Node, withFactory bool) shortcut.Config {
-		config := shortcut.Config{
-			Node: node, StrategyName: demoEdgeStrategyName, Probation: 400 * time.Millisecond,
-			SolveTimeout: 2 * time.Second,
-			PacketNeighbor: mesh.PacketNeighborConfig{
-				KeepAliveInterval: 25 * time.Millisecond, PeerTimeout: 250 * time.Millisecond,
-				ReadPollInterval: 25 * time.Millisecond, WriteTimeout: 100 * time.Millisecond,
-			},
-		}
-		if withFactory {
-			config.StrategyFactory = factory
-		}
-		return config
-	}
-	managerA, err := shortcut.NewManager(managerConfig(nodeA, true))
+	managerA, err := shortcut.NewManager(demoShortcutConfig(nodeA, factory))
 	if err != nil {
 		return result{}, err
 	}
 	defer managerA.Close()
-	managerB, err := shortcut.NewManager(managerConfig(nodeB, false))
+	managerB, err := shortcut.NewManager(demoShortcutConfig(nodeB, nil))
 	if err != nil {
 		return result{}, err
 	}
 	defer managerB.Close()
-	managerC, err := shortcut.NewManager(managerConfig(nodeC, true))
+	managerC, err := shortcut.NewManager(demoShortcutConfig(nodeC, factory))
 	if err != nil {
 		return result{}, err
 	}
@@ -240,8 +226,8 @@ func runShortcut(ctx context.Context, payload []byte) (result, error) {
 	}
 	var directRoute mesh.Route
 	if err := waitFor(ctx, func() bool {
-		forward, forwardOK := nodeA.Route("C")
-		reverse, reverseOK := nodeC.Route("A")
+		forward, forwardOK := nodeA.DataRoute("C")
+		reverse, reverseOK := nodeC.DataRoute("A")
 		if forwardOK && reverseOK && slices.Equal(forward.Path, []string{"A", "C"}) &&
 			slices.Equal(reverse.Path, []string{"C", "A"}) {
 			directRoute = forward
@@ -266,7 +252,6 @@ func runShortcut(ctx context.Context, payload []byte) (result, error) {
 	if err != nil {
 		return result{}, fmt.Errorf("direct packet echo: %w", err)
 	}
-	time.Sleep(25 * time.Millisecond)
 	directBypassedB := dataForwardedByB.Load() == 2
 	transitRetained := nodeA.HasNeighbor("B") && nodeB.HasNeighbor("A") && nodeB.HasNeighbor("C") && nodeC.HasNeighbor("B")
 	if !directBypassedB || !transitRetained || solverSignalsByB.Load() < 2 {
@@ -365,8 +350,8 @@ func runRejoin(ctx context.Context, payload []byte) (result, error) {
 		}
 	}
 	if err := waitFor(ctx, func() bool {
-		forward, forwardOK := nodeA.Route("C")
-		reverse, reverseOK := nodeC.Route("A")
+		forward, forwardOK := nodeA.DataRoute("C")
+		reverse, reverseOK := nodeC.DataRoute("A")
 		return forwardOK && reverseOK && slices.Equal(forward.Path, []string{"A", "C"}) &&
 			slices.Equal(reverse.Path, []string{"C", "A"})
 	}); err != nil {
@@ -381,8 +366,8 @@ func runRejoin(ctx context.Context, payload []byte) (result, error) {
 	}
 	var bootstrapRoute mesh.Route
 	if err := waitFor(ctx, func() bool {
-		forward, forwardOK := nodeA.Route("B")
-		reverse, reverseOK := nodeB.Route("A")
+		forward, forwardOK := nodeA.DataRoute("B")
+		reverse, reverseOK := nodeB.DataRoute("A")
 		if forwardOK && reverseOK && slices.Equal(forward.Path, []string{"A", "C", "B"}) &&
 			slices.Equal(reverse.Path, []string{"B", "C", "A"}) {
 			bootstrapRoute = forward
@@ -460,27 +445,17 @@ func runRejoin(ctx context.Context, payload []byte) (result, error) {
 		}
 		return newDemoEdgeStrategy(spec, broker), nil
 	}
-	managerConfig := func(node *mesh.Node) shortcut.Config {
-		return shortcut.Config{
-			Node: node, StrategyName: demoEdgeStrategyName, StrategyFactory: factory,
-			Probation: 400 * time.Millisecond, SolveTimeout: 2 * time.Second,
-			PacketNeighbor: mesh.PacketNeighborConfig{
-				KeepAliveInterval: 25 * time.Millisecond, PeerTimeout: 250 * time.Millisecond,
-				ReadPollInterval: 25 * time.Millisecond, WriteTimeout: 100 * time.Millisecond,
-			},
-		}
-	}
-	managerA, err := shortcut.NewManager(managerConfig(nodeA))
+	managerA, err := shortcut.NewManager(demoShortcutConfig(nodeA, factory))
 	if err != nil {
 		return result{}, err
 	}
 	defer managerA.Close()
-	managerB, err := shortcut.NewManager(managerConfig(nodeB))
+	managerB, err := shortcut.NewManager(demoShortcutConfig(nodeB, factory))
 	if err != nil {
 		return result{}, err
 	}
 	defer managerB.Close()
-	managerC, err := shortcut.NewManager(managerConfig(nodeC))
+	managerC, err := shortcut.NewManager(demoShortcutConfig(nodeC, factory))
 	if err != nil {
 		return result{}, err
 	}
@@ -501,8 +476,8 @@ func runRejoin(ctx context.Context, payload []byte) (result, error) {
 	}
 	var firstDirectRoute mesh.Route
 	if err := waitFor(ctx, func() bool {
-		forward, forwardOK := nodeA.Route("B")
-		reverse, reverseOK := nodeB.Route("A")
+		forward, forwardOK := nodeA.DataRoute("B")
+		reverse, reverseOK := nodeB.DataRoute("A")
 		if forwardOK && reverseOK && slices.Equal(forward.Path, []string{"A", "B"}) &&
 			slices.Equal(reverse.Path, []string{"B", "A"}) {
 			firstDirectRoute = forward
@@ -515,7 +490,6 @@ func runRejoin(ctx context.Context, payload []byte) (result, error) {
 	if _, err := packetEcho(ctx, packetAB, packetBA, append([]byte("DIRECT-A-B:"), payload...)); err != nil {
 		return result{}, fmt.Errorf("direct A-B packet echo: %w", err)
 	}
-	time.Sleep(25 * time.Millisecond)
 	firstBypassedC := dataForwardedByC.Load() == afterBootstrapC
 	if !firstBypassedC || solverSignalsByC.Load() < 2 {
 		return result{}, fmt.Errorf(
@@ -531,8 +505,8 @@ func runRejoin(ctx context.Context, payload []byte) (result, error) {
 	}
 	var replacementRoute mesh.Route
 	if err := waitFor(ctx, func() bool {
-		forward, forwardOK := nodeB.Route("C")
-		reverse, reverseOK := nodeC.Route("B")
+		forward, forwardOK := nodeB.DataRoute("C")
+		reverse, reverseOK := nodeC.DataRoute("B")
 		if !nodeB.HasNeighbor("C") && !nodeC.HasNeighbor("B") && forwardOK && reverseOK &&
 			slices.Equal(forward.Path, []string{"B", "A", "C"}) &&
 			slices.Equal(reverse.Path, []string{"C", "A", "B"}) {
@@ -565,8 +539,8 @@ func runRejoin(ctx context.Context, payload []byte) (result, error) {
 	}
 	var secondDirectRoute mesh.Route
 	if err := waitFor(ctx, func() bool {
-		forward, forwardOK := nodeB.Route("C")
-		reverse, reverseOK := nodeC.Route("B")
+		forward, forwardOK := nodeB.DataRoute("C")
+		reverse, reverseOK := nodeC.DataRoute("B")
 		if forwardOK && reverseOK && slices.Equal(forward.Path, []string{"B", "C"}) &&
 			slices.Equal(reverse.Path, []string{"C", "B"}) {
 			secondDirectRoute = forward
@@ -579,7 +553,6 @@ func runRejoin(ctx context.Context, payload []byte) (result, error) {
 	if _, err := packetEcho(ctx, packetBC, packetCB, append([]byte("DIRECT-B-C:"), payload...)); err != nil {
 		return result{}, fmt.Errorf("direct B-C packet echo: %w", err)
 	}
-	time.Sleep(25 * time.Millisecond)
 	secondBypassedA := dataForwardedByA.Load() == afterReplacementA
 	allEdgesDirect := nodeA.HasNeighbor("B") && nodeB.HasNeighbor("A") &&
 		nodeA.HasNeighbor("C") && nodeC.HasNeighbor("A") &&
@@ -1093,7 +1066,30 @@ func waitFor(ctx context.Context, condition func() bool) error {
 	}
 }
 
-const demoEdgeStrategyName = "demo_protected_direct"
+const (
+	// Demo timings stay short enough for an interactive proof but leave enough
+	// scheduling margin for low-core CI; probation must outlive peer liveness.
+	demoEdgeStrategyName        = "demo_protected_direct"
+	demoShortcutProbation       = 1250 * time.Millisecond
+	demoShortcutSolveTimeout    = 2 * time.Second
+	demoPacketKeepAliveInterval = 50 * time.Millisecond
+	demoPacketPeerTimeout       = time.Second
+	demoPacketReadPollInterval  = 50 * time.Millisecond
+	demoPacketWriteTimeout      = 500 * time.Millisecond
+)
+
+func demoShortcutConfig(node *mesh.Node, factory shortcut.StrategyFactory) shortcut.Config {
+	return shortcut.Config{
+		Node: node, StrategyName: demoEdgeStrategyName, StrategyFactory: factory,
+		Probation: demoShortcutProbation, SolveTimeout: demoShortcutSolveTimeout,
+		PacketNeighbor: mesh.PacketNeighborConfig{
+			KeepAliveInterval: demoPacketKeepAliveInterval,
+			PeerTimeout:       demoPacketPeerTimeout,
+			ReadPollInterval:  demoPacketReadPollInterval,
+			WriteTimeout:      demoPacketWriteTimeout,
+		},
+	}
+}
 
 type demoEdgeStrategy struct {
 	spec     shortcut.AttemptSpec

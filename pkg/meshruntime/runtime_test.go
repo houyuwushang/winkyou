@@ -322,7 +322,7 @@ func TestReadSelfBootstrapSecret(t *testing.T) {
 }
 
 func TestMeshRuntimeRejoinsAndReplacesBootstrapEdge(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
 	tcpTarget := runtimeTestStartTCPEcho(t)
@@ -342,14 +342,17 @@ func TestMeshRuntimeRejoinsAndReplacesBootstrapEdge(t *testing.T) {
 			return nil, fmt.Errorf("no runtime test edge for %s-%s", spec.LocalNodeID, spec.RemoteNodeID)
 		}
 	}
+	// The package runs beside many integration packages in CI. A 250 ms peer
+	// timeout was shorter than observed scheduler stalls and produced false
+	// liveness failures before both packet sessions could exchange a heartbeat.
 	newConfig := func(nodeID string) runtimeConfig {
 		return runtimeConfig{
 			NodeID: nodeID, VirtualIP: "fd00::" + stringsToLower(nodeID),
 			MeshListen: "127.0.0.1:0", ControlListen: "127.0.0.1:0",
 			Lease: 3 * time.Second, RefreshInterval: 50 * time.Millisecond,
 			DialRetry: 25 * time.Millisecond, HandshakeTimeout: time.Second,
-			SolveTimeout: 2 * time.Second, Probation: 350 * time.Millisecond,
-			KeepAliveInterval: 25 * time.Millisecond, PeerTimeout: 250 * time.Millisecond,
+			SolveTimeout: 2 * time.Second, Probation: 1250 * time.Millisecond,
+			KeepAliveInterval: 50 * time.Millisecond, PeerTimeout: time.Second,
 			strategyName: runtimeTestStrategyName, strategyFactory: factory,
 		}
 	}
@@ -419,19 +422,22 @@ func TestMeshRuntimeRejoinsAndReplacesBootstrapEdge(t *testing.T) {
 		t.Fatalf("A TCP forwards = %+v, want one forward to B", tcpForwards)
 	}
 
-	var first shortcutView
+	var firstResponse runtimeTestShortcutResponse
 	statusCode = runtimeTestPostJSON(t, "http://"+runtimeA.ControlAddr()+"/v1/shortcuts", shortcutRequest{
-		TargetID: "B", CoordinatorID: "C", Wait: true, Timeout: "3s",
-	}, &first)
+		TargetID: "B", CoordinatorID: "C", Wait: true, Timeout: "5s",
+	}, &firstResponse)
+	first := firstResponse.view()
 	if statusCode != http.StatusOK || first.Phase != shortcut.PhaseStable {
-		t.Fatalf("A-B shortcut response = status:%d phase:%s", statusCode, first.Phase)
+		t.Fatalf("A-B shortcut response = status:%d phase:%s failure:%q error:%q", statusCode, first.Phase, first.Failure, firstResponse.Error)
 	}
 	if err := runtimeTestWaitShortcut(ctx, first.AttemptID, runtimeA, runtimeB, runtimeC); err != nil {
 		t.Fatalf("A-B shortcut consensus: %v", err)
 	}
 	if err := runtimeTestWait(ctx, func() bool {
-		route, ok := runtimeA.node.Route("B")
-		return ok && slices.Equal(route.Path, []string{"A", "B"})
+		forward, forwardOK := runtimeA.node.DataRoute("B")
+		reverse, reverseOK := runtimeB.node.DataRoute("A")
+		return forwardOK && reverseOK && slices.Equal(forward.Path, []string{"A", "B"}) &&
+			slices.Equal(reverse.Path, []string{"B", "A"})
 	}); err != nil {
 		t.Fatalf("wait direct A-B: %v", err)
 	}
@@ -440,7 +446,6 @@ func TestMeshRuntimeRejoinsAndReplacesBootstrapEdge(t *testing.T) {
 	}
 	forwardedBeforeDirectTCP := runtimeC.counters.dataForwarded.Load()
 	runtimeTestTCPRoundTrip(t, tcpForwards[0].Listen, []byte("direct TCP over A-B bypasses C"))
-	time.Sleep(100 * time.Millisecond)
 	if got := runtimeC.counters.dataForwarded.Load(); got != forwardedBeforeDirectTCP {
 		t.Fatalf("C forwarded direct A-B TCP frames: before=%d after=%d", forwardedBeforeDirectTCP, got)
 	}
@@ -467,19 +472,22 @@ func TestMeshRuntimeRejoinsAndReplacesBootstrapEdge(t *testing.T) {
 		t.Fatalf("wait B-A-C replacement: %v", err)
 	}
 
-	var second shortcutView
+	var secondResponse runtimeTestShortcutResponse
 	statusCode = runtimeTestPostJSON(t, "http://"+runtimeB.ControlAddr()+"/v1/shortcuts", shortcutRequest{
-		TargetID: "C", CoordinatorID: "A", Wait: true, Timeout: "3s",
-	}, &second)
+		TargetID: "C", CoordinatorID: "A", Wait: true, Timeout: "5s",
+	}, &secondResponse)
+	second := secondResponse.view()
 	if statusCode != http.StatusOK || second.Phase != shortcut.PhaseStable {
-		t.Fatalf("B-C shortcut response = status:%d phase:%s", statusCode, second.Phase)
+		t.Fatalf("B-C shortcut response = status:%d phase:%s failure:%q error:%q", statusCode, second.Phase, second.Failure, secondResponse.Error)
 	}
 	if err := runtimeTestWaitShortcut(ctx, second.AttemptID, runtimeA, runtimeB, runtimeC); err != nil {
 		t.Fatalf("B-C shortcut consensus: %v", err)
 	}
 	if err := runtimeTestWait(ctx, func() bool {
-		route, ok := runtimeB.node.Route("C")
-		return ok && slices.Equal(route.Path, []string{"B", "C"})
+		forward, forwardOK := runtimeB.node.DataRoute("C")
+		reverse, reverseOK := runtimeC.node.DataRoute("B")
+		return forwardOK && reverseOK && slices.Equal(forward.Path, []string{"B", "C"}) &&
+			slices.Equal(reverse.Path, []string{"C", "B"})
 	}); err != nil {
 		t.Fatalf("wait direct B-C: %v", err)
 	}
@@ -528,7 +536,6 @@ func TestMeshRuntimeRejoinsAndReplacesBootstrapEdge(t *testing.T) {
 	}
 	forwardedByABeforeDynamicTCP := runtimeA.counters.dataForwarded.Load()
 	runtimeTestTCPRoundTrip(t, dynamicForward.Listen, []byte("dynamic TCP over direct B-C bypasses A"))
-	time.Sleep(100 * time.Millisecond)
 	if got := runtimeA.counters.dataForwarded.Load(); got != forwardedByABeforeDynamicTCP {
 		t.Fatalf("A forwarded direct B-C dynamic TCP frames: before=%d after=%d", forwardedByABeforeDynamicTCP, got)
 	}
@@ -637,6 +644,19 @@ func runtimeTestTCPRoundTrip(t *testing.T, address string, payload []byte) {
 func runtimeTestPostJSON(t *testing.T, url string, requestBody, responseBody any) int {
 	t.Helper()
 	return runtimeTestJSONRequest(t, http.MethodPost, url, requestBody, responseBody)
+}
+
+type runtimeTestShortcutResponse struct {
+	shortcutView
+	Error  string        `json:"error,omitempty"`
+	Status *shortcutView `json:"status,omitempty"`
+}
+
+func (r runtimeTestShortcutResponse) view() shortcutView {
+	if r.Status != nil {
+		return *r.Status
+	}
+	return r.shortcutView
 }
 
 func runtimeTestJSONRequest(t *testing.T, method, url string, requestBody, responseBody any) int {
