@@ -29,6 +29,7 @@ var (
 	ErrClockRollback     = errors.New("testpairing: clock moved backwards")
 	ErrCredentialUsed    = errors.New("testpairing: credential already burned")
 	ErrClosed            = errors.New("testpairing: channel closed")
+	ErrPeerClosed        = errors.New("testpairing: peer channel closed")
 	ErrInvalidTransition = errors.New("testpairing: invalid state transition")
 	ErrContextMismatch   = errors.New("testpairing: message context mismatch")
 	ErrSequence          = errors.New("testpairing: invalid message sequence")
@@ -219,6 +220,7 @@ type SimulatedChannel struct {
 	role     Role
 	ledger   ReplayLedger
 	now      func() time.Time
+	pair     *pairAbort
 	incoming chan Message
 	outgoing chan Message
 
@@ -260,6 +262,50 @@ type tokenBucket struct {
 	last   time.Time
 }
 
+type pairAbort struct {
+	once   sync.Once
+	done   chan struct{}
+	mu     sync.Mutex
+	reason TerminalReason
+}
+
+func newPairAbort() *pairAbort {
+	return &pairAbort{done: make(chan struct{})}
+}
+
+func (p *pairAbort) abort(reason TerminalReason) {
+	if p == nil || reason == TerminalNone || reason == TerminalSuccess {
+		return
+	}
+	p.once.Do(func() {
+		p.mu.Lock()
+		p.reason = reason
+		p.mu.Unlock()
+		close(p.done)
+	})
+}
+
+func (p *pairAbort) snapshot() (TerminalReason, bool) {
+	if p == nil {
+		return TerminalNone, false
+	}
+	select {
+	case <-p.done:
+		p.mu.Lock()
+		defer p.mu.Unlock()
+		return p.reason, true
+	default:
+		return TerminalNone, false
+	}
+}
+
+func (p *pairAbort) doneChannel() <-chan struct{} {
+	if p == nil {
+		return nil
+	}
+	return p.done
+}
+
 // NewSimulatedPair burns the credential independently in each injected ledger
 // and creates a one-frame-buffered, in-memory duplex pair. If the second burn
 // fails, the first remains burned by design.
@@ -288,11 +334,13 @@ func NewSimulatedPair(
 
 	initiatorToResponder := make(chan Message, 1)
 	responderToInitiator := make(chan Message, 1)
+	pair := newPairAbort()
 	initiator := newSimulatedChannel(
 		attempt,
 		RoleInitiator,
 		initiatorLedger,
 		now,
+		pair,
 		responderToInitiator,
 		initiatorToResponder,
 		startedAt,
@@ -302,6 +350,7 @@ func NewSimulatedPair(
 		RoleResponder,
 		responderLedger,
 		now,
+		pair,
 		initiatorToResponder,
 		responderToInitiator,
 		startedAt,
@@ -326,6 +375,7 @@ func newSimulatedChannel(
 	role Role,
 	ledger ReplayLedger,
 	now func() time.Time,
+	pair *pairAbort,
 	incoming chan Message,
 	outgoing chan Message,
 	startedAt time.Time,
@@ -335,6 +385,7 @@ func newSimulatedChannel(
 		role:     role,
 		ledger:   ledger,
 		now:      now,
+		pair:     pair,
 		incoming: incoming,
 		outgoing: outgoing,
 		state: channelState{
@@ -403,6 +454,11 @@ func (c *SimulatedChannel) Send(ctx context.Context, messageType MessageType, pa
 		err := c.failLocked(TerminalExpired, ErrExpired)
 		c.mu.Unlock()
 		return err
+	case <-c.pair.doneChannel():
+		reason, _ := c.pair.snapshot()
+		err := c.failLocked(reason, ErrPeerClosed)
+		c.mu.Unlock()
+		return err
 	}
 }
 
@@ -420,7 +476,7 @@ func (c *SimulatedChannel) Receive(ctx context.Context) (Message, error) {
 	}
 
 	c.mu.Lock()
-	if err := c.checkLiveLocked(); err != nil {
+	if err := c.checkLocalLiveLocked(); err != nil {
 		c.mu.Unlock()
 		return Message{}, err
 	}
@@ -428,18 +484,24 @@ func (c *SimulatedChannel) Receive(ctx context.Context) (Message, error) {
 	c.mu.Unlock()
 	defer stopTimer(timer)
 
-	var message Message
-	select {
-	case message = <-c.incoming:
-	case <-ctx.Done():
-		return Message{}, c.fail(TerminalCancelled, ctx.Err())
-	case <-timer.C:
-		return Message{}, c.fail(TerminalExpired, ErrExpired)
+	message, received := c.receiveBuffered()
+	if !received {
+		select {
+		case message = <-c.incoming:
+		case <-ctx.Done():
+			return Message{}, c.fail(TerminalCancelled, ctx.Err())
+		case <-timer.C:
+			return Message{}, c.fail(TerminalExpired, ErrExpired)
+		case <-c.pair.doneChannel():
+			if message, received = c.receiveBuffered(); !received {
+				return Message{}, c.failFromPair()
+			}
+		}
 	}
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if err := c.checkLiveLocked(); err != nil {
+	if err := c.checkLocalLiveLocked(); err != nil {
 		return Message{}, err
 	}
 	if !c.allowReceiveLocked() {
@@ -621,6 +683,16 @@ func (c *SimulatedChannel) applyReceiveLocked(messageType MessageType) {
 }
 
 func (c *SimulatedChannel) checkLiveLocked() error {
+	if err := c.checkLocalLiveLocked(); err != nil {
+		return err
+	}
+	if reason, aborted := c.pair.snapshot(); aborted {
+		return c.failLocked(reason, ErrPeerClosed)
+	}
+	return nil
+}
+
+func (c *SimulatedChannel) checkLocalLiveLocked() error {
 	if c.state.terminal {
 		return ErrClosed
 	}
@@ -633,6 +705,15 @@ func (c *SimulatedChannel) checkLiveLocked() error {
 		return c.failLocked(TerminalExpired, ErrExpired)
 	}
 	return nil
+}
+
+func (c *SimulatedChannel) receiveBuffered() (Message, bool) {
+	select {
+	case message := <-c.incoming:
+		return message, true
+	default:
+		return Message{}, false
+	}
 }
 
 func (c *SimulatedChannel) allowReceiveLocked() bool {
@@ -684,6 +765,14 @@ func (c *SimulatedChannel) fail(reason TerminalReason, cause error) error {
 	return c.failLocked(reason, cause)
 }
 
+func (c *SimulatedChannel) failFromPair() error {
+	reason, aborted := c.pair.snapshot()
+	if !aborted || reason == TerminalNone || reason == TerminalSuccess {
+		reason = TerminalProtocolError
+	}
+	return c.fail(reason, ErrPeerClosed)
+}
+
 func (c *SimulatedChannel) failLocked(reason TerminalReason, cause error) error {
 	c.setTerminalLocked(reason)
 	return errors.Join(cause, c.finishIfTerminalLocked())
@@ -696,6 +785,7 @@ func (c *SimulatedChannel) setTerminalLocked(reason TerminalReason) {
 	c.state.terminal = true
 	c.state.reason = reason
 	c.state.success = reason == TerminalSuccess
+	c.pair.abort(reason)
 }
 
 func (c *SimulatedChannel) finishIfTerminalLocked() error {

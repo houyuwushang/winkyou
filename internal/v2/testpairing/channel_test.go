@@ -455,10 +455,13 @@ func TestSendCopiesPayloadBeforeQueueing(t *testing.T) {
 
 func TestCancelledOperationClosesSimulation(t *testing.T) {
 	clock := newManualClock()
-	initiator, _, err := NewSimulatedPair(
-		testAttempt(clock.Now()),
-		NewMemoryLedger(),
-		NewMemoryLedger(),
+	attempt := testAttempt(clock.Now())
+	initiatorLedger := NewMemoryLedger()
+	responderLedger := NewMemoryLedger()
+	initiator, responder, err := NewSimulatedPair(
+		attempt,
+		initiatorLedger,
+		responderLedger,
 		clock.Now,
 	)
 	if err != nil {
@@ -472,6 +475,48 @@ func TestCancelledOperationClosesSimulation(t *testing.T) {
 	if status := initiator.Status(); status.Reason != TerminalCancelled {
 		t.Fatalf("status = %#v", status)
 	}
+	peerContext, peerCancel := context.WithTimeout(context.Background(), time.Second)
+	defer peerCancel()
+	if _, err := responder.Receive(peerContext); !errors.Is(err, ErrPeerClosed) {
+		t.Fatalf("peer Receive() error = %v, want ErrPeerClosed", err)
+	}
+	if status := responder.Status(); !status.Terminal || status.Reason != TerminalCancelled {
+		t.Fatalf("peer status = %#v", status)
+	}
+	assertLedgerReason(t, initiatorLedger, attempt.CredentialID, TerminalCancelled)
+	assertLedgerReason(t, responderLedger, attempt.CredentialID, TerminalCancelled)
+}
+
+func TestProtocolFailureClosesPeerSimulation(t *testing.T) {
+	clock := newManualClock()
+	attempt := testAttempt(clock.Now())
+	initiatorLedger := NewMemoryLedger()
+	responderLedger := NewMemoryLedger()
+	initiator, responder, err := NewSimulatedPair(
+		attempt,
+		initiatorLedger,
+		responderLedger,
+		clock.Now,
+	)
+	if err != nil {
+		t.Fatalf("NewSimulatedPair() error: %v", err)
+	}
+	if err := responder.Send(context.Background(), MessageFire, nil); !errors.Is(err, ErrInvalidTransition) {
+		t.Fatalf("responder Send(fire) error = %v, want ErrInvalidTransition", err)
+	}
+	if err := initiator.Send(context.Background(), MessagePrepare, nil); !errors.Is(err, ErrPeerClosed) {
+		t.Fatalf("initiator Send(prepare) error = %v, want ErrPeerClosed", err)
+	}
+	for name, status := range map[string]Status{
+		"initiator": initiator.Status(),
+		"responder": responder.Status(),
+	} {
+		if !status.Terminal || status.Success || status.Reason != TerminalProtocolError {
+			t.Fatalf("%s status = %#v", name, status)
+		}
+	}
+	assertLedgerReason(t, initiatorLedger, attempt.CredentialID, TerminalProtocolError)
+	assertLedgerReason(t, responderLedger, attempt.CredentialID, TerminalProtocolError)
 }
 
 func sendMessage(t *testing.T, channel TestPairingChannel, messageType MessageType, payload []byte) {
