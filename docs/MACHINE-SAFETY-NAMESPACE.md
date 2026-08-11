@@ -60,7 +60,22 @@ World-writable fixed files are deliberate: an unprivileged official process must
 
 The trip file begins with a one-byte latch followed by a checksummed, versioned JSON record. Trip commits the blocking latch and syncs it before closing attempt leases at that commit point and writing diagnostic detail. Reset writes and syncs a complete clear record while the latch remains tripped, then clears and syncs the latch last. A torn write, checksum mismatch, unknown schema, missing file, or latch/record disagreement is `indeterminate` and blocks active work.
 
-The first valid trip reason is retained. A process restart, different CLI command, different Mesh, or different data directory cannot clear it. Reset is sequence-bound so an operator cannot accidentally clear a newer trip than the one inspected. Automated recovery and peer events never receive reset authority. The store exposes read-only inspection and an elevated, exclusive-owner, sequence-bound reset API; operator CLI commands are the next stacked slice.
+The first valid trip reason is retained. A process restart, different CLI command, different Mesh, or different data directory cannot clear it. Reset is sequence-bound so an operator cannot accidentally clear a newer trip than the one inspected. Automated recovery and peer events never receive reset authority.
+
+Read status before deciding whether to reset:
+
+```text
+wink safety status
+wink safety status --json
+```
+
+A blocking status exits nonzero after printing the record. Reset requires the exact tripped sequence, a non-empty audit note, administrator/root privileges, and exclusive ownership (no official governor may still be running):
+
+```text
+wink safety reset --expected-sequence 7 --note "operator reviewed resource exhaustion"
+```
+
+Reset never starts a runtime or performs network activity. Corrupt or indeterminate state is not reset automatically.
 
 This slice intentionally does not expose a standalone operator trip command: without the future local control channel or a probe-I/O latch watcher, such a command could write a marker while falsely implying that an already-running process had stopped sending. Active authorities call `Governor.Trip` directly; an independent operator kill switch remains a separately reviewed integration.
 
