@@ -42,6 +42,7 @@ func newRootCmd() *cobra.Command {
 		newPeersCmd(opts),
 		newPingCmd(opts),
 		newGenkeyCmd(),
+		newSetupMachineScopeCmd(),
 		newVersionCmd(),
 	)
 
