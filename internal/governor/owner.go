@@ -110,8 +110,14 @@ func AcquirePreparedNamespace(namespace string, scope Scope, buildVersion string
 	if !scope.valid() {
 		return nil, fmt.Errorf("%w: unsupported scope %q", ErrInvalidNamespace, scope)
 	}
+	if buildVersion == "" {
+		buildVersion = "unknown"
+	}
 	if len(buildVersion) > 128 {
 		return nil, fmt.Errorf("%w: build version is too long", ErrInvalidNamespace)
+	}
+	if err := validateIdentifier("build version", buildVersion); err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrInvalidNamespace, err)
 	}
 
 	clean, err := validatePreparedNamespace(namespace)
@@ -146,9 +152,6 @@ func AcquirePreparedNamespace(namespace string, scope Scope, buildVersion string
 		_ = unlockOwnerFile(file)
 		_ = file.Close()
 		return nil, fmt.Errorf("create governor owner instance id: %w", err)
-	}
-	if buildVersion == "" {
-		buildVersion = "unknown"
 	}
 	info := OwnerInfo{
 		PID:          os.Getpid(),
@@ -246,11 +249,57 @@ func readOwnerInfo(path string) (OwnerInfo, error) {
 		return OwnerInfo{}, err
 	}
 	defer func() { _ = file.Close() }()
+	fileInfo, err := file.Stat()
+	if err != nil {
+		return OwnerInfo{}, fmt.Errorf("stat owner metadata: %w", err)
+	}
+	if fileInfo.Size() > maxOwnerFileBytes {
+		return OwnerInfo{}, fmt.Errorf("owner metadata exceeds %d bytes", maxOwnerFileBytes)
+	}
+	decoder := json.NewDecoder(io.LimitReader(file, maxOwnerFileBytes))
 	var info OwnerInfo
-	if err := json.NewDecoder(io.LimitReader(file, maxOwnerFileBytes)).Decode(&info); err != nil {
+	if err := decoder.Decode(&info); err != nil {
+		return OwnerInfo{}, err
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
+		if err == nil {
+			return OwnerInfo{}, errors.New("owner metadata contains trailing JSON")
+		}
+		return OwnerInfo{}, fmt.Errorf("decode trailing owner metadata: %w", err)
+	}
+	if err := validateOwnerInfo(info); err != nil {
 		return OwnerInfo{}, err
 	}
 	return info, nil
+}
+
+func validateOwnerInfo(info OwnerInfo) error {
+	if info.PID <= 0 {
+		return errors.New("owner metadata PID must be positive")
+	}
+	if info.StartedAt.IsZero() {
+		return errors.New("owner metadata start time is missing")
+	}
+	if !info.Scope.valid() {
+		return fmt.Errorf("owner metadata scope %q is invalid", info.Scope)
+	}
+	if err := validateIdentifier("owner instance id", info.InstanceID); err != nil {
+		return fmt.Errorf("invalid owner metadata: %w", err)
+	}
+	if len(info.InstanceID) != 32 {
+		return errors.New("owner metadata instance id must contain 32 hexadecimal characters")
+	}
+	if _, err := hex.DecodeString(info.InstanceID); err != nil {
+		return fmt.Errorf("owner metadata instance id is not hexadecimal: %w", err)
+	}
+	if len(info.BuildVersion) > 128 {
+		return errors.New("owner metadata build version is too long")
+	}
+	if err := validateIdentifier("owner build version", info.BuildVersion); err != nil {
+		return fmt.Errorf("invalid owner metadata: %w", err)
+	}
+	return nil
 }
 
 // Info returns immutable diagnostic metadata for this owner.
