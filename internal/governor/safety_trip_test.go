@@ -102,7 +102,7 @@ func TestGovernorTripStopsAttemptsAndSurvivesRestart(t *testing.T) {
 	for index, attempt := range attempts {
 		select {
 		case <-attempt.Done():
-		default:
+		case <-time.After(time.Second):
 			t.Fatalf("attempt %d was not stopped by trip", index)
 		}
 	}

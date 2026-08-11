@@ -177,8 +177,8 @@ func (store *safetyTripStore) trip(event SafetyTripEvent) (SafetyTripStatus, err
 }
 
 // tripThen invokes afterLatch after the blocking latch is durable and before
-// diagnostic detail is written. Governor uses it to close attempt leases at
-// the fail-closed commit point.
+// diagnostic detail is written. Governor uses it to begin bounded attempt
+// cancellation at the fail-closed commit point.
 func (store *safetyTripStore) tripThen(event SafetyTripEvent, afterLatch func()) (SafetyTripStatus, error) {
 	if store == nil {
 		status := indeterminateSafetyTripStatus("safety trip store is unavailable")

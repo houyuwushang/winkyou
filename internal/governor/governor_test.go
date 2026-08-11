@@ -145,8 +145,50 @@ func TestAttemptLeaseTripBindsPeerAndAttemptIdentity(t *testing.T) {
 	}
 	select {
 	case <-attempt.Done():
-	default:
+	case <-time.After(time.Second):
 		t.Fatal("trip did not close attempt lease")
+	}
+}
+
+func TestAttemptTripWaitsForRegisteredDrain(t *testing.T) {
+	governor := newTestGovernor(t, ProfilePhase1Machine, nil)
+	peer, err := governor.AcquirePeer("peer-trip-drain")
+	if err != nil {
+		t.Fatalf("acquire peer: %v", err)
+	}
+	attempt, err := peer.AcquireAttempt(context.Background(), testAttempt("attempt-trip-drain"))
+	if err != nil {
+		t.Fatalf("acquire attempt: %v", err)
+	}
+	drain, err := attempt.RegisterDrain("trip-drain")
+	if err != nil {
+		t.Fatalf("register drain: %v", err)
+	}
+
+	if _, err := attempt.Trip(SafetyTripEvent{Reason: SafetyTripHardLimit, Detail: "trip drain proof"}); err != nil {
+		t.Fatalf("trip attempt: %v", err)
+	}
+	select {
+	case <-attempt.Stopping():
+	default:
+		t.Fatal("trip did not synchronously signal stopping")
+	}
+	select {
+	case <-attempt.Done():
+		t.Fatal("trip released attempt before drain completion")
+	default:
+	}
+	if snapshot := governor.Snapshot(); snapshot.ActiveAttempts != 1 {
+		t.Fatalf("active attempts while trip drains = %d, want 1", snapshot.ActiveAttempts)
+	}
+
+	if err := drain.Complete(); err != nil {
+		t.Fatalf("complete drain: %v", err)
+	}
+	select {
+	case <-attempt.Done():
+	case <-time.After(time.Second):
+		t.Fatal("trip did not release attempt after drain completion")
 	}
 }
 
@@ -179,6 +221,261 @@ func TestClosedAttemptLeaseCannotTripGovernor(t *testing.T) {
 	}
 }
 
+func TestAttemptCloseWaitsForRegisteredDrain(t *testing.T) {
+	governor := newTestGovernor(t, ProfilePhase1Machine, nil)
+	peer, err := governor.AcquirePeer("peer-drain")
+	if err != nil {
+		t.Fatalf("acquire peer: %v", err)
+	}
+	attempt, err := peer.AcquireAttempt(context.Background(), testAttempt("attempt-drain"))
+	if err != nil {
+		t.Fatalf("acquire attempt: %v", err)
+	}
+	drain, err := attempt.RegisterDrain("probeio-controller")
+	if err != nil {
+		t.Fatalf("register drain: %v", err)
+	}
+
+	closeResult := make(chan error, 1)
+	go func() { closeResult <- attempt.Close() }()
+	select {
+	case <-attempt.Stopping():
+	case <-time.After(time.Second):
+		t.Fatal("attempt did not enter stopping state")
+	}
+	select {
+	case err := <-closeResult:
+		t.Fatalf("attempt close returned before drain completion: %v", err)
+	default:
+	}
+	repeatCloseResult := make(chan error, 1)
+	go func() { repeatCloseResult <- attempt.Close() }()
+	select {
+	case err := <-repeatCloseResult:
+		t.Fatalf("concurrent attempt close returned before drain completion: %v", err)
+	default:
+	}
+	if snapshot := governor.Snapshot(); snapshot.ActiveAttempts != 1 {
+		t.Fatalf("active attempts while draining = %d, want 1", snapshot.ActiveAttempts)
+	}
+	if _, err := attempt.Trip(SafetyTripEvent{Reason: SafetyTripHardLimit, Detail: "stale stopping capability"}); !errors.Is(err, ErrLeaseClosed) {
+		t.Fatalf("stopping attempt trip error = %v, want ErrLeaseClosed", err)
+	}
+
+	if err := drain.Complete(); err != nil {
+		t.Fatalf("complete drain: %v", err)
+	}
+	if err := drain.Complete(); err != nil {
+		t.Fatalf("repeat drain completion: %v", err)
+	}
+	select {
+	case err := <-closeResult:
+		if err != nil {
+			t.Fatalf("attempt close: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("attempt close did not finish after drain completion")
+	}
+	select {
+	case err := <-repeatCloseResult:
+		if err != nil {
+			t.Fatalf("concurrent attempt close: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("concurrent attempt close did not finish after drain completion")
+	}
+	select {
+	case <-attempt.Done():
+	default:
+		t.Fatal("attempt Done did not close after drain completion")
+	}
+	if snapshot := governor.Snapshot(); snapshot.ActiveAttempts != 0 || snapshot.Reserved != (Resources{}) {
+		t.Fatalf("snapshot after drain = %+v, want released attempt", snapshot)
+	}
+	if _, err := attempt.RegisterDrain("late-drain"); !errors.Is(err, ErrLeaseClosed) {
+		t.Fatalf("late drain error = %v, want ErrLeaseClosed", err)
+	}
+}
+
+func TestAttemptDrainRegistrationsAreBounded(t *testing.T) {
+	governor := newTestGovernor(t, ProfilePhase1Machine, nil)
+	peer, err := governor.AcquirePeer("peer-bounded-drains")
+	if err != nil {
+		t.Fatalf("acquire peer: %v", err)
+	}
+	attempt, err := peer.AcquireAttempt(context.Background(), testAttempt("attempt-bounded-drains"))
+	if err != nil {
+		t.Fatalf("acquire attempt: %v", err)
+	}
+
+	drains := make([]DrainHandle, 0, maxAttemptDrainRegistrations)
+	for index := 0; index < maxAttemptDrainRegistrations; index++ {
+		drain, err := attempt.RegisterDrain(fmt.Sprintf("drain-%d", index))
+		if err != nil {
+			t.Fatalf("register drain %d: %v", index, err)
+		}
+		drains = append(drains, drain)
+	}
+	if _, err := attempt.RegisterDrain("one-too-many"); !errors.Is(err, ErrLimitExceeded) {
+		t.Fatalf("extra drain error = %v, want ErrLimitExceeded", err)
+	}
+	for index, drain := range drains {
+		if err := drain.Complete(); err != nil {
+			t.Fatalf("complete drain %d: %v", index, err)
+		}
+	}
+	if err := attempt.Close(); err != nil {
+		t.Fatalf("close attempt: %v", err)
+	}
+}
+
+func TestAttemptCancellationDrainTimeoutTripsMachine(t *testing.T) {
+	hard, err := HardLimits(ProfilePhase1Machine)
+	if err != nil {
+		t.Fatalf("hard limits: %v", err)
+	}
+	hard.CancellationDrainTimeout = 20 * time.Millisecond
+	governor := newTestGovernor(t, ProfilePhase1Machine, &hard)
+	peer, err := governor.AcquirePeer("peer-timeout")
+	if err != nil {
+		t.Fatalf("acquire peer: %v", err)
+	}
+	attempt, err := peer.AcquireAttempt(context.Background(), testAttempt("attempt-timeout"))
+	if err != nil {
+		t.Fatalf("acquire attempt: %v", err)
+	}
+	drain, err := attempt.RegisterDrain("stuck-worker")
+	if err != nil {
+		t.Fatalf("register drain: %v", err)
+	}
+
+	err = attempt.Close()
+	if !errors.Is(err, ErrCancellationDrainTimeout) {
+		t.Fatalf("close error = %v, want ErrCancellationDrainTimeout", err)
+	}
+	status := governor.Snapshot().SafetyTrip
+	if status.State != SafetyTripTripped || status.Record.Reason != SafetyTripCancellation {
+		t.Fatalf("safety trip = %+v, want cancellation timeout", status)
+	}
+	if status.Record.PeerID != "peer-timeout" || status.Record.AttemptID != "attempt-timeout" {
+		t.Fatalf("trip identity = %q/%q", status.Record.PeerID, status.Record.AttemptID)
+	}
+	if err := attempt.Close(); !errors.Is(err, ErrCancellationDrainTimeout) {
+		t.Fatalf("repeat close error = %v, want ErrCancellationDrainTimeout", err)
+	}
+	select {
+	case <-attempt.Done():
+	default:
+		t.Fatal("timed-out attempt was not forcibly revoked")
+	}
+	if err := drain.Complete(); err != nil {
+		t.Fatalf("late drain completion: %v", err)
+	}
+}
+
+func TestGovernorCloseHoldsMachineOwnerUntilDrainsFinish(t *testing.T) {
+	namespace := t.TempDir()
+	prepareTestSafetyTrip(t, namespace)
+	owner, err := AcquirePreparedNamespace(namespace, ScopeMachine, "drain-owner")
+	if err != nil {
+		t.Fatalf("acquire owner: %v", err)
+	}
+	governor, err := New(owner, ProfilePhase1Machine, nil)
+	if err != nil {
+		_ = owner.Close()
+		t.Fatalf("new governor: %v", err)
+	}
+	peer, err := governor.AcquirePeer("peer-owner")
+	if err != nil {
+		t.Fatalf("acquire peer: %v", err)
+	}
+	attempt, err := peer.AcquireAttempt(context.Background(), testAttempt("attempt-owner"))
+	if err != nil {
+		t.Fatalf("acquire attempt: %v", err)
+	}
+	drain, err := attempt.RegisterDrain("owner-drain")
+	if err != nil {
+		t.Fatalf("register drain: %v", err)
+	}
+
+	closeResult := make(chan error, 1)
+	go func() { closeResult <- governor.Close() }()
+	select {
+	case <-attempt.Stopping():
+	case <-time.After(time.Second):
+		t.Fatal("governor close did not signal attempt stopping")
+	}
+	contender, contenderErr := AcquirePreparedNamespace(namespace, ScopeMachine, "contender")
+	if contender != nil {
+		_ = contender.Close()
+		t.Fatal("contender acquired namespace while drain was pending")
+	}
+	if !errors.Is(contenderErr, ErrOwnerHeld) {
+		t.Fatalf("contender error = %v, want ErrOwnerHeld", contenderErr)
+	}
+	if err := drain.Complete(); err != nil {
+		t.Fatalf("complete drain: %v", err)
+	}
+	select {
+	case err := <-closeResult:
+		if err != nil {
+			t.Fatalf("close governor: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("governor close did not finish after drain completion")
+	}
+
+	reacquired, err := AcquirePreparedNamespace(namespace, ScopeMachine, "after-drain")
+	if err != nil {
+		t.Fatalf("reacquire namespace: %v", err)
+	}
+	if err := reacquired.Close(); err != nil {
+		t.Fatalf("close reacquired owner: %v", err)
+	}
+}
+
+func TestGovernorCloseTimeoutTripsBeforeReleasingMachineOwner(t *testing.T) {
+	namespace := t.TempDir()
+	prepareTestSafetyTrip(t, namespace)
+	hard, err := HardLimits(ProfilePhase1Machine)
+	if err != nil {
+		t.Fatalf("hard limits: %v", err)
+	}
+	hard.CancellationDrainTimeout = 20 * time.Millisecond
+	owner, err := AcquirePreparedNamespace(namespace, ScopeMachine, "timeout-owner")
+	if err != nil {
+		t.Fatalf("acquire owner: %v", err)
+	}
+	governor, err := New(owner, ProfilePhase1Machine, &hard)
+	if err != nil {
+		_ = owner.Close()
+		t.Fatalf("new governor: %v", err)
+	}
+	peer, err := governor.AcquirePeer("peer-timeout-owner")
+	if err != nil {
+		t.Fatalf("acquire peer: %v", err)
+	}
+	attempt, err := peer.AcquireAttempt(context.Background(), testAttempt("attempt-timeout-owner"))
+	if err != nil {
+		t.Fatalf("acquire attempt: %v", err)
+	}
+	if _, err := attempt.RegisterDrain("stuck-owner-drain"); err != nil {
+		t.Fatalf("register drain: %v", err)
+	}
+
+	if err := governor.Close(); !errors.Is(err, ErrCancellationDrainTimeout) {
+		t.Fatalf("close error = %v, want ErrCancellationDrainTimeout", err)
+	}
+	restartedOwner, err := AcquirePreparedNamespace(namespace, ScopeMachine, "restart-build")
+	if err != nil {
+		t.Fatalf("reacquire owner after timeout: %v", err)
+	}
+	defer func() { _ = restartedOwner.Close() }()
+	if _, err := New(restartedOwner, ProfilePhase1Machine, nil); !errors.Is(err, ErrSafetyTripped) {
+		t.Fatalf("new governor after timeout error = %v, want ErrSafetyTripped", err)
+	}
+}
+
 func TestGovernorConfigurationCanLowerButNotRaiseHardLimits(t *testing.T) {
 	hard, err := HardLimits(ProfilePhase1Machine)
 	if err != nil {
@@ -194,6 +491,11 @@ func TestGovernorConfigurationCanLowerButNotRaiseHardLimits(t *testing.T) {
 	defer func() { _ = owner.Close() }()
 	if _, err := New(owner, ProfilePhase1Machine, &raised); !errors.Is(err, ErrLimitExceeded) {
 		t.Fatalf("raised limits error = %v, want ErrLimitExceeded", err)
+	}
+	raisedDrain := hard
+	raisedDrain.CancellationDrainTimeout += time.Second
+	if _, err := New(owner, ProfilePhase1Machine, &raisedDrain); !errors.Is(err, ErrLimitExceeded) {
+		t.Fatalf("raised drain timeout error = %v, want ErrLimitExceeded", err)
 	}
 
 	lowered := hard

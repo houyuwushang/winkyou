@@ -42,7 +42,9 @@ var (
 type AttemptLease interface {
 	Request() governor.AttemptRequest
 	PeerID() string
+	Stopping() <-chan struct{}
 	Done() <-chan struct{}
+	RegisterDrain(name string) (governor.DrainHandle, error)
 	Close() error
 	Trip(governor.SafetyTripEvent) (governor.SafetyTripStatus, error)
 }
@@ -150,11 +152,13 @@ type Controller struct {
 	buildVersion       string
 	request            governor.AttemptRequest
 	startedAt          time.Time
+	drain              governor.DrainHandle
 
 	stopped     bool
 	tripping    bool
 	promoted    bool
 	pending     int
+	pendingDone chan struct{}
 	nextID      uint64
 	sockets     map[uint64]*socketState
 	targetRefs  map[netip.AddrPort]int
@@ -165,6 +169,8 @@ type Controller struct {
 
 	lifecycleCtx    context.Context
 	lifecycleCancel context.CancelFunc
+	drainOnce       sync.Once
+	ops             sync.WaitGroup
 	watchDone       chan struct{}
 }
 
@@ -245,8 +251,14 @@ func New(config Config) (*Controller, error) {
 	if err != nil {
 		return nil, err
 	}
+	drain, err := config.Lease.RegisterDrain("probeio-controller")
+	if err != nil {
+		return nil, fmt.Errorf("probeio: register cancellation drain: %w", err)
+	}
 	startedAt := now()
 	lifecycleCtx, lifecycleCancel := context.WithCancel(context.Background())
+	pendingDone := make(chan struct{})
+	close(pendingDone)
 	controller := &Controller{
 		lease:              config.Lease,
 		generation:         config.Generation,
@@ -258,11 +270,13 @@ func New(config Config) (*Controller, error) {
 		buildVersion:       buildVersion,
 		request:            request,
 		startedAt:          startedAt,
+		drain:              drain,
 		sockets:            make(map[uint64]*socketState),
 		targetRefs:         make(map[netip.AddrPort]int),
 		lastNow:            startedAt,
 		lifecycleCtx:       lifecycleCtx,
 		lifecycleCancel:    lifecycleCancel,
+		pendingDone:        pendingDone,
 		watchDone:          make(chan struct{}),
 	}
 	go controller.watchLifecycle()
@@ -283,18 +297,24 @@ func (c *Controller) watchLifecycle() {
 	timer := c.newTimer(c.request.Cost.Duration)
 	if timer == nil || timer.C() == nil {
 		_ = c.trip(governor.SafetyTripHardLimit, "attempt duration timer unavailable", ErrHardLimit)
+		c.stopLocal()
 		close(c.watchDone)
+		_ = c.drain.Complete()
 		return
 	}
 	defer func() {
 		timer.Stop()
 		close(c.watchDone)
+		_ = c.drain.Complete()
 	}()
 	select {
+	case <-c.lease.Stopping():
+		c.stopLocal()
 	case <-c.lease.Done():
 		c.stopLocal()
 	case <-timer.C():
 		_ = c.trip(governor.SafetyTripHardLimit, "attempt duration budget exhausted", ErrHardLimit)
+		c.stopLocal()
 	}
 }
 
@@ -317,7 +337,7 @@ func (c *Controller) OpenProbeSocket(ctx context.Context) (*ProbeSocket, error) 
 		violation = &safetyViolation{reason: governor.SafetyTripHardLimit, detail: "socket reservation exceeded", cause: ErrHardLimit}
 	}
 	if violation == nil {
-		c.pending++
+		c.addPendingLocked()
 	}
 	c.mu.Unlock()
 	if violation != nil {
@@ -328,7 +348,7 @@ func (c *Controller) OpenProbeSocket(ctx context.Context) (*ProbeSocket, error) 
 	datagram, openErr := c.factory.Open(openCtx)
 	cancelOpen()
 	c.mu.Lock()
-	c.pending--
+	c.finishPendingLocked()
 	postViolation := c.guardViolationLocked(c.now())
 	if openErr == nil && datagram == nil {
 		openErr = fmt.Errorf("%w: factory returned a nil datagram", ErrInvalidConfig)
@@ -436,6 +456,7 @@ func (socket *ProbeSocket) SendProbe(ctx context.Context, target netip.AddrPort,
 	}
 	if violation == nil {
 		state.ops.Add(1)
+		c.ops.Add(1)
 	}
 	c.mu.Unlock()
 	if violation != nil {
@@ -446,6 +467,7 @@ func (socket *ProbeSocket) SendProbe(ctx context.Context, target netip.AddrPort,
 	n, writeErr := state.datagram.WriteTo(opCtx, packet, canonical)
 	cancel()
 	state.ops.Done()
+	c.ops.Done()
 	if writeErr == nil && n != len(packet) {
 		writeErr = errors.Join(io.ErrShortWrite, ErrDatagramContract)
 	}
@@ -503,12 +525,14 @@ func (socket *ProbeSocket) ReceiveReply(ctx context.Context, dst []byte, verify 
 	}
 	if violation == nil {
 		state.ops.Add(1)
+		c.ops.Add(1)
 	}
 	c.mu.Unlock()
 	if violation != nil {
 		return 0, netip.AddrPort{}, c.handleViolation(violation)
 	}
 	defer state.ops.Done()
+	defer c.ops.Done()
 
 	opCtx, cancel := mergeContext(ctx, state.ctx)
 	defer cancel()
@@ -617,9 +641,7 @@ func (socket *ProbeSocket) Promote(target netip.AddrPort, pathID string) (Promot
 	c.lifecycleCancel()
 	delete(c.sockets, state.id)
 	c.releaseTargetsLocked(state)
-	siblings := c.detachOpenSocketsLocked()
 	c.mu.Unlock()
-	c.closeStates(siblings)
 
 	if err := c.lease.Close(); err != nil {
 		_ = state.datagram.Close()
@@ -676,10 +698,7 @@ func (c *Controller) Close() error {
 	if c == nil {
 		return nil
 	}
-	c.stopLocal()
-	err := c.lease.Close()
-	<-c.watchDone
-	return err
+	return c.lease.Close()
 }
 
 type safetyViolation struct {
@@ -759,6 +778,7 @@ func (c *Controller) trip(reason governor.SafetyTripReason, detail string, cause
 		return ErrLeaseClosed
 	}
 	c.tripping = true
+	c.lifecycleCancel()
 	c.mu.Unlock()
 
 	_, tripErr := c.lease.Trip(governor.SafetyTripEvent{
@@ -766,7 +786,6 @@ func (c *Controller) trip(reason governor.SafetyTripReason, detail string, cause
 		Detail:       detail,
 		BuildVersion: c.buildVersion,
 	})
-	c.stopLocal()
 	return errors.Join(cause, tripErr)
 }
 
@@ -793,16 +812,34 @@ func boundedDetail(detail string) string {
 }
 
 func (c *Controller) stopLocal() {
-	c.mu.Lock()
-	if c.stopped {
+	c.drainOnce.Do(func() {
+		c.mu.Lock()
+		c.stopped = true
+		c.lifecycleCancel()
+		states := c.detachOpenSocketsLocked()
+		pendingDone := c.pendingDone
 		c.mu.Unlock()
+		c.closeStates(states)
+		<-pendingDone
+		c.ops.Wait()
+	})
+}
+
+func (c *Controller) addPendingLocked() {
+	if c.pending == 0 {
+		c.pendingDone = make(chan struct{})
+	}
+	c.pending++
+}
+
+func (c *Controller) finishPendingLocked() {
+	if c.pending <= 0 {
 		return
 	}
-	c.stopped = true
-	c.lifecycleCancel()
-	states := c.detachOpenSocketsLocked()
-	c.mu.Unlock()
-	c.closeStates(states)
+	c.pending--
+	if c.pending == 0 {
+		close(c.pendingDone)
+	}
 }
 
 func (c *Controller) detachOpenSocketsLocked() []*socketState {
