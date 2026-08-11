@@ -102,7 +102,7 @@ func TestLinuxMachineNamespacePathIsCanonical(t *testing.T) {
 }
 
 func TestLinuxUserAcknowledgedNamespaceSetupAndInspect(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "user-safety")
+	path := filepath.Join(privateLinuxTestParent(t), "user-safety")
 	uid := os.Geteuid()
 	if status := inspectLinuxUserAcknowledgedNamespaceAt(path, uid); status.State != NamespaceMissing || status.RequiresElevation {
 		t.Fatalf("initial user state = %+v, want non-elevated missing", status)
@@ -126,7 +126,7 @@ func TestLinuxUserAcknowledgedNamespaceSetupAndInspect(t *testing.T) {
 }
 
 func TestLinuxUserAcknowledgedNamespaceRejectsPermissionDrift(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "user-safety")
+	path := filepath.Join(privateLinuxTestParent(t), "user-safety")
 	uid := os.Geteuid()
 	if err := setupLinuxUserAcknowledgedNamespaceAt(path, uid); err != nil {
 		t.Fatalf("setup user namespace: %v", err)
@@ -141,7 +141,7 @@ func TestLinuxUserAcknowledgedNamespaceRejectsPermissionDrift(t *testing.T) {
 }
 
 func TestLinuxUserAcknowledgedNamespaceRejectsPrecreatedPath(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "user-safety")
+	path := filepath.Join(privateLinuxTestParent(t), "user-safety")
 	if err := os.Mkdir(path, 0o700); err != nil {
 		t.Fatalf("precreate user namespace: %v", err)
 	}
@@ -172,4 +172,13 @@ func TestLinuxUserAcknowledgedNamespacePathIsCanonical(t *testing.T) {
 	if path != want {
 		t.Fatalf("UserAcknowledgedNamespacePath = %q, want %q", path, want)
 	}
+}
+
+func privateLinuxTestParent(t *testing.T) string {
+	t.Helper()
+	parent := t.TempDir()
+	if err := os.Chmod(parent, 0o700); err != nil {
+		t.Fatalf("make Linux user test parent private: %v", err)
+	}
+	return parent
 }
