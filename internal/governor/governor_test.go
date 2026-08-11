@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"sync"
 	"testing"
 	"time"
@@ -32,7 +34,9 @@ func newTestGovernor(t *testing.T, profile Profile, limits *Limits) *Governor {
 	if err != nil {
 		t.Fatalf("profile scope: %v", err)
 	}
-	owner, err := AcquirePreparedNamespace(t.TempDir(), scope, "test-build")
+	namespace := t.TempDir()
+	prepareTestSafetyTrip(t, namespace)
+	owner, err := AcquirePreparedNamespace(namespace, scope, "test-build")
 	if err != nil {
 		t.Fatalf("acquire test owner: %v", err)
 	}
@@ -47,6 +51,21 @@ func newTestGovernor(t *testing.T, profile Profile, limits *Limits) *Governor {
 		}
 	})
 	return governor
+}
+
+func prepareTestSafetyTrip(t *testing.T, namespace string) {
+	t.Helper()
+	file, err := os.OpenFile(filepath.Join(namespace, safetyTripFilename), os.O_CREATE|os.O_EXCL|os.O_RDWR, 0o600)
+	if err != nil {
+		t.Fatalf("create test safety trip file: %v", err)
+	}
+	if err := initializeSafetyTripFile(file, time.Date(2026, 8, 11, 0, 0, 0, 0, time.UTC)); err != nil {
+		_ = file.Close()
+		t.Fatalf("initialize test safety trip file: %v", err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatalf("close test safety trip file: %v", err)
+	}
 }
 
 func TestGovernorReservesAndReleasesHierarchy(t *testing.T) {
@@ -240,6 +259,7 @@ func TestHeavyweightLimitIsAtomicUnderConcurrency(t *testing.T) {
 
 func TestGovernorCloseReleasesChildrenAndNamespace(t *testing.T) {
 	namespace := t.TempDir()
+	prepareTestSafetyTrip(t, namespace)
 	owner, err := AcquirePreparedNamespace(namespace, ScopeMachine, "first-build")
 	if err != nil {
 		t.Fatalf("acquire owner: %v", err)
@@ -280,6 +300,7 @@ func TestGovernorCloseReleasesChildrenAndNamespace(t *testing.T) {
 
 func TestGovernorPreventsPrematureOwnerClose(t *testing.T) {
 	namespace := t.TempDir()
+	prepareTestSafetyTrip(t, namespace)
 	owner, err := AcquirePreparedNamespace(namespace, ScopeMachine, "first-build")
 	if err != nil {
 		t.Fatalf("acquire owner: %v", err)

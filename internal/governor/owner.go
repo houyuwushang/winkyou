@@ -90,12 +90,13 @@ func (e *OwnerHeldError) Unwrap() error {
 // The lock file is intentionally retained after Close so contenders never
 // split across file identities.
 type Owner struct {
-	mu       sync.Mutex
-	file     *os.File
-	lockPath string
-	info     OwnerInfo
-	closed   bool
-	claimed  bool
+	mu        sync.Mutex
+	file      *os.File
+	lockPath  string
+	tripStore *safetyTripStore
+	info      OwnerInfo
+	closed    bool
+	claimed   bool
 }
 
 // AcquirePreparedNamespace acquires an OS-level exclusive lock in namespace.
@@ -163,9 +164,10 @@ func AcquirePreparedNamespace(namespace string, scope Scope, buildVersion string
 	}
 
 	return &Owner{
-		file:     file,
-		lockPath: lockPath,
-		info:     info,
+		file:      file,
+		lockPath:  lockPath,
+		tripStore: newSafetyTripStore(clean),
+		info:      info,
 	}, nil
 }
 
@@ -264,6 +266,15 @@ func (o *Owner) Info() OwnerInfo {
 // Scope returns the boundary represented by this owner.
 func (o *Owner) Scope() Scope {
 	return o.Info().Scope
+}
+
+// SafetyTripStatus reads the persistent circuit state associated with this
+// owner's prepared namespace.
+func (o *Owner) SafetyTripStatus() SafetyTripStatus {
+	if o == nil || o.tripStore == nil {
+		return indeterminateSafetyTripStatus("namespace owner has no safety trip store")
+	}
+	return o.tripStore.status()
 }
 
 func (o *Owner) usable() bool {

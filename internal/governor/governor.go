@@ -7,6 +7,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
+	"unicode/utf8"
 )
 
 var (
@@ -42,6 +44,7 @@ type Snapshot struct {
 	ActiveAttempts      int
 	HeavyweightAttempts int
 	Reserved            Resources
+	SafetyTrip          SafetyTripStatus
 	Closed              bool
 }
 
@@ -54,6 +57,7 @@ type Governor struct {
 	profile Profile
 	scope   Scope
 	limits  Limits
+	trip    SafetyTripStatus
 	closed  bool
 
 	peers               map[string]*PeerLease
@@ -92,6 +96,10 @@ func New(owner *Owner, profile Profile, requested *Limits) (*Governor, error) {
 		}
 		limits = *requested
 	}
+	trip := owner.SafetyTripStatus()
+	if trip.BlocksActiveWork {
+		return nil, &SafetyTripError{Status: trip}
+	}
 	if err := owner.claim(); err != nil {
 		return nil, err
 	}
@@ -101,6 +109,7 @@ func New(owner *Owner, profile Profile, requested *Limits) (*Governor, error) {
 		profile:  profile,
 		scope:    scope,
 		limits:   limits,
+		trip:     trip,
 		peers:    make(map[string]*PeerLease),
 		attempts: make(map[string]*AttemptLease),
 	}, nil
@@ -119,6 +128,9 @@ func (g *Governor) AcquirePeer(peerID string) (*PeerLease, error) {
 	defer g.mu.Unlock()
 	if g.closed {
 		return nil, ErrGovernorClosed
+	}
+	if g.trip.BlocksActiveWork {
+		return nil, &SafetyTripError{Status: g.trip}
 	}
 	if _, exists := g.peers[peerID]; exists {
 		return nil, fmt.Errorf("%w: %s", ErrDuplicatePeer, peerID)
@@ -155,6 +167,7 @@ func (g *Governor) Snapshot() Snapshot {
 		ActiveAttempts:      len(g.attempts),
 		HeavyweightAttempts: g.heavyweightAttempts,
 		Reserved:            g.reserved,
+		SafetyTrip:          g.trip,
 		Closed:              g.closed,
 	}
 }
@@ -171,16 +184,7 @@ func (g *Governor) Close() error {
 		return nil
 	}
 	g.closed = true
-	for _, peer := range g.peers {
-		for _, attempt := range peer.attempts {
-			g.releaseAttemptLocked(attempt)
-		}
-		peer.closed = true
-	}
-	clear(g.peers)
-	clear(g.attempts)
-	g.reserved = Resources{}
-	g.heavyweightAttempts = 0
+	g.stopActiveLocked()
 	owner := g.owner
 	g.mu.Unlock()
 	return owner.closeClaimed()
@@ -216,6 +220,10 @@ func (p *PeerLease) AcquireAttempt(ctx context.Context, request AttemptRequest) 
 
 	g := p.governor
 	g.mu.Lock()
+	if g.trip.BlocksActiveWork {
+		g.mu.Unlock()
+		return nil, &SafetyTripError{Status: g.trip}
+	}
 	if g.closed || p.closed {
 		g.mu.Unlock()
 		return nil, ErrLeaseClosed
@@ -253,6 +261,39 @@ func (p *PeerLease) AcquireAttempt(ctx context.Context, request AttemptRequest) 
 		return nil, err
 	}
 	return lease, nil
+}
+
+// Trip commits the persistent blocking latch, closes every active attempt at
+// that commit point, and then persists the diagnostic record. A failed detail
+// write leaves both the in-process governor and durable latch blocking work.
+func (g *Governor) Trip(event SafetyTripEvent) (SafetyTripStatus, error) {
+	if g == nil {
+		status := indeterminateSafetyTripStatus("governor is unavailable")
+		return status, ErrGovernorClosed
+	}
+	if err := validateSafetyTripEvent(event); err != nil {
+		return SafetyTripStatus{}, err
+	}
+
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.closed {
+		return g.trip, ErrGovernorClosed
+	}
+	if g.trip.BlocksActiveWork {
+		g.stopActiveLocked()
+		return g.trip, nil
+	}
+	status, err := g.owner.tripStore.tripThen(event, g.stopActiveLocked)
+	g.trip = status
+	if !g.trip.BlocksActiveWork {
+		g.trip = indeterminateSafetyTripStatus("trip operation did not produce a blocking state")
+		if err == nil {
+			err = &SafetyTripError{Status: g.trip}
+		}
+	}
+	g.stopActiveLocked()
+	return g.trip, err
 }
 
 func (g *Governor) validateAttemptLocked(peer *PeerLease, request AttemptRequest) error {
@@ -393,7 +434,23 @@ func (g *Governor) releaseAttemptLocked(attempt *AttemptLease) {
 	close(attempt.done)
 }
 
+func (g *Governor) stopActiveLocked() {
+	for _, peer := range g.peers {
+		for _, attempt := range peer.attempts {
+			g.releaseAttemptLocked(attempt)
+		}
+		peer.closed = true
+	}
+	clear(g.peers)
+	clear(g.attempts)
+	g.reserved = Resources{}
+	g.heavyweightAttempts = 0
+}
+
 func validateIdentifier(field, value string) error {
+	if !utf8.ValidString(value) {
+		return fmt.Errorf("%w: %s is not valid UTF-8", ErrInvalidRequest, field)
+	}
 	if strings.TrimSpace(value) == "" {
 		return fmt.Errorf("%w: %s is empty", ErrInvalidRequest, field)
 	}
@@ -402,6 +459,9 @@ func validateIdentifier(field, value string) error {
 	}
 	if len(value) > 256 {
 		return fmt.Errorf("%w: %s is too long", ErrInvalidRequest, field)
+	}
+	if strings.IndexFunc(value, unicode.IsControl) >= 0 {
+		return fmt.Errorf("%w: %s contains a control character", ErrInvalidRequest, field)
 	}
 	return nil
 }

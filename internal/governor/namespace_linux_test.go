@@ -34,7 +34,7 @@ func TestLinuxMachineNamespaceSetupAndInspect(t *testing.T) {
 		t.Fatalf("close installed namespace owner: %v", err)
 	}
 
-	for _, name := range []string{ownerLockFilename, ownerMetadataFilename} {
+	for _, name := range namespaceFixedFilenames() {
 		info, err := os.Stat(filepath.Join(path, name))
 		if err != nil {
 			t.Fatalf("stat %s: %v", name, err)
@@ -42,6 +42,9 @@ func TestLinuxMachineNamespaceSetupAndInspect(t *testing.T) {
 		if got := info.Mode().Perm(); got != 0o666 {
 			t.Fatalf("%s mode = %04o, want 0666", name, got)
 		}
+	}
+	if trip := newSafetyTripStore(path).status(); trip.State != SafetyTripClear || trip.BlocksActiveWork {
+		t.Fatalf("initial safety trip status = %+v, want clear", trip)
 	}
 }
 

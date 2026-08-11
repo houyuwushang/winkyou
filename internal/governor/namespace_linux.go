@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"syscall"
+	"time"
 
 	"golang.org/x/sys/unix"
 )
@@ -32,10 +33,18 @@ func setupMachineNamespaceAt(path string) error {
 	if status.State != NamespaceMissing {
 		return fmt.Errorf("%w: %s", ErrNamespaceUnsafe, status.Detail)
 	}
-	if os.Geteuid() != 0 {
+	elevated, err := machineScopeElevated()
+	if err != nil {
+		return fmt.Errorf("inspect process elevation: %w", err)
+	}
+	if !elevated {
 		return fmt.Errorf("%w: run wink setup-machine-scope as root", ErrElevationRequired)
 	}
 	return setupLinuxMachineNamespaceAt(path, 0, 0)
+}
+
+func machineScopeElevated() (bool, error) {
+	return os.Geteuid() == 0, nil
 }
 
 func inspectLinuxMachineNamespaceAt(path string, expectedUID, expectedGID int) NamespaceStatus {
@@ -57,7 +66,7 @@ func inspectLinuxMachineNamespaceAt(path string, expectedUID, expectedGID int) N
 		return unsafeNamespaceStatus(path, err)
 	}
 
-	for _, name := range []string{ownerLockFilename, ownerMetadataFilename} {
+	for _, name := range namespaceFixedFilenames() {
 		filePath := filepath.Join(path, name)
 		fileInfo, err := os.Lstat(filePath)
 		if err != nil {
@@ -119,11 +128,17 @@ func setupLinuxMachineNamespaceAt(path string, expectedUID, expectedGID int) err
 		return fmt.Errorf("set machine namespace mode: %w", err)
 	}
 
-	for _, name := range []string{ownerLockFilename, ownerMetadataFilename} {
+	for _, name := range namespaceFixedFilenames() {
 		filePath := filepath.Join(path, name)
 		file, err := os.OpenFile(filePath, os.O_CREATE|os.O_EXCL|os.O_RDWR, 0o666)
 		if err != nil {
 			return fmt.Errorf("create %s: %w", name, err)
+		}
+		if name == safetyTripFilename {
+			if err := initializeSafetyTripFile(file, time.Now()); err != nil {
+				_ = file.Close()
+				return fmt.Errorf("initialize %s: %w", name, err)
+			}
 		}
 		closeErr := file.Close()
 		if closeErr != nil {
