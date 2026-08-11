@@ -453,6 +453,15 @@ func TestCoordinatedRolesConvergeCrossedWinners(t *testing.T) {
 	writePunchTestPacket(t, b0, a0, punchPacket{Kind: punchAck, Session: session, Nonce: [8]byte{1}})
 	writePunchTestPacket(t, a1, b1, punchPacket{Kind: punchAck, Session: session, Nonce: [8]byte{2}})
 
+	// Wait for the manufactured B1 hit before asserting the coordinated result.
+	// The old non-blocking check raced the B1 reader against the faster A0/B0
+	// SELECT/ACK/DONE exchange and intermittently claimed the packet was absent
+	// even though it was still queued in the loopback socket.
+	legacyHit := waitPunchResult(t, receiverResults)
+	if legacyHit.Conn != b1 {
+		t.Fatalf("manufactured receiver first hit used %v, want B1", legacyHit.LocalAddr)
+	}
+
 	selector := waitPunchResult(t, selectorDone)
 	receiver := waitPunchResult(t, receiverDone)
 	if selector.Conn != a0 || !udpAddrEqual(selector.RemoteAddr, udpAddrOf(b0)) {
@@ -461,15 +470,6 @@ func TestCoordinatedRolesConvergeCrossedWinners(t *testing.T) {
 	if receiver.Conn != b0 || !udpAddrEqual(receiver.RemoteAddr, udpAddrOf(a0)) {
 		t.Fatalf("receiver tuple = %v -> %v, want B0 -> A0; crossed local hit on B1 must not win", receiver.LocalAddr, receiver.RemoteAddr)
 	}
-	select {
-	case legacyHit := <-receiverResults:
-		if legacyHit.Conn != b1 {
-			t.Fatalf("manufactured receiver first hit used %v, want B1", legacyHit.LocalAddr)
-		}
-	default:
-		t.Fatal("receiver did not observe the manufactured crossed legacy hit")
-	}
-
 	// Match Punch teardown: readers stop, deadlines are cleared, and every loser
 	// closes. The reciprocal winners must still carry application datagrams in
 	// both directions after that teardown.
