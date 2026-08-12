@@ -1,0 +1,88 @@
+name: Docker Smoke
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+concurrency:
+  group: docker-smoke-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  coordinator:
+    name: Coordinator TLS/Auth (Linux)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Build and smoke-test secure coordinator image
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          smoke_dir="$(mktemp -d)"
+          export WINK_PUBLIC_IP="203.0.113.10"
+          export WINK_COORD_LISTEN="127.0.0.1:50051"
+          export WINK_COORD_TLS_CERT="${smoke_dir}/coordinator.crt"
+          export WINK_COORD_TLS_KEY="${smoke_dir}/coordinator.key"
+          export WINK_AUTH_KEY="docker-smoke-only-shared-key"
+          export COMPOSE_PROJECT_NAME="winkyou-docker-smoke"
+
+          compose=(docker compose -f deploy/quickstart/docker-compose.yml)
+          cleanup() {
+            status=$?
+            trap - EXIT
+            if [[ ${status} -ne 0 ]]; then
+              "${compose[@]}" logs --no-color coordinator || true
+            fi
+            "${compose[@]}" down --volumes --remove-orphans || true
+            exit "${status}"
+          }
+          trap cleanup EXIT
+
+          openssl req -x509 -newkey rsa:2048 -sha256 -nodes -days 1 \
+            -keyout "${WINK_COORD_TLS_KEY}" \
+            -out "${WINK_COORD_TLS_CERT}" \
+            -subj "/CN=winkyou-docker-smoke" \
+            -addext "subjectAltName=IP:127.0.0.1" \
+            >/dev/null 2>&1
+          chmod 600 "${WINK_COORD_TLS_KEY}"
+
+          "${compose[@]}" config --quiet
+          "${compose[@]}" build coordinator
+
+          if "${compose[@]}" run --rm --no-deps coordinator --listen :0 >"${smoke_dir}/fail-closed.log" 2>&1; then
+            echo "non-loopback coordinator unexpectedly started without TLS/auth" >&2
+            exit 1
+          fi
+          if ! grep -q "non-loopback listener" "${smoke_dir}/fail-closed.log"; then
+            cat "${smoke_dir}/fail-closed.log" >&2
+            echo "expected fail-closed diagnostic was not emitted" >&2
+            exit 1
+          fi
+
+          "${compose[@]}" up -d coordinator
+
+          export WINKYOU_DOCKER_COORDINATOR_URL="grpcs://127.0.0.1:50051"
+          export WINKYOU_DOCKER_COORDINATOR_CA_FILE="${WINK_COORD_TLS_CERT}"
+          export WINKYOU_DOCKER_COORDINATOR_AUTH_KEY="${WINK_AUTH_KEY}"
+          go test ./test/integration -run '^TestDockerCoordinatorTLSAuthSmoke$' -count=1 -v
+
+          "${compose[@]}" down --volumes --remove-orphans
+          if [[ -n "$("${compose[@]}" ps -a -q)" ]]; then
+            echo "docker compose resources remain after teardown" >&2
+            exit 1
+          fi
+          trap - EXIT

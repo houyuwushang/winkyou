@@ -79,6 +79,8 @@ docker compose --env-file deploy/quickstart/.env -f deploy/quickstart/docker-com
 docker compose --env-file deploy/quickstart/.env -f deploy/quickstart/docker-compose.yml logs -f coordinator coturn
 ```
 
+仓库的 [`Docker Smoke`](../.github/workflows/docker-smoke.yml) 会在每个 PR 和 `main` push 上校验 Compose、构建 coordinator 镜像、验证非 loopback 缺少 TLS/auth 时 fail-closed、运行 TLS/auth 客户端 smoke，并确认容器已清理。它只覆盖 coordinator 的 loopback 控制面，不代表 coturn、真实 peer、NAT 穿透或生产部署已经验收。
+
 ## 3. 准备两个 client 配置
 
 把 coordinator 公共证书 `coordinator.crt` 安全复制到两台 client；只复制证书，不复制 `coordinator.key`。然后把三个占位符替换为服务器地址、同一部署共享密钥和 client 本地的证书路径。
