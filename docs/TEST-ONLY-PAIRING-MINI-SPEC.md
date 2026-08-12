@@ -3,6 +3,13 @@
 Status: **Draft; security review required before any cryptographic or network
 adapter is implemented.**
 
+Review disposition (2026-08-12): the first expert review accepted the direction
+and required the S1/S2 changes recorded below. Review gate 1 remains open until
+those changes are confirmed. This document is stacked on PR #23; every
+statement about `machine` and `user_acknowledged` scope is conditional on an
+independent review of #23's scope semantics and the stack must merge from the
+bottom up.
+
 This document defines the narrow authentication and control-channel boundary
 for one operator-initiated `wink connect-test`. It does not authorize live
 probing, a production socket, a public coordinator, a daemon, or any legacy
@@ -98,7 +105,7 @@ The protocol is intended to reject:
 
 - wrong or modified pairing material;
 - network replay and local credential reuse;
-- cross-attempt and cross-generation messages;
+- cross-attempt and non-version-1 generation messages;
 - initiator/responder reflection;
 - expired bundles;
 - transcript tampering; and
@@ -124,7 +131,11 @@ outside their declared range, and documents larger than 4096 bytes. Fields
 used in the cryptographic context are canonicalized with the JSON
 Canonicalization Scheme (JCS) from [RFC 8785](https://www.rfc-editor.org/rfc/rfc8785.html).
 `observation_generation` is encoded as a decimal string to avoid cross-language
-JSON integer ambiguity.
+JSON integer ambiguity. Phase 1a has no production network-observation system,
+so version 1 operator tooling MUST assign the literal string `"1"` and parsers
+MUST reject every other value. In this version it is an anti-mixup field, not a
+claim of network freshness. Giving it another source or meaning requires a
+versioned spec change and review.
 
 ### 4.2 OFFER
 
@@ -138,9 +149,10 @@ The initiator creates:
   "credential_id": "<16 random bytes>",
   "pairing_secret": "<32 random bytes>",
   "attempt_id": "<16 random bytes>",
-  "observation_generation": "<positive uint64>",
+  "observation_generation": "1",
   "initiator_participant_id": "<16 random bytes>",
   "initiator_governor_scope": "machine|user_acknowledged",
+  "secure_channel_profile": "<one exact ADR-selected profile>",
   "issued_at": "<RFC3339 UTC seconds>",
   "expires_at": "<RFC3339 UTC seconds>"
 }
@@ -165,14 +177,15 @@ After importing and locally validating the OFFER, the responder creates:
   "auth_scope": "test_only",
   "credential_id": "<same credential_id>",
   "attempt_id": "<same attempt_id>",
-  "observation_generation": "<same generation>",
+  "observation_generation": "1",
   "initiator_participant_id": "<same initiator id>",
   "responder_participant_id": "<16 random bytes>",
   "initiator_governor_scope": "<same initiator scope>",
   "responder_governor_scope": "machine|user_acknowledged",
+  "secure_channel_profile": "<same exact profile>",
   "issued_at": "<same issued_at>",
   "expires_at": "<same expires_at>",
-  "offer_fingerprint": "<SHA-256 of the JCS OFFER without pairing_secret>"
+  "offer_fingerprint": "<unpadded base64url SHA-256 digest>"
 }
 ```
 
@@ -181,6 +194,20 @@ acceptance is returned through the controlled OOB workflow. The initiator MUST
 compare every repeated field and the fingerprint before producing a COMPLETE
 BUNDLE. This two-way step ensures both random participant identifiers and both
 actual local scope claims are known before the handshake.
+
+`offer_fingerprint` is computed in exactly this order:
+
+1. parse and validate the OFFER as an object;
+2. construct a new object containing every validated OFFER member except the
+   `pairing_secret` member;
+3. apply JCS to that new object;
+4. apply SHA-256 to the UTF-8 JCS bytes; and
+5. encode the 32-byte digest as canonical unpadded base64url.
+
+The member is removed from the data model before canonicalization. Textual
+deletion from serialized JSON, hashing the original bytes, padded base64, and
+hex encoding are all invalid. Positive and negative cross-language vectors
+MUST freeze this ordering.
 
 The fingerprint is a correlation and operator-verification value, not a secret
 and not an authentication MAC. Version 1 does not define a shortened manual
@@ -199,15 +226,20 @@ The `PairingContext` is the ACCEPTANCE object plus the following fixed fields:
 
 ```json
 {
-  "tls_profile": "tls13-epsk-importer-psk-dhe-x25519-aes128gcm-sha256/1",
-  "initiator_transport_role": "tls_client",
-  "responder_transport_role": "tls_server",
+  "initiator_channel_role": "initiator",
+  "responder_channel_role": "responder",
   "early_data": "disabled",
-  "resumption": "disabled"
+  "resumption": "disabled",
+  "runtime_fallback": "disabled"
 }
 ```
 
-The external-PSK importer context is:
+`secure_channel_profile` is not negotiated on the carrier. The follow-up ADR
+selects one exact identifier, both OOB artifacts repeat it, and unknown or
+mismatched values fail before any carrier I/O. Until that ADR is accepted there
+is no valid real-channel value and only the secret-free simulation is allowed.
+
+Candidate A's external-PSK importer context is:
 
 ```text
 SHA-256(
@@ -221,9 +253,30 @@ importer. It is not a home-grown MAC or handshake. The external PSK identity is
 the random `credential_id`; the base key is the 32-byte `pairing_secret`; the
 single associated hash is SHA-256.
 
+Candidate B MUST bind the exact same JCS `PairingContext` as the Noise prologue
+using these bytes, with no alternate encoding:
+
+```text
+UTF8("winkyou test-only pairing Noise prologue v1\n") ||
+JCS(PairingContext)
+```
+
+The selected Noise implementation must mix that prologue into its handshake
+hash exactly as required by the reviewed Noise framework. It MUST NOT treat the
+prologue as an application MAC or omit it when payloads are empty.
+
 ## 5. Provisional cryptographic profile
 
-The only version-1 candidate is:
+The follow-up ADR MUST select exactly one of the following parallel candidate
+families and freeze it in `secure_channel_profile`. There is no on-wire
+algorithm negotiation and no fallback between them. Selection of a library is
+not selection of a protocol: the exact profile, context binding, framing,
+failure behavior, and test vectors must all be accepted together.
+
+### 5.1 Candidate A: TLS 1.3 external PSK importer
+
+The proposed exact profile identifier is
+`tls13-epsk-importer-psk-dhe-x25519-aes128gcm-sha256/1`. Its requirements are:
 
 - TLS 1.3 exactly, as specified by
   [RFC 8446](https://www.rfc-editor.org/rfc/rfc8446.html);
@@ -247,17 +300,53 @@ separating this external PSK from other uses. Application messages are then
 integrity- and confidentiality-protected TLS records; WinkYou MUST NOT add its
 own application MAC, custom key schedule, or second encryption layer.
 
-This profile is intentionally not implemented yet. The Go standard library
+Candidate A is intentionally not implemented yet. The Go standard library
 [`crypto/tls`](https://pkg.go.dev/crypto/tls) exposes PSK controls for session
 resumption but no external-PSK importer API. Session tickets, `WrapSession`, or
 `UnwrapSession` MUST NOT be repurposed as an approximation. No TLS source fork,
 copied handshake implementation, `unsafe` hook, or reflection hook is allowed.
 
-Before implementation, a follow-up ADR must identify a maintained,
-independently reviewed Go implementation that supports this exact profile and
-interoperable test vectors. If none is acceptable, this candidate returns to
-security review; it MUST NOT silently fall back to Noise, a bare X25519+hash
-construction, a custom MAC, or unauthenticated TLS.
+### 5.2 Candidate B: reviewed Noise framework implementation
+
+Candidate B is an explicitly reviewed parallel candidate, not an automatic
+fallback. It must use the official
+[Noise Protocol Framework](https://noiseprotocol.org/noise.html), an
+interactive PSK-modified named pattern, and fresh ephemeral Diffie-Hellman. The
+ADR MUST freeze all of the following before this candidate has a valid
+`secure_channel_profile` value:
+
+- the exact standard pattern and `pskN` placement, with an independent review
+  of its mutual authentication, key-confirmation, forward-secrecy, KCI, and
+  identity-exposure properties for this OOB threat model;
+- one exact standard Noise protocol name and suite, using 25519 and a standard
+  Noise cipher/hash combination, with no application-defined token sequence,
+  primitive, negotiation, or downgrade;
+- how the 32-byte `pairing_secret` is supplied as the Noise PSK and how the
+  section 4.4 prologue is checked on both sides;
+- handshake and transport framing, nonce exhaustion, EOF/truncation handling,
+  per-attempt key lifetime, and terminal close behavior within the section 8
+  hard limits; and
+- interoperable positive/negative vectors plus fuzz, concurrency, and secret
+  redaction evidence for the selected Go implementation.
+
+If the chosen pattern uses static key slots, those keypairs MUST be generated
+for this attempt only, MUST NOT assert a stable NodeID, and MUST be destroyed
+best-effort at terminal state. Candidate B permits neither 0-RTT nor PSK/key
+reuse, resumption, rekey into a second attempt, or transport fallback.
+
+`github.com/flynn/noise` is a possible ADR evaluation input, not a pre-approved
+dependency. The ADR must establish current maintenance, release provenance,
+security-review history, supported vectors, and suitability at selection time;
+repository popularity or use of related primitives by another protocol is not
+that evidence.
+
+### 5.3 Common rejection rule
+
+Before implementation, the ADR must identify a maintained, independently
+reviewed implementation for one complete candidate profile. If neither is
+acceptable, the implementation gate stays closed. WinkYou MUST NOT silently
+switch candidate families or use a bare X25519+hash construction, custom MAC,
+custom handshake, unauthenticated TLS, or a TLS source fork.
 
 ## 6. Single-use and replay ledger
 
@@ -265,11 +354,12 @@ Each endpoint maintains a replay ledger in its already selected canonical
 machine or per-user safety namespace. The namespace is selected locally before
 bundle import and MUST equal that endpoint's scope in `PairingContext`.
 
-Immediately before sending or accepting the first handshake byte, each
-endpoint MUST atomically transition its `credential_id` from absent to burned.
-There is no rollback to fresh. A failed dial, rejected handshake, cancellation,
-timeout, process crash, or malformed peer burns the credential. Retrying needs
-a new OFFER and a new secret.
+The pre-handshake scope admission in section 9 runs immediately before sending
+or accepting the first secure-channel handshake byte. As part of that admission
+each endpoint MUST atomically transition its `credential_id` from absent to
+burned. There is no rollback to fresh. A scope mismatch, failed dial, rejected
+handshake, cancellation, timeout, process crash, or malformed peer burns the
+credential. Retrying needs a new OFFER and a new secret.
 
 The burned record contains only:
 
@@ -290,10 +380,12 @@ It MUST NOT be described as restart-safe evidence.
 
 ## 7. Authenticated control envelope
 
-After TLS Finished succeeds, both endpoints exchange length-prefixed JSON
-envelopes. The prefix is a four-byte unsigned big-endian payload length. Zero,
-values above 4096, invalid JSON, duplicate/unknown fields, and trailing bytes
-are rejected before dispatch.
+After the selected secure-channel handshake authenticates both endpoints (TLS
+Finished for candidate A or reviewed Noise handshake completion for candidate
+B), both endpoints exchange length-prefixed JSON envelopes. The prefix is a
+four-byte unsigned big-endian payload length. Zero, values above 4096, invalid
+JSON, duplicate/unknown fields, and trailing bytes are rejected before
+dispatch.
 
 Every envelope contains:
 
@@ -302,7 +394,8 @@ Every envelope contains:
   "protocol": "winkyou-test-pairing/1",
   "auth_scope": "test_only",
   "attempt_id": "<bound attempt>",
-  "observation_generation": "<bound generation>",
+  "observation_generation": "1",
+  "secure_channel_profile": "<bound profile>",
   "from_participant_id": "<bound sender>",
   "to_participant_id": "<bound receiver>",
   "sender_role": "initiator|responder",
@@ -315,8 +408,8 @@ Every envelope contains:
 
 Sequence numbers start at one independently in each direction and increase by
 exactly one. Every bound field is compared to `PairingContext` before payload
-parsing. Role reflection, skipped/repeated sequence, unknown type, stale
-generation, and wrong participant fail the entire channel closed.
+parsing. Role reflection, skipped/repeated sequence, unknown type, a generation
+other than `"1"`, and wrong participant fail the entire channel closed.
 
 The payload schemas belong to the future connect-test plan, not to this
 authentication spec. Until independently reviewed, payload is a simulation-only
@@ -335,16 +428,16 @@ local simulated action. Receipt of the peer VERIFY after sending the local
 VERIFY is the only successful terminal state.
 
 CANCEL may be sent once from any non-terminal state. Receipt, local
-cancellation, parser failure, TLS alert, EOF, timeout, or any invalid transition
-closes the channel and produces a failed terminal result. No message is retried
-inside this protocol; reliability belongs to the carrier. A new attempt needs a
-new credential.
+cancellation, parser failure, secure-channel authentication failure or alert,
+EOF, timeout, or any invalid transition closes the channel and produces a
+failed terminal result. No message is retried inside this protocol; reliability
+belongs to the carrier. A new attempt needs a new credential.
 
 Compiled version-1 limits are:
 
 | Limit | Hard ceiling |
 | --- | ---: |
-| TLS connections | 1 per attempt |
+| Secure-channel carrier connections | 1 per attempt |
 | Concurrent attempts per channel | 1 |
 | Pairing lifetime | 10 minutes |
 | Established control lifetime | 15 seconds |
@@ -352,7 +445,7 @@ Compiled version-1 limits are:
 | Opaque simulation payload | 2048 bytes |
 | Messages per direction | 4 plus one CANCEL |
 | Messages total | 8 plus one CANCEL |
-| Receive rate | 4 messages/second, burst 2 |
+| Receive rate | 4 messages/second sustained, burst 4 |
 | Buffered inbound frames | 1 |
 | Buffered outbound frames | 1 |
 
@@ -360,12 +453,49 @@ Configuration may lower, never raise, these values. The shorter local governor
 deadline always wins. The channel owns no retry loop, ticker that outlives the
 attempt, unbounded queue, or background recovery task.
 
+Receive-rate accounting MUST use the local monotonic clock. Burst 4 is the
+minimum that permits the responder to receive the complete valid
+PREPARE/READY/FIRE/VERIFY sequence without an artificial 250 ms delay. It is
+still provisional: before a real adapter is accepted, sanitized test-only
+timings must demonstrate that normal successful exchanges are not falsely
+rate-limited. Raising the hard ceiling requires a reviewed spec change; flood
+tests must still terminate within the same control lifetime.
+
 ## 9. Governor and cancellation coupling
 
 A future real adapter MUST receive an already acquired connect-test attempt
 capability; it cannot acquire a machine or user governor itself. Transport
 connection cost, DNS work, and any later probe work must be separately reserved
 under reviewed coarse or `probeio` leases before the relevant I/O begins.
+
+Bundle-import validation is not sufficient because as much as ten minutes may
+pass before the handshake. Each endpoint MUST perform this local admission
+sequence immediately before sending or accepting the first secure-channel
+handshake byte:
+
+1. ask the same local governor authority that issued the attempt capability for
+   a fresh scope/ownership observation;
+2. classify whether the capability is live, its scope still exactly equals this
+   endpoint's scope in `PairingContext`, and the canonical namespace owner or
+   lock still authorizes that scope, without yet performing carrier I/O;
+3. under that same authority, atomically burn the credential in the originally
+   bound ledger namespace regardless of the classification; and
+4. only if the pre-burn classification matched, recheck the local scope after
+   the burn and then begin the handshake without an intervening wait, dial, DNS
+   lookup, or other carrier I/O.
+
+If either check differs, the capability is cancelled, the namespace owner
+cannot be proven, or a `machine` namespace becomes ready while a
+`user_acknowledged` attempt is pending, the endpoint MUST burn (or preserve a
+prior burn), record `scope_changed`, and fail without a handshake byte. If it
+cannot prove the burn in the originally bound namespace, that credential and
+scope remain failed closed. It MUST NOT migrate the attempt, select a new
+namespace, or silently downgrade/upgrade scope.
+
+This admission must be serialized with #23's scope selection/ownership rules.
+If a platform implementation cannot make the post-burn check stable through
+the first handshake operation, the real adapter remains blocked on that
+platform. Peer-reported scope is never an input to this local check.
 
 If either endpoint reports `user_acknowledged`, the combined test report MUST
 state:
@@ -394,9 +524,10 @@ generation, both reported governor scopes, context digest, timestamps, terminal
 state, bounded counters, and sanitized failure class.
 
 Reports, logs, errors, metrics, panics, and traces MUST NOT contain the pairing
-secret, imported/derived PSK, TLS traffic secrets, raw OOB artifacts, payloads,
-or a reusable carrier credential. Debug key logging is forbidden. Diagnostic
-DTOs remain separate from domain objects containing secret material.
+secret, imported/derived PSK, secure-channel handshake or traffic secrets, raw
+OOB artifacts, payloads, or a reusable carrier credential. Debug key logging is
+forbidden. Diagnostic DTOs remain separate from domain objects containing
+secret material.
 
 ## 11. Permanent negative tests
 
@@ -404,13 +535,21 @@ The implementation gate includes deterministic tests for:
 
 - malformed, duplicate-key, unknown-field, oversized, and non-canonical
   artifacts;
-- secrets or identifiers with wrong length or encoding;
-- duration over ten minutes, expiry, clock jump, and generation zero;
-- wrong token, modified context, cross-attempt and cross-generation use;
+- secrets, identifiers, or fingerprints with wrong length or encoding, plus
+  cross-language fingerprint vectors that remove `pairing_secret` before JCS;
+- duration over ten minutes, expiry, clock jump, and every
+  `observation_generation` other than the literal `"1"`;
+- wrong token, modified context, and cross-attempt or cross-profile use;
 - atomic burn, reuse after success/failure/cancel/crash simulation, corrupt
-  ledger, and namespace mismatch;
+  ledger, namespace mismatch, and local scope/owner changes between bundle
+  import and the first handshake byte;
 - wrong role, role reflection, wrong participant, repeated/skipped sequence,
   invalid transition, message flood, and oversized frame/payload;
+- a complete valid exchange with no artificial inter-message delay, plus flood
+  rejection under the provisional sustained-rate/burst limits;
+- concurrent full-duplex sends with both one-frame queues full, proving bounded
+  expiry and no blocked call or goroutine survives the 15-second control
+  lifetime;
 - cancellation and expiry at every state with no surviving goroutine or queued
   message;
 - rejection by Mesh, Node Runtime, service, transit, recovery, mapping,
@@ -418,19 +557,22 @@ The implementation gate includes deterministic tests for:
 - report downgrading when either endpoint is `user_acknowledged` and proof that
   peer input cannot raise local scope;
 - absence of secret material from every report and error fixture;
-- interoperation and negative vectors for the final reviewed TLS library; and
+- interoperation and negative vectors for the final reviewed secure-channel
+  profile, including context/prologue mismatch and cross-profile rejection; and
 - the repository AST/dependency gate proving the simulated package has no raw
   or transitive network capability.
 
 ## 12. Review and implementation gates
 
-All of the following are required before a real `TestPairingChannel` exists:
+All of the following are required before a real `TestPairingChannel` exists.
+Because this PR is stacked on #23, its approval is conditional on #23's scope
+semantics being independently accepted and the stack merging bottom-up:
 
 1. independent security review accepts this threat model, OOB workflow,
-   importer context, single-use semantics, role binding, state machine, and
-   limits;
-2. a follow-up ADR selects a maintained and independently reviewed
-   RFC 8446/RFC 9258 implementation for the exact fixed profile;
+   candidate-specific context/prologue binding, single-use semantics, role
+   binding, state machine, and limits;
+2. a follow-up ADR selects one exact candidate A or candidate B profile and a
+   maintained, independently reviewed implementation satisfying section 5;
 3. cross-language positive and negative test vectors are checked in;
 4. the durable replay-ledger format, locking, ACL/ownership checks, corruption
    behavior, and bounded cleanup are reviewed for Windows and Linux;
