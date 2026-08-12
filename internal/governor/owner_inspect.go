@@ -42,6 +42,20 @@ func InspectMachineOwner() OwnerStatus {
 	return inspectPreparedNamespaceOwner(namespace.Path, ScopeMachine)
 }
 
+// InspectUserAcknowledgedOwner probes the canonical per-user lock without
+// creating the namespace or writing owner metadata.
+func InspectUserAcknowledgedOwner() OwnerStatus {
+	namespace := InspectUserAcknowledgedNamespace()
+	if !namespace.Ready {
+		return OwnerStatus{
+			Scope:  ScopeUserAcknowledged,
+			State:  OwnerUnavailable,
+			Detail: fmt.Sprintf("user-acknowledged namespace is %s: %s", namespace.State, namespace.Detail),
+		}
+	}
+	return inspectPreparedNamespaceOwner(namespace.Path, ScopeUserAcknowledged)
+}
+
 func inspectPreparedNamespaceOwner(namespace string, scope Scope) OwnerStatus {
 	status := OwnerStatus{Scope: scope, State: OwnerUnavailable}
 	if !scope.valid() {

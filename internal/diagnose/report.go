@@ -15,6 +15,8 @@ import (
 
 const SchemaVersion = "winkyou.diagnose/v1alpha1"
 
+const UserAcknowledgedWarning = "WARNING: user-acknowledged scope is per-user/container only, is not machine-wide safety, and must not be used for background runtime, recovery, port mapping, prediction, or birthday punching."
+
 type Platform struct {
 	OS   string `json:"os"`
 	Arch string `json:"arch"`
@@ -86,6 +88,40 @@ type ActiveProbeStatus struct {
 	Action string `json:"action,omitempty"`
 }
 
+type ResourceLimitReport struct {
+	Sockets          int `json:"sockets"`
+	Targets          int `json:"targets"`
+	PacketsPerSecond int `json:"packets_per_second"`
+	Packets          int `json:"packets"`
+	FiveTuples       int `json:"five_tuples"`
+}
+
+type GovernorLimitReport struct {
+	MaxActivePeers             int                 `json:"max_active_peers"`
+	MaxActiveAttempts          int                 `json:"max_active_attempts"`
+	MaxAttemptsPerPeer         int                 `json:"max_attempts_per_peer"`
+	MaxHeavyweightAttempts     int                 `json:"max_heavyweight_attempts"`
+	MaxAttemptDurationMS       int64               `json:"max_attempt_duration_ms"`
+	CancellationDrainTimeoutMS int64               `json:"cancellation_drain_timeout_ms"`
+	Aggregate                  ResourceLimitReport `json:"aggregate"`
+	PerAttempt                 ResourceLimitReport `json:"per_attempt"`
+}
+
+type UserAcknowledgedBoundary struct {
+	ExplicitAcknowledgement bool                 `json:"explicit_acknowledgement"`
+	MachineWide             bool                 `json:"machine_wide"`
+	PersistentDefault       bool                 `json:"persistent_default"`
+	Acquired                bool                 `json:"acquired"`
+	PolicyVerified          bool                 `json:"policy_verified"`
+	Released                bool                 `json:"released"`
+	Profile                 governor.Profile     `json:"profile"`
+	AllowedOperations       []governor.Operation `json:"allowed_operations"`
+	DeniedCapabilities      []string             `json:"denied_capabilities"`
+	HardLimits              GovernorLimitReport  `json:"hard_limits"`
+	Warning                 string               `json:"warning"`
+	Detail                  string               `json:"detail,omitempty"`
+}
+
 type Report struct {
 	SchemaVersion          string                    `json:"schema_version"`
 	GeneratedAt            time.Time                 `json:"generated_at"`
@@ -95,6 +131,8 @@ type Report struct {
 	Platform               Platform                  `json:"platform"`
 	GovernorScope          governor.Scope            `json:"governor_scope"`
 	Namespace              governor.NamespaceStatus  `json:"namespace"`
+	MachineNamespace       *governor.NamespaceStatus `json:"machine_namespace,omitempty"`
+	UserAcknowledged       *UserAcknowledgedBoundary `json:"user_acknowledged,omitempty"`
 	Owner                  governor.OwnerStatus      `json:"owner"`
 	SafetyTrip             governor.SafetyTripStatus `json:"safety_trip"`
 	Configuration          ConfigStatus              `json:"configuration"`
@@ -105,29 +143,45 @@ type Report struct {
 }
 
 type Options struct {
-	ConfigPath string
+	ConfigPath    string
+	GovernorScope governor.Scope
+}
+
+type RestrictedUserAuthority interface {
+	Snapshot() governor.Snapshot
+	Close() error
 }
 
 // Inspector dependencies are explicit so tests can prove that a missing
 // machine namespace still returns every passive section.
 type Inspector struct {
-	Now           func() time.Time
-	Namespace     func() governor.NamespaceStatus
-	Owner         func() governor.OwnerStatus
-	SafetyTrip    func() governor.SafetyTripStatus
-	Configuration func(string) ConfigStatus
-	Interfaces    func() InterfaceStatus
-	DefaultRoute  func(context.Context) DefaultRouteStatus
-	Platform      Platform
-	BuildVersion  string
+	Now            func() time.Time
+	Namespace      func() governor.NamespaceStatus
+	Owner          func() governor.OwnerStatus
+	SafetyTrip     func() governor.SafetyTripStatus
+	UserNamespace  func() governor.NamespaceStatus
+	UserOwner      func() governor.OwnerStatus
+	UserSafetyTrip func() governor.SafetyTripStatus
+	AcquireUser    func(string) (RestrictedUserAuthority, error)
+	Configuration  func(string) ConfigStatus
+	Interfaces     func() InterfaceStatus
+	DefaultRoute   func(context.Context) DefaultRouteStatus
+	Platform       Platform
+	BuildVersion   string
 }
 
 func SystemInspector(buildVersion string) Inspector {
 	return Inspector{
-		Now:           time.Now,
-		Namespace:     governor.InspectMachineNamespace,
-		Owner:         governor.InspectMachineOwner,
-		SafetyTrip:    governor.InspectMachineSafetyTrip,
+		Now:            time.Now,
+		Namespace:      governor.InspectMachineNamespace,
+		Owner:          governor.InspectMachineOwner,
+		SafetyTrip:     governor.InspectMachineSafetyTrip,
+		UserNamespace:  governor.InspectUserAcknowledgedNamespace,
+		UserOwner:      governor.InspectUserAcknowledgedOwner,
+		UserSafetyTrip: governor.InspectUserAcknowledgedSafetyTrip,
+		AcquireUser: func(buildVersion string) (RestrictedUserAuthority, error) {
+			return governor.AcquireRestrictedUserGovernor(buildVersion)
+		},
 		Configuration: inspectConfiguration,
 		Interfaces:    inspectInterfaces,
 		DefaultRoute:  inspectDefaultRoute,
@@ -155,6 +209,10 @@ func (inspector Inspector) Run(ctx context.Context, options Options) Report {
 		Platform:      inspector.Platform,
 		GovernorScope: governor.ScopeMachine,
 	}
+	if options.GovernorScope == governor.ScopeUserAcknowledged {
+		report.Mode = "user_acknowledged_passive_only"
+		report.GovernorScope = governor.ScopeUserAcknowledged
+	}
 	if report.Platform.OS == "" {
 		report.Platform.OS = runtime.GOOS
 	}
@@ -162,20 +220,10 @@ func (inspector Inspector) Run(ctx context.Context, options Options) Report {
 		report.Platform.Arch = runtime.GOARCH
 	}
 
-	if inspector.Namespace == nil {
-		report.Namespace = governor.NamespaceStatus{Scope: governor.ScopeMachine, State: governor.NamespaceUnavailable, Detail: "namespace collector unavailable"}
+	if report.GovernorScope == governor.ScopeUserAcknowledged {
+		inspector.collectUserAcknowledgedBoundary(&report)
 	} else {
-		report.Namespace = inspector.Namespace()
-	}
-	if inspector.Owner == nil {
-		report.Owner = governor.OwnerStatus{Scope: governor.ScopeMachine, State: governor.OwnerUnavailable, Detail: "owner collector unavailable"}
-	} else {
-		report.Owner = inspector.Owner()
-	}
-	if inspector.SafetyTrip == nil {
-		report.SafetyTrip = governor.SafetyTripStatus{State: governor.SafetyTripUnavailable, BlocksActiveWork: true, Detail: "safety trip collector unavailable"}
-	} else {
-		report.SafetyTrip = inspector.SafetyTrip()
+		inspector.collectMachineBoundary(&report)
 	}
 	if inspector.Configuration == nil {
 		report.Configuration = ConfigStatus{State: ConfigUnavailable, Source: "unknown", Detail: "configuration collector unavailable"}
@@ -196,8 +244,166 @@ func (inspector Inspector) Run(ctx context.Context, options Options) Report {
 	return report
 }
 
+func (inspector Inspector) collectMachineBoundary(report *Report) {
+	if inspector.Namespace == nil {
+		report.Namespace = governor.NamespaceStatus{Scope: governor.ScopeMachine, State: governor.NamespaceUnavailable, Detail: "namespace collector unavailable"}
+	} else {
+		report.Namespace = inspector.Namespace()
+	}
+	if inspector.Owner == nil {
+		report.Owner = governor.OwnerStatus{Scope: governor.ScopeMachine, State: governor.OwnerUnavailable, Detail: "owner collector unavailable"}
+	} else {
+		report.Owner = inspector.Owner()
+	}
+	if inspector.SafetyTrip == nil {
+		report.SafetyTrip = governor.SafetyTripStatus{State: governor.SafetyTripUnavailable, BlocksActiveWork: true, Detail: "safety trip collector unavailable"}
+	} else {
+		report.SafetyTrip = inspector.SafetyTrip()
+	}
+}
+
+func (inspector Inspector) collectUserAcknowledgedBoundary(report *Report) {
+	hard, hardErr := governor.HardLimits(governor.ProfilePhase1UserAcknowledged)
+	boundary := &UserAcknowledgedBoundary{
+		ExplicitAcknowledgement: true,
+		MachineWide:             false,
+		PersistentDefault:       false,
+		Profile:                 governor.ProfilePhase1UserAcknowledged,
+		AllowedOperations:       []governor.Operation{governor.OperationDiagnose, governor.OperationConnectTest},
+		DeniedCapabilities: []string{
+			"node_runtime",
+			"automatic_recovery",
+			"port_mapping",
+			"prediction",
+			"birthday_punch",
+			"background_daemon",
+			"parallel_heavyweight_attempt",
+		},
+		HardLimits: limitReport(hard),
+		Warning:    UserAcknowledgedWarning,
+	}
+	if hardErr != nil {
+		boundary.Detail = fmt.Sprintf("load compiled user limits: %v", hardErr)
+	}
+
+	if hardErr != nil {
+		// A missing compiled profile is a build defect, so no namespace may be
+		// acquired under an unknown policy.
+	} else if inspector.AcquireUser == nil {
+		boundary.Detail = firstNonEmpty(boundary.Detail, "restricted user authority collector unavailable")
+	} else {
+		authority, err := inspector.AcquireUser(report.BuildVersion)
+		if err != nil {
+			boundary.Detail = firstNonEmpty(boundary.Detail, err.Error())
+		} else if authority == nil {
+			boundary.Detail = firstNonEmpty(boundary.Detail, "restricted user authority returned nil")
+		} else {
+			boundary.Acquired = true
+			snapshot := authority.Snapshot()
+			if snapshot.Profile != governor.ProfilePhase1UserAcknowledged || snapshot.Scope != governor.ScopeUserAcknowledged {
+				boundary.Detail = fmt.Sprintf("restricted authority identity mismatch: profile=%s scope=%s", snapshot.Profile, snapshot.Scope)
+			} else if snapshot.Limits != hard {
+				boundary.Detail = "restricted authority limits do not match the compiled user ceiling"
+			} else if snapshot.Closed || snapshot.ActivePeers != 0 || snapshot.ActiveAttempts != 0 || snapshot.HeavyweightAttempts != 0 || snapshot.Reserved != (governor.Resources{}) {
+				boundary.Detail = "restricted authority was not an idle, newly acquired capability"
+			} else {
+				boundary.PolicyVerified = true
+			}
+			if err := authority.Close(); err != nil {
+				boundary.Detail = firstNonEmpty(boundary.Detail, fmt.Sprintf("release restricted user authority: %v", err))
+			} else {
+				boundary.Released = true
+			}
+		}
+	}
+	report.UserAcknowledged = boundary
+	machine := governor.NamespaceStatus{Scope: governor.ScopeMachine, State: governor.NamespaceUnavailable, Detail: "machine namespace collector unavailable"}
+	if inspector.Namespace != nil {
+		machine = inspector.Namespace()
+	}
+	report.MachineNamespace = &machine
+
+	if inspector.UserNamespace == nil {
+		report.Namespace = governor.NamespaceStatus{Scope: governor.ScopeUserAcknowledged, State: governor.NamespaceUnavailable, Detail: "user namespace collector unavailable"}
+	} else {
+		report.Namespace = inspector.UserNamespace()
+	}
+	if inspector.UserOwner == nil {
+		report.Owner = governor.OwnerStatus{Scope: governor.ScopeUserAcknowledged, State: governor.OwnerUnavailable, Detail: "user owner collector unavailable"}
+	} else {
+		report.Owner = inspector.UserOwner()
+	}
+	if inspector.UserSafetyTrip == nil {
+		report.SafetyTrip = governor.SafetyTripStatus{State: governor.SafetyTripUnavailable, BlocksActiveWork: true, Detail: "user safety trip collector unavailable"}
+	} else {
+		report.SafetyTrip = inspector.UserSafetyTrip()
+	}
+}
+
+func limitReport(limits governor.Limits) GovernorLimitReport {
+	return GovernorLimitReport{
+		MaxActivePeers:             limits.MaxActivePeers,
+		MaxActiveAttempts:          limits.MaxActiveAttempts,
+		MaxAttemptsPerPeer:         limits.MaxAttemptsPerPeer,
+		MaxHeavyweightAttempts:     limits.MaxHeavyweightAttempts,
+		MaxAttemptDurationMS:       limits.MaxAttemptDuration.Milliseconds(),
+		CancellationDrainTimeoutMS: limits.CancellationDrainTimeout.Milliseconds(),
+		Aggregate:                  resourceLimitReport(limits.Aggregate),
+		PerAttempt:                 resourceLimitReport(limits.PerAttempt),
+	}
+}
+
+func resourceLimitReport(resources governor.Resources) ResourceLimitReport {
+	return ResourceLimitReport{
+		Sockets:          resources.Sockets,
+		Targets:          resources.Targets,
+		PacketsPerSecond: resources.PacketsPerSecond,
+		Packets:          resources.Packets,
+		FiveTuples:       resources.FiveTuples,
+	}
+}
+
 func activeProbeStatus(report Report) ActiveProbeStatus {
 	status := ActiveProbeStatus{State: "active_probe_blocked"}
+	if report.GovernorScope == governor.ScopeUserAcknowledged {
+		if report.MachineNamespace != nil && report.MachineNamespace.Ready {
+			status.Reason = "user_acknowledged_scope_not_needed"
+			status.Detail = "the machine-wide authority is ready, so the lower per-user authority was rejected"
+			status.Action = "rerun wink diagnose without --governor-scope"
+			return status
+		}
+		if report.UserAcknowledged == nil || !report.UserAcknowledged.Acquired || !report.UserAcknowledged.PolicyVerified || !report.UserAcknowledged.Released {
+			status.Reason = "user_acknowledged_scope_unavailable"
+			status.Detail = "the explicitly requested per-user authority could not be safely acquired and released"
+			if report.UserAcknowledged != nil && report.UserAcknowledged.Detail != "" {
+				status.Detail = report.UserAcknowledged.Detail
+			}
+			status.Action = "install the machine scope, or review the reported per-user namespace and owner state"
+			return status
+		}
+		if !report.Namespace.Ready {
+			status.Reason = "user_acknowledged_scope_unavailable"
+			status.Detail = fmt.Sprintf("user-acknowledged namespace is %s: %s", report.Namespace.State, report.Namespace.Detail)
+			status.Action = "review the reported per-user namespace permissions and ownership"
+			return status
+		}
+		if report.Owner.State != governor.OwnerIdle {
+			status.Reason = "user_acknowledged_scope_unavailable"
+			status.Detail = firstNonEmpty(report.Owner.Detail, fmt.Sprintf("user-acknowledged owner state is %s", report.Owner.State))
+			status.Action = "stop or reuse the recorded per-user owner before retrying"
+			return status
+		}
+		if report.SafetyTrip.BlocksActiveWork {
+			status.Reason = "user_acknowledged_scope_unavailable"
+			status.Detail = fmt.Sprintf("per-user safety state %s blocks active work", report.SafetyTrip.State)
+			status.Action = "install machine scope; per-user reset semantics are not exposed in this slice"
+			return status
+		}
+		status.Reason = "user_acknowledged_passive_only"
+		status.Detail = "the restricted per-user authority was acquired and released; this slice still performs no STUN, coordinator, DNS, TCP, or UDP activity"
+		status.Action = "active diagnostics remain unavailable until the separately reviewed probe path is installed"
+		return status
+	}
 	if !report.Namespace.Ready {
 		status.Reason = "machine_scope_not_ready"
 		status.Detail = fmt.Sprintf("machine scope is %s; passive diagnostics remain available", report.Namespace.State)

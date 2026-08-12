@@ -40,7 +40,16 @@ func newTestGovernor(t *testing.T, profile Profile, limits *Limits) *Governor {
 	if err != nil {
 		t.Fatalf("acquire test owner: %v", err)
 	}
-	governor, err := New(owner, profile, limits)
+	var governor *Governor
+	if profile == ProfilePhase1UserAcknowledged {
+		restricted, restrictedErr := NewRestrictedUserGovernor(owner, limits)
+		err = restrictedErr
+		if restricted != nil {
+			governor = restricted.governor
+		}
+	} else {
+		governor, err = New(owner, profile, limits)
+	}
 	if err != nil {
 		_ = owner.Close()
 		t.Fatalf("new governor: %v", err)

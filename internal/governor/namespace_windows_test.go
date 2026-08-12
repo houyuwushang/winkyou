@@ -116,6 +116,74 @@ func TestWindowsMachineNamespaceUsesKnownFolder(t *testing.T) {
 	}
 }
 
+func TestWindowsUserAcknowledgedNamespaceSetupAndInspect(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "user-safety")
+	if status := inspectUserAcknowledgedNamespaceAt(path); status.State != NamespaceMissing || status.RequiresElevation {
+		t.Fatalf("initial user state = %+v, want non-elevated missing", status)
+	}
+	if err := setupWindowsUserAcknowledgedNamespaceAt(path); err != nil {
+		t.Fatalf("setup user namespace: %v", err)
+	}
+	status := inspectUserAcknowledgedNamespaceAt(path)
+	if !status.Ready || status.Scope != ScopeUserAcknowledged {
+		t.Fatalf("installed user status = %+v, want ready", status)
+	}
+	owner, err := AcquirePreparedNamespace(path, ScopeUserAcknowledged, "user-namespace-test")
+	if err != nil {
+		t.Fatalf("acquire user namespace: %v", err)
+	}
+	if err := owner.Close(); err != nil {
+		t.Fatalf("close user namespace owner: %v", err)
+	}
+	if trip := newSafetyTripStore(path).status(); trip.State != SafetyTripClear || trip.BlocksActiveWork {
+		t.Fatalf("initial user safety trip = %+v, want clear", trip)
+	}
+}
+
+func TestWindowsUserAcknowledgedNamespaceRejectsACLDrift(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "user-safety")
+	if err := setupWindowsUserAcknowledgedNamespaceAt(path); err != nil {
+		t.Fatalf("setup user namespace: %v", err)
+	}
+	lockPath := filepath.Join(path, ownerLockFilename)
+	if err := setWindowsDACL(lockPath, windows.FILE_GENERIC_READ); err != nil {
+		t.Fatalf("tamper user lock DACL: %v", err)
+	}
+	t.Cleanup(func() { _ = setWindowsUserDACL(lockPath) })
+	status := inspectUserAcknowledgedNamespaceAt(path)
+	if status.State != NamespaceUnsafe || status.Ready || status.RequiresElevation {
+		t.Fatalf("tampered user status = %+v, want non-elevated unsafe", status)
+	}
+	if err := setupWindowsUserAcknowledgedNamespaceAt(path); !errors.Is(err, ErrNamespaceUnsafe) {
+		t.Fatalf("setup unsafe user namespace error = %v, want ErrNamespaceUnsafe", err)
+	}
+}
+
+func TestWindowsUserAcknowledgedNamespaceRejectsPrecreatedPath(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "user-safety")
+	if err := os.Mkdir(path, 0o700); err != nil {
+		t.Fatalf("precreate user namespace: %v", err)
+	}
+	if err := setupWindowsUserAcknowledgedNamespaceAt(path); !errors.Is(err, ErrNamespaceUnsafe) {
+		t.Fatalf("setup precreated user namespace error = %v, want ErrNamespaceUnsafe", err)
+	}
+}
+
+func TestWindowsUserAcknowledgedNamespaceUsesKnownFolder(t *testing.T) {
+	fakeLocalAppData := filepath.Join(t.TempDir(), "spoofed-local-app-data")
+	t.Setenv("LOCALAPPDATA", fakeLocalAppData)
+	path, err := UserAcknowledgedNamespacePath()
+	if err != nil {
+		t.Fatalf("UserAcknowledgedNamespacePath: %v", err)
+	}
+	if strings.HasPrefix(strings.ToLower(path), strings.ToLower(fakeLocalAppData)) {
+		t.Fatalf("UserAcknowledgedNamespacePath trusted LOCALAPPDATA environment override: %q", path)
+	}
+	if filepath.Base(path) != windowsUserNamespaceDirectory {
+		t.Fatalf("UserAcknowledgedNamespacePath = %q, want final directory %q", path, windowsUserNamespaceDirectory)
+	}
+}
+
 func registerWindowsNamespaceCleanup(t *testing.T, path string) {
 	t.Helper()
 	t.Cleanup(func() {

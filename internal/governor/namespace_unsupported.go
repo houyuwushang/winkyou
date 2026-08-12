@@ -11,6 +11,10 @@ func platformMachineNamespacePath() (string, error) {
 	return "", fmt.Errorf("%w on %s", ErrUnsupportedPlatform, runtime.GOOS)
 }
 
+func platformUserAcknowledgedNamespacePath() (string, error) {
+	return "", fmt.Errorf("%w on %s", ErrUnsupportedPlatform, runtime.GOOS)
+}
+
 func inspectMachineNamespaceAt(path string) NamespaceStatus {
 	return NamespaceStatus{
 		Scope:  ScopeMachine,
@@ -21,6 +25,19 @@ func inspectMachineNamespaceAt(path string) NamespaceStatus {
 }
 
 func setupMachineNamespaceAt(string) error {
+	return fmt.Errorf("%w on %s", ErrUnsupportedPlatform, runtime.GOOS)
+}
+
+func inspectUserAcknowledgedNamespaceAt(path string) NamespaceStatus {
+	return NamespaceStatus{
+		Scope:  ScopeUserAcknowledged,
+		Path:   path,
+		State:  NamespaceUnavailable,
+		Detail: fmt.Sprintf("%v on %s", ErrUnsupportedPlatform, runtime.GOOS),
+	}
+}
+
+func setupUserAcknowledgedNamespaceAt(string) error {
 	return fmt.Errorf("%w on %s", ErrUnsupportedPlatform, runtime.GOOS)
 }
 

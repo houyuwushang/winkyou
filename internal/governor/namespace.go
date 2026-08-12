@@ -6,10 +6,11 @@ import (
 )
 
 var (
-	ErrNamespaceNotReady   = errors.New("machine governor namespace is not ready")
-	ErrNamespaceUnsafe     = errors.New("machine governor namespace is unsafe")
+	ErrNamespaceNotReady   = errors.New("governor namespace is not ready")
+	ErrNamespaceUnsafe     = errors.New("governor namespace is unsafe")
 	ErrElevationRequired   = errors.New("administrator privileges are required")
-	ErrUnsupportedPlatform = errors.New("machine governor namespace is unsupported")
+	ErrUnsupportedPlatform = errors.New("governor namespace is unsupported")
+	ErrUserScopeNotNeeded  = errors.New("user-acknowledged scope is unavailable while machine scope is ready")
 )
 
 // NamespaceState is a stable, machine-readable setup state.
@@ -97,9 +98,57 @@ func AcquireMachineNamespace(buildVersion string) (*Owner, error) {
 	return AcquirePreparedNamespace(status.Path, ScopeMachine, buildVersion)
 }
 
-func readyNamespaceStatus(path, detail string) NamespaceStatus {
+// UserAcknowledgedNamespacePath returns the canonical per-user safety path.
+// It is derived from operating-system identity, never configuration, a mesh
+// data directory, or a caller-supplied environment override.
+func UserAcknowledgedNamespacePath() (string, error) {
+	return platformUserAcknowledgedNamespacePath()
+}
+
+// InspectUserAcknowledgedNamespace validates the canonical per-user path
+// without creating it or acquiring its owner lock.
+func InspectUserAcknowledgedNamespace() NamespaceStatus {
+	path, err := UserAcknowledgedNamespacePath()
+	if err != nil {
+		return NamespaceStatus{
+			Scope:  ScopeUserAcknowledged,
+			State:  NamespaceUnavailable,
+			Detail: err.Error(),
+		}
+	}
+	return inspectUserAcknowledgedNamespaceAt(path)
+}
+
+func prepareUserAcknowledgedNamespace() (NamespaceStatus, error) {
+	path, err := UserAcknowledgedNamespacePath()
+	if err != nil {
+		status := NamespaceStatus{
+			Scope:  ScopeUserAcknowledged,
+			State:  NamespaceUnavailable,
+			Detail: err.Error(),
+		}
+		return status, err
+	}
+	status := inspectUserAcknowledgedNamespaceAt(path)
+	if status.Ready {
+		return status, nil
+	}
+	if status.State != NamespaceMissing {
+		return status, fmt.Errorf("%w: %s", ErrNamespaceUnsafe, status.Detail)
+	}
+	if err := setupUserAcknowledgedNamespaceAt(path); err != nil {
+		return inspectUserAcknowledgedNamespaceAt(path), err
+	}
+	status = inspectUserAcknowledgedNamespaceAt(path)
+	if !status.Ready {
+		return status, fmt.Errorf("%w: %s", ErrNamespaceNotReady, status.Detail)
+	}
+	return status, nil
+}
+
+func readyNamespaceStatus(scope Scope, path, detail string) NamespaceStatus {
 	return NamespaceStatus{
-		Scope:  ScopeMachine,
+		Scope:  scope,
 		Path:   path,
 		State:  NamespaceReady,
 		Ready:  true,
@@ -107,22 +156,22 @@ func readyNamespaceStatus(path, detail string) NamespaceStatus {
 	}
 }
 
-func missingNamespaceStatus(path, detail string) NamespaceStatus {
+func missingNamespaceStatus(scope Scope, path, detail string, requiresElevation bool) NamespaceStatus {
 	return NamespaceStatus{
-		Scope:             ScopeMachine,
+		Scope:             scope,
 		Path:              path,
 		State:             NamespaceMissing,
-		RequiresElevation: true,
+		RequiresElevation: requiresElevation,
 		Detail:            detail,
 	}
 }
 
-func unsafeNamespaceStatus(path string, err error) NamespaceStatus {
+func unsafeNamespaceStatus(scope Scope, path string, err error, requiresElevation bool) NamespaceStatus {
 	return NamespaceStatus{
-		Scope:             ScopeMachine,
+		Scope:             scope,
 		Path:              path,
 		State:             NamespaceUnsafe,
-		RequiresElevation: true,
+		RequiresElevation: requiresElevation,
 		Detail:            err.Error(),
 	}
 }

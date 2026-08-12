@@ -13,7 +13,10 @@ import (
 	"golang.org/x/sys/windows"
 )
 
-const windowsMachineNamespaceDirectory = "WinkYou-SafetyV2"
+const (
+	windowsMachineNamespaceDirectory = "WinkYou-SafetyV2"
+	windowsUserNamespaceDirectory    = "WinkYou-SafetyUserV2"
+)
 
 // FILE_ALL_ACCESS from the Windows SDK. x/sys intentionally exposes the
 // component rights but not this aggregate.
@@ -27,59 +30,84 @@ func platformMachineNamespacePath() (string, error) {
 	return filepath.Join(programData, windowsMachineNamespaceDirectory), nil
 }
 
+func platformUserAcknowledgedNamespacePath() (string, error) {
+	localAppData, err := windows.KnownFolderPath(windows.FOLDERID_LocalAppData, windows.KF_FLAG_DEFAULT)
+	if err != nil {
+		return "", fmt.Errorf("resolve Windows LocalAppData known folder: %w", err)
+	}
+	return filepath.Join(localAppData, windowsUserNamespaceDirectory), nil
+}
+
 func inspectMachineNamespaceAt(path string) NamespaceStatus {
+	return inspectWindowsNamespaceAt(path, ScopeMachine)
+}
+
+func inspectUserAcknowledgedNamespaceAt(path string) NamespaceStatus {
+	return inspectWindowsNamespaceAt(path, ScopeUserAcknowledged)
+}
+
+func inspectWindowsNamespaceAt(path string, scope Scope) NamespaceStatus {
+	requiresElevation := scope == ScopeMachine
 	if !filepath.IsAbs(path) {
-		return unsafeNamespaceStatus(path, fmt.Errorf("%w: namespace path is not absolute", ErrNamespaceUnsafe))
+		return unsafeNamespaceStatus(scope, path, fmt.Errorf("%w: namespace path is not absolute", ErrNamespaceUnsafe), requiresElevation)
 	}
 	parent := filepath.Dir(path)
 	parentInfo, err := os.Lstat(parent)
 	if err != nil {
-		return unsafeNamespaceStatus(path, fmt.Errorf("%w: inspect namespace parent %s: %v", ErrNamespaceUnsafe, parent, err))
+		return unsafeNamespaceStatus(scope, path, fmt.Errorf("%w: inspect namespace parent %s: %v", ErrNamespaceUnsafe, parent, err), requiresElevation)
 	}
 	if !parentInfo.IsDir() {
-		return unsafeNamespaceStatus(path, fmt.Errorf("%w: namespace parent %s is not a directory", ErrNamespaceUnsafe, parent))
+		return unsafeNamespaceStatus(scope, path, fmt.Errorf("%w: namespace parent %s is not a directory", ErrNamespaceUnsafe, parent), requiresElevation)
 	}
 	if err := rejectWindowsReparsePoint(parent); err != nil {
-		return unsafeNamespaceStatus(path, err)
+		return unsafeNamespaceStatus(scope, path, err, requiresElevation)
 	}
 	info, err := os.Lstat(path)
 	if errors.Is(err, os.ErrNotExist) {
-		return missingNamespaceStatus(path, "machine namespace has not been installed")
+		detail := "machine namespace has not been installed"
+		if scope == ScopeUserAcknowledged {
+			detail = "user-acknowledged namespace has not been prepared"
+		}
+		return missingNamespaceStatus(scope, path, detail, requiresElevation)
 	}
 	if err != nil {
-		return unsafeNamespaceStatus(path, fmt.Errorf("%w: inspect namespace: %v", ErrNamespaceUnsafe, err))
+		return unsafeNamespaceStatus(scope, path, fmt.Errorf("%w: inspect namespace: %v", ErrNamespaceUnsafe, err), requiresElevation)
 	}
 	if !info.IsDir() {
-		return unsafeNamespaceStatus(path, fmt.Errorf("%w: namespace is not a directory", ErrNamespaceUnsafe))
+		return unsafeNamespaceStatus(scope, path, fmt.Errorf("%w: namespace is not a directory", ErrNamespaceUnsafe), requiresElevation)
 	}
 	if err := rejectWindowsReparsePoint(path); err != nil {
-		return unsafeNamespaceStatus(path, err)
+		return unsafeNamespaceStatus(scope, path, err, requiresElevation)
 	}
-	if err := validateWindowsDACL(path, windowsDirectoryAccessMask()); err != nil {
-		return unsafeNamespaceStatus(path, err)
+	if err := validateWindowsNamespaceDACL(path, scope, windowsDirectoryAccessMask()); err != nil {
+		return unsafeNamespaceStatus(scope, path, err, requiresElevation)
 	}
 
 	for _, name := range namespaceFixedFilenames() {
 		filePath := filepath.Join(path, name)
 		fileInfo, err := os.Lstat(filePath)
 		if err != nil {
-			return unsafeNamespaceStatus(path, fmt.Errorf("%w: inspect %s: %v", ErrNamespaceUnsafe, name, err))
+			return unsafeNamespaceStatus(scope, path, fmt.Errorf("%w: inspect %s: %v", ErrNamespaceUnsafe, name, err), requiresElevation)
 		}
 		if !fileInfo.Mode().IsRegular() {
-			return unsafeNamespaceStatus(path, fmt.Errorf("%w: %s is not a regular file", ErrNamespaceUnsafe, name))
+			return unsafeNamespaceStatus(scope, path, fmt.Errorf("%w: %s is not a regular file", ErrNamespaceUnsafe, name), requiresElevation)
 		}
 		if err := rejectWindowsReparsePoint(filePath); err != nil {
-			return unsafeNamespaceStatus(path, err)
+			return unsafeNamespaceStatus(scope, path, err, requiresElevation)
 		}
 		if err := validateWindowsSingleLink(filePath); err != nil {
-			return unsafeNamespaceStatus(path, err)
+			return unsafeNamespaceStatus(scope, path, err, requiresElevation)
 		}
-		if err := validateWindowsDACL(filePath, windowsFileAccessMask()); err != nil {
-			return unsafeNamespaceStatus(path, err)
+		if err := validateWindowsNamespaceDACL(filePath, scope, windowsFileAccessMask()); err != nil {
+			return unsafeNamespaceStatus(scope, path, err, requiresElevation)
 		}
 	}
 
-	return readyNamespaceStatus(path, "protected machine namespace and fixed owner files are ready")
+	detail := "protected machine namespace and fixed owner files are ready"
+	if scope == ScopeUserAcknowledged {
+		detail = "protected per-user namespace and fixed owner files are ready"
+	}
+	return readyNamespaceStatus(scope, path, detail)
 }
 
 func setupMachineNamespaceAt(path string) error {
@@ -152,6 +180,68 @@ func setupWindowsMachineNamespaceAt(path string) error {
 	return nil
 }
 
+func setupUserAcknowledgedNamespaceAt(path string) error {
+	status := inspectUserAcknowledgedNamespaceAt(path)
+	if status.Ready {
+		return nil
+	}
+	if status.State != NamespaceMissing {
+		return fmt.Errorf("%w: %s", ErrNamespaceUnsafe, status.Detail)
+	}
+	return setupWindowsUserAcknowledgedNamespaceAt(path)
+}
+
+func setupWindowsUserAcknowledgedNamespaceAt(path string) error {
+	status := inspectUserAcknowledgedNamespaceAt(path)
+	if status.Ready {
+		return nil
+	}
+	if status.State != NamespaceMissing {
+		return fmt.Errorf("%w: %s", ErrNamespaceUnsafe, status.Detail)
+	}
+
+	userSID, err := windowsCurrentUserSID()
+	if err != nil {
+		return err
+	}
+	if err := os.Mkdir(path, 0o700); err != nil {
+		return fmt.Errorf("create user-acknowledged namespace: %w", err)
+	}
+	if err := setWindowsOwnerSID(path, userSID); err != nil {
+		return fmt.Errorf("set user-acknowledged namespace owner: %w", err)
+	}
+	if err := setWindowsUserDACL(path); err != nil {
+		return fmt.Errorf("protect user-acknowledged namespace: %w", err)
+	}
+	for _, name := range namespaceFixedFilenames() {
+		filePath := filepath.Join(path, name)
+		file, err := os.OpenFile(filePath, os.O_CREATE|os.O_EXCL|os.O_RDWR, 0o600)
+		if err != nil {
+			return fmt.Errorf("create %s: %w", name, err)
+		}
+		if name == safetyTripFilename {
+			if err := initializeSafetyTripFile(file, time.Now()); err != nil {
+				_ = file.Close()
+				return fmt.Errorf("initialize %s: %w", name, err)
+			}
+		}
+		if err := file.Close(); err != nil {
+			return fmt.Errorf("close %s: %w", name, err)
+		}
+		if err := setWindowsOwnerSID(filePath, userSID); err != nil {
+			return fmt.Errorf("set %s owner: %w", name, err)
+		}
+		if err := setWindowsUserDACL(filePath); err != nil {
+			return fmt.Errorf("protect %s: %w", name, err)
+		}
+	}
+	status = inspectUserAcknowledgedNamespaceAt(path)
+	if !status.Ready {
+		return fmt.Errorf("%w: %s", ErrNamespaceNotReady, status.Detail)
+	}
+	return nil
+}
+
 func setWindowsOwner(path string) error {
 	administratorsSID, err := windows.CreateWellKnownSid(windows.WinBuiltinAdministratorsSid)
 	if err != nil {
@@ -182,6 +272,19 @@ func windowsProcessElevated() (bool, error) {
 	}
 	defer func() { _ = token.Close() }()
 	return token.IsElevated(), nil
+}
+
+func windowsCurrentUserSID() (*windows.SID, error) {
+	var token windows.Token
+	if err := windows.OpenProcessToken(windows.CurrentProcess(), windows.TOKEN_QUERY, &token); err != nil {
+		return nil, fmt.Errorf("open process token: %w", err)
+	}
+	defer func() { _ = token.Close() }()
+	user, err := token.GetTokenUser()
+	if err != nil {
+		return nil, fmt.Errorf("resolve process user SID: %w", err)
+	}
+	return windows.StringToSid(user.User.Sid.String())
 }
 
 func windowsDirectoryAccessMask() windows.ACCESS_MASK {
@@ -223,6 +326,32 @@ func windowsACLSpec(authenticatedMask windows.ACCESS_MASK) ([]windows.EXPLICIT_A
 	return entries, expected, nil
 }
 
+func windowsUserACLSpec() ([]windows.EXPLICIT_ACCESS, map[string]windows.ACCESS_MASK, *windows.SID, error) {
+	systemSID, err := windows.CreateWellKnownSid(windows.WinLocalSystemSid)
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("resolve LocalSystem SID: %w", err)
+	}
+	administratorsSID, err := windows.CreateWellKnownSid(windows.WinBuiltinAdministratorsSid)
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("resolve Administrators SID: %w", err)
+	}
+	userSID, err := windowsCurrentUserSID()
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	entries := []windows.EXPLICIT_ACCESS{
+		windowsAccessEntry(systemSID, windowsFullControlMask),
+		windowsAccessEntry(administratorsSID, windowsFullControlMask),
+		windowsAccessEntry(userSID, windowsFullControlMask),
+	}
+	expected := map[string]windows.ACCESS_MASK{
+		systemSID.String():         windowsFullControlMask,
+		administratorsSID.String(): windowsFullControlMask,
+		userSID.String():           windowsFullControlMask,
+	}
+	return entries, expected, userSID, nil
+}
+
 func windowsAccessEntry(sid *windows.SID, mask windows.ACCESS_MASK) windows.EXPLICIT_ACCESS {
 	return windows.EXPLICIT_ACCESS{
 		AccessPermissions: mask,
@@ -241,6 +370,18 @@ func setWindowsDACL(path string, authenticatedMask windows.ACCESS_MASK) error {
 	if err != nil {
 		return err
 	}
+	return setWindowsExplicitDACL(path, entries)
+}
+
+func setWindowsUserDACL(path string) error {
+	entries, _, _, err := windowsUserACLSpec()
+	if err != nil {
+		return err
+	}
+	return setWindowsExplicitDACL(path, entries)
+}
+
+func setWindowsExplicitDACL(path string, entries []windows.EXPLICIT_ACCESS) error {
 	acl, err := windows.ACLFromEntries(entries, nil)
 	if err != nil {
 		return fmt.Errorf("build DACL: %w", err)
@@ -260,6 +401,29 @@ func setWindowsDACL(path string, authenticatedMask windows.ACCESS_MASK) error {
 }
 
 func validateWindowsDACL(path string, authenticatedMask windows.ACCESS_MASK) error {
+	_, expected, err := windowsACLSpec(authenticatedMask)
+	if err != nil {
+		return fmt.Errorf("%w: %v", ErrNamespaceUnsafe, err)
+	}
+	return validateWindowsExplicitDACL(path, expected, func(owner *windows.SID) bool {
+		return owner.IsWellKnown(windows.WinBuiltinAdministratorsSid) || owner.IsWellKnown(windows.WinLocalSystemSid)
+	}, "Administrators or LocalSystem")
+}
+
+func validateWindowsNamespaceDACL(path string, scope Scope, authenticatedMask windows.ACCESS_MASK) error {
+	if scope == ScopeMachine {
+		return validateWindowsDACL(path, authenticatedMask)
+	}
+	_, expected, userSID, err := windowsUserACLSpec()
+	if err != nil {
+		return fmt.Errorf("%w: %v", ErrNamespaceUnsafe, err)
+	}
+	return validateWindowsExplicitDACL(path, expected, func(owner *windows.SID) bool {
+		return owner.String() == userSID.String()
+	}, userSID.String())
+}
+
+func validateWindowsExplicitDACL(path string, expected map[string]windows.ACCESS_MASK, ownerAllowed func(*windows.SID) bool, ownerDescription string) error {
 	descriptor, err := windows.GetNamedSecurityInfo(
 		path,
 		windows.SE_FILE_OBJECT,
@@ -272,8 +436,8 @@ func validateWindowsDACL(path string, authenticatedMask windows.ACCESS_MASK) err
 	if err != nil || owner == nil {
 		return fmt.Errorf("%w: read %s owner: %v", ErrNamespaceUnsafe, path, err)
 	}
-	if !owner.IsWellKnown(windows.WinBuiltinAdministratorsSid) && !owner.IsWellKnown(windows.WinLocalSystemSid) {
-		return fmt.Errorf("%w: %s owner %s is neither Administrators nor LocalSystem", ErrNamespaceUnsafe, path, owner.String())
+	if !ownerAllowed(owner) {
+		return fmt.Errorf("%w: %s owner %s is not %s", ErrNamespaceUnsafe, path, owner.String(), ownerDescription)
 	}
 	control, _, err := descriptor.Control()
 	if err != nil {
@@ -285,10 +449,6 @@ func validateWindowsDACL(path string, authenticatedMask windows.ACCESS_MASK) err
 	dacl, _, err := descriptor.DACL()
 	if err != nil || dacl == nil {
 		return fmt.Errorf("%w: read %s access entries: %v", ErrNamespaceUnsafe, path, err)
-	}
-	_, expected, err := windowsACLSpec(authenticatedMask)
-	if err != nil {
-		return fmt.Errorf("%w: %v", ErrNamespaceUnsafe, err)
 	}
 	if int(dacl.AceCount) != len(expected) {
 		return fmt.Errorf("%w: %s has %d DACL entries, want %d", ErrNamespaceUnsafe, path, dacl.AceCount, len(expected))
