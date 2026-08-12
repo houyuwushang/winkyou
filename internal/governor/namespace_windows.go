@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"time"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
@@ -58,7 +59,7 @@ func inspectMachineNamespaceAt(path string) NamespaceStatus {
 		return unsafeNamespaceStatus(path, err)
 	}
 
-	for _, name := range []string{ownerLockFilename, ownerMetadataFilename} {
+	for _, name := range namespaceFixedFilenames() {
 		filePath := filepath.Join(path, name)
 		fileInfo, err := os.Lstat(filePath)
 		if err != nil {
@@ -89,7 +90,7 @@ func setupMachineNamespaceAt(path string) error {
 	if status.State != NamespaceMissing {
 		return fmt.Errorf("%w: %s", ErrNamespaceUnsafe, status.Detail)
 	}
-	elevated, err := windowsProcessElevated()
+	elevated, err := machineScopeElevated()
 	if err != nil {
 		return fmt.Errorf("inspect process elevation: %w", err)
 	}
@@ -97,6 +98,10 @@ func setupMachineNamespaceAt(path string) error {
 		return fmt.Errorf("%w: run wink setup-machine-scope from an elevated terminal", ErrElevationRequired)
 	}
 	return setupWindowsMachineNamespaceAt(path)
+}
+
+func machineScopeElevated() (bool, error) {
+	return windowsProcessElevated()
 }
 
 func setupWindowsMachineNamespaceAt(path string) error {
@@ -111,11 +116,17 @@ func setupWindowsMachineNamespaceAt(path string) error {
 	if err := os.Mkdir(path, 0o755); err != nil {
 		return fmt.Errorf("create machine namespace: %w", err)
 	}
-	for _, name := range []string{ownerLockFilename, ownerMetadataFilename} {
+	for _, name := range namespaceFixedFilenames() {
 		filePath := filepath.Join(path, name)
 		file, err := os.OpenFile(filePath, os.O_CREATE|os.O_EXCL|os.O_RDWR, 0o600)
 		if err != nil {
 			return fmt.Errorf("create %s: %w", name, err)
+		}
+		if name == safetyTripFilename {
+			if err := initializeSafetyTripFile(file, time.Now()); err != nil {
+				_ = file.Close()
+				return fmt.Errorf("initialize %s: %w", name, err)
+			}
 		}
 		if err := file.Close(); err != nil {
 			return fmt.Errorf("close %s: %w", name, err)

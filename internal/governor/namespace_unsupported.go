@@ -23,3 +23,7 @@ func inspectMachineNamespaceAt(path string) NamespaceStatus {
 func setupMachineNamespaceAt(string) error {
 	return fmt.Errorf("%w on %s", ErrUnsupportedPlatform, runtime.GOOS)
 }
+
+func machineScopeElevated() (bool, error) {
+	return false, fmt.Errorf("%w on %s", ErrUnsupportedPlatform, runtime.GOOS)
+}

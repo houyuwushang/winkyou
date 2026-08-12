@@ -126,3 +126,7 @@ func unsafeNamespaceStatus(path string, err error) NamespaceStatus {
 		Detail:            err.Error(),
 	}
 }
+
+func namespaceFixedFilenames() []string {
+	return []string{ownerLockFilename, ownerMetadataFilename, safetyTripFilename}
+}

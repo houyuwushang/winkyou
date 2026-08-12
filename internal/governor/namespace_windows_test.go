@@ -37,6 +37,9 @@ func TestWindowsMachineNamespaceSetupAndInspect(t *testing.T) {
 	if err := owner.Close(); err != nil {
 		t.Fatalf("close installed namespace owner: %v", err)
 	}
+	if trip := newSafetyTripStore(path).status(); trip.State != SafetyTripClear || trip.BlocksActiveWork {
+		t.Fatalf("initial safety trip status = %+v, want clear", trip)
+	}
 }
 
 func TestWindowsMachineNamespaceRejectsACLDrift(t *testing.T) {
@@ -116,7 +119,7 @@ func TestWindowsMachineNamespaceUsesKnownFolder(t *testing.T) {
 func registerWindowsNamespaceCleanup(t *testing.T, path string) {
 	t.Helper()
 	t.Cleanup(func() {
-		for _, name := range []string{ownerLockFilename, ownerMetadataFilename} {
+		for _, name := range namespaceFixedFilenames() {
 			filePath := filepath.Join(path, name)
 			if _, err := os.Lstat(filePath); err == nil {
 				_ = setWindowsDACL(filePath, windows.GENERIC_ALL)
