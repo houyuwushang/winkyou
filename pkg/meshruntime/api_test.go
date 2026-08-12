@@ -12,6 +12,39 @@ import (
 	"time"
 )
 
+func TestNewRejectsPausedAutonomousBirthdayRecovery(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		config Config
+	}{
+		{
+			name: "maintained direct edge",
+			config: Config{
+				NodeID: "A", MeshListen: "off", ControlListen: "off",
+				MaintainedPeers: []string{"B"},
+			},
+		},
+		{
+			name: "cached self-bootstrap",
+			config: Config{
+				NodeID: "A", MeshListen: "off", ControlListen: "off",
+				RecoveryCardPath: "A-recovery.json",
+			},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			runtime, err := New(test.config, Options{})
+			if runtime != nil {
+				_ = runtime.Close()
+				t.Fatal("New() returned a runtime for paused autonomous birthday recovery")
+			}
+			if !errors.Is(err, ErrAutonomousBirthdayRecoveryPaused) {
+				t.Fatalf("New() error = %v, want ErrAutonomousBirthdayRecoveryPaused", err)
+			}
+		})
+	}
+}
+
 func TestShutdownRouteRequiresConfiguredTokenAndLoopbackCaller(t *testing.T) {
 	withoutToken, err := New(Config{NodeID: "no-shutdown", MeshListen: "off", ControlListen: "off"}, Options{})
 	if err != nil {

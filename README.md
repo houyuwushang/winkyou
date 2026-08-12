@@ -202,9 +202,6 @@ autonomous_mesh:
   bootstrap_peers:
     - node_id: demo-b
       address: mesh-b.example.invalid:32100
-  maintain_peers: [demo-b]
-  recovery_card: ./demo-a-recovery.json
-  self_bootstrap_secret_file: ./mesh.secret
   tcp_target: 127.0.0.1:8022
   tcp_forwards:
     - listen: 127.0.0.1:22022
@@ -213,6 +210,12 @@ autonomous_mesh:
     - listen: "[fd7a:115c:a1e0::b]:22"
       remote_id: demo-b
 ```
+
+事故暂停期间，`wink` 会拒绝 `autonomous_mesh.maintain_peers` 和
+`autonomous_mesh.recovery_card`，`meshnode` 也会拒绝 `--maintain-peer` 和
+`--recovery-card`。不启用自动 direct-edge recovery 的 autonomous mesh 仍可用于
+固定 bootstrap 和隔离的本机生命周期验证。该 fail-closed 门禁只能在事故记录中的
+资源预算、退避、熔断、隔离验收和复核条件全部满足后移除。
 
 `nat.punch_interface` 是可选项。配置后，WinkYou 会把接口名解析成一个明确的
 IPv4 源地址，并要求 birthday-punch 与 cached self-bootstrap 的

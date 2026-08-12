@@ -1,5 +1,12 @@
 # Peer-coordinated mesh rejoin field experiment
 
+> **PAUSED / NO-GO (2026-07-22):** this document preserves historical field
+> evidence, not current deployment instructions. Automatic maintained-edge
+> recovery and cached self-bootstrap are disabled at the product boundary after
+> the UDP tuple/session storm. Current binaries reject `--maintain-peer` and
+> `--recovery-card`; see
+> [`INCIDENT-2026-07-22-SELF-BOOTSTRAP-UDP-STORM.md`](./INCIDENT-2026-07-22-SELF-BOOTSTRAP-UDP-STORM.md).
+
 Status: edge rotation, routed SSH, a completed two-hour link-hold run, r8
 dynamic C-through-B user-space service access, and two r12 cached-endpoint
 public-NAT zero-seed rejoins are field-proven. C first recovered C-B and used B

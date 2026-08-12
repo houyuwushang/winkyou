@@ -54,10 +54,7 @@ autonomous_mesh:
   bootstrap_peers:
     - node_id: B
       address: 203.0.113.2:32100
-  maintain_peers: [B, C]
-  recovery_card: A-recovery.json
   recovery_debounce: 500ms
-  self_bootstrap_secret_file: mesh.secret
   tcp_target: 127.0.0.1:22
   tcp_forwards:
     - listen: 127.0.0.1:22024
@@ -81,8 +78,8 @@ autonomous_mesh:
 	if len(mesh.BootstrapPeers) != 1 || mesh.BootstrapPeers[0].NodeID != "B" || mesh.BootstrapPeers[0].Address != "203.0.113.2:32100" {
 		t.Fatalf("bootstrap peers = %#v", mesh.BootstrapPeers)
 	}
-	if len(mesh.MaintainPeers) != 2 || mesh.MaintainPeers[0] != "B" || mesh.MaintainPeers[1] != "C" {
-		t.Fatalf("maintain peers = %#v", mesh.MaintainPeers)
+	if len(mesh.MaintainPeers) != 0 {
+		t.Fatalf("maintain peers = %#v, want none while autonomous recovery is paused", mesh.MaintainPeers)
 	}
 	if mesh.RecoveryDebounce != 500*time.Millisecond {
 		t.Fatalf("recovery debounce = %s, want 500ms", mesh.RecoveryDebounce)
@@ -121,6 +118,44 @@ func TestValidateAutonomousMeshValid(t *testing.T) {
 	cfg := validAutonomousConfig()
 	if err := cfg.Validate(); err != nil {
 		t.Fatalf("Validate() error = %v", err)
+	}
+}
+
+func TestValidateAutonomousMeshRejectsPausedBirthdayRecovery(t *testing.T) {
+	for _, test := range []struct {
+		name      string
+		configure func(*config.Config)
+	}{
+		{
+			name: "maintained direct edge",
+			configure: func(cfg *config.Config) {
+				cfg.AutonomousMesh.MaintainPeers = []string{"B"}
+			},
+		},
+		{
+			name: "cached recovery card without maintained peers",
+			configure: func(cfg *config.Config) {
+				cfg.AutonomousMesh.RecoveryCard = "A-recovery.json"
+			},
+		},
+		{
+			name: "combined recovery configuration",
+			configure: func(cfg *config.Config) {
+				cfg.AutonomousMesh.MaintainPeers = []string{"B"}
+				cfg.AutonomousMesh.RecoveryCard = "A-recovery.json"
+				cfg.AutonomousMesh.SelfBootstrapSecretFile = "mesh.secret"
+			},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			cfg := validAutonomousConfig()
+			test.configure(&cfg)
+
+			err := cfg.Validate()
+			if err == nil || !strings.Contains(err.Error(), "autonomous birthday recovery is paused") {
+				t.Fatalf("Validate() error = %v, want autonomous birthday recovery pause", err)
+			}
+		})
 	}
 }
 
@@ -213,30 +248,31 @@ func TestValidateAutonomousMeshRejectsInvalidFields(t *testing.T) {
 			wantErr: "invalid autonomous_mesh.bootstrap_peers[0].address",
 		},
 		{
-			name: "maintain self",
+			name: "maintain self still fails closed while paused",
 			mutate: func(cfg *config.Config) {
-				cfg.AutonomousMesh.MaintainPeers[0] = "A"
+				cfg.AutonomousMesh.MaintainPeers = []string{"A"}
 			},
-			wantErr: "maintain_peers[0] must not equal",
+			wantErr: "autonomous birthday recovery is paused",
 		},
 		{
-			name: "duplicate maintained peer",
+			name: "duplicate maintained peer still fails closed while paused",
 			mutate: func(cfg *config.Config) {
 				cfg.AutonomousMesh.MaintainPeers = []string{"B", "B"}
 			},
-			wantErr: "duplicate autonomous_mesh.maintain_peers[1]",
+			wantErr: "autonomous birthday recovery is paused",
 		},
 		{
-			name: "recovery card without maintained peers",
+			name: "recovery card without maintained peers fails closed while paused",
 			mutate: func(cfg *config.Config) {
+				cfg.AutonomousMesh.RecoveryCard = "A-recovery.json"
 				cfg.AutonomousMesh.MaintainPeers = nil
 			},
-			wantErr: "recovery_card requires at least one",
+			wantErr: "autonomous birthday recovery is paused",
 		},
 		{
 			name: "secret without recovery card",
 			mutate: func(cfg *config.Config) {
-				cfg.AutonomousMesh.RecoveryCard = ""
+				cfg.AutonomousMesh.SelfBootstrapSecretFile = "mesh.secret"
 			},
 			wantErr: "self_bootstrap_secret_file requires autonomous_mesh.recovery_card",
 		},
@@ -325,11 +361,8 @@ func validAutonomousConfig() config.Config {
 		BootstrapPeers: []config.AutonomousMeshBootstrapPeer{
 			{NodeID: "B", Address: "203.0.113.2:32100"},
 		},
-		MaintainPeers:           []string{"B", "C"},
-		RecoveryCard:            "A-recovery.json",
-		RecoveryDebounce:        250 * time.Millisecond,
-		SelfBootstrapSecretFile: "mesh.secret",
-		TCPTarget:               "127.0.0.1:22",
+		RecoveryDebounce: 250 * time.Millisecond,
+		TCPTarget:        "127.0.0.1:22",
 		TCPForwards: []config.AutonomousMeshTCPForward{
 			{Listen: "127.0.0.1:22024", RemoteID: "B"},
 		},

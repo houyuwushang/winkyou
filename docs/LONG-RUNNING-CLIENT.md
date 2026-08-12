@@ -1,6 +1,6 @@
 # WinkYou 长期运行客户端
 
-> **2026-07-22 暂停告警：** 本文的通用托管方法不构成重新启用 `autonomous_mesh` cached self-bootstrap 的授权。后续现场构建在失联恢复时引发严重 UDP 五元组/出口会话风暴；该方向短期暂停，`WinkYou-A` 计划任务必须保持禁用，stop marker 必须保留。legacy 模式与自治恢复应分开评估。详见 [`INCIDENT-2026-07-22-SELF-BOOTSTRAP-UDP-STORM.md`](./INCIDENT-2026-07-22-SELF-BOOTSTRAP-UDP-STORM.md)。
+> **2026-07-22 暂停告警：** 本文的通用托管方法不构成重新启用 autonomous birthday recovery 的授权。后续现场构建在失联恢复时引发严重 UDP 五元组/出口会话风暴；该方向短期暂停，`WinkYou-A` 计划任务必须保持禁用，stop marker 必须保留。当前 `wink` 会拒绝 `maintain_peers` 和 `recovery_card`，`meshnode` 会拒绝对应参数。legacy 模式与自治恢复应分开评估。详见 [`INCIDENT-2026-07-22-SELF-BOOTSTRAP-UDP-STORM.md`](./INCIDENT-2026-07-22-SELF-BOOTSTRAP-UDP-STORM.md)。
 
 本文说明当前可用的长期运行方式。现阶段不引入新的 service 框架；`wink up` 仍是前台 client 进程，Linux 交给 systemd 管理，Windows 先使用管理员启动项、Task Scheduler 或 NSSM 管理。
 
@@ -62,11 +62,7 @@ autonomous_mesh:
     - node_id: demo-b
       address: mesh-b.example.invalid:32100
 
-  maintain_peers:
-    - demo-b
-  recovery_card: ./demo-a-recovery.json
   recovery_debounce: 500ms
-  self_bootstrap_secret_file: ./mesh.secret
 
   tcp_target: 127.0.0.1:8022
   tcp_forwards:
@@ -82,7 +78,7 @@ autonomous_mesh:
 - `node_id` 是稳定 mesh 身份；`node.name` 只是显示名。
 - `virtual_ip` 当前必须显式填写 numeric IPv6 ULA。它是成员记录和 selected-port facade 使用的节点地址，不表示已经存在透明系统 L3。
 - `listen` 是可选 bootstrap stream listener，可设为 `off`；`bootstrap_peers` 是类型化初始 seed，不是永久数据 relay。
-- `maintain_peers` 应在成对节点上对称声明。配置了 `recovery_card` 时至少要有一个 maintained peer；secret 文件是可选的当前可信节点认证输入。
+- 事故暂停期间，`maintain_peers`、`recovery_card` 和依赖它的 `self_bootstrap_secret_file` 会被拒绝；不要把历史恢复示例复制进长期运行配置。
 - `recovery_debounce` 控制拓扑收敛后启动直连边修复前的等待时间，默认 `250ms`；现场迁移可显式填写 `500ms` 以保持原实验进程的行为。
 - `control_listen` 在 enabled 模式下必填且必须是 loopback。`127.0.0.1:0` 适合本地冒烟，由 runtime state 记录实际端口；长期服务应使用经过冲突检查的固定 loopback 端口。
 - `tcp_target` 和普通 `tcp_forwards` 必须使用 loopback；`virtual_tcp_forwards` 必须使用远端成员的 ULA。三类字段仍是 fixed-target/selected-port 用户态 facade。
