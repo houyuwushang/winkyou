@@ -20,7 +20,7 @@ func TestCompiledLimitsMatchDraftMiniSpec(t *testing.T) {
 		MaxMessagesPerSide != 5 ||
 		MaxMessagesTotal != 9 ||
 		receiveTokensPerSecond != 4 ||
-		receiveBurst != 2 {
+		receiveBurst != 4 {
 		t.Fatal("compiled simulation limits drifted from TEST-ONLY-PAIRING-MINI-SPEC.md")
 	}
 }
@@ -61,8 +61,13 @@ func TestAttemptContextValidation(t *testing.T) {
 			wanted: ErrInvalidContext,
 		},
 		{
-			name:   "generation zero",
-			edit:   func(attempt *AttemptContext) { attempt.ObservationGeneration = 0 },
+			name:   "generation not one",
+			edit:   func(attempt *AttemptContext) { attempt.ObservationGeneration = 2 },
+			wanted: ErrInvalidContext,
+		},
+		{
+			name:   "real secure channel profile",
+			edit:   func(attempt *AttemptContext) { attempt.SecureChannelProfile = "noise-pending-adr/1" },
 			wanted: ErrInvalidContext,
 		},
 		{
@@ -139,21 +144,21 @@ func TestSimulatedPairHappyPath(t *testing.T) {
 
 	sendMessage(t, initiator, MessagePrepare, []byte("initiator plan"))
 	sendMessage(t, responder, MessagePrepare, []byte("responder plan"))
-	receiveMessage(t, clock, responder, MessagePrepare, "initiator plan")
-	receiveMessage(t, clock, initiator, MessagePrepare, "responder plan")
+	receiveMessage(t, responder, MessagePrepare, "initiator plan")
+	receiveMessage(t, initiator, MessagePrepare, "responder plan")
 
 	sendMessage(t, initiator, MessageReady, nil)
 	sendMessage(t, responder, MessageReady, nil)
-	receiveMessage(t, clock, responder, MessageReady, "")
-	receiveMessage(t, clock, initiator, MessageReady, "")
+	receiveMessage(t, responder, MessageReady, "")
+	receiveMessage(t, initiator, MessageReady, "")
 
 	sendMessage(t, initiator, MessageFire, nil)
-	receiveMessage(t, clock, responder, MessageFire, "")
+	receiveMessage(t, responder, MessageFire, "")
 
 	sendMessage(t, initiator, MessageVerify, []byte("initiator result"))
 	sendMessage(t, responder, MessageVerify, []byte("responder result"))
-	receiveMessage(t, clock, initiator, MessageVerify, "responder result")
-	receiveMessage(t, clock, responder, MessageVerify, "initiator result")
+	receiveMessage(t, initiator, MessageVerify, "responder result")
+	receiveMessage(t, responder, MessageVerify, "initiator result")
 
 	assertStatus(t, initiator.Status(), Status{
 		Role: RoleInitiator, Terminal: true, Success: true,
@@ -201,6 +206,17 @@ func TestSecondLedgerFailureLeavesFirstCredentialBurned(t *testing.T) {
 	assertLedgerReason(t, initiatorLedger, attempt.CredentialID, TerminalProtocolError)
 }
 
+func TestSimulatedPairRejectsSharedEndpointLedger(t *testing.T) {
+	clock := newManualClock()
+	attempt := testAttempt(clock.Now())
+	sharedLedger := NewMemoryLedger()
+
+	if _, _, err := NewSimulatedPair(attempt, sharedLedger, sharedLedger, clock.Now); !errors.Is(err, ErrCredentialUsed) {
+		t.Fatalf("NewSimulatedPair() error = %v, want ErrCredentialUsed", err)
+	}
+	assertLedgerReason(t, sharedLedger, attempt.CredentialID, TerminalProtocolError)
+}
+
 func TestSimulatedChannelRejectsBoundContextTampering(t *testing.T) {
 	tests := []struct {
 		name   string
@@ -209,6 +225,7 @@ func TestSimulatedChannelRejectsBoundContextTampering(t *testing.T) {
 	}{
 		{"attempt", func(message *Message) { message.AttemptID = testIdentifier(9) }, ErrContextMismatch},
 		{"generation", func(message *Message) { message.ObservationGeneration++ }, ErrContextMismatch},
+		{"secure channel profile", func(message *Message) { message.SecureChannelProfile = "tls-not-simulated/1" }, ErrContextMismatch},
 		{"participant", func(message *Message) { message.FromParticipantID = testIdentifier(9) }, ErrContextMismatch},
 		{"role reflection", func(message *Message) { message.SenderRole = RoleResponder }, ErrContextMismatch},
 		{"scope", func(message *Message) { message.GovernorScope = GovernorScopeUserAcknowledged }, ErrContextMismatch},
@@ -302,7 +319,7 @@ func TestReadyRequiresBothPrepareMessages(t *testing.T) {
 			t.Fatalf("NewSimulatedPair() error: %v", err)
 		}
 		sendMessage(t, responder, MessagePrepare, nil)
-		receiveMessage(t, clock, initiator, MessagePrepare, "")
+		receiveMessage(t, initiator, MessagePrepare, "")
 		if err := initiator.Send(context.Background(), MessageReady, nil); !errors.Is(err, ErrInvalidTransition) {
 			t.Fatalf("Send(ready) error = %v, want ErrInvalidTransition", err)
 		}
@@ -326,6 +343,7 @@ func TestReadyRequiresBothPrepareMessages(t *testing.T) {
 			AuthScope:             AuthScope,
 			AttemptID:             attempt.AttemptID,
 			ObservationGeneration: attempt.ObservationGeneration,
+			SecureChannelProfile:  attempt.SecureChannelProfile,
 			FromParticipantID:     attempt.ResponderParticipantID,
 			ToParticipantID:       attempt.InitiatorParticipantID,
 			SenderRole:            RoleResponder,
@@ -413,11 +431,13 @@ func TestReceiveTokenBucketIsBounded(t *testing.T) {
 	start := time.Date(2026, time.August, 11, 0, 0, 0, 0, time.UTC)
 	bucket := tokenBucket{tokens: receiveBurst, last: start}
 	channel := &SimulatedChannel{state: channelState{lastNow: start, receiveBucket: bucket}}
-	if !channel.allowReceiveLocked() || !channel.allowReceiveLocked() {
-		t.Fatal("initial burst was not admitted")
+	for admitted := 0; admitted < int(receiveBurst); admitted++ {
+		if !channel.allowReceiveLocked() {
+			t.Fatalf("initial burst stopped after %d messages", admitted)
+		}
 	}
 	if channel.allowReceiveLocked() {
-		t.Fatal("third immediate receive exceeded burst")
+		t.Fatal("fifth immediate receive exceeded burst")
 	}
 	channel.state.lastNow = start.Add(250 * time.Millisecond)
 	if !channel.allowReceiveLocked() {
@@ -426,6 +446,67 @@ func TestReceiveTokenBucketIsBounded(t *testing.T) {
 	if channel.allowReceiveLocked() {
 		t.Fatal("replenishment exceeded four messages per second")
 	}
+}
+
+func TestConcurrentDuplexSendWithFullBuffersExpiresBoundedly(t *testing.T) {
+	clock := newManualClock()
+	attempt := testAttempt(clock.Now())
+	initiatorLedger := NewMemoryLedger()
+	responderLedger := NewMemoryLedger()
+	initiator, responder, err := NewSimulatedPair(
+		attempt,
+		initiatorLedger,
+		responderLedger,
+		clock.Now,
+	)
+	if err != nil {
+		t.Fatalf("NewSimulatedPair() error: %v", err)
+	}
+
+	// PREPARE fills both one-frame queues. CANCEL is valid from this state, so
+	// simultaneous sends exercise the documented lock-held queue wait.
+	sendMessage(t, initiator, MessagePrepare, nil)
+	sendMessage(t, responder, MessagePrepare, nil)
+	nearExpiry := clock.Now().Add(-MaxControlLifetime + 50*time.Millisecond)
+	for _, channel := range []*SimulatedChannel{initiator, responder} {
+		channel.mu.Lock()
+		channel.state.startedAt = nearExpiry
+		channel.mu.Unlock()
+	}
+
+	start := make(chan struct{})
+	results := make(chan error, 2)
+	for _, channel := range []*SimulatedChannel{initiator, responder} {
+		go func(channel *SimulatedChannel) {
+			<-start
+			results <- channel.Send(context.Background(), MessageCancel, nil)
+		}(channel)
+	}
+	close(start)
+
+	testDeadline := time.NewTimer(5 * time.Second)
+	defer stopTimer(testDeadline)
+	for completed := 0; completed < 2; completed++ {
+		select {
+		case err := <-results:
+			if !errors.Is(err, ErrExpired) && !errors.Is(err, ErrPeerClosed) {
+				t.Fatalf("blocked Send() error = %v, want bounded expiry/peer close", err)
+			}
+		case <-testDeadline.C:
+			t.Fatal("full-buffer duplex sends outlived the bounded test deadline")
+		}
+	}
+
+	for name, status := range map[string]Status{
+		"initiator": initiator.Status(),
+		"responder": responder.Status(),
+	} {
+		if !status.Terminal || status.Success || status.Reason != TerminalExpired {
+			t.Fatalf("%s status = %#v, want terminal expiry", name, status)
+		}
+	}
+	assertLedgerReason(t, initiatorLedger, attempt.CredentialID, TerminalExpired)
+	assertLedgerReason(t, responderLedger, attempt.CredentialID, TerminalExpired)
 }
 
 func TestSendCopiesPayloadBeforeQueueing(t *testing.T) {
@@ -526,9 +607,8 @@ func sendMessage(t *testing.T, channel TestPairingChannel, messageType MessageTy
 	}
 }
 
-func receiveMessage(t *testing.T, clock *manualClock, channel TestPairingChannel, wantedType MessageType, wantedPayload string) {
+func receiveMessage(t *testing.T, channel TestPairingChannel, wantedType MessageType, wantedPayload string) {
 	t.Helper()
-	clock.Advance(300 * time.Millisecond)
 	message, err := channel.Receive(context.Background())
 	if err != nil {
 		t.Fatalf("Receive() error: %v", err)
@@ -560,7 +640,8 @@ func testAttempt(now time.Time) AttemptContext {
 		AuthScope:              AuthScope,
 		CredentialID:           testIdentifier(1),
 		AttemptID:              testIdentifier(2),
-		ObservationGeneration:  7,
+		ObservationGeneration:  1,
+		SecureChannelProfile:   SimulationSecureChannelProfile,
 		InitiatorParticipantID: testIdentifier(3),
 		ResponderParticipantID: testIdentifier(4),
 		InitiatorGovernorScope: GovernorScopeMachine,

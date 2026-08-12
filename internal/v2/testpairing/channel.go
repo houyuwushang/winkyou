@@ -12,6 +12,9 @@ import (
 const (
 	ProtocolVersion = "winkyou-test-pairing/1"
 	AuthScope       = "test_only"
+	// SimulationSecureChannelProfile is an in-process sentinel that a real
+	// adapter must never accept or serialize as an OOB profile.
+	SimulationSecureChannelProfile = "simulation/no-crypto-no-network/1"
 
 	MaxPairingLifetime     = 10 * time.Minute
 	MaxControlLifetime     = 15 * time.Second
@@ -20,7 +23,7 @@ const (
 	MaxMessagesPerSide     = 5
 	MaxMessagesTotal       = 9
 	receiveTokensPerSecond = 4.0
-	receiveBurst           = 2.0
+	receiveBurst           = 4.0
 )
 
 var (
@@ -93,6 +96,7 @@ type AttemptContext struct {
 	CredentialID           string
 	AttemptID              string
 	ObservationGeneration  uint64
+	SecureChannelProfile   string
 	InitiatorParticipantID string
 	ResponderParticipantID string
 	InitiatorGovernorScope GovernorScope
@@ -127,8 +131,11 @@ func (c AttemptContext) Validate(now time.Time) error {
 		}
 		seen[identifier.value] = struct{}{}
 	}
-	if c.ObservationGeneration == 0 {
+	if c.ObservationGeneration != 1 {
 		return fmt.Errorf("%w: observation generation", ErrInvalidContext)
+	}
+	if c.SecureChannelProfile != SimulationSecureChannelProfile {
+		return fmt.Errorf("%w: secure channel profile", ErrInvalidContext)
 	}
 	if !c.InitiatorGovernorScope.valid() || !c.ResponderGovernorScope.valid() {
 		return fmt.Errorf("%w: governor scope", ErrInvalidContext)
@@ -176,6 +183,7 @@ type Message struct {
 	AuthScope             string
 	AttemptID             string
 	ObservationGeneration uint64
+	SecureChannelProfile  string
 	FromParticipantID     string
 	ToParticipantID       string
 	SenderRole            Role
@@ -307,8 +315,10 @@ func (p *pairAbort) doneChannel() <-chan struct{} {
 }
 
 // NewSimulatedPair burns the credential independently in each injected ledger
-// and creates a one-frame-buffered, in-memory duplex pair. If the second burn
-// fails, the first remains burned by design.
+// and creates a one-frame-buffered, in-memory duplex pair. The ledgers must
+// represent distinct endpoint-local stores. Supplying the same ledger for both
+// endpoints makes the responder burn fail as a replay; the initiator burn then
+// remains terminal by design.
 func NewSimulatedPair(
 	attempt AttemptContext,
 	initiatorLedger ReplayLedger,
@@ -429,6 +439,7 @@ func (c *SimulatedChannel) Send(ctx context.Context, messageType MessageType, pa
 		AuthScope:             AuthScope,
 		AttemptID:             c.context.AttemptID,
 		ObservationGeneration: c.context.ObservationGeneration,
+		SecureChannelProfile:  c.context.SecureChannelProfile,
 		FromParticipantID:     localID,
 		ToParticipantID:       peerID,
 		SenderRole:            c.role,
@@ -585,6 +596,7 @@ func (c *SimulatedChannel) validateMessageLocked(message Message) error {
 		message.AuthScope != AuthScope ||
 		message.AttemptID != c.context.AttemptID ||
 		message.ObservationGeneration != c.context.ObservationGeneration ||
+		message.SecureChannelProfile != c.context.SecureChannelProfile ||
 		message.FromParticipantID != peerID ||
 		message.ToParticipantID != localID ||
 		message.SenderRole != c.role.peer() ||
