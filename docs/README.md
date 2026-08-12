@@ -35,8 +35,13 @@ When documents disagree, treat `CONNECTIVITY-SOLVER-BASELINE.md` as the source o
 
 ## Proposals
 
-These files are proposal/brainstorm material from the 2026-05 architecture overhaul pass. They remain useful context, but they are not active authority and should not override the baseline.
+These files are proposal/RFC material for future architecture work. They remain useful context, but they are not active authority and should not override the baseline. The deep-analysis and improvement notes below come from the 2026-05 architecture overhaul pass.
 
+- [`proposals/WINKYOU-V2-DIRECT-FIRST-PLAN.md`](./proposals/WINKYOU-V2-DIRECT-FIRST-PLAN.md) — draft direct-first v2 product, architecture, safety, validation, and adoption plan for maintainer review
+- [`proposals/WINKYOU-V2-PLAN-REVIEW-2026-08-11.md`](./proposals/WINKYOU-V2-PLAN-REVIEW-2026-08-11.md) — code-backed expert review of the draft v2 plan
+- [`proposals/WINKYOU-V2-PLAN-REVIEW-RESPONSE-2026-08-11.md`](./proposals/WINKYOU-V2-PLAN-REVIEW-RESPONSE-2026-08-11.md) — maintainer response and proposed resolution of the expert review
+- [`proposals/WINKYOU-V2-PLAN-REVIEW-FOLLOWUP-2026-08-11.md`](./proposals/WINKYOU-V2-PLAN-REVIEW-FOLLOWUP-2026-08-11.md) — second-round review closing the response with third-party socket and machine-governor requirements
+- [`proposals/WINKYOU-V2-PLAN-REVIEW-ROUND3-2026-08-11.md`](./proposals/WINKYOU-V2-PLAN-REVIEW-ROUND3-2026-08-11.md) — third-round acceptance review covering non-privileged governor scope and Phase 1a test-only pairing
 - [`proposals/HTTP-CONNECT-WEBSOCKET-STRATEGY.md`](./proposals/HTTP-CONNECT-WEBSOCKET-STRATEGY.md)
 - [`proposals/QUIC-DATAGRAM-STRATEGY.md`](./proposals/QUIC-DATAGRAM-STRATEGY.md)
 - [`ARCHITECTURE-DEEP-ANALYSIS.md`](./ARCHITECTURE-DEEP-ANALYSIS.md)
