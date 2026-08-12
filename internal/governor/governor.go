@@ -277,6 +277,10 @@ func (g *Governor) Trip(event SafetyTripEvent) (SafetyTripStatus, error) {
 
 	g.mu.Lock()
 	defer g.mu.Unlock()
+	return g.tripLocked(event)
+}
+
+func (g *Governor) tripLocked(event SafetyTripEvent) (SafetyTripStatus, error) {
 	if g.closed {
 		return g.trip, ErrGovernorClosed
 	}
@@ -394,6 +398,36 @@ func (a *AttemptLease) Request() AttemptRequest {
 		return AttemptRequest{}
 	}
 	return a.request
+}
+
+// PeerID returns the immutable peer identity bound to this attempt lease.
+func (a *AttemptLease) PeerID() string {
+	if a == nil || a.peer == nil {
+		return ""
+	}
+	return a.peer.peerID
+}
+
+// Trip asks the machine governor to enter its persistent fail-closed state.
+// Peer and attempt identity are always taken from the lease so a downstream
+// capability cannot attribute a trip to a different operation.
+func (a *AttemptLease) Trip(event SafetyTripEvent) (SafetyTripStatus, error) {
+	if a == nil || a.governor == nil {
+		status := indeterminateSafetyTripStatus("attempt lease has no governor")
+		return status, ErrLeaseClosed
+	}
+	event.PeerID = a.PeerID()
+	event.AttemptID = a.request.ID
+	if err := validateSafetyTripEvent(event); err != nil {
+		return SafetyTripStatus{}, err
+	}
+	g := a.governor
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if a.closed {
+		return g.trip, ErrLeaseClosed
+	}
+	return g.tripLocked(event)
 }
 
 // Done is closed when the lease is released by Close, peer/governor shutdown,
