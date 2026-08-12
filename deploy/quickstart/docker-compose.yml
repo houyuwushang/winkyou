@@ -8,6 +8,9 @@ services:
     container_name: winkyou-coordinator
     restart: unless-stopped
     network_mode: host
+    volumes:
+      - ${WINK_COORD_TLS_CERT:?set WINK_COORD_TLS_CERT to the host certificate path}:/run/winkyou/tls/coordinator.crt:ro
+      - ${WINK_COORD_TLS_KEY:?set WINK_COORD_TLS_KEY to the host private-key path}:/run/winkyou/tls/coordinator.key:ro
     command:
       - --listen
       - ${WINK_COORD_LISTEN:-:50051}
@@ -16,7 +19,11 @@ services:
       - --lease-ttl
       - ${WINK_LEASE_TTL:-30s}
       - --auth-key
-      - ${WINK_AUTH_KEY:-wink-demo-key}
+      - ${WINK_AUTH_KEY:?set WINK_AUTH_KEY to a random deployment secret}
+      - --tls-cert
+      - /run/winkyou/tls/coordinator.crt
+      - --tls-key
+      - /run/winkyou/tls/coordinator.key
       - --store-backend
       - ${WINK_STORE_BACKEND:-memory}
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -35,11 +36,20 @@ type RetryPolicy struct {
 type RegisterRequest struct {
 	PublicKey string
 	Name      string
-	AuthKey   string
-	Metadata  map[string]string
+	// Deprecated: configure Config.AuthKey so the credential is attached to
+	// every coordinator RPC, not only the registration request body.
+	AuthKey  string
+	Metadata map[string]string
 }
 
-const MetadataEndpointsKey = "endpoints"
+const (
+	MetadataEndpointsKey = "endpoints"
+
+	// SharedAuthMetadataKey is the gRPC metadata key used for the deployment-wide
+	// coordinator bearer credential. It authenticates the deployment, not an
+	// individual node identity.
+	SharedAuthMetadataKey = "x-winkyou-auth-key"
+)
 
 type RegisterResponse struct {
 	NodeID      string
@@ -162,6 +172,15 @@ func DefaultConfig() Config {
 func validateConfig(cfg *Config) error {
 	if cfg == nil {
 		return nil
+	}
+	if strings.TrimSpace(cfg.URL) != "" {
+		target, _, err := normalizeTarget(cfg.URL)
+		if err != nil {
+			return err
+		}
+		if !isLoopbackTarget(target) && strings.TrimSpace(cfg.AuthKey) == "" {
+			return fmt.Errorf("coordinator client: auth key is required for a remote coordinator")
+		}
 	}
 	if cfg.Timeout < 0 {
 		return fmt.Errorf("coordinator client: timeout must be non-negative")

@@ -7,6 +7,7 @@ import (
 	"net"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -32,6 +33,8 @@ func run() int {
 		networkCIDR  string
 		leaseTTL     = defaults.LeaseTTL
 		authKey      string
+		tlsCertPath  string
+		tlsKeyPath   string
 		storeBackend string
 		sqlitePath   string
 		showVersion  bool
@@ -41,7 +44,9 @@ func run() int {
 	flag.StringVar(&listen, "listen", defaults.ListenAddress, "coordinator listen address")
 	flag.StringVar(&networkCIDR, "network-cidr", defaults.NetworkCIDR, "overlay network CIDR")
 	flag.DurationVar(&leaseTTL, "lease-ttl", defaults.LeaseTTL, "node lease TTL")
-	flag.StringVar(&authKey, "auth-key", "", "optional shared registration auth key")
+	flag.StringVar(&authKey, "auth-key", "", "shared coordinator RPC auth key; required for non-loopback listeners")
+	flag.StringVar(&tlsCertPath, "tls-cert", "", "PEM TLS certificate path; required for non-loopback listeners")
+	flag.StringVar(&tlsKeyPath, "tls-key", "", "PEM TLS private key path; required for non-loopback listeners")
 	flag.StringVar(&storeBackend, "store-backend", defaults.StoreBackend, "coordinator store backend: memory|sqlite")
 	flag.StringVar(&sqlitePath, "sqlite-path", "", "sqlite db path when store-backend=sqlite")
 	flag.BoolVar(&showVersion, "version", false, "print version and exit")
@@ -50,6 +55,10 @@ func run() int {
 	if showVersion {
 		fmt.Println(version.String())
 		return 0
+	}
+	if err := validateCoordinatorSecurity(listen, authKey, tlsCertPath, tlsKeyPath); err != nil {
+		fmt.Fprintf(os.Stderr, "wink-coordinator: %v\n", err)
+		return 1
 	}
 
 	logCfg := config.Default().Log
@@ -72,6 +81,12 @@ func run() int {
 		_ = log.Sync()
 	}()
 
+	grpcOptions, err := server.GRPCServerOptions(authKey, tlsCertPath, tlsKeyPath)
+	if err != nil {
+		log.Error("failed to configure coordinator transport security", logger.Error(err))
+		return 1
+	}
+
 	srv, err := server.New(&server.Config{
 		ListenAddress: listen,
 		NetworkCIDR:   networkCIDR,
@@ -92,6 +107,8 @@ func run() int {
 		"starting wink coordinator",
 		logger.String("listen", srv.ListenAddress()),
 		logger.String("network_cidr", srv.NetworkCIDR()),
+		logger.Bool("tls_enabled", strings.TrimSpace(tlsCertPath) != ""),
+		logger.Bool("shared_auth_enabled", strings.TrimSpace(authKey) != ""),
 	)
 
 	listener, err := net.Listen("tcp", srv.ListenAddress())
@@ -103,7 +120,7 @@ func run() int {
 		_ = listener.Close()
 	}()
 
-	grpcServer := grpc.NewServer()
+	grpcServer := grpc.NewServer(grpcOptions...)
 	coordinatorv1.RegisterCoordinatorServer(grpcServer, server.NewGRPCService(srv))
 
 	serveErr := make(chan error, 1)
@@ -145,4 +162,37 @@ func run() int {
 	}
 
 	return 0
+}
+
+func validateCoordinatorSecurity(listen, authKey, tlsCertPath, tlsKeyPath string) error {
+	loopback, err := isExplicitLoopbackListener(listen)
+	if err != nil {
+		return err
+	}
+
+	hasCert := strings.TrimSpace(tlsCertPath) != ""
+	hasKey := strings.TrimSpace(tlsKeyPath) != ""
+	if hasCert != hasKey {
+		return fmt.Errorf("--tls-cert and --tls-key must be provided together")
+	}
+	if loopback {
+		return nil
+	}
+	if !hasCert || strings.TrimSpace(authKey) == "" {
+		return fmt.Errorf(
+			"non-loopback listener %q requires --tls-cert, --tls-key, and a non-empty --auth-key; plaintext or unauthenticated mode is loopback-only",
+			listen,
+		)
+	}
+	return nil
+}
+
+func isExplicitLoopbackListener(listen string) (bool, error) {
+	listen = strings.TrimSpace(listen)
+	host, port, err := net.SplitHostPort(listen)
+	if err != nil || strings.TrimSpace(port) == "" {
+		return false, fmt.Errorf("invalid coordinator listen address %q", listen)
+	}
+	ip := net.ParseIP(strings.TrimSpace(host))
+	return ip != nil && ip.IsLoopback(), nil
 }

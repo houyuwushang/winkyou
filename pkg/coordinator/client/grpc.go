@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/url"
 	"os"
 	"strings"
@@ -19,6 +20,7 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 )
 
@@ -81,7 +83,10 @@ func (c *grpcClient) Connect(ctx context.Context) error {
 	}
 	c.mu.RUnlock()
 
-	target, useTLS := normalizeTarget(c.cfg.URL)
+	target, useTLS, err := normalizeTarget(c.cfg.URL)
+	if err != nil {
+		return err
+	}
 	if target == "" {
 		return fmt.Errorf("coordinator client: url is required")
 	}
@@ -94,7 +99,14 @@ func (c *grpcClient) Connect(ctx context.Context) error {
 		return err
 	}
 
-	conn, err := dialGRPC(dialCtx, target, grpc.WithBlock(), grpc.WithTransportCredentials(creds))
+	conn, err := dialGRPC(
+		dialCtx,
+		target,
+		grpc.WithBlock(),
+		grpc.WithTransportCredentials(creds),
+		grpc.WithUnaryInterceptor(sharedAuthUnaryClientInterceptor(c.cfg.AuthKey)),
+		grpc.WithStreamInterceptor(sharedAuthStreamClientInterceptor(c.cfg.AuthKey)),
+	)
 	if err != nil {
 		return err
 	}
@@ -121,9 +133,9 @@ func (c *grpcClient) Register(ctx context.Context, req *RegisterRequest) (*Regis
 	callCtx, cancel := c.callContext(ctx)
 	defer cancel()
 
-	authKey := req.AuthKey
+	authKey := c.cfg.AuthKey
 	if authKey == "" {
-		authKey = c.cfg.AuthKey
+		authKey = req.AuthKey
 	}
 
 	resp, err := c.rpcClient().Register(callCtx, &coordinatorv1.RegisterRequest{
@@ -519,27 +531,93 @@ func (c *grpcClient) dispatchPeer(peer *PeerInfo, event PeerEvent) {
 	}
 }
 
-func normalizeTarget(raw string) (string, bool) {
+func normalizeTarget(raw string) (string, bool, error) {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
-		return "", false
-	}
-	if !strings.Contains(raw, "://") {
-		return raw, false
+		return "", false, nil
 	}
 
-	parsed, err := url.Parse(raw)
+	target := raw
+	useTLS := false
+	if strings.Contains(raw, "://") {
+		parsed, err := url.Parse(raw)
+		if err != nil {
+			return "", false, fmt.Errorf("coordinator client: invalid url %q: %w", raw, err)
+		}
+		switch strings.ToLower(parsed.Scheme) {
+		case "grpc", "http":
+			useTLS = false
+		case "grpcs", "https":
+			useTLS = true
+		default:
+			return "", false, fmt.Errorf("coordinator client: unsupported url scheme %q", parsed.Scheme)
+		}
+		if parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" || (parsed.Path != "" && parsed.Path != "/") {
+			return "", false, fmt.Errorf("coordinator client: url must contain only scheme, host, and port")
+		}
+		if parsed.Host == "" {
+			return "", false, fmt.Errorf("coordinator client: url host is required")
+		}
+		target = parsed.Host
+	}
+
+	host, port, err := net.SplitHostPort(target)
 	if err != nil {
-		return raw, false
+		return "", false, fmt.Errorf("coordinator client: invalid coordinator target %q: %w", target, err)
 	}
-	useTLS := parsed.Scheme == "https" || parsed.Scheme == "grpcs"
-	if parsed.Host != "" {
-		return parsed.Host, useTLS
+	if strings.TrimSpace(host) == "" || strings.TrimSpace(port) == "" {
+		return "", false, fmt.Errorf("coordinator client: target host and port are required")
 	}
-	if parsed.Opaque != "" {
-		return parsed.Opaque, useTLS
+	if !useTLS && !isLoopbackHost(host) {
+		return "", false, fmt.Errorf(
+			"coordinator client: plaintext coordinator target %q is not loopback; use grpcs:// for remote coordinators",
+			target,
+		)
 	}
-	return strings.TrimPrefix(parsed.Path, "//"), useTLS
+	return target, useTLS, nil
+}
+
+func isLoopbackHost(host string) bool {
+	ip := net.ParseIP(strings.TrimSpace(host))
+	return ip != nil && ip.IsLoopback()
+}
+
+func isLoopbackTarget(target string) bool {
+	host, _, err := net.SplitHostPort(target)
+	return err == nil && isLoopbackHost(host)
+}
+
+func sharedAuthUnaryClientInterceptor(authKey string) grpc.UnaryClientInterceptor {
+	return func(
+		ctx context.Context,
+		method string,
+		req, reply any,
+		cc *grpc.ClientConn,
+		invoker grpc.UnaryInvoker,
+		opts ...grpc.CallOption,
+	) error {
+		return invoker(withSharedAuth(ctx, authKey), method, req, reply, cc, opts...)
+	}
+}
+
+func sharedAuthStreamClientInterceptor(authKey string) grpc.StreamClientInterceptor {
+	return func(
+		ctx context.Context,
+		desc *grpc.StreamDesc,
+		cc *grpc.ClientConn,
+		method string,
+		streamer grpc.Streamer,
+		opts ...grpc.CallOption,
+	) (grpc.ClientStream, error) {
+		return streamer(withSharedAuth(ctx, authKey), desc, cc, method, opts...)
+	}
+}
+
+func withSharedAuth(ctx context.Context, authKey string) context.Context {
+	if strings.TrimSpace(authKey) == "" {
+		return ctx
+	}
+	return metadata.AppendToOutgoingContext(ctx, SharedAuthMetadataKey, authKey)
 }
 
 func dialTransportCredentials(cfg TLSConfig, useTLS bool) (credentials.TransportCredentials, error) {

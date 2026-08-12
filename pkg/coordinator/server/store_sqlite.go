@@ -108,7 +108,7 @@ func (s *SQLiteStore) Register(req *client.RegisterRequest, expectedAuthKey stri
 	if strings.TrimSpace(req.PublicKey) == "" {
 		return nil, fmt.Errorf("coordinator server: public_key is required")
 	}
-	if strings.TrimSpace(expectedAuthKey) != "" && req.AuthKey != expectedAuthKey {
+	if strings.TrimSpace(expectedAuthKey) != "" && !sharedKeyMatches(expectedAuthKey, req.AuthKey) {
 		return nil, ErrUnauthorized
 	}
 
