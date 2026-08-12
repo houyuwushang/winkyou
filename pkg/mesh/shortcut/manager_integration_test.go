@@ -177,6 +177,76 @@ func TestShortcutBecomesStableAfterProbation(t *testing.T) {
 	}, "all shortcut managers did not reach stable")
 }
 
+func TestShortcutReportsInstalledOnlyAfterPacketNeighborReady(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	nodeA := newTestNode(t, mesh.NodeConfig{NodeID: "A", Lease: 5 * time.Second, RefreshInterval: 50 * time.Millisecond})
+	nodeB := newTestNode(t, mesh.NodeConfig{NodeID: "B", Lease: 5 * time.Second, RefreshInterval: 50 * time.Millisecond})
+	nodeC := newTestNode(t, mesh.NodeConfig{NodeID: "C", Lease: 5 * time.Second, RefreshInterval: 50 * time.Millisecond})
+	attachTestDualPair(t, nodeA, "B", nodeB, "A")
+	attachTestDualPair(t, nodeB, "C", nodeC, "B")
+	for _, node := range []*mesh.Node{nodeA, nodeB, nodeC} {
+		if err := node.Start(ctx); err != nil {
+			t.Fatal(err)
+		}
+	}
+	waitReciprocalRoute(t, ctx, nodeA, nodeC, []string{"A", "B", "C"}, []string{"C", "B", "A"})
+
+	gate := make(chan struct{})
+	var releaseOnce sync.Once
+	release := func() { releaseOnce.Do(func() { close(gate) }) }
+	t.Cleanup(release)
+	broker := newFakeEdgeBroker()
+	for nodeID, packetTransport := range broker.transports {
+		broker.transports[nodeID] = &gatedShortcutPacketTransport{
+			PacketTransport: packetTransport,
+			gate:            gate,
+		}
+	}
+	factory := func(spec AttemptSpec) (solver.Strategy, error) { return newFakeEdgeStrategy(spec, broker), nil }
+	base := Config{
+		StrategyName: fakeEdgeStrategyName,
+		Probation:    150 * time.Millisecond,
+		SolveTimeout: time.Second,
+		PacketNeighbor: mesh.PacketNeighborConfig{
+			KeepAliveInterval: 10 * time.Millisecond,
+			PeerTimeout:       50 * time.Millisecond,
+			ReadPollInterval:  10 * time.Millisecond,
+			WriteTimeout:      500 * time.Millisecond,
+		},
+	}
+	base.Node, base.StrategyFactory = nodeA, factory
+	managerA := newTestManager(t, base)
+	base.Node, base.StrategyFactory = nodeB, nil
+	managerB := newTestManager(t, base)
+	base.Node, base.StrategyFactory = nodeC, factory
+	managerC := newTestManager(t, base)
+
+	handle, err := managerA.Start(ctx, "C", "B")
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitTestCondition(t, ctx, func() bool {
+		_, readyAtA := nodeA.Neighbor("C")
+		_, readyAtC := nodeC.Neighbor("A")
+		return readyAtA && readyAtC
+	}, "packet sessions were not attached")
+	for nodeID, manager := range map[string]*Manager{"A": managerA, "C": managerC} {
+		status, ok := manager.Status(handle.ID())
+		if !ok || status.Phase != PhaseSolving {
+			t.Fatalf("%s endpoint phase before packet readiness = %q, want %q", nodeID, status.Phase, PhaseSolving)
+		}
+	}
+	if status, ok := managerB.Status(handle.ID()); !ok || phaseReached(status.Phase, PhaseProbation) {
+		t.Fatalf("coordinator phase before packet readiness = %q, want before %q", status.Phase, PhaseProbation)
+	}
+
+	release()
+	if _, err := handle.WaitFor(ctx, PhaseStable); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestShortcutReconcilesDroppedPacketBarrierSignal(t *testing.T) {
 	testCases := []struct {
 		name       string
@@ -455,6 +525,20 @@ type shortcutMemoryPacketTransport struct {
 	done      chan struct{}
 	peer      *shortcutMemoryPacketTransport
 	closeOnce sync.Once
+}
+
+type gatedShortcutPacketTransport struct {
+	transport.PacketTransport
+	gate <-chan struct{}
+}
+
+func (t *gatedShortcutPacketTransport) WritePacket(ctx context.Context, packet []byte) error {
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-t.gate:
+		return t.PacketTransport.WritePacket(ctx, packet)
+	}
 }
 
 func newShortcutMemoryPacketPair() (*shortcutMemoryPacketTransport, *shortcutMemoryPacketTransport) {

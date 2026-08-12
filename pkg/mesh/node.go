@@ -297,6 +297,15 @@ func (n *Node) PromoteNeighborHandle(handle NeighborHandle) bool {
 	return n != nil && n.router != nil && n.router.PromoteNeighborHandle(handle)
 }
 
+// WaitPacketNeighborReady waits for the exact packet session represented by
+// handle to receive its first valid peer frame.
+func (n *Node) WaitPacketNeighborReady(ctx context.Context, handle NeighborHandle) error {
+	if n == nil || n.router == nil {
+		return ErrClosed
+	}
+	return n.router.WaitPacketNeighborReady(ctx, handle)
+}
+
 func (n *Node) Send(ctx context.Context, msg peercontrol.Message) error {
 	if n == nil || n.router == nil {
 		return ErrClosed

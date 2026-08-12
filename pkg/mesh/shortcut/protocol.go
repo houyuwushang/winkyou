@@ -42,6 +42,7 @@ type wireMessage struct {
 	Reason          string          `json:"reason,omitempty"`
 	SolverMessage   *solver.Message `json:"solver_message,omitempty"`
 	SentAt          time.Time       `json:"sent_at"`
+	encodedSize     int             `json:"-"`
 }
 
 func (w wireMessage) validate() error {
@@ -81,5 +82,6 @@ func unmarshalWire(raw []byte) (wireMessage, error) {
 	if err := message.validate(); err != nil {
 		return wireMessage{}, err
 	}
+	message.encodedSize = len(raw)
 	return message, nil
 }

@@ -20,7 +20,12 @@ const (
 	defaultAttemptTimeoutSlack = 10 * time.Second
 	minCommitRetryInterval     = 100 * time.Millisecond
 	maximumCommitRetryInterval = time.Second
-	maxTimeDuration            = time.Duration(1<<63 - 1)
+	// The aggregate byte limit matches the existing maximum control frame; the
+	// count limit separately bounds tiny-message bookkeeping without rejecting
+	// a legitimate candidate burst that already fits that frame budget.
+	maxPendingSolverMessages = 4096
+	maxPendingSolverBytes    = 1 << 20
+	maxTimeDuration          = time.Duration(1<<63 - 1)
 )
 
 var (
@@ -28,6 +33,7 @@ var (
 	ErrAttemptFailed  = errors.New("shortcut: attempt failed")
 	ErrUnknownAttempt = errors.New("shortcut: unknown attempt")
 	ErrPairBusy       = errors.New("shortcut: pair already has an active attempt")
+	ErrSolverBacklog  = errors.New("shortcut: pending solver message backlog exceeded")
 )
 
 type Phase string
@@ -101,7 +107,16 @@ type attemptState struct {
 	monitorStarted  bool
 	watchdogStarted bool
 	solveCancel     context.CancelFunc
+	pendingSolver   []pendingSolverMessage
+	pendingBytes    int
+	solverDraining  bool
 	changed         chan struct{}
+}
+
+type pendingSolverMessage struct {
+	from string
+	wire wireMessage
+	size int
 }
 
 type Manager struct {
@@ -657,6 +672,9 @@ func (m *Manager) handleFire(from string, wire wireMessage) error {
 		return nil
 	}
 	state.status.Phase = PhaseSolving
+	// Queue the handoff edge atomically with the phase transition so no solver
+	// message can overtake the pre-FIRE backlog before runSolver drains it.
+	state.solverDraining = true
 	state.status.UpdatedAt = time.Now().UTC()
 	m.notifyLocked(state)
 	status := cloneStatus(state.status)
@@ -669,15 +687,20 @@ func (m *Manager) handleFire(from string, wire wireMessage) error {
 }
 
 func (m *Manager) runSolver(wire wireMessage) {
-	ctx, cancel := context.WithTimeout(m.ctx, m.solveTimeout)
-	defer cancel()
+	runCtx, runCancel := context.WithCancel(m.ctx)
+	defer runCancel()
+	solveCtx, solveDeadlineCancel := context.WithTimeout(runCtx, m.solveTimeout)
 	m.mu.Lock()
 	state := m.attempts[wire.AttemptID]
 	if state == nil || state.status.Phase != PhaseSolving {
 		m.mu.Unlock()
+		solveDeadlineCancel()
 		return
 	}
-	state.solveCancel = cancel
+	// Keep one cancellation authority across solver execution, packet
+	// readiness, and INSTALLED delivery. The solver deadline remains a child
+	// phase deadline rather than accidentally bounding the readiness phase.
+	state.solveCancel = runCancel
 	strategy := state.strategy
 	plan := state.plan
 	remoteID := state.status.DirectPeerID
@@ -689,7 +712,21 @@ func (m *Manager) runSolver(wire wireMessage) {
 		}
 		m.mu.Unlock()
 	}()
-	result, err := strategy.Execute(ctx, &routedSessionIO{manager: m, wire: wire, remoteID: remoteID}, plan)
+	if err := m.drainPendingSolverMessages(solveCtx, wire.AttemptID, strategy); err != nil {
+		solveDeadlineCancel()
+		_ = strategy.Close()
+		m.failLocal(wire.AttemptID, err, true)
+		return
+	}
+	result, err := strategy.Execute(solveCtx, &routedSessionIO{manager: m, wire: wire, remoteID: remoteID}, plan)
+	solveDeadlineCancel()
+	m.mu.Lock()
+	if current := m.attempts[wire.AttemptID]; current != nil && current.status.Phase == PhaseSolving {
+		// Execute is terminal for strategy signaling. Do not expose an already
+		// closed strategy to late messages while packet readiness is pending.
+		current.strategy = nil
+	}
+	m.mu.Unlock()
 	_ = strategy.Close()
 	if err != nil {
 		m.failLocal(wire.AttemptID, err, true)
@@ -729,6 +766,14 @@ func (m *Manager) runSolver(wire wireMessage) {
 		m.failLocal(wire.AttemptID, fmt.Errorf("shortcut: install direct edge: %w", err), true)
 		return
 	}
+	readinessCtx, readinessCancel := context.WithTimeout(runCtx, neighborConfig.ReadinessTimeout)
+	err = m.node.WaitPacketNeighborReady(readinessCtx, neighborHandle)
+	readinessCancel()
+	if err != nil {
+		m.failLocal(wire.AttemptID, fmt.Errorf("shortcut: direct edge readiness: %w", err), true)
+		_ = m.node.RemoveNeighborHandle(neighborHandle)
+		return
+	}
 	now := time.Now().UTC()
 	m.mu.Lock()
 	state = m.attempts[wire.AttemptID]
@@ -747,7 +792,10 @@ func (m *Manager) runSolver(wire wireMessage) {
 	m.mu.Unlock()
 	m.emit(status)
 	wire.PathID = result.Summary.PathID
-	if err := m.sendWire(ctx, wire.CoordinatorID, typeInstalled, wire); err != nil {
+	installedCtx, installedCancel := context.WithTimeout(runCtx, neighborConfig.WriteTimeout)
+	err = m.sendWire(installedCtx, wire.CoordinatorID, typeInstalled, wire)
+	installedCancel()
+	if err != nil {
 		m.failLocal(wire.AttemptID, err, false)
 	}
 }
@@ -770,6 +818,10 @@ func (m *Manager) handleSolverMessage(ctx context.Context, from string, wire wir
 	if wire.SolverMessage == nil {
 		return fmt.Errorf("shortcut: solver signal has no message")
 	}
+	message := *wire.SolverMessage
+	message.Payload = append([]byte(nil), message.Payload...)
+	message.ReceivedAt = time.Now().UTC()
+	wire.SolverMessage = &message
 	m.mu.Lock()
 	state := m.attempts[wire.AttemptID]
 	if state == nil || from != state.status.DirectPeerID {
@@ -780,20 +832,81 @@ func (m *Manager) handleSolverMessage(ctx context.Context, from string, wire wir
 		m.mu.Unlock()
 		return nil
 	}
-	if state.status.Phase != PhaseSolving || state.strategy == nil {
+	if state.strategy == nil {
+		m.mu.Unlock()
+		return ErrUnknownAttempt
+	}
+	queue := state.status.Phase == PhaseReady ||
+		(state.status.Phase == PhaseSolving && state.solverDraining)
+	if queue {
+		messageSize := wire.encodedSize
+		if messageSize <= 0 {
+			messageSize = len(message.Namespace) + len(message.Type) + len(message.Payload)
+		}
+		if len(state.pendingSolver) >= maxPendingSolverMessages ||
+			messageSize > maxPendingSolverBytes-state.pendingBytes {
+			m.mu.Unlock()
+			m.failLocal(wire.AttemptID, ErrSolverBacklog, true)
+			return ErrSolverBacklog
+		}
+		state.pendingSolver = append(state.pendingSolver, pendingSolverMessage{
+			from: from,
+			wire: wire,
+			size: messageSize,
+		})
+		state.pendingBytes += messageSize
+		m.mu.Unlock()
+		return nil
+	}
+	if state.status.Phase != PhaseSolving {
 		m.mu.Unlock()
 		return ErrUnknownAttempt
 	}
 	strategy := state.strategy
 	m.mu.Unlock()
+	return deliverSolverMessage(ctx, m, strategy, from, wire)
+}
+
+func (m *Manager) drainPendingSolverMessages(ctx context.Context, attemptID string, strategy solver.Strategy) error {
+	for {
+		m.mu.Lock()
+		state := m.attempts[attemptID]
+		if state == nil || state.strategy == nil || state.status.Phase != PhaseSolving {
+			if state != nil {
+				state.solverDraining = false
+			}
+			m.mu.Unlock()
+			return ErrUnknownAttempt
+		}
+		if len(state.pendingSolver) == 0 {
+			state.pendingSolver = nil
+			state.pendingBytes = 0
+			state.solverDraining = false
+			m.mu.Unlock()
+			return nil
+		}
+		pending := state.pendingSolver[0]
+		state.pendingSolver[0] = pendingSolverMessage{}
+		state.pendingSolver = state.pendingSolver[1:]
+		state.pendingBytes -= pending.size
+		m.mu.Unlock()
+		if err := deliverSolverMessage(ctx, m, strategy, pending.from, pending.wire); err != nil {
+			m.mu.Lock()
+			if current := m.attempts[attemptID]; current != nil {
+				current.solverDraining = false
+			}
+			m.mu.Unlock()
+			return err
+		}
+	}
+}
+
+func deliverSolverMessage(ctx context.Context, manager *Manager, strategy solver.Strategy, from string, wire wireMessage) error {
 	handler, ok := strategy.(solver.MessageHandler)
 	if !ok {
 		return fmt.Errorf("shortcut: strategy %s does not handle messages", strategy.Name())
 	}
-	message := *wire.SolverMessage
-	message.Payload = append([]byte(nil), message.Payload...)
-	message.ReceivedAt = time.Now().UTC()
-	return handler.HandleMessage(ctx, &routedSessionIO{manager: m, wire: wire, remoteID: from}, message)
+	return handler.HandleMessage(ctx, &routedSessionIO{manager: manager, wire: wire, remoteID: from}, *wire.SolverMessage)
 }
 
 func (m *Manager) handleInstalled(from string, wire wireMessage) error {
@@ -1142,6 +1255,9 @@ func (m *Manager) failAttempt(attemptID string, cause error, notifyCoordinator, 
 	state.strategy = nil
 	state.solveCancel = nil
 	state.directAttached = false
+	state.pendingSolver = nil
+	state.pendingBytes = 0
+	state.solverDraining = false
 	m.notifyLocked(state)
 	status := cloneStatus(state.status)
 	m.mu.Unlock()

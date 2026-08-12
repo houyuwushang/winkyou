@@ -15,7 +15,10 @@ import (
 	"winkyou/pkg/transport"
 )
 
-var ErrPacketNeighborTimeout = errors.New("mesh: packet neighbor liveness timeout")
+var (
+	ErrPacketNeighborReadinessTimeout = errors.New("mesh: packet neighbor readiness timeout")
+	ErrPacketNeighborTimeout          = errors.New("mesh: packet neighbor liveness timeout")
+)
 
 const (
 	packetNeighborVersion     = 1
@@ -37,10 +40,14 @@ const (
 
 type PacketNeighborConfig struct {
 	KeepAliveInterval time.Duration
-	PeerTimeout       time.Duration
-	ReadPollInterval  time.Duration
-	WriteTimeout      time.Duration
-	OnClose           func(peerID string, cause error)
+	// ReadinessTimeout bounds the time from starting the local packet session
+	// until the first valid frame from its peer. Only after that frame does the
+	// established-peer liveness deadline apply.
+	ReadinessTimeout time.Duration
+	PeerTimeout      time.Duration
+	ReadPollInterval time.Duration
+	WriteTimeout     time.Duration
+	OnClose          func(peerID string, cause error)
 	// DeferAdvertisement attaches the packet session for liveness and direct
 	// control traffic without publishing it as a routable graph edge. The
 	// owner must promote the exact returned NeighborHandle after its own
@@ -61,6 +68,9 @@ func (c PacketNeighborConfig) withDefaults() PacketNeighborConfig {
 	}
 	if c.PeerTimeout <= c.KeepAliveInterval {
 		c.PeerTimeout = 4 * c.KeepAliveInterval
+	}
+	if c.ReadinessTimeout <= 0 {
+		c.ReadinessTimeout = c.PeerTimeout
 	}
 	if c.ReadPollInterval <= 0 || c.ReadPollInterval > c.KeepAliveInterval {
 		c.ReadPollInterval = c.KeepAliveInterval
@@ -84,13 +94,17 @@ type PacketNeighborSession struct {
 	config        PacketNeighborConfig
 	onClose       func()
 
-	writeMu   sync.Mutex
-	startOnce sync.Once
-	closeOnce sync.Once
-	done      chan struct{}
-	cancelMu  sync.Mutex
-	cancel    context.CancelFunc
-	lastRx    atomic.Int64
+	writeMu    sync.Mutex
+	startOnce  sync.Once
+	readyOnce  sync.Once
+	closeOnce  sync.Once
+	ready      chan struct{}
+	done       chan struct{}
+	cancelMu   sync.Mutex
+	cancel     context.CancelFunc
+	startedAt  atomic.Int64
+	lastRx     atomic.Int64
+	closeCause error
 }
 
 func NewPacketNeighborSession(
@@ -110,16 +124,15 @@ func NewPacketNeighborSession(
 	if handleControl == nil || handleData == nil {
 		return nil, fmt.Errorf("mesh: packet neighbor control and data handlers are required")
 	}
-	now := time.Now()
 	session := &PacketNeighborSession{
 		peerID:        peerID,
 		transport:     packetTransport,
 		handleControl: handleControl,
 		handleData:    handleData,
 		config:        config.withDefaults(),
+		ready:         make(chan struct{}),
 		done:          make(chan struct{}),
 	}
-	session.lastRx.Store(now.UnixNano())
 	return session, nil
 }
 
@@ -140,6 +153,7 @@ func (s *PacketNeighborSession) Start(parent context.Context) {
 		parent = context.Background()
 	}
 	s.startOnce.Do(func() {
+		s.startedAt.Store(time.Now().UnixNano())
 		ctx, cancel := context.WithCancel(parent)
 		s.cancelMu.Lock()
 		s.cancel = cancel
@@ -216,8 +230,8 @@ func (s *PacketNeighborSession) readLoop(ctx context.Context) {
 			}
 			var networkError net.Error
 			if errors.Is(err, context.DeadlineExceeded) || (errors.As(err, &networkError) && networkError.Timeout()) {
-				if s.peerExpired(time.Now()) {
-					closeCause = ErrPacketNeighborTimeout
+				if timeoutCause := s.timeoutCause(time.Now()); timeoutCause != nil {
+					closeCause = timeoutCause
 					return
 				}
 				continue
@@ -229,7 +243,7 @@ func (s *PacketNeighborSession) readLoop(ctx context.Context) {
 		if err != nil {
 			continue
 		}
-		s.lastRx.Store(time.Now().UnixNano())
+		s.markReady(time.Now())
 		switch kind {
 		case packetNeighborControl:
 			msg, decodeErr := peercontrol.Unmarshal(payload)
@@ -252,6 +266,12 @@ func (s *PacketNeighborSession) readLoop(ctx context.Context) {
 }
 
 func (s *PacketNeighborSession) keepAliveLoop(ctx context.Context) {
+	// Start the readiness handshake immediately. Periodic keepalives then
+	// preserve the same bounded rate after this single startup frame.
+	if err := s.sendPacket(ctx, packetNeighborPing, nil); err != nil {
+		s.closeWithError(err)
+		return
+	}
 	ticker := time.NewTicker(s.config.KeepAliveInterval)
 	defer ticker.Stop()
 	for {
@@ -261,8 +281,8 @@ func (s *PacketNeighborSession) keepAliveLoop(ctx context.Context) {
 		case <-s.done:
 			return
 		case now := <-ticker.C:
-			if s.peerExpired(now) {
-				s.closeWithError(ErrPacketNeighborTimeout)
+			if timeoutCause := s.timeoutCause(now); timeoutCause != nil {
+				s.closeWithError(timeoutCause)
 				return
 			}
 			if err := s.sendPacket(ctx, packetNeighborPing, nil); err != nil {
@@ -273,9 +293,61 @@ func (s *PacketNeighborSession) keepAliveLoop(ctx context.Context) {
 	}
 }
 
-func (s *PacketNeighborSession) peerExpired(now time.Time) bool {
-	last := time.Unix(0, s.lastRx.Load())
-	return now.Sub(last) >= s.config.PeerTimeout
+func (s *PacketNeighborSession) markReady(now time.Time) {
+	s.lastRx.Store(now.UnixNano())
+	s.readyOnce.Do(func() { close(s.ready) })
+}
+
+func (s *PacketNeighborSession) timeoutCause(now time.Time) error {
+	select {
+	case <-s.ready:
+		last := time.Unix(0, s.lastRx.Load())
+		if now.Sub(last) >= s.config.PeerTimeout {
+			return ErrPacketNeighborTimeout
+		}
+		return nil
+	default:
+		startedAt := s.startedAt.Load()
+		if startedAt == 0 {
+			return nil
+		}
+		if now.Sub(time.Unix(0, startedAt)) >= s.config.ReadinessTimeout {
+			// A valid frame may have won the race after the first non-blocking
+			// readiness check. Prefer the established state at the boundary.
+			select {
+			case <-s.ready:
+				return s.timeoutCause(now)
+			default:
+			}
+			return ErrPacketNeighborReadinessTimeout
+		}
+		return nil
+	}
+}
+
+func (s *PacketNeighborSession) waitReady(ctx context.Context) error {
+	if s == nil {
+		return ErrClosed
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	select {
+	case <-s.ready:
+		return nil
+	default:
+	}
+	select {
+	case <-s.ready:
+		return nil
+	case <-s.done:
+		if s.closeCause != nil {
+			return s.closeCause
+		}
+		return ErrClosed
+	case <-ctx.Done():
+		return fmt.Errorf("mesh: wait for packet neighbor readiness: %w", ctx.Err())
+	}
 }
 
 func (s *PacketNeighborSession) Done() <-chan struct{} {
@@ -297,6 +369,7 @@ func (s *PacketNeighborSession) closeWithError(cause error) error {
 	}
 	var closeErr error
 	s.closeOnce.Do(func() {
+		s.closeCause = cause
 		close(s.done)
 		s.cancelMu.Lock()
 		cancel := s.cancel
