@@ -58,7 +58,7 @@ World-writable fixed files are deliberate: an unprivileged official process must
 
 ## Persistent safety trip
 
-The trip file begins with a one-byte latch followed by a checksummed, versioned JSON record. Trip commits the blocking latch and syncs it before closing attempt leases at that commit point and writing diagnostic detail. Reset writes and syncs a complete clear record while the latch remains tripped, then clears and syncs the latch last. A torn write, checksum mismatch, unknown schema, missing file, or latch/record disagreement is `indeterminate` and blocks active work.
+The trip file begins with a one-byte latch followed by a checksummed, versioned JSON record. Trip commits and syncs the blocking latch before synchronously signaling attempt cancellation at that commit point and writing diagnostic detail. Registered drains then finish under the governor-owned timeout before leases are released. Reset writes and syncs a complete clear record while the latch remains tripped, then clears and syncs the latch last. A torn write, checksum mismatch, unknown schema, missing file, or latch/record disagreement is `indeterminate` and blocks active work.
 
 The first valid trip reason is retained. A process restart, different CLI command, different Mesh, or different data directory cannot clear it. Reset is sequence-bound so an operator cannot accidentally clear a newer trip than the one inspected. Automated recovery and peer events never receive reset authority.
 
@@ -75,6 +75,18 @@ A blocking status exits nonzero after printing the record. Reset requires the ex
 wink safety reset --expected-sequence 7 --note "operator reviewed resource exhaustion"
 ```
 
+Portable and non-privileged users can still collect a no-packet first-run
+report before installing the scope:
+
+```powershell
+wink diagnose
+wink diagnose --json
+```
+
+It reports `active_probe_blocked` plus a copyable setup action while continuing
+to inspect configuration, interfaces, routes, lock state, and safety state. See
+[`PASSIVE-DIAGNOSE.md`](./PASSIVE-DIAGNOSE.md).
+
 Reset never starts a runtime or performs network activity. Corrupt or indeterminate state is not reset automatically.
 
 This slice intentionally does not expose a standalone operator trip command: without the future local control channel or a probe-I/O latch watcher, such a command could write a marker while falsely implying that an already-running process had stopped sending. Active authorities call `Governor.Trip` directly; an independent operator kill switch remains a separately reviewed integration.
@@ -89,6 +101,6 @@ There is intentionally no automatic fallback to a per-user or per-data-directory
 
 ## Integration state
 
-`internal/governor.AcquireMachineNamespace` validates the canonical namespace before acquiring ownership. Governor construction refuses tripped, corrupt, missing, or latch/record-mismatched state. `Governor.Trip` persists the latch, synchronously signals every attempt to stop, and lets the governor's bounded drain controller revoke the leases only after registered I/O witnesses finish or time out; restart tests prove that a new governor remains blocked until an explicit sequence-bound reset. See [`CANCELLATION-DRAIN-CONTRACT.md`](./CANCELLATION-DRAIN-CONTRACT.md). No legacy runtime, solver strategy, `doctor` probe, or recovery loop is wired to this package yet. Therefore this foundation alone does not make current active networking safe and does not authorize live or production testing.
+`internal/governor.AcquireMachineNamespace` validates the canonical namespace before acquiring ownership. Governor construction refuses tripped, corrupt, missing, or latch/record-mismatched state. `Governor.Trip` persists the latch, synchronously signals every attempt to stop, and lets the governor's bounded drain controller revoke the leases only after registered I/O witnesses finish or time out; restart tests prove that a new governor remains blocked until an explicit sequence-bound reset. See [`CANCELLATION-DRAIN-CONTRACT.md`](./CANCELLATION-DRAIN-CONTRACT.md). The new `wink diagnose` integration is passive-only. No legacy runtime, solver strategy, active `doctor` probe, or recovery loop is wired to this package yet. Therefore this foundation alone does not make current active networking safe and does not authorize live or production testing.
 
 The next active-I/O integration must fail before opening a socket if machine ownership cannot be acquired, and must route every permitted probe through the future `probeio` enforcement point.
