@@ -238,6 +238,10 @@ The `PairingContext` is the ACCEPTANCE object plus the following fixed fields:
 selects one exact identifier, both OOB artifacts repeat it, and unknown or
 mismatched values fail before any carrier I/O. Until that ADR is accepted there
 is no valid real-channel value and only the secret-free simulation is allowed.
+The simulation uses the internal sentinel
+`simulation/no-crypto-no-network/1` solely to exercise context binding. Real
+artifact parsers and adapters MUST reject that sentinel; it MUST NOT appear in
+an OOB bundle or be promoted by the ADR.
 
 Candidate A's external-PSK importer context is:
 
