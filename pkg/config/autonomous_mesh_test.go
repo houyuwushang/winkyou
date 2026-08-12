@@ -133,7 +133,13 @@ func TestValidateAutonomousMeshRejectsPausedBirthdayRecovery(t *testing.T) {
 			},
 		},
 		{
-			name: "cached self-bootstrap",
+			name: "cached recovery card without maintained peers",
+			configure: func(cfg *config.Config) {
+				cfg.AutonomousMesh.RecoveryCard = "A-recovery.json"
+			},
+		},
+		{
+			name: "combined recovery configuration",
 			configure: func(cfg *config.Config) {
 				cfg.AutonomousMesh.MaintainPeers = []string{"B"}
 				cfg.AutonomousMesh.RecoveryCard = "A-recovery.json"
@@ -242,26 +248,26 @@ func TestValidateAutonomousMeshRejectsInvalidFields(t *testing.T) {
 			wantErr: "invalid autonomous_mesh.bootstrap_peers[0].address",
 		},
 		{
-			name: "maintain self",
+			name: "maintain self still fails closed while paused",
 			mutate: func(cfg *config.Config) {
 				cfg.AutonomousMesh.MaintainPeers = []string{"A"}
 			},
-			wantErr: "maintain_peers[0] must not equal",
+			wantErr: "autonomous birthday recovery is paused",
 		},
 		{
-			name: "duplicate maintained peer",
+			name: "duplicate maintained peer still fails closed while paused",
 			mutate: func(cfg *config.Config) {
 				cfg.AutonomousMesh.MaintainPeers = []string{"B", "B"}
 			},
-			wantErr: "duplicate autonomous_mesh.maintain_peers[1]",
+			wantErr: "autonomous birthday recovery is paused",
 		},
 		{
-			name: "recovery card without maintained peers",
+			name: "recovery card without maintained peers fails closed while paused",
 			mutate: func(cfg *config.Config) {
 				cfg.AutonomousMesh.RecoveryCard = "A-recovery.json"
 				cfg.AutonomousMesh.MaintainPeers = nil
 			},
-			wantErr: "recovery_card requires at least one",
+			wantErr: "autonomous birthday recovery is paused",
 		},
 		{
 			name: "secret without recovery card",

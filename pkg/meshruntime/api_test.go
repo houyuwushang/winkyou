@@ -28,7 +28,7 @@ func TestNewRejectsPausedAutonomousBirthdayRecovery(t *testing.T) {
 			name: "cached self-bootstrap",
 			config: Config{
 				NodeID: "A", MeshListen: "off", ControlListen: "off",
-				MaintainedPeers: []string{"B"}, RecoveryCardPath: "A-recovery.json",
+				RecoveryCardPath: "A-recovery.json",
 			},
 		},
 	} {

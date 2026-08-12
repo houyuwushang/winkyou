@@ -236,34 +236,20 @@ func validateAutonomousMesh(cfg AutonomousMeshConfig) error {
 		}
 	}
 
-	seenMaintained := make(map[string]struct{}, len(cfg.MaintainPeers))
-	for i, rawPeerID := range cfg.MaintainPeers {
-		peerID := strings.TrimSpace(rawPeerID)
-		if peerID == "" {
-			return fmt.Errorf("autonomous_mesh.maintain_peers[%d] must not be empty", i)
-		}
-		if peerID == localID {
-			return fmt.Errorf("autonomous_mesh.maintain_peers[%d] must not equal autonomous_mesh.node_id", i)
-		}
-		if _, exists := seenMaintained[peerID]; exists {
-			return fmt.Errorf("duplicate autonomous_mesh.maintain_peers[%d]: %q", i, rawPeerID)
-		}
-		seenMaintained[peerID] = struct{}{}
-	}
-
+	// The pause gate runs before any legacy recovery-field validation so every
+	// attempt to enable a paused path fails with the explicit incident error.
+	// The per-entry maintained-peer checks and the recovery-card/secret
+	// dependency rules were removed together with reachability: re-enabling
+	// these fields requires restoring that validation under a reviewed ADR.
 	recoveryCard := strings.TrimSpace(cfg.RecoveryCard)
-	secretFile := strings.TrimSpace(cfg.SelfBootstrapSecretFile)
-	if recoveryCard != "" && len(cfg.MaintainPeers) == 0 {
-		return errors.New("autonomous_mesh.recovery_card requires at least one autonomous_mesh.maintain_peers entry")
+	if len(cfg.MaintainPeers) > 0 || recoveryCard != "" {
+		return errors.New("autonomous_mesh.maintain_peers and recovery_card are unavailable while autonomous birthday recovery is paused; see docs/INCIDENT-2026-07-22-SELF-BOOTSTRAP-UDP-STORM.md")
 	}
-	if secretFile != "" && recoveryCard == "" {
+	if strings.TrimSpace(cfg.SelfBootstrapSecretFile) != "" {
 		return errors.New("autonomous_mesh.self_bootstrap_secret_file requires autonomous_mesh.recovery_card")
 	}
 	if cfg.RecoveryDebounce <= 0 {
 		return errors.New("autonomous_mesh.recovery_debounce must be greater than zero when autonomous_mesh.enabled=true")
-	}
-	if len(cfg.MaintainPeers) > 0 || recoveryCard != "" {
-		return errors.New("autonomous_mesh.maintain_peers and recovery_card are unavailable while autonomous birthday recovery is paused; see docs/INCIDENT-2026-07-22-SELF-BOOTSTRAP-UDP-STORM.md")
 	}
 
 	if target := strings.TrimSpace(cfg.TCPTarget); target != "" {
