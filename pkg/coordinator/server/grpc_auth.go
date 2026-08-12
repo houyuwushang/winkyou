@@ -24,10 +24,11 @@ func SharedAuthUnaryInterceptor(authKey string) grpc.UnaryServerInterceptor {
 		info *grpc.UnaryServerInfo,
 		handler grpc.UnaryHandler,
 	) (any, error) {
-		if err := authorizeSharedKey(ctx, authKey); err != nil {
+		authenticatedCtx, err := authenticateSharedKey(ctx, authKey)
+		if err != nil {
 			return nil, err
 		}
-		return handler(ctx, req)
+		return handler(authenticatedCtx, req)
 	}
 }
 
@@ -40,23 +41,48 @@ func SharedAuthStreamInterceptor(authKey string) grpc.StreamServerInterceptor {
 		info *grpc.StreamServerInfo,
 		handler grpc.StreamHandler,
 	) error {
-		if err := authorizeSharedKey(stream.Context(), authKey); err != nil {
+		authenticatedCtx, err := authenticateSharedKey(stream.Context(), authKey)
+		if err != nil {
 			return err
 		}
-		return handler(srv, stream)
+		return handler(srv, &sharedAuthServerStream{ServerStream: stream, ctx: authenticatedCtx})
 	}
 }
 
 func authorizeSharedKey(ctx context.Context, expected string) error {
+	_, err := authenticateSharedKey(ctx, expected)
+	return err
+}
+
+func authenticateSharedKey(ctx context.Context, expected string) (context.Context, error) {
 	if strings.TrimSpace(expected) == "" {
-		return nil
+		return ctx, nil
 	}
 	md, ok := metadata.FromIncomingContext(ctx)
 	if !ok {
-		return unauthenticatedError()
+		return nil, unauthenticatedError()
 	}
 	values := md.Get(clientdto.SharedAuthMetadataKey)
 	if len(values) != 1 || !sharedKeyMatches(expected, values[0]) {
+		return nil, unauthenticatedError()
+	}
+	authenticatedDigest := sha256.Sum256([]byte(expected))
+	return context.WithValue(ctx, sharedAuthContextKey{}, authenticatedDigest), nil
+}
+
+// requireSharedAuthContext is a defense-in-depth guard for GRPCService. It
+// makes an authenticated service fail closed if it is accidentally registered
+// on a grpc.Server without GRPCServerOptions.
+func requireSharedAuthContext(ctx context.Context, expected string) error {
+	if strings.TrimSpace(expected) == "" {
+		return nil
+	}
+	authenticatedDigest, ok := ctx.Value(sharedAuthContextKey{}).([sha256.Size]byte)
+	if !ok {
+		return unauthenticatedError()
+	}
+	expectedDigest := sha256.Sum256([]byte(expected))
+	if subtle.ConstantTimeCompare(authenticatedDigest[:], expectedDigest[:]) != 1 {
 		return unauthenticatedError()
 	}
 	return nil
@@ -70,4 +96,15 @@ func sharedKeyMatches(expected, provided string) bool {
 
 func unauthenticatedError() error {
 	return status.Error(codes.Unauthenticated, "coordinator authentication failed")
+}
+
+type sharedAuthContextKey struct{}
+
+type sharedAuthServerStream struct {
+	grpc.ServerStream
+	ctx context.Context
+}
+
+func (s *sharedAuthServerStream) Context() context.Context {
+	return s.ctx
 }

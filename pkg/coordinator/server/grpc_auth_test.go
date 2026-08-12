@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	coordinatorv1 "winkyou/api/proto/coordinatorv1"
 	clientdto "winkyou/pkg/coordinator/client"
 
 	"google.golang.org/grpc"
@@ -35,8 +36,13 @@ func TestSharedAuthUnaryInterceptor(t *testing.T) {
 				tt.ctx,
 				nil,
 				&grpc.UnaryServerInfo{FullMethod: "/test.Service/Unary"},
-				func(context.Context, any) (any, error) {
+				func(ctx context.Context, _ any) (any, error) {
 					called = true
+					if tt.authKey != "" {
+						if err := requireSharedAuthContext(ctx, tt.authKey); err != nil {
+							t.Fatalf("authenticated context marker error = %v", err)
+						}
+					}
 					return nil, nil
 				},
 			)
@@ -57,8 +63,11 @@ func TestSharedAuthStreamInterceptorRejectsBeforeHandler(t *testing.T) {
 		nil,
 		stream,
 		&grpc.StreamServerInfo{FullMethod: "/test.Service/Signal", IsClientStream: true, IsServerStream: true},
-		func(any, grpc.ServerStream) error {
+		func(_ any, stream grpc.ServerStream) error {
 			called = true
+			if err := requireSharedAuthContext(stream.Context(), "secret"); err != nil {
+				t.Fatalf("authenticated stream context marker error = %v", err)
+			}
 			return nil
 		},
 	)
@@ -70,6 +79,29 @@ func TestSharedAuthStreamInterceptorRejectsBeforeHandler(t *testing.T) {
 	}
 }
 
+func TestGRPCServiceFailsClosedWithoutAuthInterceptors(t *testing.T) {
+	domain, err := New(&Config{
+		ListenAddress: "127.0.0.1:0",
+		NetworkCIDR:   "10.99.0.0/24",
+		AuthKey:       "secret",
+	})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	defer func() { _ = domain.Close() }()
+
+	service := NewGRPCService(domain)
+	if _, err := service.Register(context.Background(), &coordinatorv1.RegisterRequest{
+		PublicKey: "body-key-must-not-authenticate",
+		AuthKey:   "secret",
+	}); status.Code(err) != codes.Unauthenticated {
+		t.Fatalf("Register() without interceptor code = %s, want %s (err=%v)", status.Code(err), codes.Unauthenticated, err)
+	}
+	if _, err := service.ListPeers(context.Background(), &coordinatorv1.ListPeersRequest{}); status.Code(err) != codes.Unauthenticated {
+		t.Fatalf("ListPeers() without interceptor code = %s, want %s (err=%v)", status.Code(err), codes.Unauthenticated, err)
+	}
+}
+
 func TestSharedAuthStreamInterceptorAllowsValidCredential(t *testing.T) {
 	stream := &authTestServerStream{ctx: incomingAuthContext("secret")}
 	called := false
@@ -77,8 +109,11 @@ func TestSharedAuthStreamInterceptorAllowsValidCredential(t *testing.T) {
 		nil,
 		stream,
 		&grpc.StreamServerInfo{FullMethod: "/test.Service/Signal", IsClientStream: true, IsServerStream: true},
-		func(any, grpc.ServerStream) error {
+		func(_ any, stream grpc.ServerStream) error {
 			called = true
+			if err := requireSharedAuthContext(stream.Context(), "secret"); err != nil {
+				t.Fatalf("authenticated stream context marker error = %v", err)
+			}
 			return nil
 		},
 	)

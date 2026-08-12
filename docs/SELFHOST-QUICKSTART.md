@@ -35,17 +35,17 @@ Linux client：
 
 ```bash
 cd winkyou
-mkdir -p deploy/quickstart/tls
+mkdir -p deploy/quickstart/tls deploy/quickstart/secrets
 openssl req -x509 -newkey rsa:3072 -sha256 -nodes -days 365 \
   -keyout deploy/quickstart/tls/coordinator.key \
   -out deploy/quickstart/tls/coordinator.crt \
   -subj "/CN=winkyou-coordinator" \
   -addext "subjectAltName=IP:203.0.113.10"
-chmod 600 deploy/quickstart/tls/coordinator.key
-openssl rand -hex 32
+openssl rand -hex 32 > deploy/quickstart/secrets/coordinator-auth-key
+chmod 600 deploy/quickstart/tls/coordinator.key deploy/quickstart/secrets/coordinator-auth-key
 ```
 
-如果 client 使用 DNS 名称连接，请改用 `subjectAltName=DNS:coord.example.com`，并在后续配置里使用同一个名称。最后一条命令的输出是新的 `WINK_AUTH_KEY`，不要提交到仓库。
+如果 client 使用 DNS 名称连接，请改用 `subjectAltName=DNS:coord.example.com`，并在后续配置里使用同一个名称。`coordinator-auth-key` 是新生成的部署级共享密钥；不要提交、打印或复制私钥 `coordinator.key`，只把共享密钥安全提供给获准接入的 client。
 
 复制环境模板：
 
@@ -59,12 +59,12 @@ cp deploy/quickstart/.env.example deploy/quickstart/.env
 WINK_PUBLIC_IP=203.0.113.10
 WINK_COORD_TLS_CERT=/absolute/path/to/winkyou/deploy/quickstart/tls/coordinator.crt
 WINK_COORD_TLS_KEY=/absolute/path/to/winkyou/deploy/quickstart/tls/coordinator.key
-WINK_AUTH_KEY=<PASTE_OPENSSL_RANDOM_OUTPUT>
+WINK_COORD_AUTH_KEY_FILE=/absolute/path/to/winkyou/deploy/quickstart/secrets/coordinator-auth-key
 WINK_TURN_USER=winkdemo
 WINK_TURN_PASSWORD=winkdemo-pass
 ```
 
-`WINK_PUBLIC_IP`、TLS 文件绝对路径和共享密钥都必须替换。仓库已忽略 `deploy/quickstart/.env` 与 `deploy/quickstart/tls/`，但仍应把私钥权限限制为 coordinator 运行用户可读。
+`WINK_PUBLIC_IP` 和三个文件绝对路径都必须替换。仓库已忽略 `deploy/quickstart/.env`、`deploy/quickstart/tls/` 与 `deploy/quickstart/secrets/`，但仍应把私钥和密钥文件权限限制为 coordinator 运行用户可读。Compose 通过只读 secret 文件挂载密钥，不会把密钥值写入容器命令行或 `docker inspect` 元数据。
 
 启动：
 
@@ -79,7 +79,7 @@ docker compose --env-file deploy/quickstart/.env -f deploy/quickstart/docker-com
 docker compose --env-file deploy/quickstart/.env -f deploy/quickstart/docker-compose.yml logs -f coordinator coturn
 ```
 
-仓库的 [`Docker Smoke`](../.github/workflows/docker-smoke.yml) 会在每个 PR 和 `main` push 上校验 Compose、构建 coordinator 镜像、验证非 loopback 缺少 TLS/auth 时 fail-closed、运行 TLS/auth 客户端 smoke，并确认容器已清理。它只覆盖 coordinator 的 loopback 控制面，不代表 coturn、真实 peer、NAT 穿透或生产部署已经验收。
+仓库的 [`Docker Smoke`](../.github/workflows/docker-smoke.yml) 会在每个 PR 和 `main` push 上校验 Compose、构建 coordinator 镜像、验证非 loopback 缺少 TLS/auth 时 fail-closed、确认密钥没有进入 Compose/容器元数据、运行 TLS/auth 客户端 smoke，并确认容器已清理。它只覆盖 coordinator 的 loopback 控制面，不代表 coturn、真实 peer、NAT 穿透或生产部署已经验收。
 
 ## 3. 准备两个 client 配置
 
@@ -236,7 +236,7 @@ Handshake:  <timestamp>
 
 - 不要在公网复用 demo TURN 凭据。
 - 不要在多个真实节点复用 demo WireGuard 私钥。
-- coordinator 的 `WINK_AUTH_KEY` 必须是随机长字符串，并应像 bearer token 一样保护和轮换；它会授权全部 coordinator unary/stream RPC。
+- coordinator 的 `WINK_COORD_AUTH_KEY_FILE` 必须指向随机长字符串文件，并应像 bearer token 一样保护和轮换；文件内容会授权全部 coordinator unary/stream RPC。直接传 `--auth-key` 只为兼容保留，因为命令参数可能被同机用户或容器元数据观察到。
 - 共享密钥只标识“这个部署的成员”，不提供每节点身份隔离。任何持有者都能以已注册 node ID 绑定或替换 signaling session；per-node Ed25519 身份属于后续 Phase 2，不能把本 quickstart 描述成零信任。
 - 不要在真实部署设置 `coordinator.tls.insecure_skip_verify: true`。自签名证书应通过 `coordinator.tls.ca_file` 显式信任。
 - 只有公共证书可以复制给 client；coordinator TLS 私钥必须留在服务器。

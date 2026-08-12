@@ -4,6 +4,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"os/signal"
@@ -33,6 +34,7 @@ func run() int {
 		networkCIDR  string
 		leaseTTL     = defaults.LeaseTTL
 		authKey      string
+		authKeyFile  string
 		tlsCertPath  string
 		tlsKeyPath   string
 		storeBackend string
@@ -44,7 +46,8 @@ func run() int {
 	flag.StringVar(&listen, "listen", defaults.ListenAddress, "coordinator listen address")
 	flag.StringVar(&networkCIDR, "network-cidr", defaults.NetworkCIDR, "overlay network CIDR")
 	flag.DurationVar(&leaseTTL, "lease-ttl", defaults.LeaseTTL, "node lease TTL")
-	flag.StringVar(&authKey, "auth-key", "", "shared coordinator RPC auth key; required for non-loopback listeners")
+	flag.StringVar(&authKey, "auth-key", "", "shared coordinator RPC auth key; prefer --auth-key-file because command arguments may be observable")
+	flag.StringVar(&authKeyFile, "auth-key-file", "", "path to a one-line shared coordinator RPC auth key; required for non-loopback listeners unless --auth-key is set")
 	flag.StringVar(&tlsCertPath, "tls-cert", "", "PEM TLS certificate path; required for non-loopback listeners")
 	flag.StringVar(&tlsKeyPath, "tls-key", "", "PEM TLS private key path; required for non-loopback listeners")
 	flag.StringVar(&storeBackend, "store-backend", defaults.StoreBackend, "coordinator store backend: memory|sqlite")
@@ -55,6 +58,12 @@ func run() int {
 	if showVersion {
 		fmt.Println(version.String())
 		return 0
+	}
+	var err error
+	authKey, err = resolveCoordinatorAuthKey(authKey, authKeyFile)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "wink-coordinator: %v\n", err)
+		return 1
 	}
 	if err := validateCoordinatorSecurity(listen, authKey, tlsCertPath, tlsKeyPath); err != nil {
 		fmt.Fprintf(os.Stderr, "wink-coordinator: %v\n", err)
@@ -164,6 +173,46 @@ func run() int {
 	return 0
 }
 
+const maxCoordinatorAuthKeyBytes = 4 * 1024
+
+func resolveCoordinatorAuthKey(authKey, authKeyFile string) (string, error) {
+	filePath := strings.TrimSpace(authKeyFile)
+	if filePath == "" {
+		return authKey, nil
+	}
+	if authKey != "" {
+		return "", fmt.Errorf("--auth-key and --auth-key-file are mutually exclusive")
+	}
+
+	file, err := os.Open(filePath)
+	if err != nil {
+		return "", fmt.Errorf("open --auth-key-file: %w", err)
+	}
+	defer func() { _ = file.Close() }()
+
+	data, err := io.ReadAll(io.LimitReader(file, maxCoordinatorAuthKeyBytes+1))
+	if err != nil {
+		return "", fmt.Errorf("read --auth-key-file: %w", err)
+	}
+	if len(data) > maxCoordinatorAuthKeyBytes {
+		return "", fmt.Errorf("--auth-key-file exceeds %d bytes", maxCoordinatorAuthKeyBytes)
+	}
+
+	key := string(data)
+	if strings.HasSuffix(key, "\r\n") {
+		key = strings.TrimSuffix(key, "\r\n")
+	} else {
+		key = strings.TrimSuffix(key, "\n")
+	}
+	if strings.ContainsAny(key, "\r\n") {
+		return "", fmt.Errorf("--auth-key-file must contain exactly one line")
+	}
+	if strings.TrimSpace(key) == "" {
+		return "", fmt.Errorf("--auth-key-file contains an empty auth key")
+	}
+	return key, nil
+}
+
 func validateCoordinatorSecurity(listen, authKey, tlsCertPath, tlsKeyPath string) error {
 	loopback, err := isExplicitLoopbackListener(listen)
 	if err != nil {
@@ -180,7 +229,7 @@ func validateCoordinatorSecurity(listen, authKey, tlsCertPath, tlsKeyPath string
 	}
 	if !hasCert || strings.TrimSpace(authKey) == "" {
 		return fmt.Errorf(
-			"non-loopback listener %q requires --tls-cert, --tls-key, and a non-empty --auth-key; plaintext or unauthenticated mode is loopback-only",
+			"non-loopback listener %q requires --tls-cert, --tls-key, and a non-empty --auth-key-file (or --auth-key); plaintext or unauthenticated mode is loopback-only",
 			listen,
 		)
 	}

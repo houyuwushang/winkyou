@@ -35,10 +35,10 @@ wink --config node-a.yaml status
 常见问题：
 
 - 连接失败：确认 TCP `50051` 已开放
-- coordinator 启动即退出并提示 non-loopback listener：公网或全网卡监听必须同时提供 `--tls-cert`、`--tls-key` 和非空 `--auth-key`；只有数值 loopback listener（如 `127.0.0.1:50051`）可显式使用无 TLS/无认证开发模式
+- coordinator 启动即退出并提示 non-loopback listener：公网或全网卡监听必须同时提供 `--tls-cert`、`--tls-key` 和非空 `--auth-key-file`（兼容模式也可用 `--auth-key`）；只有数值 loopback listener（如 `127.0.0.1:50051`）可显式使用无 TLS/无认证开发模式
 - `certificate signed by unknown authority`：把签发 coordinator 证书的 CA 写入 `coordinator.tls.ca_file`；自签名 quickstart 中该文件就是复制到 client 的 `coordinator.crt`
 - `certificate is valid for ... not ...`：client URL 中的 IP/DNS 名必须出现在证书 SAN 中
-- auth 失败：确认 client 的 `coordinator.auth_key` 和 `WINK_AUTH_KEY` 完全一致。共享密钥现在校验全部 unary 与 signaling stream，不再只校验注册
+- auth 失败：确认 client 的 `coordinator.auth_key` 和服务端 `WINK_COORD_AUTH_KEY_FILE` 文件内容完全一致。共享密钥现在通过 gRPC metadata 校验全部 unary 与 signaling stream；已废弃的 Register 正文字段不再参与认证
 - 不要用 `coordinator.tls.insecure_skip_verify: true` 掩盖真实部署的证书错误；该选项仅用于受控测试
 - 看不到 peer：先用 `wink status` 看 `Mode`。`legacy` 模式下两台 client 必须连接同一个 coordinator；`autonomous_mesh` 模式当前只应检查固定 `bootstrap_peers` 以及 `wink peers` 的 `Next Hop`/`Mesh Path`/`Bootstrap` 字段。事故暂停期间，`maintain_peers` 和 recovery card 会在启动前被拒绝。两种模式都要求对应 `wink up` 进程仍在运行
 - 已经 `State: connected` 后断开 coordinator 所在网络，peer 随后断开：先确认你断开的是否只是 coordinator 进程，而不是 natpierce/跳板/underlay 网络。当前 client 已有第一层 peer-offline 保护和 bound 后 protected-direct improvement，但如果已选 path 本身依赖 natpierce，断开 natpierce 仍会拆掉实际数据路径。详见 [`CONTROL-PLANE-RESILIENCE.md`](./CONTROL-PLANE-RESILIENCE.md)。

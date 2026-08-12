@@ -133,15 +133,9 @@ func (c *grpcClient) Register(ctx context.Context, req *RegisterRequest) (*Regis
 	callCtx, cancel := c.callContext(ctx)
 	defer cancel()
 
-	authKey := c.cfg.AuthKey
-	if authKey == "" {
-		authKey = req.AuthKey
-	}
-
 	resp, err := c.rpcClient().Register(callCtx, &coordinatorv1.RegisterRequest{
 		PublicKey: req.PublicKey,
 		Name:      req.Name,
-		AuthKey:   authKey,
 		Metadata:  cloneMetadata(req.Metadata),
 	})
 	if err != nil {

@@ -11,6 +11,8 @@ services:
     volumes:
       - ${WINK_COORD_TLS_CERT:?set WINK_COORD_TLS_CERT to the host certificate path}:/run/winkyou/tls/coordinator.crt:ro
       - ${WINK_COORD_TLS_KEY:?set WINK_COORD_TLS_KEY to the host private-key path}:/run/winkyou/tls/coordinator.key:ro
+    secrets:
+      - coordinator_auth_key
     command:
       - --listen
       - ${WINK_COORD_LISTEN:-:50051}
@@ -18,8 +20,8 @@ services:
       - ${WINK_NETWORK_CIDR:-10.42.0.0/24}
       - --lease-ttl
       - ${WINK_LEASE_TTL:-30s}
-      - --auth-key
-      - ${WINK_AUTH_KEY:?set WINK_AUTH_KEY to a random deployment secret}
+      - --auth-key-file
+      - /run/secrets/coordinator_auth_key
       - --tls-cert
       - /run/winkyou/tls/coordinator.crt
       - --tls-key
@@ -45,3 +47,7 @@ services:
       - --no-multicast-peers
       - --no-cli
       - --verbose
+
+secrets:
+  coordinator_auth_key:
+    file: ${WINK_COORD_AUTH_KEY_FILE:?set WINK_COORD_AUTH_KEY_FILE to the host auth-key file path}

@@ -1,6 +1,11 @@
 package main
 
-import "testing"
+import (
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+)
 
 func TestValidateCoordinatorSecurity(t *testing.T) {
 	tests := []struct {
@@ -31,4 +36,58 @@ func TestValidateCoordinatorSecurity(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestResolveCoordinatorAuthKey(t *testing.T) {
+	t.Run("flag value", func(t *testing.T) {
+		got, err := resolveCoordinatorAuthKey("flag-secret", "")
+		if err != nil || got != "flag-secret" {
+			t.Fatalf("resolveCoordinatorAuthKey() = %q, %v", got, err)
+		}
+	})
+
+	t.Run("one-line file", func(t *testing.T) {
+		path := writeAuthKeyFile(t, "file-secret\r\n")
+		got, err := resolveCoordinatorAuthKey("", path)
+		if err != nil || got != "file-secret" {
+			t.Fatalf("resolveCoordinatorAuthKey() = %q, %v", got, err)
+		}
+	})
+
+	t.Run("mutually exclusive sources", func(t *testing.T) {
+		path := writeAuthKeyFile(t, "file-secret\n")
+		if _, err := resolveCoordinatorAuthKey("flag-secret", path); err == nil {
+			t.Fatal("resolveCoordinatorAuthKey() error = nil, want conflict rejection")
+		}
+	})
+
+	t.Run("multiple lines", func(t *testing.T) {
+		path := writeAuthKeyFile(t, "first\nsecond\n")
+		if _, err := resolveCoordinatorAuthKey("", path); err == nil {
+			t.Fatal("resolveCoordinatorAuthKey() error = nil, want multiline rejection")
+		}
+	})
+
+	t.Run("empty", func(t *testing.T) {
+		path := writeAuthKeyFile(t, "\n")
+		if _, err := resolveCoordinatorAuthKey("", path); err == nil {
+			t.Fatal("resolveCoordinatorAuthKey() error = nil, want empty-key rejection")
+		}
+	})
+
+	t.Run("bounded", func(t *testing.T) {
+		path := writeAuthKeyFile(t, strings.Repeat("x", maxCoordinatorAuthKeyBytes+1))
+		if _, err := resolveCoordinatorAuthKey("", path); err == nil {
+			t.Fatal("resolveCoordinatorAuthKey() error = nil, want size rejection")
+		}
+	})
+}
+
+func writeAuthKeyFile(t *testing.T, value string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "coordinator.auth-key")
+	if err := os.WriteFile(path, []byte(value), 0o600); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+	return path
 }

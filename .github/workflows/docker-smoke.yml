@@ -37,8 +37,9 @@ jobs:
           export WINK_COORD_LISTEN="127.0.0.1:50051"
           export WINK_COORD_TLS_CERT="${smoke_dir}/coordinator.crt"
           export WINK_COORD_TLS_KEY="${smoke_dir}/coordinator.key"
-          export WINK_AUTH_KEY="docker-smoke-only-shared-key"
+          export WINK_COORD_AUTH_KEY_FILE="${smoke_dir}/coordinator.auth-key"
           export COMPOSE_PROJECT_NAME="winkyou-docker-smoke"
+          auth_key="docker-smoke-only-shared-key"
 
           compose=(docker compose -f deploy/quickstart/docker-compose.yml)
           cleanup() {
@@ -59,8 +60,15 @@ jobs:
             -addext "subjectAltName=IP:127.0.0.1" \
             >/dev/null 2>&1
           chmod 600 "${WINK_COORD_TLS_KEY}"
+          printf '%s\n' "${auth_key}" >"${WINK_COORD_AUTH_KEY_FILE}"
+          chmod 600 "${WINK_COORD_AUTH_KEY_FILE}"
 
           "${compose[@]}" config --quiet
+          "${compose[@]}" config >"${smoke_dir}/compose.rendered.yaml"
+          if grep -Fq "${auth_key}" "${smoke_dir}/compose.rendered.yaml"; then
+            echo "coordinator auth key leaked into rendered Compose configuration" >&2
+            exit 1
+          fi
           "${compose[@]}" build coordinator
 
           if "${compose[@]}" run --rm --no-deps coordinator --listen :0 >"${smoke_dir}/fail-closed.log" 2>&1; then
@@ -74,10 +82,15 @@ jobs:
           fi
 
           "${compose[@]}" up -d coordinator
+          docker inspect winkyou-coordinator >"${smoke_dir}/coordinator.inspect.json"
+          if grep -Fq "${auth_key}" "${smoke_dir}/coordinator.inspect.json"; then
+            echo "coordinator auth key leaked into container metadata" >&2
+            exit 1
+          fi
 
           export WINKYOU_DOCKER_COORDINATOR_URL="grpcs://127.0.0.1:50051"
           export WINKYOU_DOCKER_COORDINATOR_CA_FILE="${WINK_COORD_TLS_CERT}"
-          export WINKYOU_DOCKER_COORDINATOR_AUTH_KEY="${WINK_AUTH_KEY}"
+          export WINKYOU_DOCKER_COORDINATOR_AUTH_KEY="${auth_key}"
           go test ./test/integration -run '^TestDockerCoordinatorTLSAuthSmoke$' -count=1 -v
 
           "${compose[@]}" down --volumes --remove-orphans

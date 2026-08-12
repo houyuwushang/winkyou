@@ -22,6 +22,7 @@ Thumbs.db
 *.local.yml
 /deploy/quickstart/.env
 /deploy/quickstart/tls/
+/deploy/quickstart/secrets/
 
 # Local field/stability test artifacts
 /.live-run/

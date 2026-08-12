@@ -22,6 +22,7 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials"
+	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 )
 
@@ -65,6 +66,19 @@ func TestSecureCoordinatorTLSAndSharedAuthIntegration(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
+	authenticatedCtx := metadata.AppendToOutgoingContext(ctx, client.SharedAuthMetadataKey, authKey)
+	if _, err := rawRPC.Register(authenticatedCtx, &coordinatorv1.RegisterRequest{
+		PublicKey: "metadata-only-public-key",
+		Name:      "metadata-only-client",
+	}); err != nil {
+		t.Fatalf("metadata-only Register() error = %v", err)
+	}
+	if _, err := rawRPC.Register(ctx, &coordinatorv1.RegisterRequest{
+		PublicKey: "deprecated-body-auth-must-fail",
+		AuthKey:   authKey,
+	}); status.Code(err) != codes.Unauthenticated {
+		t.Fatalf("body-only Register() code = %s, want %s (err=%v)", status.Code(err), codes.Unauthenticated, err)
+	}
 	if _, err := rawRPC.ListPeers(ctx, &coordinatorv1.ListPeersRequest{}); status.Code(err) != codes.Unauthenticated {
 		t.Fatalf("unauthenticated ListPeers() code = %s, want %s (err=%v)", status.Code(err), codes.Unauthenticated, err)
 	}

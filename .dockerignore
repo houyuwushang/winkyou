@@ -15,6 +15,7 @@ coverage.out
 *.local.yml
 deploy/quickstart/.env
 deploy/quickstart/tls
+deploy/quickstart/secrets
 
 .live-run
 .stability-run
