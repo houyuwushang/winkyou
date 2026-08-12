@@ -101,11 +101,10 @@ type Owner struct {
 // AcquirePreparedNamespace acquires an OS-level exclusive lock in namespace.
 //
 // The namespace must already exist, be absolute, be a real directory, and be
-// protected by its installer or per-user parent. This function does not choose
-// the canonical machine path or prove platform ACL policy; those responsibilities
-// belong to the later setup-machine-scope integration. Requiring a prepared
-// directory prevents this low-level primitive from silently falling back to an
-// arbitrary data directory.
+// protected by its installer or per-user parent. Machine-scoped production
+// callers should use AcquireMachineNamespace, which chooses and validates the
+// canonical platform path first. Requiring a prepared directory prevents this
+// low-level primitive from silently falling back to an arbitrary data directory.
 func AcquirePreparedNamespace(namespace string, scope Scope, buildVersion string) (*Owner, error) {
 	if !scope.valid() {
 		return nil, fmt.Errorf("%w: unsupported scope %q", ErrInvalidNamespace, scope)

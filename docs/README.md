@@ -24,6 +24,7 @@ When documents disagree, treat `CONNECTIVITY-SOLVER-BASELINE.md` as the source o
 
 ## Operator Docs
 
+- Phase 1a machine-wide governor namespace and setup command: [`MACHINE-SAFETY-NAMESPACE.md`](./MACHINE-SAFETY-NAMESPACE.md)
 - Self-host quickstart: [`SELFHOST-QUICKSTART.md`](./SELFHOST-QUICKSTART.md)
 - Experimental `meshnode` restart recovery and recovery-card operation: [`SELF-BOOTSTRAP-RECOVERY.md`](./SELF-BOOTSTRAP-RECOVERY.md)
 - Long-running legacy/autonomous client configuration, status, and graceful-down workflow: [`LONG-RUNNING-CLIENT.md`](./LONG-RUNNING-CLIENT.md)
