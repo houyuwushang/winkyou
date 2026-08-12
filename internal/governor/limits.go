@@ -104,13 +104,14 @@ func (r Resources) validateNonNegative() error {
 
 // Limits contains both aggregate reservations and per-attempt ceilings.
 type Limits struct {
-	MaxActivePeers         int
-	MaxActiveAttempts      int
-	MaxAttemptsPerPeer     int
-	MaxHeavyweightAttempts int
-	MaxAttemptDuration     time.Duration
-	Aggregate              Resources
-	PerAttempt             Resources
+	MaxActivePeers           int
+	MaxActiveAttempts        int
+	MaxAttemptsPerPeer       int
+	MaxHeavyweightAttempts   int
+	MaxAttemptDuration       time.Duration
+	CancellationDrainTimeout time.Duration
+	Aggregate                Resources
+	PerAttempt               Resources
 }
 
 // HardLimits returns the compiled Phase 1 ceiling for profile. These are
@@ -120,11 +121,12 @@ func HardLimits(profile Profile) (Limits, error) {
 	switch profile {
 	case ProfilePhase1Machine:
 		return Limits{
-			MaxActivePeers:         20,
-			MaxActiveAttempts:      8,
-			MaxAttemptsPerPeer:     1,
-			MaxHeavyweightAttempts: 1,
-			MaxAttemptDuration:     60 * time.Second,
+			MaxActivePeers:           20,
+			MaxActiveAttempts:        8,
+			MaxAttemptsPerPeer:       1,
+			MaxHeavyweightAttempts:   1,
+			MaxAttemptDuration:       60 * time.Second,
+			CancellationDrainTimeout: 2 * time.Second,
 			Aggregate: Resources{
 				Sockets:          128,
 				Targets:          512,
@@ -142,11 +144,12 @@ func HardLimits(profile Profile) (Limits, error) {
 		}, nil
 	case ProfilePhase1UserAcknowledged:
 		return Limits{
-			MaxActivePeers:         1,
-			MaxActiveAttempts:      1,
-			MaxAttemptsPerPeer:     1,
-			MaxHeavyweightAttempts: 0,
-			MaxAttemptDuration:     15 * time.Second,
+			MaxActivePeers:           1,
+			MaxActiveAttempts:        1,
+			MaxAttemptsPerPeer:       1,
+			MaxHeavyweightAttempts:   0,
+			MaxAttemptDuration:       15 * time.Second,
+			CancellationDrainTimeout: time.Second,
 			Aggregate: Resources{
 				Sockets:          4,
 				Targets:          8,
@@ -183,6 +186,9 @@ func validateLimits(limits Limits) error {
 	if limits.MaxAttemptDuration <= 0 {
 		return fmt.Errorf("%w: max attempt duration must be positive", ErrInvalidLimits)
 	}
+	if limits.CancellationDrainTimeout <= 0 {
+		return fmt.Errorf("%w: cancellation drain timeout must be positive", ErrInvalidLimits)
+	}
 	if err := limits.Aggregate.validateNonNegative(); err != nil {
 		return err
 	}
@@ -209,6 +215,7 @@ func validateNotRaised(requested, hard Limits) error {
 		{"max_attempts_per_peer", int64(requested.MaxAttemptsPerPeer), int64(hard.MaxAttemptsPerPeer)},
 		{"max_heavyweight_attempts", int64(requested.MaxHeavyweightAttempts), int64(hard.MaxHeavyweightAttempts)},
 		{"max_attempt_duration_ns", int64(requested.MaxAttemptDuration), int64(hard.MaxAttemptDuration)},
+		{"cancellation_drain_timeout_ns", int64(requested.CancellationDrainTimeout), int64(hard.CancellationDrainTimeout)},
 	}
 	for _, check := range checks {
 		if check.requested > check.hard {

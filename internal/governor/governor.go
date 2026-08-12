@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -12,12 +13,15 @@ import (
 )
 
 var (
-	ErrGovernorClosed   = errors.New("governor is closed")
-	ErrLeaseClosed      = errors.New("governor lease is closed")
-	ErrDuplicatePeer    = errors.New("peer already has an active lease")
-	ErrDuplicateAttempt = errors.New("attempt id is already active")
-	ErrInvalidRequest   = errors.New("invalid governor request")
+	ErrGovernorClosed           = errors.New("governor is closed")
+	ErrLeaseClosed              = errors.New("governor lease is closed")
+	ErrDuplicatePeer            = errors.New("peer already has an active lease")
+	ErrDuplicateAttempt         = errors.New("attempt id is already active")
+	ErrInvalidRequest           = errors.New("invalid governor request")
+	ErrCancellationDrainTimeout = errors.New("attempt cancellation drain timed out")
 )
+
+const maxAttemptDrainRegistrations = 8
 
 // AttemptCost is the complete worst-case declaration reserved before an
 // attempt can perform active work.
@@ -53,12 +57,16 @@ type Snapshot struct {
 type Governor struct {
 	mu sync.Mutex
 
-	owner   *Owner
-	profile Profile
-	scope   Scope
-	limits  Limits
-	trip    SafetyTripStatus
-	closed  bool
+	owner            *Owner
+	profile          Profile
+	scope            Scope
+	limits           Limits
+	trip             SafetyTripStatus
+	closing          bool
+	closed           bool
+	closeDone        chan struct{}
+	closeErr         error
+	tripDrainStarted bool
 
 	peers               map[string]*PeerLease
 	attempts            map[string]*AttemptLease
@@ -105,13 +113,14 @@ func New(owner *Owner, profile Profile, requested *Limits) (*Governor, error) {
 	}
 
 	return &Governor{
-		owner:    owner,
-		profile:  profile,
-		scope:    scope,
-		limits:   limits,
-		trip:     trip,
-		peers:    make(map[string]*PeerLease),
-		attempts: make(map[string]*AttemptLease),
+		owner:     owner,
+		profile:   profile,
+		scope:     scope,
+		limits:    limits,
+		trip:      trip,
+		closeDone: make(chan struct{}),
+		peers:     make(map[string]*PeerLease),
+		attempts:  make(map[string]*AttemptLease),
 	}, nil
 }
 
@@ -126,7 +135,7 @@ func (g *Governor) AcquirePeer(peerID string) (*PeerLease, error) {
 
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	if g.closed {
+	if g.closed || g.closing {
 		return nil, ErrGovernorClosed
 	}
 	if g.trip.BlocksActiveWork {
@@ -168,7 +177,7 @@ func (g *Governor) Snapshot() Snapshot {
 		HeavyweightAttempts: g.heavyweightAttempts,
 		Reserved:            g.reserved,
 		SafetyTrip:          g.trip,
-		Closed:              g.closed,
+		Closed:              g.closed || g.closing,
 	}
 }
 
@@ -179,15 +188,37 @@ func (g *Governor) Close() error {
 		return nil
 	}
 	g.mu.Lock()
-	if g.closed {
+	if g.closed || g.closing {
+		done := g.closeDone
 		g.mu.Unlock()
-		return nil
+		<-done
+		g.mu.Lock()
+		err := g.closeErr
+		g.mu.Unlock()
+		return err
 	}
-	g.closed = true
+	g.closing = true
+	attempts := g.activeAttemptsLocked()
+	for _, attempt := range attempts {
+		g.beginAttemptStoppingLocked(attempt)
+	}
+	g.mu.Unlock()
+
+	drainErr := g.drainAttempts(attempts)
+
+	g.mu.Lock()
 	g.stopActiveLocked()
+	g.closed = true
 	owner := g.owner
 	g.mu.Unlock()
-	return owner.closeClaimed()
+	ownerErr := owner.closeClaimed()
+	result := errors.Join(drainErr, ownerErr)
+
+	g.mu.Lock()
+	g.closeErr = result
+	close(g.closeDone)
+	g.mu.Unlock()
+	return result
 }
 
 // PeerLease groups attempts for one peer and enforces per-peer single-flight.
@@ -224,7 +255,7 @@ func (p *PeerLease) AcquireAttempt(ctx context.Context, request AttemptRequest) 
 		g.mu.Unlock()
 		return nil, &SafetyTripError{Status: g.trip}
 	}
-	if g.closed || p.closed {
+	if g.closed || g.closing || p.closed {
 		g.mu.Unlock()
 		return nil, ErrLeaseClosed
 	}
@@ -237,7 +268,10 @@ func (p *PeerLease) AcquireAttempt(ctx context.Context, request AttemptRequest) 
 		governor: g,
 		peer:     p,
 		request:  request,
+		stopping: make(chan struct{}),
+		drained:  make(chan struct{}),
 		done:     make(chan struct{}),
+		drains:   make(map[uint64]*attemptDrain),
 	}
 	p.attempts[request.ID] = lease
 	g.attempts[request.ID] = lease
@@ -263,9 +297,11 @@ func (p *PeerLease) AcquireAttempt(ctx context.Context, request AttemptRequest) 
 	return lease, nil
 }
 
-// Trip commits the persistent blocking latch, closes every active attempt at
-// that commit point, and then persists the diagnostic record. A failed detail
-// write leaves both the in-process governor and durable latch blocking work.
+// Trip commits the persistent blocking latch, signals every active attempt to
+// stop at that commit point, and then persists the diagnostic record. Registered
+// drains finish asynchronously under the governor's bounded timeout authority.
+// A failed detail write leaves both the in-process governor and durable latch
+// blocking work.
 func (g *Governor) Trip(event SafetyTripEvent) (SafetyTripStatus, error) {
 	if g == nil {
 		status := indeterminateSafetyTripStatus("governor is unavailable")
@@ -285,10 +321,10 @@ func (g *Governor) tripLocked(event SafetyTripEvent) (SafetyTripStatus, error) {
 		return g.trip, ErrGovernorClosed
 	}
 	if g.trip.BlocksActiveWork {
-		g.stopActiveLocked()
+		g.beginSafetyTripDrainLocked()
 		return g.trip, nil
 	}
-	status, err := g.owner.tripStore.tripThen(event, g.stopActiveLocked)
+	status, err := g.owner.tripStore.tripThen(event, g.beginSafetyTripDrainLocked)
 	g.trip = status
 	if !g.trip.BlocksActiveWork {
 		g.trip = indeterminateSafetyTripStatus("trip operation did not produce a blocking state")
@@ -296,7 +332,7 @@ func (g *Governor) tripLocked(event SafetyTripEvent) (SafetyTripStatus, error) {
 			err = &SafetyTripError{Status: g.trip}
 		}
 	}
-	g.stopActiveLocked()
+	g.beginSafetyTripDrainLocked()
 	return g.trip, err
 }
 
@@ -372,25 +408,54 @@ func (p *PeerLease) Close() error {
 	}
 	g := p.governor
 	g.mu.Lock()
-	defer g.mu.Unlock()
 	if p.closed {
+		g.mu.Unlock()
 		return nil
 	}
-	for _, attempt := range p.attempts {
-		g.releaseAttemptLocked(attempt)
-	}
 	p.closed = true
-	delete(g.peers, p.peerID)
-	return nil
+	attempts := make([]*AttemptLease, 0, len(p.attempts))
+	for _, attempt := range p.attempts {
+		attempts = append(attempts, attempt)
+		g.beginAttemptStoppingLocked(attempt)
+	}
+	g.mu.Unlock()
+
+	err := g.drainAttempts(attempts)
+	g.mu.Lock()
+	if g.peers[p.peerID] == p {
+		delete(g.peers, p.peerID)
+	}
+	g.mu.Unlock()
+	return err
+}
+
+// DrainHandle proves that one attempt-owned worker or I/O controller has
+// registered for bounded cancellation. Complete is idempotent.
+type DrainHandle interface {
+	Complete() error
 }
 
 // AttemptLease is proof that a complete attempt cost has been reserved.
 type AttemptLease struct {
-	governor *Governor
-	peer     *PeerLease
-	request  AttemptRequest
-	done     chan struct{}
-	closed   bool
+	governor        *Governor
+	peer            *PeerLease
+	request         AttemptRequest
+	stopping        chan struct{}
+	drained         chan struct{}
+	done            chan struct{}
+	drains          map[uint64]*attemptDrain
+	nextDrainID     uint64
+	stoppingStarted bool
+	drainedClosed   bool
+	closed          bool
+	closeErr        error
+}
+
+type attemptDrain struct {
+	attempt *AttemptLease
+	id      uint64
+	name    string
+	once    sync.Once
 }
 
 func (a *AttemptLease) Request() AttemptRequest {
@@ -424,19 +489,55 @@ func (a *AttemptLease) Trip(event SafetyTripEvent) (SafetyTripStatus, error) {
 	g := a.governor
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	if a.closed {
+	if a.closed || a.stoppingStarted {
 		return g.trip, ErrLeaseClosed
 	}
 	return g.tripLocked(event)
 }
 
-// Done is closed when the lease is released by Close, peer/governor shutdown,
-// or context cancellation.
+// RegisterDrain registers one attempt-owned worker or I/O controller that
+// must finish after Stopping closes and before Done closes. Registration is
+// rejected once cancellation begins.
+func (a *AttemptLease) RegisterDrain(name string) (DrainHandle, error) {
+	if a == nil || a.governor == nil {
+		return nil, ErrLeaseClosed
+	}
+	if err := validateIdentifier("drain name", name); err != nil {
+		return nil, err
+	}
+	g := a.governor
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.closed || g.closing || a.closed || a.stoppingStarted {
+		return nil, ErrLeaseClosed
+	}
+	if len(a.drains) >= maxAttemptDrainRegistrations {
+		return nil, &LimitError{
+			Field:     "attempt_drains",
+			Requested: int64(len(a.drains) + 1),
+			Maximum:   maxAttemptDrainRegistrations,
+		}
+	}
+	a.nextDrainID++
+	drain := &attemptDrain{attempt: a, id: a.nextDrainID, name: name}
+	a.drains[drain.id] = drain
+	return drain, nil
+}
+
+// Stopping closes at the start of cancellation while the governor still owns
+// the machine namespace and retains authority to persist a timeout trip.
+func (a *AttemptLease) Stopping() <-chan struct{} {
+	if a == nil {
+		return closedChannel()
+	}
+	return a.stopping
+}
+
+// Done closes only after registered drains complete or the governor has
+// persisted a fail-closed timeout trip and forcibly revoked the attempt.
 func (a *AttemptLease) Done() <-chan struct{} {
 	if a == nil {
-		closed := make(chan struct{})
-		close(closed)
-		return closed
+		return closedChannel()
 	}
 	return a.done
 }
@@ -447,15 +548,157 @@ func (a *AttemptLease) Close() error {
 	}
 	g := a.governor
 	g.mu.Lock()
-	defer g.mu.Unlock()
-	g.releaseAttemptLocked(a)
+	if a.closed {
+		err := a.closeErr
+		g.mu.Unlock()
+		return err
+	}
+	if a.stoppingStarted {
+		done := a.done
+		g.mu.Unlock()
+		<-done
+		g.mu.Lock()
+		err := a.closeErr
+		g.mu.Unlock()
+		return err
+	}
+	g.beginAttemptStoppingLocked(a)
+	g.mu.Unlock()
+	return g.drainAttempts([]*AttemptLease{a})
+}
+
+func (drain *attemptDrain) Complete() error {
+	if drain == nil || drain.attempt == nil || drain.attempt.governor == nil {
+		return nil
+	}
+	drain.once.Do(func() {
+		attempt := drain.attempt
+		g := attempt.governor
+		g.mu.Lock()
+		if attempt.drains[drain.id] == drain {
+			delete(attempt.drains, drain.id)
+			if attempt.stoppingStarted && len(attempt.drains) == 0 {
+				g.closeAttemptDrainedLocked(attempt)
+			}
+		}
+		g.mu.Unlock()
+	})
 	return nil
+}
+
+func (g *Governor) drainAttempts(attempts []*AttemptLease) error {
+	if len(attempts) == 0 {
+		return nil
+	}
+	attempts = append([]*AttemptLease(nil), attempts...)
+	sort.Slice(attempts, func(left, right int) bool {
+		return attempts[left].request.ID < attempts[right].request.ID
+	})
+
+	g.mu.Lock()
+	for _, attempt := range attempts {
+		g.beginAttemptStoppingLocked(attempt)
+	}
+	timeout := g.limits.CancellationDrainTimeout
+	g.mu.Unlock()
+
+	timedOut := waitForAttemptDrains(attempts, timeout)
+	var result error
+	if timedOut != nil {
+		g.mu.Lock()
+		if !timedOut.closed && len(timedOut.drains) > 0 {
+			pending := len(timedOut.drains)
+			firstPending := g.firstPendingDrainNameLocked(timedOut)
+			event := SafetyTripEvent{
+				Reason:       SafetyTripCancellation,
+				Detail:       fmt.Sprintf("attempt cancellation exceeded %s with %d pending drain(s); first=%s", timeout, pending, firstPending),
+				PeerID:       timedOut.PeerID(),
+				AttemptID:    timedOut.request.ID,
+				BuildVersion: g.owner.Info().BuildVersion,
+			}
+			if err := validateSafetyTripEvent(event); err != nil {
+				result = errors.Join(ErrCancellationDrainTimeout, err)
+			} else {
+				_, tripErr := g.tripLocked(event)
+				result = errors.Join(ErrCancellationDrainTimeout, tripErr)
+			}
+		}
+		g.mu.Unlock()
+	}
+
+	g.mu.Lock()
+	for _, attempt := range attempts {
+		if attempt.closeErr == nil {
+			attempt.closeErr = result
+		} else {
+			result = errors.Join(result, attempt.closeErr)
+		}
+		g.releaseAttemptLocked(attempt)
+	}
+	g.mu.Unlock()
+	return result
+}
+
+func (g *Governor) firstPendingDrainNameLocked(attempt *AttemptLease) string {
+	if attempt == nil || len(attempt.drains) == 0 {
+		return "unknown"
+	}
+	ids := make([]uint64, 0, len(attempt.drains))
+	for id := range attempt.drains {
+		ids = append(ids, id)
+	}
+	sort.Slice(ids, func(left, right int) bool { return ids[left] < ids[right] })
+	return attempt.drains[ids[0]].name
+}
+
+func waitForAttemptDrains(attempts []*AttemptLease, timeout time.Duration) *AttemptLease {
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	for _, attempt := range attempts {
+		select {
+		case <-attempt.drained:
+		case <-attempt.done:
+		case <-timer.C:
+			for _, candidate := range attempts {
+				select {
+				case <-candidate.drained:
+					continue
+				case <-candidate.done:
+					continue
+				default:
+					return candidate
+				}
+			}
+			return nil
+		}
+	}
+	return nil
+}
+
+func (g *Governor) beginAttemptStoppingLocked(attempt *AttemptLease) {
+	if attempt == nil || attempt.closed || attempt.stoppingStarted {
+		return
+	}
+	attempt.stoppingStarted = true
+	close(attempt.stopping)
+	if len(attempt.drains) == 0 {
+		g.closeAttemptDrainedLocked(attempt)
+	}
+}
+
+func (g *Governor) closeAttemptDrainedLocked(attempt *AttemptLease) {
+	if attempt == nil || attempt.drainedClosed {
+		return
+	}
+	attempt.drainedClosed = true
+	close(attempt.drained)
 }
 
 func (g *Governor) releaseAttemptLocked(attempt *AttemptLease) {
 	if attempt == nil || attempt.closed {
 		return
 	}
+	g.beginAttemptStoppingLocked(attempt)
 	attempt.closed = true
 	delete(g.attempts, attempt.request.ID)
 	if attempt.peer != nil {
@@ -466,6 +709,43 @@ func (g *Governor) releaseAttemptLocked(attempt *AttemptLease) {
 		g.heavyweightAttempts--
 	}
 	close(attempt.done)
+}
+
+func (g *Governor) activeAttemptsLocked() []*AttemptLease {
+	attempts := make([]*AttemptLease, 0, len(g.attempts))
+	for _, attempt := range g.attempts {
+		attempts = append(attempts, attempt)
+	}
+	return attempts
+}
+
+// beginSafetyTripDrainLocked is invoked at the durable trip commit point. It
+// synchronously revokes new capabilities, then lets registered controllers
+// unwind outside the caller's I/O stack. The governor remains the timeout
+// authority and retains the machine owner until Governor.Close completes.
+func (g *Governor) beginSafetyTripDrainLocked() {
+	attempts := g.activeAttemptsLocked()
+	for _, attempt := range attempts {
+		g.beginAttemptStoppingLocked(attempt)
+	}
+	if len(attempts) == 0 || g.tripDrainStarted {
+		return
+	}
+	g.tripDrainStarted = true
+	go g.finishSafetyTripDrain(attempts)
+}
+
+func (g *Governor) finishSafetyTripDrain(attempts []*AttemptLease) {
+	_ = g.drainAttempts(attempts)
+	g.mu.Lock()
+	for peerID, peer := range g.peers {
+		if len(peer.attempts) == 0 {
+			peer.closed = true
+			delete(g.peers, peerID)
+		}
+	}
+	g.tripDrainStarted = false
+	g.mu.Unlock()
 }
 
 func (g *Governor) stopActiveLocked() {
@@ -479,6 +759,12 @@ func (g *Governor) stopActiveLocked() {
 	clear(g.attempts)
 	g.reserved = Resources{}
 	g.heavyweightAttempts = 0
+}
+
+func closedChannel() <-chan struct{} {
+	closed := make(chan struct{})
+	close(closed)
+	return closed
 }
 
 func validateIdentifier(field, value string) error {

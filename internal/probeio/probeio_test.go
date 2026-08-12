@@ -20,14 +20,16 @@ var (
 )
 
 type fakeLease struct {
-	request governor.AttemptRequest
-	peerID  string
-	done    chan struct{}
-	once    sync.Once
+	request  governor.AttemptRequest
+	peerID   string
+	stopping chan struct{}
+	done     chan struct{}
 
-	mu     sync.Mutex
-	trips  []governor.SafetyTripEvent
-	closed int
+	mu             sync.Mutex
+	trips          []governor.SafetyTripEvent
+	drains         int
+	stoppingClosed bool
+	doneClosed     bool
 }
 
 func newFakeLease(resources governor.Resources) *fakeLease {
@@ -40,22 +42,36 @@ func newFakeLease(resources governor.Resources) *fakeLease {
 				Duration:  time.Minute,
 			},
 		},
-		peerID: "peer-probeio",
-		done:   make(chan struct{}),
+		peerID:   "peer-probeio",
+		stopping: make(chan struct{}),
+		done:     make(chan struct{}),
 	}
 }
 
 func (lease *fakeLease) Request() governor.AttemptRequest { return lease.request }
 func (lease *fakeLease) PeerID() string                   { return lease.peerID }
+func (lease *fakeLease) Stopping() <-chan struct{}        { return lease.stopping }
 func (lease *fakeLease) Done() <-chan struct{}            { return lease.done }
 
+func (lease *fakeLease) RegisterDrain(string) (governor.DrainHandle, error) {
+	lease.mu.Lock()
+	defer lease.mu.Unlock()
+	if lease.stoppingClosed {
+		return nil, governor.ErrLeaseClosed
+	}
+	lease.drains++
+	return &fakeDrain{lease: lease}, nil
+}
+
 func (lease *fakeLease) Close() error {
-	lease.once.Do(func() {
-		lease.mu.Lock()
-		lease.closed++
-		lease.mu.Unlock()
-		close(lease.done)
-	})
+	lease.mu.Lock()
+	lease.startStoppingLocked()
+	if lease.drains == 0 {
+		lease.finishDoneLocked()
+	}
+	done := lease.done
+	lease.mu.Unlock()
+	<-done
 	return nil
 }
 
@@ -63,8 +79,8 @@ func (lease *fakeLease) Trip(event governor.SafetyTripEvent) (governor.SafetyTri
 	lease.mu.Lock()
 	lease.trips = append(lease.trips, event)
 	sequence := uint64(len(lease.trips))
+	lease.startStoppingLocked()
 	lease.mu.Unlock()
-	_ = lease.Close()
 	return governor.SafetyTripStatus{
 		State:            governor.SafetyTripTripped,
 		BlocksActiveWork: true,
@@ -75,6 +91,45 @@ func (lease *fakeLease) Trip(event governor.SafetyTripEvent) (governor.SafetyTri
 			Reason:        event.Reason,
 		},
 	}, nil
+}
+
+func (lease *fakeLease) startStoppingLocked() {
+	if lease.stoppingClosed {
+		return
+	}
+	lease.stoppingClosed = true
+	close(lease.stopping)
+}
+
+func (lease *fakeLease) finishDoneLocked() {
+	if lease.doneClosed {
+		return
+	}
+	lease.doneClosed = true
+	close(lease.done)
+}
+
+type fakeDrain struct {
+	lease *fakeLease
+	once  sync.Once
+}
+
+func (drain *fakeDrain) Complete() error {
+	if drain == nil || drain.lease == nil {
+		return nil
+	}
+	drain.once.Do(func() {
+		lease := drain.lease
+		lease.mu.Lock()
+		if lease.drains > 0 {
+			lease.drains--
+		}
+		if lease.stoppingClosed && lease.drains == 0 {
+			lease.finishDoneLocked()
+		}
+		lease.mu.Unlock()
+	})
+	return nil
 }
 
 func (lease *fakeLease) tripEvents() []governor.SafetyTripEvent {
@@ -372,6 +427,11 @@ func TestSendPacketBudgetBreachTripsAndCloses(t *testing.T) {
 		t.Fatalf("second send error = %v, want ErrHardLimit", err)
 	}
 	assertTripReason(t, harness.lease, governor.SafetyTripHardLimit)
+	select {
+	case <-harness.controller.watchDone:
+	case <-time.After(time.Second):
+		t.Fatal("hard-limit trip did not finish controller drain")
+	}
 	if !datagram.isClosed() {
 		t.Fatal("trip did not close the probe datagram")
 	}
