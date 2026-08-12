@@ -272,7 +272,6 @@ func TestRecoverySupervisorRepunchesAndPreservesRoutedTCPFlow(t *testing.T) {
 	recoveryTestWaitPacketTriangle(t, ctx, runtimeA, runtimeB, runtimeC)
 	forwardedBeforeDirect := runtimeC.counters.dataForwarded.Load()
 	recoveryTestConnRoundTrip(t, conn, []byte("same TCP flow after repunch"))
-	time.Sleep(60 * time.Millisecond)
 	if got := runtimeC.counters.dataForwarded.Load(); got != forwardedBeforeDirect {
 		t.Fatalf("C forwarded post-repair direct TCP frames: before=%d after=%d", forwardedBeforeDirect, got)
 	}
@@ -576,12 +575,19 @@ func recoveryTestWaitPacketTriangle(t *testing.T, ctx context.Context, runtimes 
 	t.Helper()
 	if err := runtimeTestWait(ctx, func() bool {
 		for _, runtime := range runtimes {
-			if len(runtime.node.Neighbors()) != 2 {
+			neighbors := runtime.node.Neighbors()
+			if len(neighbors) != 2 {
 				return false
 			}
-			for _, peerID := range runtime.node.Neighbors() {
+			for _, peerID := range neighbors {
 				info, ok := runtime.node.Neighbor(peerID)
 				if !ok || info.Kind != mesh.NeighborKindPacket {
+					return false
+				}
+				// A promoted packet neighbor can precede the corresponding data-table
+				// update. Gate traffic assertions on the route that will carry it.
+				route, ok := runtime.node.DataRoute(peerID)
+				if !ok || !slices.Equal(route.Path, []string{runtime.cfg.NodeID, peerID}) {
 					return false
 				}
 			}
