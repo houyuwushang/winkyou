@@ -1,0 +1,19 @@
+{
+  "strategy": "legacy_ice_udp",
+  "plan_id": "legacyice/public_direct",
+  "event": "candidate_failed",
+  "path_id": "direct/path",
+  "connection_type": "direct",
+  "local_addr": "192.0.2.10:40000",
+  "remote_addr": "198.51.100.20:50000",
+  "local_kind": "srflx",
+  "remote_kind": "prflx",
+  "error_class": "timeout",
+  "reason": "connectivity_check_timeout",
+  "timeout_ms": 1500,
+  "details": {
+    "attempt": "1",
+    "nat": "symmetric"
+  },
+  "timestamp": "2026-08-13T09:30:15.123456789Z"
+}

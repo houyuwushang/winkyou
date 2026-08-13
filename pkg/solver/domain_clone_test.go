@@ -66,6 +66,9 @@ func TestProbeDomainCloneOwnsNestedCollections(t *testing.T) {
 	if summary.Details["events"] != "1" {
 		t.Fatalf("CloneProbeResultSummary aliases Details: %#v", summary.Details)
 	}
+	if normalized := NormalizeProbeResultSummary(ProbeResultSummary{Details: map[string]string{}}); normalized.Details != nil {
+		t.Fatalf("NormalizeProbeResultSummary Details = %#v, want nil", normalized.Details)
+	}
 }
 
 func TestProbeDomainNormalizeIsDeterministicAndPreservesOrder(t *testing.T) {
