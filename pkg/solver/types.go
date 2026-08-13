@@ -6,7 +6,6 @@ import (
 	"strconv"
 	"time"
 
-	rproto "winkyou/pkg/rendezvous/proto"
 	"winkyou/pkg/transport"
 )
 
@@ -25,13 +24,21 @@ type Message struct {
 	ReceivedAt time.Time
 }
 
+// Capability is the canonical solver-domain description of connectivity
+// methods understood by one participant. It deliberately has no wire tags or
+// dependency on rendezvous/protobuf DTOs; transport adapters own conversion.
+type Capability struct {
+	Strategies []string
+	Features   []string
+}
+
 type SolveInput struct {
 	SessionID          string
 	LocalNodeID        string
 	RemoteNodeID       string
 	Initiator          bool
-	LocalCapability    rproto.Capability
-	RemoteCapability   rproto.Capability
+	LocalCapability    Capability
+	RemoteCapability   Capability
 	LocalObservations  []Observation
 	RemoteObservations []Observation
 	LastProbeResult    *ProbeResultSummary
@@ -126,7 +133,7 @@ type RankInput struct {
 	LocalNodeID        string
 	RemoteNodeID       string
 	Initiator          bool
-	RemoteCapability   rproto.Capability
+	RemoteCapability   Capability
 	LocalObservations  []Observation
 	RemoteObservations []Observation
 	LastProbeResult    *ProbeResultSummary
@@ -171,8 +178,8 @@ type ProbeInput struct {
 	LocalNodeID        string
 	RemoteNodeID       string
 	Initiator          bool
-	LocalCapability    rproto.Capability
-	RemoteCapability   rproto.Capability
+	LocalCapability    Capability
+	RemoteCapability   Capability
 	LocalObservations  []Observation
 	RemoteObservations []Observation
 	LastProbeResult    *ProbeResultSummary

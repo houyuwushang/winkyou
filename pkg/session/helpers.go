@@ -2,7 +2,6 @@ package session
 
 import (
 	"fmt"
-	"slices"
 	"strings"
 	"time"
 
@@ -153,37 +152,22 @@ func cloneCapability(capability rproto.Capability) rproto.Capability {
 }
 
 func normalizeCapability(capability rproto.Capability) rproto.Capability {
-	normalized := rproto.Capability{}
-	seen := make(map[string]struct{}, len(capability.Strategies))
-	strategies := make([]string, 0, len(capability.Strategies))
-	for _, strategy := range capability.Strategies {
-		if strategy == "" {
-			continue
-		}
-		if _, ok := seen[strategy]; ok {
-			continue
-		}
-		seen[strategy] = struct{}{}
-		strategies = append(strategies, strategy)
-	}
-	slices.Sort(strategies)
-	normalized.Strategies = strategies
+	return capabilityToWire(capabilityFromWire(capability))
+}
 
-	seen = make(map[string]struct{}, len(capability.Features))
-	features := make([]string, 0, len(capability.Features))
-	for _, feature := range capability.Features {
-		if feature == "" {
-			continue
-		}
-		if _, ok := seen[feature]; ok {
-			continue
-		}
-		seen[feature] = struct{}{}
-		features = append(features, feature)
+func capabilityFromWire(capability rproto.Capability) solver.Capability {
+	return solver.NormalizeCapability(solver.Capability{
+		Strategies: append([]string(nil), capability.Strategies...),
+		Features:   append([]string(nil), capability.Features...),
+	})
+}
+
+func capabilityToWire(capability solver.Capability) rproto.Capability {
+	normalized := solver.NormalizeCapability(capability)
+	return rproto.Capability{
+		Strategies: append([]string(nil), normalized.Strategies...),
+		Features:   append([]string(nil), normalized.Features...),
 	}
-	slices.Sort(features)
-	normalized.Features = features
-	return normalized
 }
 
 func clonePathCommit(pathCommit PathCommitSnapshot) PathCommitSnapshot {

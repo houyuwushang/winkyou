@@ -7,7 +7,6 @@ import (
 	"time"
 
 	pmodel "winkyou/pkg/probe/model"
-	rproto "winkyou/pkg/rendezvous/proto"
 	"winkyou/pkg/solver"
 )
 
@@ -19,7 +18,7 @@ func TestStrategyRankPlansPrefersRelayAfterDirectFailures(t *testing.T) {
 		LocalNodeID:      "node-a",
 		SessionID:        "session/node-a/node-b",
 		RemoteNodeID:     "node-b",
-		RemoteCapability: rproto.Capability{Strategies: []string{StrategyName}},
+		RemoteCapability: solver.Capability{Strategies: []string{StrategyName}},
 		LocalObservations: []solver.Observation{
 			observationForRanking("legacyice/direct_prefer", "candidate_failed", "", "node-b"),
 			observationForRanking("legacyice/relay_only", "candidate_succeeded", "relay", "node-b"),
@@ -94,7 +93,7 @@ func TestStrategyRankPlansKeepsPublicDirectAheadOfDirectPreferAfterRelayHint(t *
 		LocalNodeID:      "node-a",
 		SessionID:        "session/node-a/node-b",
 		RemoteNodeID:     "node-b",
-		RemoteCapability: rproto.Capability{Strategies: []string{StrategyName}},
+		RemoteCapability: solver.Capability{Strategies: []string{StrategyName}},
 		LocalObservations: []solver.Observation{
 			observationForRanking(planIDDirectPrefer, "candidate_failed", "", "node-b"),
 			observationForRanking(planIDRelayOnly, "candidate_succeeded", "relay", "node-b"),
@@ -122,7 +121,7 @@ func TestStrategyRankPlansKeepsDirectFirstWhenRelayDisabled(t *testing.T) {
 		LocalNodeID:      "node-a",
 		SessionID:        "session/node-a/node-b",
 		RemoteNodeID:     "node-b",
-		RemoteCapability: rproto.Capability{Strategies: []string{StrategyName}},
+		RemoteCapability: solver.Capability{Strategies: []string{StrategyName}},
 		LocalObservations: []solver.Observation{
 			observationForRanking("legacyice/direct_prefer", "candidate_failed", "", "node-b"),
 			observationForRanking("legacyice/relay_only", "candidate_succeeded", "relay", "node-b"),
@@ -170,7 +169,7 @@ func TestStrategyRankPlansTreatsDirectPreferRelaySuccessAsRelayEvidence(t *testi
 		LocalNodeID:      "node-a",
 		SessionID:        "session/node-a/node-b",
 		RemoteNodeID:     "node-b",
-		RemoteCapability: rproto.Capability{Strategies: []string{StrategyName}},
+		RemoteCapability: solver.Capability{Strategies: []string{StrategyName}},
 		LocalObservations: []solver.Observation{
 			observationForRanking(planIDDirectPrefer, "candidate_failed", "", "node-b"),
 			observationForRanking(planIDDirectPrefer, "candidate_succeeded", "relay", "node-b"),
