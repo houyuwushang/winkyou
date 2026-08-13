@@ -8,597 +8,126 @@ WinkYou = connectivity solver + secure WireGuard data plane
 
 项目不再以固定 ICE/TURN 流程作为架构中心。ICE、TURN relay、未来的 QUIC/TCP/proxy 路径都应被视为连接求解器可选择的候选路径；真正承载数据的是统一的 `transport.PacketTransport` 边界和 userspace `wireguard-go` 数据平面。
 
-## 紧急停机：self-bootstrap 流量风暴
-
-> **2026-07-22 安全告警：不要在办公网、生产网或未经限流的公网重新启用当前 Windows A 节点。**
->
-> 现场使用 `880936b` 构建时，一个失联 peer 的 cached self-bootstrap 会在约 45 秒的窗口内创建 128 个 UDP socket，并以约 300 ms 的周期向数十个候选端点发包。多个 peer 的窗口重叠后会持续制造大量 UDP 五元组；本机看到的是 128–256 个 socket，但 NAT、防火墙或出口设备会为不同目标建立并保留更多 conntrack/session 状态。2026-07-22 现场外部观测约 40 万并发状态，并造成公司网络故障。该构建在完成下面的 P0 修复和隔离验收前视为 **NO-GO**。
->
-> **项目决定：cached self-bootstrap / autonomous birthday recovery 短期暂停，不安排修复、现场测试或重新部署。** 当前成果和事故分析保留，后续只有在重新立项并满足限流、退避、熔断及隔离验收门禁后才允许继续。约 40 万状态的计算、代码根因和恢复门禁详见 [`docs/INCIDENT-2026-07-22-SELF-BOOTSTRAP-UDP-STORM.md`](./docs/INCIDENT-2026-07-22-SELF-BOOTSTRAP-UDP-STORM.md)。
-
-当前 A 节点的自动启动链路如下：
-
-```text
-Task Scheduler: \WinkYou-A
-  -> D:\workspace\winkyou\scripts\run-wink-supervisor.ps1
-  -> D:\workspace\winkyou\.live-run\runs\rank2x3-physical-v2-20260722-r1\artifacts\wink-windows-amd64-880936b.exe
-
-config:
-  D:\workspace\winkyou\.live-run\runs\rank2x3-physical-v2-20260722-r1\normal\A\A.yaml
-state:
-  D:\workspace\winkyou\.live-run\runs\rank2x3-physical-v2-20260722-r1\normal\A\A.runtime.json
-stop marker:
-  D:\workspace\winkyou\.live-run\runs\rank2x3-physical-v2-20260722-r1\normal\A\A.runtime.json.supervisor.stop
-```
-
-图形界面入口：按 `Win+R`，运行 `taskschd.msc`，进入“任务计划程序库”，找到 `WinkYou-A`。紧急情况下必须先点“禁用”，再点“结束”；只点“结束”或只在任务管理器结束 child 都可能被重新拉起。命令行流程仍以下面的精确路径版本为准。
-
-只结束 `wink-*.exe` **不够**：supervisor 会自动拉起新 child。紧急情况下应在 **管理员 PowerShell** 中执行下面整段，先写 stop marker，再禁用并停止计划任务，最后只按精确路径清理残留进程：
-
-```powershell
-$taskName = 'WinkYou-A'
-$taskPath = '\'
-$root = 'D:\workspace\winkyou\.live-run\runs\rank2x3-physical-v2-20260722-r1'
-$statePath = Join-Path $root 'normal\A\A.runtime.json'
-$stopPath = $statePath + '.supervisor.stop'
-$expectedExe = Join-Path $root 'artifacts\wink-windows-amd64-880936b.exe'
-$supervisorScript = 'D:\workspace\winkyou\scripts\run-wink-supervisor.ps1'
-
-# 1. 先阻止 supervisor 和 Task Scheduler 再次拉起进程。
-[IO.File]::WriteAllText(
-    $stopPath,
-    "emergency-stop: $([DateTimeOffset]::Now.ToString('o'))`n",
-    [Text.UTF8Encoding]::new($false)
-)
-Disable-ScheduledTask -TaskPath $taskPath -TaskName $taskName -ErrorAction Stop |
-    Out-Null
-Stop-ScheduledTask -TaskPath $taskPath -TaskName $taskName -ErrorAction SilentlyContinue
-Start-Sleep -Seconds 2
-
-# 2. 只清理路径和命令行都匹配本次部署的残留进程，避免误杀其他 PowerShell。
-$owned = @(
-    Get-CimInstance Win32_Process |
-        Where-Object {
-            [int]$_.ProcessId -ne $PID -and (
-                ($_.ExecutablePath -and
-                    [IO.Path]::GetFullPath($_.ExecutablePath) -ieq
-                    [IO.Path]::GetFullPath($expectedExe)) -or
-                ($_.Name -ieq 'powershell.exe' -and
-                    $_.CommandLine -like ('*' + $supervisorScript + '*') -and
-                    $_.CommandLine -like ('*' + $statePath + '*'))
-            )
-        }
-)
-$owned | ForEach-Object {
-    Stop-Process -Id ([int]$_.ProcessId) -Force -ErrorAction Stop
-}
-Start-Sleep -Seconds 3
-
-# 3. 验收：任务必须 Disabled，部署进程和三个现场监听必须为空。
-$task = Get-ScheduledTask -TaskPath $taskPath -TaskName $taskName
-$remaining = @(
-    Get-CimInstance Win32_Process |
-        Where-Object {
-            [int]$_.ProcessId -ne $PID -and (
-                ($_.ExecutablePath -and
-                    [IO.Path]::GetFullPath($_.ExecutablePath) -ieq
-                    [IO.Path]::GetFullPath($expectedExe)) -or
-                ($_.Name -ieq 'powershell.exe' -and
-                    $_.CommandLine -like ('*' + $supervisorScript + '*') -and
-                    $_.CommandLine -like ('*' + $statePath + '*'))
-            )
-        }
-)
-$listeners = @(
-    Get-NetTCPConnection -LocalPort 22022,22024,32110 -State Listen `
-        -ErrorAction SilentlyContinue
-)
-
-[pscustomobject]@{
-    TaskState         = [string]$task.State
-    TaskEnabled       = [bool]$task.Settings.Enabled
-    StopMarkerPresent = Test-Path -LiteralPath $stopPath
-    RemainingProcess  = $remaining.Count
-    RemainingListener = $listeners.Count
-}
-
-if ($task.State -ne 'Disabled' -or $remaining.Count -ne 0 -or
-    $listeners.Count -ne 0) {
-    throw 'WinkYou-A emergency stop is incomplete'
-}
-```
-
-当前现场已于 `2026-07-22 15:30:30 +08:00` 执行上述停机：任务为 `Disabled`，stop marker 存在，相关进程以及 `22022/22024/32110` 监听均为零。不要删除 stop marker，也不要手动 `Start-ScheduledTask`；单独启动 child 同样不安全。
-
-源进程停止后，出口 NAT/防火墙上已经建立的 UDP conntrack/session 不一定立即消失，会按设备的 UDP idle timeout 逐步老化。如果业务网络仍未恢复，应让网管先通过 DHCP/ARP/终端地址核实故障主机的当前源 IP，再只清理该源的 UDP 会话；不要为了本事故重启整台防火墙、清空全局会话表或扩大到无关终端。2026-07-22 本次 Wink 日志里的物理出口源地址为 `10.3.9.11`，它只能作为排查线索，不能代替现场地址核验。
-
-重新启用前至少完成以下 P0 修复：
-
-1. 给整个节点的 heavyweight punch 加全局 single-flight/semaphore，禁止多个 peer 同时各自启动 128-socket punch。
-2. 把 socket 数、目标数、窗口和周期改成可配置且带保守硬上限；失败后使用指数退避和抖动，不能每分钟长期运行约 45 秒。
-3. 对 UDP 发包做节点级 packets-per-second 和新目标/五元组速率限制；`WSAENOBUFS`、临时错误或连续写失败必须立即停止本轮并进入 local-resource backoff，不能忽略错误继续发包。
-4. punch packet nonce 不得每包调用 OS CSPRNG；保留一次安全随机 seed，再使用每 socket PRNG 或计数器。握手和认证材料仍使用密码学随机数。
-5. 健康邻居的 keepalive 不得因单次临时 `WSAENOBUFS` 立即拆边；应使用有限重试和连续错误阈值，避免“打洞过载 -> 健康边被拆 -> 更多打洞”的正反馈。
-6. 取消 punch 时主动设置 deadline/关闭 socket，等待所有 sender/reader 退出；增加 goroutine、socket、句柄和发包速率的运行时指标与 kill switch。
-7. 先在隔离网络完成单 peer、多 peer、失联 24 小时和故障注入验收，并在出口设备上同时核对 conntrack/session 数；测试期间设置外部限速。办公网只允许经过评审的小流量 canary。
-
-修复完成后也不能直接删除标记并恢复任务。应先冻结新二进制 SHA-256、确认配置中的限流值、在隔离环境通过门禁，再由两人复核执行 `Remove-Item $stopPath`、`Enable-ScheduledTask` 和 `Start-ScheduledTask`。恢复后若 UDP socket、句柄、线程、CPU、发包率或出口 session 任一超过门限，立即重新执行紧急停机。
-
 ## 当前状态
 
-当前代码已经完成 Phase 3B code health、Phase 4A `relay_only` 冻结，并进入 protected direct multipath、非 UDP PacketTransport alpha 验证和 v0.1 运维闭环。
+- v2 直连优先计划已经 **Accepted**；接受范围、证据与不授权事项见 [`docs/PHASE0-EXIT-RECORD.md`](./docs/PHASE0-EXIT-RECORD.md)，完整计划见 [`docs/proposals/WINKYOU-V2-DIRECT-FIRST-PLAN.md`](./docs/proposals/WINKYOU-V2-DIRECT-FIRST-PLAN.md)。
+- 项目处于 **Phase 1a 构建期**。main 已包含 machine-wide governor、`probeio` 网络能力边界、架构门禁、无发包诊断、test-only 配对 mini-spec/模拟器和首批 solver domain 收敛；后续仍需完成 canonical domain、session 编排、connect-test、stdio API 与 NAT 模拟矩阵。
+- [`docs/CONNECTIVITY-SOLVER-BASELINE.md`](./docs/CONNECTIVITY-SOLVER-BASELINE.md) 仍是当前实现权威；Accepted v2 计划不会在正式 ADR 合入前取代它。
+- 当前版本仍是开发中的 alpha，不应被描述为 production-ready、零信任网络或已经完成真实公网验收的 v2 产品。
 
-- 活跃架构权威：[`docs/CONNECTIVITY-SOLVER-BASELINE.md`](./docs/CONNECTIVITY-SOLVER-BASELINE.md)
-- v0.1 freeze gate：[`docs/V0.1-FREEZE.md`](./docs/V0.1-FREEZE.md)
-- v0.2 multipath/bootstrap freeze gate：[`docs/V0.2-MULTIPATH-FREEZE.md`](./docs/V0.2-MULTIPATH-FREEZE.md)
-- Protected direct multipath 目标：[`docs/MULTIPATH-PROTECTED-DIRECT.md`](./docs/MULTIPATH-PROTECTED-DIRECT.md)
-- Phase 2D 已冻结：`phase2d-freeze-2026-04-24`
-- Phase 3A strategy portfolio foundation 已落地
-- Phase 3B code health 已完成，包括 CI 质量门、session 机械拆分、状态转换校验、resolver 统一、context 边界修复和若干小型清理
-- Phase 4A 已新增 `relay_only` strategy
-- `tcp_framed` 已作为 alpha strategy 加入，用来验证 framed stream 可以承载 `PacketTransport`
-- `signal_relay` 已作为 coordinator signal stream 上的低吞吐保底 packet path 加入，用来在没有 TURN 且 direct/TCP 暂不可用时保持已绑定 WireGuard 数据面
-- 实验性 `birthday_punch` 已在双端 symmetric/EDM 真机上完成公网直连；`punchtest bridge` 可把获胜 UDP socket 直接升级为 QUIC/mTLS 固定目标 TCP 转发，并已在两端 Tailscale/natpierce 全部关闭时通过 SSH。该入口不使用 WireGuard/Wintun，也不是透明 VPN 或完整虚拟局域网；详见 [`docs/BIRTHDAY-PUNCH-DESIGN.md`](./docs/BIRTHDAY-PUNCH-DESIGN.md)
-- `birthday_punch` 的获胜 UDP socket 也已接入自治图运行时，成为可路由的 direct `PacketNeighbor`。post-r9 源码候选进一步加入持久化 recovery card：当两端既没有邻居也没有图路由时，可按确定性时间窗直接重打缓存的公网 IPv4 端点；第一条边恢复后，再由普通 mesh peer 协调补齐其余 maintained direct edge。本地源码测试已覆盖一个全新 peer runtime 仅凭 card 回来，以及全部三 runtime 重建后先成树再补齐 direct triangle，并通过重复与 race 检查。该能力未进入 staged r9 二进制，但 r12 已完成真实公网 NAT 进程的 zero-seed rejoin。Slice 4.5 现已把该运行时抽到 `pkg/meshruntime`，以默认关闭的 `autonomous_mesh` 模式接入 `wink up/down/status/peers`，并于 2026-07-19 完成 C -> B -> A 三节点产品滚动现场部署：三者均 zero seed、无基础设施 coordinator、每节点两条一跳 `protected_direct` packet edge。2026-07-20 又完成两级 A-only 恢复验收：先由独立 watchdog 证明新 generation 可安全接管硬崩溃遗留的 ULA alias，随后完成 A 的 Task Scheduler + child-supervisor 现场迁入；第二轮强杀 Wink child 后约 9.1 秒内观测到新 runtime state、约 91 秒观测到直连三角恢复并保持约 149 秒，B/C 均未重启。机器重启、B/C 托管、三节点同时冷启动和变更公网 IP 仍未验收。详见 [`docs/SLICE-4.5-FIELD-ROLLOUT-2026-07-19.md`](./docs/SLICE-4.5-FIELD-ROLLOUT-2026-07-19.md)、[`docs/VIRTUAL-TCP-ALIAS-CRASH-RECOVERY-2026-07-20.md`](./docs/VIRTUAL-TCP-ALIAS-CRASH-RECOVERY-2026-07-20.md)、[`docs/WINDOWS-SUPERVISOR-FIELD-2026-07-20.md`](./docs/WINDOWS-SUPERVISOR-FIELD-2026-07-20.md)、[`docs/SELF-BOOTSTRAP-RECOVERY.md`](./docs/SELF-BOOTSTRAP-RECOVERY.md) 和 [`docs/LONG-RUNNING-CLIENT.md`](./docs/LONG-RUNNING-CLIENT.md)
-- Recovery Candidate Portfolio v1 在不改变 recovery-card schema 的前提下使用既有的最多 64 条 endpoint 历史：按远端公网 IPv4 确定性分组，最多选 4 组、每组最多 4 个历史端口；同 IP 的端口合并进一次有界 punch。不同 IP 由共享的绝对 pair-window 序号和互补 selector/receiver 角色遍历最多 `4×4` 组合，每个 pair 每个窗口最多尝试一组；因此双方历史排序不同也不会永远错相位，进程重启后仍延续同一绝对窗口组合。失败次数只作进程内诊断，不写回 card，也不决定调度。成功边界仍是 punch winner、pair-key HMAC HELLO 和 exact neighbor promotion，不新增 relay、coordinator、协议消息或 card schema。该 portfolio 当前只按源码和隔离测试目标描述，尚无独立现场验收；IPv6、LAN discovery、PCP/NAT-PMP/UPnP 以及 endpoint 与本地 bind 的历史关联留给 v2
-- 2026-07-17 长时实测：同一 QUIC 会话连续完成 626 次新建 SSH 探针，最后一次完整成功距建连约 10 小时 58 分；原桥接进程随后仍持续存活并承载新的已认证 SSH stream，但第 627 条短命令没有正常收尾，暴露出 per-stream deadline/关闭语义仍需补测，不能只凭进程存活宣称业务全绿
-- 当前生产注册顺序保持兼容：`legacy_ice_udp` -> `relay_only` -> `signal_relay`
-- `tcp_framed` 默认禁用，只有显式 `tcp_framed.enabled: true` 且加入 `connectivity.strategy_order` 时才会注册
-- `connectivity.mode: relay_only` 会把生产 strategy 顺序切到 `relay_only` -> `legacy_ice_udp`
-- `connectivity.mode: auto` 下如果本机 NAT 检测为 `symmetric` 且已配置 TURN，生产 resolver 会临时把顺序调为 `relay_only` -> `legacy_ice_udp`，先用 relay 保活，再让 legacy/public-direct 继续尝试独立路径；如果没有 TURN，仍保持 `legacy_ice_udp` 优先，让 `direct_prefer/public_direct` 先尝试打洞
-- 旧的 `nat.force_relay: true` 仍兼容映射到 relay-only 行为
-- 旧 peer 空 capability 仍会隐式 fallback 到 `legacy_ice_udp`
-- `wink doctor` 已提供 config、coordinator、STUN、TURN、本地接口、strategy、routing、tunnel、transport 的分层诊断；strategy 层会显示 production strategy order 和 `legacy_ice_udp` 内部 plan order；STUN 检查会用同一个本地 UDP socket 探测多个 public-direct STUN 来源，显示本机映射地址、提示映射是否稳定，并在可用时给出 `nat.public_endpoint_hints` 候选；`public direct evidence` 检查会读取 observation history，说明 `legacyice/public_direct` 是未尝试、无可用公网候选、候选已交换但 ICE 检查失败，还是已证明 `protected_direct`；`--route-target <ip>` 可以检查访问某个目标 IP 时当前操作系统实际选中的接口/本地地址/下一跳，并在命中 natpierce、Tailscale、Docker 等外部 overlay 接口时给出 warning
-- `wink up/down/status/peers/logs` 已形成长期运行 CLI 工作流；默认仍运行原有 legacy coordinator/WireGuard engine。只有显式配置 `autonomous_mesh.enabled: true` 才选择自治图 engine；Linux systemd 和 Windows 启动项文档已补齐，A 已通过 Task Scheduler child-supervisor 的进程崩溃自动恢复，但整机重启和其他节点托管仍未验收
-- v0.1 release workflow 已能构建 Windows client、Linux client、Linux coordinator、Linux relay 和 SHA256SUMS
-- NAT/ICE 已支持 candidate interface include/exclude 和 candidate CIDR include/exclude；`legacy_ice_udp` 现在会在普通 `direct_prefer` 后追加 `public_direct` 执行计划，用来排除私网、`100.64.0.0/10`、loopback、link-local 等 overlay/依赖不清的 candidate，并默认避开 natpierce、Tailscale、Docker/vEthernet、Wintun/WinkYou 等外部 overlay/虚拟接口，再尝试独立公网 ICE direct；`wink doctor` 会展示过滤配置并检查 runtime candidate 是否命中排除 CIDR
-- `auto` 模式默认启用保守 protected-direct multipath：最多保留 primary + 一条 standby，relay-only/force-relay 仍保持单路径
-- 如果已 bound 的 path 不是 `protected_direct`，client 会保留现有数据面并在后台继续尝试保护直连；只有后续结果明确为 `protected_direct` 时，才会替换 tunnel peer 的 transport
-- runtime/`wink peers --json` 会暴露最近 path 的 plan、role、dependency 和 child path 摘要；验证真实直连时应以 `last_path_role=protected_direct` 且 `last_path_dependencies` 为空作为证据，而不是只看 `connection_type=direct`
-- `wink peers` / `wink peers --json` 会显示 `last_failover_why`，例如 `active_path_rx_silence:<path>`，用于判断断开 natpierce/relay/underlay 后是否真的触发了 multipath failover
-- 2026-06-06 真实节点验证：`signal_relay` 可以把 local-live 与 inner-live 绑定到 `Path Strat: signal_relay`，`Path Deps: coordinator:...:coordinator_signal_stream`，后台 `tcp_framed` / `legacy_ice_udp` protected-direct improvement 失败后不再清空已绑定 path。该路径依赖 coordinator signal stream，不等价于 coordinator-less，也不能在断开 node-b/coordinator/natpierce 这一整条 underlay 后继续承载数据。
-- 2026-06-06 同一现场还确认：本机到 inner-gw 的 `10.20.0.1:22` 能通过 natpierce/node-b 访问，但 inner-gw 临时监听的随机 TCP 端口没有收到本机连接，inner-gw `tcpdump -i natpierce tcp port 22` 看到的 SSH 来源也是 `10.20.0.4`，不是本机 `10.20.0.3`。因此当前 natpierce 拓扑不能被当作“任意 TCP/UDP 端口都直达”的 underlay；`tcp_framed` 必须配置固定且已转发/已放行的 TCP endpoint，`legacy_ice_udp` 仍需独立 STUN/ICE 证据证明 protected direct。
-- 同一轮验证还暴露了 Windows Wintun 应用流量问题：in-band `33435` 和 tunnel 计数持续读写，但外部 `wink ping`/PowerShell UDP 到 `10.88.0.8:33434` 可能被 Windows 计入 `OutboundDiscardedPackets`，未进入 wink 的 TUN read，也未到达 inner-gw `wink0`。当前已提供默认关闭的 `WINKYOU_TRACE_TUN_PACKETS=1` 调试开关，用于区分“应用包未进入 Wintun”和“已进入 tunnel 但未到远端”。
-- 真实双节点验证已证明 `legacy_ice_udp` direct path 可以建立虚拟局域网；在已 bound 数据面上只停止 node-b 的 coordinator 进程 15 秒后，`wink ping` 仍成功，说明基础 coordinator outage 已通过。但历史 selected pair 的 remote candidate 曾为 `100.64.0.10`，属于 `100.64.0.0/10`，这只能证明没有走 TURN relay，不能证明该 path 独立于 natpierce/node-b underlay。client 已加第一层 peer-offline 保护、controlled-side retry、coordinator NotFound 重注册，并已在 runtime/`wink peers` 中暴露 control/data 状态和最近成功 path cache；`pkg/peercontrol` 消息模型已冻结，client 已接入最小 in-band heartbeat/path_health 循环，`re_ice_request` 会触发 protected-direct improvement，`session_signal` 会在已建立虚拟网内冗余发送现有 session/strategy 信令，并会短期重发最近信令、按序列去重，后续仍需覆盖更长时间 heartbeat/signaling failure、完整 ACK/backoff 和 cached path 恢复；详见 [`docs/CONTROL-PLANE-RESILIENCE.md`](./docs/CONTROL-PLANE-RESILIENCE.md)
+## 安全边界
 
-当文档发生冲突时，以 [`docs/CONNECTIVITY-SOLVER-BASELINE.md`](./docs/CONNECTIVITY-SOLVER-BASELINE.md) 作为 session、solver、strategy 和 transport 边界的判断依据。部分历史架构文档已标记为 proposal/archive，不能覆盖 active baseline。
+- cached self-bootstrap / autonomous birthday recovery 继续维持 **NO-GO 与暂停决定**；当前二进制会 fail-closed 拒绝相关配置，不得重新部署或绕过门禁。
+- 历史部署的计划任务保持 `Disabled`，不得因文档重构而启用；本仓库的普通构建和测试也不授权真实家庭网、办公网或公网探测。
+- 事故根因、影响与恢复门禁见 [`docs/INCIDENT-2026-07-22-SELF-BOOTSTRAP-UDP-STORM.md`](./docs/INCIDENT-2026-07-22-SELF-BOOTSTRAP-UDP-STORM.md)；已去除个人部署细节的停机原则归档在 [`docs/RUNBOOK-EMERGENCY-STOP-HISTORICAL-WINDOWS.md`](./docs/RUNBOOK-EMERGENCY-STOP-HISTORICAL-WINDOWS.md)。
+- v2 计划 Accepted 只授权其明确列出的本地、模拟器与安全基础设施工作，不授权自动恢复、公共 coordinator/DHT/relay、遥测收集或生产发布。
+
+## 快速开始
+
+### 无发包的首次检查
+
+仓库要求 Go 1.23.1 或兼容工具链。第一次接触项目时，建议先运行 Phase 1a 的被动诊断；它读取本机安全 namespace、配置、接口和路由状态，但不会打开 socket 或发送探测包：
+
+```bash
+go run ./cmd/wink diagnose
+go run ./cmd/wink diagnose --json
+```
+
+机器级安全 namespace 的准备、非特权用户的显式降级边界与输出解释见：
+
+- [`docs/PASSIVE-DIAGNOSE.md`](./docs/PASSIVE-DIAGNOSE.md)
+- [`docs/MACHINE-SAFETY-NAMESPACE.md`](./docs/MACHINE-SAFETY-NAMESPACE.md)
+- [`docs/USER-ACKNOWLEDGED-SCOPE.md`](./docs/USER-ACKNOWLEDGED-SCOPE.md)
+
+`wink doctor` 是现有 legacy runtime 的联网诊断入口，会检查 coordinator、STUN/TURN 和路径候选；只有在明确授权的网络中才应运行。它与无发包的 `wink diagnose` 不是同一个安全级别。
+
+### 自托管两节点路径
+
+当前可复现的端到端路径仍是默认 legacy 模式：一台 Linux 公网服务器运行 coordinator + coturn，两台 client 通过连接求解器建立 direct 或 relay path，再由 WireGuard 数据面承载流量。完整证书生成、密钥权限、Compose 启动、client 配置和 direct/relay 验收步骤见 [`docs/SELFHOST-QUICKSTART.md`](./docs/SELFHOST-QUICKSTART.md)。
+
+完成 quickstart 中的 TLS 证书、共享凭证和 `.env` 准备后，服务端使用：
+
+```bash
+docker compose --env-file deploy/quickstart/.env \
+  -f deploy/quickstart/docker-compose.yml up -d --build
+```
+
+这里的 Docker 路径只容器化 coordinator 与 coturn；需要 TUN/Wintun 的 client 仍在宿主机运行。远程 coordinator 必须使用 `grpcs://`、匹配 IP/DNS SAN 的证书和部署级共享凭证；明文 `grpc://` 或无 scheme 地址只允许数值 loopback（`127.0.0.0/8`、`::1`），`localhost` 也不会被当作显式 loopback。共享凭证只证明部署成员资格，不提供每节点身份隔离。
 
 ## 当前可运行路径
 
-当前可部署的主路径仍是：
-
-- Windows client 使用 TUN/Wintun
-- Linux client / peer
-- Linux coordinator
-- coturn 作为公网部署推荐 TURN relay
-- userspace `wireguard-go` 作为安全数据平面
-- `PacketTransport` 负责把选中的 packet path 绑定给 tunnel
-- 独立现场工具 `punchtest bridge` 可运行无 Wintun 的固定目标 QUIC/TCP bridge；历史现场曾用本机 `127.0.0.1:22022` 作为该 bridge 入口。当前这个端口已由 A 的产品 `wink up` 运行时监听并通过 WinkYou 图路由到 C，可用 `ssh -o ProxyJump=none -p 22022 node-c-user@127.0.0.1` 访问，不应再把当前监听误认成独立 `punchtest bridge`
-- `pkg/meshruntime` 已把 direct UDP edge、peer transit、用户态 TCP service 和 cached-endpoint self-bootstrap 接到同一图运行时；`cmd/meshnode` 现在只是保留原实验参数的薄入口。Slice 4.5 又通过 `pkg/client` adapter 让显式启用的 `wink up` 管理同一生命周期，并让 `status`/`peers` 读取统一 runtime state；该产品 adapter 已完成三节点现场滚动部署，但仍不提供透明系统 L3
-- Windows IPv6 TCP facade 已实现：新旗标 `--virtual-tcp-forward [VIRTUAL_IP]:PORT=NODE_ID` 只接受 IPv6 ULA `/128`，运行时把地址临时挂到 Windows loopback（ActiveStore、`SkipAsSource=true`），优雅退出时清理。managed autonomous `wink up` 还会在 `%ProgramData%\WinkYou\system-ingress-ipalias` 记录按地址加锁的崩溃安全 ownership journal；外部 supervisor 以同一 state 路径、node ID 和完整 virtual-forward 映射集重启时，只有确认旧进程已死且 OS 地址行未被替换后才能接管。markerless、身份或映射不匹配时一律不修改地址并报冲突；该机制不负责拉起已经死亡的进程，低层 `meshnode` 入口也不在此恢复承诺内。它沿用现有 fixed-target `OPEN`，可与 r12 对端兼容，但远端仍必须配置 `--tcp-target`。普通 Windows TCP 客户端可在选定端口直接运行 `ssh -6 node-b-user@fd00::b` 或 `ssh -6 node-c-user@fd00::c`；它不提供任意端口、UDP、ICMP、系统 L3 或出口节点，facade 本身也不依赖 Wintun/WireGuard
-- 2026-07-19 A-only facade 先行验收：candidate PID `80524`（runtime `2026-07-19T00:57:05Z`）先通过 cached self-bootstrap 恢复一跳 A-B；A-C 第一轮经普通 peer B 协调打洞超时，第二轮成功并达到 `stable`，最终 A-B/A-C 均为一跳 `protected_direct`。旧入口 `127.0.0.1:22024/22022` 与新入口 `[fd00::b]:22/[fd00::c]:22` 共四个入口完成两轮正确 SSH banner，随后保持 45 秒；独立终验中 A 的 `data_forwarded` 从 `40` 增至 `60`，`data_dropped=0`。随后普通 Windows OpenSSH 通过两个 ULA 完成实际认证，分别返回 B 的 `node-b-host` 与 C 的 `node-c-host`，退出码均为 `0`。`fd00::b/c` 仅存在于 loopback interface index `1`，均为 ActiveStore `/128`、`SkipAsSource=true`，PersistentStore 数量为 `0`，portproxy 为空。现场 Tailscale 服务和 natpierce 进程当时仍在运行，但未承载该路径：ULA 入口命中 loopback，A 到 B/C 公网端点的 UDP socket 分别使用本进程端口 `52507/62451`，并由物理以太网源 `10.0.0.10` 经网关 `10.0.0.1` 路由；natpierce 是独立的 `58606 -> 203.0.113.40` 连接。此后 Slice 4.5 已完成三节点 `wink up` 滚动部署，四入口均返回完整命令 stdout/JSON；后续 120 秒 monitor 的 44 个 SSH 承载探针全部 exit `0`。Win32-OpenSSH 同时打印的 pending-I/O close warning 单独留证，但本轮未重现真实 stream hang，也不扩大为完整 L3 能力
-- rendezvous v2 envelope 负责 capability、observation、probe、path_commit 等 session 消息
-
-### Slice 4.5：自主 mesh 的 `wink` 集成
-
-`autonomous_mesh` 默认关闭，因此旧配置、默认 strategy 顺序和原有 coordinator/WireGuard engine 保持不变。下面是类型化配置示例；示例域名和 ULA 仅用于说明格式，不是可直接连接的现场信息：
-
-```yaml
-node:
-  name: demo-a
-
-nat:
-  # Optional; replace with the exact local name (Windows: Ethernet, Linux: eth0).
-  # punch_interface: Ethernet
-  stun_servers:
-    - stun:stun.example.invalid:3478
-
-autonomous_mesh:
-  enabled: true
-  node_id: demo-a
-  virtual_ip: fd7a:115c:a1e0::a
-  listen: 0.0.0.0:32100
-  control_listen: 127.0.0.1:32110
-  bootstrap_peers:
-    - node_id: demo-b
-      address: mesh-b.example.invalid:32100
-  tcp_target: 127.0.0.1:8022
-  tcp_forwards:
-    - listen: 127.0.0.1:22022
-      remote_id: demo-b
-  virtual_tcp_forwards:
-    - listen: "[fd7a:115c:a1e0::b]:22"
-      remote_id: demo-b
-```
-
-事故暂停期间，`wink` 会拒绝 `autonomous_mesh.maintain_peers` 和
-`autonomous_mesh.recovery_card`，`meshnode` 也会拒绝 `--maintain-peer` 和
-`--recovery-card`。不启用自动 direct-edge recovery 的 autonomous mesh 仍可用于
-固定 bootstrap 和隔离的本机生命周期验证。该 fail-closed 门禁只能在事故记录中的
-资源预算、退避、熔断、隔离验收和复核条件全部满足后移除。
-
-`nat.punch_interface` 是可选项。配置后，WinkYou 会把接口名解析成一个明确的
-IPv4 源地址，并要求 birthday-punch 与 cached self-bootstrap 的
-STUN/probe/punch socket 同时绑定该接口和源地址；无法执行时直接失败，不回退到
-系统默认路由。留空则保持原来的操作系统选路行为。这个字段只约束实际发包出口，
-不能仅凭接口名证明它就是物理 WAN；严格现场证据仍需排除 OpenVPN/TAP 等外部
-overlay，并核对 `local_bind_ip` / `local_bind_interface`。
-
-`bootstrap_peers`、`tcp_forwards` 和 `virtual_tcp_forwards` 是结构化 YAML，不暴露 `NODE=ADDRESS` 这类实验 CLI 编码。`control_listen` 必须是 loopback；它承载带随机 shutdown token 的本机优雅停止请求。`wink status --json` 不输出该 token。`wink down` 会先核对 PID 对应的进程启动身份，再发送认证请求并等待同一 instance 清理 runtime state；受管 autonomous runtime 即使传入 `--force` 也不会退回裸 PID 强杀。`--force` 只保留给没有 managed control endpoint 的 legacy 兼容路径。
-
-源码验收：
-
-```bash
-go test ./... -count=1
-go test -race ./pkg/config ./pkg/meshruntime ./pkg/processidentity ./pkg/client ./cmd/wink/cmd -count=1
-go vet ./...
-```
-
-2026-07-19 已按上述边界完成一次隔离本机 CLI 冒烟：mesh listener 关闭、control port 动态分配，第二个 `up` 被生命周期锁拒绝，`status --json` 未输出 shutdown token，认证 `down` 后进程与 state 均清理，既有现场进程保持运行。复现步骤见 [`docs/LONG-RUNNING-CLIENT.md`](./docs/LONG-RUNNING-CLIENT.md)。该集成仍是 selected-port 用户态服务和自治图生命周期，不是任意 TCP/UDP/ICMP、子网路由或出口节点；这些仍属于 Slice 5。
-
-当前真实 strategy：
-
-- `legacy_ice_udp`：兼容现有 ICE/UDP 路径，内部支持 `direct_prefer`、`public_direct` 和 `relay_only` execution plan
-- `relay_only`：第二个真实 strategy，是 `legacyice` 的 thin wrapper，强制 relay，并对外以 `relay_only` 出现在 capability、observation 和 path_commit 中
-- `tcp_framed`：alpha 非 UDP strategy，使用显式可达 TCP 地址和 `transport/framedstream` 适配器，不承诺 NAT TCP 打洞
-- `signal_relay`：通过 coordinator strategy message 承载加密 WireGuard packet 的低吞吐 fallback，path summary 会明确标记 coordinator dependency；它是保活/诊断兜底，不是 TURN 替代品，也不是无 coordinator 的 bootstrap 方案
-
-默认连接策略：
-
-```yaml
-connectivity:
-  mode: auto
-  strategy_order:
-    - legacy_ice_udp
-    - relay_only
-    - signal_relay
-  multipath:
-    enabled: true
-    protect_direct: true
-    max_paths: 2
-    shadow_write: true
-    dependency_penalty: 50
-    direct_protection_bonus: 100
-    active_path_silence_timeout: 15s
-```
-
-如果某个 WinkYou peer 还负责转发它后面的后端网段，例如 `inner-gw` 所在的 `10.6.22.0/24` 不是一个直接注册到 coordinator 的 WinkYou 节点，而是 node-b 后面的虚拟局域网，需要在网关 peer 上显式发布路由：
-
-```yaml
-node:
-  name: node-b
-  advertise_routes:
-    - "10.6.22.0/24"
-```
-
-其他 peer 从 coordinator 收到该发布后，会把 `10.6.22.0/24` 加入 node-b 这个 peer 的 WireGuard `AllowedIPs`，并在本机加一条经由 node-b 虚拟 IP 的系统路由。这不是默认 peer relay，也不会自动替任何 peer 转发任意网段；只有被显式配置的后端 CIDR 才会发布。网关机器本身仍必须允许 IP forwarding/转发，并放行对应防火墙规则。后端主机还必须能把 WinkYou 虚拟网段回包送回该网关；如果后端网络不能加静态回程路由，就需要在网关上做 SNAT/masquerade。
-
-排查时，`wink peers` 的 `Routes` 行和 `wink peers --json` 的 `advertised_routes` 字段会显示远端 peer 发布的后端网段；`wink doctor` 会在 `routing` 层报告本节点正在发布的路由、已绑定 peer 的远端发布路由，并检查本机操作系统路由表是否已经把远端后端网段指向对应 peer 的 WinkYou 虚拟 IP。Windows TUN 后端路由会用低 route/interface metric 安装，避免同前缀路由轻易被 natpierce/Tailscale 等外部 overlay 抢走；但更具体的 `/32` host route 仍会优先于 `/24`，需要清理 stale overlay route 或发布同样具体的 WinkYou 后端路由。配置了 `node.advertise_routes` 的网关 peer 还会检查当前操作系统的 IP forwarding 状态，同时提醒检查后端回程路由或 SNAT。要确认某个具体地址当前是否仍由 natpierce/Tailscale 等外部 overlay 承载，可以运行 `wink --config <config.yaml> doctor --route-target 10.20.0.1`；如果输出接口是 `natpierce`，这只能证明 natpierce overlay 能到达该地址，不能证明 WinkYou 已经独立承载这条路。
-
-默认 `auto` 模式会启用 protected-direct multipath：最多保留 primary + 一条 standby，并默认开启 shadow write，让 standby path 也持续收到数据包，从而维持 NAT/relay 状态。session 会执行预算内候选，而不是在第一个 direct 成功后立刻停止；跨 strategy 场景下也会在 `max_paths` 预算内继续给后续候选一次机会，直到能组成 primary + protected direct standby 或没有剩余候选。legacy ICE 会把 selected pair 的 RTT 写入 path metrics，让低延迟 relay/其他 path 和高延迟 direct 能参与同一轮评分。默认 scoring 会惩罚 relay/依赖路径，并对 `unknown` 依赖加倍惩罚，同时给真正的 `protected_direct` 加保护分。这样当 `legacyice/direct_prefer` 选中了低延迟但依赖不清的 path，而 `legacyice/public_direct` 或后续 direct path 也成功时，client 会把它们组合成一个 `multipath` transport 绑定给 WireGuard；如果没有 RTT 证据，依赖不清的 direct-like path 不应仅因为看起来是 direct 就压过明确可用的 relay。
-
-如果启动时 NAT detection 得到 `symmetric` 且配置了 TURN，`auto` 模式会把 production strategy 顺序临时调成 `relay_only`、`legacy_ice_udp`。这不会设置 `nat.force_relay`，也不会禁用 `legacyice/public_direct`；它只是避免在 endpoint-dependent 映射环境下先把用户流量绑到高失败概率 direct path，后续仍会继续尝试 protected-direct improvement。如果没有 TURN，`relay_only` 本身不可用，生产顺序会保持 `legacy_ice_udp` 在前，继续优先尝试 `direct_prefer/public_direct`。
-
-在没有 TURN 且没有显式 `connectivity.mode: relay_only` / `nat.force_relay: true` 时，`legacy_ice_udp` 内部也不会把 `legacyice/relay_only` plan 插到 `public_direct` 前面；历史 relay success 只会在 relay 真的可用时影响排序。这避免无 TURN 环境先等待一个必然不可用的 relay plan，给 direct/public-direct 打洞留下完整预算。
-
-如果初始绑定只拿到了 relay 或依赖不清的 direct-like path，client 不会把它当作最终状态停止。它会在保持现有 WireGuard 数据面的同时继续调度 protected-direct improvement；尝试失败时关闭临时 transport 并保留旧 path，尝试成功且 path summary 明确为 `protected_direct` 时再替换 tunnel peer 的 transport。需要回退到旧单路径行为时，可以显式设置 `connectivity.multipath.enabled: false`。
-
-显式验证 `tcp_framed` alpha 路径时，需要同时启用 strategy 和配置可达 TCP 地址：
-
-```yaml
-connectivity:
-  mode: auto
-  strategy_order:
-    - legacy_ice_udp
-    - relay_only
-    - tcp_framed
-
-tcp_framed:
-  enabled: true
-  listen_addr: "0.0.0.0:0"
-  advertise_addr: "203.0.113.10:39000"
-  role: auto
-  dial_timeout: 5s
-```
-
-如果只有一端有固定可达入口，或者外部工具只转发了某个固定 TCP 端口，不要使用随机 `:0` 作为可达性证据。可把监听端固定在被转发端口，并在对端配置静态拨号：
-
-```yaml
-# listener side
-tcp_framed:
-  enabled: true
-  role: listen
-  listen_addr: "0.0.0.0:39000"
-  advertise_addr: "203.0.113.10:39000"
-  dial_timeout: 5s
-
-# dialer side
-tcp_framed:
-  enabled: true
-  role: dial
-  dial_addr: "203.0.113.10:39000"
-  dial_timeout: 5s
-```
-
-在 natpierce 这类拓扑中，`10.20.0.1:22` 能通通常只能证明该端口或该会话被外部系统转发；如果 `10.20.0.1:<随机端口>` 不通，`tcp_framed` 的 `listen_addr: "...:0"` 也不会自动变成可达路径。
-
-配置好固定端口后，可以先运行 `wink --config <config.yaml> doctor --strategy tcp_framed`。如果本端配置了 `tcp_framed.dial_addr`，doctor 会用短超时实际 TCP 连接该 endpoint；成功只能证明该 TCP endpoint 当前可达，失败则优先检查对端监听、端口转发和防火墙。
-真实 session 执行时，`tcp_framed` 的拨号侧会在 `dial_timeout` 窗口内短间隔重试固定 endpoint，避免两端同时启动时监听侧尚未 ready 导致第一次 `connection refused` 就放弃。
-
-`tcp_framed` 的 path summary 会按远端 TCP endpoint 保守标记路径证据：公网 endpoint 成功后可标为 `protected_direct`；私网、`100.64.0.0/10`、loopback、link-local、benchmark/overlay 等非公网 endpoint 默认会保留 `unknown` dependency。只有在两端已经独立确认该非公网网段是 WinkYou 可直接使用的 underlay，并显式加入 `nat.direct_trusted_cidrs`（或兼容字段 `nat.public_direct_trusted_cidrs`）后，`tcp_framed` 才会把该 endpoint 视为 dependency-free direct path。
-
-显式验证 relay-only 路径时，优先使用连接策略入口：
-
-```yaml
-connectivity:
-  mode: relay_only
-  strategy_order:
-    - relay_only
-    - legacy_ice_udp
-  multipath:
-    enabled: false
-    protect_direct: true
-    max_paths: 2
-    shadow_write: false
-
-nat:
-  turn_servers:
-    - url: turn:your-turn.example.com:3478?transport=udp
-      username: winkdemo
-      password: winkdemo-pass
-```
-
-旧配置仍兼容：
-
-```yaml
-nat:
-  force_relay: true
-  turn_servers:
-    - url: turn:your-turn.example.com:3478?transport=udp
-      username: winkdemo
-      password: winkdemo-pass
-```
-
-在 relay-only 模式下，如果双方都支持 `relay_only`，生产 resolver 会优先选择 `relay_only`。如果远端是旧 peer 且没有上报 capability，仍会 fallback 到 `legacy_ice_udp`，但 legacy ICE agent 会继续使用 relay-only candidate gathering。
-
-注意：`connectivity.mode: relay_only` 和旧的 `nat.force_relay: true` 是单路径 relay 验证/保底模式，会关闭 protected-direct multipath。要同时保持“relay 或低延迟路径作为 primary + direct/P2P standby”，使用 `connectivity.mode: auto`，并把 `connectivity.strategy_order` 配成 `relay_only`、`legacy_ice_udp`。`wink doctor` 会在 multipath 已开启但 relay-only policy 实际导致单路径时给出 warning。
-
-验证纯 NAT piercing 时，可以排除已有 overlay 或本地虚拟网卡：
-
-```yaml
-nat:
-  candidate_interface_exclude:
-    - tailscale0
-    - docker0
-  candidate_cidr_exclude:
-    - 100.64.0.0/10
-    - 172.16.0.0/12
-```
-
-Windows 接口名应使用系统实际接口名称，例如 `Tailscale`、`vEthernet (WSL)` 或 Docker/Wintun 对应名称。`wink doctor` 会展示当前过滤配置，并在 runtime candidate 命中排除 CIDR 时报告失败。
-
-`legacyice/public_direct` 默认还会自动跳过 natpierce、Tailscale、Docker、Wintun/WinkYou 等疑似 overlay/虚拟接口，避免把已有外部通道误判成 WinkYou 自己的 protected direct。需要复现“natpierce 能通”的同类路径时，可以显式配置 `nat.candidate_interface_include` 把具体接口加入本轮测试；显式 `candidate_interface_exclude` 仍然优先。这个开关只表示你允许 WinkYou 在该接口上采集候选，不等于已经证明断开 natpierce 后仍可独立保活；若要把非公网地址当作 protected-direct 证据，还必须配合已验证的 `nat.direct_trusted_cidrs`。
-
-同理，`nat.candidate_cidr_include` 现在会让 `legacyice/public_direct` 接受该 CIDR 内的 host/peer-reflexive 候选参与连接尝试，适合受控复现 natpierce 或路由器日志中看到的非公网 underlay。它也允许该 CIDR 内的非公网 `public_endpoint_hints` 和启动时 STUN 观测生成的 runtime endpoint hints 参与尝试，并会与 mapped hint 的本地 base `/32` 合并使用，因此公网 endpoint hint、runtime hint 和受控 underlay CIDR 可以在同一轮 public-direct 尝试中共存。它不会自动把路径标为 `protected_direct`；未进入 `nat.direct_trusted_cidrs` 的非公网候选仍会在 path summary 中保留 dependency。
-
-如果两端有可确认的公网 1:1 映射或固定 UDP 端口映射，可以把公网候选提示交给 ICE agent，减少只依赖默认 STUN 采集的误判：
-
-```yaml
-nat:
-  candidate_port_min: 40000
-  candidate_port_max: 40100
-  nat1to1_candidate_type: srflx
-  nat1to1_ips:
-    - "203.0.113.10/192.168.0.10"
-  public_endpoint_hints:
-    - "192.0.2.52:41000/192.168.1.20:40000"
-  # 默认开启。启动时 STUN 观测到的公网 endpoint 会自动合入
-  # legacyice/public_direct 的 public_endpoint_hints。
-  auto_public_endpoint_hints: true
-  # 默认 2。围绕每个 public endpoint hint 的公网端口追加 ±N 的小窗口候选，
-  # 用于复现 natpierce/路由器日志里看到的可预测端口漂移。
-  public_endpoint_hint_port_window: 2
-  # 仅在确认该非公网 CIDR 是独立可达 underlay 时配置。
-  # direct_trusted_cidrs:
-  #   - "100.64.0.0/10"
-```
-
-`nat1to1_ips` 使用 Pion ICE 的 `external/local` 语义，适合公网 IP 映射和本地 ICE 端口范围稳定的场景。`public_endpoint_hints` 直接表达本机已知的公网 UDP `ip:port`，也可以写成 `公网ip:公网端口/本地ip:本地端口` 绑定到具体本地 UDP base；它只会作为 `legacyice/public_direct` 额外 srflx 候选发布。当 mapped hint 带本地 base 时，`legacyice/public_direct` 会把本次 ICE agent 限制到这些本地 IP；如果只有一个唯一的本地 base 端口，会在该本地 `ip:port` 上创建固定 UDP mux，让 host candidate、STUN/server-reflexive candidate 和 best-effort pre-punch 共享同一个 socket，从而让公网 hint 指向实际打洞 socket；收到远端 offer/answer 候选后，pre-punch 会在本轮 executor 生命周期内按 `nat.connect_timeout` 做有界重试，而不是只打一轮。如果有多个本地 base 端口，会拆成多个 `public_direct` hint plan，并分别绑定对应端口，避免把已经观测到的多个 UDP 映射混到同一个 ICE socket 里碰运气。`public_endpoint_hint_port_window` 默认配置值是 `2`；`public_direct` 会围绕每个公网 hint 追加相邻公网端口候选，例如 `41000` 和窗口 `2` 会尝试 `41000,40999,41001,40998,41002`。当 hint 带本地 base 且本地端口不同于公网映射端口时，`public_direct` 还会用同一个公网 IP 加本地固定 socket 端口作为第二个预测中心点，覆盖端口保持型或目的地相关 NAT 的常见漂移。启动 STUN mapping 判断为 symmetric/endpoint-dependent，或只有一个 STUN 来源成功导致 NAT 类型仍为 `unknown` 但本轮已经有 endpoint hint 时，生产配置会把有效窗口自动提高到 `512`，更接近 natpierce 这类工具对端口漂移的受控探测；显式设为 `0` 仍表示关闭窗口，用户配置大于 `512` 时也不会被降低。多个 endpoint hint 同时存在时，候选信令会先覆盖各 hint 的低偏移端口，再逐步扩大偏移，避免第一个 hint 的大窗口挤掉后续 hint。该配置适合拿 natpierce 或路由器日志里的公网端点和可预测端口漂移做验证。普通家宽或运营商 NAT 如果每个 UDP socket 都分配不可预测公网端口，仍应依赖 STUN/peer-reflexive learning，或走 TURN/relay fallback。
-
-`auto_public_endpoint_hints` 默认开启：启动时 NAT detection 会把运行时观测到的公网 endpoint hint 与手工 `public_endpoint_hints` 合并后交给 `legacyice/public_direct`；创建新的 peer session 前，以及 relay/依赖路径已 bound 后做 protected-direct improvement 前，client 也会用短超时刷新一次 STUN 映射，让打洞使用更接近当前连接窗口的 endpoint。刷新失败，或刷新成功但没有产出可用 endpoint hint 时，client 都会保留上一轮已有 hint，避免在短窗口 NAT 打洞前把仍可能有用的映射线索清空。client 还会从近期 `legacyice/public_direct` 本地 `candidate_gathered` observation 里恢复已保留的 srflx 样本，作为下一轮 best-effort runtime hint；这让上一轮已经看到的映射能推动下一轮更早进入 hinted public-direct，而不是只留在日志里。该检测使用与 public-direct/doctor 一致的 STUN 来源：显式 `nat.stun_servers`，以及 UDP TURN URL 派生出的同 host/port STUN binding 入口，所以只配置 coturn 的自托管部署也能生成 runtime hint。如果检测结果是 `nat_type=symmetric`，或只有一个来源成功导致 `nat_type=unknown` 但已经生成 runtime hint，这些映射仍只是 best-effort 候选：同一 UDP socket 到 STUN 服务器的端口不一定等于到 peer 的端口。此时生产配置会扩大有效端口窗口，让 WinkYou 更接近 natpierce 这类持续 punch 行为，但仍必须继续看 `legacyice/public_direct` 是否学到 `peer_reflexive_pair` / `public_direct_learned_pair`，以及最终 path 是否是 `protected_direct`。需要保守排查时，可以显式设为 `auto_public_endpoint_hints: false` 或把 `public_endpoint_hint_port_window` 设为 `0`。
-
-当本轮 `legacyice/public_direct` 已经带有手工或运行时 endpoint hint 时，legacy ICE 会把 `public_direct` 排到普通 `direct_prefer` 前面，让 hint 对应的公网 UDP 打洞先拿到执行窗口；如果历史 observation 显示 relay 更可靠，仍可以先用 relay 保活，但 `public_direct` 会排在 `direct_prefer` 前继续争取 protected-direct standby。
-
-多个 mapped hint 本地端口会拆成多个 public-direct hint 尝试；这些尝试共享 `legacyice/public_direct` 信令家族，并由 session 在同一候选窗口内并发启动，避免像串行重试那样错过短暂 NAT 映射窗口。base `public_direct` 信令会广播给同 family hint executor，精确 `public_direct_hint_N` 信令优先送到对应 executor；任一 hint 成功后会取消同 family 慢 hint 并进入 bind，全部失败时仍继续后续 `relay_only` fallback，避免“多试几个打洞端口”反而跳过保底 relay。
-
-如果另一个打洞工具已经证明某个非公网地址段确实是两端可达的 underlay，例如受控测试中的运营商 CGNAT 段，可以显式配置 `nat.direct_trusted_cidrs`。该字段会让 `legacyice/direct_prefer` 和 `legacyice/public_direct` 在 path dependency 判定中信任这些 CIDR，并让 `public_direct` 接受这些 CIDR 内的候选、手工 mapped hint，以及启动时 STUN 观测生成的 runtime endpoint hint。旧的 `nat.public_direct_trusted_cidrs` 仍兼容，并会与 `direct_trusted_cidrs` 合并使用。默认仍拒绝 `100.64.0.0/10`、私网、loopback、link-local 和 benchmark/overlay 地址。不要把 natpierce、Tailscale、Docker 或其他虚拟 overlay 的接口网段随意加入 trusted CIDR，否则会把依赖不清的 path 误标成 protected direct；只有在你确认该 CIDR 是 WinkYou 自己可直接打到的 underlay，而不是外部 overlay 提供的虚拟路由时才应配置。`wink doctor` 会检查 `direct_trusted_cidrs` 是否命中本机上疑似 natpierce、Tailscale、Docker、Wintun 或 WinkYou 的虚拟接口，并给出 warning。
-
-当 `legacyice/public_direct` 的 STUN gather 超时但本地 UDP candidate 已经建立时，NAT 层会返回已知本地候选，让上层继续追加 `public_endpoint_hints` 并尽快交换候选开始打洞。这不会把私网 host candidate 当作公网候选发布；最终信令里能否出现可用候选，仍由 `public_direct` 的公网过滤规则决定。
-
-如果本轮已经有手工或运行时 `public_endpoint_hints`，`public_direct` 会使用较短的 gather deadline，先拿到本地 socket 并尽快把 hint 发给对端；没有 hint 时仍使用正常 gather timeout 等待 STUN/server-reflexive candidate。
-
-`legacyice/public_direct` 会在 offer/answer 后对已发布候选发送有界的 `candidate` 信令 burst。第一轮会立即发送，后续 retry 在 executor 生命周期内后台补发，不阻塞 ICE connect；默认仍是三轮，生产路径会按 `nat.connect_timeout` 把重试窗口拉长，最多二十轮。每轮会从上一轮实际发送成功后的候选位置继续，而不是每次都从列表开头重发；如果某一轮因为控制面超时只发出部分候选，后续轮次仍会继续覆盖剩余端口窗口。它不会替代 offer/answer 里的 ICE credentials，但能让 coordinator 和已建立虚拟网内的 `session_signal` 多缓存候选信息，降低短窗口打洞时单次候选信令丢失或延迟的影响。为避免端口窗口过大时刷爆控制面，每轮 candidate 重发有上限，普通候选默认最多 1024 个；当 public endpoint hint/window 生成的 candidate 超过默认上限时，会最多放宽到 4096 个，以覆盖完整的受控 hint 窗口。超出部分仍以 offer/answer 内的完整候选列表为准；当候选被上限截断时，public endpoint hint/window 生成的 candidate 会被优先发送。如果 `candidate` 消息先于 offer/answer credentials 到达，legacy ICE 会先缓存可用候选，等 credentials 到达后再与 offer/answer 中的候选合并去重并交给 ICE agent；后续 offer/answer 本身没有可用公网候选时，也不会覆盖这批已缓存的有效候选。如果 offer/answer credentials 先到但里面的候选全被 public-direct 过滤掉，executor 会按 `nat.connect_timeout` 做有界等待，而不是立即让 plan 失败；窗口内收到可用候选后会继续 ICE checks。
-
-用于排查真实 NAT piercing 时，legacy ICE 会把候选采集和过滤结果写入 observation history。客户端运行状态文件同目录下会生成 `<runtime-state-base>.observations.jsonl`，其中：
-
-- `candidate_gathered`：本端 gather 后准备发布的 candidate 统计。
-- `remote_candidates_filtered`：收到远端 offer/answer/candidate 后的过滤统计。
-- `candidate_signaled`：`public_direct` 在 offer/answer 后额外发送的有界 candidate 信令统计，包括 `candidate_sent`、`candidate_total`、`candidate_round` / `candidate_rounds`、`retry_interval_ms`、`signal_window_ms`、`send_timeout_ms` 和是否 `candidate_capped`。
-- `candidate_total`、`candidate_kept`、`candidate_rejected`、`candidate_reject_reasons` 可用于判断是没有采到公网候选、候选被 `public_direct` 规则过滤，还是候选保留下来后 ICE 连通检查失败。`candidate_kept_samples` 会保留少量候选样本；带 local base 的 hint 会显示为 `srflx:公网ip:端口<-本地ip:端口`，便于和 natpierce 或路由器日志对比。
-- `candidate_failed`：`public_direct` 失败时会附带最近一次 `last_local_candidate_*` / `last_remote_candidate_*` / `last_signal_*` 摘要、`public_endpoint_hint_count`、`public_endpoint_hint_local_base_count`、`public_endpoint_hint_fixed_local_port`、`ice_state`、`ice_remote_candidate_count` 和 `ice_selected_pair`，便于直接判断是本端没有发布有效候选、hint 是否绑定到固定本地 UDP base、远端候选被过滤，候选信令是否实际发出，还是 ICE checks 已经进入 checking 但没选中路径。
-
-`wink doctor` 也会对 public-direct 的有效 STUN 来源做 binding probe：包括 `nat.stun_servers`，以及从 UDP TURN URL 派生出的同 host/port STUN binding URL。该检查会复用同一个本地 UDP socket 探测多个来源，并输出 `nat_type` 和每个来源看到的 mapped endpoint；如果显示 `nat_type=symmetric`，说明同一 socket 到不同 STUN 目的地的公网映射不一致；如果只有一个来源成功而显示 `nat_type=unknown`，也只能说明当前证据不足以证明映射稳定。`public_direct` 可能需要稳定 `public_endpoint_hints`、更强 rendezvous/punch 机制，或继续使用 TURN/`relay_only` fallback。doctor 的 `candidate filters` 会同时显示配置的 `public_endpoint_hint_port_window` 和实际生效的 `effective_public_endpoint_hint_port_window`，原因可能是 `symmetric_nat_endpoint_hints` 或 `unclassified_nat_endpoint_hints`。自托管场景中，只配置 coturn 也能用同一个 UDP 入口检查 srflx 映射，但 `public_direct` 不会使用 TURN relay candidate。如果 STUN probe 已经失败，`legacyice/public_direct` 很可能无法采集到 server-reflexive candidate。如果 doctor 显示 `candidate_kept=0`，则按本端 gather 或远端过滤结果继续排查。此时应先换成两端都可达的 STUN/UDP TURN 服务、检查 UDP 出站和防火墙，或改用 TURN/`relay_only`。
-
-从当前版本起，`legacy_ice_udp` 在没有 endpoint hint 时默认会按顺序尝试：
-
-1. `legacyice/direct_prefer`：保留 ICE 默认行为，可能选中 NAT/overlay/100.64 direct-like path。
-2. `legacyice/public_direct`：只采集 host/server-reflexive direct candidate，跳过 TURN/relay 采集；UDP TURN URL 会被当作同 host/port 的 STUN binding URL 使用，以便只配置 coturn 的自托管部署也能采集 srflx candidate。信令里只发布公网 direct 候选，并过滤远端私网、`100.64.0.0/10`、loopback、link-local、benchmark/overlay 等 candidate。该 plan 默认不在 natpierce、Tailscale、Docker/vEthernet、Wintun/WinkYou 等疑似外部 overlay/虚拟接口上 gather candidate，避免把外部 overlay 路径误证明为 WinkYou 自己的 protected direct。该 plan 会使用更积极的 ICE check interval、按 `nat.connect_timeout` 放大并在硬上限内突发的 binding request 预算，以及更短的 srflx/prflx 接受等待，在同一个 public-direct socket 上持续打洞，以更接近 natpierce 这类持续 punch 的行为；public-direct candidate signal 也会在受控上限内按 `nat.connect_timeout` 延长重发窗口，避免两端启动或信令稍微错位时只发前三轮候选就停止；session 的 candidate execution budget 会按每个 plan 的 execution timeout 和候选数量扩展，避免 `direct_prefer` 耗时后跳过 `public_direct` 或后续 relay fallback；当 ICE 过程中收到远端 STUN Binding Request 并形成公网 peer-reflexive 候选对时，public_direct 只会在本地为公网或 RFC1918 NAT base、远端为公网时切换到该候选对，不会因本地或远端 `100.64.0.0/10`、overlay、relay、loopback、link-local 或 benchmark 地址触发切换。
-3. `legacyice/relay_only`：强制 TURN relay fallback。
-
-如果 `nat.auto_public_endpoint_hints` 或手工 `nat.public_endpoint_hints` 为本轮提供了公网 endpoint hint，`public_direct` 会排到 `direct_prefer` 前面，避免普通 direct-like ICE 先耗尽候选执行窗口。这样 WinkYou 会主动尝试类似 natpierce 能打通的公网 UDP NAT piercing 路径；如果 natpierce 在同一对设备间已经能直接打通，本项目不应把 WinkYou 的失败解释为“物理不可达”，而应继续看公网候选是否采集、是否被过滤、ICE 检查是否超时以及 selected pair 是否仍落在 overlay/100.64 路径上。但如果双方 NAT 类型、运营商映射或防火墙不允许，`public_direct` 仍会失败并继续走后续 fallback。
-历史 observation 如果显示 direct 失败且 relay 成功，legacy ICE 可以把 relay 排到更前面作为 primary 候选，但不会再因为普通 `direct_prefer` 失败而完全剪掉 `public_direct`。这保证 relay/overlay 能先保活的同时，仍给独立公网 direct standby 留一次执行机会。
-当 overlay/100.64 direct-like path 和 `public_direct` 都成功且基础分相同，solver 会优先选择无显式依赖的 protected direct，避免继续被先出现的 overlay path 抢占。
-`public_direct` 的 protected direct 判定只允许本地 RFC1918 host candidate 在匹配本次已发布公网 STUN/srflx candidate 的 related/base 地址时作为 NAT base；远端 candidate 仍必须是公网，且本地或远端 `100.64.0.0/10`、loopback、link-local、198.18/15 等地址仍会被视为依赖不清。
-真实排查时，`wink doctor` 的 `public direct evidence` 会显示 `remote_candidate_kind`、`peer_reflexive_pair` 和 `public_direct_learned_pair`。其中 `remote_candidate_kind=prflx` 或 `public_direct_learned_pair=true` 表示 ICE 过程中确实学到了 peer-reflexive 候选对，更接近 natpierce 这类运行中打洞成功的证据；但仍需同时满足 `path_role=protected_direct` 且没有 `path_dependencies`，才算证明了独立公网 direct standby。
-
-尚未完成：
-
-- no-admin mode
-- proxy/userspace-only 产品路径
-- QUIC datagram、HTTP CONNECT、WebSocket 等真实 transport strategy
-- 自研 Wink Protocol 数据平面
-- `tcp_framed` 仍是 alpha，不做 NAT TCP 打洞承诺
-- 高级 learning/scoring 闭环
-- protected direct multipath：v0.2 freeze gate 已定义；代码已支持初始多路径绑定和 bound 后 protected-direct improvement，后续重点是真实设备报告、保护直连成功后的 failover 边界收敛，见 [`docs/V0.2-MULTIPATH-FREEZE.md`](./docs/V0.2-MULTIPATH-FREEZE.md)
-- coordinator 断线后保持已 bound 数据面的完整控制面韧性：基础 kill-coordinator 验证已通过；peer-offline 误清理、controlled-side retry、coordinator NotFound 重注册和 runtime control/data/path cache 已先修；更长时间 heartbeat/signaling failure、cached path 恢复仍待完成
-- 已建立虚拟网后的 in-band peer control channel 已接入最小 heartbeat/path_health、re-ICE request、session_signal 运行时循环，以及 session_signal 短期重发/去重；后续仍需更长时间真实设备验证、ACK/backoff 和恢复策略收敛
-- 真实环境下 `legacyice/public_direct` 排除 Tailscale、Docker bridge、其他 VPN/TAP 后的双端公网 NAT piercing 验证
-- GUI、移动端、原生 Windows service
-
-## 架构边界
-
-- `pkg/session` 负责 session 生命周期、状态机、capability 交换、rendezvous envelope、probe/observation 消息和 binder 协调；不要把 NAT/ICE 细节重新引入这里。
-- `pkg/solver` 保持 strategy-agnostic，只处理通用 `Strategy`、`Plan`、`Result`、observation 和 plan ordering/refinement 输入。
-- `pkg/transport` 提供稳定的 `PacketTransport` 边界；当前不要把它改成新的 V2 接口。
-- `pkg/tunnel` 使用 `wireguard-go` 和 `PacketTransport` 消费 packet 数据，不拥有路径求解逻辑。
-- strategy 专属逻辑放在 `pkg/solver/strategy/*` 或 client 组装边界中。
-
-## 目录导览
-
-- [`pkg/session`](./pkg/session)：session lifecycle、state machine、strategy selection、planning、probe、observation、envelope 和 binder 协调
-- [`pkg/client`](./pkg/client)：客户端 engine、生产 resolver 组装、peer session 和运行时状态
-- [`pkg/solver`](./pkg/solver)：连接求解器核心抽象
-- [`pkg/solver/strategy/legacyice`](./pkg/solver/strategy/legacyice)：当前 ICE/UDP 兼容 strategy
-- [`pkg/solver/strategy/relayonly`](./pkg/solver/strategy/relayonly)：relay-only strategy
-- [`pkg/solver/strategy/signalrelay`](./pkg/solver/strategy/signalrelay)：coordinator signal stream fallback strategy
-- [`pkg/transport`](./pkg/transport)：packet transport 抽象及适配器
-- [`pkg/tunnel`](./pkg/tunnel)：userspace WireGuard 数据平面和 per-peer transport bind
-- [`pkg/meshruntime`](./pkg/meshruntime)：Slice 1-4 自治图、peer transit、shortcut、恢复和 selected-port service 的可复用运行时；`cmd/meshnode` 与显式 opt-in 的 `wink up` 共同使用
-- [`pkg/rendezvous`](./pkg/rendezvous)：coordinator-backed rendezvous 通道与 v2 envelope 类型
-- [`pkg/probe`](./pkg/probe)：probe model/lab
-- [`deploy/quickstart`](./deploy/quickstart)：快速部署素材
-- [`deploy/coturn`](./deploy/coturn)：TURN relay 部署素材
-- [`docs/SELFHOST-QUICKSTART.md`](./docs/SELFHOST-QUICKSTART.md)：自托管快速部署
-- [`docs/LONG-RUNNING-CLIENT.md`](./docs/LONG-RUNNING-CLIENT.md)：长期运行客户端、日志和 service/startup 工作流
-- [`docs/CONTROL-PLANE-RESILIENCE.md`](./docs/CONTROL-PLANE-RESILIENCE.md)：真实部署中暴露的控制面断线、P2P 保持和候选接口过滤 TODO
-- [`docs/MULTIPATH-PROTECTED-DIRECT.md`](./docs/MULTIPATH-PROTECTED-DIRECT.md)：protected direct multipath 当前阶段目标
-- [`docs/INBAND-PEER-CONTROL.md`](./docs/INBAND-PEER-CONTROL.md)：已建立数据面后的 peer control 消息模型和边界
-- [`docs/TROUBLESHOOTING.md`](./docs/TROUBLESHOOTING.md)：分层排障指南
-- [`docs/RELEASE.md`](./docs/RELEASE.md)：release 构建、校验和发布流程
-- [`docs/V0.1-FREEZE.md`](./docs/V0.1-FREEZE.md)：v0.1 Alpha freeze gate 与验收边界
-- [`docs/V0.2-MULTIPATH-FREEZE.md`](./docs/V0.2-MULTIPATH-FREEZE.md)：v0.2 multipath/bootstrap freeze gate
-- [`docs/README.md`](./docs/README.md)：文档分级索引
-
-## 常用命令
-
-客户端运维入口：
+| 入口 | 当前定位 | 关键边界 |
+| --- | --- | --- |
+| `wink diagnose` | Phase 1a 被动首次检查 | 不开 socket、不发包；主动探测仍受 governor 与安全门禁约束 |
+| 默认 `wink up` | legacy coordinator + ICE/TURN + WireGuard 端到端路径 | 会进行真实网络通信；远程 coordinator 强制 TLS + auth |
+| `connectivity.mode: relay_only` | TURN relay 保活与验收路径 | 仍使用同一 WireGuard 数据面；需要正确开放 coturn relay 端口 |
+| `autonomous_mesh` | 默认关闭的历史实验路径 | birthday recovery 相关配置 fail-closed；不是当前 quickstart，也不得重新启用历史任务 |
+
+常用 client 生命周期命令：
 
 ```bash
 wink --config <config.yaml> up
-wink --config <config.yaml> down
 wink --config <config.yaml> status
 wink --config <config.yaml> peers
 wink --config <config.yaml> logs
-wink --config <config.yaml> doctor
+wink --config <config.yaml> down
 ```
 
-受管 `autonomous_mesh` 的 `down` 始终走身份校验和认证优雅停止；默认 legacy runtime 没有 control endpoint，停止时需显式使用 `wink --config <config.yaml> down --force`。
+长期运行、强制停止差异和日志位置见 [`docs/LONG-RUNNING-CLIENT.md`](./docs/LONG-RUNNING-CLIENT.md)。
 
-开发和回归入口：
+## 构建与验证
 
-```bash
-go fmt ./...
-go vet ./...
-go test ./... -count=1
-go test -race ./pkg/session ./pkg/client ./pkg/solver/... -count=1
-```
-
-Makefile 中也提供了等价入口：
-
-```bash
-make check
-make test-race
-make test-phase2d
-make test-phase3a
-make test-phase4a
-make build-all
-```
-
-Windows 本机跑 race test 需要可用的 cgo/GCC 环境。可以使用 MSYS2、MinGW-w64、w64devkit 或等价工具链，并在当前 shell 中临时启用：
-
-```powershell
-$env:PATH='<gcc-bin-dir>;' + $env:PATH
-$env:CGO_ENABLED='1'
-$env:CC='gcc'
-go test -race ./pkg/session ./pkg/client ./pkg/solver/... -count=1
-```
-
-## 构建
+使用 Makefile：
 
 ```bash
 make build-wink
 make build-wink-coordinator
 make build-wink-relay
-make build-all
+make check
+make test-race
 ```
 
-跨平台构建入口：
+也可以直接使用 Go 构建当前平台的二进制：
 
 ```bash
-make build-windows-client
-make build-linux-client
-make build-linux-coordinator
-make build-linux-relay
+go build -o bin/wink ./cmd/wink
+go build -o bin/wink-coordinator ./cmd/wink-coordinator
+go build -o bin/wink-relay ./cmd/wink-relay
 ```
 
-构建产物输出到 `bin/`。根目录下的 `wink.exe`、`netprobe.exe`、`e2e.test` 当前不应作为源码树的一部分跟踪。
+跨平台 release 构建与校验流程见 [`docs/RELEASE.md`](./docs/RELEASE.md)。构建产物写入 `bin/` 或 `dist/`，不应提交到源码树。
 
-## Relay 握手排障
+## 架构边界
 
-当预期走 relay 时，先使用 `wink peers` 或 `wink peers --json`。CLI 会展示从 ICE 选择、transport attach 到 WireGuard handshake 的链路状态。
+- `pkg/solver` 是 strategy-agnostic 的连接求解 domain，负责通用 capability、observation、plan ordering/refinement 与结果模型，不依赖 wire DTO。
+- `pkg/session` 负责 session 生命周期、状态机、rendezvous adapter、probe/observation 协调与 binder 编排；NAT/ICE 专属细节不应回流到这里。
+- `pkg/transport` 提供稳定的 `PacketTransport` 边界；不同连接策略通过它向上层交付统一的 packet transport。
+- `pkg/tunnel` 使用 userspace `wireguard-go` 和 `PacketTransport` 承载数据，不拥有路径求解逻辑。
+- strategy 专属实现位于 `pkg/solver/strategy/*` 或 client 组装边界；安全预算与实际网络 I/O 必须经过 `internal/governor` / `internal/probeio` 门禁。
 
-示例：
+## 目录导览
 
-```text
-Peer 1
-  Name:        beta
-  Node ID:     node-000002
-  Virtual IP:  10.77.0.2
-  Public Key:  BRWDltpykmj7xkz5mscwH82XtleebmfOtYvvaIxIRVQ=
-  State:       connected
-  Endpoint:    127.0.0.1:65042
-  Conn Type:   relay
-  ICE State:   connected
-  Local Cand:  relay:127.0.0.1:65040
-  Remote Cand: relay:127.0.0.1:65042
-  Tx:          1.2 KiB
-  Rx:          304 B
-  Xport Tx:    13 pkts / 1.2 KiB
-  Xport Rx:    4 pkts / 304 B
-  Xport Err:   -
-  Handshake:   2026-04-22T16:04:34Z
-  Last Seen:   2026-04-22T16:04:34Z
-```
-
-排查顺序：
-
-- `ICE State` 不是 `connected` 或 `completed`：问题仍在 ICE/TURN 或 candidate exchange。
-- `Local Cand` / `Remote Cand` 未出现 `relay`：没有选中 relay path，或 relay candidate 没有成功 gather。
-- candidate 显示 relay，但 `Xport Tx` / `Xport Rx` 始终为 `0`：ICE transport 已选中，但 `PacketTransport` 未 attach 或未保持存活。
-- `Xport Tx` / `Xport Rx` 增长且 `Xport Err` 非空：transport/bind 读写失败。
-- `Xport Tx` / `Xport Rx` 增长但 `Handshake` 仍为 `-`：relay packet 在流动，但 WireGuard 握手没有完成。
-- `Handshake` 非 `-` 但业务流量失败：检查 `AllowedIPs`、路由、防火墙和 MTU。
+- [`cmd/`](./cmd)：`wink`、coordinator、relay 与开发工具入口
+- [`pkg/solver`](./pkg/solver)：连接求解器 domain 与 strategy portfolio
+- [`pkg/session`](./pkg/session)：session 编排和 wire/domain adapter 边界
+- [`pkg/transport`](./pkg/transport)：统一 packet transport 抽象与适配器
+- [`pkg/tunnel`](./pkg/tunnel)：userspace WireGuard 数据面
+- [`pkg/rendezvous`](./pkg/rendezvous)：coordinator-backed rendezvous 通道和 wire protocol
+- [`pkg/probe`](./pkg/probe)：probe model 与受控实验支持
+- [`internal/governor`](./internal/governor)：机器级资源预算、owner lock 与持久 safety trip
+- [`internal/probeio`](./internal/probeio)：受 governor 约束的网络 I/O 能力
+- [`internal/architecture`](./internal/architecture)：依赖方向与网络能力回归门禁
+- [`deploy/quickstart`](./deploy/quickstart)：coordinator + coturn Compose 与 client 配置模板
+- [`docs/`](./docs)：架构权威、路线图、运维文档、事故记录和历史归档
 
 ## 文档定位
 
-- Active baseline：[`docs/CONNECTIVITY-SOLVER-BASELINE.md`](./docs/CONNECTIVITY-SOLVER-BASELINE.md)
-- 文档索引：[`docs/README.md`](./docs/README.md)
-- 自治 mesh 与 peer transit ADR：[`docs/ADR-AUTONOMOUS-MESH.md`](./docs/ADR-AUTONOMOUS-MESH.md)
-- 三节点 rejoin 现场记录：[`docs/MESH-REJOIN-FIELD-EXPERIMENT.md`](./docs/MESH-REJOIN-FIELD-EXPERIMENT.md)
-- post-r9 recovery card 与无路由自举：[`docs/SELF-BOOTSTRAP-RECOVERY.md`](./docs/SELF-BOOTSTRAP-RECOVERY.md)
-- Phase 2D freeze gate：[`docs/PHASE2D-FREEZE.md`](./docs/PHASE2D-FREEZE.md)
-- Phase 3A entry：[`docs/PHASE3A-STRATEGY-PORTFOLIO.md`](./docs/PHASE3A-STRATEGY-PORTFOLIO.md)
-- Phase 3B+ working plan：[`implementation_plan.md`](./implementation_plan.md)
-- legacy execution baseline notice：[`docs/EXECUTION-BASELINE.md`](./docs/EXECUTION-BASELINE.md)
+- 当前实现权威：[`docs/CONNECTIVITY-SOLVER-BASELINE.md`](./docs/CONNECTIVITY-SOLVER-BASELINE.md)
+- Accepted v2 计划：[`docs/proposals/WINKYOU-V2-DIRECT-FIRST-PLAN.md`](./docs/proposals/WINKYOU-V2-DIRECT-FIRST-PLAN.md)
+- Phase 0 出口记录：[`docs/PHASE0-EXIT-RECORD.md`](./docs/PHASE0-EXIT-RECORD.md)
+- 自托管 quickstart：[`docs/SELFHOST-QUICKSTART.md`](./docs/SELFHOST-QUICKSTART.md)
+- 分层排障：[`docs/TROUBLESHOOTING.md`](./docs/TROUBLESHOOTING.md)
+- 事故记录：[`docs/INCIDENT-2026-07-22-SELF-BOOTSTRAP-UDP-STORM.md`](./docs/INCIDENT-2026-07-22-SELF-BOOTSTRAP-UDP-STORM.md)
+- 完整文档索引：[`docs/README.md`](./docs/README.md)
 
-历史 ICE/TURN-centric baseline 保留在 tag `legacy-ice-turn-baseline-2026-04-15`，仅用于回溯和 rollback 分析。当前代码应按 connectivity solver baseline 评估。
+历史 ICE/TURN-centric baseline 保留在 tag `legacy-ice-turn-baseline-2026-04-15`，仅用于回溯和 rollback 分析。当前代码应按 connectivity solver baseline 和已接受的 v2 阶段边界评估。
