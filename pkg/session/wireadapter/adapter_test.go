@@ -233,20 +233,67 @@ func TestObservationWireJSONGolden(t *testing.T) {
 		Details:        map[string]string{"attempt": "1", "nat": "symmetric"},
 		Timestamp:      time.Date(2026, 8, 13, 9, 30, 15, 123456789, time.UTC),
 	}
-	encoded, err := json.MarshalIndent(ObservationToWire(domain), "", "  ")
+	assertWireJSONGolden(t, "testdata/observation.golden.json", ObservationToWire(domain))
+}
+
+func TestProbeScriptWireJSONGolden(t *testing.T) {
+	domain := solver.ProbeScript{
+		ScriptType: "preflight_v1",
+		PlanID:     "probe/preflight",
+		Steps: []solver.ProbeStep{
+			{
+				Action: "udp_send",
+				Params: map[string]string{
+					"addr":        "192.0.2.10:9999",
+					"payload":     "ping",
+					"expect":      "pong",
+					"duration_ms": "25",
+					"trace":       "synthetic",
+				},
+				Timeout: 1500 * time.Millisecond,
+			},
+			{
+				Action: "report",
+				Params: map[string]string{
+					"event":    "probe_ready",
+					"evidence": "passive",
+				},
+			},
+		},
+	}
+	assertWireJSONGolden(t, "testdata/probe_script.golden.json", ProbeScriptToWire(domain))
+}
+
+func TestProbeResultWireJSONGolden(t *testing.T) {
+	domain := solver.ProbeResult{
+		ScriptType: "preflight_v1",
+		PlanID:     "probe/preflight",
+		Success:    true,
+		Events: []solver.Observation{{
+			Strategy:  "passive_diagnose",
+			Event:     "probe_ready",
+			Details:   map[string]string{"source": "synthetic"},
+			Timestamp: time.Date(2026, 8, 13, 9, 31, 15, 0, time.UTC),
+		}},
+		SelectedPathID: "direct/path",
+		FinishedAt:     time.Date(2026, 8, 13, 9, 31, 16, 123456789, time.UTC),
+	}
+	assertWireJSONGolden(t, "testdata/probe_result.golden.json", ProbeResultToWire(domain))
+}
+
+func assertWireJSONGolden(t *testing.T, filename string, value any) {
+	t.Helper()
+	encoded, err := json.MarshalIndent(value, "", "  ")
 	if err != nil {
-		t.Fatalf("marshal observation golden: %v", err)
+		t.Fatalf("marshal %s: %v", filename, err)
 	}
 	encoded = append(encoded, '\n')
-	want, err := os.ReadFile("testdata/observation.golden.json")
+	want, err := os.ReadFile(filename)
 	if err != nil {
-		t.Fatalf("read observation golden: %v", err)
+		t.Fatalf("read %s: %v", filename, err)
 	}
 	want = bytes.ReplaceAll(want, []byte("\r\n"), []byte("\n"))
 	if !bytes.Equal(encoded, want) {
-		t.Fatalf("observation JSON changed\ngot:\n%s\nwant:\n%s", encoded, want)
+		t.Fatalf("%s changed\ngot:\n%s\nwant:\n%s", filename, encoded, want)
 	}
 }
-
-// TODO(v2-phase1a): add equivalent ProbeScript and ProbeResult JSON goldens
-// once their compatibility-field policy is frozen independently.

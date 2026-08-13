@@ -1,0 +1,17 @@
+{
+  "script_type": "preflight_v1",
+  "plan_id": "probe/preflight",
+  "success": true,
+  "events": [
+    {
+      "strategy": "passive_diagnose",
+      "event": "probe_ready",
+      "details": {
+        "source": "synthetic"
+      },
+      "timestamp": "2026-08-13T09:31:15Z"
+    }
+  ],
+  "selected_path_id": "direct/path",
+  "finished_at": "2026-08-13T09:31:16.123456789Z"
+}
