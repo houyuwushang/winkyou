@@ -3,9 +3,9 @@
 ## 状态与决策
 
 - 严重级别：P0，可能耗尽终端和出口 NAT/防火墙资源。
-- 受影响构建：现场 A 节点使用的 `880936b` 构建。
+- 受影响范围：历史 Windows 实验部署使用的现场构建。
 - 当前决定：**cached self-bootstrap / autonomous birthday recovery 短期暂停**。不安排修复、现场实验或重新部署，仅保留代码、日志和本记录供以后重新立项。
-- 当前运行状态：Windows 计划任务 `\WinkYou-A` 已禁用，supervisor stop marker 已保留，相关进程和现场监听已停止。不得只删除 marker、手动启动 child 或重新启用任务。
+- 当前运行状态：该部署的 Windows 计划任务已禁用，supervisor stop marker 已保留，相关进程和现场监听已停止。不得只删除 marker、手动启动 child 或重新启用任务。
 - 安全结论：当前实现为 **NO-GO**，不得在办公网、生产网或未经独立出口限流的公网运行。
 
 这里的“暂停”不是否定 P2P 直连结果。历史实验已经证明 birthday punch 可以建立真实公网直连；本事故证明的是：把高成本概率打洞直接接入长期自动重连生命周期，在没有节点级资源预算、退避和熔断时不具备产品运行安全性。
@@ -67,7 +67,7 @@
 
 1. `pkg/bootstrap/selfhosted/engine.go` 的默认现场参数使用 45 秒窗口、1 分钟周期、128 sockets、48 birthday targets 和 300 ms round delay。
 2. `pkg/nat/puncher/puncher.go` 为每个 socket 启动 sender，并在**每一轮**为该 socket 重新生成 48 个随机远端端口。目标集合没有按 attempt 预生成并复用，因此持续产生新五元组。
-3. `880936b` 增加了 `punchDeadlineMisses` 路径：preserving/sequential 候选一次 deadline miss 后，从低成本预测升级为完整 `cached_predictive_birthday_fallback`。失败因此会提高后续成本，而不是降低速率。
+3. 该历史构建增加了 `punchDeadlineMisses` 路径：preserving/sequential 候选一次 deadline miss 后，从低成本预测升级为完整 `cached_predictive_birthday_fallback`。失败因此会提高后续成本，而不是降低速率。
 4. 每个 maintained peer 有独立循环；self-bootstrap 和 recovery 之间没有共享的节点级 single-flight、packets-per-second 或 new-tuples budget。多个 peer 可以重叠执行重型 punch。
 5. 失败调度会轮换候选，但没有足够的指数退避和长期冷却，形成“约每分钟运行一个长窗口”的持续负载。
 6. UDP 写错误被逐包忽略。出现 `WSAENOBUFS` 时，本轮不会立刻全局停止并进入本地资源冷却。
@@ -121,7 +121,7 @@
 - 隔离环境能同时核对终端指标和出口 session/conntrack；
 - 形成书面测试计划、停止阈值和回滚命令；
 - 明确得到目标网络所有者允许；
-- 不直接复用 `880936b` 现场二进制；
+- 不直接复用历史现场二进制；
 - 两人复核后才允许删除 stop marker、启用计划任务和启动新构建。
 
 在这些条件满足前，历史“直连成功”“三角恢复成功”或“长连接保持成功”均不能作为重新启用 cached self-bootstrap 的依据。
