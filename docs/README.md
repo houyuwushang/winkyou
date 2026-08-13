@@ -10,6 +10,7 @@ When documents disagree, treat `CONNECTIVITY-SOLVER-BASELINE.md` as the source o
 
 ## Current Roadmap
 
+- Accepted v2 direct-first plan and its Phase 0 exit record: [`proposals/WINKYOU-V2-DIRECT-FIRST-PLAN.md`](./proposals/WINKYOU-V2-DIRECT-FIRST-PLAN.md), [`PHASE0-EXIT-RECORD.md`](./PHASE0-EXIT-RECORD.md)
 - Autonomous mesh control, peer transit, shortcut proof, and default-off `wink` lifecycle integration (Slices 1-4.5): [`ADR-AUTONOMOUS-MESH.md`](./ADR-AUTONOMOUS-MESH.md)
 - Accepted Slice 4.5 C -> B -> A three-node product rollout: [`SLICE-4.5-FIELD-ROLLOUT-2026-07-19.md`](./SLICE-4.5-FIELD-ROLLOUT-2026-07-19.md)
 - Three-node peer-coordinated rejoin plus direct routed-SSH field experiment: [`MESH-REJOIN-FIELD-EXPERIMENT.md`](./MESH-REJOIN-FIELD-EXPERIMENT.md)
@@ -42,7 +43,7 @@ When documents disagree, treat `CONNECTIVITY-SOLVER-BASELINE.md` as the source o
 
 These files are proposal/RFC material for future architecture work. They remain useful context, but they are not active authority and should not override the baseline. The deep-analysis and improvement notes below come from the 2026-05 architecture overhaul pass.
 
-- [`proposals/WINKYOU-V2-DIRECT-FIRST-PLAN.md`](./proposals/WINKYOU-V2-DIRECT-FIRST-PLAN.md) — draft direct-first v2 product, architecture, safety, validation, and adoption plan for maintainer review
+- [`proposals/WINKYOU-V2-DIRECT-FIRST-PLAN.md`](./proposals/WINKYOU-V2-DIRECT-FIRST-PLAN.md) — **Accepted** (2026-08-13, [`PHASE0-EXIT-RECORD.md`](./PHASE0-EXIT-RECORD.md)) direct-first v2 product, architecture, safety, validation, and adoption plan; acceptance scope and non-authorized actions per its §20
 - [`proposals/WINKYOU-V2-PLAN-REVIEW-2026-08-11.md`](./proposals/WINKYOU-V2-PLAN-REVIEW-2026-08-11.md) — code-backed expert review of the draft v2 plan
 - [`proposals/WINKYOU-V2-PLAN-REVIEW-RESPONSE-2026-08-11.md`](./proposals/WINKYOU-V2-PLAN-REVIEW-RESPONSE-2026-08-11.md) — maintainer response and proposed resolution of the expert review
 - [`proposals/WINKYOU-V2-PLAN-REVIEW-FOLLOWUP-2026-08-11.md`](./proposals/WINKYOU-V2-PLAN-REVIEW-FOLLOWUP-2026-08-11.md) — second-round review closing the response with third-party socket and machine-governor requirements

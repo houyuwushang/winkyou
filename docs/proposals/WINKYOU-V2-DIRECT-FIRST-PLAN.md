@@ -1,10 +1,10 @@
 # WinkYou v2：直连优先的产品与架构重启计划
 
-- 状态：**Draft / Request for Comments**
+- 状态：**Accepted**（2026-08-13,见 [`../PHASE0-EXIT-RECORD.md`](../PHASE0-EXIT-RECORD.md)）
 - 日期：2026-08-11
 - 目标读者：维护者、早期测试者、未来的本地 API 集成者
 - 修订状态：第三轮架构复审意见已纳入正文
-- 决策状态：待 PR #11 合入后方可从 Draft 标记为 Accepted
+- 决策状态：PR #11 已合入、Issue #12 已修复,Phase 0 出口门槛全部满足,本文自 Phase 0 出口记录合入起为 Accepted。接受范围与不授权事项见 §20 与出口记录 §4
 
 审查记录：
 
@@ -13,8 +13,8 @@
 - [`WINKYOU-V2-PLAN-REVIEW-FOLLOWUP-2026-08-11.md`](./WINKYOU-V2-PLAN-REVIEW-FOLLOWUP-2026-08-11.md)
 - [`WINKYOU-V2-PLAN-REVIEW-ROUND3-2026-08-11.md`](./WINKYOU-V2-PLAN-REVIEW-ROUND3-2026-08-11.md)
 
-> 本文是一份待审查的产品与技术计划，不是实施授权，也不是现场测试授权。
-> 在本文被明确接受并由新的 ADR 接管之前，
+> 本文是已接受的产品与技术计划，但不是现场测试授权。
+> 在新的正式 ADR 接管之前，
 > [`CONNECTIVITY-SOLVER-BASELINE.md`](../CONNECTIVITY-SOLVER-BASELINE.md) 仍是当前实现的权威基线。
 > 本文不会解除
 > [`INCIDENT-2026-07-22-SELF-BOOTSTRAP-UDP-STORM.md`](../INCIDENT-2026-07-22-SELF-BOOTSTRAP-UDP-STORM.md)
