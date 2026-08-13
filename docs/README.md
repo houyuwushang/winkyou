@@ -58,6 +58,7 @@ These files are proposal/RFC material for future architecture work. They remain 
 
 ## Archive / Brainstorm
 
+- Historical Windows emergency-stop principles (personal paths, IPs, builds, and topology removed): [`RUNBOOK-EMERGENCY-STOP-HISTORICAL-WINDOWS.md`](./RUNBOOK-EMERGENCY-STOP-HISTORICAL-WINDOWS.md)
 - Legacy baseline notice: [`EXECUTION-BASELINE.md`](./EXECUTION-BASELINE.md)
 - Historical legacy snapshot pointer: [`legacy/EXECUTION-BASELINE-legacy.md`](./legacy/EXECUTION-BASELINE-legacy.md)
 - Historical task breakdowns: [`tasks/`](./tasks)
