@@ -1,6 +1,7 @@
 package wireadapter
 
 import (
+	"bytes"
 	"encoding/json"
 	"os"
 	"reflect"
@@ -241,7 +242,8 @@ func TestObservationWireJSONGolden(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read observation golden: %v", err)
 	}
-	if string(encoded) != string(want) {
+	want = bytes.ReplaceAll(want, []byte("\r\n"), []byte("\n"))
+	if !bytes.Equal(encoded, want) {
 		t.Fatalf("observation JSON changed\ngot:\n%s\nwant:\n%s", encoded, want)
 	}
 }
