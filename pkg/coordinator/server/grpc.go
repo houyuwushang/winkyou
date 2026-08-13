@@ -39,11 +39,17 @@ func NewGRPCService(domain *Server) *GRPCService {
 }
 
 func (s *GRPCService) Register(ctx context.Context, req *coordinatorv1.RegisterRequest) (*coordinatorv1.RegisterResponse, error) {
+	if err := s.authorizeRPC(ctx); err != nil {
+		return nil, err
+	}
 	resp, err := s.domain.Register(ctx, &clientdto.RegisterRequest{
 		PublicKey: req.GetPublicKey(),
 		Name:      req.GetName(),
-		AuthKey:   req.GetAuthKey(),
-		Metadata:  cloneMetadata(req.GetMetadata()),
+		// RPC authentication belongs to gRPC metadata. The interceptor proves
+		// that credential before this service injects the domain key, so the
+		// deprecated protobuf field cannot become a second auth source.
+		AuthKey:  s.domain.Config().AuthKey,
+		Metadata: cloneMetadata(req.GetMetadata()),
 	})
 	if err != nil {
 		return nil, toStatus(err)
@@ -57,6 +63,9 @@ func (s *GRPCService) Register(ctx context.Context, req *coordinatorv1.RegisterR
 }
 
 func (s *GRPCService) Heartbeat(ctx context.Context, req *coordinatorv1.HeartbeatRequest) (*coordinatorv1.HeartbeatResponse, error) {
+	if err := s.authorizeRPC(ctx); err != nil {
+		return nil, err
+	}
 	resp, err := s.domain.Heartbeat(ctx, &clientdto.HeartbeatRequest{
 		NodeID:    req.GetNodeId(),
 		Timestamp: req.GetTimestamp(),
@@ -71,6 +80,9 @@ func (s *GRPCService) Heartbeat(ctx context.Context, req *coordinatorv1.Heartbea
 }
 
 func (s *GRPCService) ListPeers(ctx context.Context, req *coordinatorv1.ListPeersRequest) (*coordinatorv1.ListPeersResponse, error) {
+	if err := s.authorizeRPC(ctx); err != nil {
+		return nil, err
+	}
 	resp, err := s.domain.ListPeers(ctx, &clientdto.ListPeersRequest{
 		OnlineOnly: req.GetOnlineOnly(),
 	})
@@ -87,6 +99,9 @@ func (s *GRPCService) ListPeers(ctx context.Context, req *coordinatorv1.ListPeer
 }
 
 func (s *GRPCService) GetPeer(ctx context.Context, req *coordinatorv1.GetPeerRequest) (*coordinatorv1.PeerInfo, error) {
+	if err := s.authorizeRPC(ctx); err != nil {
+		return nil, err
+	}
 	peer, err := s.domain.GetPeer(ctx, &clientdto.GetPeerRequest{NodeID: req.GetNodeId()})
 	if err != nil {
 		return nil, toStatus(err)
@@ -95,6 +110,9 @@ func (s *GRPCService) GetPeer(ctx context.Context, req *coordinatorv1.GetPeerReq
 }
 
 func (s *GRPCService) Signal(stream grpc.BidiStreamingServer[coordinatorv1.SignalEnvelope, coordinatorv1.SignalEnvelope]) error {
+	if err := s.authorizeRPC(stream.Context()); err != nil {
+		return err
+	}
 	first, err := stream.Recv()
 	if err == io.EOF {
 		return status.Error(codes.InvalidArgument, "signal stream requires bind envelope")
@@ -167,6 +185,13 @@ func (s *GRPCService) Signal(stream grpc.BidiStreamingServer[coordinatorv1.Signa
 			}
 		}
 	}
+}
+
+func (s *GRPCService) authorizeRPC(ctx context.Context) error {
+	if s == nil || s.domain == nil {
+		return status.Error(codes.Internal, "coordinator service is not configured")
+	}
+	return requireSharedAuthContext(ctx, s.domain.Config().AuthKey)
 }
 
 func (s *GRPCService) sendLoop(stream grpc.BidiStreamingServer[coordinatorv1.SignalEnvelope, coordinatorv1.SignalEnvelope], session *signalSession, errCh chan<- error) {

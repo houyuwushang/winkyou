@@ -26,7 +26,11 @@ func TestQuickstartConfigsLoad(t *testing.T) {
 				t.Fatalf("ReadFile(%q) error = %v", src, err)
 			}
 
-			rendered := strings.ReplaceAll(string(content), "<HOST>", "127.0.0.1")
+			rendered := strings.NewReplacer(
+				"<HOST>", "127.0.0.1",
+				"<COORDINATOR_AUTH_KEY>", "test-only-auth-key",
+				"<COORDINATOR_CA_FILE>", filepath.Join(t.TempDir(), "coordinator.crt"),
+			).Replace(string(content))
 			dst := filepath.Join(t.TempDir(), filepath.Base(src))
 			if err := os.WriteFile(dst, []byte(rendered), 0o600); err != nil {
 				t.Fatalf("WriteFile(%q) error = %v", dst, err)
@@ -43,8 +47,14 @@ func TestQuickstartConfigsLoad(t *testing.T) {
 			if cfg.WireGuard.ListenPort != 0 {
 				t.Fatalf("wireguard.listen_port = %d, want 0", cfg.WireGuard.ListenPort)
 			}
-			if got := cfg.Coordinator.URL; got != "grpc://127.0.0.1:50051" {
-				t.Fatalf("coordinator.url = %q, want grpc://127.0.0.1:50051", got)
+			if got := cfg.Coordinator.URL; got != "grpcs://127.0.0.1:50051" {
+				t.Fatalf("coordinator.url = %q, want grpcs://127.0.0.1:50051", got)
+			}
+			if cfg.Coordinator.AuthKey != "test-only-auth-key" {
+				t.Fatalf("coordinator.auth_key = %q, want rendered test key", cfg.Coordinator.AuthKey)
+			}
+			if strings.TrimSpace(cfg.Coordinator.TLS.CAFile) == "" {
+				t.Fatal("coordinator.tls.ca_file is empty")
 			}
 			if len(cfg.NAT.TURNServers) != 1 || cfg.NAT.TURNServers[0].URL != "turn:127.0.0.1:3478?transport=udp" {
 				t.Fatalf("turn server = %+v, want turn:127.0.0.1:3478?transport=udp", cfg.NAT.TURNServers)

@@ -12,7 +12,8 @@ wink --config node-a.yaml status
 
 常见问题：
 
-- `invalid coordinator.url`：确认使用 `grpc://host:50051`
+- `invalid coordinator.url`：远程 coordinator 使用 `grpcs://host:50051`；`grpc://` 只用于数值 loopback 开发地址（如 `127.0.0.1:50051`）
+- `plaintext coordinator target ... is not loopback`：远程明文控制面已被 fail-closed 拒绝，改用 `grpcs://` 并配置可信 CA
 - `invalid connectivity.strategy_order`：只使用当前实现的 strategy 名称，例如 `legacy_ice_udp`、`relay_only`、`tcp_framed`、`signal_relay`
 - `connectivity.multipath.max_paths must be greater than zero`：默认 multipath 已启用，因此 `max_paths` 必须至少为 `1`；真实 protected direct 验证建议使用 `2`
 - WireGuard 私钥错误：重新运行 `wink genkey`，把 private key 写入 `wireguard.private_key`
@@ -34,13 +35,18 @@ wink --config node-a.yaml status
 常见问题：
 
 - 连接失败：确认 TCP `50051` 已开放
-- auth 失败：确认 client 的 `coordinator.auth_key` 和 `WINK_AUTH_KEY` 一致
+- coordinator 启动即退出并提示 non-loopback listener：公网或全网卡监听必须同时提供 `--tls-cert`、`--tls-key` 和非空 `--auth-key-file`（兼容模式也可用 `--auth-key`）；只有数值 loopback listener（如 `127.0.0.1:50051`）可显式使用无 TLS/无认证开发模式
+- `certificate signed by unknown authority`：把签发 coordinator 证书的 CA 写入 `coordinator.tls.ca_file`；自签名 quickstart 中该文件就是复制到 client 的 `coordinator.crt`
+- `certificate is valid for ... not ...`：client URL 中的 IP/DNS 名必须出现在证书 SAN 中
+- auth 失败：确认 client 的 `coordinator.auth_key` 和服务端 `WINK_COORD_AUTH_KEY_FILE` 文件内容完全一致。共享密钥现在通过 gRPC metadata 校验全部 unary 与 signaling stream；已废弃的 Register 正文字段不再参与认证
+- 不要用 `coordinator.tls.insecure_skip_verify: true` 掩盖真实部署的证书错误；该选项仅用于受控测试
 - 看不到 peer：先用 `wink status` 看 `Mode`。`legacy` 模式下两台 client 必须连接同一个 coordinator；`autonomous_mesh` 模式当前只应检查固定 `bootstrap_peers` 以及 `wink peers` 的 `Next Hop`/`Mesh Path`/`Bootstrap` 字段。事故暂停期间，`maintain_peers` 和 recovery card 会在启动前被拒绝。两种模式都要求对应 `wink up` 进程仍在运行
 - 已经 `State: connected` 后断开 coordinator 所在网络，peer 随后断开：先确认你断开的是否只是 coordinator 进程，而不是 natpierce/跳板/underlay 网络。当前 client 已有第一层 peer-offline 保护和 bound 后 protected-direct improvement，但如果已选 path 本身依赖 natpierce，断开 natpierce 仍会拆掉实际数据路径。详见 [`CONTROL-PLANE-RESILIENCE.md`](./CONTROL-PLANE-RESILIENCE.md)。
 
 部署建议：
 
 - coordinator 应部署在双方都能稳定访问的位置，例如公网服务器或固定内网节点。
+- 当前共享密钥是部署级 bearer credential，不是 per-node 身份。任何持有者都拥有整个 coordinator API 的广泛信任；泄露后应立即轮换所有节点配置和服务端密钥。
 - 不要把唯一 coordinator 放在临时跳板链路后面；否则断开跳板/natpierce 后，心跳、peer discovery 和 session signaling 都会失效。
 - 已建立数据面未来应能容忍 coordinator 短暂不可达。当前已修 peer offline update 导致的第一层误清理风险，并支持 bound 后继续尝试 protected direct；但 heartbeat/signaling failure 的长时间验证和 cached path 恢复仍需继续收敛。
 - 如果要单独验证 coordinator outage，不要断开 natpierce/跳板网络；应保持 underlay 不动，只停止 coordinator 进程，再观察 `wink peers`、WireGuard handshake 和双向 ping。断开 natpierce 会同时改变控制面和可能的数据面候选路径，不能单独证明 coordinator 问题。

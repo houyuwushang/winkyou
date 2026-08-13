@@ -20,6 +20,9 @@ Thumbs.db
 # Local config overrides
 *.local.yaml
 *.local.yml
+/deploy/quickstart/.env
+/deploy/quickstart/tls/
+/deploy/quickstart/secrets/
 
 # Local field/stability test artifacts
 /.live-run/

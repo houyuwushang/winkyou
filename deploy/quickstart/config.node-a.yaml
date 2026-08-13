@@ -7,9 +7,11 @@ log:
   output: stderr
 
 coordinator:
-  url: grpc://<HOST>:50051
+  url: grpcs://<HOST>:50051
   timeout: 10s
-  auth_key: wink-demo-key
+  auth_key: <COORDINATOR_AUTH_KEY>
+  tls:
+    ca_file: <COORDINATOR_CA_FILE>
 
 netif:
   backend: tun

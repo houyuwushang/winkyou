@@ -15,6 +15,8 @@ service Coordinator {
 message RegisterRequest {
   string public_key = 1;
   string name = 2;
+  // Deprecated: RPC authentication is carried in metadata on every call.
+  // Field 3 is retained only for wire compatibility and is ignored by v2.
   string auth_key = 3;
   map<string, string> metadata = 4;
 }

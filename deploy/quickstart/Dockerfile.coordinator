@@ -4,7 +4,9 @@ WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
-RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o /out/wink-coordinator ./cmd/wink-coordinator
+ARG TARGETOS
+ARG TARGETARCH
+RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH:-amd64} go build -o /out/wink-coordinator ./cmd/wink-coordinator
 
 FROM gcr.io/distroless/static-debian12
 
