@@ -1,5 +1,12 @@
 package model
 
+import (
+	"strconv"
+	"time"
+
+	"winkyou/pkg/solver"
+)
+
 // Builder provides a fluent interface for constructing probe scripts
 type Builder struct {
 	script Script
@@ -11,7 +18,7 @@ func NewScript(scriptType, planID string) *Builder {
 		script: Script{
 			ScriptType: scriptType,
 			PlanID:     planID,
-			Steps:      []Step{},
+			Steps:      []solver.ProbeStep{},
 		},
 	}
 }
@@ -19,18 +26,23 @@ func NewScript(scriptType, planID string) *Builder {
 // AddSleep adds a sleep step
 func (b *Builder) AddSleep(ms int) *Builder {
 	b.script.Steps = append(b.script.Steps, Step{
-		Type:       StepSleep,
-		DurationMS: ms,
+		Action: StepSleep,
+		Params: map[string]string{
+			"duration_ms": strconv.Itoa(ms),
+		},
 	})
 	return b
 }
 
 // AddReport adds a report event step
 func (b *Builder) AddReport(event string, details map[string]string) *Builder {
+	params := map[string]string{"event": event}
+	for key, value := range details {
+		params[key] = value
+	}
 	b.script.Steps = append(b.script.Steps, Step{
-		Type:    StepReport,
-		Event:   event,
-		Details: details,
+		Action: StepReport,
+		Params: params,
 	})
 	return b
 }
@@ -38,10 +50,9 @@ func (b *Builder) AddReport(event string, details map[string]string) *Builder {
 // AddUDPSend adds a UDP send step
 func (b *Builder) AddUDPSend(addr, payload string, timeoutMS int) *Builder {
 	b.script.Steps = append(b.script.Steps, Step{
-		Type:      StepUDPSend,
-		Addr:      addr,
-		Payload:   payload,
-		TimeoutMS: timeoutMS,
+		Action:  StepUDPSend,
+		Params:  map[string]string{"addr": addr, "payload": payload},
+		Timeout: time.Duration(timeoutMS) * time.Millisecond,
 	})
 	return b
 }
@@ -49,10 +60,9 @@ func (b *Builder) AddUDPSend(addr, payload string, timeoutMS int) *Builder {
 // AddUDPListen adds a UDP listen step
 func (b *Builder) AddUDPListen(addr, expect string, timeoutMS int) *Builder {
 	b.script.Steps = append(b.script.Steps, Step{
-		Type:      StepUDPListen,
-		Addr:      addr,
-		Expect:    expect,
-		TimeoutMS: timeoutMS,
+		Action:  StepUDPListen,
+		Params:  map[string]string{"addr": addr, "expect": expect},
+		Timeout: time.Duration(timeoutMS) * time.Millisecond,
 	})
 	return b
 }
@@ -60,14 +70,14 @@ func (b *Builder) AddUDPListen(addr, expect string, timeoutMS int) *Builder {
 // AddTCPCheck adds a TCP connectivity check step
 func (b *Builder) AddTCPCheck(addr string, timeoutMS int) *Builder {
 	b.script.Steps = append(b.script.Steps, Step{
-		Type:      StepTCPCheck,
-		Addr:      addr,
-		TimeoutMS: timeoutMS,
+		Action:  StepTCPCheck,
+		Params:  map[string]string{"addr": addr},
+		Timeout: time.Duration(timeoutMS) * time.Millisecond,
 	})
 	return b
 }
 
 // Build returns the constructed script
 func (b *Builder) Build() Script {
-	return b.script
+	return solver.CloneProbeScript(b.script)
 }

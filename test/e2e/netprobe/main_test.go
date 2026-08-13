@@ -9,7 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"winkyou/pkg/probe/model"
+	rproto "winkyou/pkg/rendezvous/proto"
+	"winkyou/pkg/session/wireadapter"
 )
 
 func TestRunTCPCommands(t *testing.T) {
@@ -54,10 +55,11 @@ func TestRunScriptOutputsStructuredResult(t *testing.T) {
 		t.Fatalf("script-run error = %v", err)
 	}
 
-	var result model.Result
-	if err := json.Unmarshal(out.Bytes(), &result); err != nil {
+	var wireResult rproto.ProbeResult
+	if err := json.Unmarshal(out.Bytes(), &wireResult); err != nil {
 		t.Fatalf("decode result: %v\noutput=%s", err, out.String())
 	}
+	result := wireadapter.ProbeResultFromWire(wireResult)
 	if !result.Success || result.PlanID != "lab/demo" {
 		t.Fatalf("script result = %+v, want successful lab/demo result", result)
 	}

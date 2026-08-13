@@ -7,6 +7,7 @@ import (
 
 	pmodel "winkyou/pkg/probe/model"
 	rproto "winkyou/pkg/rendezvous/proto"
+	"winkyou/pkg/session/wireadapter"
 	"winkyou/pkg/solver"
 )
 
@@ -51,7 +52,7 @@ func (s *Session) runStrategyPreflightProbe(ctx context.Context, strategy solver
 
 	s.transition(StateProbing)
 	s.setPreflightAttempt(true, false)
-	localScript := solverProbeScriptToModel(*script)
+	localScript := solver.NormalizeProbeScript(*script)
 	sentAt := time.Now()
 	if err := s.sendProbeScript(ctx, localScript); err != nil {
 		return err
@@ -132,8 +133,8 @@ func (s *Session) probeFeaturesNegotiated() bool {
 		capabilityHasFeature(remote, rproto.FeatureProbeScriptV1)
 }
 
-func (s *Session) sendProbeScript(ctx context.Context, script pmodel.Script) error {
-	envelope, err := s.newEnvelope(rproto.MsgTypeProbeScript, probeScriptToProto(script))
+func (s *Session) sendProbeScript(ctx context.Context, script solver.ProbeScript) error {
+	envelope, err := s.newEnvelope(rproto.MsgTypeProbeScript, wireadapter.ProbeScriptToWire(script))
 	if err != nil {
 		return err
 	}
@@ -162,8 +163,8 @@ func (s *Session) sendProbeScript(ctx context.Context, script pmodel.Script) err
 	})
 }
 
-func (s *Session) sendProbeResult(ctx context.Context, result pmodel.Result) error {
-	envelope, err := s.newEnvelope(rproto.MsgTypeProbeResult, probeResultToProto(result))
+func (s *Session) sendProbeResult(ctx context.Context, result solver.ProbeResult) error {
+	envelope, err := s.newEnvelope(rproto.MsgTypeProbeResult, wireadapter.ProbeResultToWire(result))
 	if err != nil {
 		return err
 	}
@@ -182,7 +183,7 @@ func (s *Session) sendProbeResult(ctx context.Context, result pmodel.Result) err
 }
 
 func (s *Session) handleProbeScript(receivedAt time.Time, script rproto.ProbeScript) {
-	localScript := probeScriptFromProto(script)
+	localScript := wireadapter.ProbeScriptFromWire(script)
 	s.recordProbeScript(localScript, receivedAt)
 	runCtx := s.runContext()
 	s.emitObservation(runCtx, solver.Observation{
@@ -199,7 +200,7 @@ func (s *Session) handleProbeScript(receivedAt time.Time, script rproto.ProbeScr
 	go s.runProbeScript(localScript)
 }
 
-func (s *Session) runProbeScript(script pmodel.Script) {
+func (s *Session) runProbeScript(script solver.ProbeScript) {
 	runCtx := s.runContext()
 	s.emitObservation(runCtx, solver.Observation{
 		Strategy: pmodel.StrategyName,
@@ -212,7 +213,7 @@ func (s *Session) runProbeScript(script pmodel.Script) {
 	})
 
 	if s.cfg.ProbeRunner == nil {
-		result := pmodel.Result{
+		result := solver.ProbeResult{
 			ScriptType: script.ScriptType,
 			PlanID:     script.PlanID,
 			Success:    false,
@@ -294,7 +295,7 @@ func (s *Session) runProbeScript(script pmodel.Script) {
 }
 
 func (s *Session) handleProbeResult(receivedAt time.Time, result rproto.ProbeResult) {
-	localResult := probeResultFromProto(result)
+	localResult := wireadapter.ProbeResultFromWire(result)
 	if localResult.FinishedAt.IsZero() {
 		localResult.FinishedAt = receivedAt
 	}
@@ -334,7 +335,7 @@ func (s *Session) handleProbeResult(receivedAt time.Time, result rproto.ProbeRes
 	}
 }
 
-func (s *Session) recordProbeScript(script pmodel.Script, at time.Time) {
+func (s *Session) recordProbeScript(script solver.ProbeScript, at time.Time) {
 	s.metaMu.Lock()
 	s.meta.LastProbeScriptType = script.ScriptType
 	if !at.IsZero() {
@@ -345,142 +346,11 @@ func (s *Session) recordProbeScript(script pmodel.Script, at time.Time) {
 	s.metaMu.Unlock()
 }
 
-func probeScriptToProto(script pmodel.Script) rproto.ProbeScript {
-	steps := make([]rproto.ProbeStep, 0, len(script.Steps))
-	for _, step := range script.Steps {
-		steps = append(steps, rproto.ProbeStep{
-			Type:       step.Type,
-			Addr:       step.Addr,
-			Payload:    step.Payload,
-			Expect:     step.Expect,
-			Message:    step.Message,
-			Reply:      step.Reply,
-			DurationMS: step.DurationMS,
-			TimeoutMS:  step.TimeoutMS,
-			Event:      step.Event,
-			Details:    cloneStringMap(step.Details),
-		})
-	}
-	return rproto.ProbeScript{
-		ScriptType: script.ScriptType,
-		PlanID:     script.PlanID,
-		Steps:      steps,
-	}
-}
-
-func probeScriptFromProto(script rproto.ProbeScript) pmodel.Script {
-	steps := make([]pmodel.Step, 0, len(script.Steps))
-	for _, step := range script.Steps {
-		steps = append(steps, pmodel.Step{
-			Type:       step.Type,
-			Addr:       step.Addr,
-			Payload:    step.Payload,
-			Expect:     step.Expect,
-			Message:    step.Message,
-			Reply:      step.Reply,
-			DurationMS: step.DurationMS,
-			TimeoutMS:  step.TimeoutMS,
-			Event:      step.Event,
-			Details:    cloneStringMap(step.Details),
-		})
-	}
-	return pmodel.Script{
-		ScriptType: script.ScriptType,
-		PlanID:     script.PlanID,
-		Steps:      steps,
-	}
-}
-
-func probeResultToProto(result pmodel.Result) rproto.ProbeResult {
-	events := make([]rproto.Observation, 0, len(result.Events))
-	for _, obs := range result.Events {
-		events = append(events, rproto.Observation{
-			Strategy:       obs.Strategy,
-			PlanID:         obs.PlanID,
-			Event:          obs.Event,
-			PathID:         obs.PathID,
-			ConnectionType: obs.ConnectionType,
-			LocalAddr:      obs.LocalAddr,
-			RemoteAddr:     obs.RemoteAddr,
-			LocalKind:      obs.LocalKind,
-			RemoteKind:     obs.RemoteKind,
-			ErrorClass:     obs.ErrorClass,
-			Reason:         obs.Reason,
-			TimeoutMS:      obs.TimeoutMS,
-			Details:        cloneStringMap(obs.Details),
-			Timestamp:      obs.Timestamp,
-		})
-	}
-	return rproto.ProbeResult{
-		ScriptType:     result.ScriptType,
-		PlanID:         result.PlanID,
-		Success:        result.Success,
-		Events:         events,
-		SelectedPathID: result.SelectedPathID,
-		ErrorClass:     result.ErrorClass,
-		FinishedAt:     result.FinishedAt,
-	}
-}
-
-func probeResultFromProto(result rproto.ProbeResult) pmodel.Result {
-	events := make([]solver.Observation, 0, len(result.Events))
-	for _, obs := range result.Events {
-		events = append(events, solver.Observation{
-			Strategy:       obs.Strategy,
-			PlanID:         obs.PlanID,
-			Event:          obs.Event,
-			PathID:         obs.PathID,
-			ConnectionType: obs.ConnectionType,
-			LocalAddr:      obs.LocalAddr,
-			RemoteAddr:     obs.RemoteAddr,
-			LocalKind:      obs.LocalKind,
-			RemoteKind:     obs.RemoteKind,
-			ErrorClass:     obs.ErrorClass,
-			Reason:         obs.Reason,
-			TimeoutMS:      obs.TimeoutMS,
-			Details:        cloneStringMap(obs.Details),
-			Timestamp:      obs.Timestamp,
-		})
-	}
-	return pmodel.Result{
-		ScriptType:     result.ScriptType,
-		PlanID:         result.PlanID,
-		Success:        result.Success,
-		Events:         events,
-		SelectedPathID: result.SelectedPathID,
-		ErrorClass:     result.ErrorClass,
-		FinishedAt:     result.FinishedAt,
-	}
-}
-
-func localResultPathType(result pmodel.Result) string {
+func localResultPathType(result solver.ProbeResult) string {
 	for i := len(result.Events) - 1; i >= 0; i-- {
 		if result.Events[i].ConnectionType != "" {
 			return result.Events[i].ConnectionType
 		}
 	}
 	return ""
-}
-
-func solverProbeScriptToModel(script solver.ProbeScript) pmodel.Script {
-	steps := make([]pmodel.Step, len(script.Steps))
-	for i, step := range script.Steps {
-		steps[i] = pmodel.Step{
-			Type:       step.Action,
-			Addr:       step.Params["addr"],
-			Payload:    step.Params["payload"],
-			Expect:     step.Params["expect"],
-			Message:    step.Params["message"],
-			Reply:      step.Params["reply"],
-			Event:      step.Params["event"],
-			DurationMS: parseIntParam(step.Params["duration_ms"]),
-			TimeoutMS:  int(step.Timeout.Milliseconds()),
-			Details:    cloneStringMapExcept(step.Params, "addr", "payload", "expect", "message", "reply", "event", "duration_ms"),
-		}
-	}
-	return pmodel.Script{
-		ScriptType: script.ScriptType,
-		PlanID:     script.PlanID,
-		Steps:      steps,
-	}
 }

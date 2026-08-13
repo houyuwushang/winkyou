@@ -4,7 +4,6 @@ import (
 	"context"
 	"time"
 
-	pmodel "winkyou/pkg/probe/model"
 	rproto "winkyou/pkg/rendezvous/proto"
 	"winkyou/pkg/solver"
 )
@@ -77,7 +76,7 @@ type OrderedStrategyResolver interface {
 }
 
 type ProbeRunner interface {
-	Run(ctx context.Context, script pmodel.Script) (pmodel.Result, error)
+	Run(ctx context.Context, script solver.ProbeScript) (solver.ProbeResult, error)
 }
 
 type Config struct {
@@ -119,7 +118,7 @@ type Snapshot struct {
 	LastEnvelopeAt          time.Time
 	LastProbeScriptType     string
 	LastProbeScriptAt       time.Time
-	LastProbeResult         pmodel.Result
+	LastProbeResult         solver.ProbeResult
 	LastProbeResultAt       time.Time
 	LastPlanOrder           []string
 	LastPlanOrderReason     string
