@@ -315,6 +315,30 @@ func (r *Router) PromoteNeighborHandle(handle NeighborHandle) bool {
 	return true
 }
 
+// WaitPacketNeighborReady waits until the exact attached packet session has
+// received a valid frame from its peer. A stale handle never observes a
+// replacement session that later attaches under the same peer ID.
+func (r *Router) WaitPacketNeighborReady(ctx context.Context, handle NeighborHandle) error {
+	if r == nil || handle.router != r || handle.entry == nil || handle.peerID == "" {
+		return fmt.Errorf("%w: packet neighbor handle", ErrUnknownNeighbor)
+	}
+	r.mu.RLock()
+	entry := r.neighbors[handle.peerID]
+	closed := r.closed
+	r.mu.RUnlock()
+	if closed {
+		return ErrClosed
+	}
+	if entry != handle.entry {
+		return fmt.Errorf("%w: %s", ErrUnknownNeighbor, handle.peerID)
+	}
+	session, ok := entry.session.(*PacketNeighborSession)
+	if !ok {
+		return fmt.Errorf("mesh: neighbor %q is not a packet session", handle.peerID)
+	}
+	return session.waitReady(ctx)
+}
+
 // RemoveNeighbor withdraws a direct edge immediately. Dynamic control-plane
 // users publish a newer LSA from the neighbor-change callback.
 func (r *Router) RemoveNeighbor(peerID string) error {

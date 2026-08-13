@@ -126,6 +126,132 @@ func TestAttemptTimeoutCancelsPlanningStrategy(t *testing.T) {
 	assertAttemptTimesOut(t, manager, wire.AttemptID, 60*time.Millisecond)
 }
 
+func TestEarlySolverMessageIsDeliveredBeforeExecute(t *testing.T) {
+	node := newTestNode(t, mesh.NodeConfig{NodeID: "A"})
+	strategy := &queuedMessageStrategy{
+		handled:  make(chan solver.Message, 1),
+		executed: make(chan solver.Message, 1),
+	}
+	manager := newTestManager(t, Config{Node: node, StrategyName: queuedMessageStrategyName})
+	wire := wireMessage{
+		AttemptID: "early-solver-message", InitiatorID: "A", TargetID: "B", CoordinatorID: "C",
+		Strategy: queuedMessageStrategyName, ProbationMillis: 1000, SentAt: time.Now().UTC(),
+	}
+	manager.mu.Lock()
+	manager.attempts[wire.AttemptID] = &attemptState{
+		status: Status{
+			AttemptID: wire.AttemptID, InitiatorID: "A", TargetID: "B", CoordinatorID: "C",
+			Strategy: queuedMessageStrategyName, LocalRole: "initiator", Phase: PhaseReady,
+			DirectPeerID: "B", StartedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(),
+		},
+		strategy: strategy,
+		plan:     solver.Plan{ID: "queued", Strategy: queuedMessageStrategyName},
+		changed:  make(chan struct{}),
+	}
+	manager.mu.Unlock()
+
+	early := wire
+	early.SolverMessage = &solver.Message{
+		Kind: solver.MessageKindStrategy, Namespace: queuedMessageStrategyName,
+		Type: "ready", Payload: []byte("peer-ready"),
+	}
+	if err := manager.handleSolverMessage(context.Background(), "B", early); err != nil {
+		t.Fatal(err)
+	}
+	early.SolverMessage.Payload[0] = 'X'
+	select {
+	case <-strategy.handled:
+		t.Fatal("early solver message was delivered before FIRE")
+	default:
+	}
+	if err := manager.handleFire("C", wire); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case message := <-strategy.executed:
+		if message.Type != "ready" || string(message.Payload) != "peer-ready" || message.ReceivedAt.IsZero() {
+			t.Fatalf("message observed by Execute = %+v", message)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("queued solver message was not delivered before Execute")
+	}
+}
+
+func TestPendingSolverMessageBacklogFailsClosed(t *testing.T) {
+	node := newTestNode(t, mesh.NodeConfig{NodeID: "A"})
+	strategy := &queuedMessageStrategy{
+		handled:  make(chan solver.Message, 1),
+		executed: make(chan solver.Message, 1),
+	}
+	manager := newTestManager(t, Config{Node: node, StrategyName: queuedMessageStrategyName})
+	wire := wireMessage{
+		AttemptID: "solver-backlog", InitiatorID: "A", TargetID: "B", CoordinatorID: "C",
+		Strategy: queuedMessageStrategyName, ProbationMillis: 1000, SentAt: time.Now().UTC(),
+	}
+	manager.mu.Lock()
+	manager.attempts[wire.AttemptID] = &attemptState{
+		status: Status{
+			AttemptID: wire.AttemptID, InitiatorID: "A", TargetID: "B", CoordinatorID: "C",
+			Strategy: queuedMessageStrategyName, LocalRole: "initiator", Phase: PhaseReady,
+			DirectPeerID: "B", StartedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(),
+		},
+		strategy: strategy,
+		changed:  make(chan struct{}),
+	}
+	manager.mu.Unlock()
+	for index := 0; index < maxPendingSolverMessages; index++ {
+		messageWire := wire
+		messageWire.SolverMessage = &solver.Message{Kind: solver.MessageKindStrategy, Type: "candidate"}
+		if err := manager.handleSolverMessage(context.Background(), "B", messageWire); err != nil {
+			t.Fatalf("queue message %d: %v", index, err)
+		}
+	}
+	overflow := wire
+	overflow.SolverMessage = &solver.Message{Kind: solver.MessageKindStrategy, Type: "candidate"}
+	if err := manager.handleSolverMessage(context.Background(), "B", overflow); !errors.Is(err, ErrSolverBacklog) {
+		t.Fatalf("overflow error = %v, want %v", err, ErrSolverBacklog)
+	}
+	status, ok := manager.Status(wire.AttemptID)
+	if !ok || status.Phase != PhaseFailed || !strings.Contains(status.Failure, ErrSolverBacklog.Error()) {
+		t.Fatalf("overflow status = %+v", status)
+	}
+}
+
+func TestPendingSolverMessageByteBacklogFailsClosed(t *testing.T) {
+	node := newTestNode(t, mesh.NodeConfig{NodeID: "A"})
+	strategy := &queuedMessageStrategy{
+		handled:  make(chan solver.Message, 1),
+		executed: make(chan solver.Message, 1),
+	}
+	manager := newTestManager(t, Config{Node: node, StrategyName: queuedMessageStrategyName})
+	wire := wireMessage{
+		AttemptID: "solver-byte-backlog", InitiatorID: "A", TargetID: "B", CoordinatorID: "C",
+		Strategy: queuedMessageStrategyName, ProbationMillis: 1000, SentAt: time.Now().UTC(),
+		SolverMessage: &solver.Message{
+			Kind: solver.MessageKindStrategy, Type: "candidate",
+			Payload: make([]byte, maxPendingSolverBytes+1),
+		},
+	}
+	manager.mu.Lock()
+	manager.attempts[wire.AttemptID] = &attemptState{
+		status: Status{
+			AttemptID: wire.AttemptID, InitiatorID: "A", TargetID: "B", CoordinatorID: "C",
+			Strategy: queuedMessageStrategyName, LocalRole: "initiator", Phase: PhaseReady,
+			DirectPeerID: "B", StartedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(),
+		},
+		strategy: strategy,
+		changed:  make(chan struct{}),
+	}
+	manager.mu.Unlock()
+	if err := manager.handleSolverMessage(context.Background(), "B", wire); !errors.Is(err, ErrSolverBacklog) {
+		t.Fatalf("oversized backlog error = %v, want %v", err, ErrSolverBacklog)
+	}
+	status, ok := manager.Status(wire.AttemptID)
+	if !ok || status.Phase != PhaseFailed || !strings.Contains(status.Failure, ErrSolverBacklog.Error()) {
+		t.Fatalf("oversized backlog status = %+v", status)
+	}
+}
+
 func TestCancelTerminalAttemptIsIdempotentAndKeepsDirectEdge(t *testing.T) {
 	for _, phase := range []Phase{PhaseStable, PhaseFailed} {
 		t.Run(string(phase), func(t *testing.T) {
@@ -435,6 +561,36 @@ func (s *blockingPlanStrategy) Execute(context.Context, solver.SessionIO, solver
 }
 
 func (s *blockingPlanStrategy) Close() error { return nil }
+
+const queuedMessageStrategyName = "queued_message"
+
+type queuedMessageStrategy struct {
+	handled  chan solver.Message
+	executed chan solver.Message
+}
+
+func (s *queuedMessageStrategy) Name() string { return queuedMessageStrategyName }
+
+func (s *queuedMessageStrategy) Plan(context.Context, solver.SolveInput) ([]solver.Plan, error) {
+	return []solver.Plan{{ID: "queued", Strategy: queuedMessageStrategyName}}, nil
+}
+
+func (s *queuedMessageStrategy) Execute(ctx context.Context, _ solver.SessionIO, _ solver.Plan) (solver.Result, error) {
+	select {
+	case message := <-s.handled:
+		s.executed <- message
+		return solver.Result{}, errors.New("queued message test complete")
+	case <-ctx.Done():
+		return solver.Result{}, ctx.Err()
+	}
+}
+
+func (s *queuedMessageStrategy) HandleMessage(_ context.Context, _ solver.SessionIO, message solver.Message) error {
+	s.handled <- message
+	return nil
+}
+
+func (*queuedMessageStrategy) Close() error { return nil }
 
 func TestDefaultAttemptLifecycleTimeoutCoversSolveAndCommitWindows(t *testing.T) {
 	solveTimeout := 2 * time.Minute

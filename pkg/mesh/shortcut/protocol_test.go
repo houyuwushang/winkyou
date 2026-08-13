@@ -29,6 +29,9 @@ func TestWireMessageRoundTrip(t *testing.T) {
 		decoded.SolverMessage == nil || string(decoded.SolverMessage.Payload) != "endpoint" {
 		t.Fatalf("decoded wire = %+v", decoded)
 	}
+	if decoded.encodedSize != len(raw) {
+		t.Fatalf("decoded encoded size = %d, want %d", decoded.encodedSize, len(raw))
+	}
 }
 
 func TestManagerRejectsProbationShorterThanLivenessTimeout(t *testing.T) {
