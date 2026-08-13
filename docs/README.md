@@ -30,6 +30,7 @@ When documents disagree, treat `CONNECTIVITY-SOLVER-BASELINE.md` as the source o
 - Phase 1a bounded cancellation and I/O drain contract: [`CANCELLATION-DRAIN-CONTRACT.md`](./CANCELLATION-DRAIN-CONTRACT.md)
 - Phase 1a no-packet first-run report: [`PASSIVE-DIAGNOSE.md`](./PASSIVE-DIAGNOSE.md)
 - Draft Phase 1a one-time test pairing protocol and security gates: [`TEST-ONLY-PAIRING-MINI-SPEC.md`](./TEST-ONLY-PAIRING-MINI-SPEC.md)
+- Draft Phase 1a test-pairing cryptographic candidate evaluation (no decision or implementation authority): [`adr/ADR-TEST-PAIRING-CRYPTO-CANDIDATE.md`](./adr/ADR-TEST-PAIRING-CRYPTO-CANDIDATE.md)
 - Self-host quickstart: [`SELFHOST-QUICKSTART.md`](./SELFHOST-QUICKSTART.md)
 - Experimental `meshnode` restart recovery and recovery-card operation: [`SELF-BOOTSTRAP-RECOVERY.md`](./SELF-BOOTSTRAP-RECOVERY.md)
 - Long-running legacy/autonomous client configuration, status, and graceful-down workflow: [`LONG-RUNNING-CLIENT.md`](./LONG-RUNNING-CLIENT.md)
