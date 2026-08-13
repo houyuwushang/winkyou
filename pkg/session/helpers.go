@@ -5,7 +5,6 @@ import (
 	"strings"
 	"time"
 
-	pmodel "winkyou/pkg/probe/model"
 	rproto "winkyou/pkg/rendezvous/proto"
 	"winkyou/pkg/solver"
 )
@@ -115,35 +114,6 @@ func pathSummaryObservationDetails(summary solver.PathSummary, details map[strin
 	return details
 }
 
-func parseIntParam(s string) int {
-	if s == "" {
-		return 0
-	}
-	var val int
-	fmt.Sscanf(s, "%d", &val)
-	return val
-}
-
-func cloneStringMapExcept(m map[string]string, except ...string) map[string]string {
-	if len(m) == 0 {
-		return nil
-	}
-	excludeSet := make(map[string]struct{}, len(except))
-	for _, key := range except {
-		excludeSet[key] = struct{}{}
-	}
-	result := make(map[string]string, len(m))
-	for k, v := range m {
-		if _, excluded := excludeSet[k]; !excluded {
-			result[k] = v
-		}
-	}
-	if len(result) == 0 {
-		return nil
-	}
-	return result
-}
-
 func cloneCapability(capability rproto.Capability) rproto.Capability {
 	return rproto.Capability{
 		Strategies: append([]string(nil), capability.Strategies...),
@@ -197,14 +167,8 @@ func capabilityHasFeature(capability rproto.Capability, feature string) bool {
 	return false
 }
 
-func cloneProbeResult(result pmodel.Result) pmodel.Result {
-	cloned := result
-	cloned.Events = make([]solver.Observation, 0, len(result.Events))
-	for _, obs := range result.Events {
-		obs.Details = cloneStringMap(obs.Details)
-		cloned.Events = append(cloned.Events, obs)
-	}
-	return cloned
+func cloneProbeResult(result solver.ProbeResult) solver.ProbeResult {
+	return solver.CloneProbeResult(result)
 }
 
 func cloneStringMap(in map[string]string) map[string]string {

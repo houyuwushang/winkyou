@@ -6,9 +6,12 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"strconv"
 	"time"
 
 	"winkyou/pkg/probe/model"
+	rproto "winkyou/pkg/rendezvous/proto"
+	"winkyou/pkg/session/wireadapter"
 	"winkyou/pkg/solver"
 )
 
@@ -19,11 +22,11 @@ func LoadScript(path string) (model.Script, error) {
 	if err != nil {
 		return model.Script{}, err
 	}
-	var script model.Script
+	var script rproto.ProbeScript
 	if err := json.Unmarshal(data, &script); err != nil {
 		return model.Script{}, fmt.Errorf("probe: decode script: %w", err)
 	}
-	return script, nil
+	return wireadapter.ProbeScriptFromWire(script), nil
 }
 
 func (Runner) Run(ctx context.Context, script model.Script) (model.Result, error) {
@@ -49,7 +52,7 @@ func (Runner) Run(ctx context.Context, script model.Script) (model.Result, error
 				Reason:     err.Error(),
 				Details: map[string]string{
 					"step_index": fmt.Sprintf("%d", i),
-					"step_type":  step.Type,
+					"step_type":  step.Action,
 				},
 				Timestamp: time.Now(),
 			})
@@ -62,7 +65,7 @@ func (Runner) Run(ctx context.Context, script model.Script) (model.Result, error
 }
 
 func runStep(ctx context.Context, planID string, step model.Step) (solver.Observation, error) {
-	switch step.Type {
+	switch step.Action {
 	case model.StepUDPSend:
 		return runUDPSend(ctx, planID, step)
 	case model.StepUDPListen:
@@ -74,37 +77,37 @@ func runStep(ctx context.Context, planID string, step model.Step) (solver.Observ
 	case model.StepReport:
 		return runReport(planID, step), nil
 	default:
-		return solver.Observation{}, fmt.Errorf("probe: unsupported step type %q", step.Type)
+		return solver.Observation{}, fmt.Errorf("probe: unsupported step type %q", step.Action)
 	}
 }
 
 func runUDPSend(ctx context.Context, planID string, step model.Step) (solver.Observation, error) {
-	timeout := stepTimeout(step.TimeoutMS, 5*time.Second)
+	timeout := stepTimeout(step.Timeout, 5*time.Second)
 	dialer := net.Dialer{Timeout: timeout}
-	conn, err := dialer.DialContext(ctx, "udp4", step.Addr)
+	conn, err := dialer.DialContext(ctx, "udp4", step.Params["addr"])
 	if err != nil {
 		return solver.Observation{}, err
 	}
 	defer conn.Close()
 	_ = conn.SetDeadline(time.Now().Add(timeout))
-	if _, err := conn.Write([]byte(step.Payload)); err != nil {
+	if _, err := conn.Write([]byte(step.Params["payload"])); err != nil {
 		return solver.Observation{}, err
 	}
 	return solver.Observation{
 		Strategy:   model.StrategyName,
 		PlanID:     planID,
 		Event:      model.StepUDPSend,
-		RemoteAddr: step.Addr,
+		RemoteAddr: step.Params["addr"],
 		Reason:     "sent",
 		Details: map[string]string{
-			"payload_len": fmt.Sprintf("%d", len(step.Payload)),
+			"payload_len": fmt.Sprintf("%d", len(step.Params["payload"])),
 		},
 		Timestamp: time.Now(),
 	}, nil
 }
 
 func runUDPListen(ctx context.Context, planID string, step model.Step) (solver.Observation, error) {
-	addr, err := net.ResolveUDPAddr("udp4", step.Addr)
+	addr, err := net.ResolveUDPAddr("udp4", step.Params["addr"])
 	if err != nil {
 		return solver.Observation{}, err
 	}
@@ -114,7 +117,7 @@ func runUDPListen(ctx context.Context, planID string, step model.Step) (solver.O
 	}
 	defer conn.Close()
 
-	timeout := stepTimeout(step.TimeoutMS, 5*time.Second)
+	timeout := stepTimeout(step.Timeout, 5*time.Second)
 	_ = conn.SetDeadline(time.Now().Add(timeout))
 	buf := make([]byte, 2048)
 	done := make(chan struct {
@@ -139,11 +142,11 @@ func runUDPListen(ctx context.Context, planID string, step model.Step) (solver.O
 			return solver.Observation{}, read.err
 		}
 		payload := string(buf[:read.n])
-		if step.Expect != "" && payload != step.Expect {
-			return solver.Observation{}, fmt.Errorf("probe: udp payload = %q, want %q", payload, step.Expect)
+		if expect := step.Params["expect"]; expect != "" && payload != expect {
+			return solver.Observation{}, fmt.Errorf("probe: udp payload = %q, want %q", payload, expect)
 		}
-		if step.Reply != "" {
-			if _, err := conn.WriteToUDP([]byte(step.Reply), read.remote); err != nil {
+		if reply := step.Params["reply"]; reply != "" {
+			if _, err := conn.WriteToUDP([]byte(reply), read.remote); err != nil {
 				return solver.Observation{}, err
 			}
 		}
@@ -163,28 +166,28 @@ func runUDPListen(ctx context.Context, planID string, step model.Step) (solver.O
 }
 
 func runTCPCheck(ctx context.Context, planID string, step model.Step) (solver.Observation, error) {
-	timeout := stepTimeout(step.TimeoutMS, 5*time.Second)
+	timeout := stepTimeout(step.Timeout, 5*time.Second)
 	dialer := net.Dialer{Timeout: timeout}
-	conn, err := dialer.DialContext(ctx, "tcp4", step.Addr)
+	conn, err := dialer.DialContext(ctx, "tcp4", step.Params["addr"])
 	if err != nil {
 		return solver.Observation{}, err
 	}
 	defer conn.Close()
 	_ = conn.SetDeadline(time.Now().Add(timeout))
 
-	if step.Message != "" {
-		if _, err := conn.Write([]byte(step.Message)); err != nil {
+	if message := step.Params["message"]; message != "" {
+		if _, err := conn.Write([]byte(message)); err != nil {
 			return solver.Observation{}, err
 		}
 	}
-	if step.Expect != "" {
+	if expect := step.Params["expect"]; expect != "" {
 		buf := make([]byte, 2048)
 		n, err := conn.Read(buf)
 		if err != nil {
 			return solver.Observation{}, err
 		}
-		if string(buf[:n]) != step.Expect {
-			return solver.Observation{}, fmt.Errorf("probe: tcp reply = %q, want %q", string(buf[:n]), step.Expect)
+		if string(buf[:n]) != expect {
+			return solver.Observation{}, fmt.Errorf("probe: tcp reply = %q, want %q", string(buf[:n]), expect)
 		}
 	}
 	return solver.Observation{
@@ -192,14 +195,15 @@ func runTCPCheck(ctx context.Context, planID string, step model.Step) (solver.Ob
 		PlanID:         planID,
 		Event:          model.StepTCPCheck,
 		ConnectionType: "tcp",
-		RemoteAddr:     step.Addr,
+		RemoteAddr:     step.Params["addr"],
 		Reason:         "checked",
 		Timestamp:      time.Now(),
 	}, nil
 }
 
 func runSleep(ctx context.Context, planID string, step model.Step) (solver.Observation, error) {
-	duration := time.Duration(step.DurationMS) * time.Millisecond
+	durationMS, _ := strconv.Atoi(step.Params["duration_ms"])
+	duration := time.Duration(durationMS) * time.Millisecond
 	if duration <= 0 {
 		duration = 50 * time.Millisecond
 	}
@@ -220,7 +224,7 @@ func runSleep(ctx context.Context, planID string, step model.Step) (solver.Obser
 }
 
 func runReport(planID string, step model.Step) solver.Observation {
-	event := step.Event
+	event := step.Params["event"]
 	if event == "" {
 		event = "report"
 	}
@@ -228,16 +232,16 @@ func runReport(planID string, step model.Step) solver.Observation {
 		Strategy:  model.StrategyName,
 		PlanID:    planID,
 		Event:     event,
-		Details:   cloneDetails(step.Details),
+		Details:   wireadapter.ProbeStepDetails(step),
 		Timestamp: time.Now(),
 	}
 }
 
-func stepTimeout(rawMS int, fallback time.Duration) time.Duration {
-	if rawMS <= 0 {
+func stepTimeout(timeout, fallback time.Duration) time.Duration {
+	if timeout <= 0 {
 		return fallback
 	}
-	return time.Duration(rawMS) * time.Millisecond
+	return timeout
 }
 
 func classifyError(err error) string {
@@ -251,15 +255,4 @@ func classifyError(err error) string {
 	default:
 		return "unknown"
 	}
-}
-
-func cloneDetails(in map[string]string) map[string]string {
-	if len(in) == 0 {
-		return nil
-	}
-	out := make(map[string]string, len(in))
-	for k, v := range in {
-		out[k] = v
-	}
-	return out
 }

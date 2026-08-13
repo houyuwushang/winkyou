@@ -6,23 +6,20 @@ import (
 	"time"
 
 	rproto "winkyou/pkg/rendezvous/proto"
+	"winkyou/pkg/session/wireadapter"
 	"winkyou/pkg/solver"
 )
 
 func (s *Session) Observations() []solver.Observation {
 	s.obsMu.Lock()
 	defer s.obsMu.Unlock()
-	out := make([]solver.Observation, len(s.observations))
-	copy(out, s.observations)
-	return out
+	return solver.CloneObservations(s.observations)
 }
 
 func (s *Session) RemoteObservations() []solver.Observation {
 	s.obsMu.Lock()
 	defer s.obsMu.Unlock()
-	out := make([]solver.Observation, len(s.remoteObs))
-	copy(out, s.remoteObs)
-	return out
+	return solver.CloneObservations(s.remoteObs)
 }
 
 func (s *Session) localObservationCount() int {
@@ -32,22 +29,7 @@ func (s *Session) localObservationCount() int {
 }
 
 func (s *Session) recordRemoteObservation(obs rproto.Observation, receivedAt time.Time) {
-	solverObs := solver.Observation{
-		Strategy:       obs.Strategy,
-		PlanID:         obs.PlanID,
-		Event:          obs.Event,
-		PathID:         obs.PathID,
-		ConnectionType: obs.ConnectionType,
-		LocalAddr:      obs.LocalAddr,
-		RemoteAddr:     obs.RemoteAddr,
-		LocalKind:      obs.LocalKind,
-		RemoteKind:     obs.RemoteKind,
-		ErrorClass:     obs.ErrorClass,
-		Reason:         obs.Reason,
-		TimeoutMS:      obs.TimeoutMS,
-		Details:        obs.Details,
-		Timestamp:      obs.Timestamp,
-	}
+	solverObs := wireadapter.ObservationFromWire(obs)
 	if solverObs.Timestamp.IsZero() {
 		solverObs.Timestamp = receivedAt
 	}
@@ -79,22 +61,7 @@ func (s *Session) reportObservation(ctx context.Context, obs solver.Observation)
 		}
 	}
 
-	envelope, err := s.newEnvelope(rproto.MsgTypeObservation, rproto.Observation{
-		Strategy:       obs.Strategy,
-		PlanID:         obs.PlanID,
-		Event:          obs.Event,
-		PathID:         obs.PathID,
-		ConnectionType: obs.ConnectionType,
-		LocalAddr:      obs.LocalAddr,
-		RemoteAddr:     obs.RemoteAddr,
-		LocalKind:      obs.LocalKind,
-		RemoteKind:     obs.RemoteKind,
-		ErrorClass:     obs.ErrorClass,
-		Reason:         obs.Reason,
-		TimeoutMS:      obs.TimeoutMS,
-		Details:        obs.Details,
-		Timestamp:      obs.Timestamp,
-	})
+	envelope, err := s.newEnvelope(rproto.MsgTypeObservation, wireadapter.ObservationToWire(obs))
 	if err != nil {
 		return err
 	}
@@ -121,7 +88,7 @@ func (s *Session) emitObservation(ctx context.Context, obs solver.Observation) {
 }
 
 func appendObservation(list []solver.Observation, obs solver.Observation, limit int) []solver.Observation {
-	list = append(list, obs)
+	list = append(list, solver.CloneObservation(obs))
 	if limit > 0 && len(list) > limit {
 		retained := make([]solver.Observation, limit)
 		copy(retained, list[len(list)-limit:])
@@ -133,7 +100,7 @@ func appendObservation(list []solver.Observation, obs solver.Observation, limit 
 func (s *Session) localObservationHistory() []solver.Observation {
 	observations := make([]solver.Observation, 0, 128)
 	if s.cfg.ObservationHistory != nil {
-		observations = append(observations, s.cfg.ObservationHistory.Recent(64)...)
+		observations = append(observations, solver.CloneObservations(s.cfg.ObservationHistory.Recent(64))...)
 	}
 	observations = append(observations, s.Observations()...)
 	return observations
@@ -145,7 +112,7 @@ func (s *Session) lastProbeResultSummary() *solver.ProbeResultSummary {
 	if s.meta.LastProbeResultAt.IsZero() && s.meta.LastProbeResult.ScriptType == "" {
 		return nil
 	}
-	summary := solver.ProbeResultSummary{
+	summary := solver.NormalizeProbeResultSummary(solver.ProbeResultSummary{
 		ScriptType: s.meta.LastProbeResult.ScriptType,
 		Success:    s.meta.LastProbeResult.Success,
 		ErrorClass: s.meta.LastProbeResult.ErrorClass,
@@ -155,6 +122,6 @@ func (s *Session) lastProbeResultSummary() *solver.ProbeResultSummary {
 			"event_count": fmt.Sprintf("%d", len(s.meta.LastProbeResult.Events)),
 		},
 		FinishedAt: s.meta.LastProbeResult.FinishedAt,
-	}
+	})
 	return &summary
 }

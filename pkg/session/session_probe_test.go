@@ -170,7 +170,10 @@ func TestSessionProbeScriptRoundTrip(t *testing.T) {
 	if err := local.sendProbeScript(context.Background(), pmodel.Script{
 		ScriptType: "manual_test",
 		PlanID:     "probe/manual",
-		Steps:      []pmodel.Step{{Type: pmodel.StepReport, Event: "script_completed"}},
+		Steps: []pmodel.Step{{
+			Action: pmodel.StepReport,
+			Params: map[string]string{"event": "script_completed"},
+		}},
 	}); err != nil {
 		t.Fatalf("sendProbeScript() error = %v", err)
 	}

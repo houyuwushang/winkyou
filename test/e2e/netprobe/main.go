@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"winkyou/pkg/probe/lab"
+	"winkyou/pkg/session/wireadapter"
 )
 
 func main() {
@@ -191,7 +192,7 @@ func runScript(args []string, stdout io.Writer) error {
 		return err
 	}
 	result, runErr := (lab.Runner{}).Run(context.Background(), script)
-	encoded, err := json.MarshalIndent(result, "", "  ")
+	encoded, err := json.MarshalIndent(wireadapter.ProbeResultToWire(result), "", "  ")
 	if err != nil {
 		return err
 	}

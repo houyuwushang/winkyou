@@ -32,39 +32,54 @@ func TestSolverDomainDoesNotImportWireDTOs(t *testing.T) {
 	}
 }
 
-func TestSolverWireImportScannerDetectsAliasedImports(t *testing.T) {
+func TestSolverWireImportScannerDetectsDomainDTOImports(t *testing.T) {
 	root := t.TempDir()
-	file := filepath.Join(root, "types.go")
-	source := []byte("package solver\nimport wire \"winkyou/pkg/rendezvous/proto\"\nvar _ wire.Capability\n")
-	if err := os.WriteFile(file, source, 0o600); err != nil {
+	rendezvousFile := filepath.Join(root, "observation.go")
+	rendezvousSource := []byte("package solver\nimport wire \"winkyou/pkg/rendezvous/proto\"\nvar _ wire.Observation\nvar _ wire.ProbeScript\n")
+	if err := os.WriteFile(rendezvousFile, rendezvousSource, 0o600); err != nil {
 		t.Fatalf("write scanner fixture: %v", err)
+	}
+	apiFile := filepath.Join(root, "probe.go")
+	apiSource := []byte("package solver\nimport generated \"winkyou/api/proto/coordinatorv1\"\nvar _ generated.ProbeResult\n")
+	if err := os.WriteFile(apiFile, apiSource, 0o600); err != nil {
+		t.Fatalf("write api scanner fixture: %v", err)
 	}
 	violations, err := solverWireImportViolations(root)
 	if err != nil {
 		t.Fatalf("scan fixture: %v", err)
 	}
-	want := "types.go imports winkyou/pkg/rendezvous/proto"
-	if len(violations) != 1 || violations[0] != want {
-		t.Fatalf("violations = %#v, want %q", violations, want)
+	want := []string{
+		"observation.go imports winkyou/pkg/rendezvous/proto",
+		"probe.go imports winkyou/api/proto/coordinatorv1",
+	}
+	if strings.Join(violations, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("violations = %#v, want %#v", violations, want)
 	}
 }
 
 func TestSolverWireDependencyScannerDetectsWrapper(t *testing.T) {
-	packages := map[string]*packageInfo{
-		modulePath + "/pkg/solver": {
-			imports: map[string]struct{}{modulePath + "/pkg/wrapper": {}},
-		},
-		modulePath + "/pkg/wrapper": {
-			imports: map[string]struct{}{modulePath + "/pkg/rendezvous/proto": {}},
-		},
-	}
-	want := []string{
-		modulePath + "/pkg/solver",
-		modulePath + "/pkg/wrapper",
+	for _, wirePackage := range []string{
 		modulePath + "/pkg/rendezvous/proto",
-	}
-	if got := solverWireDependencyPath(modulePath+"/pkg/solver", packages); strings.Join(got, "\n") != strings.Join(want, "\n") {
-		t.Fatalf("dependency path = %#v, want %#v", got, want)
+		modulePath + "/api/proto/coordinatorv1",
+	} {
+		t.Run(wirePackage, func(t *testing.T) {
+			packages := map[string]*packageInfo{
+				modulePath + "/pkg/solver": {
+					imports: map[string]struct{}{modulePath + "/pkg/wrapper": {}},
+				},
+				modulePath + "/pkg/wrapper": {
+					imports: map[string]struct{}{wirePackage: {}},
+				},
+			}
+			want := []string{
+				modulePath + "/pkg/solver",
+				modulePath + "/pkg/wrapper",
+				wirePackage,
+			}
+			if got := solverWireDependencyPath(modulePath+"/pkg/solver", packages); strings.Join(got, "\n") != strings.Join(want, "\n") {
+				t.Fatalf("dependency path = %#v, want %#v", got, want)
+			}
+		})
 	}
 }
 

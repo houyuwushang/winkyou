@@ -13,14 +13,11 @@ func TestRunnerRunMinimalScript(t *testing.T) {
 	addr, cleanup := startUDPReceiver(t)
 	defer cleanup()
 
-	script := model.Script{
-		PlanID: "lab/demo",
-		Steps: []model.Step{
-			{Type: model.StepUDPSend, Addr: addr, Payload: "hello"},
-			{Type: model.StepSleep, DurationMS: 10},
-			{Type: model.StepReport, Event: "script_completed"},
-		},
-	}
+	script := model.NewScript("", "lab/demo").
+		AddUDPSend(addr, "hello", 0).
+		AddSleep(10).
+		AddReport("script_completed", nil).
+		Build()
 
 	result, err := (Runner{}).Run(context.Background(), script)
 	if err != nil {
@@ -47,9 +44,10 @@ func TestRunnerRunTCPCheck(t *testing.T) {
 	addr := startTCPResponder(t, "ping", "pong")
 	script := model.Script{
 		PlanID: "lab/tcp-check",
-		Steps: []model.Step{
-			{Type: model.StepTCPCheck, Addr: addr, Message: "ping", Expect: "pong"},
-		},
+		Steps: []model.Step{{
+			Action: model.StepTCPCheck,
+			Params: map[string]string{"addr": addr, "message": "ping", "expect": "pong"},
+		}},
 	}
 
 	result, err := (Runner{}).Run(context.Background(), script)

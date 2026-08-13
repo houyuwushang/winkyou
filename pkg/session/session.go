@@ -6,7 +6,6 @@ import (
 	"sync"
 	"time"
 
-	pmodel "winkyou/pkg/probe/model"
 	"winkyou/pkg/solver"
 )
 
@@ -62,7 +61,7 @@ type Session struct {
 }
 
 type probeResultSignal struct {
-	result pmodel.Result
+	result solver.ProbeResult
 	at     time.Time
 }
 
