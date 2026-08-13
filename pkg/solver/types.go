@@ -128,6 +128,19 @@ type ProbeResultSummary struct {
 	FinishedAt time.Time
 }
 
+// ProbeResult is the canonical solver-domain result of executing one probe
+// script. ProbeResultSummary remains the intentionally smaller view supplied
+// to plan ranking and refinement.
+type ProbeResult struct {
+	ScriptType     string
+	PlanID         string
+	Success        bool
+	Events         []Observation
+	SelectedPathID string
+	ErrorClass     string
+	FinishedAt     time.Time
+}
+
 type RankInput struct {
 	SessionID          string
 	LocalNodeID        string
