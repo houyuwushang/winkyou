@@ -202,6 +202,8 @@ func TestGovernedPackageZonesIncludeProbeIOChildrenAndV2Roots(t *testing.T) {
 	checks := map[string]bool{
 		"winkyou/internal/probeio":       true,
 		"winkyou/internal/probeio/osudp": true,
+		"winkyou/internal/natsim":        true,
+		"winkyou/internal/natsim/model":  true,
 		"winkyou/internal/v2":            true,
 		"winkyou/internal/v2/connect":    true,
 		"winkyou/pkg/v2":                 true,
@@ -213,5 +215,24 @@ func TestGovernedPackageZonesIncludeProbeIOChildrenAndV2Roots(t *testing.T) {
 		if actual := isGovernedPackage(pkg); actual != expected {
 			t.Errorf("isGovernedPackage(%q) = %t, want %t", pkg, actual, expected)
 		}
+	}
+}
+
+func TestNATSimulatorCannotAcquireNetworkCapability(t *testing.T) {
+	result := scanResult{
+		findings: []finding{{
+			file:       "internal/natsim/bypass.go",
+			function:   "openRealSocket",
+			capability: "reference:net.ListenUDP",
+			pkg:        "winkyou/internal/natsim",
+		}},
+		packages: map[string]*packageInfo{
+			"winkyou/internal/natsim": {imports: map[string]struct{}{}},
+		},
+	}
+	violations := governedCapabilityViolations(result)
+	want := "winkyou/internal/natsim directly owns reference:net.ListenUDP in internal/natsim/bypass.go (openRealSocket)"
+	if len(violations) != 1 || violations[0] != want {
+		t.Fatalf("violations = %#v, want %q", violations, want)
 	}
 }

@@ -20,15 +20,18 @@ The current findings are frozen in
 of v1/legacy compatibility debt. Presence in the file is not a v2 approval and
 is not evidence that the path is safe to enable.
 
-`internal/probeio`, every child package beneath it, and packages beneath
-`internal/v2` or `pkg/v2` are governed zones. They must have no unreviewed raw
-capability of their own and no transitive dependency on a package that owns
-one. The only exception is the exact `openLoopbackUDP` call in the production
-probeio adapter, recorded with `owner=governor`; filename, function, package,
-capability, owner, or count drift fails the gate. The adapter returns only the
-bounded `Datagram` interface and Phase 1a rejects non-loopback binds and
-targets. A future v2 package that imports a harmless-looking wrapper around
-`pkg/nat`, for example, still fails through the dependency graph.
+`internal/probeio`, `internal/natsim`, every child package beneath them, and
+packages beneath `internal/v2` or `pkg/v2` are governed zones. They must have
+no unreviewed raw capability of their own and no transitive dependency on a
+package that owns one. The only exception is the exact `openLoopbackUDP` call
+in the production probeio adapter, recorded with `owner=governor`; filename,
+function, package, capability, owner, or count drift fails the gate. The
+adapter returns only the bounded `Datagram` interface and Phase 1a rejects
+non-loopback binds and targets. `internal/natsim` is permanently pure-memory
+with no exception: adding a real socket opener there fails even if the
+inventory is edited. A future v2 package that imports a harmless-looking
+wrapper around `pkg/nat`, for example, still fails through the dependency
+graph.
 
 Hidden worktrees, `.git`, `vendor`, and `node_modules` are excluded so ignored
 copies do not become part of the current-source inventory. Non-hidden Go test

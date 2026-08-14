@@ -508,6 +508,8 @@ func capabilityDependencyPath(start string, packages map[string]*packageInfo, ca
 func isGovernedPackage(pkg string) bool {
 	return pkg == modulePath+"/internal/probeio" ||
 		strings.HasPrefix(pkg, modulePath+"/internal/probeio/") ||
+		pkg == modulePath+"/internal/natsim" ||
+		strings.HasPrefix(pkg, modulePath+"/internal/natsim/") ||
 		pkg == modulePath+"/internal/governor" ||
 		strings.HasPrefix(pkg, modulePath+"/internal/governor/") ||
 		pkg == modulePath+"/internal/diagnose" ||
