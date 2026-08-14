@@ -21,10 +21,14 @@ of v1/legacy compatibility debt. Presence in the file is not a v2 approval and
 is not evidence that the path is safe to enable.
 
 `internal/probeio`, every child package beneath it, and packages beneath
-`internal/v2` or `pkg/v2` are governed zones. They must have no raw capability
-of their own and no transitive dependency on a package that owns one. A future
-v2 package that imports a harmless-looking wrapper around `pkg/nat`, for
-example, still fails through the dependency graph.
+`internal/v2` or `pkg/v2` are governed zones. They must have no unreviewed raw
+capability of their own and no transitive dependency on a package that owns
+one. The only exception is the exact `openLoopbackUDP` call in the production
+probeio adapter, recorded with `owner=governor`; filename, function, package,
+capability, owner, or count drift fails the gate. The adapter returns only the
+bounded `Datagram` interface and Phase 1a rejects non-loopback binds and
+targets. A future v2 package that imports a harmless-looking wrapper around
+`pkg/nat`, for example, still fails through the dependency graph.
 
 Hidden worktrees, `.git`, `vendor`, and `node_modules` are excluded so ignored
 copies do not become part of the current-source inventory. Non-hidden Go test
@@ -42,9 +46,9 @@ The failure separates new or changed findings from stale entries and prints
 the complete sorted inventory.
 
 For a new v2 or `probeio` finding, do not update the inventory merely to make
-CI pass. Route active probing through the governed capability. A production
-OS adapter will require a specific architecture change that identifies it as
-the sole reviewed opener while keeping callers unable to obtain a raw socket.
+CI pass. Route active probing through the governed capability. The production
+OS adapter is the sole exact reviewed opener; callers still cannot obtain its
+raw socket.
 
 For a deliberate legacy-only change, reviewers should verify the ownership
 and bounds, then update the exact sorted entry and count. Removing a legacy
