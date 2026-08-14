@@ -1,9 +1,9 @@
 # ADR: test-only pairing cryptographic candidate
 
-- Status: **Draft; decision and security review are open**
+- Status: **Draft; protocol-level candidate selected, implementation decision and security review remain open**
 - Evidence snapshot: 2026-08-13
 - Decision owner: WinkYou maintainers, with independent security review
-- Selected candidate: **unresolved**
+- Selected candidate: **Candidate B at protocol level only (2026-08-14)**
 - Selected implementation: **unresolved**
 - Implementation authorization: **none**
 
@@ -437,18 +437,44 @@ independently reviewed implementation for the whole selected profile. If
 correct result is to keep `connect_test` gated as `not_implemented`. Availability
 pressure is not a reason to weaken the cryptographic boundary.
 
-## 9. Decision record (intentionally blank)
+## 9. Decision record
 
-Maintainers and independent reviewers must complete this section in a later
-revision. Editing it requires a separately reviewable change.
+Maintainers and independent reviewers complete this section in separately
+reviewable revisions. The 2026-08-14 revision records a **protocol-level**
+selection only; every implementation-facing field stays TBD and keeps
+`connect_test` gated as `not_implemented`.
 
-- Selected candidate: **TBD**
-- Selected `secure_channel_profile`: **TBD**
-- Selected implementation and immutable source reference: **TBD**
-- Independent review reference: **TBD**
-- Vector set and cross-language verifier reference: **TBD**
-- Residual risks accepted by: **TBD**
-- Approval date: **TBD**
+- Selected candidate: **Candidate B, protocol level only.** The maintainer
+  selected the Noise profile for the disposable test-only pairing channel
+  after expert review verified RFC 9258 section 5.2 (`imp binder`) makes
+  Candidate A unimplementable without a prohibited fork, and verified the
+  Candidate B pattern, framing, and prologue binding. Candidate A remains a
+  parallel candidate through the upstream contribution track in
+  [issue #41](https://github.com/houyuwushang/winkyou/issues/41); if a
+  maintained upstream importer ships, re-evaluating it requires a reviewed
+  revision of this record.
+- Selected `secure_channel_profile`: **`noise-nnpsk0-25519-chachapoly-sha256/1`**
+  (`Noise_NNpsk0_25519_ChaChaPoly_SHA256`), exactly as frozen in section 4.
+- Selected implementation and immutable source reference: **TBD.**
+  `github.com/flynn/noise` remains an evaluation input; the section 5.4
+  conditions (focused review of pinned source, dependency owner, independent
+  interop) are unmet.
+- Independent review reference: protocol-level expert review on
+  [PR #39](https://github.com/houyuwushang/winkyou/pull/39) (verified: RFC 9258
+  binder-label claim against the RFC text, `NNpsk0` message pattern and
+  48-byte framing, prologue domain separation). This reference covers the
+  protocol proposal only, not any implementation.
+- Vector set and cross-language verifier reference: **TBD.** This selection
+  unblocks building the section 6 vector suite; no vector is normative yet.
+- Residual risks accepted by: maintainer, for the protocol-level selection of
+  a symmetric one-use PSK channel as bounded in section 4.4. Implementation
+  and dependency risks are **not yet accepted** by anyone.
+- Approval date: **2026-08-14 (protocol level only).**
+- Follow-up required before implementation: mini-spec section 4.4
+  `PairingContext` fixed fields must be aligned with the candidate-neutral
+  names used in section 4.2 through a versioned mini-spec revision, so the JCS
+  context cannot drift between the two documents.
 
-Until every field above is resolved and the mini-spec section 12 gates close,
-this ADR remains Draft and grants no implementation or network authority.
+Until the implementation-facing fields above are resolved and the mini-spec
+section 12 gates close, this ADR remains Draft and grants no implementation or
+network authority.
