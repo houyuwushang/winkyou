@@ -1,6 +1,6 @@
-// Package diagnose builds a passive, structured first-run diagnostic report.
-// It does not own active connectivity probes or the separately planned
-// redacted-report export format.
+// Package diagnose builds a passive, structured first-run diagnostic report
+// and its stricter shareable export form. It does not own active connectivity
+// probes.
 package diagnose
 
 import (
