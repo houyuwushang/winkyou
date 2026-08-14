@@ -21,6 +21,45 @@ import (
 
 var loopbackEphemeral = netip.MustParseAddrPort("127.0.0.1:0")
 
+type fakeTimeoutError struct{}
+
+func (fakeTimeoutError) Error() string   { return "fake i/o timeout" }
+func (fakeTimeoutError) Timeout() bool   { return true }
+func (fakeTimeoutError) Temporary() bool { return true }
+
+func TestContextErrorForIOAttributesArmedTimeoutsDeterministically(t *testing.T) {
+	expired, cancelExpired := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+	defer cancelExpired()
+	if got := contextErrorForIO(expired, fakeTimeoutError{}); !errors.Is(got, context.DeadlineExceeded) {
+		t.Fatalf("expired deadline timeout = %v, want context.DeadlineExceeded", got)
+	}
+
+	// The OS timer armed from the context can fire a moment before ctx.Err()
+	// is set; a timeout under a deadline-carrying context is still the
+	// context's timeout.
+	pending, cancelPending := context.WithDeadline(context.Background(), time.Now().Add(time.Hour))
+	defer cancelPending()
+	if got := contextErrorForIO(pending, fakeTimeoutError{}); !errors.Is(got, context.DeadlineExceeded) {
+		t.Fatalf("armed deadline timeout = %v, want context.DeadlineExceeded", got)
+	}
+
+	cancelled, cancelNow := context.WithCancel(context.Background())
+	cancelNow()
+	if got := contextErrorForIO(cancelled, fakeTimeoutError{}); !errors.Is(got, context.Canceled) {
+		t.Fatalf("cancelled timeout = %v, want context.Canceled", got)
+	}
+
+	if got := contextErrorForIO(context.Background(), fakeTimeoutError{}); got != nil {
+		t.Fatalf("timeout without deadline = %v, want passthrough nil", got)
+	}
+	if got := contextErrorForIO(pending, errors.New("write failure")); got != nil {
+		t.Fatalf("non-timeout error = %v, want passthrough nil", got)
+	}
+	if got := contextErrorForIO(pending, nil); got != nil {
+		t.Fatalf("success = %v, want nil", got)
+	}
+}
+
 func TestUDPFactoryIsLoopbackOnly(t *testing.T) {
 	for _, endpoint := range []netip.AddrPort{
 		{},
