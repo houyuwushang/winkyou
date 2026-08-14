@@ -21,20 +21,21 @@ import (
 const consecutiveWriteFailureLimit = 3
 
 var (
-	ErrInvalidConfig      = errors.New("probeio: invalid configuration")
-	ErrLeaseClosed        = errors.New("probeio: attempt lease is closed")
-	ErrSocketClosed       = errors.New("probeio: socket handle is closed")
-	ErrUnregisteredTarget = errors.New("probeio: target is not registered")
-	ErrInvalidTarget      = errors.New("probeio: invalid target")
-	ErrReplyRejected      = errors.New("probeio: reply was rejected")
-	ErrReplyNotVerified   = errors.New("probeio: no verified reply for target")
-	ErrHardLimit          = errors.New("probeio: reserved hard limit exceeded")
-	ErrResourceExhausted  = errors.New("probeio: operating system resource exhausted")
-	ErrWriteFailures      = errors.New("probeio: consecutive write failure limit reached")
-	ErrStaleGeneration    = errors.New("probeio: stale network generation")
-	ErrInvalidGeneration  = errors.New("probeio: invalid network generation")
-	ErrAlreadyPromoted    = errors.New("probeio: controller already promoted a socket")
-	ErrDatagramContract   = errors.New("probeio: datagram implementation violated its contract")
+	ErrInvalidConfig       = errors.New("probeio: invalid configuration")
+	ErrLeaseClosed         = errors.New("probeio: attempt lease is closed")
+	ErrSocketClosed        = errors.New("probeio: socket handle is closed")
+	ErrUnregisteredTarget  = errors.New("probeio: target is not registered")
+	ErrInvalidTarget       = errors.New("probeio: invalid target")
+	ErrReplyRejected       = errors.New("probeio: reply was rejected")
+	ErrReplyNotVerified    = errors.New("probeio: no verified reply for target")
+	ErrHardLimit           = errors.New("probeio: reserved hard limit exceeded")
+	ErrResourceExhausted   = errors.New("probeio: operating system resource exhausted")
+	ErrWriteFailures       = errors.New("probeio: consecutive write failure limit reached")
+	ErrStaleGeneration     = errors.New("probeio: stale network generation")
+	ErrInvalidGeneration   = errors.New("probeio: invalid network generation")
+	ErrAlreadyPromoted     = errors.New("probeio: controller already promoted a socket")
+	ErrDatagramContract    = errors.New("probeio: datagram implementation violated its contract")
+	ErrFactoryUnauthorized = errors.New("probeio: factory open is not controller-authorized")
 )
 
 // AttemptLease is the narrow governor capability required by probeio.
@@ -63,7 +64,6 @@ type Datagram interface {
 }
 
 // Factory creates exactly one Datagram for each successful OpenProbeSocket.
-// No production implementation is included in this foundation slice.
 type Factory interface {
 	Open(ctx context.Context) (Datagram, error)
 }
@@ -245,7 +245,7 @@ func New(config Config) (*Controller, error) {
 	}
 	classifier := config.ResourceExhausted
 	if classifier == nil {
-		classifier = func(err error) bool { return errors.Is(err, ErrResourceExhausted) }
+		classifier = IsResourceExhausted
 	}
 	buildVersion, err := normalizeBuildVersion(config.BuildVersion)
 	if err != nil {
@@ -345,6 +345,7 @@ func (c *Controller) OpenProbeSocket(ctx context.Context) (*ProbeSocket, error) 
 	}
 
 	openCtx, cancelOpen := mergeContext(ctx, c.lifecycleCtx)
+	openCtx = authorizeFactoryOpen(openCtx)
 	datagram, openErr := c.factory.Open(openCtx)
 	cancelOpen()
 	c.mu.Lock()
@@ -420,6 +421,38 @@ func (socket *ProbeSocket) RegisterTarget(target netip.AddrPort) error {
 		return c.handleViolation(violation)
 	}
 	return nil
+}
+
+// LocalAddr returns the immutable local endpoint metadata for this bounded
+// handle. It never exposes the Datagram, UDP connection, file descriptor, or
+// any method that can bypass the controller's send accounting.
+func (socket *ProbeSocket) LocalAddr() (netip.AddrPort, error) {
+	c, state, err := socket.parts()
+	if err != nil {
+		return netip.AddrPort{}, err
+	}
+	c.mu.Lock()
+	violation := c.guardViolationLocked(c.now())
+	if violation == nil && state.state != socketOpen {
+		c.mu.Unlock()
+		return netip.AddrPort{}, ErrSocketClosed
+	}
+	if violation != nil {
+		c.mu.Unlock()
+		return netip.AddrPort{}, c.handleViolation(violation)
+	}
+	address := state.datagram.LocalAddr()
+	c.mu.Unlock()
+
+	udpAddress, ok := address.(*net.UDPAddr)
+	if !ok || udpAddress == nil {
+		return netip.AddrPort{}, ErrDatagramContract
+	}
+	endpoint := udpAddress.AddrPort()
+	if !endpoint.IsValid() || endpoint.Port() == 0 || endpoint.Addr().IsUnspecified() {
+		return netip.AddrPort{}, ErrDatagramContract
+	}
+	return netip.AddrPortFrom(endpoint.Addr().Unmap(), endpoint.Port()), nil
 }
 
 // SendProbe sends only to a registered target and accounts the attempt before

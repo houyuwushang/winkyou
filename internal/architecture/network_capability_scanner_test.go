@@ -74,6 +74,49 @@ func TestGovernedPackageCannotReachCapabilityTransitively(t *testing.T) {
 	}
 }
 
+func TestProbeIOApprovalIsExactAndDirectBypassStillFails(t *testing.T) {
+	approved := finding{
+		file:       "internal/probeio/udp_factory.go",
+		function:   "openLoopbackUDP",
+		capability: "reference:net.ListenUDP",
+		pkg:        "winkyou/internal/probeio",
+	}
+	bypass := finding{
+		file:       "internal/probeio/bypass.go",
+		function:   "openUnaccountedSocket",
+		capability: "reference:net.ListenUDP",
+		pkg:        "winkyou/internal/probeio",
+	}
+	result := scanResult{
+		findings: []finding{approved, bypass},
+		packages: map[string]*packageInfo{
+			"winkyou/internal/probeio": {imports: map[string]struct{}{}},
+		},
+	}
+
+	violations := governedCapabilityViolations(result)
+	want := "winkyou/internal/probeio directly owns reference:net.ListenUDP in internal/probeio/bypass.go (openUnaccountedSocket)"
+	if len(violations) != 1 || violations[0] != want {
+		t.Fatalf("violations = %#v, want only %q", violations, want)
+	}
+	if !approvedGovernedCapability(approved) {
+		t.Fatal("reviewed governor-owned adapter was not recognized")
+	}
+	approved.function = "anotherOpener"
+	if approvedGovernedCapability(approved) {
+		t.Fatal("approval widened beyond the exact reviewed function")
+	}
+}
+
+func TestProbeIOCapabilityApprovalHasGovernorOwner(t *testing.T) {
+	if len(governedCapabilityApprovals) != 1 {
+		t.Fatalf("governed approvals = %d, want exactly 1", len(governedCapabilityApprovals))
+	}
+	if owner := governedCapabilityApprovals[0].owner; owner != "governor" {
+		t.Fatalf("probeio capability owner = %q, want governor", owner)
+	}
+}
+
 func TestInventoryDifferenceRejectsAdditionAndStaleDebt(t *testing.T) {
 	unexpected, stale := inventoryDifference(
 		[]string{"capability-a", "capability-b"},

@@ -80,6 +80,26 @@ type scanResult struct {
 	packages map[string]*packageInfo
 }
 
+type governedCapabilityApproval struct {
+	file       string
+	function   string
+	capability string
+	pkg        string
+	owner      string
+}
+
+// This is the sole raw capability approved inside a governed v2 package. The
+// adapter returns only probeio.Datagram and is constrained to loopback in Phase
+// 1a. Any filename, function, capability, package, owner, or count drift must
+// fail review rather than silently widening this exception.
+var governedCapabilityApprovals = []governedCapabilityApproval{{
+	file:       "internal/probeio/udp_factory.go",
+	function:   "openLoopbackUDP",
+	capability: "reference:net.ListenUDP",
+	pkg:        modulePath + "/internal/probeio",
+	owner:      "governor",
+}}
+
 func TestProductionNetworkCapabilityInventory(t *testing.T) {
 	root := repositoryRoot(t)
 	result, err := scanRepository(root)
@@ -412,6 +432,9 @@ func governedCapabilityViolations(result scanResult) []string {
 	capabilityPackages := make(map[string]struct{})
 	var violations []string
 	for _, current := range result.findings {
+		if approvedGovernedCapability(current) {
+			continue
+		}
 		capabilityPackages[current.pkg] = struct{}{}
 		if isGovernedPackage(current.pkg) {
 			violations = append(violations, fmt.Sprintf(
@@ -433,6 +456,19 @@ func governedCapabilityViolations(result scanResult) []string {
 	}
 	sort.Strings(violations)
 	return violations
+}
+
+func approvedGovernedCapability(current finding) bool {
+	for _, approval := range governedCapabilityApprovals {
+		if approval.owner == "governor" &&
+			current.file == approval.file &&
+			current.function == approval.function &&
+			current.capability == approval.capability &&
+			current.pkg == approval.pkg {
+			return true
+		}
+	}
+	return false
 }
 
 func capabilityDependencyPath(start string, packages map[string]*packageInfo, capabilityPackages map[string]struct{}) []string {
