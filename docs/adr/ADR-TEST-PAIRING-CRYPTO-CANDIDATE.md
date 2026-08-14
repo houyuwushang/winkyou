@@ -191,11 +191,13 @@ UTF8("winkyou test-only pairing Noise prologue v1\n") ||
 JCS(PairingContext)
 ```
 
-`PairingContext` is the validated ACCEPTANCE object plus the fixed fields from
-mini-spec section 4.4:
+`PairingContext` is the validated ACCEPTANCE object reconstructed with the six
+candidate-neutral channel-policy field names from mini-spec section 4.4. The
+profile value is copied from ACCEPTANCE; the other five are fixed by version 1:
 
 ```json
 {
+  "secure_channel_profile": "noise-nnpsk0-25519-chachapoly-sha256/1",
   "initiator_channel_role": "initiator",
   "responder_channel_role": "responder",
   "early_data": "disabled",
@@ -357,6 +359,7 @@ bytes and contains only synthetic public test material:
   "vector_schema": "winkyou-test-pairing-noise-vector/1",
   "profile": "noise-nnpsk0-25519-chachapoly-sha256/1",
   "noise_protocol_name": "Noise_NNpsk0_25519_ChaChaPoly_SHA256",
+  "pairing_context": {"<field>": "<string value>"},
   "pairing_context_jcs_hex": "<bytes>",
   "prologue_hex": "<bytes>",
   "psk_hex": "<32 bytes>",
@@ -379,6 +382,10 @@ byte-for-byte by both the selected Go implementation and an independent
 implementation (proposed verifier: Rust
 [`snow`](https://docs.rs/snow/latest/snow/struct.Builder.html), pinned by version
 and commit).
+The structured `pairing_context` is mandatory so every implementation can
+independently recompute `pairing_context_jcs_hex` and `prologue_hex`; the hex
+members are assertions, not substitutes for canonicalization.
+
 The suite must first run the upstream Noise vectors for
 `Noise_NNpsk0_25519_ChaChaPoly_SHA256`, then run the WinkYou-specific prologue,
 outer framing, inner control framing, and terminal transcript. The verifier must
@@ -470,10 +477,10 @@ selection only; every implementation-facing field stays TBD and keeps
   a symmetric one-use PSK channel as bounded in section 4.4. Implementation
   and dependency risks are **not yet accepted** by anyone.
 - Approval date: **2026-08-14 (protocol level only).**
-- Follow-up required before implementation: mini-spec section 4.4
-  `PairingContext` fixed fields must be aligned with the candidate-neutral
-  names used in section 4.2 through a versioned mini-spec revision, so the JCS
-  context cannot drift between the two documents.
+- Mini-spec alignment follow-up: the 2026-08-14 vector-foundation revision
+  proposes the required section 4.4 alignment and restricted-JCS fixtures. It
+  closes this text drift only after independent review; it does not resolve the
+  TBD implementation or interop fields above.
 
 Until the implementation-facing fields above are resolved and the mini-spec
 section 12 gates close, this ADR remains Draft and grants no implementation or

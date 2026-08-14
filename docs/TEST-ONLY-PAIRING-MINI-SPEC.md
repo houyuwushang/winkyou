@@ -222,10 +222,15 @@ stores it only long enough to attempt one connection. The secret MUST be kept
 separate from diagnostic DTOs, JSON reports, errors, tracing fields, crash
 reports, and command-line arguments.
 
-The `PairingContext` is the ACCEPTANCE object plus the following fixed fields:
+The `PairingContext` is a newly reconstructed, flat, string-only object that
+contains every validated ACCEPTANCE member. The following six
+candidate-neutral channel-policy field names are frozen explicitly; the first
+value is copied from the validated ACCEPTANCE and the other five are fixed by
+this version:
 
 ```json
 {
+  "secure_channel_profile": "<same exact profile from ACCEPTANCE>",
   "initiator_channel_role": "initiator",
   "responder_channel_role": "responder",
   "early_data": "disabled",
@@ -234,14 +239,22 @@ The `PairingContext` is the ACCEPTANCE object plus the following fixed fields:
 }
 ```
 
-`secure_channel_profile` is not negotiated on the carrier. The follow-up ADR
-selects one exact identifier, both OOB artifacts repeat it, and unknown or
-mismatched values fail before any carrier I/O. Until that ADR is accepted there
-is no valid real-channel value and only the secret-free simulation is allowed.
-The simulation uses the internal sentinel
+`secure_channel_profile` is not negotiated on the carrier. The protocol-level
+ADR decision selected one exact identifier, both OOB artifacts repeat it, and
+unknown or mismatched values fail before any carrier I/O. The implementation,
+dependency, interoperability, and independent-review gates remain open, so
+this field alignment does not authorize a real channel. The simulation uses
+the internal sentinel
 `simulation/no-crypto-no-network/1` solely to exercise context binding. Real
 artifact parsers and adapters MUST reject that sentinel; it MUST NOT appear in
 an OOB bundle or be promoted by the ADR.
+
+Revision note (2026-08-14): the previous text inherited
+`secure_channel_profile` only implicitly from ACCEPTANCE while listing the
+other five policy fields explicitly. This revision freezes all six
+candidate-neutral names in one place. It does not change OFFER or ACCEPTANCE
+wire members, the simulator state machine, or cryptographic implementation
+authority.
 
 Candidate A's external-PSK importer context is:
 
