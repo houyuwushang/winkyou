@@ -2,10 +2,11 @@
 // contract.
 //
 // It intentionally contains no pairing secret, cryptographic handshake,
-// encoder, socket, DNS lookup, or production transport adapter. Simulated
-// channels enforce bounded attempt context and state transitions, but provide
-// no authentication or confidentiality and must never be used across a trust
-// boundary.
+// carrier encoder, socket, DNS lookup, or production transport adapter. Its
+// restricted-JCS and vector helpers operate only on synthetic, non-operational
+// test material. Simulated channels enforce bounded attempt context and
+// state transitions, but provide no authentication or confidentiality and
+// must never be used across a trust boundary.
 //
 // The simulator deliberately has mixed half-duplex scheduling semantics: Send
 // holds an endpoint's state lock until its one-frame outgoing queue accepts the
