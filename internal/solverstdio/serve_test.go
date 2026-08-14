@@ -69,6 +69,57 @@ func TestServeHandshakeGolden(t *testing.T) {
 	}
 }
 
+func TestServePipelinedHandshakeOrdersBeforeLaterRequests(t *testing.T) {
+	// Both frames arrive in one write with stdin closing immediately after.
+	// The handshake must complete before the pipelined status request is
+	// dispatched, and EOF must drain the in-flight status to success.
+	for attempt := 0; attempt < 20; attempt++ {
+		authority := &fakeAuthority{status: clearTrip()}
+		input := bytes.NewBuffer(nil)
+		input.Write(serveFrame(`{"jsonrpc":"2.0","id":1,"method":"handshake","params":{"schema_version":"winkyou.stdio/v1","framing_version":"lsp-content-length/v1"}}`))
+		input.Write(serveFrame(`{"jsonrpc":"2.0","id":2,"method":"status","params":{}}`))
+		var output bytes.Buffer
+		if err := serveWithDependencies(context.Background(), input, &output, Options{}, testDependencies(authority)); err != nil {
+			t.Fatalf("serve: %v", err)
+		}
+		reader, err := stdiojsonrpc.NewFrameReader(bytes.NewReader(output.Bytes()), 1024, 1<<20)
+		if err != nil {
+			t.Fatalf("new response reader: %v", err)
+		}
+		responses := make(map[string]json.RawMessage)
+		for {
+			body, readErr := reader.ReadFrame()
+			if readErr == io.EOF {
+				break
+			}
+			if readErr != nil {
+				t.Fatalf("read response: %v", readErr)
+			}
+			var envelope struct {
+				ID     json.RawMessage `json:"id"`
+				Result json.RawMessage `json:"result"`
+				Error  json.RawMessage `json:"error"`
+			}
+			if err := json.Unmarshal(body, &envelope); err != nil {
+				t.Fatalf("decode response: %v", err)
+			}
+			if len(envelope.ID) != 0 && string(envelope.ID) != "null" {
+				if len(envelope.Error) != 0 {
+					t.Fatalf("attempt %d: request %s failed: %s", attempt, envelope.ID, envelope.Error)
+				}
+				responses[string(envelope.ID)] = envelope.Result
+			}
+		}
+		if len(responses["1"]) == 0 || len(responses["2"]) == 0 {
+			t.Fatalf("attempt %d: missing pipelined responses: %v", attempt, responses)
+		}
+	}
+}
+
+func serveFrame(payload string) []byte {
+	return []byte(fmt.Sprintf("Content-Length: %d\r\n\r\n%s", len(payload), payload))
+}
+
 func TestServeFailsClosedWithOwnerPID(t *testing.T) {
 	held := &governor.OwnerHeldError{Owner: governor.OwnerInfo{
 		PID:          4242,

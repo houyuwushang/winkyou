@@ -79,5 +79,8 @@ func serveWithDependencies(ctx context.Context, input io.Reader, output io.Write
 	if err != nil {
 		return fmt.Errorf("create stdio JSON-RPC server: %w", err)
 	}
+	// The handshake gates every other method, so it must complete before any
+	// later pipelined request is dispatched.
+	server.MarkSynchronousMethod(MethodHandshake)
 	return server.Run(ctx)
 }

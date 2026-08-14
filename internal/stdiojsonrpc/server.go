@@ -86,6 +86,7 @@ type Server struct {
 	handler          Handler
 	deadlineSelector DeadlineSelector
 	limits           Limits
+	synchronous      map[string]struct{}
 	writeMu          sync.Mutex
 	inflightMu       sync.Mutex
 	inflight         map[string]*inflightRequest
@@ -122,10 +123,22 @@ func NewServer(input io.Reader, output io.Writer, handler Handler, limits Limits
 		handler:          handler,
 		deadlineSelector: selector,
 		limits:           limits,
+		synchronous:      make(map[string]struct{}),
 		inflight:         make(map[string]*inflightRequest),
 		semaphore:        make(chan struct{}, limits.MaxConcurrent),
 		rate:             newTokenBucket(limits.RequestsPerSecond, limits.RateBurst),
 	}, nil
+}
+
+// MarkSynchronousMethod makes the named method execute inline in the dispatch
+// loop, so its completion is ordered before any later pipelined request is
+// started. It must be called before Run and is intended for fast,
+// ordering-critical methods such as a protocol handshake.
+func (server *Server) MarkSynchronousMethod(method string) {
+	if server == nil || strings.TrimSpace(method) == "" {
+		return
+	}
+	server.synchronous[method] = struct{}{}
 }
 
 func (server *Server) Run(ctx context.Context) error {
@@ -157,30 +170,34 @@ func (server *Server) Run(ctx context.Context) error {
 		var err error
 		select {
 		case <-ctx.Done():
-			return server.shutdown()
+			return server.shutdown(true)
 		case frame := <-frames:
 			payload, err = frame.payload, frame.err
 		}
 		if errors.Is(err, io.EOF) {
-			return server.shutdown()
+			// EOF means the client finished sending requests, not that it
+			// stopped wanting responses. Drain in-flight work instead of
+			// cancelling it; cancellation stays reserved for explicit cancel,
+			// deadlines, context shutdown, and fatal transport errors.
+			return server.shutdown(false)
 		}
 		if err != nil {
 			server.writeFramingError(err)
 			cancel()
-			return errors.Join(err, server.shutdown())
+			return errors.Join(err, server.shutdown(true))
 		}
 		request, rpcErr := ParseRequest(payload)
 		if rpcErr != nil {
 			if err := server.writeError(nil, rpcErr); err != nil {
 				cancel()
-				return errors.Join(err, server.shutdown())
+				return errors.Join(err, server.shutdown(true))
 			}
 			continue
 		}
 		if request.Method == CancelMethod {
 			if err := server.handleCancel(request); err != nil {
 				cancel()
-				return errors.Join(err, server.shutdown())
+				return errors.Join(err, server.shutdown(true))
 			}
 			continue
 		}
@@ -190,7 +207,7 @@ func (server *Server) Run(ctx context.Context) error {
 			rpcErr.Data.RetryAfterMS = maxInt64(1, retryAfter.Milliseconds())
 			if err := server.writeError(request.ID.Raw(), rpcErr); err != nil {
 				cancel()
-				return errors.Join(err, server.shutdown())
+				return errors.Join(err, server.shutdown(true))
 			}
 			continue
 		}
@@ -201,21 +218,26 @@ func (server *Server) Run(ctx context.Context) error {
 			rpcErr.Data.Limit = int64(server.limits.MaxConcurrent)
 			if err := server.writeError(request.ID.Raw(), rpcErr); err != nil {
 				cancel()
-				return errors.Join(err, server.shutdown())
+				return errors.Join(err, server.shutdown(true))
 			}
 			continue
 		}
-		if rpcErr := server.start(ctx, request); rpcErr != nil {
+		if rpcErr := server.start(ctx, request, server.isSynchronous(request.Method)); rpcErr != nil {
 			<-server.semaphore
 			if err := server.writeError(request.ID.Raw(), rpcErr); err != nil {
 				cancel()
-				return errors.Join(err, server.shutdown())
+				return errors.Join(err, server.shutdown(true))
 			}
 		}
 	}
 }
 
-func (server *Server) start(parent context.Context, request Request) *RPCError {
+func (server *Server) isSynchronous(method string) bool {
+	_, synchronous := server.synchronous[method]
+	return synchronous
+}
+
+func (server *Server) start(parent context.Context, request Request, inline bool) *RPCError {
 	duration := server.limits.DefaultDeadline
 	if server.deadlineSelector != nil {
 		selected, rpcErr := server.deadlineSelector(request)
@@ -244,6 +266,12 @@ func (server *Server) start(parent context.Context, request Request) *RPCError {
 	server.inflightMu.Unlock()
 
 	server.wait.Add(1)
+	if inline {
+		// Ordering-critical methods finish before the next pipelined request
+		// is dispatched, so their effects are visible to later requests.
+		server.execute(requestCtx, request, inflight)
+		return nil
+	}
 	go server.execute(requestCtx, request, inflight)
 	return nil
 }
@@ -347,12 +375,33 @@ func (reporter *requestProgressReporter) Report(stage string, cancellable bool) 
 	})
 }
 
-func (server *Server) shutdown() error {
+func (server *Server) shutdown(cancelInflight bool) error {
+	if cancelInflight {
+		server.cancelAllInflight()
+	}
+	if server.waitInflight() {
+		return nil
+	}
+	if !cancelInflight {
+		// The bounded drain window expired; fall back to cancellation so the
+		// process still stops within a second bounded window.
+		server.cancelAllInflight()
+		if server.waitInflight() {
+			return nil
+		}
+	}
+	return fmt.Errorf("stdio shutdown exceeded %s", server.limits.ShutdownTimeout)
+}
+
+func (server *Server) cancelAllInflight() {
 	server.inflightMu.Lock()
 	for _, request := range server.inflight {
 		request.cancel()
 	}
 	server.inflightMu.Unlock()
+}
+
+func (server *Server) waitInflight() bool {
 	done := make(chan struct{})
 	go func() {
 		server.wait.Wait()
@@ -360,9 +409,9 @@ func (server *Server) shutdown() error {
 	}()
 	select {
 	case <-done:
-		return nil
+		return true
 	case <-time.After(server.limits.ShutdownTimeout):
-		return fmt.Errorf("stdio shutdown exceeded %s", server.limits.ShutdownTimeout)
+		return false
 	}
 }
 

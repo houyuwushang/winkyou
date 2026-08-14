@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"sync"
 	"testing"
 	"time"
 )
@@ -27,7 +28,9 @@ func TestServerConcurrencyLimitIsImmediateAndExplainable(t *testing.T) {
 	}
 	frames := decodeOutputFrames(t, output.Bytes())
 	assertErrorClass(t, frames, "second", ClassConcurrencyLimit)
-	assertErrorClass(t, frames, "first", ClassCancelled)
+	// EOF drains in-flight work, so "first" runs to its own request deadline
+	// instead of being cancelled by the input closing.
+	assertErrorClass(t, frames, "first", ClassDeadlineExceeded)
 }
 
 func TestServerCancelPropagatesAndProgressBindsOriginalID(t *testing.T) {
@@ -92,52 +95,119 @@ func TestServerCancelPropagatesAndProgressBindsOriginalID(t *testing.T) {
 	_ = outputWriter.Close()
 }
 
-func TestServerEOFAndParentCancellationCancelInFlightWork(t *testing.T) {
-	for _, test := range []struct {
-		name   string
-		finish func(context.CancelFunc, *io.PipeWriter)
-	}{
-		{name: "stdin EOF", finish: func(_ context.CancelFunc, writer *io.PipeWriter) { _ = writer.Close() }},
-		{name: "parent cancellation", finish: func(cancel context.CancelFunc, _ *io.PipeWriter) { cancel() }},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			inputReader, inputWriter := io.Pipe()
-			started := make(chan struct{})
-			cancelled := make(chan struct{})
-			handler := HandlerFunc(func(ctx context.Context, _ Request, _ ProgressReporter) (any, *RPCError) {
-				close(started)
-				<-ctx.Done()
-				close(cancelled)
-				return nil, nil
-			})
-			server := mustServer(t, inputReader, io.Discard, handler, testLimits(), nil)
-			ctx, cancel := context.WithCancel(context.Background())
-			defer cancel()
-			runDone := make(chan error, 1)
-			go func() { runDone <- server.Run(ctx) }()
-			writeTestFrame(t, inputWriter, `{"jsonrpc":"2.0","id":1,"method":"wait","params":{}}`)
-			select {
-			case <-started:
-			case <-time.After(time.Second):
-				t.Fatal("handler did not start")
-			}
-			test.finish(cancel, inputWriter)
-			select {
-			case <-cancelled:
-			case <-time.After(time.Second):
-				t.Fatal("in-flight handler was not cancelled")
-			}
-			select {
-			case err := <-runDone:
-				if err != nil {
-					t.Fatalf("run server: %v", err)
-				}
-			case <-time.After(time.Second):
-				t.Fatal("server did not stop")
-			}
-			_ = inputWriter.Close()
-		})
+func TestServerEOFDrainsInFlightWorkToCompletion(t *testing.T) {
+	inputReader, inputWriter := io.Pipe()
+	output := &syncBuffer{}
+	started := make(chan struct{})
+	release := make(chan struct{})
+	handler := HandlerFunc(func(ctx context.Context, _ Request, _ ProgressReporter) (any, *RPCError) {
+		close(started)
+		select {
+		case <-release:
+			return map[string]string{"outcome": "completed"}, nil
+		case <-ctx.Done():
+			return nil, nil
+		}
+	})
+	server := mustServer(t, inputReader, output, handler, testLimits(), nil)
+	runDone := make(chan error, 1)
+	go func() { runDone <- server.Run(context.Background()) }()
+	writeTestFrame(t, inputWriter, `{"jsonrpc":"2.0","id":1,"method":"wait","params":{}}`)
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("handler did not start")
 	}
+	// Closing stdin means "no more requests", not "cancel my request".
+	_ = inputWriter.Close()
+	close(release)
+	select {
+	case err := <-runDone:
+		if err != nil {
+			t.Fatalf("run server: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("server did not stop after draining")
+	}
+	frames := decodeOutputFrames(t, output.Bytes())
+	if len(frames) != 1 || frames[0].Error != nil || frames[0].Result == nil {
+		t.Fatalf("frames after EOF drain = %+v, want one successful response", frames)
+	}
+}
+
+func TestServerEOFFallsBackToBoundedCancellationForStuckWork(t *testing.T) {
+	inputReader, inputWriter := io.Pipe()
+	started := make(chan struct{})
+	cancelled := make(chan struct{})
+	handler := HandlerFunc(func(ctx context.Context, _ Request, _ ProgressReporter) (any, *RPCError) {
+		close(started)
+		<-ctx.Done()
+		close(cancelled)
+		return nil, nil
+	})
+	limits := testLimits()
+	limits.ShutdownTimeout = 100 * time.Millisecond
+	server := mustServer(t, inputReader, io.Discard, handler, limits, nil)
+	runDone := make(chan error, 1)
+	go func() { runDone <- server.Run(context.Background()) }()
+	writeTestFrame(t, inputWriter, `{"jsonrpc":"2.0","id":1,"method":"wait","params":{}}`)
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("handler did not start")
+	}
+	_ = inputWriter.Close()
+	select {
+	case <-cancelled:
+	case <-time.After(time.Second):
+		t.Fatal("stuck in-flight handler was not cancelled by the bounded fallback")
+	}
+	select {
+	case err := <-runDone:
+		if err != nil {
+			t.Fatalf("run server: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("server did not stop")
+	}
+}
+
+func TestServerParentCancellationCancelsInFlightWork(t *testing.T) {
+	inputReader, inputWriter := io.Pipe()
+	started := make(chan struct{})
+	cancelled := make(chan struct{})
+	handler := HandlerFunc(func(ctx context.Context, _ Request, _ ProgressReporter) (any, *RPCError) {
+		close(started)
+		<-ctx.Done()
+		close(cancelled)
+		return nil, nil
+	})
+	server := mustServer(t, inputReader, io.Discard, handler, testLimits(), nil)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	runDone := make(chan error, 1)
+	go func() { runDone <- server.Run(ctx) }()
+	writeTestFrame(t, inputWriter, `{"jsonrpc":"2.0","id":1,"method":"wait","params":{}}`)
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("handler did not start")
+	}
+	cancel()
+	select {
+	case <-cancelled:
+	case <-time.After(time.Second):
+		t.Fatal("in-flight handler was not cancelled")
+	}
+	select {
+	case err := <-runDone:
+		if err != nil {
+			t.Fatalf("run server: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("server did not stop")
+	}
+	_ = inputWriter.Close()
 }
 
 func TestServerDeadlineAndRateLimitsUseStableClasses(t *testing.T) {
@@ -213,6 +283,23 @@ type decodedFrame struct {
 	Params json.RawMessage
 	Result json.RawMessage
 	Error  *RPCError
+}
+
+type syncBuffer struct {
+	mu     sync.Mutex
+	buffer bytes.Buffer
+}
+
+func (buffer *syncBuffer) Write(payload []byte) (int, error) {
+	buffer.mu.Lock()
+	defer buffer.mu.Unlock()
+	return buffer.buffer.Write(payload)
+}
+
+func (buffer *syncBuffer) Bytes() []byte {
+	buffer.mu.Lock()
+	defer buffer.mu.Unlock()
+	return append([]byte(nil), buffer.buffer.Bytes()...)
 }
 
 func decodeOutputFrames(t *testing.T, payload []byte) []decodedFrame {

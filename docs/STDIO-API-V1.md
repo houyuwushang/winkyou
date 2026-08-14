@@ -63,9 +63,18 @@ v1 规则：
 | 退出取消等待 | 2000 ms | 进程退出错误 |
 
 每个方法的 `params.deadline_ms` 可向下或在最大值内调整 deadline。`cancel` 是控制方法，
-不被普通请求的速率或并发占满所阻断，但仍受 framing 和请求大小限制。stdin EOF、父
-context 取消或进程收到中断时，server 取消全部在途 request context，并在有界时间内
-等待处理器退出。
+不被普通请求的速率或并发占满所阻断，但仍受 framing 和请求大小限制。
+
+生命周期语义：
+
+- **stdin EOF** 表示"不再有新请求"，不是取消。server 停止接收新请求，把在途请求
+  排空到各自完成或到达自身 deadline；仅当排空超过退出等待窗口时才回退为取消，再
+  等待一个同样有界的窗口。
+- **父 context 取消、进程中断或致命传输错误**会立即取消全部在途 request context，
+  并在有界时间内等待处理器退出。
+- **`handshake` 是顺序同步方法**：它在分发循环内联完成，因此同一批写入中跟在它
+  后面的请求一定能观察到已完成的握手状态，客户端可以安全地流水线
+  `handshake + 后续请求`。
 
 ## 4. 握手与版本拒绝
 
@@ -217,7 +226,7 @@ response 后不再发送该请求的 progress。
 | `rate_limited` | 进程请求速率超限 |
 | `concurrency_limit` | 四个普通请求槽位已满 |
 | `deadline_exceeded` | server deadline 到期 |
-| `cancelled` | client、stdin EOF 或进程退出取消 |
+| `cancelled` | client 显式取消或进程退出取消 |
 | `handshake_required` | 未完成精确版本握手 |
 | `incompatible_version` | schema/framing 不精确匹配 |
 | `safety_trip_active` | durable safety trip 阻断该方法 |
