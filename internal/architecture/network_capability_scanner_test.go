@@ -200,21 +200,42 @@ func TestThirdPartyCapabilityPrefixesAreNarrowAndExplicit(t *testing.T) {
 
 func TestGovernedPackageZonesIncludeProbeIOChildrenAndV2Roots(t *testing.T) {
 	checks := map[string]bool{
-		"winkyou/internal/probeio":       true,
-		"winkyou/internal/probeio/osudp": true,
-		"winkyou/internal/natsim":        true,
-		"winkyou/internal/natsim/model":  true,
-		"winkyou/internal/v2":            true,
-		"winkyou/internal/v2/connect":    true,
-		"winkyou/pkg/v2":                 true,
-		"winkyou/pkg/v2/session":         true,
-		"winkyou/pkg/nat":                false,
-		"winkyou/pkg/transport":          false,
+		"winkyou/internal/probeio":        true,
+		"winkyou/internal/probeio/osudp":  true,
+		"winkyou/internal/stunobserve":    true,
+		"winkyou/internal/stunobserve/v4": true,
+		"winkyou/internal/natsim":         true,
+		"winkyou/internal/natsim/model":   true,
+		"winkyou/internal/v2":             true,
+		"winkyou/internal/v2/connect":     true,
+		"winkyou/pkg/v2":                  true,
+		"winkyou/pkg/v2/session":          true,
+		"winkyou/pkg/nat":                 false,
+		"winkyou/pkg/transport":           false,
 	}
 	for pkg, expected := range checks {
 		if actual := isGovernedPackage(pkg); actual != expected {
 			t.Errorf("isGovernedPackage(%q) = %t, want %t", pkg, actual, expected)
 		}
+	}
+}
+
+func TestSTUNObserverCannotAcquireNetworkCapability(t *testing.T) {
+	result := scanResult{
+		findings: []finding{{
+			file:       "internal/stunobserve/bypass.go",
+			function:   "openUnaccountedSocket",
+			capability: "reference:net.ListenUDP",
+			pkg:        "winkyou/internal/stunobserve",
+		}},
+		packages: map[string]*packageInfo{
+			"winkyou/internal/stunobserve": {imports: map[string]struct{}{}},
+		},
+	}
+	violations := governedCapabilityViolations(result)
+	want := "winkyou/internal/stunobserve directly owns reference:net.ListenUDP in internal/stunobserve/bypass.go (openUnaccountedSocket)"
+	if len(violations) != 1 || violations[0] != want {
+		t.Fatalf("violations = %#v, want %q", violations, want)
 	}
 }
 
