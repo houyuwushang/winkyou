@@ -20,11 +20,13 @@ The current findings are frozen in
 of v1/legacy compatibility debt. Presence in the file is not a v2 approval and
 is not evidence that the path is safe to enable.
 
-`internal/probeio`, every child package beneath it, and packages beneath
-`internal/v2` or `pkg/v2` are governed zones. They must have no raw capability
-of their own and no transitive dependency on a package that owns one. A future
-v2 package that imports a harmless-looking wrapper around `pkg/nat`, for
-example, still fails through the dependency graph.
+`internal/probeio`, `internal/natsim`, every child package beneath them, and
+packages beneath `internal/v2` or `pkg/v2` are governed zones. They must have
+no raw capability of their own and no transitive dependency on a package that
+owns one. `internal/natsim` is permanently pure-memory; adding a real socket
+opener there fails even if the inventory is edited. A future v2 package that
+imports a harmless-looking wrapper around `pkg/nat`, for example, still fails
+through the dependency graph.
 
 Hidden worktrees, `.git`, `vendor`, and `node_modules` are excluded so ignored
 copies do not become part of the current-source inventory. Non-hidden Go test
