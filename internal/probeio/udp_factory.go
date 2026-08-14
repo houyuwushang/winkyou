@@ -132,8 +132,8 @@ func (datagram *udpDatagram) ReadFrom(ctx context.Context, dst []byte) (int, net
 	defer disarm()
 
 	n, from, err := datagram.connection.ReadFromUDPAddrPort(dst)
-	if ctxErr := ctx.Err(); ctxErr != nil {
-		return 0, netip.AddrPort{}, ctxErr
+	if mapped := contextErrorForIO(ctx, err); mapped != nil {
+		return 0, netip.AddrPort{}, mapped
 	}
 	if err != nil {
 		return 0, netip.AddrPort{}, err
@@ -169,8 +169,8 @@ func (datagram *udpDatagram) WriteTo(ctx context.Context, packet []byte, target 
 	defer disarm()
 
 	n, err := datagram.connection.WriteToUDPAddrPort(packet, canonical)
-	if ctxErr := ctx.Err(); ctxErr != nil {
-		return 0, ctxErr
+	if mapped := contextErrorForIO(ctx, err); mapped != nil {
+		return 0, mapped
 	}
 	return n, err
 }
@@ -214,6 +214,28 @@ func canonicalLoopbackEndpoint(endpoint netip.AddrPort, allowZeroPort bool) (net
 		return netip.AddrPort{}, ErrInvalidTarget
 	}
 	return netip.AddrPortFrom(address, endpoint.Port()), nil
+}
+
+// contextErrorForIO deterministically attributes an I/O result to the context
+// when the context is responsible. armContextDeadline makes the armed context
+// deadline the only OS deadline during a governed read or write, and the OS
+// timer often fires a moment before ctx.Err() is set; a timeout with a
+// deadline-carrying context therefore always belongs to the context.
+func contextErrorForIO(ctx context.Context, err error) error {
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return ctxErr
+	}
+	if err == nil {
+		return nil
+	}
+	var networkErr net.Error
+	if !errors.As(err, &networkErr) || !networkErr.Timeout() {
+		return nil
+	}
+	if _, hasDeadline := ctx.Deadline(); hasDeadline {
+		return context.DeadlineExceeded
+	}
+	return nil
 }
 
 func armContextDeadline(ctx context.Context, setDeadline func(time.Time) error) (func(), error) {
