@@ -118,6 +118,13 @@ func TestDiagnoseReturnsExistingPassiveReportAndProgress(t *testing.T) {
 	if runner.options.ConfigPath != "test-config.yaml" || runner.options.GovernorScope != governor.ScopeMachine {
 		t.Fatalf("diagnose options = %+v", runner.options)
 	}
+	encoded, err := json.Marshal(result)
+	if err != nil {
+		t.Fatalf("marshal stdio diagnose result: %v", err)
+	}
+	if strings.Contains(string(encoded), `"active_stun"`) {
+		t.Fatalf("CLI-only active STUN leaked into stdio diagnose schema: %s", encoded)
+	}
 }
 
 func TestExportWritesStrictReportWithoutReturningReportOrPath(t *testing.T) {

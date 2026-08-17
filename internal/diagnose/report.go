@@ -1,6 +1,6 @@
-// Package diagnose builds a passive, structured first-run diagnostic report
-// and its stricter shareable export form. It does not own active connectivity
-// probes.
+// Package diagnose builds the default-passive first-run diagnostic report,
+// the explicitly requested bounded STUN observation section, and the stricter
+// shareable export form.
 package diagnose
 
 import (
@@ -139,6 +139,7 @@ type Report struct {
 	Interfaces             InterfaceStatus           `json:"interfaces"`
 	DefaultRoute           DefaultRouteStatus        `json:"default_route"`
 	ActiveProbe            ActiveProbeStatus         `json:"active_probe"`
+	ActiveSTUN             *ActiveSTUNReport         `json:"active_stun,omitempty"`
 	NetworkActivityStarted bool                      `json:"network_activity_started"`
 }
 
@@ -180,7 +181,7 @@ func SystemInspector(buildVersion string) Inspector {
 		UserOwner:      governor.InspectUserAcknowledgedOwner,
 		UserSafetyTrip: governor.InspectUserAcknowledgedSafetyTrip,
 		AcquireUser: func(buildVersion string) (RestrictedUserAuthority, error) {
-			return governor.AcquireRestrictedUserGovernor(buildVersion)
+			return acquireRestrictedUserAuthority(buildVersion)
 		},
 		Configuration: inspectConfiguration,
 		Interfaces:    inspectInterfaces,
@@ -188,6 +189,14 @@ func SystemInspector(buildVersion string) Inspector {
 		Platform:      Platform{OS: runtime.GOOS, Arch: runtime.GOARCH},
 		BuildVersion:  buildVersion,
 	}
+}
+
+// acquireRestrictedUserAuthority is intentionally the sole production
+// selector reference to the restricted constructor. Both passive policy proof
+// and the explicit active-STUN path pass through this reviewed activation
+// layer, preserving the architecture gate's single authority boundary.
+func acquireRestrictedUserAuthority(buildVersion string) (*governor.RestrictedUserGovernor, error) {
+	return governor.AcquireRestrictedUserGovernor(buildVersion)
 }
 
 // Run always produces a report. Collector failures are represented in their

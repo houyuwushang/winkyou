@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"strings"
@@ -42,7 +43,22 @@ func RedactForExport(source Report) Report {
 		report.UserAcknowledged = &boundary
 	}
 	if report.ActiveProbe.Detail != "" {
-		report.ActiveProbe.Detail = "active probing remains blocked; inspect the local report for details"
+		if source.ActiveSTUN != nil && source.ActiveSTUN.State != ActiveSTUNStateBlocked {
+			report.ActiveProbe.Detail = "explicit bounded STUN observations ran; inspect the local report for full endpoint details"
+		} else {
+			report.ActiveProbe.Detail = "active probing remains blocked; inspect the local report for details"
+		}
+	}
+	if source.ActiveSTUN != nil {
+		active := *source.ActiveSTUN
+		active.Results = append([]ActiveSTUNTargetReport(nil), source.ActiveSTUN.Results...)
+		for index := range active.Results {
+			active.Results[index].TargetPrefix = redactedEndpointPrefix(active.Results[index].Target)
+			active.Results[index].Target = ""
+			active.Results[index].MappedPrefix = redactedEndpointPrefix(active.Results[index].MappedAddress)
+			active.Results[index].MappedAddress = ""
+		}
+		report.ActiveSTUN = &active
 	}
 	return report
 }
@@ -193,4 +209,17 @@ func redactDefaultRoute(status DefaultRouteStatus) DefaultRouteStatus {
 		status.Detail = fmt.Sprintf("default-route state is %s; local details are redacted", status.State)
 	}
 	return status
+}
+
+func redactedEndpointPrefix(value string) string {
+	endpoint, err := netip.ParseAddrPort(value)
+	if err != nil {
+		return ""
+	}
+	address := endpoint.Addr().Unmap()
+	bits := 48
+	if address.Is4() {
+		bits = 24
+	}
+	return netip.PrefixFrom(address, bits).Masked().String()
 }
