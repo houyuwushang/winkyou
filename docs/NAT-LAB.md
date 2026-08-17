@@ -41,6 +41,11 @@ namespace，运行任意 Go 测试体，再恢复原 namespace。调用体必须
 创建后可由自己的 goroutine 继续读写。被测客户端始终是 `stunobserve.Client`，生产 UDP
 能力仍只来自 `probeio.UDPFactory` 的显式 unicast scope。
 
+显式 unicast 使用 `0.0.0.0:0` 让内核在 namespace 内选路。未连接 UDP socket 的
+`LocalAddr` 会保留 wildcard address，但具有真实非零本地端口；probeio 只对自己拥有的
+unicast adapter 接受这种 metadata，第三方 Datagram 不能借此放宽契约。端口保持/转换
+断言只比较该本地端口与 STUN mapped port。
+
 ## 3. 场景与配方
 
 | 场景 | 内核配方 | 当前断言 | §17.2 映射 |
