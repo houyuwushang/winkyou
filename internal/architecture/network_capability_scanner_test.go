@@ -77,7 +77,7 @@ func TestGovernedPackageCannotReachCapabilityTransitively(t *testing.T) {
 func TestProbeIOApprovalIsExactAndDirectBypassStillFails(t *testing.T) {
 	approved := finding{
 		file:       "internal/probeio/udp_factory.go",
-		function:   "openLoopbackUDP",
+		function:   "openGovernedUDP",
 		capability: "reference:net.ListenUDP",
 		pkg:        "winkyou/internal/probeio",
 	}

@@ -31,12 +31,13 @@ const (
 )
 
 var (
-	ErrInvalidConfig      = errors.New("stunobserve: invalid configuration")
-	ErrInsufficientBudget = errors.New("stunobserve: attempt budget does not cover the declared worst case")
-	ErrAlreadyObserved    = errors.New("stunobserve: client is single-use")
-	ErrInvalidTarget      = errors.New("stunobserve: target must be a loopback UDP endpoint")
-	ErrSourceMismatch     = errors.New("stunobserve: response source does not match the registered target")
-	ErrTimeout            = errors.New("stunobserve: binding observation timed out")
+	ErrInvalidConfig        = errors.New("stunobserve: invalid configuration")
+	ErrInsufficientBudget   = errors.New("stunobserve: attempt budget does not cover the declared worst case")
+	ErrAlreadyObserved      = errors.New("stunobserve: client is single-use")
+	ErrInvalidTarget        = errors.New("stunobserve: target must be a loopback UDP endpoint")
+	ErrInvalidUnicastTarget = errors.New("stunobserve: target must be a unicast UDP endpoint")
+	ErrSourceMismatch       = errors.New("stunobserve: response source does not match the registered target")
+	ErrTimeout              = errors.New("stunobserve: binding observation timed out")
 )
 
 // WorstCaseCost returns the complete reservation required before constructing
@@ -63,15 +64,20 @@ type Config struct {
 	ExpectedGeneration uint64
 	Factory            probeio.Factory
 	BuildVersion       string
+	// AllowNonLoopback must be set only by an independently reviewed,
+	// explicitly user-authorized or isolated-lab caller. The zero value keeps
+	// the original loopback-only boundary.
+	AllowNonLoopback bool
 }
 
 // Client performs exactly one bounded Binding observation.
 type Client struct {
-	controller  *probeio.Controller
-	now         func() time.Time
-	initialRTO  time.Duration
-	request     []byte
-	transaction transactionID
+	controller       *probeio.Controller
+	now              func() time.Time
+	initialRTO       time.Duration
+	request          []byte
+	transaction      transactionID
+	allowNonLoopback bool
 
 	mu   sync.Mutex
 	used bool
@@ -105,11 +111,12 @@ func newClient(config Config, random io.Reader, now func() time.Time, initialRTO
 		return nil, err
 	}
 	return &Client{
-		controller:  controller,
-		now:         now,
-		initialRTO:  initialRTO,
-		request:     request,
-		transaction: transaction,
+		controller:       controller,
+		now:              now,
+		initialRTO:       initialRTO,
+		request:          request,
+		transaction:      transaction,
+		allowNonLoopback: config.AllowNonLoopback,
 	}, nil
 }
 
@@ -172,7 +179,7 @@ func (client *Client) Observe(ctx context.Context, target netip.AddrPort) (solve
 	client.mu.Unlock()
 	defer client.Close()
 
-	canonical, err := canonicalLoopbackTarget(target)
+	canonical, err := canonicalTarget(target, client.allowNonLoopback)
 	if err != nil {
 		return finish(0, netip.AddrPort{}, "", err)
 	}
@@ -250,13 +257,22 @@ func coversWorstCase(actual, required governor.AttemptCost) error {
 	return nil
 }
 
-func canonicalLoopbackTarget(target netip.AddrPort) (netip.AddrPort, error) {
+func canonicalTarget(target netip.AddrPort, allowNonLoopback bool) (netip.AddrPort, error) {
 	if !target.IsValid() || target.Port() == 0 || target.Addr().Zone() != "" {
+		if allowNonLoopback {
+			return netip.AddrPort{}, ErrInvalidUnicastTarget
+		}
 		return netip.AddrPort{}, ErrInvalidTarget
 	}
 	address := target.Addr().Unmap()
-	if !address.IsLoopback() {
+	if address.IsLoopback() {
+		return netip.AddrPortFrom(address, target.Port()), nil
+	}
+	if !allowNonLoopback {
 		return netip.AddrPort{}, ErrInvalidTarget
+	}
+	if !address.IsGlobalUnicast() {
+		return netip.AddrPort{}, ErrInvalidUnicastTarget
 	}
 	return netip.AddrPortFrom(address, target.Port()), nil
 }
@@ -293,6 +309,8 @@ func classifyError(err error) (string, string) {
 		return ErrorClassSource, "response_source_mismatch"
 	case errors.Is(err, ErrInvalidTarget):
 		return ErrorClassInvalidTarget, "loopback_target_required"
+	case errors.Is(err, ErrInvalidUnicastTarget):
+		return ErrorClassInvalidTarget, "unicast_target_required"
 	case errors.Is(err, ErrInsufficientBudget), errors.Is(err, probeio.ErrHardLimit):
 		return ErrorClassBudget, "declared_budget_unavailable"
 	case errors.Is(err, ErrMessageTooLarge),

@@ -89,12 +89,13 @@ type governedCapabilityApproval struct {
 }
 
 // This is the sole raw capability approved inside a governed v2 package. The
-// adapter returns only probeio.Datagram and is constrained to loopback in Phase
-// 1a. Any filename, function, capability, package, owner, or count drift must
-// fail review rather than silently widening this exception.
+// adapter returns only probeio.Datagram; its default is loopback and its
+// explicit unicast scope permits only an unspecified ephemeral bind. Any
+// filename, function, capability, package, owner, or count drift must fail
+// review rather than silently widening this exception.
 var governedCapabilityApprovals = []governedCapabilityApproval{{
 	file:       "internal/probeio/udp_factory.go",
-	function:   "openLoopbackUDP",
+	function:   "openGovernedUDP",
 	capability: "reference:net.ListenUDP",
 	pkg:        modulePath + "/internal/probeio",
 	owner:      "governor",

@@ -88,6 +88,72 @@ func TestUDPFactoryIsLoopbackOnly(t *testing.T) {
 	}
 }
 
+func TestUDPFactoryTargetScopeDefaultsToLoopback(t *testing.T) {
+	if AllowedTargetScopeLoopback != 0 {
+		t.Fatalf("loopback scope = %d, want zero-value default", AllowedTargetScopeLoopback)
+	}
+	factory, err := NewUDPFactory(UDPFactoryConfig{LocalAddr: loopbackEphemeral})
+	if err != nil {
+		t.Fatalf("new default factory: %v", err)
+	}
+	if factory.targetScope != AllowedTargetScopeLoopback {
+		t.Fatalf("default target scope = %d, want loopback", factory.targetScope)
+	}
+}
+
+func TestUDPFactoryExplicitUnicastScopeRestrictsBindAndTargets(t *testing.T) {
+	for _, local := range []netip.AddrPort{
+		netip.MustParseAddrPort("0.0.0.0:0"),
+		netip.MustParseAddrPort("[::]:0"),
+		loopbackEphemeral,
+	} {
+		if _, err := NewUDPFactory(UDPFactoryConfig{
+			LocalAddr:          local,
+			AllowedTargetScope: AllowedTargetScopeUnicast,
+		}); err != nil {
+			t.Errorf("explicit unicast local %v: %v", local, err)
+		}
+	}
+	for _, local := range []netip.AddrPort{
+		netip.MustParseAddrPort("0.0.0.0:3478"),
+		netip.MustParseAddrPort("192.0.2.10:0"),
+		netip.MustParseAddrPort("[2001:db8::10]:0"),
+	} {
+		if _, err := NewUDPFactory(UDPFactoryConfig{
+			LocalAddr:          local,
+			AllowedTargetScope: AllowedTargetScopeUnicast,
+		}); !errors.Is(err, ErrInvalidConfig) {
+			t.Errorf("unsafe explicit unicast local %v error = %v, want ErrInvalidConfig", local, err)
+		}
+	}
+	if _, err := NewUDPFactory(UDPFactoryConfig{
+		LocalAddr:          loopbackEphemeral,
+		AllowedTargetScope: AllowedTargetScope(99),
+	}); !errors.Is(err, ErrInvalidConfig) {
+		t.Fatalf("unknown target scope error = %v, want ErrInvalidConfig", err)
+	}
+
+	allowed := []netip.AddrPort{
+		netip.MustParseAddrPort("127.0.0.1:3478"),
+		netip.MustParseAddrPort("192.0.2.10:3478"),
+		netip.MustParseAddrPort("[2001:db8::10]:3478"),
+	}
+	for _, target := range allowed {
+		if got, err := canonicalTargetEndpoint(target, AllowedTargetScopeUnicast); err != nil || got != target {
+			t.Errorf("canonical unicast target %v = %v, %v", target, got, err)
+		}
+	}
+	for _, target := range []netip.AddrPort{
+		netip.MustParseAddrPort("0.0.0.0:3478"),
+		netip.MustParseAddrPort("224.0.0.1:3478"),
+		netip.MustParseAddrPort("[ff02::1]:3478"),
+	} {
+		if _, err := canonicalTargetEndpoint(target, AllowedTargetScopeUnicast); !errors.Is(err, ErrInvalidTarget) {
+			t.Errorf("invalid unicast target %v error = %v, want ErrInvalidTarget", target, err)
+		}
+	}
+}
+
 func TestUDPFactoryPermitCanOpenOnlyOneSocket(t *testing.T) {
 	base := mustUDPFactory(t)
 	double := &doubleOpenFactory{inner: base}
