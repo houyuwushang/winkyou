@@ -1,0 +1,42 @@
+name: NAT Lab (Advisory)
+
+on:
+  pull_request:
+  push:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: nat-lab-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  netns-nat-lab:
+    name: Netns NAT Lab (advisory)
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Install isolated-network tools
+        run: |
+          if ! command -v ip >/dev/null || ! command -v iptables >/dev/null || ! command -v iptables-restore >/dev/null; then
+            sudo apt-get update
+            sudo apt-get install -y iproute2 iptables
+          fi
+          command -v ip
+          command -v iptables
+          command -v iptables-restore
+
+      - name: Build unprivileged test binary
+        run: go test -c -tags=natlab -o "${RUNNER_TEMP}/winkyou-natlab.test" ./test/natlab
+
+      - name: Run root-only namespace matrix
+        run: sudo "${RUNNER_TEMP}/winkyou-natlab.test" -test.v -test.run '^TestLinuxNATMatrix$' -test.timeout=2m
