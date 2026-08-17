@@ -14,18 +14,31 @@ import (
 
 const windowsWSAENOBUFS syscall.Errno = 10055
 
+// AllowedTargetScope fixes the address class a UDPFactory may contact. Its
+// zero value is deliberately loopback-only.
+type AllowedTargetScope uint8
+
+const (
+	AllowedTargetScopeLoopback AllowedTargetScope = iota
+	AllowedTargetScopeUnicast
+)
+
 // UDPFactoryConfig fixes the local address of one reviewed OS UDP opener.
-// Phase 1a deliberately accepts loopback addresses only. Port zero asks the
-// operating system to choose an ephemeral loopback port.
+// The default scope accepts loopback binds and targets only. Explicit unicast
+// scope may additionally bind an unspecified address at ephemeral port zero,
+// letting the OS select the concrete source address without granting callers
+// an arbitrary interface or fixed-port bind.
 type UDPFactoryConfig struct {
-	LocalAddr netip.AddrPort
+	LocalAddr          netip.AddrPort
+	AllowedTargetScope AllowedTargetScope
 }
 
 // UDPFactory is the production, governor-owned Datagram factory. Its Open
 // result is returned only through the Datagram interface, so callers cannot
 // obtain the underlying *net.UDPConn or its file descriptor.
 type UDPFactory struct {
-	localAddr netip.AddrPort
+	localAddr   netip.AddrPort
+	targetScope AllowedTargetScope
 }
 
 type factoryOpenPermit struct {
@@ -34,20 +47,23 @@ type factoryOpenPermit struct {
 
 type factoryOpenPermitKey struct{}
 
-// NewUDPFactory constructs the reviewed Phase 1a loopback-only UDP adapter.
-// Enabling non-loopback binds or targets requires a separate architecture and
-// live-network safety review.
+// NewUDPFactory constructs the reviewed Phase 1a UDP adapter. Loopback remains
+// the default; selecting unicast is an explicit capability request but is not
+// by itself authorization to perform live-network I/O.
 func NewUDPFactory(config UDPFactoryConfig) (*UDPFactory, error) {
-	local, err := canonicalLoopbackEndpoint(config.LocalAddr, true)
+	if !config.AllowedTargetScope.valid() {
+		return nil, fmt.Errorf("%w: unsupported target scope %d", ErrInvalidConfig, config.AllowedTargetScope)
+	}
+	local, err := canonicalLocalEndpoint(config.LocalAddr, config.AllowedTargetScope)
 	if err != nil {
 		return nil, fmt.Errorf("%w: local UDP bind: %v", ErrInvalidConfig, err)
 	}
-	return &UDPFactory{localAddr: local}, nil
+	return &UDPFactory{localAddr: local, targetScope: config.AllowedTargetScope}, nil
 }
 
 // Open creates one real OS UDP socket after Controller has reserved the socket
 // budget. The only raw socket opener in the governed v2 dependency closure is
-// openLoopbackUDP below (architecture owner: governor).
+// openGovernedUDP below (architecture owner: governor).
 func (factory *UDPFactory) Open(ctx context.Context) (Datagram, error) {
 	if factory == nil {
 		return nil, fmt.Errorf("%w: UDP factory is nil", ErrInvalidConfig)
@@ -66,7 +82,7 @@ func (factory *UDPFactory) Open(ctx context.Context) (Datagram, error) {
 	if factory.localAddr.Addr().Is4() {
 		network = "udp4"
 	}
-	connection, err := openLoopbackUDP(network, net.UDPAddrFromAddrPort(factory.localAddr))
+	connection, err := openGovernedUDP(network, net.UDPAddrFromAddrPort(factory.localAddr))
 	if err != nil {
 		return nil, err
 	}
@@ -74,7 +90,7 @@ func (factory *UDPFactory) Open(ctx context.Context) (Datagram, error) {
 		_ = connection.Close()
 		return nil, err
 	}
-	return &udpDatagram{connection: connection}, nil
+	return &udpDatagram{connection: connection, targetScope: factory.targetScope}, nil
 }
 
 func authorizeFactoryOpen(ctx context.Context) context.Context {
@@ -89,10 +105,11 @@ func consumeFactoryOpenPermit(ctx context.Context) bool {
 	return ok && permit != nil && permit.used.CompareAndSwap(false, true)
 }
 
-// openLoopbackUDP is the sole reviewed net.ListenUDP call owned by the
-// governor/probeio boundary. Keep this function small so the architecture
-// inventory can identify the capability exactly.
-func openLoopbackUDP(network string, address *net.UDPAddr) (*net.UDPConn, error) {
+// openGovernedUDP is the sole reviewed net.ListenUDP call owned by the
+// governor/probeio boundary. Its caller has already restricted the bind to
+// loopback or an unspecified ephemeral address. Keep this function small so
+// the architecture inventory can identify the capability exactly.
+func openGovernedUDP(network string, address *net.UDPAddr) (*net.UDPConn, error) {
 	return net.ListenUDP(network, address)
 }
 
@@ -105,11 +122,12 @@ func IsResourceExhausted(err error) bool {
 }
 
 type udpDatagram struct {
-	connection *net.UDPConn
-	readMu     sync.Mutex
-	writeMu    sync.Mutex
-	closeOnce  sync.Once
-	closeErr   error
+	connection  *net.UDPConn
+	targetScope AllowedTargetScope
+	readMu      sync.Mutex
+	writeMu     sync.Mutex
+	closeOnce   sync.Once
+	closeErr    error
 }
 
 func (datagram *udpDatagram) ReadFrom(ctx context.Context, dst []byte) (int, netip.AddrPort, error) {
@@ -138,7 +156,7 @@ func (datagram *udpDatagram) ReadFrom(ctx context.Context, dst []byte) (int, net
 	if err != nil {
 		return 0, netip.AddrPort{}, err
 	}
-	canonical, canonicalErr := canonicalLoopbackEndpoint(from, false)
+	canonical, canonicalErr := canonicalTargetEndpoint(from, datagram.targetScope)
 	if canonicalErr != nil {
 		return n, from, canonicalErr
 	}
@@ -155,7 +173,7 @@ func (datagram *udpDatagram) WriteTo(ctx context.Context, packet []byte, target 
 	if err := ctx.Err(); err != nil {
 		return 0, err
 	}
-	canonical, err := canonicalLoopbackEndpoint(target, false)
+	canonical, err := canonicalTargetEndpoint(target, datagram.targetScope)
 	if err != nil {
 		return 0, err
 	}
@@ -193,6 +211,10 @@ func (datagram *udpDatagram) LocalAddr() net.Addr {
 	return net.UDPAddrFromAddrPort(address.AddrPort())
 }
 
+func (datagram *udpDatagram) allowsUnspecifiedLocalAddr() bool {
+	return datagram != nil && datagram.targetScope == AllowedTargetScopeUnicast
+}
+
 func (datagram *udpDatagram) Close() error {
 	if datagram == nil {
 		return nil
@@ -205,12 +227,30 @@ func (datagram *udpDatagram) Close() error {
 	return datagram.closeErr
 }
 
-func canonicalLoopbackEndpoint(endpoint netip.AddrPort, allowZeroPort bool) (netip.AddrPort, error) {
+func (scope AllowedTargetScope) valid() bool {
+	return scope == AllowedTargetScopeLoopback || scope == AllowedTargetScopeUnicast
+}
+
+func canonicalLocalEndpoint(endpoint netip.AddrPort, scope AllowedTargetScope) (netip.AddrPort, error) {
 	if !endpoint.IsValid() || endpoint.Addr().Zone() != "" {
 		return netip.AddrPort{}, ErrInvalidTarget
 	}
 	address := endpoint.Addr().Unmap()
-	if !address.IsLoopback() || (!allowZeroPort && endpoint.Port() == 0) {
+	if address.IsLoopback() {
+		return netip.AddrPortFrom(address, endpoint.Port()), nil
+	}
+	if scope == AllowedTargetScopeUnicast && address.IsUnspecified() && endpoint.Port() == 0 {
+		return netip.AddrPortFrom(address, 0), nil
+	}
+	return netip.AddrPort{}, ErrInvalidTarget
+}
+
+func canonicalTargetEndpoint(endpoint netip.AddrPort, scope AllowedTargetScope) (netip.AddrPort, error) {
+	if !endpoint.IsValid() || endpoint.Addr().Zone() != "" || endpoint.Port() == 0 {
+		return netip.AddrPort{}, ErrInvalidTarget
+	}
+	address := endpoint.Addr().Unmap()
+	if !address.IsLoopback() && (scope != AllowedTargetScopeUnicast || !address.IsGlobalUnicast()) {
 		return netip.AddrPort{}, ErrInvalidTarget
 	}
 	return netip.AddrPortFrom(address, endpoint.Port()), nil

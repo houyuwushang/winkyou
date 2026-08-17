@@ -98,3 +98,40 @@ func TestWriteRedactedReportRejectsRelativeAndMissingParent(t *testing.T) {
 		t.Fatal("missing export parent accepted")
 	}
 }
+
+func TestRedactForExportKeepsOnlyActiveSTUNPrefixesAndPortBehavior(t *testing.T) {
+	source := Report{ActiveSTUN: &ActiveSTUNReport{
+		State:            ActiveSTUNStateCompleted,
+		ObservationScope: "time_window_only",
+		Results: []ActiveSTUNTargetReport{
+			{Target: "192.0.2.99:3478", MappedAddress: "198.51.100.123:42000", PortBehavior: "translated", ObservationScope: "time_window_only"},
+			{Target: "[2001:db8:1:2::99]:3478", MappedAddress: "[2001:db8:abcd:1234::5]:43000", PortBehavior: "preserved", ObservationScope: "time_window_only"},
+		},
+	}}
+
+	redacted := RedactForExport(source)
+	if redacted.ActiveSTUN == nil || len(redacted.ActiveSTUN.Results) != 2 {
+		t.Fatalf("redacted active STUN = %+v", redacted.ActiveSTUN)
+	}
+	first := redacted.ActiveSTUN.Results[0]
+	second := redacted.ActiveSTUN.Results[1]
+	if first.Target != "" || first.MappedAddress != "" || first.TargetPrefix != "192.0.2.0/24" || first.MappedPrefix != "198.51.100.0/24" || first.PortBehavior != "translated" {
+		t.Fatalf("IPv4 redaction = %+v", first)
+	}
+	if second.Target != "" || second.MappedAddress != "" || second.TargetPrefix != "2001:db8:1::/48" || second.MappedPrefix != "2001:db8:abcd::/48" || second.PortBehavior != "preserved" {
+		t.Fatalf("IPv6 redaction = %+v", second)
+	}
+	redacted.ActiveSTUN.Results[0].Reason = "changed"
+	if source.ActiveSTUN.Results[0].Reason == "changed" {
+		t.Fatal("redacted active STUN retained source slice ownership")
+	}
+	encoded, err := json.Marshal(redacted)
+	if err != nil {
+		t.Fatalf("marshal redacted report: %v", err)
+	}
+	for _, forbidden := range []string{"192.0.2.99", "198.51.100.123", "2001:db8:1:2::99", "2001:db8:abcd:1234::5", "42000", "43000"} {
+		if strings.Contains(string(encoded), forbidden) {
+			t.Fatalf("redacted active STUN contains %q: %s", forbidden, encoded)
+		}
+	}
+}

@@ -1,0 +1,65 @@
+{
+  "schema_version": "winkyou.diagnose/v1alpha1",
+  "generated_at": "2026-08-11T04:00:00Z",
+  "mode": "passive_only",
+  "redaction": "partial",
+  "build_version": "test-build",
+  "platform": {
+    "os": "windows",
+    "arch": "amd64"
+  },
+  "governor_scope": "machine",
+  "namespace": {
+    "scope": "machine",
+    "state": "missing",
+    "ready": false,
+    "requires_elevation": true,
+    "detail": "not installed"
+  },
+  "owner": {
+    "scope": "machine",
+    "state": "unavailable",
+    "held": false,
+    "metadata_available": false
+  },
+  "safety_trip": {
+    "state": "unavailable",
+    "blocks_active_work": true
+  },
+  "configuration": {
+    "state": "ready",
+    "source": "defaults_and_environment",
+    "explicit_path": false,
+    "file_present": false
+  },
+  "interfaces": {
+    "state": "ready",
+    "count": 1,
+    "up_count": 1,
+    "interfaces": [
+      {
+        "name": "Ethernet",
+        "index": 4,
+        "mtu": 1500,
+        "up": true,
+        "loopback": false,
+        "address_classes": [
+          "ipv4_private"
+        ],
+        "addresses_are_redacted": true
+      }
+    ]
+  },
+  "default_route": {
+    "state": "present",
+    "family": "ipv4",
+    "interface": "Ethernet"
+  },
+  "active_probe": {
+    "state": "active_probe_blocked",
+    "reason": "machine_scope_not_ready",
+    "detail": "machine scope is missing; passive diagnostics remain available",
+    "action": "wink setup-machine-scope"
+  },
+  "network_activity_started": false
+}

@@ -3,8 +3,10 @@
 //
 // The package never owns a socket. A Client receives an already admitted
 // probeio attempt and performs every open, target registration, send, and read
-// through probeio. The Phase 1a implementation accepts loopback targets only
-// and is not connected to diagnose, stdio, a strategy, or a daemon.
+// through probeio. Targets are loopback-only by default. The explicit
+// AllowNonLoopback option accepts unicast targets only and must remain behind
+// a reviewed user-opt-in or isolated-lab boundary; it does not grant raw socket
+// access.
 //
 // One Client is single-use. WorstCaseCost reserves one socket, one target, one
 // five-tuple, at most two packets per second, three outbound packets, and four
