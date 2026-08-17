@@ -154,6 +154,54 @@ func TestUDPFactoryExplicitUnicastScopeRestrictsBindAndTargets(t *testing.T) {
 	}
 }
 
+func TestUDPFactoryExplicitUnicastReportsWildcardEphemeralMetadata(t *testing.T) {
+	factory, err := NewUDPFactory(UDPFactoryConfig{
+		LocalAddr:          netip.MustParseAddrPort("0.0.0.0:0"),
+		AllowedTargetScope: AllowedTargetScopeUnicast,
+	})
+	if err != nil {
+		t.Fatalf("new unicast factory: %v", err)
+	}
+	controller, _ := newFakeController(t, factory, normalResources())
+	socket, err := controller.OpenProbeSocket(context.Background())
+	if err != nil {
+		t.Fatalf("open unicast socket: %v", err)
+	}
+	local, err := socket.LocalAddr()
+	if err != nil {
+		t.Fatalf("wildcard local metadata: %v", err)
+	}
+	if !local.Addr().IsUnspecified() || local.Port() == 0 {
+		t.Fatalf("unicast local metadata = %s, want wildcard ephemeral endpoint", local)
+	}
+}
+
+func TestUnreviewedDatagramCannotClaimWildcardLocalMetadata(t *testing.T) {
+	factory := staticWildcardFactory{}
+	controller, _ := newFakeController(t, factory, normalResources())
+	socket, err := controller.OpenProbeSocket(context.Background())
+	if err != nil {
+		t.Fatalf("open fake socket: %v", err)
+	}
+	if _, err := socket.LocalAddr(); !errors.Is(err, ErrDatagramContract) {
+		t.Fatalf("unreviewed wildcard metadata error = %v, want ErrDatagramContract", err)
+	}
+}
+
+type staticWildcardFactory struct{}
+
+func (staticWildcardFactory) Open(context.Context) (Datagram, error) {
+	return &staticWildcardDatagram{fakeDatagram: newFakeDatagram()}, nil
+}
+
+type staticWildcardDatagram struct {
+	*fakeDatagram
+}
+
+func (*staticWildcardDatagram) LocalAddr() net.Addr {
+	return net.UDPAddrFromAddrPort(netip.MustParseAddrPort("0.0.0.0:32000"))
+}
+
 func TestUDPFactoryPermitCanOpenOnlyOneSocket(t *testing.T) {
 	base := mustUDPFactory(t)
 	double := &doubleOpenFactory{inner: base}
