@@ -63,6 +63,13 @@ type Datagram interface {
 	Close() error
 }
 
+// unspecifiedLocalAddrMetadata is deliberately package-private: only a
+// reviewed probeio-owned Datagram may attest that a wildcard address is the
+// expected metadata for an explicit unicast, OS-routed ephemeral bind.
+type unspecifiedLocalAddrMetadata interface {
+	allowsUnspecifiedLocalAddr() bool
+}
+
 // Factory creates exactly one Datagram for each successful OpenProbeSocket.
 type Factory interface {
 	Open(ctx context.Context) (Datagram, error)
@@ -441,7 +448,8 @@ func (socket *ProbeSocket) LocalAddr() (netip.AddrPort, error) {
 		c.mu.Unlock()
 		return netip.AddrPort{}, c.handleViolation(violation)
 	}
-	address := state.datagram.LocalAddr()
+	datagram := state.datagram
+	address := datagram.LocalAddr()
 	c.mu.Unlock()
 
 	udpAddress, ok := address.(*net.UDPAddr)
@@ -449,8 +457,14 @@ func (socket *ProbeSocket) LocalAddr() (netip.AddrPort, error) {
 		return netip.AddrPort{}, ErrDatagramContract
 	}
 	endpoint := udpAddress.AddrPort()
-	if !endpoint.IsValid() || endpoint.Port() == 0 || endpoint.Addr().IsUnspecified() {
+	if !endpoint.IsValid() || endpoint.Port() == 0 {
 		return netip.AddrPort{}, ErrDatagramContract
+	}
+	if endpoint.Addr().IsUnspecified() {
+		metadata, allowed := datagram.(unspecifiedLocalAddrMetadata)
+		if !allowed || !metadata.allowsUnspecifiedLocalAddr() {
+			return netip.AddrPort{}, ErrDatagramContract
+		}
 	}
 	return netip.AddrPortFrom(endpoint.Addr().Unmap(), endpoint.Port()), nil
 }

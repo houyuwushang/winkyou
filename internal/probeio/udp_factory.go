@@ -211,6 +211,10 @@ func (datagram *udpDatagram) LocalAddr() net.Addr {
 	return net.UDPAddrFromAddrPort(address.AddrPort())
 }
 
+func (datagram *udpDatagram) allowsUnspecifiedLocalAddr() bool {
+	return datagram != nil && datagram.targetScope == AllowedTargetScopeUnicast
+}
+
 func (datagram *udpDatagram) Close() error {
 	if datagram == nil {
 		return nil
