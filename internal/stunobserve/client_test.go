@@ -16,7 +16,10 @@ import (
 	"winkyou/internal/probeio"
 )
 
-const testRTO = 5 * time.Millisecond
+// Keep the accelerated schedule well below the 500 ms production RTO while
+// leaving enough room for the loopback responder goroutine under race and
+// high-repeat scheduler load.
+const testRTO = 20 * time.Millisecond
 
 var loopbackIPv4 = netip.MustParseAddr("127.0.0.1")
 
@@ -167,6 +170,40 @@ func TestClientRejectsNonLoopbackTargetWithoutSending(t *testing.T) {
 	}
 	if counted.opens.Load() != 0 || counted.writes.Load() != 0 {
 		t.Fatalf("resources = opens=%d writes=%d, want zero", counted.opens.Load(), counted.writes.Load())
+	}
+}
+
+func TestClientAllowNonLoopbackDefaultsOffAndAcceptsOnlyExplicitUnicast(t *testing.T) {
+	client, err := newClient(Config{
+		Lease:              newTestLease(WorstCaseCost()),
+		Generation:         probeio.NewGeneration(1),
+		ExpectedGeneration: 1,
+		Factory:            mustLoopbackFactory(t),
+		BuildVersion:       "stunobserve-test",
+	}, deterministicRandom(), time.Now, testRTO)
+	if err != nil {
+		t.Fatalf("new default client: %v", err)
+	}
+	t.Cleanup(func() { _ = client.Close() })
+	if client.allowNonLoopback {
+		t.Fatal("AllowNonLoopback defaulted to true")
+	}
+
+	target := netip.MustParseAddrPort("192.0.2.10:3478")
+	if _, err := canonicalTarget(target, false); !errors.Is(err, ErrInvalidTarget) {
+		t.Fatalf("default target error = %v, want loopback rejection", err)
+	}
+	if got, err := canonicalTarget(target, true); err != nil || got != target {
+		t.Fatalf("explicit unicast target = %v, %v", got, err)
+	}
+	for _, invalid := range []netip.AddrPort{
+		netip.MustParseAddrPort("0.0.0.0:3478"),
+		netip.MustParseAddrPort("224.0.0.1:3478"),
+		netip.MustParseAddrPort("[ff02::1]:3478"),
+	} {
+		if _, err := canonicalTarget(invalid, true); !errors.Is(err, ErrInvalidUnicastTarget) {
+			t.Errorf("explicit invalid target %v error = %v, want unicast rejection", invalid, err)
+		}
 	}
 }
 
@@ -432,7 +469,7 @@ func intString(value int32) string {
 
 func acceleratedTestCost() governor.AttemptCost {
 	cost := WorstCaseCost()
-	// Tests compress the 500 ms production RTO to 5 ms. Reserve all three
+	// Tests compress the 500 ms production RTO to 20 ms. Reserve all three
 	// transmissions in one second so the accelerated clock cannot weaken the
 	// probeio PPS guard being exercised.
 	cost.Resources.PacketsPerSecond = MaxTransmissions
@@ -441,4 +478,15 @@ func acceleratedTestCost() governor.AttemptCost {
 
 func deterministicRandom() *bytes.Reader {
 	return bytes.NewReader([]byte{0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11})
+}
+
+func mustLoopbackFactory(t *testing.T) probeio.Factory {
+	t.Helper()
+	factory, err := probeio.NewUDPFactory(probeio.UDPFactoryConfig{
+		LocalAddr: netip.AddrPortFrom(loopbackIPv4, 0),
+	})
+	if err != nil {
+		t.Fatalf("new loopback factory: %v", err)
+	}
+	return factory
 }

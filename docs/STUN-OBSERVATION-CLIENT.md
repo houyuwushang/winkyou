@@ -6,9 +6,10 @@
 短时间窗口内陈述“该 socket 对该 STUN 目标观察到了什么”。它不推断或持久化 NAT
 类型，也没有接入 `diagnose`、stdio API、连接策略或 daemon。
 
-Phase 1a 的生产 adapter 仍只允许 loopback。本文中的 `127.0.0.1` 仅表示本机测试
-应答器；真实 STUN 目标、公共域名以及非 loopback 地址仍属于单独的 live-network
-授权边界。
+客户端和生产 adapter 的默认值仍只允许 loopback。显式 `AllowNonLoopback` 与
+`AllowedTargetScopeUnicast` 只放开字面 unicast endpoint，并把本地绑定限制为未指定
+地址的临时端口；它们本身不构成 live-network 授权。本文中的 `127.0.0.1` 仅表示
+本机测试应答器；真实 STUN 目标仍属于调用入口的单独授权边界。
 
 ## 协议范围
 

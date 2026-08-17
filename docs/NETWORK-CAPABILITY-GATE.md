@@ -24,11 +24,13 @@ is not evidence that the path is safe to enable.
 package beneath them, and packages beneath `internal/v2` or `pkg/v2` are
 governed zones. They must have no unreviewed raw capability of their own and no
 transitive dependency on a package that owns one. The only exception is the
-exact `openLoopbackUDP` call in the production probeio adapter, recorded with
+exact `openGovernedUDP` call in the production probeio adapter, recorded with
 `owner=governor`; filename, function, package, capability, owner, or count
-drift fails the gate. The adapter returns only the bounded `Datagram` interface
-and Phase 1a rejects non-loopback binds and targets. `internal/stunobserve`
-must reach that adapter only through probeio and owns no raw capability;
+drift fails the gate. The adapter returns only the bounded `Datagram` interface.
+Its zero-value target scope is loopback-only; explicit unicast scope permits
+only an unspecified ephemeral local bind and does not itself authorize live
+network use. `internal/stunobserve` must reach that adapter only through
+probeio and owns no raw capability;
 `internal/natsim` is permanently pure-memory with no exception. Adding a real
 socket opener to either package fails even if the inventory is edited. A future
 v2 package that imports a harmless-looking wrapper around `pkg/nat`, for
