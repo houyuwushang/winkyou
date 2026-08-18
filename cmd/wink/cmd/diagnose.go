@@ -37,6 +37,7 @@ func newDiagnoseCmdWithRunners(opts *Options, runner passiveDiagnoseRunner, acti
 	var asJSON bool
 	var governorScope string
 	var activeSTUNValues []string
+	var mapBehavior bool
 	cmd := &cobra.Command{
 		Use:   "diagnose",
 		Short: "Collect passive diagnostics or explicitly request bounded STUN observations",
@@ -49,6 +50,11 @@ func newDiagnoseCmdWithRunners(opts *Options, runner passiveDiagnoseRunner, acti
 			targets, err := parseActiveSTUNTargets(activeSTUNValues)
 			if err != nil {
 				return err
+			}
+			if mapBehavior {
+				if err := passivediagnose.ValidateMappingBehaviorTargets(targets); err != nil {
+					return err
+				}
 			}
 			scope := governor.ScopeMachine
 			switch governorScope {
@@ -70,7 +76,7 @@ func newDiagnoseCmdWithRunners(opts *Options, runner passiveDiagnoseRunner, acti
 					return fmt.Errorf("active STUN runner is unavailable")
 				}
 				cmd.PrintErrln(passivediagnose.ActiveSTUNDisclosure)
-				active, err := activeRunner.Run(cmd.Context(), passivediagnose.ActiveSTUNOptions{Targets: targets, GovernorScope: scope})
+				active, err := activeRunner.Run(cmd.Context(), passivediagnose.ActiveSTUNOptions{Targets: targets, GovernorScope: scope, MapBehavior: mapBehavior})
 				passivediagnose.ApplyActiveSTUN(&report, active)
 				activeErr = err
 			}
@@ -87,6 +93,7 @@ func newDiagnoseCmdWithRunners(opts *Options, runner passiveDiagnoseRunner, acti
 	cmd.Flags().BoolVar(&asJSON, "json", false, "output the diagnostic report as json")
 	cmd.Flags().StringVar(&governorScope, "governor-scope", string(governor.ScopeMachine), "safety scope: machine or explicit user-acknowledged")
 	cmd.Flags().StringArrayVar(&activeSTUNValues, "active-stun", nil, "explicit literal STUN target IP:port (repeat up to 3 times; sends UDP)")
+	cmd.Flags().BoolVar(&mapBehavior, "map-behavior", false, "reuse one governed socket across 2-3 active STUN targets")
 	return cmd
 }
 
@@ -211,7 +218,20 @@ func writeActiveSTUNReport(cmd *cobra.Command, report passivediagnose.ActiveSTUN
 	if report.ErrorClass != "" {
 		cmd.Printf("STUN error:      %s (reason=%s)\n", report.ErrorClass, report.Reason)
 	}
-	for _, result := range report.Results {
+	results := report.Results
+	if mapping := report.MappingBehavior; mapping != nil {
+		limitations := "none"
+		if len(mapping.Limitations) > 0 {
+			values := make([]string, 0, len(mapping.Limitations))
+			for _, limitation := range mapping.Limitations {
+				values = append(values, string(limitation))
+			}
+			limitations = strings.Join(values, ",")
+		}
+		cmd.Printf("Mapping behavior: %s (scope=%s successes=%d limitations=%s)\n", mapping.Behavior, mapping.EvidenceScope, mapping.SuccessfulTargets, limitations)
+		results = mapping.Results
+	}
+	for _, result := range results {
 		cmd.Printf("  - target=%s duration_ms=%d transmissions=%d scope=%s", dashIfEmpty(result.Target), result.DurationMS, result.Transmissions, result.ObservationScope)
 		if result.MappedAddress != "" {
 			cmd.Printf(" mapped=%s port_behavior=%s", result.MappedAddress, result.PortBehavior)

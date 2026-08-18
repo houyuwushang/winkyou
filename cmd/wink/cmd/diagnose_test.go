@@ -17,6 +17,8 @@ import (
 	passivediagnose "winkyou/internal/diagnose"
 	"winkyou/internal/governor"
 	"winkyou/internal/probeio"
+	"winkyou/internal/stunobserve"
+	"winkyou/internal/stunserver"
 )
 
 type fakePassiveDiagnoseRunner struct {
@@ -346,6 +348,159 @@ func TestDiagnoseActiveSTUNRealLoopbackMixedTargets(t *testing.T) {
 	}
 }
 
+func TestDiagnoseMapBehaviorRealLoopbackCLIPath(t *testing.T) {
+	firstTarget := startCLIStunServer(t)
+	secondTarget := startCLIStunServer(t)
+	limits, err := governor.HardLimits(governor.ProfilePhase1Machine)
+	if err != nil {
+		t.Fatalf("hard limits: %v", err)
+	}
+	authority := &cliActiveSTUNAuthority{snapshot: governor.Snapshot{
+		Profile:    governor.ProfilePhase1Machine,
+		Scope:      governor.ScopeMachine,
+		Limits:     limits,
+		SafetyTrip: governor.SafetyTripStatus{State: governor.SafetyTripClear},
+	}}
+	active := passivediagnose.ActiveSTUNInspector{
+		AcquireMachine: func(string) (passivediagnose.ActiveSTUNAuthority, error) { return authority, nil },
+		BuildVersion:   "test-build",
+	}
+	cmd := newDiagnoseCmdWithRunners(&Options{}, &fakePassiveDiagnoseRunner{report: passiveDiagnoseFixture()}, active)
+	stdout := new(bytes.Buffer)
+	stderr := new(bytes.Buffer)
+	cmd.SetOut(stdout)
+	cmd.SetErr(stderr)
+	cmd.SetArgs([]string{"--json", "--map-behavior", "--active-stun", firstTarget.String(), "--active-stun", secondTarget.String()})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("mapping diagnose: %v\nstderr: %s", err, stderr.String())
+	}
+	var report passivediagnose.Report
+	if err := json.Unmarshal(stdout.Bytes(), &report); err != nil {
+		t.Fatalf("decode mapping report: %v\n%s", err, stdout.String())
+	}
+	if report.ActiveSTUN == nil || report.ActiveSTUN.State != passivediagnose.ActiveSTUNStateCompleted || report.ActiveSTUN.MappingBehavior == nil || !report.NetworkActivityStarted {
+		t.Fatalf("mapping active report = %+v", report.ActiveSTUN)
+	}
+	mapping := report.ActiveSTUN.MappingBehavior
+	if mapping.Behavior != stunobserve.MappingBehaviorConsistentSameAddress || mapping.SuccessfulTargets != 2 || len(mapping.Results) != 2 {
+		t.Fatalf("mapping evidence = %+v", mapping)
+	}
+	if len(mapping.Limitations) != 1 || mapping.Limitations[0] != stunobserve.MappingLimitationAddressComparisonUnavailable {
+		t.Fatalf("mapping limitations = %v", mapping.Limitations)
+	}
+	if mapping.Results[0].MappedAddress == "" || mapping.Results[0].MappedAddress != mapping.Results[1].MappedAddress {
+		t.Fatalf("mapping endpoints = %+v", mapping.Results)
+	}
+	if authority.peer == nil || authority.peer.acquireCalls != 1 || authority.closeCalls != 1 {
+		t.Fatalf("single-attempt lifecycle = %+v", authority)
+	}
+	if !strings.Contains(stderr.String(), "source IP address") {
+		t.Fatalf("active disclosure = %q", stderr.String())
+	}
+}
+
+func TestDiagnoseMapBehaviorValidationRunsBeforePassiveCollection(t *testing.T) {
+	tests := []struct {
+		name string
+		args []string
+		want string
+	}{
+		{name: "no targets", args: []string{"--map-behavior"}, want: "requires two or three targets"},
+		{name: "one target", args: []string{"--map-behavior", "--active-stun", "127.0.0.1:3478"}, want: "requires two or three targets"},
+		{name: "mixed address family", args: []string{"--map-behavior", "--active-stun", "127.0.0.1:3478", "--active-stun", "[::1]:3479"}, want: "one address family"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			passive := &fakePassiveDiagnoseRunner{report: passiveDiagnoseFixture()}
+			active := &fakeActiveSTUNRunner{t: t, forbid: true}
+			cmd := newDiagnoseCmdWithRunners(&Options{}, passive, active)
+			cmd.SetOut(new(bytes.Buffer))
+			cmd.SetErr(new(bytes.Buffer))
+			cmd.SetArgs(test.args)
+			err := cmd.Execute()
+			if err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("validation error = %v, want %q", err, test.want)
+			}
+			if passive.calls != 0 || active.calls != 0 {
+				t.Fatalf("collectors ran before validation: passive=%d active=%d", passive.calls, active.calls)
+			}
+		})
+	}
+}
+
+func TestDiagnoseMapBehaviorJSONGolden(t *testing.T) {
+	passive := &fakePassiveDiagnoseRunner{report: passiveDiagnoseFixture()}
+	active := &fakeActiveSTUNRunner{report: mappingDiagnoseFixture()}
+	cmd := newDiagnoseCmdWithRunners(&Options{}, passive, active)
+	stdout := new(bytes.Buffer)
+	cmd.SetOut(stdout)
+	cmd.SetErr(new(bytes.Buffer))
+	cmd.SetArgs([]string{"--json", "--map-behavior", "--active-stun", "203.0.113.10:3478", "--active-stun", "203.0.113.10:3479"})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("mapping diagnose golden: %v", err)
+	}
+	if !active.options.MapBehavior || len(active.options.Targets) != 2 {
+		t.Fatalf("mapping options = %+v", active.options)
+	}
+	want, err := os.ReadFile(filepath.Join("testdata", "diagnose-mapping.json.golden"))
+	if err != nil {
+		t.Fatalf("read mapping golden: %v", err)
+	}
+	normalize := func(value string) string {
+		return strings.TrimSpace(strings.ReplaceAll(value, "\r\n", "\n"))
+	}
+	if normalize(stdout.String()) != normalize(string(want)) {
+		t.Fatalf("mapping JSON changed\n\ngot:\n%s\n\nwant:\n%s", stdout.String(), want)
+	}
+}
+
+func TestDiagnoseMapBehaviorHumanOutputKeepsLimitationsWithEvidence(t *testing.T) {
+	active := &fakeActiveSTUNRunner{report: mappingDiagnoseFixture()}
+	cmd := newDiagnoseCmdWithRunners(&Options{}, &fakePassiveDiagnoseRunner{report: passiveDiagnoseFixture()}, active)
+	stdout := new(bytes.Buffer)
+	cmd.SetOut(stdout)
+	cmd.SetErr(new(bytes.Buffer))
+	cmd.SetArgs([]string{"--map-behavior", "--active-stun", "203.0.113.10:3478", "--active-stun", "203.0.113.10:3479"})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("mapping diagnose text: %v", err)
+	}
+	for _, want := range []string{
+		"Mapping behavior: port_dependent",
+		"scope=same_address_multiple_ports",
+		"limitations=address_comparison_unavailable",
+		"target=203.0.113.10:3478",
+	} {
+		if !strings.Contains(stdout.String(), want) {
+			t.Fatalf("mapping text missing %q:\n%s", want, stdout.String())
+		}
+	}
+}
+
+func mappingDiagnoseFixture() passivediagnose.ActiveSTUNReport {
+	return passivediagnose.ActiveSTUNReport{
+		State:                     passivediagnose.ActiveSTUNStateCompleted,
+		ObservationScope:          "time_window_only",
+		TargetCount:               2,
+		WorstCaseDurationMS:       8000,
+		WorstCasePackets:          6,
+		MaxTransmissionsPerTarget: 3,
+		MappingBehavior: &passivediagnose.MappingBehaviorReport{
+			Behavior:          stunobserve.MappingBehaviorPortDependent,
+			EvidenceScope:     stunobserve.MappingEvidenceSameAddressMultiplePorts,
+			Limitations:       []stunobserve.MappingLimitation{stunobserve.MappingLimitationAddressComparisonUnavailable},
+			SuccessfulTargets: 2,
+			Results: []passivediagnose.ActiveSTUNTargetReport{
+				{Target: "203.0.113.10:3478", MappedAddress: "198.51.100.40:41000", PortBehavior: "translated", DurationMS: 5, Transmissions: 1, ObservationScope: "time_window_only"},
+				{Target: "203.0.113.10:3479", MappedAddress: "198.51.100.40:41001", PortBehavior: "translated", DurationMS: 6, Transmissions: 1, ObservationScope: "time_window_only"},
+			},
+		},
+		NetworkActivityStarted: true,
+	}
+}
+
 func TestDiagnoseActiveSTUNRejectsDNSAndMoreThanThreeBeforeCollection(t *testing.T) {
 	tests := []struct {
 		name string
@@ -394,8 +549,38 @@ func TestDiagnoseActiveSTUNPassesOnlyExplicitUserScopeToRunner(t *testing.T) {
 	if err := cmd.Execute(); err != nil {
 		t.Fatalf("explicit user active STUN: %v", err)
 	}
-	if active.calls != 1 || active.options.GovernorScope != governor.ScopeUserAcknowledged || len(active.options.Targets) != 1 {
+	if active.calls != 1 || active.options.GovernorScope != governor.ScopeUserAcknowledged || len(active.options.Targets) != 1 || active.options.MapBehavior {
 		t.Fatalf("active options = %+v calls=%d", active.options, active.calls)
+	}
+	for _, warning := range []string{"not machine-wide safety", "source IP address", "observation timing"} {
+		if !strings.Contains(stderr.String(), warning) {
+			t.Fatalf("stderr missing %q: %s", warning, stderr.String())
+		}
+	}
+}
+
+func TestDiagnoseMapBehaviorPassesExplicitUserScopeToRunner(t *testing.T) {
+	passiveReport := passiveDiagnoseFixture()
+	passiveReport.GovernorScope = governor.ScopeUserAcknowledged
+	active := &fakeActiveSTUNRunner{report: mappingDiagnoseFixture()}
+	cmd := newDiagnoseCmdWithRunners(&Options{}, &fakePassiveDiagnoseRunner{report: passiveReport}, active)
+	stdout := new(bytes.Buffer)
+	stderr := new(bytes.Buffer)
+	cmd.SetOut(stdout)
+	cmd.SetErr(stderr)
+	cmd.SetArgs([]string{
+		"--governor-scope", "user-acknowledged",
+		"--map-behavior",
+		"--active-stun", "203.0.113.10:3478",
+		"--active-stun", "203.0.113.10:3479",
+		"--json",
+	})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("explicit user mapping STUN: %v", err)
+	}
+	if active.calls != 1 || active.options.GovernorScope != governor.ScopeUserAcknowledged || !active.options.MapBehavior || len(active.options.Targets) != 2 {
+		t.Fatalf("mapping active options = %+v calls=%d", active.options, active.calls)
 	}
 	for _, warning := range []string{"not machine-wide safety", "source IP address", "observation timing"} {
 		if !strings.Contains(stderr.String(), warning) {
@@ -527,4 +712,31 @@ func startCLIStunResponder(t *testing.T, corruptCookie bool) netip.AddrPort {
 		<-done
 	})
 	return connection.LocalAddr().(*net.UDPAddr).AddrPort()
+}
+
+func startCLIStunServer(t *testing.T) netip.AddrPort {
+	t.Helper()
+	server, err := stunserver.Open(stunserver.Config{
+		ListenAddr: netip.MustParseAddrPort("127.0.0.1:0"),
+		MaxPPS:     20,
+	})
+	if err != nil {
+		t.Fatalf("open loopback STUN server: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- server.Serve(ctx) }()
+	t.Cleanup(func() {
+		cancel()
+		_ = server.Close()
+		select {
+		case err := <-done:
+			if err != nil {
+				t.Errorf("serve loopback STUN server: %v", err)
+			}
+		case <-time.After(time.Second):
+			t.Error("loopback STUN server did not stop")
+		}
+	})
+	return server.ListenAddr()
 }

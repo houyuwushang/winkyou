@@ -4,7 +4,8 @@
 
 `internal/stunobserve` 实现 RFC 8489 的最小 Binding 客户端子集，用于在一个
 短时间窗口内陈述“该 socket 对该 STUN 目标观察到了什么”。它不推断或持久化 NAT
-类型，也没有接入 `diagnose`、stdio API、连接策略或 daemon。
+类型。单目标 `Client` 已由显式主动 diagnose 使用；`MappingClient` 只接入同样显式的
+`--map-behavior` CLI，不进入 stdio API、连接策略或 daemon。
 
 客户端和生产 adapter 的默认值仍只允许 loopback。显式 `AllowNonLoopback` 与
 `AllowedTargetScopeUnicast` 只放开字面 unicast endpoint，并把本地绑定限制为未指定
@@ -70,6 +71,19 @@ MESSAGE-INTEGRITY、认证、Binding Error、TURN、ICE 以及其他 STUN 方法
 `address_comparison_unavailable`。这个标记不是第四种 mapping behavior；它明确说明
 当前证据无法区分 EIM 与 ADM。完整 RFC 4787 分类仍需要第二个服务器地址、独立评审的
 测试设计和新的现场授权。
+
+## diagnose 接线边界
+
+`wink diagnose --map-behavior` 必须与 2 至 3 个去重后的字面量
+`--active-stun=IP:port` 同用，并要求所有目标属于同一个地址族。该模式仍先验证 safety
+trip、fresh-idle authority 与完整 `MappingWorstCaseCost(N)`，随后只取得一个 attempt、
+打开一个 socket 并串行观测。省略 `--map-behavior` 时，现有“每目标独立 attempt 与
+socket”的主动 STUN 行为不变；完全省略 `--active-stun` 时仍是零网络活动的被动诊断。
+
+报告把行为、证据范围、限制标记和逐目标结果放在
+`active_stun.mapping_behavior` 下。strict redaction 保留行为与限制标记，但完整 target、
+mapped address 和端口会被移除，只留下 IPv4 `/24` 或 IPv6 `/48`。stdio v1 不接受
+`map_behavior` 参数，也不会从被动 diagnose 结果中产生该字段。
 
 ## 输出语义
 

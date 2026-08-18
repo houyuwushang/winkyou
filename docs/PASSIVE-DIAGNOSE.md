@@ -83,22 +83,50 @@ wink diagnose --active-stun=192.0.2.10:3478 --active-stun=198.51.100.20:3478 --j
 STUN 地址，也不会替用户选择目标。真实公网目标的首次运行仍需维护者具名授权，本批次
 没有执行此类运行。
 
+默认多目标语义保持不变：每个 `--active-stun` 目标各自取得 attempt、建立独立 socket，
+所以不同目标的 mapped endpoint 不能用于映射行为比较。只有同时显式给出
+`--map-behavior` 与 2 至 3 个目标时，才切换为一个 attempt、一个 governed socket、按
+输入顺序串行交换：
+
+```powershell
+wink diagnose --map-behavior `
+  --active-stun=203.0.113.10:3478 `
+  --active-stun=203.0.113.10:3479 `
+  --json
+```
+
+mapping 模式不接受单个目标，也不在同一个 socket 中混用 IPv4 与 IPv6 目标。所有目标
+仍须是去重后的字面量 unicast `IP:port`，并在被动采集、authority 获取和网络 I/O 前完成
+CLI 校验。地址仍是 TEST-NET 占位符，不能直接当作可用服务运行。
+
 主动路径有三项必须同时成立：
 
 - CLI 存在显式 `--active-stun`，且所有目标在任何网络 I/O 前完成字面量和数量校验；
 - 取得机器级 governor lock，或用户同时显式选择 `--governor-scope=user-acknowledged`；
-- 在开 socket 前验证 `N × WorstCaseCost`，随后每个目标各自取得 AttemptLease，经
-  `probeio` 与 `stunobserve.Client` 串行执行。
+- 默认模式在开 socket 前验证 `N × WorstCaseCost`，随后每个目标各自取得 AttemptLease，
+  经 `probeio` 与 `stunobserve.Client` 串行执行；mapping 模式改为一次验证完整的
+  `MappingWorstCaseCost(N)`，只取得一个 AttemptLease 并调用 `MappingClient`。
 
 每个目标最坏占用 1 socket、1 target、1 five-tuple、2 packets/s、最多 3 个包和 4 秒；
 三个目标的整次命令预检为 3 sockets、3 targets、3 five-tuples、6 packets/s、9 个包和
 12 秒。目标仍是串行执行，汇总值用于先验拒绝而不是放大瞬时发包能力。任一 authority、
 safety trip 或总预算问题都会 fail-closed；预算拒绝发生在 socket 创建之前。
 
+mapping 模式的 2/3 目标成本分别为：1 socket、2/3 targets、2/3 five-tuples、3/4
+packets/s、6/9 个包和 8/12 秒。`N+1` PPS 是滑动一秒窗口的最坏预留：某目标可能在
+第二次发送后立即成功，余下目标随后各完成第一次发送；目标本身仍严格串行。
+
 启用时 stderr 会先明确提示：目标会观察到本机源 IP 与观测时间信息。报告中的每条结果
 只说明该次 `time_window_only` 时间窗，包含映射地址或稳定错误类、耗时、发送次数和端口
 保持/转换行为；它不是永久 NAT 标签。调用方可以完全不使用此参数，且 stdio JSON-RPC
 的 `diagnose` 方法仍只走被动路径。
+
+mapping JSON 位于 `active_stun.mapping_behavior`，把 `behavior`、`evidence_scope`、
+`limitations`、成功目标数和逐目标结果放在同一个对象中。当前 behavior 只有
+`consistent_same_address`、`port_dependent`、`inconclusive`；同一服务器 IP 的多端口
+比较必须同时保留 `address_comparison_unavailable`，因为它不能排除 ADM，也不等于完整
+RFC 4787 分类。该字段不会进入 stdio v1；stdio 对 `map_behavior` 参数继续返回
+`invalid_params`。
 
 ## 隐私状态
 
@@ -106,4 +134,5 @@ schema 为 `winkyou.diagnose/v1alpha1`，本地输出声明 `redaction: partial`
 MAC、网关地址和配置值仍被省略；显式主动模式的本地 `--json` 会保留完整目标与映射地址，
 因此发布前必须审阅。`export_redacted_report` 的 strict 形式会移除完整 STUN endpoint：
 IPv4 只保留 `/24`、IPv6 只保留 `/48`，并保留 `preserved` / `translated` 端口行为分类，
-不保留完整映射地址或映射端口。
+不保留完整映射地址或映射端口。mapping report 的 behavior、evidence scope 与 limitation
+原样保留，嵌套的逐目标 endpoint 继续应用相同 `/24`、`/48` 规则。
