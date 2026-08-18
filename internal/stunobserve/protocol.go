@@ -6,18 +6,20 @@ import (
 	"fmt"
 	"io"
 	"net/netip"
+
+	"winkyou/internal/stunwire"
 )
 
 const (
-	bindingRequestType  uint16 = 0x0001
-	bindingSuccessType  uint16 = 0x0101
-	stunMagicCookie     uint32 = 0x2112a442
-	stunHeaderBytes            = 20
-	maxSTUNMessageBytes        = 1024
+	bindingRequestType  = stunwire.BindingRequestType
+	bindingSuccessType  = stunwire.BindingSuccessType
+	stunMagicCookie     = stunwire.MagicCookie
+	stunHeaderBytes     = stunwire.HeaderBytes
+	maxSTUNMessageBytes = 1024
 
 	attributeMappedAddress    uint16 = 0x0001
 	attributeMessageIntegrity uint16 = 0x0008
-	attributeXORMappedAddress uint16 = 0x0020
+	attributeXORMappedAddress        = stunwire.AttributeXORMappedAddress
 )
 
 var (
@@ -33,7 +35,7 @@ var (
 	ErrMappedAddressInvalid     = errors.New("stunobserve: mapped address is invalid")
 )
 
-type transactionID [12]byte
+type transactionID = stunwire.TransactionID
 
 func newBindingRequest(random io.Reader) ([]byte, transactionID, error) {
 	var transaction transactionID
