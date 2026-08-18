@@ -43,7 +43,7 @@ This looks consistent with an environment where direct ICE connectivity is not a
 With TURN enabled:
 
 - `wink peers` shows `Conn Type: relay`
-- `Endpoint` becomes a relay address such as `104.168.56.67:59100`
+- `Endpoint` becomes a relay address such as `203.0.113.10:59100`
 - peers still remain `State: connecting`
 - `wink ping` still times out
 
