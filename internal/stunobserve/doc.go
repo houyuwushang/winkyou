@@ -8,9 +8,11 @@
 // a reviewed user-opt-in or isolated-lab boundary; it does not grant raw socket
 // access.
 //
-// One Client is single-use. WorstCaseCost reserves one socket, one target, one
-// five-tuple, at most two packets per second, three outbound packets, and four
-// seconds. The retransmission schedule starts at 500 ms and doubles for each
-// of the three transmissions. A result is a time-windowed solver.Observation;
-// it never assigns a permanent NAT type.
+// Client and MappingClient are single-use. WorstCaseCost reserves one socket,
+// one target, one five-tuple, at most two packets per second, three outbound
+// packets, and four seconds. MappingWorstCaseCost reserves one socket plus the
+// aggregate target, five-tuple, packet, PPS, and duration bounds for two or
+// three serial exchanges. The retransmission schedule starts at 500 ms and
+// doubles for each of the three transmissions. Every result is time-windowed;
+// mapping classification is narrow evidence, never a permanent NAT type.
 package stunobserve

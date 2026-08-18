@@ -41,6 +41,36 @@ MESSAGE-INTEGRITY、认证、Binding Error、TURN、ICE 以及其他 STUN 方法
 `ErrInsufficientBudget`，不会尝试开 socket 或发送；若运行期预算拒绝被表达为观测
 结果，则使用稳定错误类 `budget_rejected`。
 
+`MappingClient` 在同一个 attempt 和同一个 governed socket 上，按给定顺序串行观测
+2 至 3 个不同 endpoint。所有 endpoint 会在第一次发送前完成校验和 target/five-tuple
+登记；一个目标超时或返回协议错误不会抹掉此前结果，也不会阻止下一个目标。它的聚合
+成本由 `MappingWorstCaseCost(N)` 在构造前验证：
+
+| 目标数 | socket | target / 新五元组 | 每秒发送包数 | 总发送包数 | 最大持续时间 |
+| ---: | ---: | ---: | ---: | ---: | ---: |
+| 2 | 1 | 2 | 3 | 6 | 8 秒 |
+| 3 | 1 | 3 | 4 | 9 | 12 秒 |
+
+每秒发送上限不是简单沿用单目标的 2：前一个目标可能在第二次发送后立即成功，剩余目标
+随即各发送第一次请求，因此滑动一秒窗口的最坏值为 `N+1`。这只是预留上限，不改变
+目标间“严格串行、无并发”的执行语义。
+
+## 单地址多端口映射证据
+
+`ClassifyMapping` 是不进行 I/O 的纯函数，只对“同一服务器地址、不同 UDP 端口”形成的
+短时间窗口证据分类：
+
+| behavior | 含义 | 不得推导出的结论 |
+| --- | --- | --- |
+| `consistent_same_address` | 至少两个成功目标位于同一 IP 的不同端口，且所有成功结果的 mapped endpoint 完全一致；该证据与 EIM 一致 | 不能排除 ADM；需要第二个服务器 IP 才能比较地址依赖性 |
+| `port_dependent` | 同一 IP 的不同目标端口得到不同 mapped endpoint；观测到端口依赖 | 不是节点的永久 NAT 标签，也不代表所有网络路径都相同 |
+| `inconclusive` | 成功目标少于两个，或现有结果不能形成同地址多端口比较 | 不能据此选择激进打洞策略 |
+
+当本次配置的目标全部属于同一个 IP 时，分类必须同时保留限制标记
+`address_comparison_unavailable`。这个标记不是第四种 mapping behavior；它明确说明
+当前证据无法区分 EIM 与 ADM。完整 RFC 4787 分类仍需要第二个服务器地址、独立评审的
+测试设计和新的现场授权。
+
 ## 输出语义
 
 结果是 `solver.Observation`：包含观测开始/结束时间、STUN 目标、本地受控 socket、
