@@ -156,7 +156,7 @@ func (server *Server) Serve(ctx context.Context) error {
 	go func() {
 		select {
 		case <-ctx.Done():
-			_ = server.connection.SetReadDeadline(time.Now())
+			_ = server.Close()
 		case <-wakeDone:
 		}
 	}()
