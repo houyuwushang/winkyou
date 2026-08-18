@@ -70,6 +70,89 @@ func TestResponseServerRoundTripsThroughProductionObserver(t *testing.T) {
 	}
 }
 
+func TestTwoResponseServersObserveThroughOneGovernedSocket(t *testing.T) {
+	first := startResponseServer(t)
+	second := startResponseServer(t)
+	cost, err := stunobserve.MappingWorstCaseCost(2)
+	if err != nil {
+		t.Fatalf("mapping cost: %v", err)
+	}
+	factory, err := probeio.NewUDPFactory(probeio.UDPFactoryConfig{
+		LocalAddr: netip.MustParseAddrPort("127.0.0.1:0"),
+	})
+	if err != nil {
+		t.Fatalf("new UDP factory: %v", err)
+	}
+	client, err := stunobserve.NewMapping(stunobserve.Config{
+		Lease:              newTestLease(cost),
+		Generation:         probeio.NewGeneration(1),
+		ExpectedGeneration: 1,
+		Factory:            factory,
+		BuildVersion:       "wink-stund-mapping-integration-test",
+	}, 2)
+	if err != nil {
+		t.Fatalf("new mapping observer: %v", err)
+	}
+	result, err := client.Observe(context.Background(), []netip.AddrPort{first.ListenAddr(), second.ListenAddr()})
+	if err != nil {
+		t.Fatalf("observe mapping: %v", err)
+	}
+	if len(result.Results) != 2 || result.Results[0].Err != nil || result.Results[1].Err != nil {
+		t.Fatalf("mapping results = %+v", result.Results)
+	}
+	firstLocal, err := netip.ParseAddrPort(result.Results[0].Observation.LocalAddr)
+	if err != nil {
+		t.Fatalf("first local endpoint: %v", err)
+	}
+	secondLocal, err := netip.ParseAddrPort(result.Results[1].Observation.LocalAddr)
+	if err != nil {
+		t.Fatalf("second local endpoint: %v", err)
+	}
+	firstMapped, err := netip.ParseAddrPort(result.Results[0].Observation.Details["mapped_address"])
+	if err != nil {
+		t.Fatalf("first mapped endpoint: %v", err)
+	}
+	secondMapped, err := netip.ParseAddrPort(result.Results[1].Observation.Details["mapped_address"])
+	if err != nil {
+		t.Fatalf("second mapped endpoint: %v", err)
+	}
+	if firstLocal != secondLocal || firstMapped != secondMapped || firstMapped != firstLocal {
+		t.Fatalf("single-socket endpoints: local=%v/%v mapped=%v/%v", firstLocal, secondLocal, firstMapped, secondMapped)
+	}
+	if result.Classification.Behavior != stunobserve.MappingBehaviorConsistentSameAddress ||
+		len(result.Classification.Limitations) != 1 ||
+		result.Classification.Limitations[0] != stunobserve.MappingLimitationAddressComparisonUnavailable {
+		t.Fatalf("classification = %+v", result.Classification)
+	}
+}
+
+func startResponseServer(t *testing.T) *stunserver.Server {
+	t.Helper()
+	server, err := stunserver.Open(stunserver.Config{
+		ListenAddr: netip.MustParseAddrPort("127.0.0.1:0"),
+		MaxPPS:     20,
+	})
+	if err != nil {
+		t.Fatalf("listen responder: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	serveDone := make(chan error, 1)
+	go func() { serveDone <- server.Serve(ctx) }()
+	t.Cleanup(func() {
+		cancel()
+		_ = server.Close()
+		select {
+		case err := <-serveDone:
+			if err != nil {
+				t.Errorf("serve responder: %v", err)
+			}
+		case <-time.After(time.Second):
+			t.Error("responder did not exit")
+		}
+	})
+	return server
+}
+
 type testLease struct {
 	request  governor.AttemptRequest
 	stopping chan struct{}
