@@ -99,14 +99,7 @@ func newClient(config Config, random io.Reader, now func() time.Time, initialRTO
 	if err != nil {
 		return nil, err
 	}
-	controller, err := probeio.New(probeio.Config{
-		Lease:              config.Lease,
-		Generation:         config.Generation,
-		ExpectedGeneration: config.ExpectedGeneration,
-		Factory:            config.Factory,
-		BuildVersion:       config.BuildVersion,
-		Now:                now,
-	})
+	controller, err := newProbeController(config, now)
 	if err != nil {
 		return nil, err
 	}
@@ -137,7 +130,103 @@ func (client *Client) Observe(ctx context.Context, target netip.AddrPort) (solve
 	if client != nil && client.now != nil {
 		startedAt = client.now().UTC()
 	}
-	observation := solver.Observation{
+	observation := newBindingObservation(startedAt, target)
+	now := time.Now
+	if client != nil && client.now != nil {
+		now = client.now
+	}
+
+	if client == nil || client.controller == nil || ctx == nil {
+		return finishBindingObservation(now, observation, 0, netip.AddrPort{}, "", ErrInvalidConfig)
+	}
+	client.mu.Lock()
+	if client.used {
+		client.mu.Unlock()
+		return finishBindingObservation(now, observation, 0, netip.AddrPort{}, "", ErrAlreadyObserved)
+	}
+	client.used = true
+	client.mu.Unlock()
+	defer client.Close()
+
+	canonical, err := canonicalTarget(target, client.allowNonLoopback)
+	if err != nil {
+		return finishBindingObservation(now, observation, 0, netip.AddrPort{}, "", err)
+	}
+	observation.RemoteAddr = canonical.String()
+	operationCtx, cancel := context.WithTimeout(ctx, MaxObservationDuration)
+	defer cancel()
+
+	socket, err := client.controller.OpenProbeSocket(operationCtx)
+	if err != nil {
+		return finishBindingObservation(now, observation, 0, netip.AddrPort{}, "", err)
+	}
+	defer socket.Close()
+	local, err := socket.LocalAddr()
+	if err != nil {
+		return finishBindingObservation(now, observation, 0, netip.AddrPort{}, "", err)
+	}
+	observation.LocalAddr = local.String()
+	if err := socket.RegisterTarget(canonical); err != nil {
+		return finishBindingObservation(now, observation, 0, netip.AddrPort{}, "", err)
+	}
+	return runBindingExchange(ctx, operationCtx, socket, canonical, client.request, client.transaction, client.initialRTO, now, observation)
+}
+
+func runBindingExchange(
+	callerCtx context.Context,
+	operationCtx context.Context,
+	socket *probeio.ProbeSocket,
+	target netip.AddrPort,
+	request []byte,
+	transaction transactionID,
+	initialRTO time.Duration,
+	now func() time.Time,
+	observation solver.Observation,
+) (solver.Observation, error) {
+	buffer := make([]byte, maxSTUNMessageBytes+1)
+	transmissions := 0
+	for attempt := 0; attempt < MaxTransmissions; attempt++ {
+		if err := socket.SendProbe(operationCtx, target, request); err != nil {
+			return finishBindingObservation(now, observation, transmissions, netip.AddrPort{}, "", err)
+		}
+		transmissions++
+
+		rto := initialRTO << attempt
+		receiveCtx, receiveCancel := context.WithTimeout(operationCtx, rto)
+		var mapped netip.AddrPort
+		var attribute string
+		_, _, receiveErr := socket.ReceiveReply(receiveCtx, buffer, func(packet []byte, from netip.AddrPort) error {
+			if from != target {
+				return ErrSourceMismatch
+			}
+			var parseErr error
+			mapped, attribute, parseErr = parseBindingSuccess(packet, transaction)
+			return parseErr
+		})
+		receiveCancel()
+		if receiveErr == nil {
+			return finishBindingObservation(now, observation, transmissions, mapped, attribute, nil)
+		}
+		if errors.Is(receiveErr, probeio.ErrUnregisteredTarget) || errors.Is(receiveErr, ErrSourceMismatch) {
+			return finishBindingObservation(now, observation, transmissions, netip.AddrPort{}, "", ErrSourceMismatch)
+		}
+		if errors.Is(receiveErr, context.DeadlineExceeded) {
+			if err := callerCtx.Err(); err != nil {
+				return finishBindingObservation(now, observation, transmissions, netip.AddrPort{}, "", err)
+			}
+			if err := operationCtx.Err(); err != nil {
+				return finishBindingObservation(now, observation, transmissions, netip.AddrPort{}, "", ErrTimeout)
+			}
+			continue
+		}
+		return finishBindingObservation(now, observation, transmissions, netip.AddrPort{}, "", unwrapReplyError(receiveErr))
+	}
+	return finishBindingObservation(now, observation, transmissions, netip.AddrPort{}, "", ErrTimeout)
+}
+
+func newBindingObservation(startedAt time.Time, target netip.AddrPort) solver.Observation {
+	startedAt = startedAt.UTC()
+	return solver.Observation{
 		Strategy:   ObservationStrategy,
 		Event:      "stun_binding_observation",
 		RemoteAddr: target.String(),
@@ -149,97 +238,35 @@ func (client *Client) Observe(ctx context.Context, target netip.AddrPort) (solve
 			"observation_scope": "time_window_only",
 		},
 	}
-	finish := func(sent int, mapped netip.AddrPort, attribute string, err error) (solver.Observation, error) {
-		finishedAt := time.Now().UTC()
-		if client != nil && client.now != nil {
-			finishedAt = client.now().UTC()
-		}
-		observation.Timestamp = finishedAt
-		observation.Details["window_finished_at"] = finishedAt.Format(time.RFC3339Nano)
-		observation.Details["transmissions"] = strconv.Itoa(sent)
-		if mapped.IsValid() {
-			observation.Details["mapped_address"] = mapped.String()
-			observation.Details["mapped_attribute"] = attribute
-		}
-		if err != nil {
-			observation.ErrorClass, observation.Reason = classifyError(err)
-		}
-		return solver.NormalizeObservation(observation), err
-	}
+}
 
-	if client == nil || client.controller == nil || ctx == nil {
-		return finish(0, netip.AddrPort{}, "", ErrInvalidConfig)
+func finishBindingObservation(now func() time.Time, observation solver.Observation, sent int, mapped netip.AddrPort, attribute string, err error) (solver.Observation, error) {
+	finishedAt := time.Now().UTC()
+	if now != nil {
+		finishedAt = now().UTC()
 	}
-	client.mu.Lock()
-	if client.used {
-		client.mu.Unlock()
-		return finish(0, netip.AddrPort{}, "", ErrAlreadyObserved)
+	observation.Timestamp = finishedAt
+	observation.Details["window_finished_at"] = finishedAt.Format(time.RFC3339Nano)
+	observation.Details["transmissions"] = strconv.Itoa(sent)
+	if mapped.IsValid() {
+		observation.Details["mapped_address"] = mapped.String()
+		observation.Details["mapped_attribute"] = attribute
 	}
-	client.used = true
-	client.mu.Unlock()
-	defer client.Close()
-
-	canonical, err := canonicalTarget(target, client.allowNonLoopback)
 	if err != nil {
-		return finish(0, netip.AddrPort{}, "", err)
+		observation.ErrorClass, observation.Reason = classifyError(err)
 	}
-	observation.RemoteAddr = canonical.String()
-	operationCtx, cancel := context.WithTimeout(ctx, MaxObservationDuration)
-	defer cancel()
+	return solver.NormalizeObservation(observation), err
+}
 
-	socket, err := client.controller.OpenProbeSocket(operationCtx)
-	if err != nil {
-		return finish(0, netip.AddrPort{}, "", err)
-	}
-	defer socket.Close()
-	local, err := socket.LocalAddr()
-	if err != nil {
-		return finish(0, netip.AddrPort{}, "", err)
-	}
-	observation.LocalAddr = local.String()
-	if err := socket.RegisterTarget(canonical); err != nil {
-		return finish(0, netip.AddrPort{}, "", err)
-	}
-
-	buffer := make([]byte, maxSTUNMessageBytes+1)
-	transmissions := 0
-	for attempt := 0; attempt < MaxTransmissions; attempt++ {
-		if err := socket.SendProbe(operationCtx, canonical, client.request); err != nil {
-			return finish(transmissions, netip.AddrPort{}, "", err)
-		}
-		transmissions++
-
-		rto := client.initialRTO << attempt
-		receiveCtx, receiveCancel := context.WithTimeout(operationCtx, rto)
-		var mapped netip.AddrPort
-		var attribute string
-		_, _, receiveErr := socket.ReceiveReply(receiveCtx, buffer, func(packet []byte, from netip.AddrPort) error {
-			if from != canonical {
-				return ErrSourceMismatch
-			}
-			var parseErr error
-			mapped, attribute, parseErr = parseBindingSuccess(packet, client.transaction)
-			return parseErr
-		})
-		receiveCancel()
-		if receiveErr == nil {
-			return finish(transmissions, mapped, attribute, nil)
-		}
-		if errors.Is(receiveErr, probeio.ErrUnregisteredTarget) || errors.Is(receiveErr, ErrSourceMismatch) {
-			return finish(transmissions, netip.AddrPort{}, "", ErrSourceMismatch)
-		}
-		if errors.Is(receiveErr, context.DeadlineExceeded) {
-			if err := ctx.Err(); err != nil {
-				return finish(transmissions, netip.AddrPort{}, "", err)
-			}
-			if err := operationCtx.Err(); err != nil {
-				return finish(transmissions, netip.AddrPort{}, "", ErrTimeout)
-			}
-			continue
-		}
-		return finish(transmissions, netip.AddrPort{}, "", unwrapReplyError(receiveErr))
-	}
-	return finish(transmissions, netip.AddrPort{}, "", ErrTimeout)
+func newProbeController(config Config, now func() time.Time) (*probeio.Controller, error) {
+	return probeio.New(probeio.Config{
+		Lease:              config.Lease,
+		Generation:         config.Generation,
+		ExpectedGeneration: config.ExpectedGeneration,
+		Factory:            config.Factory,
+		BuildVersion:       config.BuildVersion,
+		Now:                now,
+	})
 }
 
 func coversWorstCase(actual, required governor.AttemptCost) error {
