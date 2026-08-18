@@ -122,8 +122,21 @@ func TestDiagnoseReturnsExistingPassiveReportAndProgress(t *testing.T) {
 	if err != nil {
 		t.Fatalf("marshal stdio diagnose result: %v", err)
 	}
-	if strings.Contains(string(encoded), `"active_stun"`) {
-		t.Fatalf("CLI-only active STUN leaked into stdio diagnose schema: %s", encoded)
+	if strings.Contains(string(encoded), `"active_stun"`) || strings.Contains(string(encoded), `"mapping_behavior"`) {
+		t.Fatalf("CLI-only active STUN or mapping behavior leaked into stdio diagnose schema: %s", encoded)
+	}
+}
+
+func TestDiagnoseRejectsCLIOnlyMapBehaviorParameter(t *testing.T) {
+	runner := &recordingDiagnose{}
+	handler := newTestHandler(t, &fakeAuthority{status: clearTrip()}, runner, nil)
+	handler.handshaken.Store(true)
+	_, rpcErr := handler.Handle(context.Background(), testRequest(t, MethodDiagnose, `{"map_behavior":true}`), discardProgress{})
+	if rpcErr == nil || rpcErr.Data.Class != stdiojsonrpc.ClassInvalidParams {
+		t.Fatalf("mapping parameter error = %+v", rpcErr)
+	}
+	if runner.options != (passivediagnose.Options{}) {
+		t.Fatalf("passive runner called with %+v", runner.options)
 	}
 }
 

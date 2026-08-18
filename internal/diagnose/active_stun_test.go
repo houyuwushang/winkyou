@@ -74,6 +74,23 @@ type fakeActiveSTUNObserver struct {
 	closeCalls  int
 }
 
+type fakeActiveSTUNMappingObserver struct {
+	result     stunobserve.MappingObservation
+	err        error
+	targets    []netip.AddrPort
+	closeCalls int
+}
+
+func (observer *fakeActiveSTUNMappingObserver) Observe(_ context.Context, targets []netip.AddrPort) (stunobserve.MappingObservation, error) {
+	observer.targets = append([]netip.AddrPort(nil), targets...)
+	return observer.result, observer.err
+}
+
+func (observer *fakeActiveSTUNMappingObserver) Close() error {
+	observer.closeCalls++
+	return nil
+}
+
 func (observer *fakeActiveSTUNObserver) Observe(context.Context, netip.AddrPort) (solver.Observation, error) {
 	return observer.observation, observer.err
 }
@@ -221,6 +238,158 @@ func TestActiveSTUNSerialTargetsRetainMixedPerTargetResults(t *testing.T) {
 		if observer.closeCalls != 1 {
 			t.Fatalf("observer %d close calls = %d", index, observer.closeCalls)
 		}
+	}
+}
+
+func TestActiveSTUNMappingUsesOneAggregateAttemptAndNestedEvidence(t *testing.T) {
+	targets := []netip.AddrPort{
+		netip.MustParseAddrPort("192.0.2.10:3478"),
+		netip.MustParseAddrPort("192.0.2.10:3479"),
+	}
+	mapped := netip.MustParseAddrPort("198.51.100.10:41000")
+	classification := stunobserve.ClassifyMapping([]stunobserve.MappingEndpoint{
+		{Target: targets[0], Mapped: mapped},
+		{Target: targets[1], Mapped: mapped},
+	})
+	observer := &fakeActiveSTUNMappingObserver{result: stunobserve.MappingObservation{
+		Classification: classification,
+		Results: []stunobserve.MappingTargetObservation{
+			{Target: targets[0], Observation: mappingTestObservation(targets[0], mapped, "2026-08-18T00:00:00Z", "2026-08-18T00:00:00.005Z")},
+			{Target: targets[1], Observation: mappingTestObservation(targets[1], mapped, "2026-08-18T00:00:00.005Z", "2026-08-18T00:00:00.011Z")},
+		},
+	}}
+	peer := &fakeActiveSTUNPeer{}
+	authority := &fakeActiveSTUNAuthority{snapshot: readyActiveSTUNSnapshot(t, governor.ScopeMachine), peer: peer}
+	factoryCalls := 0
+	inspector := ActiveSTUNInspector{
+		AcquireMachine: func(string) (ActiveSTUNAuthority, error) { return authority, nil },
+		Factory: func(target netip.AddrPort) (probeio.Factory, error) {
+			factoryCalls++
+			if target != targets[0] {
+				t.Fatalf("factory target = %v, want %v", target, targets[0])
+			}
+			return fakeUnusedProbeFactory{}, nil
+		},
+		Observer: func(stunobserve.Config) (ActiveSTUNObserver, error) {
+			t.Fatal("default per-target observer used in mapping mode")
+			return nil, nil
+		},
+		MappingObserver: func(_ stunobserve.Config, targetCount int) (ActiveSTUNMappingObserver, error) {
+			if targetCount != 2 {
+				t.Fatalf("mapping target count = %d", targetCount)
+			}
+			return observer, nil
+		},
+		BuildVersion: "test-build",
+	}
+
+	report, err := inspector.Run(context.Background(), ActiveSTUNOptions{Targets: targets, GovernorScope: governor.ScopeMachine, MapBehavior: true})
+	if err != nil {
+		t.Fatalf("run mapping STUN: %v", err)
+	}
+	if report.State != ActiveSTUNStateCompleted || !report.NetworkActivityStarted || len(report.Results) != 0 || report.MappingBehavior == nil {
+		t.Fatalf("mapping report = %+v", report)
+	}
+	mapping := report.MappingBehavior
+	if mapping.Behavior != stunobserve.MappingBehaviorConsistentSameAddress || mapping.SuccessfulTargets != 2 || len(mapping.Results) != 2 {
+		t.Fatalf("mapping evidence = %+v", mapping)
+	}
+	if len(mapping.Limitations) != 1 || mapping.Limitations[0] != stunobserve.MappingLimitationAddressComparisonUnavailable {
+		t.Fatalf("mapping limitations = %v", mapping.Limitations)
+	}
+	if mapping.Results[0].DurationMS != 5 || mapping.Results[1].DurationMS != 6 || mapping.Results[0].MappedAddress != mapped.String() {
+		t.Fatalf("mapping target reports = %+v", mapping.Results)
+	}
+	wantCost, costErr := stunobserve.MappingWorstCaseCost(2)
+	if costErr != nil {
+		t.Fatalf("mapping cost: %v", costErr)
+	}
+	if len(peer.requests) != 1 || peer.requests[0].Cost != wantCost || factoryCalls != 1 || observer.closeCalls != 1 {
+		t.Fatalf("mapping lifecycle: attempts=%+v factories=%d closes=%d", peer.requests, factoryCalls, observer.closeCalls)
+	}
+	if len(observer.targets) != 2 || observer.targets[0] != targets[0] || observer.targets[1] != targets[1] {
+		t.Fatalf("mapping targets = %v", observer.targets)
+	}
+}
+
+func TestActiveSTUNMappingSafetyTripAndValidationRejectBeforeFactory(t *testing.T) {
+	targets := []netip.AddrPort{
+		netip.MustParseAddrPort("127.0.0.1:3478"),
+		netip.MustParseAddrPort("127.0.0.1:3479"),
+	}
+	t.Run("safety trip", func(t *testing.T) {
+		snapshot := readyActiveSTUNSnapshot(t, governor.ScopeMachine)
+		snapshot.SafetyTrip = governor.SafetyTripStatus{State: governor.SafetyTripTripped, BlocksActiveWork: true}
+		authority := &fakeActiveSTUNAuthority{snapshot: snapshot, peer: &fakeActiveSTUNPeer{}}
+		factoryCalls := 0
+		inspector := ActiveSTUNInspector{
+			AcquireMachine: func(string) (ActiveSTUNAuthority, error) { return authority, nil },
+			Factory: func(netip.AddrPort) (probeio.Factory, error) {
+				factoryCalls++
+				return nil, errors.New("must not be called")
+			},
+		}
+		report, err := inspector.Run(context.Background(), ActiveSTUNOptions{Targets: targets, GovernorScope: governor.ScopeMachine, MapBehavior: true})
+		if !errors.Is(err, ErrActiveSTUNSafetyTrip) || report.NetworkActivityStarted || report.MappingBehavior == nil {
+			t.Fatalf("safety result = %+v err=%v", report, err)
+		}
+		if authority.acquireCalls != 0 || factoryCalls != 0 {
+			t.Fatalf("work ran under trip: peer=%d factory=%d", authority.acquireCalls, factoryCalls)
+		}
+	})
+	t.Run("aggregate attempt budget", func(t *testing.T) {
+		snapshot := readyActiveSTUNSnapshot(t, governor.ScopeMachine)
+		snapshot.Limits.PerAttempt.Targets = 1
+		authority := &fakeActiveSTUNAuthority{snapshot: snapshot, peer: &fakeActiveSTUNPeer{}}
+		factoryCalls := 0
+		inspector := ActiveSTUNInspector{
+			AcquireMachine: func(string) (ActiveSTUNAuthority, error) { return authority, nil },
+			Factory: func(netip.AddrPort) (probeio.Factory, error) {
+				factoryCalls++
+				return nil, errors.New("must not be called")
+			},
+		}
+		report, err := inspector.Run(context.Background(), ActiveSTUNOptions{Targets: targets, GovernorScope: governor.ScopeMachine, MapBehavior: true})
+		if !errors.Is(err, ErrActiveSTUNBudget) || report.ErrorClass != "budget_rejected" || report.NetworkActivityStarted {
+			t.Fatalf("budget result = %+v err=%v", report, err)
+		}
+		if authority.acquireCalls != 0 || factoryCalls != 0 {
+			t.Fatalf("work ran before budget rejection: peer=%d factory=%d", authority.acquireCalls, factoryCalls)
+		}
+	})
+
+	for _, test := range []struct {
+		name    string
+		targets []netip.AddrPort
+	}{
+		{name: "one target", targets: targets[:1]},
+		{name: "mixed address families", targets: []netip.AddrPort{targets[0], netip.MustParseAddrPort("[::1]:3479")}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			acquireCalls := 0
+			inspector := ActiveSTUNInspector{AcquireMachine: func(string) (ActiveSTUNAuthority, error) {
+				acquireCalls++
+				return nil, errors.New("must not acquire")
+			}}
+			report, err := inspector.Run(context.Background(), ActiveSTUNOptions{Targets: test.targets, GovernorScope: governor.ScopeMachine, MapBehavior: true})
+			if !errors.Is(err, ErrActiveSTUNInvalidRequest) || report.NetworkActivityStarted || acquireCalls != 0 {
+				t.Fatalf("validation result = %+v err=%v acquire=%d", report, err, acquireCalls)
+			}
+		})
+	}
+}
+
+func mappingTestObservation(target, mapped netip.AddrPort, started, finished string) solver.Observation {
+	return solver.Observation{
+		LocalAddr:  mapped.String(),
+		RemoteAddr: target.String(),
+		Details: map[string]string{
+			"mapped_address":     mapped.String(),
+			"transmissions":      "1",
+			"observation_scope":  "time_window_only",
+			"window_started_at":  started,
+			"window_finished_at": finished,
+		},
 	}
 }
 

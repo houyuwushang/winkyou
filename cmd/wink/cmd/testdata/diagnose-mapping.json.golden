@@ -1,0 +1,98 @@
+{
+  "schema_version": "winkyou.diagnose/v1alpha1",
+  "generated_at": "2026-08-11T04:00:00Z",
+  "mode": "active_stun",
+  "redaction": "partial",
+  "build_version": "test-build",
+  "platform": {
+    "os": "windows",
+    "arch": "amd64"
+  },
+  "governor_scope": "machine",
+  "namespace": {
+    "scope": "machine",
+    "state": "missing",
+    "ready": false,
+    "requires_elevation": true,
+    "detail": "not installed"
+  },
+  "owner": {
+    "scope": "machine",
+    "state": "unavailable",
+    "held": false,
+    "metadata_available": false
+  },
+  "safety_trip": {
+    "state": "unavailable",
+    "blocks_active_work": true
+  },
+  "configuration": {
+    "state": "ready",
+    "source": "defaults_and_environment",
+    "explicit_path": false,
+    "file_present": false
+  },
+  "interfaces": {
+    "state": "ready",
+    "count": 1,
+    "up_count": 1,
+    "interfaces": [
+      {
+        "name": "Ethernet",
+        "index": 4,
+        "mtu": 1500,
+        "up": true,
+        "loopback": false,
+        "address_classes": [
+          "ipv4_private"
+        ],
+        "addresses_are_redacted": true
+      }
+    ]
+  },
+  "default_route": {
+    "state": "present",
+    "family": "ipv4",
+    "interface": "Ethernet"
+  },
+  "active_probe": {
+    "state": "active_probe_completed",
+    "reason": "explicit_active_stun",
+    "detail": "bounded STUN observations completed; results describe only their observation windows"
+  },
+  "active_stun": {
+    "state": "completed",
+    "observation_scope": "time_window_only",
+    "target_count": 2,
+    "worst_case_duration_ms": 8000,
+    "worst_case_packets": 6,
+    "max_transmissions_per_target": 3,
+    "mapping_behavior": {
+      "behavior": "port_dependent",
+      "evidence_scope": "same_address_multiple_ports",
+      "limitations": [
+        "address_comparison_unavailable"
+      ],
+      "successful_targets": 2,
+      "results": [
+        {
+          "target": "203.0.113.10:3478",
+          "mapped_address": "198.51.100.40:41000",
+          "port_behavior": "translated",
+          "duration_ms": 5,
+          "transmissions": 1,
+          "observation_scope": "time_window_only"
+        },
+        {
+          "target": "203.0.113.10:3479",
+          "mapped_address": "198.51.100.40:41001",
+          "port_behavior": "translated",
+          "duration_ms": 6,
+          "transmissions": 1,
+          "observation_scope": "time_window_only"
+        }
+      ]
+    }
+  },
+  "network_activity_started": true
+}

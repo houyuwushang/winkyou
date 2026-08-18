@@ -12,6 +12,7 @@ import (
 	"unicode/utf8"
 
 	"winkyou/internal/governor"
+	"winkyou/internal/stunobserve"
 )
 
 const ExportRedaction = "strict"
@@ -51,16 +52,27 @@ func RedactForExport(source Report) Report {
 	}
 	if source.ActiveSTUN != nil {
 		active := *source.ActiveSTUN
-		active.Results = append([]ActiveSTUNTargetReport(nil), source.ActiveSTUN.Results...)
-		for index := range active.Results {
-			active.Results[index].TargetPrefix = redactedEndpointPrefix(active.Results[index].Target)
-			active.Results[index].Target = ""
-			active.Results[index].MappedPrefix = redactedEndpointPrefix(active.Results[index].MappedAddress)
-			active.Results[index].MappedAddress = ""
+		active.Results = redactActiveSTUNResults(source.ActiveSTUN.Results)
+		if source.ActiveSTUN.MappingBehavior != nil {
+			mapping := *source.ActiveSTUN.MappingBehavior
+			mapping.Limitations = append(make([]stunobserve.MappingLimitation, 0, len(source.ActiveSTUN.MappingBehavior.Limitations)), source.ActiveSTUN.MappingBehavior.Limitations...)
+			mapping.Results = redactActiveSTUNResults(source.ActiveSTUN.MappingBehavior.Results)
+			active.MappingBehavior = &mapping
 		}
 		report.ActiveSTUN = &active
 	}
 	return report
+}
+
+func redactActiveSTUNResults(source []ActiveSTUNTargetReport) []ActiveSTUNTargetReport {
+	results := append([]ActiveSTUNTargetReport(nil), source...)
+	for index := range results {
+		results[index].TargetPrefix = redactedEndpointPrefix(results[index].Target)
+		results[index].Target = ""
+		results[index].MappedPrefix = redactedEndpointPrefix(results[index].MappedAddress)
+		results[index].MappedAddress = ""
+	}
+	return results
 }
 
 // WriteRedactedReport creates one new private JSON file. It refuses relative

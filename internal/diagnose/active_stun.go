@@ -45,7 +45,19 @@ type ActiveSTUNReport struct {
 	WorstCasePackets          int                      `json:"worst_case_packets"`
 	MaxTransmissionsPerTarget int                      `json:"max_transmissions_per_target"`
 	Results                   []ActiveSTUNTargetReport `json:"results,omitempty"`
+	MappingBehavior           *MappingBehaviorReport   `json:"mapping_behavior,omitempty"`
 	NetworkActivityStarted    bool                     `json:"-"`
+}
+
+// MappingBehaviorReport is emitted only for the explicit --map-behavior
+// mode. Limitations and per-target results are kept beside the behavior so a
+// consumer cannot accidentally detach the classification from its evidence.
+type MappingBehaviorReport struct {
+	Behavior          stunobserve.MappingBehavior      `json:"behavior"`
+	EvidenceScope     stunobserve.MappingEvidenceScope `json:"evidence_scope"`
+	Limitations       []stunobserve.MappingLimitation  `json:"limitations"`
+	SuccessfulTargets int                              `json:"successful_targets"`
+	Results           []ActiveSTUNTargetReport         `json:"results"`
 }
 
 type ActiveSTUNTargetReport struct {
@@ -64,6 +76,7 @@ type ActiveSTUNTargetReport struct {
 type ActiveSTUNOptions struct {
 	Targets       []netip.AddrPort
 	GovernorScope governor.Scope
+	MapBehavior   bool
 }
 
 // ActiveSTUNAuthority is the narrow authority surface used by the explicit
@@ -84,16 +97,22 @@ type ActiveSTUNObserver interface {
 	Close() error
 }
 
+type ActiveSTUNMappingObserver interface {
+	Observe(context.Context, []netip.AddrPort) (stunobserve.MappingObservation, error)
+	Close() error
+}
+
 // ActiveSTUNInspector has explicit dependencies so tests can prove preflight
 // rejection without constructing a socket and can exercise the real loopback
 // adapter without acquiring a host-wide namespace.
 type ActiveSTUNInspector struct {
-	Now            func() time.Time
-	AcquireMachine func(string) (ActiveSTUNAuthority, error)
-	AcquireUser    func(string) (ActiveSTUNAuthority, error)
-	Factory        func(netip.AddrPort) (probeio.Factory, error)
-	Observer       func(stunobserve.Config) (ActiveSTUNObserver, error)
-	BuildVersion   string
+	Now             func() time.Time
+	AcquireMachine  func(string) (ActiveSTUNAuthority, error)
+	AcquireUser     func(string) (ActiveSTUNAuthority, error)
+	Factory         func(netip.AddrPort) (probeio.Factory, error)
+	Observer        func(stunobserve.Config) (ActiveSTUNObserver, error)
+	MappingObserver func(stunobserve.Config, int) (ActiveSTUNMappingObserver, error)
+	BuildVersion    string
 }
 
 func SystemActiveSTUNInspector(buildVersion string) ActiveSTUNInspector {
@@ -107,20 +126,20 @@ func SystemActiveSTUNInspector(buildVersion string) ActiveSTUNInspector {
 			}
 			return restrictedActiveSTUNAuthority{authority: authority}, nil
 		},
-		Factory:      activeSTUNUDPFactory,
-		Observer:     func(config stunobserve.Config) (ActiveSTUNObserver, error) { return stunobserve.New(config) },
+		Factory:  activeSTUNUDPFactory,
+		Observer: func(config stunobserve.Config) (ActiveSTUNObserver, error) { return stunobserve.New(config) },
+		MappingObserver: func(config stunobserve.Config, targetCount int) (ActiveSTUNMappingObserver, error) {
+			return stunobserve.NewMapping(config, targetCount)
+		},
 		BuildVersion: buildVersion,
 	}
 }
 
 func (inspector ActiveSTUNInspector) Run(ctx context.Context, options ActiveSTUNOptions) (ActiveSTUNReport, error) {
-	cost := stunobserve.WorstCaseCost()
 	report := ActiveSTUNReport{
 		State:                     ActiveSTUNStateBlocked,
 		ObservationScope:          "time_window_only",
 		TargetCount:               len(options.Targets),
-		WorstCaseDurationMS:       (cost.Duration * time.Duration(len(options.Targets))).Milliseconds(),
-		WorstCasePackets:          cost.Resources.Packets * len(options.Targets),
 		MaxTransmissionsPerTarget: stunobserve.MaxTransmissions,
 	}
 	if ctx == nil {
@@ -130,6 +149,21 @@ func (inspector ActiveSTUNInspector) Run(ctx context.Context, options ActiveSTUN
 	if err != nil {
 		return blockActiveSTUN(report, "invalid_request", "invalid_target_list", err)
 	}
+	cost := stunobserve.WorstCaseCost()
+	attemptCount := len(targets)
+	if options.MapBehavior {
+		if err := ValidateMappingBehaviorTargets(targets); err != nil {
+			return blockActiveSTUN(report, "invalid_request", "invalid_mapping_target_list", err)
+		}
+		cost, err = stunobserve.MappingWorstCaseCost(len(targets))
+		if err != nil {
+			return blockActiveSTUN(report, "invalid_request", "invalid_mapping_target_list", errors.Join(ErrActiveSTUNInvalidRequest, err))
+		}
+		attemptCount = 1
+		report.MappingBehavior = emptyMappingBehaviorReport(targets)
+	}
+	report.WorstCaseDurationMS = (cost.Duration * time.Duration(attemptCount)).Milliseconds()
+	report.WorstCasePackets = cost.Resources.Packets * attemptCount
 	if inspector.Now == nil {
 		inspector.Now = time.Now
 	}
@@ -138,6 +172,11 @@ func (inspector ActiveSTUNInspector) Run(ctx context.Context, options ActiveSTUN
 	}
 	if inspector.Observer == nil {
 		inspector.Observer = func(config stunobserve.Config) (ActiveSTUNObserver, error) { return stunobserve.New(config) }
+	}
+	if inspector.MappingObserver == nil {
+		inspector.MappingObserver = func(config stunobserve.Config, targetCount int) (ActiveSTUNMappingObserver, error) {
+			return stunobserve.NewMapping(config, targetCount)
+		}
 	}
 	build := firstNonEmpty(strings.TrimSpace(inspector.BuildVersion), "unknown")
 
@@ -166,7 +205,7 @@ func (inspector ActiveSTUNInspector) Run(ctx context.Context, options ActiveSTUN
 			_ = authority.Close()
 		}
 	}()
-	if err := preflightActiveSTUN(authority.Snapshot(), options.GovernorScope, len(targets), cost); err != nil {
+	if err := preflightActiveSTUN(authority.Snapshot(), options.GovernorScope, attemptCount, cost); err != nil {
 		if errors.Is(err, ErrActiveSTUNSafetyTrip) {
 			return blockActiveSTUN(report, "safety_trip", "safety_trip_blocks_active_work", err)
 		}
@@ -175,7 +214,7 @@ func (inspector ActiveSTUNInspector) Run(ctx context.Context, options ActiveSTUN
 		}
 		return blockActiveSTUN(report, "budget_rejected", "worst_case_budget_unavailable", err)
 	}
-	runCtx, cancelRun := context.WithTimeout(ctx, cost.Duration*time.Duration(len(targets)))
+	runCtx, cancelRun := context.WithTimeout(ctx, cost.Duration*time.Duration(attemptCount))
 	defer cancelRun()
 
 	peer, err := authority.AcquireDiagnosticPeer("diagnose-active-stun")
@@ -191,6 +230,10 @@ func (inspector ActiveSTUNInspector) Run(ctx context.Context, options ActiveSTUN
 			_ = peer.Close()
 		}
 	}()
+
+	if options.MapBehavior {
+		return inspector.runMappingBehavior(runCtx, targets, cost, build, report, peer, authority, &closePeer, &closeAuthority)
+	}
 
 	report.Results = make([]ActiveSTUNTargetReport, 0, len(targets))
 	for index, target := range targets {
@@ -250,10 +293,79 @@ func (inspector ActiveSTUNInspector) Run(ctx context.Context, options ActiveSTUN
 		}
 	}
 
+	return completeActiveSTUN(report, peer, authority, &closePeer, &closeAuthority)
+}
+
+func (inspector ActiveSTUNInspector) runMappingBehavior(
+	ctx context.Context,
+	targets []netip.AddrPort,
+	cost governor.AttemptCost,
+	build string,
+	report ActiveSTUNReport,
+	peer ActiveSTUNPeer,
+	authority ActiveSTUNAuthority,
+	closePeer, closeAuthority *bool,
+) (ActiveSTUNReport, error) {
+	if err := ctx.Err(); err != nil {
+		class, reason := activeSTUNContextFailure(err)
+		return finishActiveSTUNWithSystemError(report, peer, authority, closePeer, closeAuthority, class, reason, err)
+	}
+	lease, err := peer.AcquireDiagnosticAttempt(ctx, "diagnose-active-stun-mapping", cost)
+	if err != nil {
+		return finishActiveSTUNWithSystemError(report, peer, authority, closePeer, closeAuthority, "budget_rejected", "attempt_lease_unavailable", err)
+	}
+	if lease == nil {
+		return finishActiveSTUNWithSystemError(report, peer, authority, closePeer, closeAuthority, "authority_unavailable", "nil_attempt_lease", ErrActiveSTUNAuthority)
+	}
+	factory, err := inspector.Factory(targets[0])
+	if err != nil {
+		_ = lease.Close()
+		return finishActiveSTUNWithSystemError(report, peer, authority, closePeer, closeAuthority, "io_error", "udp_factory_unavailable", err)
+	}
+	if factory == nil {
+		_ = lease.Close()
+		return finishActiveSTUNWithSystemError(report, peer, authority, closePeer, closeAuthority, "io_error", "nil_udp_factory", ErrActiveSTUNInvalidRequest)
+	}
+	observer, err := inspector.MappingObserver(stunobserve.Config{
+		Lease:              lease,
+		Generation:         probeio.NewGeneration(1),
+		ExpectedGeneration: 1,
+		Factory:            factory,
+		BuildVersion:       build,
+		AllowNonLoopback:   true,
+	}, len(targets))
+	if err != nil {
+		_ = lease.Close()
+		return finishActiveSTUNWithSystemError(report, peer, authority, closePeer, closeAuthority, "io_error", "mapping_observer_unavailable", err)
+	}
+	if observer == nil {
+		_ = lease.Close()
+		return finishActiveSTUNWithSystemError(report, peer, authority, closePeer, closeAuthority, "io_error", "nil_mapping_observer", ErrActiveSTUNInvalidRequest)
+	}
+
+	report.NetworkActivityStarted = true
+	mapping, observeErr := observer.Observe(ctx, targets)
+	report.MappingBehavior = mappingBehaviorReportForTargets(mapping, targets)
+	closeErr := observer.Close()
+	if observeErr != nil || closeErr != nil {
+		class := stunobserve.ErrorClassIO
+		reason := "mapping_observation_failed"
+		if closeErr != nil {
+			reason = "probe_cleanup_failed"
+		}
+		if err := ctx.Err(); err != nil {
+			class, reason = activeSTUNContextFailure(err)
+		}
+		return finishActiveSTUNWithSystemError(report, peer, authority, closePeer, closeAuthority, class, reason, errors.Join(observeErr, closeErr))
+	}
+	return completeActiveSTUN(report, peer, authority, closePeer, closeAuthority)
+}
+
+func completeActiveSTUN(report ActiveSTUNReport, peer ActiveSTUNPeer, authority ActiveSTUNAuthority, closePeer, closeAuthority *bool) (ActiveSTUNReport, error) {
 	peerErr := peer.Close()
-	closePeer = false
+	*closePeer = false
 	authorityErr := authority.Close()
-	closeAuthority = false
+	*closeAuthority = false
 	if err := errors.Join(peerErr, authorityErr); err != nil {
 		report.State = ActiveSTUNStateBlocked
 		report.ErrorClass = stunobserve.ErrorClassIO
@@ -261,13 +373,86 @@ func (inspector ActiveSTUNInspector) Run(ctx context.Context, options ActiveSTUN
 		return report, fmt.Errorf("active STUN cleanup: %w", err)
 	}
 	report.State = ActiveSTUNStateCompleted
-	for _, result := range report.Results {
+	for _, result := range activeSTUNReportResults(report) {
 		if result.ErrorClass != "" {
 			report.State = ActiveSTUNStateCompletedWithErrs
 			break
 		}
 	}
 	return report, nil
+}
+
+func activeSTUNReportResults(report ActiveSTUNReport) []ActiveSTUNTargetReport {
+	if report.MappingBehavior != nil {
+		return report.MappingBehavior.Results
+	}
+	return report.Results
+}
+
+// ValidateMappingBehaviorTargets rejects a mapping request before authority
+// acquisition or network I/O. One UDP socket cannot safely mix address
+// families across platforms.
+func ValidateMappingBehaviorTargets(targets []netip.AddrPort) error {
+	if len(targets) < stunobserve.MinMappingTargets || len(targets) > stunobserve.MaxMappingTargets {
+		return fmt.Errorf("%w: --map-behavior requires two or three targets", ErrActiveSTUNInvalidRequest)
+	}
+	ipv4 := targets[0].Addr().Is4()
+	for _, target := range targets[1:] {
+		if target.Addr().Is4() != ipv4 {
+			return fmt.Errorf("%w: --map-behavior targets must use one address family", ErrActiveSTUNInvalidRequest)
+		}
+	}
+	return nil
+}
+
+func emptyMappingBehaviorReport(targets []netip.AddrPort) *MappingBehaviorReport {
+	return mappingBehaviorReportForTargets(stunobserve.MappingObservation{Results: []stunobserve.MappingTargetObservation{}}, targets)
+}
+
+func mappingBehaviorReportForTargets(mapping stunobserve.MappingObservation, targets []netip.AddrPort) *MappingBehaviorReport {
+	if mapping.Classification.TotalTargets == 0 {
+		endpoints := make([]stunobserve.MappingEndpoint, 0, len(targets))
+		for _, target := range targets {
+			endpoints = append(endpoints, stunobserve.MappingEndpoint{Target: target})
+		}
+		mapping.Classification = stunobserve.ClassifyMapping(endpoints)
+	}
+	return mappingBehaviorReport(mapping)
+}
+
+func mappingBehaviorReport(mapping stunobserve.MappingObservation) *MappingBehaviorReport {
+	classification := mapping.Classification
+	if classification.Behavior == "" {
+		classification.Behavior = stunobserve.MappingBehaviorInconclusive
+	}
+	if classification.EvidenceScope == "" {
+		classification.EvidenceScope = stunobserve.MappingEvidenceSameAddressMultiplePorts
+	}
+	report := &MappingBehaviorReport{
+		Behavior:          classification.Behavior,
+		EvidenceScope:     classification.EvidenceScope,
+		Limitations:       append(make([]stunobserve.MappingLimitation, 0, len(classification.Limitations)), classification.Limitations...),
+		SuccessfulTargets: classification.SuccessfulTargets,
+		Results:           make([]ActiveSTUNTargetReport, 0, len(mapping.Results)),
+	}
+	for _, result := range mapping.Results {
+		report.Results = append(report.Results, activeSTUNTargetResult(
+			result.Target,
+			result.Observation,
+			activeSTUNObservationDuration(result.Observation),
+			result.Err,
+		))
+	}
+	return report
+}
+
+func activeSTUNObservationDuration(observation solver.Observation) time.Duration {
+	started, startErr := time.Parse(time.RFC3339Nano, observation.Details["window_started_at"])
+	finished, finishErr := time.Parse(time.RFC3339Nano, observation.Details["window_finished_at"])
+	if startErr != nil || finishErr != nil || finished.Before(started) {
+		return 0
+	}
+	return finished.Sub(started)
 }
 
 // ApplyActiveSTUN attaches the CLI-only active section without changing the

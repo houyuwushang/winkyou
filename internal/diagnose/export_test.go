@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"winkyou/internal/governor"
+	"winkyou/internal/stunobserve"
 )
 
 func TestRedactForExportOwnsSlicesAndRemovesLocalIdentifiers(t *testing.T) {
@@ -132,6 +133,57 @@ func TestRedactForExportKeepsOnlyActiveSTUNPrefixesAndPortBehavior(t *testing.T)
 	for _, forbidden := range []string{"192.0.2.99", "198.51.100.123", "2001:db8:1:2::99", "2001:db8:abcd:1234::5", "42000", "43000"} {
 		if strings.Contains(string(encoded), forbidden) {
 			t.Fatalf("redacted active STUN contains %q: %s", forbidden, encoded)
+		}
+	}
+}
+
+func TestRedactForExportKeepsMappingBehaviorAndRedactsNestedEvidence(t *testing.T) {
+	source := Report{ActiveSTUN: &ActiveSTUNReport{
+		State:            ActiveSTUNStateCompleted,
+		ObservationScope: "time_window_only",
+		MappingBehavior: &MappingBehaviorReport{
+			Behavior:          stunobserve.MappingBehaviorPortDependent,
+			EvidenceScope:     stunobserve.MappingEvidenceSameAddressMultiplePorts,
+			Limitations:       []stunobserve.MappingLimitation{stunobserve.MappingLimitationAddressComparisonUnavailable},
+			SuccessfulTargets: 2,
+			Results: []ActiveSTUNTargetReport{
+				{Target: "203.0.113.10:3478", MappedAddress: "198.51.100.123:42000", PortBehavior: "translated", ObservationScope: "time_window_only"},
+				{Target: "203.0.113.10:3479", MappedAddress: "198.51.100.123:42001", PortBehavior: "translated", ObservationScope: "time_window_only"},
+			},
+		},
+	}}
+
+	redacted := RedactForExport(source)
+	if redacted.ActiveSTUN == nil || redacted.ActiveSTUN.MappingBehavior == nil {
+		t.Fatalf("redacted mapping report = %+v", redacted.ActiveSTUN)
+	}
+	mapping := redacted.ActiveSTUN.MappingBehavior
+	if mapping.Behavior != stunobserve.MappingBehaviorPortDependent ||
+		mapping.EvidenceScope != stunobserve.MappingEvidenceSameAddressMultiplePorts ||
+		len(mapping.Limitations) != 1 ||
+		mapping.Limitations[0] != stunobserve.MappingLimitationAddressComparisonUnavailable {
+		t.Fatalf("mapping classification changed = %+v", mapping)
+	}
+	if len(mapping.Results) != 2 {
+		t.Fatalf("mapping results = %+v", mapping.Results)
+	}
+	for _, result := range mapping.Results {
+		if result.Target != "" || result.MappedAddress != "" || result.TargetPrefix != "203.0.113.0/24" || result.MappedPrefix != "198.51.100.0/24" {
+			t.Fatalf("nested redaction = %+v", result)
+		}
+	}
+	mapping.Limitations[0] = "changed"
+	mapping.Results[0].Reason = "changed"
+	if source.ActiveSTUN.MappingBehavior.Limitations[0] == "changed" || source.ActiveSTUN.MappingBehavior.Results[0].Reason == "changed" {
+		t.Fatal("redacted mapping report retained source slice ownership")
+	}
+	encoded, err := json.Marshal(redacted)
+	if err != nil {
+		t.Fatalf("marshal redacted mapping report: %v", err)
+	}
+	for _, forbidden := range []string{"203.0.113.10", "198.51.100.123", "42000", "42001"} {
+		if strings.Contains(string(encoded), forbidden) {
+			t.Fatalf("redacted mapping report contains %q: %s", forbidden, encoded)
 		}
 	}
 }
