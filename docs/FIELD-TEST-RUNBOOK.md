@@ -4,9 +4,9 @@
 不等于授权部署、开放防火墙或向公网发包。执行前必须选定具体服务器、执行人、时间窗和
 回滚人，并确认 `wink-stund` 与主动 `diagnose` 来自已经评审的同一发布基线。
 
-本实验只验证：不同接入网络能否向一个维护者控制的 response-only STUN 目标完成有界
-Binding 观测，以及映射结果在短时间窗内是否稳定。它不运行 birthday punch、自动恢复、
-ICE、TURN、端口扫描或 daemon 化客户端。
+本实验只验证：不同接入网络能否向维护者控制的 response-only STUN 目标完成有界 Binding
+观测；获得独立授权时，还可比较同一服务器 IP 的两个端口在单 socket 短时间窗中的映射
+证据。它不运行 birthday punch、自动恢复、ICE、TURN、端口扫描或 daemon 化客户端。
 
 ## 1. 数据与网络红线
 
@@ -17,8 +17,8 @@ ICE、TURN、端口扫描或 daemon 化客户端。
 - `wink diagnose --active-stun ... --json` 的本地输出是 `redaction: partial`，会包含完整
   target 与 mapped endpoint，不能原样提交。公开记录只能使用 strict-redacted 导出，或
   按本文模板人工抄录 `/24`、`/48` 与端口行为分类。
-- 首次窗口只开放一个 UDP 端口，只使用一个目标，每种网络执行 3 次；不得扩大为目标列表、
-  扫描或自动循环。
+- 基础可达性窗口只开放一个 UDP 端口、只使用一个目标；映射行为窗口必须另行具名授权，
+  且只允许同一服务器 IP 上明确列出的两个 UDP 端口。两种窗口都不得扩大为扫描或自动循环。
 - `WinkYou-A`、cached self-bootstrap 与 autonomous birthday recovery 必须继续 Disabled。
 
 ## 2. 前置检查
@@ -58,7 +58,7 @@ wink diagnose --governor-scope=user-acknowledged --active-stun=203.0.113.10:3478
 - 服务器资产的内部引用，而非把真实地址复制到仓库；
 - 计划开始/结束时间；
 - 使用的两个精确 Git SHA；
-- UDP 端口、全局 PPS 配置和防火墙规则变更单；
+- UDP 端口（基础窗口一个；映射窗口恰好两个）、全局 PPS 配置和防火墙规则变更单；
 - 独立 kill switch：停止 service 加撤销 UDP 入站规则。
 
 ## 3. 构建与传输
@@ -155,6 +155,58 @@ echo $! >/tmp/wink-stund.pid
 这里的地址仍是 TEST-NET 占位。必须确认 PID 只属于该二进制；停止时先发 `TERM`，不得用
 模糊的进程名批量终止其他服务。
 
+### 4.3 双端口 systemd template（仅映射行为窗口）
+
+只有第 7 节的映射行为窗口获得独立授权后，才使用两个实例。真实监听地址仍只写入服务器
+本地文件；仓库中的模板固定使用同一个 TEST-NET IP 的两个端口：
+
+```bash
+sudo install -d -o root -g root -m 0755 /etc/winkyou
+sudo tee /etc/winkyou/wink-stund-3478.env >/dev/null <<'EOF'
+STUN_LISTEN=203.0.113.10:3478
+STUN_MAX_PPS=20
+EOF
+sudo tee /etc/winkyou/wink-stund-3479.env >/dev/null <<'EOF'
+STUN_LISTEN=203.0.113.10:3479
+STUN_MAX_PPS=20
+EOF
+```
+
+创建 `/etc/systemd/system/wink-stund@.service`：
+
+```ini
+[Unit]
+Description=WinkYou response-only STUN field target on UDP %i
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=winkyou-stun
+Group=winkyou-stun
+EnvironmentFile=/etc/winkyou/wink-stund-%i.env
+ExecStart=/usr/local/bin/wink-stund --listen ${STUN_LISTEN} --max-pps ${STUN_MAX_PPS}
+Restart=on-failure
+RestartSec=5s
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+
+[Install]
+WantedBy=multi-user.target
+```
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable --now wink-stund@3478.service wink-stund@3479.service
+sudo systemctl status --no-pager wink-stund@3478.service wink-stund@3479.service
+sudo ss -lunp | grep -E ':(3478|3479)\b'
+```
+
+两个实例必须来自同一已复核 SHA，并分别保持编译期限速、每源限速与默认不记录客户端 IP。
+不得通过端口范围或动态实例列表扩大目标集合。
+
 ## 5. 放行 UDP：两层都要检查
 
 只选择服务器实际使用的一种主机防火墙。示例端口为 UDP 3478：
@@ -172,11 +224,14 @@ sudo firewall-cmd --reload
 测试窗口必须临时允许任意来源，应只开放这个 UDP 端口、保留全局/每源限速，并在结束时
 立即撤销。不得顺带开放 TCP、端口范围或管理端口。
 
+映射行为窗口需要分别放行 UDP 3478 与 3479；必须使用两条精确端口规则，不能改成
+`3478:3479` 以外的范围。窗口结束时两条规则都要逐条撤销并复核。
+
 `nc -zvu 203.0.113.10 3478` 只能证明本机命令能够发送一个 UDP datagram；UDP 没有连接
 握手，它不能证明防火墙已放行，也不能证明 STUN 应答正确。真正自检必须使用下一节的
 `wink diagnose`，并同时观察服务器聚合计数是否增加。
 
-## 6. 实测矩阵
+## 6. 基础单目标实测矩阵
 
 每次运行前确认 stderr 出现主动观测隐私提示。相邻运行间隔至少 10 秒，避免把短时间重试
 误当作独立样本。原始 JSON 只保存在仓库外的私有临时目录。
@@ -201,7 +256,43 @@ wink diagnose --governor-scope=user-acknowledged --active-stun=203.0.113.10:3478
 对每种网络重复 3 次并记录实际开始时间。不要写脚本无限循环；出现资源错误、异常日志增长、
 safety trip 或服务器响应计数超出人工运行规模时立即停止 service 并撤销入站规则。
 
-## 7. 脱敏记录模板
+## 7. 映射行为判定（独立授权的双端口窗口）
+
+先完成第 6 节的单目标可达性验证；只有维护者重新确认双端口服务器、客户端、网络和时间
+窗后，才进入本节。两个 `wink-stund` 实例必须位于同一个服务器 IP、使用不同端口，例如
+占位符 `203.0.113.10:3478` 与 `203.0.113.10:3479`。客户端必须用一条命令显式列出两者：
+
+```powershell
+wink diagnose --map-behavior `
+  --active-stun=203.0.113.10:3478 `
+  --active-stun=203.0.113.10:3479 `
+  --json
+```
+
+若只能使用用户级 scope，仍需同时显式知情：
+
+```powershell
+wink diagnose --governor-scope=user-acknowledged --map-behavior `
+  --active-stun=203.0.113.10:3478 `
+  --active-stun=203.0.113.10:3479 `
+  --json
+```
+
+同一网络手工执行 3 次，相邻运行至少间隔 10 秒；不得写无限循环。每次命令内部只建立一个
+governed socket，并按 3478、3479 顺序串行观测。三个 behavior 的证据边界如下：
+
+| behavior | 本次短窗能说明什么 | 仍不能说明什么 |
+|---|---|---|
+| `consistent_same_address` | 同一服务器 IP 的不同端口观察到完全一致的 mapped endpoint；与 EIM 一致 | 不能排除 ADM，不能视为永久 NAT 类型 |
+| `port_dependent` | 同一服务器 IP 的不同端口观察到不同 mapped endpoint；存在端口依赖证据 | 不能推断其他时间、网络或服务器地址上的行为 |
+| `inconclusive` | 成功目标不足两个或证据不满足同地址多端口比较 | 不能据此选择 birthday punch 或其他激进策略 |
+
+使用同一 IP 时，结果必须同时出现 `address_comparison_unavailable`。这是强制限制标记，
+表示缺少第二个服务器 IP，无法区分 EIM 与 ADM；它不是第四种 behavior。若标记缺失、两个
+目标没有共享同一本地 endpoint、出现 safety trip，或任一实例计数超过人工规模，应立即
+停止两个 service、撤销两个 UDP 入站规则，并回到 loopback/netns 复现。
+
+## 8. 脱敏记录模板
 
 当前 CLI 主动模式的 `--json` 是本地原始证据，不是可公开报告；stdio
 `export_redacted_report` 仍采集被动报告，不能自动携带这次 CLI-only active 结果。除非以后
@@ -217,11 +308,11 @@ safety trip 或服务器响应计数超出人工运行规模时立即停止 serv
 - network class: home_wifi | mobile_hotspot
 - trials: 3
 
-| trial | result class | target prefix | mapped prefix | port behavior | transmissions | duration bucket |
-|---:|---|---|---|---|---:|---|
-| 1 | success | 203.0.113.0/24 | 198.51.100.0/24 | preserved | 1 | <1s |
-| 2 | timeout | 203.0.113.0/24 | — | unknown | 3 | 3–4s |
-| 3 | protocol_error | 203.0.113.0/24 | — | unknown | 1 | <1s |
+| trial | result class | mapping behavior | mapping limitation | target prefix | mapped prefix | port behavior | transmissions | duration bucket |
+|---:|---|---|---|---|---|---|---:|---|
+| 1 | success | consistent_same_address | address_comparison_unavailable | 203.0.113.0/24 | 198.51.100.0/24 | preserved | 1 | <1s |
+| 2 | timeout | inconclusive | address_comparison_unavailable | 203.0.113.0/24 | — | unknown | 3 | 3–4s |
+| 3 | protocol_error | not_requested | not_requested | 203.0.113.0/24 | — | unknown | 1 | <1s |
 
 - responder aggregate delta: received=<COUNT>, responded=<COUNT>
 - notes: <NO ISP, SSID, HOSTNAME, DEVICE NAME, FULL IP, OR PORT>
@@ -231,7 +322,7 @@ safety trip 或服务器响应计数超出人工运行规模时立即停止 serv
 允许 `/48`；不得记录 mapped port 数值，只记录 `preserved`、`translated` 或 `unknown`。
 原始 JSON 在脱敏核对完成后按维护者的数据保留政策处理，绝不移动进 Git 工作树。
 
-## 8. 故障排查
+## 9. 故障排查
 
 | 客户端结果/现象 | 先检查 | 可能原因 | 下一步 |
 |---|---|---|---|
@@ -242,8 +333,10 @@ safety trip 或服务器响应计数超出人工运行规模时立即停止 serv
 | 服务器 received 增加但 responded 不增 | dropped 聚合分类 | 错 cookie/类型/长度、required 属性、源/全局限速 | 不开启报文日志；用离线测试包复现 |
 | 服务器完全无计数 | 两层防火墙与监听地址 | 安全组、主机规则、错误网卡绑定、上游 UDP 阻断 | 先修路径，不提高 PPS、不开放端口范围 |
 | 家庭成功、热点超时 | 重复 3 次并确认网络切换 | 蜂窝 CGNAT/运营商策略可能限制 UDP | 记录为有界失败；不能直接命名 NAT 类型 |
+| mapping 为 `inconclusive` | 两实例状态、逐目标结果、同一本地 endpoint | 一个目标超时/协议错误，或目标没有形成同地址多端口证据 | 保留部分结果，不增加重试、不自动切换打洞策略 |
+| 缺少 `address_comparison_unavailable` | 两个目标是否确为同一服务器 IP | 客户端/报告版本不匹配或目标配置错误 | 停止公开记录，回到同 SHA 的 loopback 集成测试 |
 
-## 9. 结束与泄漏检查
+## 10. 结束与泄漏检查
 
 实验窗口结束或触发 kill switch 时：
 
@@ -265,20 +358,36 @@ sudo firewall-cmd --permanent --remove-port=3478/udp
 sudo firewall-cmd --reload
 ```
 
+若启用了双端口 template，还必须逐项停止并撤销第二个端口：
+
+```bash
+sudo systemctl disable --now wink-stund@3478.service wink-stund@3479.service
+sudo ss -lunp | grep -E ':(3478|3479)\b' || true
+
+# 按实际使用的防火墙二选一，并对两个端口逐条撤销
+sudo ufw delete allow 3478/udp
+sudo ufw delete allow 3479/udp
+# 或
+sudo firewall-cmd --permanent --remove-port=3478/udp
+sudo firewall-cmd --permanent --remove-port=3479/udp
+sudo firewall-cmd --reload
+```
+
 若使用 nohup，只能读取 `/tmp/wink-stund.pid`、核验该 PID 的可执行文件确为
 `/usr/local/bin/wink-stund` 后发送 `TERM`。不得使用 `pkill -f wink`。
 
-## 10. 完成判据与已知限制
+## 11. 完成判据与已知限制
 
 一次现场窗口只有同时满足以下条件才算记录完成：
 
 - 家庭 Wi-Fi 与手机热点各有 3 个有界结果，成功和失败都可以作为证据；
-- 每次最多 3 次客户端发送，服务端未出现超编译上限的响应行为；
+- 基础单目标命令最多发送 3 次；双端口 mapping 命令每目标最多 3 次、总计最多 6 次；
+  服务端未出现超编译上限的响应行为；
 - 结束后无 `wink-stund` 进程、UDP listener、残留安全组/防火墙规则；
 - 公开材料通过第二人隐私检查，只包含前缀和分类；
 - 没有触发或恢复任何 autonomous recovery 路径。
 
-当前 `diagnose` 为每个 target 创建独立 socket，因此不同 target 的 mapped port 不能进行
-严格的 EIM/EDM 判断。即使同一 target 连续三次稳定，也只说明这些独立短时间窗中的现象，
-不是永久 NAT 标签。需要“单 socket、多 target”的 mapping/filtering 观测时，应另开设计、
-资源证明和安全评审，不能从本 runbook 扩展执行。
+默认 `diagnose --active-stun` 仍为每个 target 创建独立 socket，不同 target 的 mapped port
+不能用于映射行为判断。只有显式 `--map-behavior` 才提供“单 socket、同地址多端口”的
+有限证据；它仍不是完整 RFC 4787 分类。区分 ADM 需要第二个服务器 IP 和新的部署/隐私/
+资源评审，不能从本双端口模板自行扩展。任何结果都不能自动恢复 birthday punch。
