@@ -400,6 +400,183 @@ func TestDiagnoseMapBehaviorRealLoopbackCLIPath(t *testing.T) {
 	}
 }
 
+func TestDiagnosePortAllocationRealLoopbackCLIPath(t *testing.T) {
+	target := startCLIStunServer(t)
+	limits, err := governor.HardLimits(governor.ProfilePhase1Machine)
+	if err != nil {
+		t.Fatalf("hard limits: %v", err)
+	}
+	authority := &cliActiveSTUNAuthority{snapshot: governor.Snapshot{
+		Profile:    governor.ProfilePhase1Machine,
+		Scope:      governor.ScopeMachine,
+		Limits:     limits,
+		SafetyTrip: governor.SafetyTripStatus{State: governor.SafetyTripClear},
+	}}
+	active := passivediagnose.ActiveSTUNInspector{
+		AcquireMachine: func(string) (passivediagnose.ActiveSTUNAuthority, error) { return authority, nil },
+		BuildVersion:   "test-build",
+	}
+	cmd := newDiagnoseCmdWithRunners(&Options{}, &fakePassiveDiagnoseRunner{report: passiveDiagnoseFixture()}, active)
+	stdout := new(bytes.Buffer)
+	stderr := new(bytes.Buffer)
+	cmd.SetOut(stdout)
+	cmd.SetErr(stderr)
+	cmd.SetArgs([]string{"--json", "--port-allocation", "3", "--active-stun", target.String()})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("port allocation diagnose: %v\nstderr: %s", err, stderr.String())
+	}
+	var report passivediagnose.Report
+	if err := json.Unmarshal(stdout.Bytes(), &report); err != nil {
+		t.Fatalf("decode allocation report: %v\n%s", err, stdout.String())
+	}
+	if report.ActiveSTUN == nil || report.ActiveSTUN.State != passivediagnose.ActiveSTUNStateCompleted || report.ActiveSTUN.PortAllocation == nil || !report.NetworkActivityStarted {
+		t.Fatalf("allocation active report = %+v", report.ActiveSTUN)
+	}
+	allocation := report.ActiveSTUN.PortAllocation
+	if allocation.TotalSockets != 3 || allocation.SuccessfulSockets != 3 || len(allocation.Results) != 3 {
+		t.Fatalf("allocation evidence = %+v", allocation)
+	}
+	locals := make(map[string]struct{}, 3)
+	for _, result := range allocation.Results {
+		if result.LocalAddress == "" || result.MappedAddress != result.LocalAddress || result.ErrorClass != "" {
+			t.Fatalf("allocation socket result = %+v", result)
+		}
+		if _, exists := locals[result.LocalAddress]; exists {
+			t.Fatalf("local endpoint reused: %s", result.LocalAddress)
+		}
+		locals[result.LocalAddress] = struct{}{}
+	}
+	if authority.peer == nil || authority.peer.acquireCalls != 1 || authority.closeCalls != 1 {
+		t.Fatalf("single-attempt lifecycle = %+v", authority)
+	}
+	if !strings.Contains(stderr.String(), "source IP address") {
+		t.Fatalf("active disclosure = %q", stderr.String())
+	}
+}
+
+func TestDiagnosePortAllocationValidationRunsBeforePassiveCollection(t *testing.T) {
+	tests := []struct {
+		name string
+		args []string
+		want string
+	}{
+		{name: "no target", args: []string{"--port-allocation", "3"}, want: "exactly one"},
+		{name: "two targets", args: []string{"--port-allocation", "3", "--active-stun", "127.0.0.1:3478", "--active-stun", "127.0.0.1:3479"}, want: "exactly one"},
+		{name: "too few sockets", args: []string{"--port-allocation", "2", "--active-stun", "127.0.0.1:3478"}, want: "between 3 and 8"},
+		{name: "too many sockets", args: []string{"--port-allocation", "9", "--active-stun", "127.0.0.1:3478"}, want: "between 3 and 8"},
+		{name: "mapping conflict", args: []string{"--port-allocation", "3", "--map-behavior", "--active-stun", "127.0.0.1:3478"}, want: "mutually exclusive"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			passive := &fakePassiveDiagnoseRunner{report: passiveDiagnoseFixture()}
+			active := &fakeActiveSTUNRunner{t: t, forbid: true}
+			cmd := newDiagnoseCmdWithRunners(&Options{}, passive, active)
+			cmd.SetOut(new(bytes.Buffer))
+			cmd.SetErr(new(bytes.Buffer))
+			cmd.SetArgs(test.args)
+			err := cmd.Execute()
+			if err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("validation error = %v, want %q", err, test.want)
+			}
+			if passive.calls != 0 || active.calls != 0 {
+				t.Fatalf("collectors ran before validation: passive=%d active=%d", passive.calls, active.calls)
+			}
+		})
+	}
+}
+
+func TestDiagnosePortAllocationUsesFiveSocketsWhenValueOmitted(t *testing.T) {
+	active := &fakeActiveSTUNRunner{report: allocationDiagnoseFixture()}
+	cmd := newDiagnoseCmdWithRunners(&Options{}, &fakePassiveDiagnoseRunner{report: passiveDiagnoseFixture()}, active)
+	cmd.SetOut(new(bytes.Buffer))
+	cmd.SetErr(new(bytes.Buffer))
+	cmd.SetArgs([]string{"--port-allocation", "--active-stun", "203.0.113.10:3478", "--json"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("default port allocation: %v", err)
+	}
+	if active.options.PortAllocationSockets != stunobserve.DefaultAllocationSockets || len(active.options.Targets) != 1 || active.options.MapBehavior {
+		t.Fatalf("allocation options = %+v", active.options)
+	}
+}
+
+func TestDiagnosePortAllocationPassesExplicitUserScopeToRunner(t *testing.T) {
+	passiveReport := passiveDiagnoseFixture()
+	passiveReport.GovernorScope = governor.ScopeUserAcknowledged
+	active := &fakeActiveSTUNRunner{report: allocationDiagnoseFixture()}
+	cmd := newDiagnoseCmdWithRunners(&Options{}, &fakePassiveDiagnoseRunner{report: passiveReport}, active)
+	stdout := new(bytes.Buffer)
+	stderr := new(bytes.Buffer)
+	cmd.SetOut(stdout)
+	cmd.SetErr(stderr)
+	cmd.SetArgs([]string{
+		"--governor-scope", "user-acknowledged",
+		"--port-allocation", "3",
+		"--active-stun", "203.0.113.10:3478",
+		"--json",
+	})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("explicit user allocation STUN: %v", err)
+	}
+	if active.calls != 1 || active.options.GovernorScope != governor.ScopeUserAcknowledged || active.options.PortAllocationSockets != 3 || active.options.MapBehavior {
+		t.Fatalf("allocation active options = %+v calls=%d", active.options, active.calls)
+	}
+	for _, warning := range []string{"not machine-wide safety", "source IP address", "observation timing"} {
+		if !strings.Contains(stderr.String(), warning) {
+			t.Fatalf("stderr missing %q: %s", warning, stderr.String())
+		}
+	}
+}
+
+func TestDiagnosePortAllocationHumanOutputKeepsDeltasWithLimitations(t *testing.T) {
+	active := &fakeActiveSTUNRunner{report: allocationDiagnoseFixture()}
+	cmd := newDiagnoseCmdWithRunners(&Options{}, &fakePassiveDiagnoseRunner{report: passiveDiagnoseFixture()}, active)
+	stdout := new(bytes.Buffer)
+	cmd.SetOut(stdout)
+	cmd.SetErr(new(bytes.Buffer))
+	cmd.SetArgs([]string{"--port-allocation", "3", "--active-stun", "203.0.113.10:3478"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("allocation diagnose text: %v", err)
+	}
+	for _, want := range []string{
+		"Port allocation: sequential_uniform",
+		"scope=single_target_multiple_sockets",
+		"limitations=single_time_window,single_target,small_sample_not_permanent_nat_label",
+		"deltas=10,10",
+		"local=192.0.2.25:31001",
+		"target=203.0.113.10:3478",
+	} {
+		if !strings.Contains(stdout.String(), want) {
+			t.Fatalf("allocation text missing %q:\n%s", want, stdout.String())
+		}
+	}
+}
+
+func allocationDiagnoseFixture() passivediagnose.ActiveSTUNReport {
+	return passivediagnose.ActiveSTUNReport{
+		State:                     passivediagnose.ActiveSTUNStateCompleted,
+		ObservationScope:          "time_window_only",
+		TargetCount:               1,
+		WorstCaseDurationMS:       12000,
+		WorstCasePackets:          9,
+		MaxTransmissionsPerTarget: 3,
+		PortAllocation: &passivediagnose.PortAllocationReport{
+			Behavior:          stunobserve.AllocationBehaviorSequentialUniform,
+			EvidenceScope:     stunobserve.AllocationEvidenceSingleTargetMultipleSockets,
+			Limitations:       []stunobserve.AllocationLimitation{stunobserve.AllocationLimitationSingleTimeWindow, stunobserve.AllocationLimitationSingleTarget, stunobserve.AllocationLimitationSmallSample},
+			SuccessfulSockets: 3,
+			TotalSockets:      3,
+			Deltas:            []int{10, 10},
+			Results: []passivediagnose.PortAllocationSocketReport{
+				{LocalAddress: "192.0.2.25:31001", Target: "203.0.113.10:3478", MappedAddress: "198.51.100.40:41000", PortBehavior: "translated", DurationMS: 5, Transmissions: 1, ObservationScope: "time_window_only"},
+				{LocalAddress: "192.0.2.25:31002", Target: "203.0.113.10:3478", MappedAddress: "198.51.100.40:41010", PortBehavior: "translated", DurationMS: 5, Transmissions: 1, ObservationScope: "time_window_only"},
+				{LocalAddress: "192.0.2.25:31003", Target: "203.0.113.10:3478", MappedAddress: "198.51.100.40:41020", PortBehavior: "translated", DurationMS: 5, Transmissions: 1, ObservationScope: "time_window_only"},
+			},
+		},
+		NetworkActivityStarted: true,
+	}
+}
+
 func TestDiagnoseMapBehaviorValidationRunsBeforePassiveCollection(t *testing.T) {
 	tests := []struct {
 		name string

@@ -59,9 +59,29 @@ func RedactForExport(source Report) Report {
 			mapping.Results = redactActiveSTUNResults(source.ActiveSTUN.MappingBehavior.Results)
 			active.MappingBehavior = &mapping
 		}
+		if source.ActiveSTUN.PortAllocation != nil {
+			allocation := *source.ActiveSTUN.PortAllocation
+			allocation.Limitations = append(make([]stunobserve.AllocationLimitation, 0, len(source.ActiveSTUN.PortAllocation.Limitations)), source.ActiveSTUN.PortAllocation.Limitations...)
+			allocation.Deltas = append(make([]int, 0, len(source.ActiveSTUN.PortAllocation.Deltas)), source.ActiveSTUN.PortAllocation.Deltas...)
+			allocation.Results = redactPortAllocationResults(source.ActiveSTUN.PortAllocation.Results)
+			active.PortAllocation = &allocation
+		}
 		report.ActiveSTUN = &active
 	}
 	return report
+}
+
+func redactPortAllocationResults(source []PortAllocationSocketReport) []PortAllocationSocketReport {
+	results := append([]PortAllocationSocketReport(nil), source...)
+	for index := range results {
+		results[index].LocalPrefix = redactedEndpointPrefix(results[index].LocalAddress)
+		results[index].LocalAddress = ""
+		results[index].TargetPrefix = redactedEndpointPrefix(results[index].Target)
+		results[index].Target = ""
+		results[index].MappedPrefix = redactedEndpointPrefix(results[index].MappedAddress)
+		results[index].MappedAddress = ""
+	}
+	return results
 }
 
 func redactActiveSTUNResults(source []ActiveSTUNTargetReport) []ActiveSTUNTargetReport {
