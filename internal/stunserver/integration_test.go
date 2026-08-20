@@ -126,6 +126,56 @@ func TestTwoResponseServersObserveThroughOneGovernedSocket(t *testing.T) {
 	}
 }
 
+func TestOneResponseServerObservesThroughMultipleGovernedSockets(t *testing.T) {
+	server := startResponseServer(t)
+	const sockets = stunobserve.DefaultAllocationSockets
+	cost, err := stunobserve.AllocationWorstCaseCost(sockets)
+	if err != nil {
+		t.Fatalf("allocation cost: %v", err)
+	}
+	factory, err := probeio.NewUDPFactory(probeio.UDPFactoryConfig{
+		LocalAddr: netip.MustParseAddrPort("127.0.0.1:0"),
+	})
+	if err != nil {
+		t.Fatalf("new UDP factory: %v", err)
+	}
+	client, err := stunobserve.NewAllocation(stunobserve.Config{
+		Lease:              newTestLease(cost),
+		Generation:         probeio.NewGeneration(1),
+		ExpectedGeneration: 1,
+		Factory:            factory,
+		BuildVersion:       "wink-stund-allocation-integration-test",
+	}, sockets)
+	if err != nil {
+		t.Fatalf("new allocation observer: %v", err)
+	}
+	result, err := client.Observe(context.Background(), server.ListenAddr())
+	if err != nil {
+		t.Fatalf("observe allocation: %v", err)
+	}
+	if len(result.Results) != sockets || result.Classification.SuccessfulSockets != sockets {
+		t.Fatalf("allocation result = %+v", result)
+	}
+	locals := make(map[netip.AddrPort]struct{}, sockets)
+	for _, socketResult := range result.Results {
+		if socketResult.Err != nil {
+			t.Fatalf("socket result = %+v", socketResult)
+		}
+		if _, exists := locals[socketResult.Local]; exists {
+			t.Fatalf("local endpoint was reused: %v", socketResult.Local)
+		}
+		locals[socketResult.Local] = struct{}{}
+		mapped, parseErr := netip.ParseAddrPort(socketResult.Observation.Details["mapped_address"])
+		if parseErr != nil || mapped != socketResult.Local {
+			t.Fatalf("mapped endpoint=%q local=%v err=%v", socketResult.Observation.Details["mapped_address"], socketResult.Local, parseErr)
+		}
+	}
+	stats := server.Snapshot()
+	if stats.Received != sockets || stats.Responded != sockets {
+		t.Fatalf("responder stats = %+v", stats)
+	}
+}
+
 func startResponseServer(t *testing.T) *stunserver.Server {
 	t.Helper()
 	server, err := stunserver.Open(stunserver.Config{
