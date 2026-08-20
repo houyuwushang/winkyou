@@ -81,9 +81,9 @@
 |---:|---|---|---|
 | 1 | LAN | 两个空 NAT chain 的直接 PacketConn | TODO：等待 v2 strategy adapter |
 | 2 | 双方全局 IPv6 | IPv6 `netip.AddrPort` + 空 NAT chain | TODO：等待 v2 strategy adapter |
-| 3 | EIM × EIM | 双 NAT、EIM、endpoint-independent filter | **参考场景已覆盖，连续 100 次成功** |
+| 3 | EIM × EIM | 双 NAT、EIM、endpoint-independent filter | **参考场景及受控同步 punch 均连续 100 次成功；后者还覆盖 address+port-dependent filter** |
 | 4 | EIM × EDM | 两侧分别选择 EIM/EDM | TODO：模型就绪，等待策略 |
-| 5 | 可预测 EDM × EDM | EDM + preserving/increment allocation | TODO：映射与递增单测已覆盖，等待策略 |
+| 5 | 可预测 EDM × EDM | EDM + preserving/increment allocation | 观察 endpoint 直接复用已验证有界失败；端口预测策略仍 TODO |
 | 6 | 随机 EDM × EDM，预期有界失败 | EDM + seeded random allocation | TODO：随机确定性单测已覆盖，等待失败分类策略 |
 | 7 | CGNAT | inner-to-outer 两层 NAT chain | 模型双向转换单测已覆盖；策略场景 TODO |
 | 8 | UDP 完全阻断 | 任一层 `UDPBlocked=true` | **参考场景已覆盖，连续 100 次稳定 `ErrUDPBlocked`** |
