@@ -391,3 +391,21 @@ sudo firewall-cmd --reload
 不能用于映射行为判断。只有显式 `--map-behavior` 才提供“单 socket、同地址多端口”的
 有限证据；它仍不是完整 RFC 4787 分类。区分 ADM 需要第二个服务器 IP 和新的部署/隐私/
 资源评审，不能从本双端口模板自行扩展。任何结果都不能自动恢复 birthday punch。
+
+## 12. 后续双端实验预告（仅占位）
+
+未来若要让两个客户端在同一短时窗口交换各自的 mapped endpoint，可把
+[`SIGNAL-EXCHANGE.md`](./SIGNAL-EXCHANGE.md) 定义的 `wink-signal` 作为一次性人工信箱：两端先分别
+完成已经授权的有界 STUN 观测，再用带外生成的 code 和不同 role 交换**仅属于操作者自己的观测结果**。
+交换完成后停止信令进程并撤销精确 TCP 入站规则。
+
+这只是依赖关系预告，不是执行步骤或 live-network 授权。进入双端真实打洞前仍须另行确定并复核：
+
+- 两端操作者、测试设备、网络、服务器、精确端口、UTC 时间窗和独立回滚人；
+- 配对加密实现已经通过其独立 ADR 门禁，而不是把 code 当作密钥；
+- 每端 socket、target、five-tuple、PPS、总包数和总时长预算；
+- 对端 endpoint 的内存生命周期、日志/报告脱敏规则和实验后删除方式；
+- 首次失败、连续写失败、取消超时、safety trip 或异常计数增长时的立即停止条件。
+
+在这些项目未被具名批准前，不得部署 `wink-signal` 到公网、不得开放 TCP 规则、不得把
+`connect_test` 从 `not_implemented` 改为可执行，也不得恢复 birthday punch 或 autonomous recovery。
