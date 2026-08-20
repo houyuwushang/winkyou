@@ -119,6 +119,12 @@ stderr 只输出 JSON 启动事件、每分钟聚合计数和停止事件。启�
 
 下面只说明进程约束，**不是公网部署授权**。地址来自 TEST-NET；真实服务器、TCP 端口、防火墙规则、
 执行人、时间窗和回滚人必须在一次单独的 live-network 评审中确定，并只保存在仓库外的受限记录中。
+授权后应先创建不可登录的专用用户，并安装已经记录 SHA-256 的评审构建：
+
+```bash
+sudo useradd --system --no-create-home --shell /usr/sbin/nologin winkyou-signal
+sudo install -o root -g root -m 0755 /tmp/wink-signal /usr/local/bin/wink-signal
+```
 
 `/etc/winkyou/wink-signal.env`：
 
