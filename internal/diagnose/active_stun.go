@@ -46,6 +46,7 @@ type ActiveSTUNReport struct {
 	MaxTransmissionsPerTarget int                      `json:"max_transmissions_per_target"`
 	Results                   []ActiveSTUNTargetReport `json:"results,omitempty"`
 	MappingBehavior           *MappingBehaviorReport   `json:"mapping_behavior,omitempty"`
+	PortAllocation            *PortAllocationReport    `json:"port_allocation,omitempty"`
 	NetworkActivityStarted    bool                     `json:"-"`
 }
 
@@ -58,6 +59,34 @@ type MappingBehaviorReport struct {
 	Limitations       []stunobserve.MappingLimitation  `json:"limitations"`
 	SuccessfulTargets int                              `json:"successful_targets"`
 	Results           []ActiveSTUNTargetReport         `json:"results"`
+}
+
+// PortAllocationReport is emitted only for --port-allocation. The enum,
+// signed deltas, limitations, and per-socket evidence remain one object so the
+// bounded sample cannot be mistaken for a permanent NAT property.
+type PortAllocationReport struct {
+	Behavior          stunobserve.AllocationBehavior      `json:"behavior"`
+	EvidenceScope     stunobserve.AllocationEvidenceScope `json:"evidence_scope"`
+	Limitations       []stunobserve.AllocationLimitation  `json:"limitations"`
+	SuccessfulSockets int                                 `json:"successful_sockets"`
+	TotalSockets      int                                 `json:"total_sockets"`
+	Deltas            []int                               `json:"deltas"`
+	Results           []PortAllocationSocketReport        `json:"results"`
+}
+
+type PortAllocationSocketReport struct {
+	LocalAddress     string `json:"local_address,omitempty"`
+	LocalPrefix      string `json:"local_prefix,omitempty"`
+	Target           string `json:"target,omitempty"`
+	TargetPrefix     string `json:"target_prefix,omitempty"`
+	MappedAddress    string `json:"mapped_address,omitempty"`
+	MappedPrefix     string `json:"mapped_prefix,omitempty"`
+	PortBehavior     string `json:"port_behavior"`
+	ErrorClass       string `json:"error_class,omitempty"`
+	Reason           string `json:"reason,omitempty"`
+	DurationMS       int64  `json:"duration_ms"`
+	Transmissions    int    `json:"transmissions"`
+	ObservationScope string `json:"observation_scope"`
 }
 
 type ActiveSTUNTargetReport struct {
@@ -74,9 +103,10 @@ type ActiveSTUNTargetReport struct {
 }
 
 type ActiveSTUNOptions struct {
-	Targets       []netip.AddrPort
-	GovernorScope governor.Scope
-	MapBehavior   bool
+	Targets               []netip.AddrPort
+	GovernorScope         governor.Scope
+	MapBehavior           bool
+	PortAllocationSockets int
 }
 
 // ActiveSTUNAuthority is the narrow authority surface used by the explicit
@@ -102,17 +132,23 @@ type ActiveSTUNMappingObserver interface {
 	Close() error
 }
 
+type ActiveSTUNAllocationObserver interface {
+	Observe(context.Context, netip.AddrPort) (stunobserve.AllocationObservation, error)
+	Close() error
+}
+
 // ActiveSTUNInspector has explicit dependencies so tests can prove preflight
 // rejection without constructing a socket and can exercise the real loopback
 // adapter without acquiring a host-wide namespace.
 type ActiveSTUNInspector struct {
-	Now             func() time.Time
-	AcquireMachine  func(string) (ActiveSTUNAuthority, error)
-	AcquireUser     func(string) (ActiveSTUNAuthority, error)
-	Factory         func(netip.AddrPort) (probeio.Factory, error)
-	Observer        func(stunobserve.Config) (ActiveSTUNObserver, error)
-	MappingObserver func(stunobserve.Config, int) (ActiveSTUNMappingObserver, error)
-	BuildVersion    string
+	Now                func() time.Time
+	AcquireMachine     func(string) (ActiveSTUNAuthority, error)
+	AcquireUser        func(string) (ActiveSTUNAuthority, error)
+	Factory            func(netip.AddrPort) (probeio.Factory, error)
+	Observer           func(stunobserve.Config) (ActiveSTUNObserver, error)
+	MappingObserver    func(stunobserve.Config, int) (ActiveSTUNMappingObserver, error)
+	AllocationObserver func(stunobserve.Config, int) (ActiveSTUNAllocationObserver, error)
+	BuildVersion       string
 }
 
 func SystemActiveSTUNInspector(buildVersion string) ActiveSTUNInspector {
@@ -130,6 +166,9 @@ func SystemActiveSTUNInspector(buildVersion string) ActiveSTUNInspector {
 		Observer: func(config stunobserve.Config) (ActiveSTUNObserver, error) { return stunobserve.New(config) },
 		MappingObserver: func(config stunobserve.Config, targetCount int) (ActiveSTUNMappingObserver, error) {
 			return stunobserve.NewMapping(config, targetCount)
+		},
+		AllocationObserver: func(config stunobserve.Config, socketCount int) (ActiveSTUNAllocationObserver, error) {
+			return stunobserve.NewAllocation(config, socketCount)
 		},
 		BuildVersion: buildVersion,
 	}
@@ -149,6 +188,9 @@ func (inspector ActiveSTUNInspector) Run(ctx context.Context, options ActiveSTUN
 	if err != nil {
 		return blockActiveSTUN(report, "invalid_request", "invalid_target_list", err)
 	}
+	if options.MapBehavior && options.PortAllocationSockets != 0 {
+		return blockActiveSTUN(report, "invalid_request", "active_stun_modes_conflict", fmt.Errorf("%w: --map-behavior and --port-allocation are mutually exclusive", ErrActiveSTUNInvalidRequest))
+	}
 	cost := stunobserve.WorstCaseCost()
 	attemptCount := len(targets)
 	if options.MapBehavior {
@@ -161,6 +203,17 @@ func (inspector ActiveSTUNInspector) Run(ctx context.Context, options ActiveSTUN
 		}
 		attemptCount = 1
 		report.MappingBehavior = emptyMappingBehaviorReport(targets)
+	}
+	if options.PortAllocationSockets != 0 {
+		if err := ValidatePortAllocationRequest(targets, options.PortAllocationSockets); err != nil {
+			return blockActiveSTUN(report, "invalid_request", "invalid_port_allocation_request", err)
+		}
+		cost, err = stunobserve.AllocationWorstCaseCost(options.PortAllocationSockets)
+		if err != nil {
+			return blockActiveSTUN(report, "invalid_request", "invalid_port_allocation_request", errors.Join(ErrActiveSTUNInvalidRequest, err))
+		}
+		attemptCount = 1
+		report.PortAllocation = emptyPortAllocationReport(targets[0], options.PortAllocationSockets)
 	}
 	report.WorstCaseDurationMS = (cost.Duration * time.Duration(attemptCount)).Milliseconds()
 	report.WorstCasePackets = cost.Resources.Packets * attemptCount
@@ -176,6 +229,11 @@ func (inspector ActiveSTUNInspector) Run(ctx context.Context, options ActiveSTUN
 	if inspector.MappingObserver == nil {
 		inspector.MappingObserver = func(config stunobserve.Config, targetCount int) (ActiveSTUNMappingObserver, error) {
 			return stunobserve.NewMapping(config, targetCount)
+		}
+	}
+	if inspector.AllocationObserver == nil {
+		inspector.AllocationObserver = func(config stunobserve.Config, socketCount int) (ActiveSTUNAllocationObserver, error) {
+			return stunobserve.NewAllocation(config, socketCount)
 		}
 	}
 	build := firstNonEmpty(strings.TrimSpace(inspector.BuildVersion), "unknown")
@@ -233,6 +291,9 @@ func (inspector ActiveSTUNInspector) Run(ctx context.Context, options ActiveSTUN
 
 	if options.MapBehavior {
 		return inspector.runMappingBehavior(runCtx, targets, cost, build, report, peer, authority, &closePeer, &closeAuthority)
+	}
+	if options.PortAllocationSockets != 0 {
+		return inspector.runPortAllocation(runCtx, targets[0], options.PortAllocationSockets, cost, build, report, peer, authority, &closePeer, &closeAuthority)
 	}
 
 	report.Results = make([]ActiveSTUNTargetReport, 0, len(targets))
@@ -294,6 +355,72 @@ func (inspector ActiveSTUNInspector) Run(ctx context.Context, options ActiveSTUN
 	}
 
 	return completeActiveSTUN(report, peer, authority, &closePeer, &closeAuthority)
+}
+
+func (inspector ActiveSTUNInspector) runPortAllocation(
+	ctx context.Context,
+	target netip.AddrPort,
+	socketCount int,
+	cost governor.AttemptCost,
+	build string,
+	report ActiveSTUNReport,
+	peer ActiveSTUNPeer,
+	authority ActiveSTUNAuthority,
+	closePeer, closeAuthority *bool,
+) (ActiveSTUNReport, error) {
+	if err := ctx.Err(); err != nil {
+		class, reason := activeSTUNContextFailure(err)
+		return finishActiveSTUNWithSystemError(report, peer, authority, closePeer, closeAuthority, class, reason, err)
+	}
+	lease, err := peer.AcquireDiagnosticAttempt(ctx, "diagnose-active-stun-port-allocation", cost)
+	if err != nil {
+		return finishActiveSTUNWithSystemError(report, peer, authority, closePeer, closeAuthority, "budget_rejected", "attempt_lease_unavailable", err)
+	}
+	if lease == nil {
+		return finishActiveSTUNWithSystemError(report, peer, authority, closePeer, closeAuthority, "authority_unavailable", "nil_attempt_lease", ErrActiveSTUNAuthority)
+	}
+	factory, err := inspector.Factory(target)
+	if err != nil {
+		_ = lease.Close()
+		return finishActiveSTUNWithSystemError(report, peer, authority, closePeer, closeAuthority, "io_error", "udp_factory_unavailable", err)
+	}
+	if factory == nil {
+		_ = lease.Close()
+		return finishActiveSTUNWithSystemError(report, peer, authority, closePeer, closeAuthority, "io_error", "nil_udp_factory", ErrActiveSTUNInvalidRequest)
+	}
+	observer, err := inspector.AllocationObserver(stunobserve.Config{
+		Lease:              lease,
+		Generation:         probeio.NewGeneration(1),
+		ExpectedGeneration: 1,
+		Factory:            factory,
+		BuildVersion:       build,
+		AllowNonLoopback:   true,
+	}, socketCount)
+	if err != nil {
+		_ = lease.Close()
+		return finishActiveSTUNWithSystemError(report, peer, authority, closePeer, closeAuthority, "io_error", "allocation_observer_unavailable", err)
+	}
+	if observer == nil {
+		_ = lease.Close()
+		return finishActiveSTUNWithSystemError(report, peer, authority, closePeer, closeAuthority, "io_error", "nil_allocation_observer", ErrActiveSTUNInvalidRequest)
+	}
+
+	report.NetworkActivityStarted = true
+	allocation, observeErr := observer.Observe(ctx, target)
+	report.PortAllocation = portAllocationReport(allocation, target, socketCount)
+	closeErr := observer.Close()
+	if observeErr != nil || closeErr != nil {
+		class := stunobserve.ErrorClassIO
+		reason := "port_allocation_observation_failed"
+		if closeErr != nil {
+			reason = "probe_cleanup_failed"
+		}
+		if err := ctx.Err(); err != nil {
+			class, reason = activeSTUNContextFailure(err)
+		}
+		return finishActiveSTUNWithSystemError(report, peer, authority, closePeer, closeAuthority, class, reason, errors.Join(observeErr, closeErr))
+	}
+	return completeActiveSTUN(report, peer, authority, closePeer, closeAuthority)
 }
 
 func (inspector ActiveSTUNInspector) runMappingBehavior(
@@ -373,13 +500,26 @@ func completeActiveSTUN(report ActiveSTUNReport, peer ActiveSTUNPeer, authority 
 		return report, fmt.Errorf("active STUN cleanup: %w", err)
 	}
 	report.State = ActiveSTUNStateCompleted
-	for _, result := range activeSTUNReportResults(report) {
-		if result.ErrorClass != "" {
-			report.State = ActiveSTUNStateCompletedWithErrs
-			break
-		}
+	if activeSTUNReportHasErrors(report) {
+		report.State = ActiveSTUNStateCompletedWithErrs
 	}
 	return report, nil
+}
+
+func activeSTUNReportHasErrors(report ActiveSTUNReport) bool {
+	for _, result := range activeSTUNReportResults(report) {
+		if result.ErrorClass != "" {
+			return true
+		}
+	}
+	if report.PortAllocation != nil {
+		for _, result := range report.PortAllocation.Results {
+			if result.ErrorClass != "" {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func activeSTUNReportResults(report ActiveSTUNReport) []ActiveSTUNTargetReport {
@@ -401,6 +541,18 @@ func ValidateMappingBehaviorTargets(targets []netip.AddrPort) error {
 		if target.Addr().Is4() != ipv4 {
 			return fmt.Errorf("%w: --map-behavior targets must use one address family", ErrActiveSTUNInvalidRequest)
 		}
+	}
+	return nil
+}
+
+// ValidatePortAllocationRequest rejects the mode before authority acquisition
+// or network I/O. The mode has one target and a bounded socket count.
+func ValidatePortAllocationRequest(targets []netip.AddrPort, socketCount int) error {
+	if len(targets) != 1 {
+		return fmt.Errorf("%w: --port-allocation requires exactly one --active-stun target", ErrActiveSTUNInvalidRequest)
+	}
+	if socketCount < stunobserve.MinAllocationSockets || socketCount > stunobserve.MaxAllocationSockets {
+		return fmt.Errorf("%w: --port-allocation socket count must be between %d and %d", ErrActiveSTUNInvalidRequest, stunobserve.MinAllocationSockets, stunobserve.MaxAllocationSockets)
 	}
 	return nil
 }
@@ -442,6 +594,41 @@ func mappingBehaviorReport(mapping stunobserve.MappingObservation) *MappingBehav
 			activeSTUNObservationDuration(result.Observation),
 			result.Err,
 		))
+	}
+	return report
+}
+
+func emptyPortAllocationReport(target netip.AddrPort, socketCount int) *PortAllocationReport {
+	return portAllocationReport(stunobserve.AllocationObservation{}, target, socketCount)
+}
+
+func portAllocationReport(allocation stunobserve.AllocationObservation, target netip.AddrPort, socketCount int) *PortAllocationReport {
+	classification := allocation.Classification
+	if classification.TotalSockets == 0 {
+		classification = stunobserve.ClassifyAllocation(make([]stunobserve.AllocationSample, socketCount))
+	}
+	report := &PortAllocationReport{
+		Behavior:          classification.Behavior,
+		EvidenceScope:     classification.EvidenceScope,
+		Limitations:       append(make([]stunobserve.AllocationLimitation, 0, len(classification.Limitations)), classification.Limitations...),
+		SuccessfulSockets: classification.SuccessfulSockets,
+		TotalSockets:      classification.TotalSockets,
+		Deltas:            append(make([]int, 0, len(classification.Deltas)), classification.Deltas...),
+		Results:           make([]PortAllocationSocketReport, 0, len(allocation.Results)),
+	}
+	for _, socketResult := range allocation.Results {
+		base := activeSTUNTargetResult(target, socketResult.Observation, activeSTUNObservationDuration(socketResult.Observation), socketResult.Err)
+		report.Results = append(report.Results, PortAllocationSocketReport{
+			LocalAddress:     socketResult.Local.String(),
+			Target:           base.Target,
+			MappedAddress:    base.MappedAddress,
+			PortBehavior:     base.PortBehavior,
+			ErrorClass:       base.ErrorClass,
+			Reason:           base.Reason,
+			DurationMS:       base.DurationMS,
+			Transmissions:    base.Transmissions,
+			ObservationScope: base.ObservationScope,
+		})
 	}
 	return report
 }

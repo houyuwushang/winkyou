@@ -187,3 +187,52 @@ func TestRedactForExportKeepsMappingBehaviorAndRedactsNestedEvidence(t *testing.
 		}
 	}
 }
+
+func TestRedactForExportKeepsAllocationDeltasAndClearsRawPorts(t *testing.T) {
+	source := Report{ActiveSTUN: &ActiveSTUNReport{
+		State:            ActiveSTUNStateCompleted,
+		ObservationScope: "time_window_only",
+		PortAllocation: &PortAllocationReport{
+			Behavior:          stunobserve.AllocationBehaviorSequentialUniform,
+			EvidenceScope:     stunobserve.AllocationEvidenceSingleTargetMultipleSockets,
+			Limitations:       []stunobserve.AllocationLimitation{stunobserve.AllocationLimitationSingleTimeWindow, stunobserve.AllocationLimitationSingleTarget},
+			SuccessfulSockets: 3,
+			TotalSockets:      3,
+			Deltas:            []int{10, 10},
+			Results: []PortAllocationSocketReport{
+				{LocalAddress: "192.0.2.25:31001", Target: "203.0.113.10:3478", MappedAddress: "198.51.100.123:42000", PortBehavior: "translated", ObservationScope: "time_window_only"},
+				{LocalAddress: "192.0.2.25:31002", Target: "203.0.113.10:3478", MappedAddress: "198.51.100.123:42010", PortBehavior: "translated", ObservationScope: "time_window_only"},
+				{LocalAddress: "192.0.2.25:31003", Target: "203.0.113.10:3478", MappedAddress: "198.51.100.123:42020", PortBehavior: "translated", ObservationScope: "time_window_only"},
+			},
+		},
+	}}
+
+	redacted := RedactForExport(source)
+	allocation := redacted.ActiveSTUN.PortAllocation
+	if allocation == nil || allocation.Behavior != stunobserve.AllocationBehaviorSequentialUniform || allocation.EvidenceScope != stunobserve.AllocationEvidenceSingleTargetMultipleSockets {
+		t.Fatalf("allocation classification = %+v", allocation)
+	}
+	if len(allocation.Deltas) != 2 || allocation.Deltas[0] != 10 || allocation.Deltas[1] != 10 {
+		t.Fatalf("allocation deltas = %v", allocation.Deltas)
+	}
+	for _, result := range allocation.Results {
+		if result.LocalAddress != "" || result.Target != "" || result.MappedAddress != "" || result.LocalPrefix != "192.0.2.0/24" || result.TargetPrefix != "203.0.113.0/24" || result.MappedPrefix != "198.51.100.0/24" {
+			t.Fatalf("allocation redaction = %+v", result)
+		}
+	}
+	allocation.Deltas[0] = 99
+	allocation.Limitations[0] = "changed"
+	allocation.Results[0].Reason = "changed"
+	if source.ActiveSTUN.PortAllocation.Deltas[0] != 10 || source.ActiveSTUN.PortAllocation.Limitations[0] == "changed" || source.ActiveSTUN.PortAllocation.Results[0].Reason == "changed" {
+		t.Fatal("redacted allocation report retained source slice ownership")
+	}
+	encoded, err := json.Marshal(redacted)
+	if err != nil {
+		t.Fatalf("marshal redacted allocation report: %v", err)
+	}
+	for _, forbidden := range []string{"192.0.2.25", "203.0.113.10", "198.51.100.123", "31001", "31002", "31003", "42000", "42010", "42020"} {
+		if strings.Contains(string(encoded), forbidden) {
+			t.Fatalf("redacted allocation report contains %q: %s", forbidden, encoded)
+		}
+	}
+}

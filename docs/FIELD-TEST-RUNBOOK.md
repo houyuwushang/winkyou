@@ -292,7 +292,47 @@ governed socket，并按 3478、3479 顺序串行观测。三个 behavior 的证
 目标没有共享同一本地 endpoint、出现 safety trip，或任一实例计数超过人工规模，应立即
 停止两个 service、撤销两个 UDP 入站规则，并回到 loopback/netns 复现。
 
-## 8. 脱敏记录模板
+## 8. 单目标端口分配画像（独立授权）
+
+本节与第 7 节回答不同问题：第 7 节用**一个 socket 对两个目标端口**比较映射行为；本节用
+**多个同时保持打开的 socket 对同一个目标端口**观察 NAT 分配的 mapped-port 序列。完成
+基础单目标可达性并取得本节的具名授权后，只需保持一个 `wink-stund` 实例和一个精确 UDP
+入站规则，不得为画像增加端口范围。
+
+先用最小 K=3 做一次人工运行：
+
+```powershell
+wink diagnose --port-allocation=3 `
+  --active-stun=203.0.113.10:3478 `
+  --json
+```
+
+机器级 scope 的资源状态正常时，可在另一个间隔至少 10 秒的窗口使用默认 K=5：
+
+```powershell
+wink diagnose --port-allocation `
+  --active-stun=203.0.113.10:3478 `
+  --json
+```
+
+当前 user-acknowledged 编译期硬上限只能容纳 K=3；K=4 至 8 会在开 socket 前因 socket 或
+总时长预算被拒绝，不能通过改配置抬高。每条命令内部先打开全部 K 个 governed socket，
+再严格串行交换，并在整轮结束后统一关闭。任何 socket 失败都保留为单独结果；不得为了
+凑足成功数自动追加 socket 或循环重试。
+
+结果必须同时阅读 `behavior`、`deltas` 和三个 limitation：
+
+- `sequential_uniform`：本窗口的环形增量相同，包括一次 `65535 -> 1` 回绕；
+- `monotonic_nonuniform`：严格前进但增量不完全相同；
+- `apparently_random`：存在反向/重复或增量离散度超过保守阈值；
+- `insufficient_data`：成功数少于 3；
+- `single_time_window`、`single_target`、`small_sample_not_permanent_nat_label` 永远保留。
+
+同一网络最多手工执行 3 轮，相邻至少 10 秒。原始 JSON 中 local/mapped endpoint 与端口只
+能留在仓库外私有记录。公开摘要可以保留有符号 `deltas` 和 behavior，但必须清除所有原始
+local/mapped port，并保留 limitation；这些小样本不能直接转化为 birthday-punch 预测窗口。
+
+## 9. 脱敏记录模板
 
 当前 CLI 主动模式的 `--json` 是本地原始证据，不是可公开报告；stdio
 `export_redacted_report` 仍采集被动报告，不能自动携带这次 CLI-only active 结果。除非以后
@@ -322,7 +362,7 @@ governed socket，并按 3478、3479 顺序串行观测。三个 behavior 的证
 允许 `/48`；不得记录 mapped port 数值，只记录 `preserved`、`translated` 或 `unknown`。
 原始 JSON 在脱敏核对完成后按维护者的数据保留政策处理，绝不移动进 Git 工作树。
 
-## 9. 故障排查
+## 10. 故障排查
 
 | 客户端结果/现象 | 先检查 | 可能原因 | 下一步 |
 |---|---|---|---|
@@ -335,8 +375,10 @@ governed socket，并按 3478、3479 顺序串行观测。三个 behavior 的证
 | 家庭成功、热点超时 | 重复 3 次并确认网络切换 | 蜂窝 CGNAT/运营商策略可能限制 UDP | 记录为有界失败；不能直接命名 NAT 类型 |
 | mapping 为 `inconclusive` | 两实例状态、逐目标结果、同一本地 endpoint | 一个目标超时/协议错误，或目标没有形成同地址多端口证据 | 保留部分结果，不增加重试、不自动切换打洞策略 |
 | 缺少 `address_comparison_unavailable` | 两个目标是否确为同一服务器 IP | 客户端/报告版本不匹配或目标配置错误 | 停止公开记录，回到同 SHA 的 loopback 集成测试 |
+| allocation 为 `insufficient_data` | 逐 socket 错误、成功数、server aggregate | 某些 Binding exchange 超时或协议失败 | 保留失败，不追加 socket、不提高 K 或重传上限 |
+| allocation 预算拒绝 | K、governor scope、fresh-idle snapshot | user-acknowledged 上限不足或 authority 已被占用 | machine scope 就绪后重开新窗口，不能降低门禁或抬高硬上限 |
 
-## 10. 结束与泄漏检查
+## 11. 结束与泄漏检查
 
 实验窗口结束或触发 kill switch 时：
 
@@ -376,13 +418,14 @@ sudo firewall-cmd --reload
 若使用 nohup，只能读取 `/tmp/wink-stund.pid`、核验该 PID 的可执行文件确为
 `/usr/local/bin/wink-stund` 后发送 `TERM`。不得使用 `pkill -f wink`。
 
-## 11. 完成判据与已知限制
+## 12. 完成判据与已知限制
 
 一次现场窗口只有同时满足以下条件才算记录完成：
 
 - 家庭 Wi-Fi 与手机热点各有 3 个有界结果，成功和失败都可以作为证据；
 - 基础单目标命令最多发送 3 次；双端口 mapping 命令每目标最多 3 次、总计最多 6 次；
-  服务端未出现超编译上限的响应行为；
+  allocation 命令最多 K 个 socket、每 socket 3 次、总计最多 `3K` 次；服务端未出现超
+  编译上限的响应行为；
 - 结束后无 `wink-stund` 进程、UDP listener、残留安全组/防火墙规则；
 - 公开材料通过第二人隐私检查，只包含前缀和分类；
 - 没有触发或恢复任何 autonomous recovery 路径。
@@ -391,6 +434,10 @@ sudo firewall-cmd --reload
 不能用于映射行为判断。只有显式 `--map-behavior` 才提供“单 socket、同地址多端口”的
 有限证据；它仍不是完整 RFC 4787 分类。区分 ADM 需要第二个服务器 IP 和新的部署/隐私/
 资源评审，不能从本双端口模板自行扩展。任何结果都不能自动恢复 birthday punch。
+
+显式 `--port-allocation` 只提供“同一目标、同一时间窗、K 个同时存活 socket”的端口序列。
+即使多轮都为 `sequential_uniform`，也不能证明下一次分配、另一个目标或另一个接入网络仍
+使用同一步长，更不能绕过单独的打洞设计评审与 live-network 授权。
 
 ## 12. 后续双端实验预告（仅占位）
 

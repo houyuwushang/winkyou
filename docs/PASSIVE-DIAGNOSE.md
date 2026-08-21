@@ -99,13 +99,26 @@ mapping 模式不接受单个目标，也不在同一个 socket 中混用 IPv4 �
 仍须是去重后的字面量 unicast `IP:port`，并在被动采集、authority 获取和网络 I/O 前完成
 CLI 校验。地址仍是 TEST-NET 占位符，不能直接当作可用服务运行。
 
+端口分配画像使用相反的受控形状：恰好一个目标、3 至 8 个同时保持打开的 governed
+socket，并按 socket 顺序串行交换。flag 没有显式值时 K 默认为 5：
+
+```powershell
+wink diagnose --port-allocation=3 --active-stun=203.0.113.10:3478 --json
+wink diagnose --port-allocation --active-stun=203.0.113.10:3478 --json
+```
+
+`--port-allocation` 与 `--map-behavior` 互斥。所有 socket 都保持打开到整轮结束，避免关闭
+前一个 socket 后 NAT 复用端口污染序列；任一 exchange 失败仍保留并继续后续 socket。
+
 主动路径有三项必须同时成立：
 
 - CLI 存在显式 `--active-stun`，且所有目标在任何网络 I/O 前完成字面量和数量校验；
 - 取得机器级 governor lock，或用户同时显式选择 `--governor-scope=user-acknowledged`；
 - 默认模式在开 socket 前验证 `N × WorstCaseCost`，随后每个目标各自取得 AttemptLease，
   经 `probeio` 与 `stunobserve.Client` 串行执行；mapping 模式改为一次验证完整的
-  `MappingWorstCaseCost(N)`，只取得一个 AttemptLease 并调用 `MappingClient`。
+  `MappingWorstCaseCost(N)`，只取得一个 AttemptLease 并调用 `MappingClient`；端口分配
+  模式验证 `AllocationWorstCaseCost(K)`，同样只取得一个 AttemptLease 并调用
+  `AllocationClient`。
 
 每个目标最坏占用 1 socket、1 target、1 five-tuple、2 packets/s、最多 3 个包和 4 秒；
 三个目标的整次命令预检为 3 sockets、3 targets、3 five-tuples、6 packets/s、9 个包和
@@ -115,6 +128,10 @@ safety trip 或总预算问题都会 fail-closed；预算拒绝发生在 socket 
 mapping 模式的 2/3 目标成本分别为：1 socket、2/3 targets、2/3 five-tuples、3/4
 packets/s、6/9 个包和 8/12 秒。`N+1` PPS 是滑动一秒窗口的最坏预留：某目标可能在
 第二次发送后立即成功，余下目标随后各完成第一次发送；目标本身仍严格串行。
+
+allocation 模式声明 K sockets、1 unique target、K five-tuples、`K+1` packets/s、最多
+`3K` 个包和 `4K` 秒。机器 scope 支持 K=3..8；当前 user-acknowledged 硬上限只能容纳
+K=3，其他 K 在开 socket 前 fail-closed，不能通过运行时配置抬高。
 
 启用时 stderr 会先明确提示：目标会观察到本机源 IP 与观测时间信息。报告中的每条结果
 只说明该次 `time_window_only` 时间窗，包含映射地址或稳定错误类、耗时、发送次数和端口
@@ -128,6 +145,12 @@ mapping JSON 位于 `active_stun.mapping_behavior`，把 `behavior`、`evidence_
 RFC 4787 分类。该字段不会进入 stdio v1；stdio 对 `map_behavior` 参数继续返回
 `invalid_params`。
 
+allocation JSON 位于 `active_stun.port_allocation`，把 `behavior`、`evidence_scope`、
+三个强制 limitation、成功/总 socket 数、有符号相邻 `deltas` 和逐 socket 结果放在一个
+对象中。四个 behavior 是 `sequential_uniform`、`monotonic_nonuniform`、
+`apparently_random`、`insufficient_data`；它们只描述单目标、单时间窗、最多 8 个样本，
+不会自动改变连接策略。stdio v1 对 `port_allocation` 参数同样返回 `invalid_params`。
+
 ## 隐私状态
 
 schema 为 `winkyou.diagnose/v1alpha1`，本地输出声明 `redaction: partial`。原始接口地址、
@@ -136,3 +159,5 @@ MAC、网关地址和配置值仍被省略；显式主动模式的本地 `--json
 IPv4 只保留 `/24`、IPv6 只保留 `/48`，并保留 `preserved` / `translated` 端口行为分类，
 不保留完整映射地址或映射端口。mapping report 的 behavior、evidence scope 与 limitation
 原样保留，嵌套的逐目标 endpoint 继续应用相同 `/24`、`/48` 规则。
+allocation strict redaction 对 local、target、mapped endpoint 采用同一前缀规则并清除所有
+原始端口；classification、limitations 与端口差值序列保留，且返回值拥有独立切片。
