@@ -31,6 +31,7 @@ When documents disagree, treat `CONNECTIVITY-SOLVER-BASELINE.md` as the source o
 - Phase 1a default no-packet report and explicit bounded STUN mode: [`PASSIVE-DIAGNOSE.md`](./PASSIVE-DIAGNOSE.md)
 - Phase 1a local JSON-RPC v1 stdio API: [`STDIO-API-V1.md`](./STDIO-API-V1.md)
 - Phase 1a pure-memory NAT simulation matrix and current coverage: [`NAT-SIMULATION-MATRIX.md`](./NAT-SIMULATION-MATRIX.md)
+- Phase 1a governed synchronized direct-punch simulation boundary: [`DIRECT-PUNCH-SIMULATION.md`](./DIRECT-PUNCH-SIMULATION.md)
 - Phase 1a loopback-only STUN Binding observation slice: [`STUN-OBSERVATION-CLIENT.md`](./STUN-OBSERVATION-CLIENT.md)
 - Experimental response-only STUN Binding responder: [`STUN-RESPONDER.md`](./STUN-RESPONDER.md)
 - Test-only in-memory observation exchange protocol and deployment boundary: [`SIGNAL-EXCHANGE.md`](./SIGNAL-EXCHANGE.md)
