@@ -114,6 +114,14 @@ The protocol is intended to reject:
 It does not claim anonymity, resistance to endpoint compromise, or a global
 clock source.
 
+The durable implementation also follows
+[`PAIRING-RESTART-SAFETY-CONTRACT.md`](./PAIRING-RESTART-SAFETY-CONTRACT.md).
+That contract covers concurrent processes, process and operating-system
+restart, and torn writes on a supported local filesystem. It explicitly does
+not claim resistance to administrator/root rollback of the complete safety
+namespace, VM snapshot rollback, or storage that falsely acknowledges durable
+writes; those cases require a TPM-backed or external monotonic anchor.
+
 ## 4. Pairing artifacts
 
 ### 4.1 Encodings and entropy
@@ -365,18 +373,26 @@ acceptable, the implementation gate stays closed. WinkYou MUST NOT silently
 switch candidate families or use a bare X25519+hash construction, custom MAC,
 custom handshake, unauthenticated TLS, or a TLS source fork.
 
-## 6. Single-use and replay ledger
+## 6. Single-use replay and persistent admission ledger
 
-Each endpoint maintains a replay ledger in its already selected canonical
-machine or per-user safety namespace. The namespace is selected locally before
-bundle import and MUST equal that endpoint's scope in `PairingContext`.
+The normative durable format, restart behavior, admission windows, circuit,
+opening rules, and failure states are frozen in
+[`PAIRING-RESTART-SAFETY-CONTRACT.md`](./PAIRING-RESTART-SAFETY-CONTRACT.md).
+The first durable implementation exists only in the canonical machine safety
+namespace. A local `user_acknowledged` scope MUST NOT authorize a real pairing
+carrier because the Linux user namespace does not survive operating-system
+restart.
 
 The pre-handshake scope admission in section 9 runs immediately before sending
 or accepting the first secure-channel handshake byte. As part of that admission
-each endpoint MUST atomically transition its `credential_id` from absent to
-burned. There is no rollback to fresh. A scope mismatch, failed dial, rejected
-handshake, cancellation, timeout, process crash, or malformed peer burns the
-credential. Retrying needs a new OFFER and a new secret.
+each endpoint MUST atomically append one durable `BURN_AND_ADMIT` transition for
+its `credential_id`. This single transition both burns the credential and
+reserves the attempt's complete declared worst-case envelope. There is no
+rollback to fresh and no budget refund. A scope mismatch, failed dial, rejected
+handshake, cancellation, timeout, process crash, operating-system restart, or
+malformed peer burns the credential. Retrying needs an explicit new OFFER and
+new secret, and the new credential remains subject to the same persistent
+machine windows.
 
 The burned record contains only:
 
@@ -384,13 +400,22 @@ The burned record contains only:
 - `attempt_id`;
 - the context digest;
 - local scope;
-- burn time and expiry; and
-- terminal reason.
+- burn/admission time and expiry;
+- the reserved worst-case envelope; and
+- an append-only terminal reason when available.
 
-It contains no secret, traffic key, endpoint, or payload. The record MUST
-survive process restart at least through `expires_at` plus the maximum local
-clock-skew policy. Cleanup is bounded maintenance under the same namespace
-owner; missing, corrupt, untrusted, or unavailable ledger state fails closed.
+It contains no secret, traffic key, endpoint, or payload. The fixed journal
+MUST survive process and operating-system restart. Phase 1a performs no GC,
+rewrite, or compaction. Missing, corrupt, torn, untrusted, unavailable, full,
+or unsynchronizable state fails closed. `ledger_not_initialized` is distinct
+from `ledger_indeterminate`, but both permit zero active emission.
+
+Only the process holding the existing machine governor OS owner lock may append
+the journal; there is no second ledger lock. Explicit setup pre-creates the
+fixed file with create-exclusive semantics. The active path opens an existing
+validated file without create and never repairs or replaces it. An explicit
+rebuild cold-starts with the 1-hour, 24-hour, and packet windows fully consumed,
+as specified by the restart-safety contract.
 
 The simulated implementation uses an injected in-memory ledger and fake clock.
 It MUST NOT be described as restart-safe evidence.
@@ -465,6 +490,13 @@ Compiled version-1 limits are:
 | Receive rate | 4 messages/second sustained, burst 4 |
 | Buffered inbound frames | 1 |
 | Buffered outbound frames | 1 |
+| Machine admission interval | at least 60 seconds |
+| Machine admissions per rolling hour | 4 |
+| Machine admissions per rolling 24 hours | 12 |
+| Machine reserved packets per rolling 24 hours | 2048 |
+| Durable journal capacity | 4 MiB and 8192 records, first reached wins |
+| Consecutive terminal failures | 3, then persistent circuit-open |
+| Circuit minimum lock horizon | 6 hours plus explicit safety reset |
 
 Configuration may lower, never raise, these values. The shorter local governor
 deadline always wins. The channel owns no retry loop, ticker that outlives the
@@ -495,11 +527,15 @@ handshake byte:
 2. classify whether the capability is live, its scope still exactly equals this
    endpoint's scope in `PairingContext`, and the canonical namespace owner or
    lock still authorizes that scope, without yet performing carrier I/O;
-3. under that same authority, atomically burn the credential in the originally
-   bound ledger namespace regardless of the classification; and
-4. only if the pre-burn classification matched, recheck the local scope after
-   the burn and then begin the handshake without an intervening wait, dial, DNS
-   lookup, or other carrier I/O.
+3. under that same authority and while holding its existing machine OS owner
+   lock, atomically append and synchronize `BURN_AND_ADMIT` in the fixed journal
+   regardless of the classification;
+4. reserve the complete worst-case envelope against the 60-second, 1-hour,
+   24-hour, and packet windows without refund on later failure; and
+5. only if the pre-burn classification matched, recheck the local scope, owner,
+   lease, safety trip, journal state, and unforgeable admission receipt, then
+   begin the handshake without an intervening wait, dial, DNS lookup, or other
+   carrier I/O.
 
 If either check differs, the capability is cancelled, the namespace owner
 cannot be proven, or a `machine` namespace becomes ready while a
@@ -560,6 +596,14 @@ The implementation gate includes deterministic tests for:
 - atomic burn, reuse after success/failure/cancel/crash simulation, corrupt
   ledger, namespace mismatch, and local scope/owner changes between bundle
   import and the first handshake byte;
+- 32 to 100 process competition for one credential, 1000 restart attempts with
+  one bundle, and fresh-credential restarts bounded by the persistent admission
+  windows and packet reservation;
+- process-external emission witnessing at every crash boundary and mutation
+  detection proving that emission-before-burn is rejected by the suite;
+- missing, torn, modified, sequence-invalid, capacity-exhausted, rollback-
+  affected, and explicitly rebuilt journals, including the fully consumed
+  rebuild baseline;
 - wrong role, role reflection, wrong participant, repeated/skipped sequence,
   invalid transition, message flood, and oversized frame/payload;
 - a complete valid exchange with no artificial inter-message delay, plus flood
@@ -591,8 +635,9 @@ semantics being independently accepted and the stack merging bottom-up:
 2. a follow-up ADR selects one exact candidate A or candidate B profile and a
    maintained, independently reviewed implementation satisfying section 5;
 3. cross-language positive and negative test vectors are checked in;
-4. the durable replay-ledger format, locking, ACL/ownership checks, corruption
-   behavior, and bounded cleanup are reviewed for Windows and Linux;
+4. the durable burn/admission journal, existing-OS-lock single-writer rule,
+   ACL/ownership checks, corruption and rebuild behavior, fixed no-GC capacity,
+   persistent windows, and circuit are reviewed for Windows and Linux;
 5. TCP/DNS carrier costs and cancellation drains are integrated with the
    governor without giving this package a raw socket;
 6. secret-redaction tests and fuzz/property tests pass; and
