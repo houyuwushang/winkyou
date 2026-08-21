@@ -39,7 +39,7 @@ When documents disagree, treat `CONNECTIVITY-SOLVER-BASELINE.md` as the source o
 - First authorized real-network STUN observation procedure: [`FIELD-TEST-RUNBOOK.md`](./FIELD-TEST-RUNBOOK.md)
 - Linux root-only namespace NAT laboratory: [`NAT-LAB.md`](./NAT-LAB.md)
 - Draft Phase 1a one-time test pairing protocol and security gates: [`TEST-ONLY-PAIRING-MINI-SPEC.md`](./TEST-ONLY-PAIRING-MINI-SPEC.md)
-- Draft Phase 1a test-pairing cryptographic candidate evaluation (protocol selected; implementation evidence awaiting review): [`adr/ADR-TEST-PAIRING-CRYPTO-CANDIDATE.md`](./adr/ADR-TEST-PAIRING-CRYPTO-CANDIDATE.md)
+- Accepted Phase 1a test-pairing cryptographic candidate decision (protocol and simulation-only implementation; real-network authority separately gated): [`adr/ADR-TEST-PAIRING-CRYPTO-CANDIDATE.md`](./adr/ADR-TEST-PAIRING-CRYPTO-CANDIDATE.md)
 - Self-host quickstart: [`SELFHOST-QUICKSTART.md`](./SELFHOST-QUICKSTART.md)
 - Experimental `meshnode` restart recovery and recovery-card operation: [`SELF-BOOTSTRAP-RECOVERY.md`](./SELF-BOOTSTRAP-RECOVERY.md)
 - Long-running legacy/autonomous client configuration, status, and graceful-down workflow: [`LONG-RUNNING-CLIENT.md`](./LONG-RUNNING-CLIENT.md)

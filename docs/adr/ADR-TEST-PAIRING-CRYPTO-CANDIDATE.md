@@ -1,18 +1,19 @@
 # ADR: test-only pairing cryptographic candidate
 
-- Status: **Draft; protocol-level candidate selected, implementation decision and security review remain open**
+- Status: **Accepted (2026-08-21): protocol and simulation-only in-repository implementation approved; real-network and `connect_test` authority remain separately gated**
 - Evidence snapshot: 2026-08-13
 - Decision owner: WinkYou maintainers, with independent security review
 - Selected candidate: **Candidate B at protocol level only (2026-08-14)**
-- Selected implementation: **unresolved**
-- Implementation authorization: **none**
+- Selected implementation: **in-repository `internal/v2/noisecore` (PR #59), from-spec, zero new module dependencies; `flynn/noise` not adopted**
+- Implementation authorization: **simulation-only; no socket, signaling, runtime, or `connect_test` authority**
 
 This ADR evaluates the two candidate families required by
 [`TEST-ONLY-PAIRING-MINI-SPEC.md`](../TEST-ONLY-PAIRING-MINI-SPEC.md), sections
 5 and 12. It does not approve a dependency, create a valid real-channel
-`secure_channel_profile`, or authorize cryptographic or network code. Until a
-maintainer records a decision and the independent review gates close, the only
-permitted pairing implementation remains the secret-free, in-memory simulator.
+`secure_channel_profile`, or authorize network code. With the 2026-08-21
+acceptance, the permitted pairing implementations are the secret-free
+in-memory simulator and the simulation-only `internal/v2/noisecore` core;
+real-network use remains ungranted.
 
 ## 1. Context and decision boundary
 
@@ -348,9 +349,9 @@ real test channel. Selection would require at least:
 If those conditions cannot be met, this library must be rejected rather than
 vendored or silently forked.
 
-### 5.5 In-repository implementation evidence (awaiting review)
+### 5.5 In-repository implementation evidence (reviewed and accepted 2026-08-21)
 
-Implementation evidence submitted, awaiting review. A simulation-only,
+Implementation evidence submitted and reviewed. A simulation-only,
 from-spec implementation of the fixed
 `Noise_NNpsk0_25519_ChaChaPoly_SHA256` profile now exists at
 [`internal/v2/noisecore`](../../internal/v2/noisecore), with its scope and
@@ -379,13 +380,14 @@ executes before the first `e` token, the first empty handshake payload already
 has an authentication tag. A one-bit PSK mismatch is therefore rejected by the
 responder while reading message one, rather than waiting for message two.
 
-This code is review evidence, not a selected implementation. In particular, a
-new in-repository implementation has no prior independent audit and does not by
-itself satisfy section 2 criterion 5 or the decision fields in section 9. The
-ADR remains Draft, `connect_test` remains `not_implemented`, and no real-channel
-or network authorization follows from this evidence.
+This code was submitted as review evidence. Following the 2026-08-21 expert
+review of PR #59/#60 (specification line-by-line verification, independent
+upstream vector re-verification, negative matrix, race and fuzz batteries),
+the maintainer accepted it as the selected implementation in section 9.
+`connect_test` remains `not_implemented`, and no real-channel or network
+authorization follows from this acceptance.
 
-### 5.6 Punch-simulation integration evidence (awaiting review)
+### 5.6 Punch-simulation integration evidence (reviewed and accepted 2026-08-21)
 
 Additional implementation evidence connects completed `noisecore` sessions to
 the existing pure-memory punch simulation behind an explicit opt-in. The
@@ -538,26 +540,44 @@ selection only; every implementation-facing field stays TBD and keeps
   revision of this record.
 - Selected `secure_channel_profile`: **`noise-nnpsk0-25519-chachapoly-sha256/1`**
   (`Noise_NNpsk0_25519_ChaChaPoly_SHA256`), exactly as frozen in section 4.
-- Selected implementation and immutable source reference: **TBD.**
-  `github.com/flynn/noise` remains an evaluation input; the section 5.4
-  conditions (focused review of pinned source, dependency owner, independent
-  interop) are unmet.
+- Selected implementation and immutable source reference: **in-repository
+  `internal/v2/noisecore` as merged in PR #59 (head `a03372f`) and integrated
+  in PR #60 (head `5c9e4aa`).** The implementation is written from the Noise
+  revision 34 specification against primitives already present in
+  `golang.org/x/crypto`; it adds no module dependency. `github.com/flynn/noise`
+  is **not adopted**: the section 5.4 conditions were never met, and the
+  in-repository implementation removes the dependency-owner and maintenance
+  risks recorded in section 5.
 - Independent review reference: protocol-level expert review on
   [PR #39](https://github.com/houyuwushang/winkyou/pull/39) (verified: RFC 9258
   binder-label claim against the RFC text, `NNpsk0` message pattern and
   48-byte framing, prologue domain separation). This reference covers the
   protocol proposal only, not any implementation.
-- Vector set and cross-language verifier reference: **TBD.** This selection
-  unblocks building the section 6 vector suite; no vector is normative yet.
+- Vector set and cross-language verifier reference: **cacophony upstream
+  vectors, pinned to commit `8ee9d41e34a1a596cfa3ab12aa4069ff87dc1247`
+  (blob `b8a271ed1aba8b4a56bf429e559d7947827123b4`, Unlicense),** stored at
+  `internal/v2/noisecore/testdata/` and asserted byte-for-byte across all six
+  messages and both final handshake hashes. During the PR #59 review the
+  extracted vector was independently re-downloaded from upstream and matched
+  field-for-field, ruling out fabricated fixtures. These vectors are normative
+  for this profile.
 - Residual risks accepted by: maintainer, for the protocol-level selection of
-  a symmetric one-use PSK channel as bounded in section 4.4. Implementation
-  and dependency risks are **not yet accepted** by anyone.
-- Approval date: **2026-08-14 (protocol level only).**
+  a symmetric one-use PSK channel as bounded in section 4.4, and — on
+  2026-08-21 — for the simulation-only in-repository implementation, including
+  the documented Go memory-zeroization limits in
+  [`NOISE-CORE.md`](../NOISE-CORE.md). Real-network and dependency risks
+  outside this scope are **not accepted**.
+- Approval date: **2026-08-14 (protocol level); 2026-08-21 (simulation-only
+  implementation, maintainer acceptance after expert review of PR #59/#60:
+  specification line-by-line verification, independent upstream vector
+  re-verification, negative matrix, race and fuzz batteries).**
 - Mini-spec alignment follow-up: the 2026-08-14 vector-foundation revision
   proposes the required section 4.4 alignment and restricted-JCS fixtures. It
   closes this text drift only after independent review; it does not resolve the
   TBD implementation or interop fields above.
 
-Until the implementation-facing fields above are resolved and the mini-spec
-section 12 gates close, this ADR remains Draft and grants no implementation or
-network authority.
+This ADR is Accepted for the protocol and its simulation-only in-repository
+implementation. It still grants no real-network authority: `connect_test`
+stays `not_implemented` until its own reviewed wiring change passes the
+mini-spec section 12 gates and the field-test authorization items in the
+runbook.

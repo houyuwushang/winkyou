@@ -3,7 +3,7 @@
 - 状态：**Phase 1a simulation-only 实现证据，不是已批准的生产密码通道**
 - 实现：`internal/v2/noisecore`
 - 固定协议：`Noise_NNpsk0_25519_ChaChaPoly_SHA256`
-- ADR：[`ADR-TEST-PAIRING-CRYPTO-CANDIDATE.md`](./adr/ADR-TEST-PAIRING-CRYPTO-CANDIDATE.md)，仍为 Draft
+- ADR：[`ADR-TEST-PAIRING-CRYPTO-CANDIDATE.md`](./adr/ADR-TEST-PAIRING-CRYPTO-CANDIDATE.md)，已于 2026-08-21 Accepted（仅限仿真实现，真实网络权限另行门禁）
 
 ## 1. 边界
 
