@@ -200,11 +200,15 @@ func decodePairingJournalFrame(payload []byte) (pairingJournalRecord, error) {
 
 func buildPairingLedgerSnapshot(records []pairingJournalRecord, bytes int64, ownerInstanceID string) (pairingLedgerSnapshot, error) {
 	snapshot := pairingLedgerSnapshot{
-		records:         append([]pairingJournalRecord(nil), records...),
+		records:         make([]pairingJournalRecord, 0, len(records)),
 		admissions:      make(map[string]*pairingAdmissionEntry),
 		attempts:        make(map[string]*pairingAdmissionEntry),
 		bytes:           bytes,
 		ownerInstanceID: ownerInstanceID,
+		status: PairingLedgerStatus{
+			State:  PairingLedgerReady,
+			Limits: PairingAdmissionHardLimits(),
+		},
 	}
 	if len(records) == 0 {
 		return snapshot, errors.New("pairing journal has no initialization record")
@@ -258,9 +262,17 @@ func buildPairingLedgerSnapshot(records []pairingJournalRecord, bytes int64, own
 			if index == 0 {
 				return snapshot, errors.New("circuit reset precedes initialization")
 			}
+			status := snapshot.statusAt(record.RecordedAt)
+			if !status.ExplicitResetRequired || status.CircuitOpenedAt.IsZero() {
+				return snapshot, errors.New("circuit reset has no matching open circuit")
+			}
+			if record.RecordedAt.Before(status.CircuitResetEligibleAt) {
+				return snapshot, errors.New("circuit reset precedes its minimum horizon")
+			}
 		default:
 			return snapshot, fmt.Errorf("unknown pairing journal record type %q", record.Type)
 		}
+		snapshot.records = append(snapshot.records, record)
 	}
 	snapshot.sequence = uint64(len(records))
 	snapshot.status = PairingLedgerStatus{

@@ -87,6 +87,18 @@ func TestPairingJournalFormatRoundTripAndRejectsDamage(t *testing.T) {
 	if _, err := buildPairingLedgerSnapshot(decodedOutOfOrder, int64(len(outOfOrder)), ownerID); err == nil {
 		t.Fatal("out-of-order sequence was accepted")
 	}
+
+	invalidReset := append([]pairingJournalRecord(nil), records[:1]...)
+	invalidReset = append(invalidReset, pairingJournalRecord{
+		SchemaVersion: pairingLedgerSchemaVersion,
+		Sequence:      2,
+		Type:          pairingRecordCircuitReset,
+		RecordedAt:    base.Add(pairingAdmissionCircuitHorizon),
+		ResetNote:     "no-open-circuit",
+	})
+	if _, err := buildPairingLedgerSnapshot(invalidReset, 0, ownerID); err == nil {
+		t.Fatal("circuit reset without an open circuit was accepted")
+	}
 }
 
 func TestPairingLedgerDistinguishesMissingAndIndeterminate(t *testing.T) {
