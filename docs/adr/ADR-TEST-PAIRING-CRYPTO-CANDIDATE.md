@@ -385,6 +385,45 @@ itself satisfy section 2 criterion 5 or the decision fields in section 9. The
 ADR remains Draft, `connect_test` remains `not_implemented`, and no real-channel
 or network authorization follows from this evidence.
 
+### 5.6 Punch-simulation integration evidence (awaiting review)
+
+Additional implementation evidence connects completed `noisecore` sessions to
+the existing pure-memory punch simulation behind an explicit opt-in. The
+plaintext sentinel remains the default. The two 48-byte handshake messages are
+carried as opaque `PREPARE` payloads over the existing test-only control
+carrier, the peers compare the final handshake hash in `READY`, and no UDP punch
+packet is sent before that exchange completes.
+
+The simulation does not apply the ordered Noise `CipherState` API directly to
+datagrams: a valid `SYN_ACK` can arrive after a preceding `SYN` was filtered,
+which would otherwise present transport nonce 1 while the receiver still
+expects nonce 0. It follows
+[Noise revision 34 section 11.4](https://noiseprotocol.org/noise.html#out-of-order-transport-messages),
+which sends the nonce with a lossy transport message and requires recipients to
+track successful nonces and reject repeats. `Session.TakePacketCipher`
+atomically transfers fresh, unused Split keys into a narrower packet adapter.
+It exposes no key export and no arbitrary nonce setter; it admits only sequences
+0 through 2, permits authenticated out-of-order receive, and closes a direction
+on replay, range, or authentication failure. A compatibility test proves that
+sequences 0 through 2 produce the same ciphertext bytes as the ordered Noise
+transport state at those nonces. The clear packet header is bound as additional
+data, while attempt ID, generation, sender role, and frame type are inside the
+ciphertext.
+
+Tests cover 100 consecutive secure EIM-by-EIM runs, wrong PSK before any UDP
+punch, every-byte packet mutation, same-session packet replay, and injection of
+a prior complete handshake and punch sequence into fresh ephemeral sessions.
+The opt-in mode leaves the compiled punch envelope unchanged at one reused
+socket, one new target and five-tuple, at most two outbound and two inbound
+packets, two outbound PPS, 256 bytes per packet, and one second. The concrete
+secure packet is 56 bytes. Full details and limitations are recorded in
+[`DIRECT-PUNCH-SIMULATION.md`](../DIRECT-PUNCH-SIMULATION.md).
+
+This packet adapter is application-layer review evidence, not part of the Noise
+protocol vector claim and not an implementation approval. This section does not
+change the ADR status or decision fields and grants no `connect_test`, runtime,
+or live-network authority.
+
 ## 6. Test-vector and verification plan
 
 No vector is normative until reviewed and committed with a schema version and

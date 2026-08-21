@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/netip"
 	"sync"
@@ -15,6 +16,7 @@ import (
 	"winkyou/internal/governor"
 	"winkyou/internal/natsim"
 	"winkyou/internal/probeio"
+	"winkyou/internal/v2/noisecore"
 	"winkyou/internal/v2/punchsim"
 	"winkyou/internal/v2/testpairing"
 )
@@ -36,13 +38,14 @@ func TestGovernedSynchronizedEIMEIMPunchPromotesSameSocket100Times(t *testing.T)
 				return err
 			}
 			defer run.close()
+			if run.initiator.err != nil || run.responder.err != nil {
+				return fmt.Errorf("outcomes: initiator=%v responder=%v", run.initiator.err, run.responder.err)
+			}
 			for _, outcome := range []endpointOutcome{run.initiator, run.responder} {
-				if outcome.err != nil {
-					return outcome.err
-				}
-				if outcome.result.OutboundPackets < 1 || outcome.result.OutboundPackets > punchsim.MaxOutboundPackets ||
+				if outcome.result.Secure ||
+					outcome.result.OutboundPackets < 1 || outcome.result.OutboundPackets > punchsim.MaxOutboundPackets ||
 					outcome.result.InboundPackets < 1 || outcome.result.InboundPackets > punchsim.MaxInboundPackets {
-					return fmt.Errorf("unexpected punch counters: %+v", outcome.result)
+					return fmt.Errorf("unexpected plaintext punch result: %+v", outcome.result)
 				}
 			}
 			if !run.initiatorChannel.Status().Success || !run.responderChannel.Status().Success {
@@ -135,6 +138,220 @@ func TestPunchWorstCaseCostIsFixed(t *testing.T) {
 	}
 }
 
+func TestGovernedSecureEIMEIMPunchPromotesSameSocket100Times(t *testing.T) {
+	scenario := natsim.Scenario{
+		Name:        "governed-secure-eim-eim-punch",
+		Repetitions: 100,
+		Network: natsim.Config{
+			MaxPacketConns: 2,
+			MaxMappings:    2,
+			QueueCapacity:  8,
+			MaxDatagram:    512,
+		},
+		Resources: natsim.ResourceLimits{PacketConns: 2, Mappings: 2, QueuedPackets: 4},
+		Execute: func(ctx context.Context, network *natsim.Network) error {
+			initiatorSecure, responderSecure := securePairConfigs(t, repeatedPSK(0x61), repeatedPSK(0x61), nil, nil)
+			run, err := runPairWithOptions(ctx, network, pairOptions{
+				mapping:         natsim.MappingEndpointIndependent,
+				window:          300 * time.Millisecond,
+				initiatorSecure: initiatorSecure,
+				responderSecure: responderSecure,
+			})
+			if err != nil {
+				return err
+			}
+			defer run.close()
+			if run.initiator.err != nil || run.responder.err != nil {
+				return fmt.Errorf("secure outcomes: initiator=%v responder=%v", run.initiator.err, run.responder.err)
+			}
+			for _, outcome := range []endpointOutcome{run.initiator, run.responder} {
+				if !outcome.result.Secure ||
+					outcome.result.OutboundPackets < 1 || outcome.result.OutboundPackets > punchsim.MaxOutboundPackets ||
+					outcome.result.InboundPackets < 1 || outcome.result.InboundPackets > punchsim.MaxInboundPackets {
+					return fmt.Errorf("unexpected secure counters: %+v", outcome.result)
+				}
+			}
+			if !run.initiatorChannel.Status().Success || !run.responderChannel.Status().Success {
+				return errors.New("secure pairing VERIFY did not reach success")
+			}
+			if err := exchangeApplicationPayload(ctx, run); err != nil {
+				return err
+			}
+			return run.close()
+		},
+	}
+
+	report, err := natsim.RunScenario(context.Background(), scenario)
+	if err != nil {
+		t.Fatalf("run governed secure EIM x EIM punch scenario: %v", err)
+	}
+	if report.CompletedRepetitions != 100 || report.PeakPacketConns != 2 || report.PeakMappings != 2 {
+		t.Fatalf("secure scenario report = %+v", report)
+	}
+}
+
+func TestSecurePunchWrongPSKNeverPromotesAndStaysWithinBudget(t *testing.T) {
+	network, err := natsim.NewNetwork(natsim.Config{MaxPacketConns: 2, MaxMappings: 2, QueueCapacity: 4, MaxDatagram: 512})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer network.Close()
+	initiatorSecure, responderSecure := securePairConfigs(t, repeatedPSK(0x71), repeatedPSK(0x70), fixedRandom(0x11), fixedRandom(0x22))
+	run, err := runPairWithOptions(context.Background(), network, pairOptions{
+		mapping:         natsim.MappingEndpointIndependent,
+		window:          100 * time.Millisecond,
+		initiatorSecure: initiatorSecure,
+		responderSecure: responderSecure,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer run.close()
+	for _, outcome := range []endpointOutcome{run.initiator, run.responder} {
+		if outcome.err == nil {
+			t.Fatal("wrong-PSK endpoint unexpectedly succeeded")
+		}
+		if outcome.result.Promotion.Transport != nil {
+			t.Fatal("wrong PSK promoted a path")
+		}
+	}
+	if run.initiatorChannel.Status().Success || run.responderChannel.Status().Success {
+		t.Fatal("wrong PSK reached pairing success")
+	}
+	if run.initiatorLease.tripCount() != 0 || run.responderLease.tripCount() != 0 {
+		t.Fatal("ordinary authentication failure caused a persistent safety trip")
+	}
+	if counters := network.Snapshot(); counters.PacketsWritten > 2 {
+		t.Fatalf("wrong-PSK path emitted UDP punch traffic before authentication: %+v", counters)
+	}
+}
+
+func TestEverySecurePunchPacketByteIsAuthenticated(t *testing.T) {
+	const securePunchPacketSize = len(punchsim.SecurePacketPrefix) + 1 + 8 + 16 + 8 + 1 + 1 + noisecore.TagSize
+	for byteIndex := 0; byteIndex < securePunchPacketSize; byteIndex++ {
+		t.Run(fmt.Sprintf("byte_%02d", byteIndex), func(t *testing.T) {
+			network, err := natsim.NewNetwork(natsim.Config{MaxPacketConns: 2, MaxMappings: 2, QueueCapacity: 4, MaxDatagram: 512})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer network.Close()
+			mutate := func(packet []byte) []byte {
+				if !isSecurePunchPacket(packet) {
+					return packet
+				}
+				mutated := append([]byte(nil), packet...)
+				mutated[byteIndex] ^= 1
+				return mutated
+			}
+			initiatorSecure, responderSecure := securePairConfigs(t, repeatedPSK(0x72), repeatedPSK(0x72), fixedRandom(0x31), fixedRandom(0x41))
+			run, err := runPairWithOptions(context.Background(), network, pairOptions{
+				mapping:         natsim.MappingEndpointIndependent,
+				responderMutate: mutate,
+				window:          80 * time.Millisecond,
+				initiatorSecure: initiatorSecure,
+				responderSecure: responderSecure,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer run.close()
+			if run.initiator.err == nil && run.responder.err == nil {
+				t.Fatal("tampered secure packet completed both endpoints")
+			}
+			if run.initiator.result.Promotion.Transport != nil || run.responder.result.Promotion.Transport != nil {
+				t.Fatal("tampered secure packet promoted a path")
+			}
+			if run.initiatorLease.tripCount() != 0 || run.responderLease.tripCount() != 0 {
+				t.Fatal("authenticated packet rejection caused a persistent safety trip")
+			}
+		})
+	}
+}
+
+func TestReplayedPriorSecureHandshakeAndPunchSequenceCannotPromote(t *testing.T) {
+	initiatorRecorder := &securePacketRecorder{}
+	responderRecorder := &securePacketRecorder{}
+	initiatorHandshakeRecorder := &byteSequenceRecorder{}
+	responderHandshakeRecorder := &byteSequenceRecorder{}
+	firstNetwork, err := natsim.NewNetwork(natsim.Config{MaxPacketConns: 2, MaxMappings: 2, QueueCapacity: 8, MaxDatagram: 512})
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstInitiatorSecure, firstResponderSecure := securePairConfigs(t, repeatedPSK(0x73), repeatedPSK(0x73), fixedRandom(0x51), fixedRandom(0x61))
+	firstInitiatorSecure.handshakeMutate = initiatorHandshakeRecorder.record
+	firstResponderSecure.handshakeMutate = responderHandshakeRecorder.record
+	first, err := runPairWithOptions(context.Background(), firstNetwork, pairOptions{
+		mapping:         natsim.MappingEndpointIndependent,
+		initiatorMutate: initiatorRecorder.record,
+		responderMutate: responderRecorder.record,
+		window:          200 * time.Millisecond,
+		initiatorSecure: firstInitiatorSecure,
+		responderSecure: firstResponderSecure,
+	})
+	if err != nil {
+		_ = firstNetwork.Close()
+		t.Fatal(err)
+	}
+	if first.initiator.err != nil || first.responder.err != nil {
+		_ = first.close()
+		_ = firstNetwork.Close()
+		t.Fatalf("recording run failed: initiator=%v responder=%v", first.initiator.err, first.responder.err)
+	}
+	if err := first.close(); err != nil {
+		_ = firstNetwork.Close()
+		t.Fatal(err)
+	}
+	if err := firstNetwork.Close(); err != nil {
+		t.Fatal(err)
+	}
+	initiatorSequence := initiatorRecorder.snapshot()
+	responderSequence := responderRecorder.snapshot()
+	initiatorHandshake := initiatorHandshakeRecorder.snapshot()
+	responderHandshake := responderHandshakeRecorder.snapshot()
+	if len(initiatorHandshake) != 1 || len(responderHandshake) != 1 ||
+		len(initiatorSequence) < 1 || len(responderSequence) < 1 ||
+		!containsSecurePunchPacket(initiatorSequence) || !containsSecurePunchPacket(responderSequence) {
+		t.Fatalf("recorded sequences do not contain handshake plus punch: handshake=%d/%d punch=%d/%d", len(initiatorHandshake), len(responderHandshake), len(initiatorSequence), len(responderSequence))
+	}
+
+	secondNetwork, err := natsim.NewNetwork(natsim.Config{MaxPacketConns: 2, MaxMappings: 2, QueueCapacity: 8, MaxDatagram: 512})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer secondNetwork.Close()
+	initiatorReplay := newSecurePacketReplayer(initiatorSequence)
+	responderReplay := newSecurePacketReplayer(responderSequence)
+	initiatorHandshakeReplay := newByteSequenceReplayer(initiatorHandshake)
+	responderHandshakeReplay := newByteSequenceReplayer(responderHandshake)
+	secondInitiatorSecure, secondResponderSecure := securePairConfigs(t, repeatedPSK(0x73), repeatedPSK(0x73), fixedRandom(0x52), fixedRandom(0x62))
+	secondInitiatorSecure.handshakeMutate = initiatorHandshakeReplay.replay
+	secondResponderSecure.handshakeMutate = responderHandshakeReplay.replay
+	second, err := runPairWithOptions(context.Background(), secondNetwork, pairOptions{
+		mapping:         natsim.MappingEndpointIndependent,
+		initiatorMutate: initiatorReplay.replay,
+		responderMutate: responderReplay.replay,
+		window:          100 * time.Millisecond,
+		initiatorSecure: secondInitiatorSecure,
+		responderSecure: secondResponderSecure,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer second.close()
+	if second.initiator.err == nil && second.responder.err == nil {
+		t.Fatal("replayed prior sequence completed both fresh sessions")
+	}
+	if second.initiator.result.Promotion.Transport != nil || second.responder.result.Promotion.Transport != nil {
+		t.Fatal("replayed prior sequence promoted a path")
+	}
+	if initiatorHandshakeReplay.used() != 1 || responderHandshakeReplay.used() != 1 {
+		t.Fatal("replay injectors did not replace both fresh handshake messages")
+	}
+	if initiatorReplay.used() != 0 || responderReplay.used() != 0 {
+		t.Fatal("replayed handshake unexpectedly reached UDP punch replay")
+	}
+}
+
 type pairRunResult struct {
 	initiator endpointOutcome
 	responder endpointOutcome
@@ -180,8 +397,32 @@ func runPair(
 	responderMutate func([]byte) []byte,
 	window time.Duration,
 ) (*pairRunResult, error) {
+	return runPairWithOptions(parent, network, pairOptions{
+		mapping:         mapping,
+		responderMutate: responderMutate,
+		window:          window,
+	})
+}
+
+type pairOptions struct {
+	mapping         natsim.MappingBehavior
+	initiatorMutate func([]byte) []byte
+	responderMutate func([]byte) []byte
+	window          time.Duration
+	initiatorSecure *secureEndpointConfig
+	responderSecure *secureEndpointConfig
+}
+
+func runPairWithOptions(
+	parent context.Context,
+	network *natsim.Network,
+	options pairOptions,
+) (*pairRunResult, error) {
+	if (options.initiatorSecure == nil) != (options.responderSecure == nil) {
+		return nil, errors.New("secure simulation must be configured at both endpoints")
+	}
 	model := natsim.Model{
-		Mapping:    mapping,
+		Mapping:    options.mapping,
 		Allocation: natsim.PortPreserving,
 		Filtering:  natsim.FilterAddressPortDependent,
 	}
@@ -204,6 +445,7 @@ func runPair(
 			LocalAddr: netip.MustParseAddrPort("192.0.2.10:45010"),
 			NATChain:  []*natsim.NAT{natA},
 		},
+		mutateWrite: options.initiatorMutate,
 	}
 	responderFactory := &simulationFactory{
 		network: network,
@@ -211,7 +453,7 @@ func runPair(
 			LocalAddr: netip.MustParseAddrPort("198.51.100.20:45020"),
 			NATChain:  []*natsim.NAT{natB},
 		},
-		mutateWrite: responderMutate,
+		mutateWrite: options.responderMutate,
 	}
 	initiatorController, err := newSimulationController(initiatorLease, initiatorFactory)
 	if err != nil {
@@ -278,11 +520,11 @@ func runPair(
 	defer cancel()
 	results := make(chan endpointOutcome, 2)
 	go func() {
-		result, runErr := runEndpoint(ctx, initiatorController, initiatorPreparer, initiatorChannel, testpairing.RoleInitiator, attemptID, window)
+		result, runErr := runEndpoint(ctx, initiatorController, initiatorPreparer, initiatorChannel, testpairing.RoleInitiator, attemptID, options.window, options.initiatorSecure)
 		results <- endpointOutcome{role: testpairing.RoleInitiator, result: result, err: runErr}
 	}()
 	go func() {
-		result, runErr := runEndpoint(ctx, responderController, responderPreparer, responderChannel, testpairing.RoleResponder, attemptID, window)
+		result, runErr := runEndpoint(ctx, responderController, responderPreparer, responderChannel, testpairing.RoleResponder, attemptID, options.window, options.responderSecure)
 		results <- endpointOutcome{role: testpairing.RoleResponder, result: result, err: runErr}
 	}()
 	for index := 0; index < 2; index++ {
@@ -304,11 +546,17 @@ func runEndpoint(
 	role testpairing.Role,
 	attemptID string,
 	window time.Duration,
+	secure *secureEndpointConfig,
 ) (result punchsim.Result, err error) {
 	handedToPunch := false
+	cryptoHandedToPunch := false
+	var securePackets *noisecore.PacketCipher
 	defer func() {
 		if !handedToPunch {
 			err = errors.Join(err, controller.Close())
+		}
+		if securePackets != nil && !cryptoHandedToPunch {
+			err = errors.Join(err, securePackets.Close())
 		}
 		if err != nil {
 			cancelControl(channel)
@@ -323,13 +571,19 @@ func runEndpoint(
 	if err != nil {
 		return punchsim.Result{}, err
 	}
-	if err := runControlPrelude(ctx, channel, role, attemptID); err != nil {
+	securePackets, err = runControlPrelude(ctx, channel, role, attemptID, secure)
+	if err != nil {
 		return punchsim.Result{}, err
 	}
 	handedToPunch = true
 	coreRole := punchsim.RoleInitiator
 	if role == testpairing.RoleResponder {
 		coreRole = punchsim.RoleResponder
+	}
+	var securePunch *punchsim.SecureConfig
+	if securePackets != nil {
+		securePunch = &punchsim.SecureConfig{Packets: securePackets}
+		cryptoHandedToPunch = true
 	}
 	result, err = punchsim.Run(ctx, punchsim.Config{
 		Socket:                &governedPunchSocket{controller: controller, socket: socket},
@@ -338,6 +592,7 @@ func runEndpoint(
 		AttemptID:             attemptID,
 		ObservationGeneration: 1,
 		PunchWindow:           window,
+		Secure:                securePunch,
 	})
 	if err != nil {
 		return punchsim.Result{}, err
@@ -349,23 +604,184 @@ func runEndpoint(
 	return result, nil
 }
 
-func runControlPrelude(ctx context.Context, channel *testpairing.SimulatedChannel, role testpairing.Role, attemptID string) error {
-	if err := channel.Send(ctx, testpairing.MessagePrepare, nil); err != nil {
-		return err
+func runControlPrelude(
+	ctx context.Context,
+	channel *testpairing.SimulatedChannel,
+	role testpairing.Role,
+	attemptID string,
+	secure *secureEndpointConfig,
+) (*noisecore.PacketCipher, error) {
+	var session *noisecore.Session
+	var err error
+	if secure == nil {
+		if err := channel.Send(ctx, testpairing.MessagePrepare, nil); err != nil {
+			return nil, err
+		}
+		if err := receiveControl(ctx, channel, attemptID, testpairing.MessagePrepare); err != nil {
+			return nil, err
+		}
+	} else {
+		session, err = runSecureHandshakeOverControl(ctx, channel, role, attemptID, secure)
+		if err != nil {
+			return nil, err
+		}
 	}
-	if err := receiveControl(ctx, channel, attemptID, testpairing.MessagePrepare); err != nil {
-		return err
+	var readyPayload []byte
+	if session != nil {
+		hash, err := session.HandshakeHash()
+		if err != nil {
+			_ = session.Close()
+			return nil, err
+		}
+		readyPayload = append(readyPayload, hash[:]...)
 	}
-	if err := channel.Send(ctx, testpairing.MessageReady, nil); err != nil {
-		return err
+	if err := channel.Send(ctx, testpairing.MessageReady, readyPayload); err != nil {
+		clear(readyPayload)
+		_ = session.Close()
+		return nil, err
 	}
-	if err := receiveControl(ctx, channel, attemptID, testpairing.MessageReady); err != nil {
-		return err
+	peerReady, err := receiveControlPayload(ctx, channel, attemptID, testpairing.MessageReady)
+	if err != nil {
+		clear(readyPayload)
+		_ = session.Close()
+		return nil, err
+	}
+	if session == nil && len(peerReady) != 0 {
+		clear(peerReady)
+		clear(readyPayload)
+		_ = session.Close()
+		return nil, errors.New("plaintext control payload mismatch")
+	}
+	if session != nil {
+		if len(peerReady) != noisecore.HashSize || !bytes.Equal(peerReady, readyPayload) {
+			clear(peerReady)
+			clear(readyPayload)
+			_ = session.Close()
+			return nil, errors.New("secure handshake hash mismatch")
+		}
+	}
+	clear(peerReady)
+	clear(readyPayload)
+	var packets *noisecore.PacketCipher
+	if session != nil {
+		packets, err = session.TakePacketCipher(punchsim.MaxSecurePacketSequence)
+		if err != nil {
+			_ = session.Close()
+			return nil, err
+		}
 	}
 	if role == testpairing.RoleInitiator {
-		return channel.Send(ctx, testpairing.MessageFire, nil)
+		if err := channel.Send(ctx, testpairing.MessageFire, nil); err != nil {
+			_ = packets.Close()
+			return nil, err
+		}
+		return packets, nil
 	}
-	return receiveControl(ctx, channel, attemptID, testpairing.MessageFire)
+	if err := receiveControl(ctx, channel, attemptID, testpairing.MessageFire); err != nil {
+		_ = packets.Close()
+		return nil, err
+	}
+	return packets, nil
+}
+
+func runSecureHandshakeOverControl(
+	ctx context.Context,
+	channel *testpairing.SimulatedChannel,
+	role testpairing.Role,
+	attemptID string,
+	secure *secureEndpointConfig,
+) (*noisecore.Session, error) {
+	noiseConfig := noisecore.Config{Prologue: secure.prologue, PSK: secure.psk, Random: secure.random}
+	if role == testpairing.RoleInitiator {
+		session, err := noisecore.NewInitiator(noiseConfig)
+		if err != nil {
+			return nil, err
+		}
+		first, err := session.WriteMessage(nil)
+		if err != nil {
+			_ = session.Close()
+			return nil, err
+		}
+		first = mutateHandshake(first, secure.handshakeMutate)
+		if len(first) != noisecore.PublicKeySize+noisecore.TagSize {
+			clear(first)
+			_ = session.Close()
+			return nil, errors.New("secure control handshake message size mismatch")
+		}
+		if err := channel.Send(ctx, testpairing.MessagePrepare, first); err != nil {
+			clear(first)
+			_ = session.Close()
+			return nil, err
+		}
+		clear(first)
+		second, err := receiveControlPayload(ctx, channel, attemptID, testpairing.MessagePrepare)
+		if err != nil {
+			_ = session.Close()
+			return nil, err
+		}
+		payload, err := session.ReadMessage(second)
+		clear(second)
+		if err != nil || len(payload) != 0 || !session.Complete() {
+			clear(payload)
+			_ = session.Close()
+			if err != nil {
+				return nil, err
+			}
+			return nil, errors.New("secure control handshake incomplete")
+		}
+		clear(payload)
+		return session, nil
+	}
+
+	session, err := noisecore.NewResponder(noiseConfig)
+	if err != nil {
+		return nil, err
+	}
+	first, err := receiveControlPayload(ctx, channel, attemptID, testpairing.MessagePrepare)
+	if err != nil {
+		_ = session.Close()
+		return nil, err
+	}
+	payload, err := session.ReadMessage(first)
+	clear(first)
+	if err != nil || len(payload) != 0 {
+		clear(payload)
+		_ = session.Close()
+		if err != nil {
+			return nil, err
+		}
+		return nil, errors.New("secure control handshake payload was not empty")
+	}
+	clear(payload)
+	second, err := session.WriteMessage(nil)
+	if err != nil {
+		_ = session.Close()
+		return nil, err
+	}
+	second = mutateHandshake(second, secure.handshakeMutate)
+	if len(second) != noisecore.PublicKeySize+noisecore.TagSize {
+		clear(second)
+		_ = session.Close()
+		return nil, errors.New("secure control handshake message size mismatch")
+	}
+	if err := channel.Send(ctx, testpairing.MessagePrepare, second); err != nil {
+		clear(second)
+		_ = session.Close()
+		return nil, err
+	}
+	clear(second)
+	if !session.Complete() {
+		_ = session.Close()
+		return nil, errors.New("secure control handshake incomplete")
+	}
+	return session, nil
+}
+
+func mutateHandshake(message []byte, mutate func([]byte) []byte) []byte {
+	if mutate == nil {
+		return message
+	}
+	return mutate(message)
 }
 
 func runControlVerify(ctx context.Context, channel *testpairing.SimulatedChannel, attemptID string) error {
@@ -383,14 +799,27 @@ func runControlVerify(ctx context.Context, channel *testpairing.SimulatedChannel
 }
 
 func receiveControl(ctx context.Context, channel *testpairing.SimulatedChannel, attemptID string, expected testpairing.MessageType) error {
-	message, err := channel.Receive(ctx)
+	payload, err := receiveControlPayload(ctx, channel, attemptID, expected)
 	if err != nil {
 		return err
 	}
-	if message.Type != expected || message.AttemptID != attemptID || message.ObservationGeneration != 1 || len(message.Payload) != 0 {
-		return errors.New("pairing control context mismatch")
+	defer clear(payload)
+	if len(payload) != 0 {
+		return errors.New("pairing control payload mismatch")
 	}
 	return nil
+}
+
+func receiveControlPayload(ctx context.Context, channel *testpairing.SimulatedChannel, attemptID string, expected testpairing.MessageType) ([]byte, error) {
+	message, err := channel.Receive(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if message.Type != expected || message.AttemptID != attemptID || message.ObservationGeneration != 1 {
+		clear(message.Payload)
+		return nil, errors.New("pairing control context mismatch")
+	}
+	return message.Payload, nil
 }
 
 func cancelControl(channel *testpairing.SimulatedChannel) {
@@ -467,6 +896,223 @@ func exchangeApplicationPayload(parent context.Context, run *pairRunResult) erro
 
 func simulationID(seed byte) string {
 	return base64.RawURLEncoding.EncodeToString(bytes.Repeat([]byte{seed}, 16))
+}
+
+type fixedTestPSK struct {
+	key [noisecore.PSKSize]byte
+}
+
+type secureEndpointConfig struct {
+	prologue        []byte
+	psk             noisecore.PSKSource
+	random          io.Reader
+	handshakeMutate func([]byte) []byte
+}
+
+func (source fixedTestPSK) LoadPSK() ([noisecore.PSKSize]byte, error) {
+	return source.key, nil
+}
+
+func repeatedPSK(value byte) [noisecore.PSKSize]byte {
+	var key [noisecore.PSKSize]byte
+	for index := range key {
+		key[index] = value
+	}
+	return key
+}
+
+func fixedRandom(value byte) []byte {
+	return bytes.Repeat([]byte{value}, 32)
+}
+
+func securePairConfigs(
+	t *testing.T,
+	initiatorPSK, responderPSK [noisecore.PSKSize]byte,
+	initiatorRandom, responderRandom []byte,
+) (*secureEndpointConfig, *secureEndpointConfig) {
+	t.Helper()
+	prologue := securePairingPrologue(t)
+	initiator := &secureEndpointConfig{
+		prologue: append([]byte(nil), prologue...),
+		psk:      fixedTestPSK{key: initiatorPSK},
+	}
+	responder := &secureEndpointConfig{
+		prologue: append([]byte(nil), prologue...),
+		psk:      fixedTestPSK{key: responderPSK},
+	}
+	if initiatorRandom != nil {
+		initiator.random = bytes.NewReader(append([]byte(nil), initiatorRandom...))
+	}
+	if responderRandom != nil {
+		responder.random = bytes.NewReader(append([]byte(nil), responderRandom...))
+	}
+	return initiator, responder
+}
+
+func securePairingPrologue(t *testing.T) []byte {
+	t.Helper()
+	now := time.Date(2026, 8, 20, 0, 0, 0, 0, time.UTC)
+	context := testpairing.PairingContext{
+		Artifact:               testpairing.PairingArtifactAcceptance,
+		Protocol:               testpairing.ProtocolVersion,
+		AuthScope:              testpairing.AuthScope,
+		CredentialID:           simulationID(1),
+		AttemptID:              simulationID(2),
+		ObservationGeneration:  "1",
+		InitiatorParticipantID: simulationID(3),
+		ResponderParticipantID: simulationID(4),
+		InitiatorGovernorScope: string(testpairing.GovernorScopeMachine),
+		ResponderGovernorScope: string(testpairing.GovernorScopeMachine),
+		SecureChannelProfile:   testpairing.SelectedSecureChannelProfile,
+		IssuedAt:               now.Add(-time.Second).Format(time.RFC3339),
+		ExpiresAt:              now.Add(5 * time.Minute).Format(time.RFC3339),
+		OfferFingerprint:       base64.RawURLEncoding.EncodeToString(bytes.Repeat([]byte{6}, 32)),
+		InitiatorChannelRole:   testpairing.ChannelRoleInitiator,
+		ResponderChannelRole:   testpairing.ChannelRoleResponder,
+		EarlyData:              testpairing.FeatureDisabled,
+		Resumption:             testpairing.FeatureDisabled,
+		RuntimeFallback:        testpairing.FeatureDisabled,
+	}
+	prologue, err := testpairing.BuildNoisePrologue(context)
+	if err != nil {
+		t.Fatalf("build secure pairing prologue: %v", err)
+	}
+	return prologue
+}
+
+func isSecurePacket(packet []byte) bool {
+	return len(packet) > len(punchsim.SecurePacketPrefix) && bytes.HasPrefix(packet, []byte(punchsim.SecurePacketPrefix))
+}
+
+func isSecurePunchPacket(packet []byte) bool {
+	if !isSecurePacket(packet) {
+		return false
+	}
+	frameType := packet[len(punchsim.SecurePacketPrefix)]
+	return frameType >= 0x11 && frameType <= 0x13
+}
+
+func containsSecurePunchPacket(packets [][]byte) bool {
+	for _, packet := range packets {
+		if isSecurePunchPacket(packet) {
+			return true
+		}
+	}
+	return false
+}
+
+type securePacketRecorder struct {
+	mu      sync.Mutex
+	packets [][]byte
+}
+
+type byteSequenceRecorder struct {
+	mu      sync.Mutex
+	entries [][]byte
+}
+
+func (recorder *byteSequenceRecorder) record(value []byte) []byte {
+	recorder.mu.Lock()
+	recorder.entries = append(recorder.entries, append([]byte(nil), value...))
+	recorder.mu.Unlock()
+	return value
+}
+
+func (recorder *byteSequenceRecorder) snapshot() [][]byte {
+	recorder.mu.Lock()
+	defer recorder.mu.Unlock()
+	result := make([][]byte, len(recorder.entries))
+	for index := range recorder.entries {
+		result[index] = append([]byte(nil), recorder.entries[index]...)
+	}
+	return result
+}
+
+type byteSequenceReplayer struct {
+	mu      sync.Mutex
+	entries [][]byte
+	index   int
+}
+
+func newByteSequenceReplayer(entries [][]byte) *byteSequenceReplayer {
+	result := &byteSequenceReplayer{entries: make([][]byte, len(entries))}
+	for index := range entries {
+		result.entries[index] = append([]byte(nil), entries[index]...)
+	}
+	return result
+}
+
+func (replayer *byteSequenceReplayer) replay(value []byte) []byte {
+	replayer.mu.Lock()
+	defer replayer.mu.Unlock()
+	if replayer.index >= len(replayer.entries) {
+		return value
+	}
+	replacement := append([]byte(nil), replayer.entries[replayer.index]...)
+	replayer.index++
+	clear(value)
+	return replacement
+}
+
+func (replayer *byteSequenceReplayer) used() int {
+	replayer.mu.Lock()
+	defer replayer.mu.Unlock()
+	return replayer.index
+}
+
+func (recorder *securePacketRecorder) record(packet []byte) []byte {
+	if !isSecurePacket(packet) {
+		return packet
+	}
+	recorder.mu.Lock()
+	recorder.packets = append(recorder.packets, append([]byte(nil), packet...))
+	recorder.mu.Unlock()
+	return packet
+}
+
+func (recorder *securePacketRecorder) snapshot() [][]byte {
+	recorder.mu.Lock()
+	defer recorder.mu.Unlock()
+	result := make([][]byte, len(recorder.packets))
+	for index := range recorder.packets {
+		result[index] = append([]byte(nil), recorder.packets[index]...)
+	}
+	return result
+}
+
+type securePacketReplayer struct {
+	mu      sync.Mutex
+	packets [][]byte
+	index   int
+}
+
+func newSecurePacketReplayer(packets [][]byte) *securePacketReplayer {
+	result := &securePacketReplayer{packets: make([][]byte, len(packets))}
+	for index := range packets {
+		result.packets[index] = append([]byte(nil), packets[index]...)
+	}
+	return result
+}
+
+func (replayer *securePacketReplayer) replay(packet []byte) []byte {
+	if !isSecurePacket(packet) {
+		return packet
+	}
+	replayer.mu.Lock()
+	defer replayer.mu.Unlock()
+	if replayer.index >= len(replayer.packets) {
+		return packet
+	}
+	replacement := append([]byte(nil), replayer.packets[replayer.index]...)
+	replayer.index++
+	clear(packet)
+	return replacement
+}
+
+func (replayer *securePacketReplayer) used() int {
+	replayer.mu.Lock()
+	defer replayer.mu.Unlock()
+	return replayer.index
 }
 
 type candidateExchange struct {

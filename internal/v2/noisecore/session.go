@@ -21,22 +21,79 @@ const (
 )
 
 var (
-	ErrInvalidConfig       = errors.New("noisecore: invalid configuration")
-	ErrPSKUnavailable      = errors.New("noisecore: preshared key unavailable")
-	ErrRandomSource        = errors.New("noisecore: random source failed")
-	ErrUnexpectedMessage   = errors.New("noisecore: unexpected handshake message")
-	ErrInvalidMessage      = errors.New("noisecore: invalid Noise message")
-	ErrAuthentication      = errors.New("noisecore: authentication failed")
-	ErrLowOrderPoint       = errors.New("noisecore: invalid low-order X25519 public key")
-	ErrNonceExhausted      = errors.New("noisecore: nonce exhausted")
-	ErrHandshakeIncomplete = errors.New("noisecore: handshake incomplete")
-	ErrClosed              = errors.New("noisecore: state closed")
+	ErrInvalidConfig        = errors.New("noisecore: invalid configuration")
+	ErrPSKUnavailable       = errors.New("noisecore: preshared key unavailable")
+	ErrRandomSource         = errors.New("noisecore: random source failed")
+	ErrUnexpectedMessage    = errors.New("noisecore: unexpected handshake message")
+	ErrInvalidMessage       = errors.New("noisecore: invalid Noise message")
+	ErrAuthentication       = errors.New("noisecore: authentication failed")
+	ErrLowOrderPoint        = errors.New("noisecore: invalid low-order X25519 public key")
+	ErrNonceExhausted       = errors.New("noisecore: nonce exhausted")
+	ErrSequenceOutOfRange   = errors.New("noisecore: packet sequence out of range")
+	ErrSequenceReuse        = errors.New("noisecore: packet sequence reused")
+	ErrTransportAlreadyUsed = errors.New("noisecore: ordered transport state already used")
+	ErrHandshakeIncomplete  = errors.New("noisecore: handshake incomplete")
+	ErrClosed               = errors.New("noisecore: state closed")
 )
 
 // PSKSource supplies one already-derived 32-byte pairing secret. noisecore
 // never derives, persists, or fetches pairing material itself.
 type PSKSource interface {
 	LoadPSK() ([PSKSize]byte, error)
+}
+
+// TakePacketCipher atomically moves both unused Split keys into a bounded
+// explicit-sequence packet cipher. It is mutually exclusive with Encrypt and
+// Decrypt: once called, Session is permanently closed and cannot be reused.
+// This narrow simulation seam implements the out-of-order transport guidance
+// in Noise revision 34 section 11.4 without exposing keys or mutable SetNonce.
+func (session *Session) TakePacketCipher(maxSequence uint64) (*PacketCipher, error) {
+	if session == nil {
+		return nil, ErrClosed
+	}
+	session.mu.Lock()
+	if session.closed {
+		session.mu.Unlock()
+		return nil, ErrClosed
+	}
+	if !session.complete || session.send == nil || session.receive == nil {
+		session.mu.Unlock()
+		return nil, ErrHandshakeIncomplete
+	}
+	if maxSequence == ^uint64(0) {
+		session.mu.Unlock()
+		return nil, ErrSequenceOutOfRange
+	}
+	send := session.send
+	receive := session.receive
+	send.mu.Lock()
+	receive.mu.Lock()
+	if send.core.closed || receive.core.closed || !send.core.hasKey || !receive.core.hasKey || send.core.nonce != 0 || receive.core.nonce != 0 {
+		receive.mu.Unlock()
+		send.mu.Unlock()
+		session.failLocked(ErrTransportAlreadyUsed)
+		session.send = nil
+		session.receive = nil
+		session.mu.Unlock()
+		closeCipherStates(send, receive)
+		return nil, ErrTransportAlreadyUsed
+	}
+	sendKey := send.core.key
+	receiveKey := receive.core.key
+	send.core.zeroize()
+	receive.core.zeroize()
+	receive.mu.Unlock()
+	send.mu.Unlock()
+	session.closed = true
+	session.complete = false
+	session.send = nil
+	session.receive = nil
+	zeroBytes(session.handshakeHash[:])
+	session.mu.Unlock()
+	packetCipher := newPacketCipher(sendKey, receiveKey, maxSequence)
+	zeroBytes(sendKey[:])
+	zeroBytes(receiveKey[:])
+	return packetCipher, nil
 }
 
 // Config contains only caller-owned in-memory inputs. Random defaults to
