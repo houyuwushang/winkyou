@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -232,6 +233,7 @@ func (receipt *PairingAdmissionReceipt) Sequence() uint64 {
 }
 
 type pairingLedgerWriteHooks struct {
+	writeFrame            func(*os.File, pairingJournalRecord, []byte) (int, error)
 	afterAppendBeforeSync func(pairingJournalRecord) error
 	afterSync             func(pairingJournalRecord) error
 }

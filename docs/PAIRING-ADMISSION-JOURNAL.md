@@ -1,7 +1,8 @@
 # Pairing Admission Journal (Phase 1a)
 
-Status: implemented zero-network storage and policy evaluator; not connected to
-`connect_test`, `noisecore`, a carrier, or any scheduler.
+Status: implemented zero-network storage and policy evaluator; consumed by the
+zero-network admission gate, but not connected to `connect_test`, `noisecore`,
+`probeio`, a carrier, or any scheduler.
 
 Normative safety rules remain in
 [`PAIRING-RESTART-SAFETY-CONTRACT.md`](./PAIRING-RESTART-SAFETY-CONTRACT.md).
@@ -163,10 +164,11 @@ an accidental-corruption detector, not a MAC against a hostile privileged
 writer.
 
 This package creates no socket and imports no network capability. It does not
-call an emission sink, create pairing material, run `noisecore`, start a
-daemon, modify a scheduled task, or implement `connect_test`. A separate Draft
-PR must still add and review the process-external admission gate and emission
-witness before any carrier can consume this state.
+call a carrier emission sink, create pairing material, run `noisecore`, start a
+daemon, modify a scheduled task, or implement `connect_test`. The zero-network
+admission gate and parent-process witness are described in
+[`PAIRING-ADMISSION-GATE.md`](./PAIRING-ADMISSION-GATE.md); a separate future
+review is still required before any network carrier can consume its authority.
 
 ## Verification
 
@@ -177,3 +179,5 @@ boundaries, packet reservations, restart-owned unfinished attempts, persistent
 circuit reset, rebuild cold start, clock rollback, capacity, and owner-lock
 lifetime through `fsync`. Platform tests validate Linux ownership/mode and
 Windows owner/DACL behavior and prove that setup does not repair corruption.
+The gate adds process-external crash, mutation, 32-process competition, and
+1000-restart evidence without opening a socket.

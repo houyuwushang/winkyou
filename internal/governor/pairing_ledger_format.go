@@ -560,7 +560,12 @@ func appendPairingJournalFrame(path string, record pairingJournalRecord, frame [
 		return fmt.Errorf("open pairing journal for append: %w", err)
 	}
 	defer func() { _ = file.Close() }()
-	written, err := file.Write(frame)
+	var written int
+	if hooks.writeFrame != nil {
+		written, err = hooks.writeFrame(file, record, frame)
+	} else {
+		written, err = file.Write(frame)
+	}
 	if err != nil {
 		return fmt.Errorf("append pairing journal frame: %w", err)
 	}
