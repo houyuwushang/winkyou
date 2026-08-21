@@ -37,8 +37,46 @@ func TestWindowsMachineNamespaceSetupAndInspect(t *testing.T) {
 	if err := owner.Close(); err != nil {
 		t.Fatalf("close installed namespace owner: %v", err)
 	}
+	if err := validateWindowsMachinePairingLedgerAt(path); err != nil {
+		t.Fatalf("validate pairing ledger: %v", err)
+	}
 	if trip := newSafetyTripStore(path).status(); trip.State != SafetyTripClear || trip.BlocksActiveWork {
 		t.Fatalf("initial safety trip status = %+v, want clear", trip)
+	}
+}
+
+func TestWindowsMachinePairingLedgerCorruptionIsNotRepaired(t *testing.T) {
+	requireWindowsElevation(t)
+	path := filepath.Join(t.TempDir(), "safety")
+	registerWindowsNamespaceCleanup(t, path)
+	if err := setupWindowsMachineNamespaceAt(path); err != nil {
+		t.Fatalf("setup namespace: %v", err)
+	}
+	journalPath := filepath.Join(path, pairingLedgerFilename)
+	file, err := os.OpenFile(journalPath, os.O_WRONLY|os.O_APPEND, 0)
+	if err != nil {
+		t.Fatalf("open journal for corruption: %v", err)
+	}
+	if _, err := file.Write([]byte{0xff}); err != nil {
+		_ = file.Close()
+		t.Fatalf("corrupt journal: %v", err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatalf("close corrupt journal: %v", err)
+	}
+	before, err := os.ReadFile(journalPath)
+	if err != nil {
+		t.Fatalf("read corrupt journal: %v", err)
+	}
+	if err := setupWindowsMachineNamespaceAt(path); !errors.Is(err, ErrNamespaceUnsafe) {
+		t.Fatalf("setup corrupt journal error = %v, want ErrNamespaceUnsafe", err)
+	}
+	after, err := os.ReadFile(journalPath)
+	if err != nil {
+		t.Fatalf("reread corrupt journal: %v", err)
+	}
+	if string(after) != string(before) {
+		t.Fatal("setup repaired or rewrote corrupt journal")
 	}
 }
 
@@ -138,6 +176,9 @@ func TestWindowsUserAcknowledgedNamespaceSetupAndInspect(t *testing.T) {
 	if trip := newSafetyTripStore(path).status(); trip.State != SafetyTripClear || trip.BlocksActiveWork {
 		t.Fatalf("initial user safety trip = %+v, want clear", trip)
 	}
+	if _, err := os.Lstat(filepath.Join(path, pairingLedgerFilename)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("user namespace pairing journal = %v, want absent", err)
+	}
 }
 
 func TestWindowsUserAcknowledgedNamespaceRejectsACLDrift(t *testing.T) {
@@ -187,7 +228,8 @@ func TestWindowsUserAcknowledgedNamespaceUsesKnownFolder(t *testing.T) {
 func registerWindowsNamespaceCleanup(t *testing.T, path string) {
 	t.Helper()
 	t.Cleanup(func() {
-		for _, name := range namespaceFixedFilenames() {
+		filenames := append(namespaceFixedFilenames(), pairingLedgerFilename)
+		for _, name := range filenames {
 			filePath := filepath.Join(path, name)
 			if _, err := os.Lstat(filePath); err == nil {
 				_ = setWindowsDACL(filePath, windows.GENERIC_ALL)

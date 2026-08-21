@@ -113,9 +113,13 @@ func inspectWindowsNamespaceAt(path string, scope Scope) NamespaceStatus {
 func setupMachineNamespaceAt(path string) error {
 	status := inspectMachineNamespaceAt(path)
 	if status.Ready {
-		return nil
+		if err := validateWindowsMachinePairingLedgerAt(path); err == nil {
+			return nil
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
 	}
-	if status.State != NamespaceMissing {
+	if !status.Ready && status.State != NamespaceMissing {
 		return fmt.Errorf("%w: %s", ErrNamespaceUnsafe, status.Detail)
 	}
 	elevated, err := machineScopeElevated()
@@ -135,7 +139,7 @@ func machineScopeElevated() (bool, error) {
 func setupWindowsMachineNamespaceAt(path string) error {
 	status := inspectMachineNamespaceAt(path)
 	if status.Ready {
-		return nil
+		return setupWindowsMachinePairingLedgerAt(path, time.Now().UTC())
 	}
 	if status.State != NamespaceMissing {
 		return fmt.Errorf("%w: %s", ErrNamespaceUnsafe, status.Detail)
@@ -172,10 +176,45 @@ func setupWindowsMachineNamespaceAt(path string) error {
 	if err := setWindowsDACL(path, windowsDirectoryAccessMask()); err != nil {
 		return fmt.Errorf("protect machine namespace: %w", err)
 	}
+	if err := setupWindowsMachinePairingLedgerAt(path, time.Now().UTC()); err != nil {
+		return err
+	}
 
 	status = inspectMachineNamespaceAt(path)
 	if !status.Ready {
 		return fmt.Errorf("%w: %s", ErrNamespaceNotReady, status.Detail)
+	}
+	return nil
+}
+
+func setupWindowsMachinePairingLedgerAt(namespace string, now time.Time) error {
+	if err := validateWindowsMachinePairingLedgerAt(namespace); err == nil {
+		return nil
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+
+	path := filepath.Join(namespace, pairingLedgerFilename)
+	if err := createPairingLedgerFile(path, 0o600, now, false); err != nil {
+		return fmt.Errorf("create %s: %w", pairingLedgerFilename, err)
+	}
+	if err := setWindowsOwner(path); err != nil {
+		return fmt.Errorf("set %s owner: %w", pairingLedgerFilename, err)
+	}
+	if err := setWindowsDACL(path, windowsFileAccessMask()); err != nil {
+		return fmt.Errorf("protect %s: %w", pairingLedgerFilename, err)
+	}
+	return validateWindowsMachinePairingLedgerAt(namespace)
+}
+
+func validateWindowsMachinePairingLedgerAt(namespace string) error {
+	path := filepath.Join(namespace, pairingLedgerFilename)
+	if err := validateMachinePairingLedgerFile(path); err != nil {
+		return err
+	}
+	validationTime := time.Date(9999, time.December, 31, 23, 59, 59, 0, time.UTC)
+	if _, err := readPairingLedgerSnapshot(path, validationTime, "", validateMachinePairingLedgerFile); err != nil {
+		return fmt.Errorf("%w: pairing journal validation failed: %v", ErrNamespaceUnsafe, err)
 	}
 	return nil
 }

@@ -90,13 +90,14 @@ func (e *OwnerHeldError) Unwrap() error {
 // The lock file is intentionally retained after Close so contenders never
 // split across file identities.
 type Owner struct {
-	mu        sync.Mutex
-	file      *os.File
-	lockPath  string
-	tripStore *safetyTripStore
-	info      OwnerInfo
-	closed    bool
-	claimed   bool
+	mu            sync.Mutex
+	file          *os.File
+	lockPath      string
+	tripStore     *safetyTripStore
+	pairingLedger *PairingAdmissionLedger
+	info          OwnerInfo
+	closed        bool
+	claimed       bool
 }
 
 // AcquirePreparedNamespace acquires an OS-level exclusive lock in namespace.

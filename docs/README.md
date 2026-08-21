@@ -34,6 +34,7 @@ When documents disagree, treat `CONNECTIVITY-SOLVER-BASELINE.md` as the source o
 - Phase 1a governed synchronized direct-punch simulation boundary: [`DIRECT-PUNCH-SIMULATION.md`](./DIRECT-PUNCH-SIMULATION.md)
 - Phase 1a simulation-only NNpsk0 implementation evidence and limits: [`NOISE-CORE.md`](./NOISE-CORE.md)
 - Phase 1a cross-process and cross-restart pairing admission contract: [`PAIRING-RESTART-SAFETY-CONTRACT.md`](./PAIRING-RESTART-SAFETY-CONTRACT.md)
+- Phase 1a machine-only persistent pairing admission journal implementation: [`PAIRING-ADMISSION-JOURNAL.md`](./PAIRING-ADMISSION-JOURNAL.md)
 - Phase 1a loopback-only STUN Binding observation slice: [`STUN-OBSERVATION-CLIENT.md`](./STUN-OBSERVATION-CLIENT.md)
 - Experimental response-only STUN Binding responder: [`STUN-RESPONDER.md`](./STUN-RESPONDER.md)
 - Test-only in-memory observation exchange protocol and deployment boundary: [`SIGNAL-EXCHANGE.md`](./SIGNAL-EXCHANGE.md)
