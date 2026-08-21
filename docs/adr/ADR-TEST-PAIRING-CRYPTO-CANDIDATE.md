@@ -348,6 +348,43 @@ real test channel. Selection would require at least:
 If those conditions cannot be met, this library must be rejected rather than
 vendored or silently forked.
 
+### 5.5 In-repository implementation evidence (awaiting review)
+
+Implementation evidence submitted, awaiting review. A simulation-only,
+from-spec implementation of the fixed
+`Noise_NNpsk0_25519_ChaChaPoly_SHA256` profile now exists at
+[`internal/v2/noisecore`](../../internal/v2/noisecore), with its scope and
+limitations recorded in [`NOISE-CORE.md`](../NOISE-CORE.md).
+
+The evidence adds no module dependency and gives the package no socket, file,
+DNS, signaling, CLI, or runtime authority. Architecture tests keep it inside
+the existing simulation-only boundary, reject production importers, reject
+`net` imports, and keep the core independent of other WinkYou packages. The
+WinkYou-specific test passes the exact bytes produced by
+`testpairing.BuildNoisePrologue`; the core does not duplicate JCS or secret
+derivation.
+
+Byte-level interoperability is checked against the
+[`Noise_NNpsk0_25519_ChaChaPoly_SHA256` Cacophony vector](https://raw.githubusercontent.com/haskell-cryptography/cacophony/8ee9d41e34a1a596cfa3ab12aa4069ff87dc1247/vectors/cacophony.txt)
+from commit `8ee9d41e34a1a596cfa3ab12aa4069ff87dc1247` (Unlicense; vector blob
+`b8a271ed1aba8b4a56bf429e559d7947827123b4`). Tests reproduce both handshake
+messages, the final handshake hash, and the subsequent bidirectional transport
+messages byte for byte. Negative coverage includes wrong PSK and prologue,
+every-byte handshake mutation, truncation, oversize input, ordering, replay,
+all-zero/low-order X25519 input, nonce encoding/exhaustion, terminal
+authentication failure, race tests, and fuzz seeds.
+
+One prompt assumption was corrected to match revision 34: because `psk0`
+executes before the first `e` token, the first empty handshake payload already
+has an authentication tag. A one-bit PSK mismatch is therefore rejected by the
+responder while reading message one, rather than waiting for message two.
+
+This code is review evidence, not a selected implementation. In particular, a
+new in-repository implementation has no prior independent audit and does not by
+itself satisfy section 2 criterion 5 or the decision fields in section 9. The
+ADR remains Draft, `connect_test` remains `not_implemented`, and no real-channel
+or network authorization follows from this evidence.
+
 ## 6. Test-vector and verification plan
 
 No vector is normative until reviewed and committed with a schema version and
