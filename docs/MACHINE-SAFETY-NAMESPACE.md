@@ -120,8 +120,9 @@ There is intentionally no automatic fallback to a per-user or per-data-directory
 
 `internal/governor.AcquireMachineNamespace` validates the canonical namespace before acquiring ownership. Governor construction refuses tripped, corrupt, missing, or latch/record-mismatched safety-trip state. `Governor.Trip` persists the latch, synchronously signals every attempt to stop, and lets the governor's bounded drain controller revoke the leases only after registered I/O witnesses finish or time out; restart tests prove that a new governor remains blocked until an explicit sequence-bound reset. See [`CANCELLATION-DRAIN-CONTRACT.md`](./CANCELLATION-DRAIN-CONTRACT.md). The pairing journal now has a machine-owner-bound storage and policy evaluator, but no admission gate or carrier consumes it. The `wink diagnose` integration remains passive-only. Its explicit user-scope mode only prepares, acquires, proves, and releases the lower per-user authority. No legacy runtime, solver strategy, active `doctor` probe, STUN path, recovery loop, `noisecore` session, or `connect_test` is wired to the journal. Therefore this foundation alone does not make current active networking safe and does not authorize live or production testing.
 
-The next pairing integration is a separately reviewed zero-network admission
-gate with a process-external emission witness. Any later active-I/O integration
-must fail before opening a socket if machine ownership, safety state, ledger
-admission, or the governed attempt lease is unavailable, and must route every
-permitted probe through `probeio`.
+The zero-network pairing admission gate and process-external emission witness
+are now implemented and remain intentionally unconnected; see
+[`PAIRING-ADMISSION-GATE.md`](./PAIRING-ADMISSION-GATE.md). Any later active-I/O
+integration must fail before opening a socket if machine ownership, safety
+state, ledger admission, or the governed attempt lease is unavailable, and
+must route every permitted probe through `probeio`.

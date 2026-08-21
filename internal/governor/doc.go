@@ -4,7 +4,7 @@
 // budgets across cooperating official processes and OS restarts.
 //
 // This package deliberately does not create sockets or start network work. A
-// caller must first acquire one prepared safety namespace. The pairing journal
-// still has no carrier integration; future active work must separately obtain
-// durable admission plus peer and attempt leases before probeio can perform I/O.
+// caller must first acquire one prepared safety namespace. The zero-network
+// pairing gate combines a durable admission with a live attempt lease, but has
+// no production carrier; probeio remains the only reviewed future I/O boundary.
 package governor
