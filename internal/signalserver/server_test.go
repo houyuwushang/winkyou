@@ -310,6 +310,48 @@ func TestOpenServesLoopbackAndShutsDownWithContext(t *testing.T) {
 	}
 }
 
+// TestEarlyResponsesAreReadableOverTCP reproduces a real client reading a
+// rate-limited response. Before draining the bounded request body, the kernel
+// could reset the connection and hide the 429 status from the client.
+func TestEarlyResponsesAreReadableOverTCP(t *testing.T) {
+	server, err := Open(Config{ListenAddr: netip.MustParseAddrPort("127.0.0.1:0")})
+	if err != nil {
+		t.Fatalf("open server: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- server.Serve(ctx) }()
+	defer func() {
+		cancel()
+		<-done
+		_ = server.Close()
+	}()
+	url := "http://" + server.ListenAddr().String() + ExchangePath
+	client := &http.Client{Timeout: 2 * time.Second}
+	sawRateLimited := false
+	for index := 0; index < PerSourceMaxRPS+8; index++ {
+		body := fmt.Sprintf(`{"code":"early-body-code-%04d","role":"a","payload":{"index":%d}}`, index, index)
+		request, err := http.NewRequest(http.MethodPost, url, strings.NewReader(body))
+		if err != nil {
+			t.Fatalf("new request %d: %v", index, err)
+		}
+		request.Header.Set("Content-Type", "application/json")
+		response, err := client.Do(request)
+		if err != nil {
+			t.Fatalf("request %d failed instead of returning a status: %v", index, err)
+		}
+		_, _ = io.Copy(io.Discard, response.Body)
+		_ = response.Body.Close()
+		if response.StatusCode == http.StatusTooManyRequests {
+			sawRateLimited = true
+		}
+	}
+	if !sawRateLimited {
+		t.Fatal("burst never produced a readable 429")
+	}
+}
+
 func newTestServer(t *testing.T) *Server {
 	t.Helper()
 	server, err := New(Config{ListenAddr: netip.MustParseAddrPort("127.0.0.1:0")})

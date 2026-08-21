@@ -275,6 +275,12 @@ type exchangeResponse struct {
 
 func (server *Server) ServeHTTP(response http.ResponseWriter, request *http.Request) {
 	setResponseHeaders(response.Header())
+	// Bound the body before any early response. Draining the bounded remainder
+	// before returning lets the client read the status instead of a TCP reset.
+	request.Body = http.MaxBytesReader(response, request.Body, server.settings.maxBodyBytes)
+	defer func() {
+		_, _ = io.Copy(io.Discard, request.Body)
+	}()
 	source, err := requestSource(request.RemoteAddr)
 	if err != nil {
 		server.recordInvalid()
@@ -309,7 +315,6 @@ func (server *Server) ServeHTTP(response http.ResponseWriter, request *http.Requ
 		writeAPIError(response, http.StatusUnsupportedMediaType, "invalid_request")
 		return
 	}
-	request.Body = http.MaxBytesReader(response, request.Body, server.settings.maxBodyBytes)
 	decoder := json.NewDecoder(request.Body)
 	decoder.DisallowUnknownFields()
 	var input exchangeRequest
