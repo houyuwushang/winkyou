@@ -1,8 +1,10 @@
 package punchsim
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"net/netip"
@@ -11,18 +13,22 @@ import (
 	"time"
 
 	"winkyou/internal/governor"
+	"winkyou/internal/v2/noisecore"
 	"winkyou/pkg/transport"
 )
 
 const (
 	SimulationPacketProtocol = "winkyou-test-punch/1"
+	SecurePacketProtocol     = "winkyou-test-punch-noise/1"
+	SecurePacketPrefix       = "WYNP\x01"
 	PathID                   = "direct/test-punch"
 
-	MaxPunchWindow      = time.Second
-	DefaultPunchWindow  = 500 * time.Millisecond
-	MaxOutboundPackets  = 2
-	MaxInboundPackets   = 2
-	MaxSimulationPacket = 256
+	MaxPunchWindow          = time.Second
+	DefaultPunchWindow      = 500 * time.Millisecond
+	MaxOutboundPackets      = 2
+	MaxInboundPackets       = 2
+	MaxSimulationPacket     = 256
+	MaxSecurePacketSequence = 2
 )
 
 var (
@@ -32,6 +38,7 @@ var (
 	ErrProbeSend        = errors.New("punchsim: simulated probe send failed")
 	ErrProbeReceive     = errors.New("punchsim: simulated probe receive failed")
 	ErrProbeSequence    = errors.New("punchsim: invalid simulated probe sequence")
+	ErrSecurePacket     = errors.New("punchsim: invalid secure simulation packet")
 	ErrPromotion        = errors.New("punchsim: promotion failed")
 	errUnexpectedPacket = errors.New("punchsim: unexpected simulated packet")
 )
@@ -70,6 +77,14 @@ type Config struct {
 	AttemptID             string
 	ObservationGeneration uint64
 	PunchWindow           time.Duration
+	Secure                *SecureConfig
+}
+
+// SecureConfig explicitly enables the simulation-only Noise mode. The caller
+// must finish the reviewed-profile handshake over its control carrier before
+// FIRE and transfers ownership of the bounded packet cipher to Run.
+type SecureConfig struct {
+	Packets *noisecore.PacketCipher
 }
 
 type Result struct {
@@ -77,6 +92,7 @@ type Result struct {
 	PeerEndpoint    netip.AddrPort
 	OutboundPackets int
 	InboundPackets  int
+	Secure          bool
 	Promotion       Promotion
 }
 
@@ -114,11 +130,28 @@ type punchResult struct {
 	inbound  int
 }
 
+type secureFrameType byte
+
+const (
+	secureFramePunchSYN    secureFrameType = 0x11
+	secureFramePunchSYNACK secureFrameType = 0x12
+	secureFramePunchACK    secureFrameType = 0x13
+)
+
+const securePunchBodySize = 16 + 8 + 1 + 1
+
 // Run starts only after an injected simulation gate has released FIRE. It
 // neither owns nor implements that gate. Run owns Socket on entry, closes it on
 // every failure, and returns Promotion.Transport only after promotion.
 func Run(ctx context.Context, input Config) (result Result, err error) {
 	socket := input.Socket
+	var securePackets *noisecore.PacketCipher
+	if input.Secure != nil {
+		securePackets = input.Secure.Packets
+		if securePackets != nil {
+			defer securePackets.Close()
+		}
+	}
 	promoted := false
 	if socket != nil {
 		defer func() {
@@ -135,7 +168,7 @@ func Run(ctx context.Context, input Config) (result Result, err error) {
 	if err := config.Socket.RegisterTarget(config.PeerEndpoint); err != nil {
 		return Result{}, fmt.Errorf("%w: register peer target: %w", ErrInvalidConfig, err)
 	}
-	punch, err := runPunch(ctx, config)
+	punch, err := runPunch(ctx, config, securePackets)
 	if err != nil {
 		return Result{}, err
 	}
@@ -158,6 +191,7 @@ func Run(ctx context.Context, input Config) (result Result, err error) {
 		PeerEndpoint:    config.PeerEndpoint,
 		OutboundPackets: punch.outbound,
 		InboundPackets:  punch.inbound,
+		Secure:          config.Secure != nil,
 		Promotion:       promotion,
 	}, nil
 }
@@ -182,6 +216,9 @@ func normalizeConfig(ctx context.Context, input Config) (normalizedConfig, error
 	if window <= 0 || window > MaxPunchWindow {
 		return normalizedConfig{}, ErrInvalidConfig
 	}
+	if input.Secure != nil && (input.Secure.Packets == nil || !input.Secure.Packets.Ready()) {
+		return normalizedConfig{}, ErrInvalidConfig
+	}
 	input.PeerEndpoint = netip.AddrPortFrom(input.PeerEndpoint.Addr().Unmap(), input.PeerEndpoint.Port())
 	input.PunchWindow = window
 	return normalizedConfig{Config: input, window: window}, nil
@@ -197,28 +234,30 @@ func validAttemptID(value string) bool {
 	return err == nil && len(decoded) == 16 && base64.RawURLEncoding.EncodeToString(decoded) == value
 }
 
-func runPunch(ctx context.Context, config normalizedConfig) (punchResult, error) {
+func runPunch(ctx context.Context, config normalizedConfig, packets *noisecore.PacketCipher) (punchResult, error) {
 	runCtx, cancel := context.WithTimeout(ctx, config.window)
 	defer cancel()
+	return runPunchWithin(runCtx, config, packets, punchResult{})
+}
 
-	result := punchResult{}
-	if err := sendSimulationPacket(runCtx, config, packetSYN); err != nil {
+func runPunchWithin(ctx context.Context, config normalizedConfig, packets *noisecore.PacketCipher, result punchResult) (punchResult, error) {
+	if err := sendSimulationPacket(ctx, config, packets, packetSYN); err != nil {
 		return result, err
 	}
 	result.outbound++
 
-	first, err := receiveSimulationPacket(runCtx, config)
+	first, err := receiveSimulationPacket(ctx, config, packets)
 	if err != nil {
 		return result, err
 	}
 	result.inbound++
 	switch first {
 	case packetSYN:
-		if err := sendSimulationPacket(runCtx, config, packetSYNACK); err != nil {
+		if err := sendSimulationPacket(ctx, config, packets, packetSYNACK); err != nil {
 			return result, err
 		}
 		result.outbound++
-		second, err := receiveSimulationPacket(runCtx, config)
+		second, err := receiveSimulationPacket(ctx, config, packets)
 		if err != nil {
 			return result, err
 		}
@@ -228,7 +267,7 @@ func runPunch(ctx context.Context, config normalizedConfig) (punchResult, error)
 		}
 		return result, nil
 	case packetSYNACK:
-		if err := sendSimulationPacket(runCtx, config, packetACK); err != nil {
+		if err := sendSimulationPacket(ctx, config, packets, packetACK); err != nil {
 			return result, err
 		}
 		result.outbound++
@@ -238,8 +277,18 @@ func runPunch(ctx context.Context, config normalizedConfig) (punchResult, error)
 	}
 }
 
-func sendSimulationPacket(ctx context.Context, config normalizedConfig, kind packetKind) error {
-	packet := simulationPacket(config.AttemptID, config.ObservationGeneration, config.Role, kind)
+func sendSimulationPacket(ctx context.Context, config normalizedConfig, packets *noisecore.PacketCipher, kind packetKind) error {
+	var packet []byte
+	if packets != nil {
+		var err error
+		packet, err = secureSimulationPacket(packets, config.AttemptID, config.ObservationGeneration, config.Role, kind)
+		if err != nil {
+			return fmt.Errorf("%w: %w", ErrSecurePacket, err)
+		}
+	} else {
+		packet = simulationPacket(config.AttemptID, config.ObservationGeneration, config.Role, kind)
+	}
+	defer clear(packet)
 	if len(packet) == 0 || len(packet) > MaxSimulationPacket {
 		return ErrInvalidConfig
 	}
@@ -255,8 +304,9 @@ func sendSimulationPacket(ctx context.Context, config normalizedConfig, kind pac
 	return nil
 }
 
-func receiveSimulationPacket(ctx context.Context, config normalizedConfig) (packetKind, error) {
+func receiveSimulationPacket(ctx context.Context, config normalizedConfig, packets *noisecore.PacketCipher) (packetKind, error) {
 	buffer := make([]byte, MaxSimulationPacket+1)
+	defer clear(buffer)
 	var received packetKind
 	_, from, err := config.Socket.ReceiveReply(ctx, buffer, func(packet []byte, source netip.AddrPort) error {
 		if source != config.PeerEndpoint {
@@ -265,6 +315,14 @@ func receiveSimulationPacket(ctx context.Context, config normalizedConfig) (pack
 		peerRole := RoleInitiator
 		if config.Role == RoleInitiator {
 			peerRole = RoleResponder
+		}
+		if packets != nil {
+			candidate, err := openSecureSimulationPacket(packets, packet, config.AttemptID, config.ObservationGeneration, peerRole)
+			if err != nil {
+				return err
+			}
+			received = candidate
+			return nil
 		}
 		for _, candidate := range []packetKind{packetSYN, packetSYNACK, packetACK} {
 			if string(packet) == string(simulationPacket(config.AttemptID, config.ObservationGeneration, peerRole, candidate)) {
@@ -287,12 +345,159 @@ func receiveSimulationPacket(ctx context.Context, config normalizedConfig) (pack
 		if errors.Is(err, errUnexpectedPacket) {
 			return "", fmt.Errorf("%w: %w", ErrProbeRejected, err)
 		}
+		if errors.Is(err, ErrSecurePacket) || errors.Is(err, noisecore.ErrAuthentication) || errors.Is(err, noisecore.ErrClosed) {
+			return "", fmt.Errorf("%w: %w", ErrProbeRejected, err)
+		}
 		return "", fmt.Errorf("%w: %w", ErrProbeReceive, err)
 	}
 	if received == "" {
 		return "", ErrProbeRejected
 	}
 	return received, nil
+}
+
+func secureFrame(frameType secureFrameType, sequence uint64, body []byte) []byte {
+	packet := make([]byte, 0, len(SecurePacketPrefix)+1+8+len(body))
+	packet = append(packet, SecurePacketPrefix...)
+	packet = append(packet, byte(frameType))
+	var sequenceBytes [8]byte
+	binary.BigEndian.PutUint64(sequenceBytes[:], sequence)
+	packet = append(packet, sequenceBytes[:]...)
+	clear(sequenceBytes[:])
+	packet = append(packet, body...)
+	return packet
+}
+
+func secureSimulationPacket(packets *noisecore.PacketCipher, attemptID string, generation uint64, role Role, kind packetKind) ([]byte, error) {
+	frameType, ok := secureFrameTypeForKind(kind)
+	if !ok {
+		return nil, ErrSecurePacket
+	}
+	sequence, ok := secureSequenceForKind(kind)
+	if !ok {
+		return nil, ErrSecurePacket
+	}
+	attemptBytes, err := base64.RawURLEncoding.DecodeString(attemptID)
+	if err != nil || len(attemptBytes) != 16 {
+		clear(attemptBytes)
+		return nil, ErrSecurePacket
+	}
+	body := make([]byte, securePunchBodySize)
+	copy(body[:16], attemptBytes)
+	clear(attemptBytes)
+	binary.BigEndian.PutUint64(body[16:24], generation)
+	body[24] = byte(roleCode(role))
+	body[25] = byte(frameType)
+	header := secureFrame(frameType, sequence, nil)
+	additionalData := secureAdditionalData(header)
+	ciphertext, err := packets.Seal(sequence, additionalData, body)
+	clear(body)
+	clear(additionalData)
+	if err != nil {
+		clear(header)
+		return nil, err
+	}
+	packet := make([]byte, 0, len(header)+len(ciphertext))
+	packet = append(packet, header...)
+	packet = append(packet, ciphertext...)
+	clear(header)
+	clear(ciphertext)
+	return packet, nil
+}
+
+func openSecureSimulationPacket(packets *noisecore.PacketCipher, packet []byte, attemptID string, generation uint64, peerRole Role) (packetKind, error) {
+	headerSize := len(SecurePacketPrefix) + 1 + 8
+	if len(packet) != headerSize+securePunchBodySize+noisecore.TagSize || !bytes.HasPrefix(packet, []byte(SecurePacketPrefix)) {
+		return "", ErrSecurePacket
+	}
+	frameType := secureFrameType(packet[len(SecurePacketPrefix)])
+	kind, ok := packetKindForSecureFrame(frameType)
+	if !ok {
+		return "", ErrSecurePacket
+	}
+	sequence := binary.BigEndian.Uint64(packet[len(SecurePacketPrefix)+1 : headerSize])
+	expectedSequence, ok := secureSequenceForKind(kind)
+	if !ok || sequence != expectedSequence || sequence > MaxSecurePacketSequence {
+		return "", ErrSecurePacket
+	}
+	additionalData := secureAdditionalData(packet[:headerSize])
+	plaintext, err := packets.Open(sequence, additionalData, packet[headerSize:])
+	clear(additionalData)
+	if err != nil {
+		return "", fmt.Errorf("%w: %w", ErrSecurePacket, err)
+	}
+	defer clear(plaintext)
+	attemptBytes, err := base64.RawURLEncoding.DecodeString(attemptID)
+	if err != nil || len(attemptBytes) != 16 {
+		clear(attemptBytes)
+		return "", ErrSecurePacket
+	}
+	defer clear(attemptBytes)
+	if len(plaintext) != securePunchBodySize ||
+		!bytes.Equal(plaintext[:16], attemptBytes) ||
+		binary.BigEndian.Uint64(plaintext[16:24]) != generation ||
+		plaintext[24] != byte(roleCode(peerRole)) ||
+		plaintext[25] != byte(frameType) {
+		return "", ErrSecurePacket
+	}
+	return kind, nil
+}
+
+func secureSequenceForKind(kind packetKind) (uint64, bool) {
+	switch kind {
+	case packetSYN:
+		return 0, true
+	case packetSYNACK:
+		return 1, true
+	case packetACK:
+		return 2, true
+	default:
+		return 0, false
+	}
+}
+
+func secureAdditionalData(header []byte) []byte {
+	additionalData := make([]byte, 0, len(SecurePacketProtocol)+1+len(header))
+	additionalData = append(additionalData, SecurePacketProtocol...)
+	additionalData = append(additionalData, 0)
+	additionalData = append(additionalData, header...)
+	return additionalData
+}
+
+func secureFrameTypeForKind(kind packetKind) (secureFrameType, bool) {
+	switch kind {
+	case packetSYN:
+		return secureFramePunchSYN, true
+	case packetSYNACK:
+		return secureFramePunchSYNACK, true
+	case packetACK:
+		return secureFramePunchACK, true
+	default:
+		return 0, false
+	}
+}
+
+func packetKindForSecureFrame(frameType secureFrameType) (packetKind, bool) {
+	switch frameType {
+	case secureFramePunchSYN:
+		return packetSYN, true
+	case secureFramePunchSYNACK:
+		return packetSYNACK, true
+	case secureFramePunchACK:
+		return packetACK, true
+	default:
+		return "", false
+	}
+}
+
+func roleCode(role Role) byte {
+	if role == RoleInitiator {
+		return 1
+	}
+	if role == RoleResponder {
+		return 2
+	}
+	return 0
 }
 
 func simulationPacket(attemptID string, generation uint64, role Role, kind packetKind) []byte {
