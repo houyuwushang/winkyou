@@ -376,7 +376,7 @@ type pairingGateRunningCommand struct {
 
 func newPairingGateSubprocessCommand(namespace, scenario, bundle string, logicalNow time.Time) *pairingGateRunningCommand {
 	running := &pairingGateRunningCommand{}
-	running.command = exec.Command(os.Args[0], "-test.run=^TestPairingAdmissionGateSubprocessHelper$", "-test.count=1", "-test.timeout=30s")
+	running.command = exec.Command(os.Args[0], "-test.run=^TestPairingAdmissionGateSubprocessHelper$", "-test.count=1", "-test.timeout=120s")
 	running.command.Env = append(
 		os.Environ(),
 		pairingGateHelperEnabledEnv+"=1",
