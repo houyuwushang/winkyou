@@ -11,11 +11,13 @@ Official WinkYou processes that may perform active connectivity work will share 
 | Windows | the OS-resolved ProgramData known folder plus `WinkYou-SafetyV2` |
 | Linux | `/var/lib/winkyou-safety-v2` |
 
-The directory contains three fixed files:
+The machine directory contains four fixed files:
 
 - `governor.lock`: the operating-system lock authority;
 - `governor.owner.json`: best-effort diagnostic metadata only.
 - `safety-trip.json`: a persistent fail-closed latch and checksummed diagnostic record.
+- `pairing-admission-v1.journal`: the append-only, cross-process and
+  cross-restart pairing admission budget.
 
 Metadata never proves ownership. A stale, corrupt, or user-modified metadata file cannot override the OS lock.
 
@@ -27,7 +29,7 @@ An installed package should prepare this namespace. Portable users can do the sa
 wink setup-machine-scope
 ```
 
-Creating the namespace requires an elevated terminal on Windows or root on Linux. Once it is valid, an ordinary user can run the command again as an idempotent validation. A precreated path, permission drift, unexpected owner, symbolic link/reparse point, hard-linked owner file, or unexpected ACL fails closed; setup does not silently repair or adopt it.
+Creating the namespace requires an elevated terminal on Windows or root on Linux. Once it is valid, an ordinary user can run the command again as an idempotent validation. The command also create-exclusively adds a missing pairing journal to a valid namespace installed before that journal existed. A precreated path, permission drift, unexpected owner, symbolic link/reparse point, hard-linked fixed file, malformed existing journal, or unexpected ACL fails closed; setup does not silently repair or adopt it.
 
 Inspection never changes the machine:
 
@@ -42,17 +44,17 @@ Both modes explicitly report that no WinkYou runtime or network activity was sta
 
 ### Windows
 
-The namespace directory and all three files use protected, non-inherited DACLs and an `Administrators` owner:
+The namespace directory and all four machine files use protected, non-inherited DACLs and an `Administrators` owner:
 
 - `LocalSystem` and built-in `Administrators`: full control;
 - `Authenticated Users` on the directory: list, traverse, read attributes, synchronize, and read permissions;
-- `Authenticated Users` on the three files: generic read and write, without delete, owner, or DACL rights.
+- `Authenticated Users` on the four files: generic read and write, without delete, owner, or DACL rights.
 
 This lets an ordinary official process acquire the lock and refresh diagnostic metadata while preventing it from creating, deleting, renaming, or replacing the fixed files. The ProgramData path comes from the Windows Known Folder API, so changing `%ProgramData%` cannot redirect the authority.
 
 ### Linux
 
-The direct parent must be a real, root-owned directory that is not writable by group or others. The namespace is `root:root` mode `0755`; all three fixed files are `root:root` mode `0666`. The validator rejects symbolic links, special files, extra hard links, special mode bits, and extended POSIX access ACLs.
+The direct parent must be a real, root-owned directory that is not writable by group or others. The namespace is `root:root` mode `0755`; all four machine files are `root:root` mode `0666`. The validator rejects symbolic links, special files, extra hard links, special mode bits, and extended POSIX access ACLs.
 
 World-writable fixed files are deliberate: an unprivileged official process must be able to lock and update them, while the non-writable directory prevents replacement or deletion. The lock file is retained after release so contenders never split across file identities.
 
@@ -89,6 +91,21 @@ to inspect configuration, interfaces, routes, lock state, and safety state. See
 
 Reset never starts a runtime or performs network activity. Corrupt or indeterminate state is not reset automatically.
 
+## Persistent pairing admission journal
+
+The machine-only pairing journal is initialized by explicit setup and is not
+part of the lower `user_acknowledged` namespace. Active APIs never create,
+truncate, repair, rotate, or compact it. Missing state is
+`ledger_not_initialized`; untrusted existing state is `ledger_indeterminate`.
+Both block future pairing admission without changing the independent safety
+trip.
+
+Journal writes are serialized by the existing machine governor OS owner lock.
+There is no second process lock, and the owner cannot close until an append and
+`fsync` complete. The fixed budgets, format, crash behavior, and current
+zero-network integration boundary are documented in
+[`PAIRING-ADMISSION-JOURNAL.md`](./PAIRING-ADMISSION-JOURNAL.md).
+
 This slice intentionally does not expose a standalone operator trip command: without the future local control channel or a probe-I/O latch watcher, such a command could write a marker while falsely implying that an already-running process had stopped sending. Active authorities call `Governor.Trip` directly; an independent operator kill switch remains a separately reviewed integration.
 
 ## Threat boundary
@@ -101,6 +118,10 @@ There is intentionally no automatic fallback to a per-user or per-data-directory
 
 ## Integration state
 
-`internal/governor.AcquireMachineNamespace` validates the canonical namespace before acquiring ownership. Governor construction refuses tripped, corrupt, missing, or latch/record-mismatched state. `Governor.Trip` persists the latch, synchronously signals every attempt to stop, and lets the governor's bounded drain controller revoke the leases only after registered I/O witnesses finish or time out; restart tests prove that a new governor remains blocked until an explicit sequence-bound reset. See [`CANCELLATION-DRAIN-CONTRACT.md`](./CANCELLATION-DRAIN-CONTRACT.md). The new `wink diagnose` integration is passive-only. Its explicit user-scope mode only prepares, acquires, proves, and releases the lower per-user authority. No legacy runtime, solver strategy, active `doctor` probe, STUN path, or recovery loop is wired to this package yet. Therefore this foundation alone does not make current active networking safe and does not authorize live or production testing.
+`internal/governor.AcquireMachineNamespace` validates the canonical namespace before acquiring ownership. Governor construction refuses tripped, corrupt, missing, or latch/record-mismatched safety-trip state. `Governor.Trip` persists the latch, synchronously signals every attempt to stop, and lets the governor's bounded drain controller revoke the leases only after registered I/O witnesses finish or time out; restart tests prove that a new governor remains blocked until an explicit sequence-bound reset. See [`CANCELLATION-DRAIN-CONTRACT.md`](./CANCELLATION-DRAIN-CONTRACT.md). The pairing journal now has a machine-owner-bound storage and policy evaluator, but no admission gate or carrier consumes it. The `wink diagnose` integration remains passive-only. Its explicit user-scope mode only prepares, acquires, proves, and releases the lower per-user authority. No legacy runtime, solver strategy, active `doctor` probe, STUN path, recovery loop, `noisecore` session, or `connect_test` is wired to the journal. Therefore this foundation alone does not make current active networking safe and does not authorize live or production testing.
 
-The next active-I/O integration must fail before opening a socket if machine ownership cannot be acquired, and must route every permitted probe through the future `probeio` enforcement point.
+The next pairing integration is a separately reviewed zero-network admission
+gate with a process-external emission witness. Any later active-I/O integration
+must fail before opening a socket if machine ownership, safety state, ledger
+admission, or the governed attempt lease is unavailable, and must route every
+permitted probe through `probeio`.
