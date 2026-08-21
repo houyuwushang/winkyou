@@ -37,9 +37,13 @@ func inspectUserAcknowledgedNamespaceAt(path string) NamespaceStatus {
 func setupMachineNamespaceAt(path string) error {
 	status := inspectMachineNamespaceAt(path)
 	if status.Ready {
-		return nil
+		if err := validateLinuxMachinePairingLedgerAt(path, 0, 0); err == nil {
+			return nil
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
 	}
-	if status.State != NamespaceMissing {
+	if !status.Ready && status.State != NamespaceMissing {
 		return fmt.Errorf("%w: %s", ErrNamespaceUnsafe, status.Detail)
 	}
 	elevated, err := machineScopeElevated()
@@ -177,7 +181,7 @@ func validateLinuxUserNamespaceParent(path string, expectedUID int) error {
 func setupLinuxMachineNamespaceAt(path string, expectedUID, expectedGID int) error {
 	status := inspectLinuxMachineNamespaceAt(path, expectedUID, expectedGID)
 	if status.Ready {
-		return nil
+		return setupLinuxMachinePairingLedgerAt(path, expectedUID, expectedGID, time.Now().UTC())
 	}
 	if status.State != NamespaceMissing {
 		return fmt.Errorf("%w: %s", ErrNamespaceUnsafe, status.Detail)
@@ -216,10 +220,51 @@ func setupLinuxMachineNamespaceAt(path string, expectedUID, expectedGID int) err
 			return fmt.Errorf("set %s mode: %w", name, err)
 		}
 	}
+	if err := setupLinuxMachinePairingLedgerAt(path, expectedUID, expectedGID, time.Now().UTC()); err != nil {
+		return err
+	}
 
 	status = inspectLinuxMachineNamespaceAt(path, expectedUID, expectedGID)
 	if !status.Ready {
 		return fmt.Errorf("%w: %s", ErrNamespaceNotReady, status.Detail)
+	}
+	return nil
+}
+
+func setupLinuxMachinePairingLedgerAt(namespace string, expectedUID, expectedGID int, now time.Time) error {
+	if err := validateLinuxMachinePairingLedgerAt(namespace, expectedUID, expectedGID); err == nil {
+		return nil
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+
+	path := filepath.Join(namespace, pairingLedgerFilename)
+	if err := createPairingLedgerFile(path, 0o666, now, false); err != nil {
+		return fmt.Errorf("create %s: %w", pairingLedgerFilename, err)
+	}
+	if err := os.Chown(path, expectedUID, expectedGID); err != nil {
+		return fmt.Errorf("set %s owner: %w", pairingLedgerFilename, err)
+	}
+	if err := os.Chmod(path, 0o666); err != nil {
+		return fmt.Errorf("set %s mode: %w", pairingLedgerFilename, err)
+	}
+	return validateLinuxMachinePairingLedgerAt(namespace, expectedUID, expectedGID)
+}
+
+func validateLinuxMachinePairingLedgerAt(namespace string, expectedUID, expectedGID int) error {
+	path := filepath.Join(namespace, pairingLedgerFilename)
+	validator := func(path string) error {
+		return validateLinuxPairingLedgerFileAt(path, expectedUID, expectedGID)
+	}
+	if err := validator(path); err != nil {
+		return err
+	}
+	// A structural setup check must not treat a wall-clock rollback as file
+	// corruption. A far-future instant validates framing and transitions while
+	// active reads continue to enforce the durable clock high-watermark.
+	validationTime := time.Date(9999, time.December, 31, 23, 59, 59, 0, time.UTC)
+	if _, err := readPairingLedgerSnapshot(path, validationTime, "", validator); err != nil {
+		return fmt.Errorf("%w: pairing journal validation failed: %v", ErrNamespaceUnsafe, err)
 	}
 	return nil
 }

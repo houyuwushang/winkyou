@@ -44,8 +44,52 @@ func TestLinuxMachineNamespaceSetupAndInspect(t *testing.T) {
 			t.Fatalf("%s mode = %04o, want 0666", name, got)
 		}
 	}
+	ledgerInfo, err := os.Stat(filepath.Join(path, pairingLedgerFilename))
+	if err != nil {
+		t.Fatalf("stat %s: %v", pairingLedgerFilename, err)
+	}
+	if got := ledgerInfo.Mode().Perm(); got != 0o666 {
+		t.Fatalf("%s mode = %04o, want 0666", pairingLedgerFilename, got)
+	}
+	if err := validateLinuxMachinePairingLedgerAt(path, uid, gid); err != nil {
+		t.Fatalf("validate pairing ledger: %v", err)
+	}
 	if trip := newSafetyTripStore(path).status(); trip.State != SafetyTripClear || trip.BlocksActiveWork {
 		t.Fatalf("initial safety trip status = %+v, want clear", trip)
+	}
+}
+
+func TestLinuxMachinePairingLedgerCorruptionIsNotRepaired(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "safety")
+	uid, gid := os.Geteuid(), os.Getegid()
+	if err := setupLinuxMachineNamespaceAt(path, uid, gid); err != nil {
+		t.Fatalf("setup namespace: %v", err)
+	}
+	journalPath := filepath.Join(path, pairingLedgerFilename)
+	file, err := os.OpenFile(journalPath, os.O_WRONLY|os.O_APPEND, 0)
+	if err != nil {
+		t.Fatalf("open journal for corruption: %v", err)
+	}
+	if _, err := file.Write([]byte{0xff}); err != nil {
+		_ = file.Close()
+		t.Fatalf("corrupt journal: %v", err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatalf("close corrupt journal: %v", err)
+	}
+	before, err := os.ReadFile(journalPath)
+	if err != nil {
+		t.Fatalf("read corrupt journal: %v", err)
+	}
+	if err := setupLinuxMachineNamespaceAt(path, uid, gid); !errors.Is(err, ErrNamespaceUnsafe) {
+		t.Fatalf("setup corrupt journal error = %v, want ErrNamespaceUnsafe", err)
+	}
+	after, err := os.ReadFile(journalPath)
+	if err != nil {
+		t.Fatalf("reread corrupt journal: %v", err)
+	}
+	if string(after) != string(before) {
+		t.Fatal("setup repaired or rewrote corrupt journal")
 	}
 }
 
@@ -122,6 +166,9 @@ func TestLinuxUserAcknowledgedNamespaceSetupAndInspect(t *testing.T) {
 		if got := info.Mode().Perm(); got != 0o600 {
 			t.Fatalf("%s mode = %04o, want 0600", name, got)
 		}
+	}
+	if _, err := os.Lstat(filepath.Join(path, pairingLedgerFilename)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("user namespace pairing journal = %v, want absent", err)
 	}
 }
 
