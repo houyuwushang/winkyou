@@ -287,6 +287,17 @@ a TPM-backed or external monotonic anchor and is outside this phase.
 Missing or visibly untrusted state still fails closed; the limitation is the
 undetectable restoration of a previously valid older state.
 
+On Linux, the canonical machine namespace deliberately keeps its files
+world-writable so that any local user's safety trip can block machine-wide
+active work. The journal checksum is unkeyed and detects corruption, not
+malice. A hostile unprivileged local user on a shared Linux host can therefore
+rewrite the journal wholesale and erase budget history, exactly as they could
+already clear a safety trip file. Phase 1a accepts this: the supported
+deployment for real connect-test admission is a single-operator machine.
+Multi-user Linux hosts must be treated as outside the admission trust
+boundary until a keyed or root-owned ledger design passes review. Windows
+relies on the reviewed DACL and does not share this gap.
+
 ## 12. Non-goals
 
 This contract does not implement or authorize:
