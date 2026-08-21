@@ -4,12 +4,14 @@ import (
 	"context"
 	"fmt"
 	"net/netip"
+	"strconv"
 	"strings"
 
 	"github.com/spf13/cobra"
 
 	passivediagnose "winkyou/internal/diagnose"
 	"winkyou/internal/governor"
+	"winkyou/internal/stunobserve"
 	"winkyou/pkg/version"
 )
 
@@ -38,6 +40,7 @@ func newDiagnoseCmdWithRunners(opts *Options, runner passiveDiagnoseRunner, acti
 	var governorScope string
 	var activeSTUNValues []string
 	var mapBehavior bool
+	var portAllocationSockets int
 	cmd := &cobra.Command{
 		Use:   "diagnose",
 		Short: "Collect passive diagnostics or explicitly request bounded STUN observations",
@@ -45,14 +48,41 @@ func newDiagnoseCmdWithRunners(opts *Options, runner passiveDiagnoseRunner, acti
 			"Missing machine scope is reported as active_probe_blocked rather than preventing passive output. " +
 			"Portable users may explicitly prove the lower per-user authority with --governor-scope=user-acknowledged; it is never selected from config or environment. " +
 			"Active STUN is off by default and requires one to three literal IP:port --active-stun flags.",
-		Args: cobra.NoArgs,
-		RunE: func(cmd *cobra.Command, _ []string) error {
+		Args: func(cmd *cobra.Command, args []string) error {
+			if len(args) == 0 {
+				return nil
+			}
+			if len(args) == 1 && cmd.Flags().Changed("port-allocation") {
+				return nil
+			}
+			return cobra.NoArgs(cmd, args)
+		},
+		RunE: func(cmd *cobra.Command, args []string) error {
+			portAllocationRequested := cmd.Flags().Changed("port-allocation")
+			if len(args) == 1 {
+				if !portAllocationRequested || portAllocationSockets != stunobserve.DefaultAllocationSockets {
+					return fmt.Errorf("unexpected diagnose argument %q", args[0])
+				}
+				value, parseErr := strconv.Atoi(args[0])
+				if parseErr != nil {
+					return fmt.Errorf("invalid --port-allocation value %q: use an integer", args[0])
+				}
+				portAllocationSockets = value
+			}
 			targets, err := parseActiveSTUNTargets(activeSTUNValues)
 			if err != nil {
 				return err
 			}
+			if mapBehavior && portAllocationRequested {
+				return fmt.Errorf("--map-behavior and --port-allocation are mutually exclusive")
+			}
 			if mapBehavior {
 				if err := passivediagnose.ValidateMappingBehaviorTargets(targets); err != nil {
+					return err
+				}
+			}
+			if portAllocationRequested {
+				if err := passivediagnose.ValidatePortAllocationRequest(targets, portAllocationSockets); err != nil {
 					return err
 				}
 			}
@@ -76,7 +106,12 @@ func newDiagnoseCmdWithRunners(opts *Options, runner passiveDiagnoseRunner, acti
 					return fmt.Errorf("active STUN runner is unavailable")
 				}
 				cmd.PrintErrln(passivediagnose.ActiveSTUNDisclosure)
-				active, err := activeRunner.Run(cmd.Context(), passivediagnose.ActiveSTUNOptions{Targets: targets, GovernorScope: scope, MapBehavior: mapBehavior})
+				active, err := activeRunner.Run(cmd.Context(), passivediagnose.ActiveSTUNOptions{
+					Targets:               targets,
+					GovernorScope:         scope,
+					MapBehavior:           mapBehavior,
+					PortAllocationSockets: portAllocationSockets,
+				})
 				passivediagnose.ApplyActiveSTUN(&report, active)
 				activeErr = err
 			}
@@ -94,6 +129,8 @@ func newDiagnoseCmdWithRunners(opts *Options, runner passiveDiagnoseRunner, acti
 	cmd.Flags().StringVar(&governorScope, "governor-scope", string(governor.ScopeMachine), "safety scope: machine or explicit user-acknowledged")
 	cmd.Flags().StringArrayVar(&activeSTUNValues, "active-stun", nil, "explicit literal STUN target IP:port (repeat up to 3 times; sends UDP)")
 	cmd.Flags().BoolVar(&mapBehavior, "map-behavior", false, "reuse one governed socket across 2-3 active STUN targets")
+	cmd.Flags().IntVar(&portAllocationSockets, "port-allocation", 0, "observe one target through 3-8 governed sockets (default 5 when flag has no value)")
+	cmd.Flags().Lookup("port-allocation").NoOptDefVal = strconv.Itoa(stunobserve.DefaultAllocationSockets)
 	return cmd
 }
 
@@ -219,6 +256,36 @@ func writeActiveSTUNReport(cmd *cobra.Command, report passivediagnose.ActiveSTUN
 		cmd.Printf("STUN error:      %s (reason=%s)\n", report.ErrorClass, report.Reason)
 	}
 	results := report.Results
+	if allocation := report.PortAllocation; allocation != nil {
+		limitations := "none"
+		if len(allocation.Limitations) > 0 {
+			values := make([]string, 0, len(allocation.Limitations))
+			for _, limitation := range allocation.Limitations {
+				values = append(values, string(limitation))
+			}
+			limitations = strings.Join(values, ",")
+		}
+		deltas := "none"
+		if len(allocation.Deltas) > 0 {
+			values := make([]string, 0, len(allocation.Deltas))
+			for _, delta := range allocation.Deltas {
+				values = append(values, strconv.Itoa(delta))
+			}
+			deltas = strings.Join(values, ",")
+		}
+		cmd.Printf("Port allocation: %s (scope=%s successes=%d/%d limitations=%s deltas=%s)\n", allocation.Behavior, allocation.EvidenceScope, allocation.SuccessfulSockets, allocation.TotalSockets, limitations, deltas)
+		for index, result := range allocation.Results {
+			cmd.Printf("  - socket=%d local=%s target=%s duration_ms=%d transmissions=%d scope=%s", index+1, dashIfEmpty(result.LocalAddress), dashIfEmpty(result.Target), result.DurationMS, result.Transmissions, result.ObservationScope)
+			if result.MappedAddress != "" {
+				cmd.Printf(" mapped=%s port_behavior=%s", result.MappedAddress, result.PortBehavior)
+			}
+			if result.ErrorClass != "" {
+				cmd.Printf(" error=%s reason=%s", result.ErrorClass, result.Reason)
+			}
+			cmd.Println()
+		}
+		return
+	}
 	if mapping := report.MappingBehavior; mapping != nil {
 		limitations := "none"
 		if len(mapping.Limitations) > 0 {
