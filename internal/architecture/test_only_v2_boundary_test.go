@@ -112,6 +112,7 @@ func TestLoopbackCarrierApprovalIsExactAndBidirectional(t *testing.T) {
 	punchSim := modulePath + "/internal/v2/punchsim"
 	punchProto := modulePath + "/internal/v2/punchproto"
 	noiseCore := modulePath + "/internal/v2/noisecore"
+	pairingContext := modulePath + "/internal/v2/pairingcontext"
 
 	checks := []struct {
 		importer string
@@ -120,10 +121,13 @@ func TestLoopbackCarrierApprovalIsExactAndBidirectional(t *testing.T) {
 	}{
 		{carrier, punchProto, true},
 		{carrier, noiseCore, true},
+		{carrier, pairingContext, true},
+		{modulePath + "/internal/v2/testpairing", pairingContext, true},
 		{punchSim, punchProto, true},
 		{punchSim, noiseCore, true},
 		{punchProto, noiseCore, true},
 		{carrier + "/child", punchProto, false},
+		{carrier + "/child", pairingContext, false},
 		{modulePath + "/cmd/wink", punchProto, false},
 		{carrier, punchSim, false},
 	}
@@ -134,7 +138,7 @@ func TestLoopbackCarrierApprovalIsExactAndBidirectional(t *testing.T) {
 	}
 
 	result := scanResult{packages: map[string]*packageInfo{
-		carrier: {imports: map[string]struct{}{punchProto: {}, noiseCore: {}}},
+		carrier: {imports: map[string]struct{}{punchProto: {}, noiseCore: {}, pairingContext: {}}},
 	}}
 	if violations := v2RestrictedDependencyViolations(result); len(violations) != 0 {
 		t.Fatalf("exact carrier approval produced violations: %v", violations)
@@ -186,13 +190,15 @@ func v2RestrictedDependencyViolations(result scanResult) []string {
 	punchSim := modulePath + "/internal/v2/punchsim"
 	noiseCore := modulePath + "/internal/v2/noisecore"
 	punchProto := modulePath + "/internal/v2/punchproto"
+	pairingContext := modulePath + "/internal/v2/pairingcontext"
 	simulationOnlyPackages := map[string]struct{}{
 		testPairing: {},
 		punchSim:    {},
 	}
 	loopbackPrimitives := map[string]struct{}{
-		noiseCore:  {},
-		punchProto: {},
+		noiseCore:      {},
+		punchProto:     {},
+		pairingContext: {},
 	}
 	forbiddenPunchSimImports := map[string]struct{}{
 		modulePath + "/internal/natsim":         {},
@@ -224,6 +230,8 @@ func approvedLoopbackPrimitiveImporter(importer, imported string) bool {
 	punchSim := modulePath + "/internal/v2/punchsim"
 	punchProto := modulePath + "/internal/v2/punchproto"
 	noiseCore := modulePath + "/internal/v2/noisecore"
+	pairingContext := modulePath + "/internal/v2/pairingcontext"
+	testPairing := modulePath + "/internal/v2/testpairing"
 	carrier := modulePath + "/internal/v2/loopbackcarrier"
 
 	switch imported {
@@ -231,6 +239,8 @@ func approvedLoopbackPrimitiveImporter(importer, imported string) bool {
 		return importer == punchProto || importer == punchSim || importer == carrier
 	case punchProto:
 		return importer == punchSim || importer == carrier
+	case pairingContext:
+		return importer == testPairing || importer == carrier
 	default:
 		return false
 	}

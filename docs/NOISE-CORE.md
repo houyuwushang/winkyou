@@ -3,7 +3,7 @@
 - 状态：**Phase 1a loopback-carrier approved 纯密码核心；仅允许被受审的精确回环 carrier 边界使用，非回环仍未授权**
 - 实现：`internal/v2/noisecore`
 - 固定协议：`Noise_NNpsk0_25519_ChaChaPoly_SHA256`
-- ADR：[`ADR-TEST-PAIRING-CRYPTO-CANDIDATE.md`](./adr/ADR-TEST-PAIRING-CRYPTO-CANDIDATE.md)，已于 2026-08-21 Accepted（仅限仿真实现，真实网络权限另行门禁）
+- ADR：[`ADR-TEST-PAIRING-CRYPTO-CANDIDATE.md`](./adr/ADR-TEST-PAIRING-CRYPTO-CANDIDATE.md)，已于 2026-08-21 Accepted（协议与仿真实现）；当前 exact loopback 接线仍等待独立 Draft 评审
 
 ## 1. 边界
 
@@ -16,11 +16,16 @@
 
 它不拥有 socket、文件、DNS、信令或任何网络能力，也不派生、读取或持久化 PSK。调用方必须通过 `PSKSource` 注入已经得到的 32 字节一次性 pairing secret。架构门禁只允许 `punchproto`、simulation adapter 与精确的 `internal/v2/loopbackcarrier` 导入本包；CLI、Runtime 和任何其他路径均会失败。本包仍禁止导入 `net` 或仓库内其他包。
 
-边界提升本身没有接线任何调用方，`connect_test` 仍稳定返回 `not_implemented`。本包没有授权非回环配对、身份系统、恢复控制器或生产传输。
+精确的 `internal/v2/loopbackcarrier` 现可在一次性回环 `connect_test` 中消费本包；
+`punchsim` 仍是 simulation-only。该接线没有授权非回环配对、身份系统、恢复控制器、
+长连接或生产数据传输。
 
 ## 2. Prologue 与 API
 
-WinkYou 调用方必须先严格校验 `PairingContext`，再把 `testpairing.BuildNoisePrologue` 的完整输出作为 `Config.Prologue` 传入。密码核心只消费调用方给出的字节，不复制 JCS 或 pairing 规则，从而保持协议上下文与密码原语的单一职责。跨包测试会用真实 builder 输出完成自互通。
+WinkYou 调用方必须先严格校验 `PairingContext`，再把
+`pairingcontext.BuildNoisePrologue` 的完整输出作为 `Config.Prologue` 传入。密码核心只
+消费调用方给出的字节，不复制 JCS 或 pairing 规则，从而保持协议上下文与密码原语的
+单一职责。simulation adapter 通过兼容包装继续使用同一 builder。
 
 最小调用顺序是：
 

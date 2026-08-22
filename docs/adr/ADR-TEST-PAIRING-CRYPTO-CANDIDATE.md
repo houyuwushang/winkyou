@@ -582,3 +582,27 @@ implementation. It still grants no real-network authority: `connect_test`
 stays `not_implemented` until its own reviewed wiring change passes the
 mini-spec section 12 gates and the field-test authorization items in the
 runbook.
+
+## 10. Draft loopback wiring evidence (2026-08-23)
+
+The separately reviewable loopback wiring revision proposes the exact
+`internal/v2/loopbackcarrier` as the sole consumer of pairing admission,
+`noisecore`, `punchproto`, and `probeio`. It adds no dependency and does not
+change this ADR's protocol selection or retroactively approve non-loopback
+network use.
+
+The proposed adapter accepts only canonical numeric loopback endpoints, burns
+one credential before constructing the carrier, performs the two Noise
+messages and encrypted SYN/SYN_ACK/ACK on the same governed UDP socket, then
+closes immediately after `PromoteTerminal` and durable FINISH. Its per-endpoint
+envelope is one socket, one target, one five-tuple, three packets, three PPS,
+and fifteen seconds. There is no retry, reconnect, application payload, raw
+socket return, or plaintext fallback.
+
+Real loopback packet witnesses cover the 3/2 successful outbound sequence,
+wrong PSK, tamper, replay, terminal-before-attempt-close ordering, and socket
+and goroutine drainage. Existing restart-safety subprocess tests continue to
+cover durable burn, concurrent processes, crash points, torn FINISH, and zero
+emission after restart. This section is implementation evidence only: the
+revision remains Draft until independent review, and LAN/NAT/public-network
+authorization remains explicitly undecided.

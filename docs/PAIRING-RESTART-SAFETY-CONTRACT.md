@@ -1,6 +1,7 @@
 # Pairing restart-safety contract (Phase 1a)
 
-Status: **Accepted design contract; implementation remains gated.**
+Status: **Accepted design contract; durable admission is implemented, while
+the exact loopback carrier remains subject to its independent Draft review.**
 
 This document freezes the cross-process and cross-restart safety contract for
 the Phase 1a test-only pairing path. It extends
@@ -11,8 +12,10 @@ implementation can be reviewed.
 The key words MUST, MUST NOT, REQUIRED, SHOULD, SHOULD NOT, and MAY are used as
 normative requirements.
 
-Nothing in this document authorizes a production socket, DNS lookup, live
-probe, daemon, automatic retry, recovery controller, or real `connect_test`.
+Nothing in this document by itself authorizes a socket, DNS lookup, live probe,
+daemon, automatic retry, recovery controller, or non-loopback `connect_test`.
+The separately reviewed loopback-only carrier must still obey every invariant
+in this contract.
 
 ## 1. Safety properties
 
@@ -93,8 +96,9 @@ zero bytes. The burn and reservation remain committed.
 ## 4. Machine scope only
 
 The first durable implementation supports only the canonical machine safety
-namespace and a machine-scoped `AttemptLease`. A future real `connect_test`
-MUST reject `user_acknowledged` locally before active I/O.
+namespace and a machine-scoped `AttemptLease`. The reviewed loopback
+`connect_test` adapter MUST reject `user_acknowledged` locally before active
+I/O and before durable burn.
 
 The Linux user-acknowledged namespace is under `/run/user/<uid>` and does not
 survive an operating-system restart. It therefore remains suitable for the
@@ -304,9 +308,10 @@ This contract does not implement or authorize:
 
 - automatic reconnect or the Phase 3a recovery controller;
 - automatic pairing-material generation;
-- real `connect_test` behavior or a stdio v1/v2 activation decision;
-- promotion of `internal/v2/noisecore`, `testpairing`, or `punchsim` into a
-  production dependency;
+- non-loopback `connect_test` behavior or a stdio version change beyond the
+  additive loopback-only activation;
+- promotion of `testpairing` or `punchsim` into a production dependency, or
+  use of `noisecore` outside the exact reviewed loopback carrier;
 - a socket, DNS lookup, live probe, public/home/shared-network test, daemon, or
   scheduled-task change; or
 - birthday-punch re-enablement.

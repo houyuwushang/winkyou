@@ -176,6 +176,8 @@ type Controller struct {
 
 	lifecycleCtx    context.Context
 	lifecycleCancel context.CancelFunc
+	handoffOnce     sync.Once
+	handoffDone     chan struct{}
 	drainOnce       sync.Once
 	ops             sync.WaitGroup
 	watchDone       chan struct{}
@@ -285,6 +287,7 @@ func New(config Config) (*Controller, error) {
 		lifecycleCancel:    lifecycleCancel,
 		pendingDone:        pendingDone,
 		watchDone:          make(chan struct{}),
+		handoffDone:        make(chan struct{}),
 	}
 	go controller.watchLifecycle()
 	return controller, nil
@@ -319,6 +322,10 @@ func (c *Controller) watchLifecycle() {
 		c.stopLocal()
 	case <-c.lease.Done():
 		c.stopLocal()
+	case <-c.handoffDone:
+		// A terminal-only promotion has revoked every probe handle and
+		// transferred the one verified datagram. The caller deliberately
+		// retains the attempt until its durable FINISH record is appended.
 	case <-timer.C():
 		_ = c.trip(governor.SafetyTripHardLimit, "attempt duration budget exhausted", ErrHardLimit)
 		c.stopLocal()
@@ -627,6 +634,19 @@ func (socket *ProbeSocket) ReceiveReply(ctx context.Context, dst []byte, verify 
 // PacketTransport, clears probe deadlines, revokes the old ProbeSocket, closes
 // every sibling socket, and releases the attempt lease.
 func (socket *ProbeSocket) Promote(target netip.AddrPort, pathID string) (Promotion, error) {
+	return socket.promote(target, pathID, true)
+}
+
+// PromoteTerminal performs the same atomic, one-time transport handoff as
+// Promote but retains the attempt lease. It exists only for reviewed carriers
+// that must close the short-lived promoted transport and durably record their
+// terminal result before releasing the attempt. The caller must eventually
+// close the Controller; the promoted Transport remains independently owned.
+func (socket *ProbeSocket) PromoteTerminal(target netip.AddrPort, pathID string) (Promotion, error) {
+	return socket.promote(target, pathID, false)
+}
+
+func (socket *ProbeSocket) promote(target netip.AddrPort, pathID string, closeLease bool) (Promotion, error) {
 	canonical, err := canonicalTarget(target)
 	if err != nil {
 		return Promotion{}, err
@@ -688,11 +708,16 @@ func (socket *ProbeSocket) Promote(target netip.AddrPort, pathID string) (Promot
 	c.lifecycleCancel()
 	delete(c.sockets, state.id)
 	c.releaseTargetsLocked(state)
+	siblings := c.detachOpenSocketsLocked()
 	c.mu.Unlock()
+	c.closeStates(siblings)
+	c.handoffOnce.Do(func() { close(c.handoffDone) })
 
-	if err := c.lease.Close(); err != nil {
-		_ = state.datagram.Close()
-		return Promotion{}, err
+	if closeLease {
+		if err := c.lease.Close(); err != nil {
+			_ = state.datagram.Close()
+			return Promotion{}, err
+		}
 	}
 	return Promotion{
 		PeerID:     c.lease.PeerID(),

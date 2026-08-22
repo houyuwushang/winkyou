@@ -6,6 +6,7 @@ import (
 	"go/parser"
 	"go/token"
 	"io/fs"
+	"os"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -20,9 +21,10 @@ var unconnectedPairingGateIdentifiers = map[string]struct{}{
 	"BeforeFirstEmission":           {},
 }
 
-func TestPairingAdmissionGateHasNoProductionConsumer(t *testing.T) {
+func TestPairingAdmissionGateHasOnlyReviewedCarrierConsumer(t *testing.T) {
 	root := repositoryRoot(t)
 	gateFile := filepath.ToSlash(filepath.Join("internal", "governor", "pairing_gate.go"))
+	carrierFile := filepath.ToSlash(filepath.Join("internal", "v2", "loopbackcarrier", "carrier.go"))
 	var violations []string
 	fset := token.NewFileSet()
 	err := filepath.WalkDir(root, func(filename string, entry fs.DirEntry, walkErr error) error {
@@ -43,7 +45,7 @@ func TestPairingAdmissionGateHasNoProductionConsumer(t *testing.T) {
 			return err
 		}
 		relative = filepath.ToSlash(relative)
-		if relative == gateFile {
+		if relative == gateFile || relative == carrierFile {
 			return nil
 		}
 		parsed, err := parser.ParseFile(fset, filename, nil, 0)
@@ -69,6 +71,31 @@ func TestPairingAdmissionGateHasNoProductionConsumer(t *testing.T) {
 	}
 	sort.Strings(violations)
 	if len(violations) > 0 {
-		t.Fatalf("pairing admission gate gained a production consumer before carrier review:\n%s", strings.Join(violations, "\n"))
+		t.Fatalf("pairing admission gate escaped the exact reviewed carrier:\n%s", strings.Join(violations, "\n"))
+	}
+}
+
+func TestPairingAdmissionGateApprovalIsExact(t *testing.T) {
+	approved := filepath.ToSlash(filepath.Join("internal", "v2", "loopbackcarrier", "carrier.go"))
+	checks := map[string]bool{
+		approved: true,
+		filepath.ToSlash(filepath.Join("internal", "v2", "loopbackcarrier", "child.go")): false,
+		filepath.ToSlash(filepath.Join("internal", "solverstdio", "handler.go")):         false,
+		filepath.ToSlash(filepath.Join("cmd", "wink", "main.go")):                        false,
+	}
+	for path, wanted := range checks {
+		if actual := path == approved; actual != wanted {
+			t.Errorf("pairing gate approval for %q = %t, want %t", path, actual, wanted)
+		}
+	}
+
+	payload, err := os.ReadFile(filepath.Join(repositoryRoot(t), filepath.FromSlash(approved)))
+	if err != nil {
+		t.Fatalf("read reviewed carrier: %v", err)
+	}
+	for identifier := range unconnectedPairingGateIdentifiers {
+		if !strings.Contains(string(payload), identifier) {
+			t.Errorf("reviewed carrier no longer consumes required gate step %s", identifier)
+		}
 	}
 }

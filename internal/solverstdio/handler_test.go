@@ -15,6 +15,7 @@ import (
 	passivediagnose "winkyou/internal/diagnose"
 	"winkyou/internal/governor"
 	"winkyou/internal/stdiojsonrpc"
+	"winkyou/internal/v2/loopbackcarrier"
 )
 
 func TestSupportedMethodsAreExactAndExcludeNetworkCapabilities(t *testing.T) {
@@ -72,8 +73,13 @@ func TestSafetyTripAllowsOnlyHandshakeStatusAndFrameworkCancel(t *testing.T) {
 	if _, rpcErr := handler.Handle(context.Background(), testRequest(t, MethodHandshake, validHandshakeParams()), discardProgress{}); rpcErr != nil {
 		t.Fatalf("handshake under trip: %+v", rpcErr)
 	}
-	if _, rpcErr := handler.Handle(context.Background(), testRequest(t, MethodStatus, `{}`), discardProgress{}); rpcErr != nil {
+	statusResult, rpcErr := handler.Handle(context.Background(), testRequest(t, MethodStatus, `{}`), discardProgress{})
+	if rpcErr != nil {
 		t.Fatalf("status under trip: %+v", rpcErr)
+	}
+	status, ok := statusResult.(StatusResult)
+	if !ok || status.PairingLedger.State != governor.PairingLedgerIndeterminate || !status.PairingLedger.BlocksActiveWork {
+		t.Fatalf("status pairing ledger = %+v", statusResult)
 	}
 	for _, request := range []stdiojsonrpc.Request{
 		testRequest(t, MethodDiagnose, `{}`),
@@ -201,12 +207,87 @@ func TestExportErrorDoesNotReflectDestination(t *testing.T) {
 	}
 }
 
-func TestConnectTestIsStableNotImplementedGate(t *testing.T) {
+func TestConnectTestWithoutReviewedAuthorityFailsStable(t *testing.T) {
 	handler := newTestHandler(t, &fakeAuthority{status: clearTrip()}, staticDiagnose{}, nil)
 	handler.handshaken.Store(true)
 	_, rpcErr := handler.Handle(context.Background(), testRequest(t, MethodConnectTest, `{"auth_scope":"test_only","complete_bundle":{},"deadline_ms":15000}`), discardProgress{})
-	if rpcErr == nil || rpcErr.Data.Class != ClassNotImplemented || rpcErr.Data.Reason != "crypto_adr_vectors_and_independent_security_review_required" {
+	if rpcErr == nil || rpcErr.Data.Class != ClassNotImplemented || rpcErr.Data.Reason != "loopback_carrier_not_available" {
 		t.Fatalf("connect_test gate = %+v", rpcErr)
+	}
+}
+
+func TestConnectTestExecutesReviewedLoopbackAuthorityAndRedactsBundle(t *testing.T) {
+	authority := &fakeConnectAuthority{
+		fakeAuthority: fakeAuthority{status: clearTrip()},
+		result: loopbackcarrier.Result{
+			Established: true, Bidirectional: true, Promoted: true,
+			Terminal: "success", NetworkScope: "loopback", OutboundPackets: 3,
+			WorstCaseEnvelope: governor.PairingEnvelopeFromAttemptCost(loopbackcarrier.AttemptCost()),
+		},
+		ledger: governor.PairingLedgerStatus{State: governor.PairingLedgerReady, Limits: governor.PairingAdmissionHardLimits()},
+	}
+	handler := newTestHandler(t, authority, staticDiagnose{}, nil)
+	handler.handshaken.Store(true)
+	progress := &recordingProgress{}
+	secretMarker := "bundle-secret-marker"
+	result, rpcErr := handler.Handle(context.Background(), testRequest(t, MethodConnectTest, `{"auth_scope":"test_only","complete_bundle":{"marker":"`+secretMarker+`"},"deadline_ms":15000}`), progress)
+	if rpcErr != nil {
+		t.Fatalf("connect_test: %+v", rpcErr)
+	}
+	if got := progress.stages(); !reflect.DeepEqual(got, []string{"validating_complete_bundle", "loopback_socket_ready", "terminal_finish_recorded"}) {
+		t.Fatalf("progress stages = %v", got)
+	}
+	response, ok := result.(ConnectTestResult)
+	if !ok || !response.Result.Established || response.PairingLedger.State != governor.PairingLedgerReady {
+		t.Fatalf("connect result = %+v", result)
+	}
+	encoded, _ := json.Marshal(result)
+	if strings.Contains(string(encoded), secretMarker) || strings.Contains(string(encoded), "complete_bundle") {
+		t.Fatalf("connect response reflected bundle: %s", encoded)
+	}
+	if string(authority.payload) != `{"marker":"`+secretMarker+`"}` {
+		t.Fatalf("authority payload = %s", authority.payload)
+	}
+}
+
+func TestConnectTestSocketReadyProgressFailureReturnsInternalError(t *testing.T) {
+	authority := &fakeConnectAuthority{fakeAuthority: fakeAuthority{status: clearTrip()}}
+	handler := newTestHandler(t, authority, staticDiagnose{}, nil)
+	handler.handshaken.Store(true)
+	progress := &stageFailingProgress{stage: string(loopbackcarrier.ProgressStageSocketReady)}
+	result, rpcErr := handler.Handle(context.Background(), testRequest(t, MethodConnectTest, `{"auth_scope":"test_only","complete_bundle":{}}`), progress)
+	if result != nil || rpcErr == nil || rpcErr.Data.Class != stdiojsonrpc.ClassInternalError {
+		t.Fatalf("progress failure = result %+v error %+v", result, rpcErr)
+	}
+}
+
+func TestConnectTestReturnsStableLoopbackErrorsAndRejectsUnknownFields(t *testing.T) {
+	for _, test := range []struct {
+		name  string
+		err   error
+		class string
+	}{
+		{"non-loopback", loopbackcarrier.ErrNonLoopbackBlocked, ClassNonLoopbackBlocked},
+		{"user scope", loopbackcarrier.ErrUserScopeBlocked, ClassUserScopeBlocked},
+		{"invalid bundle", loopbackcarrier.ErrInvalidBundle, ClassInvalidCompleteBundle},
+		{"admission", governor.ErrPairingAdmissionRejected, ClassPairingAdmissionBlocked},
+		{"carrier", loopbackcarrier.ErrCarrierProtocol, ClassConnectTestFailed},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			authority := &fakeConnectAuthority{fakeAuthority: fakeAuthority{status: clearTrip()}, err: test.err}
+			handler := newTestHandler(t, authority, staticDiagnose{}, nil)
+			handler.handshaken.Store(true)
+			_, rpcErr := handler.Handle(context.Background(), testRequest(t, MethodConnectTest, `{"auth_scope":"test_only","complete_bundle":{}}`), discardProgress{})
+			if rpcErr == nil || rpcErr.Data.Class != test.class || rpcErr.Data.Reason != test.class {
+				t.Fatalf("error = %+v", rpcErr)
+			}
+		})
+	}
+	handler := newTestHandler(t, &fakeConnectAuthority{fakeAuthority: fakeAuthority{status: clearTrip()}}, staticDiagnose{}, nil)
+	handler.handshaken.Store(true)
+	_, rpcErr := handler.Handle(context.Background(), testRequest(t, MethodConnectTest, `{"auth_scope":"test_only","complete_bundle":{},"unexpected":true}`), discardProgress{})
+	if rpcErr == nil || rpcErr.Data.Class != stdiojsonrpc.ClassInvalidParams {
+		t.Fatalf("unknown field = %+v", rpcErr)
 	}
 }
 
@@ -240,6 +321,28 @@ type fakeAuthority struct {
 	status governor.SafetyTripStatus
 	closed bool
 	mu     sync.Mutex
+}
+
+type fakeConnectAuthority struct {
+	fakeAuthority
+	result  loopbackcarrier.Result
+	err     error
+	payload []byte
+	ledger  governor.PairingLedgerStatus
+}
+
+func (authority *fakeConnectAuthority) ConnectTest(_ context.Context, payload []byte, _ string, progress loopbackcarrier.ProgressReporter) (loopbackcarrier.Result, error) {
+	authority.payload = append(authority.payload[:0], payload...)
+	if progress != nil {
+		if err := progress(loopbackcarrier.ProgressStageSocketReady); err != nil {
+			return loopbackcarrier.Result{}, err
+		}
+	}
+	return authority.result, authority.err
+}
+
+func (authority *fakeConnectAuthority) PairingLedgerStatus() governor.PairingLedgerStatus {
+	return authority.ledger
 }
 
 func (authority *fakeAuthority) Info() governor.OwnerInfo {
@@ -284,6 +387,15 @@ func (discardProgress) Report(string, bool) error { return nil }
 type recordingProgress struct {
 	mu      sync.Mutex
 	reports []string
+}
+
+type stageFailingProgress struct{ stage string }
+
+func (progress *stageFailingProgress) Report(stage string, _ bool) error {
+	if stage == progress.stage {
+		return errors.New("test progress sink failure")
+	}
+	return nil
 }
 
 func (progress *recordingProgress) Report(stage string, _ bool) error {

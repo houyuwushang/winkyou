@@ -665,6 +665,49 @@ func TestPromotionTransfersOneVerifiedFixedTarget(t *testing.T) {
 	}
 }
 
+func TestTerminalPromotionRetainsLeaseUntilCallerFinishes(t *testing.T) {
+	harness := newHarness(t, normalResources())
+	socket, datagram := openSocket(t, harness)
+	if err := socket.RegisterTarget(targetA); err != nil {
+		t.Fatalf("register target: %v", err)
+	}
+	datagram.queueRead([]byte("authenticated-finish"), targetA)
+	buffer := make([]byte, 64)
+	if _, _, err := socket.ReceiveReply(context.Background(), buffer, func([]byte, netip.AddrPort) error { return nil }); err != nil {
+		t.Fatalf("verify reply: %v", err)
+	}
+
+	promotion, err := socket.PromoteTerminal(targetA, "direct/terminal")
+	if err != nil {
+		t.Fatalf("promote terminal: %v", err)
+	}
+	select {
+	case <-harness.lease.Stopping():
+		t.Fatal("terminal promotion released the attempt before FINISH")
+	default:
+	}
+	select {
+	case <-harness.controller.watchDone:
+	case <-time.After(time.Second):
+		t.Fatal("terminal promotion did not retire the probeio drain")
+	}
+	if datagram.isClosed() {
+		t.Fatal("terminal promotion closed the transferred datagram")
+	}
+
+	if err := promotion.Transport.Close(); err != nil {
+		t.Fatalf("close promoted transport: %v", err)
+	}
+	if err := harness.controller.Close(); err != nil {
+		t.Fatalf("release terminal attempt: %v", err)
+	}
+	select {
+	case <-harness.lease.Done():
+	default:
+		t.Fatal("controller close did not release retained attempt")
+	}
+}
+
 func TestRejectedOrUnknownReplyCannotPromote(t *testing.T) {
 	t.Run("verifier rejected", func(t *testing.T) {
 		harness := newHarness(t, normalResources())
