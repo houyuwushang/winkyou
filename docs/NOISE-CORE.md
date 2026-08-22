@@ -1,6 +1,6 @@
 # Test-only Noise 握手核心
 
-- 状态：**Phase 1a simulation-only 实现证据，不是已批准的生产密码通道**
+- 状态：**Phase 1a loopback-carrier approved 纯密码核心；仅允许被受审的精确回环 carrier 边界使用，非回环仍未授权**
 - 实现：`internal/v2/noisecore`
 - 固定协议：`Noise_NNpsk0_25519_ChaChaPoly_SHA256`
 - ADR：[`ADR-TEST-PAIRING-CRYPTO-CANDIDATE.md`](./adr/ADR-TEST-PAIRING-CRYPTO-CANDIDATE.md)，已于 2026-08-21 Accepted（仅限仿真实现，真实网络权限另行门禁）
@@ -14,9 +14,9 @@
 - 握手完成后的发送、接收两个独立 `CipherState`；
 - 固定递增 nonce、认证失败即终止，以及显式 `Zeroize` / `Close`。
 
-它不拥有 socket、文件、DNS、信令或任何网络能力，也不派生、读取或持久化 PSK。调用方必须通过 `PSKSource` 注入已经得到的 32 字节一次性 pairing secret。架构门禁禁止 CLI、Runtime 和其他生产路径导入本包，并禁止本包导入 `net` 或仓库内其他包。
+它不拥有 socket、文件、DNS、信令或任何网络能力，也不派生、读取或持久化 PSK。调用方必须通过 `PSKSource` 注入已经得到的 32 字节一次性 pairing secret。架构门禁只允许 `punchproto`、simulation adapter 与精确的 `internal/v2/loopbackcarrier` 导入本包；CLI、Runtime 和任何其他路径均会失败。本包仍禁止导入 `net` 或仓库内其他包。
 
-`connect_test` 仍稳定返回 `not_implemented`。本包没有授权真实配对、真实网络测试、身份系统、恢复控制器或生产传输。
+边界提升本身没有接线任何调用方，`connect_test` 仍稳定返回 `not_implemented`。本包没有授权非回环配对、身份系统、恢复控制器或生产传输。
 
 ## 2. Prologue 与 API
 

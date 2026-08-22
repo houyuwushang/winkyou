@@ -18,7 +18,7 @@ func TestSimulationOnlyV2PackagesStayOutOfProductionPaths(t *testing.T) {
 		t.Fatalf("scan production Go sources: %v", err)
 	}
 
-	violations := simulationOnlyV2DependencyViolations(result)
+	violations := v2RestrictedDependencyViolations(result)
 	if len(violations) > 0 {
 		t.Fatalf("simulation-only v2 dependency escaped into a production path:\n  %s", strings.Join(violations, "\n  "))
 	}
@@ -29,7 +29,7 @@ func TestSimulationOnlyV2BoundaryDetectsNewProductionImporter(t *testing.T) {
 	result := scanResult{packages: map[string]*packageInfo{
 		modulePath + "/pkg/runtime": {imports: map[string]struct{}{punchSim: {}}},
 	}}
-	violations := simulationOnlyV2DependencyViolations(result)
+	violations := v2RestrictedDependencyViolations(result)
 	want := modulePath + "/pkg/runtime imports simulation-only " + punchSim
 	if len(violations) != 1 || violations[0] != want {
 		t.Fatalf("violations = %v, want %q", violations, want)
@@ -42,20 +42,20 @@ func TestSimulationOnlyV2BoundaryDetectsPunchSimCapabilityDependency(t *testing.
 	result := scanResult{packages: map[string]*packageInfo{
 		punchSim: {imports: map[string]struct{}{probeIO: {}}},
 	}}
-	violations := simulationOnlyV2DependencyViolations(result)
+	violations := v2RestrictedDependencyViolations(result)
 	want := punchSim + " imports forbidden simulation dependency " + probeIO
 	if len(violations) != 1 || violations[0] != want {
 		t.Fatalf("violations = %v, want %q", violations, want)
 	}
 }
 
-func TestSimulationOnlyV2BoundaryDetectsNoiseCoreProductionImporter(t *testing.T) {
+func TestLoopbackCarrierBoundaryDetectsNoiseCoreProductionImporter(t *testing.T) {
 	noiseCore := modulePath + "/internal/v2/noisecore"
 	result := scanResult{packages: map[string]*packageInfo{
 		modulePath + "/cmd/wink": {imports: map[string]struct{}{noiseCore: {}}},
 	}}
-	violations := simulationOnlyV2DependencyViolations(result)
-	want := modulePath + "/cmd/wink imports simulation-only " + noiseCore
+	violations := v2RestrictedDependencyViolations(result)
+	want := modulePath + "/cmd/wink imports loopback-carrier-approved " + noiseCore + " without approval"
 	if len(violations) != 1 || violations[0] != want {
 		t.Fatalf("violations = %v, want %q", violations, want)
 	}
@@ -67,7 +67,7 @@ func TestSimulationOnlyV2BoundaryAllowsPunchSimToUseNoiseCore(t *testing.T) {
 	result := scanResult{packages: map[string]*packageInfo{
 		punchSim: {imports: map[string]struct{}{noiseCore: {}}},
 	}}
-	if violations := simulationOnlyV2DependencyViolations(result); len(violations) != 0 {
+	if violations := v2RestrictedDependencyViolations(result); len(violations) != 0 {
 		t.Fatalf("simulation-only dependency produced violations: %v", violations)
 	}
 }
@@ -78,7 +78,7 @@ func TestSimulationOnlyV2BoundaryKeepsNoiseCoreIndependent(t *testing.T) {
 	result := scanResult{packages: map[string]*packageInfo{
 		noiseCore: {imports: map[string]struct{}{testPairing: {}}},
 	}}
-	violations := simulationOnlyV2DependencyViolations(result)
+	violations := v2RestrictedDependencyViolations(result)
 	want := noiseCore + " imports forbidden WinkYou dependency " + testPairing
 	if len(violations) != 1 || violations[0] != want {
 		t.Fatalf("violations = %v, want %q", violations, want)
@@ -93,6 +93,76 @@ func TestNoiseCoreDoesNotImportNetworkPackages(t *testing.T) {
 	}
 	if len(violations) != 0 {
 		t.Fatalf("noisecore gained a network import:\n  %s", strings.Join(violations, "\n  "))
+	}
+}
+
+func TestPunchProtoDoesNotImportNetworkPackages(t *testing.T) {
+	directory := filepath.Join(repositoryRoot(t), "internal", "v2", "punchproto")
+	violations, err := noiseCoreNetworkImportViolations(directory)
+	if err != nil {
+		t.Fatalf("scan punchproto imports: %v", err)
+	}
+	if len(violations) != 0 {
+		t.Fatalf("punchproto gained a network import:\n  %s", strings.Join(violations, "\n  "))
+	}
+}
+
+func TestLoopbackCarrierApprovalIsExactAndBidirectional(t *testing.T) {
+	carrier := modulePath + "/internal/v2/loopbackcarrier"
+	punchSim := modulePath + "/internal/v2/punchsim"
+	punchProto := modulePath + "/internal/v2/punchproto"
+	noiseCore := modulePath + "/internal/v2/noisecore"
+
+	checks := []struct {
+		importer string
+		imported string
+		allowed  bool
+	}{
+		{carrier, punchProto, true},
+		{carrier, noiseCore, true},
+		{punchSim, punchProto, true},
+		{punchSim, noiseCore, true},
+		{punchProto, noiseCore, true},
+		{carrier + "/child", punchProto, false},
+		{modulePath + "/cmd/wink", punchProto, false},
+		{carrier, punchSim, false},
+	}
+	for _, check := range checks {
+		if actual := approvedLoopbackPrimitiveImporter(check.importer, check.imported); actual != check.allowed {
+			t.Errorf("approvedLoopbackPrimitiveImporter(%q, %q) = %t, want %t", check.importer, check.imported, actual, check.allowed)
+		}
+	}
+
+	result := scanResult{packages: map[string]*packageInfo{
+		carrier: {imports: map[string]struct{}{punchProto: {}, noiseCore: {}}},
+	}}
+	if violations := v2RestrictedDependencyViolations(result); len(violations) != 0 {
+		t.Fatalf("exact carrier approval produced violations: %v", violations)
+	}
+}
+
+func TestLoopbackCarrierBoundaryDetectsNewUnauthorizedImporter(t *testing.T) {
+	punchProto := modulePath + "/internal/v2/punchproto"
+	result := scanResult{packages: map[string]*packageInfo{
+		modulePath + "/pkg/runtime": {imports: map[string]struct{}{punchProto: {}}},
+	}}
+	violations := v2RestrictedDependencyViolations(result)
+	want := modulePath + "/pkg/runtime imports loopback-carrier-approved " + punchProto + " without approval"
+	if len(violations) != 1 || violations[0] != want {
+		t.Fatalf("violations = %v, want %q", violations, want)
+	}
+}
+
+func TestLoopbackCarrierCannotImportPunchSim(t *testing.T) {
+	carrier := modulePath + "/internal/v2/loopbackcarrier"
+	punchSim := modulePath + "/internal/v2/punchsim"
+	result := scanResult{packages: map[string]*packageInfo{
+		carrier: {imports: map[string]struct{}{punchSim: {}}},
+	}}
+	violations := v2RestrictedDependencyViolations(result)
+	want := carrier + " imports simulation-only " + punchSim
+	if len(violations) != 1 || violations[0] != want {
+		t.Fatalf("violations = %v, want %q", violations, want)
 	}
 }
 
@@ -111,14 +181,18 @@ func TestNoiseCoreNetworkImportGateDetectsNet(t *testing.T) {
 	}
 }
 
-func simulationOnlyV2DependencyViolations(result scanResult) []string {
+func v2RestrictedDependencyViolations(result scanResult) []string {
 	testPairing := modulePath + "/internal/v2/testpairing"
 	punchSim := modulePath + "/internal/v2/punchsim"
 	noiseCore := modulePath + "/internal/v2/noisecore"
+	punchProto := modulePath + "/internal/v2/punchproto"
 	simulationOnlyPackages := map[string]struct{}{
 		testPairing: {},
 		punchSim:    {},
-		noiseCore:   {},
+	}
+	loopbackPrimitives := map[string]struct{}{
+		noiseCore:  {},
+		punchProto: {},
 	}
 	forbiddenPunchSimImports := map[string]struct{}{
 		modulePath + "/internal/natsim":         {},
@@ -131,15 +205,35 @@ func simulationOnlyV2DependencyViolations(result scanResult) []string {
 			switch {
 			case importer == noiseCore && strings.HasPrefix(imported, modulePath+"/"):
 				violations = append(violations, importer+" imports forbidden WinkYou dependency "+imported)
+			case importer == punchProto && strings.HasPrefix(imported, modulePath+"/") && imported != noiseCore:
+				violations = append(violations, importer+" imports forbidden WinkYou dependency "+imported)
 			case importer == punchSim && containsImportOrChild(forbiddenPunchSimImports, imported):
 				violations = append(violations, importer+" imports forbidden simulation dependency "+imported)
 			case containsImportOrChild(simulationOnlyPackages, imported) && !containsImportOrChild(simulationOnlyPackages, importer):
 				violations = append(violations, importer+" imports simulation-only "+imported)
+			case containsImportOrChild(loopbackPrimitives, imported) && !approvedLoopbackPrimitiveImporter(importer, imported):
+				violations = append(violations, importer+" imports loopback-carrier-approved "+imported+" without approval")
 			}
 		}
 	}
 	sort.Strings(violations)
 	return violations
+}
+
+func approvedLoopbackPrimitiveImporter(importer, imported string) bool {
+	punchSim := modulePath + "/internal/v2/punchsim"
+	punchProto := modulePath + "/internal/v2/punchproto"
+	noiseCore := modulePath + "/internal/v2/noisecore"
+	carrier := modulePath + "/internal/v2/loopbackcarrier"
+
+	switch imported {
+	case noiseCore:
+		return importer == punchProto || importer == punchSim || importer == carrier
+	case punchProto:
+		return importer == punchSim || importer == carrier
+	default:
+		return false
+	}
 }
 
 func noiseCoreNetworkImportViolations(directory string) ([]string, error) {

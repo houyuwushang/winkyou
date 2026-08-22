@@ -5,7 +5,8 @@
 - Decision owner: WinkYou maintainers, with independent security review
 - Selected candidate: **Candidate B at protocol level only (2026-08-14)**
 - Selected implementation: **in-repository `internal/v2/noisecore` (PR #59), from-spec, zero new module dependencies; `flynn/noise` not adopted**
-- Implementation authorization: **simulation-only; no socket, signaling, runtime, or `connect_test` authority**
+- Implementation authorization: **simulation plus the exact future loopback-carrier import boundary; no socket, signaling, runtime, or `connect_test` authority is added by this boundary-only revision**
+- Boundary promotion: **`noisecore` and the extracted pure `punchproto` may be imported only by the exact reviewed loopback carrier package; this adds no socket and grants no non-loopback authority**
 
 This ADR evaluates the two candidate families required by
 [`TEST-ONLY-PAIRING-MINI-SPEC.md`](../TEST-ONLY-PAIRING-MINI-SPEC.md), sections
