@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"sync"
 	"time"
+
+	"winkyou/internal/v2/pairingcontext"
 )
 
 const (
@@ -27,7 +29,7 @@ const (
 )
 
 var (
-	ErrInvalidContext    = errors.New("testpairing: invalid attempt context")
+	ErrInvalidContext    = pairingcontext.ErrInvalidContext
 	ErrExpired           = errors.New("testpairing: attempt expired")
 	ErrClockRollback     = errors.New("testpairing: clock moved backwards")
 	ErrCredentialUsed    = errors.New("testpairing: credential already burned")
