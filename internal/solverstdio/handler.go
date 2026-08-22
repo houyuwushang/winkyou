@@ -13,6 +13,7 @@ import (
 	passivediagnose "winkyou/internal/diagnose"
 	"winkyou/internal/governor"
 	"winkyou/internal/stdiojsonrpc"
+	"winkyou/internal/v2/loopbackcarrier"
 )
 
 type handler struct {
@@ -53,7 +54,7 @@ func (handler *handler) Handle(ctx context.Context, request stdiojsonrpc.Request
 	case MethodExportRedactedReport:
 		return handler.export(ctx, request, progress)
 	case MethodConnectTest:
-		return handler.connectTest(request)
+		return handler.connectTest(ctx, request, progress)
 	default:
 		return nil, stdiojsonrpc.NewRPCError(stdiojsonrpc.CodeMethodNotFound, stdiojsonrpc.ClassMethodNotFound, "method is not part of the v1 schema", false)
 	}
@@ -87,8 +88,8 @@ func (handler *handler) handshake(request stdiojsonrpc.Request) (any, *stdiojson
 			HardLimits:     governorLimits(hard),
 			Remaining:      remainingQuota(hard),
 		},
-		AuthScope:           "none",
-		SupportedAuthScopes: []string{},
+		AuthScope:           "test_only",
+		SupportedAuthScopes: []string{"test_only"},
 		SafetyTrip:          handler.authority.SafetyTripStatus(),
 		Methods:             SupportedMethods(),
 		Notifications: []NotificationCapability{{
@@ -117,6 +118,7 @@ func (handler *handler) status(ctx context.Context, request stdiojsonrpc.Request
 		MachineNamespace:       report.MachineNamespace,
 		Owner:                  report.Owner,
 		SafetyTrip:             handler.authority.SafetyTripStatus(),
+		PairingLedger:          handler.pairingLedgerStatus(),
 		NetworkActivityStarted: false,
 	}, nil
 }
@@ -175,14 +177,76 @@ func (handler *handler) export(ctx context.Context, request stdiojsonrpc.Request
 	return ExportResult{Written: true, Redaction: passivediagnose.ExportRedaction, Bytes: written}, nil
 }
 
-func (handler *handler) connectTest(request stdiojsonrpc.Request) (any, *stdiojsonrpc.RPCError) {
+func (handler *handler) connectTest(ctx context.Context, request stdiojsonrpc.Request, progress stdiojsonrpc.ProgressReporter) (any, *stdiojsonrpc.RPCError) {
+	defer clear(request.Params)
 	var params connectTestParams
 	if rpcErr := decodeMethodParams(request.Params, &params); rpcErr != nil {
 		return nil, rpcErr
 	}
-	rpcErr := stdiojsonrpc.NewRPCError(CodeNotImplemented, ClassNotImplemented, "connect_test is present in v1 but is not implemented", false)
-	rpcErr.Data.Reason = "crypto_adr_vectors_and_independent_security_review_required"
-	return nil, rpcErr
+	defer clear(params.CompleteBundle)
+	if params.AuthScope != "test_only" {
+		return nil, stdiojsonrpc.NewRPCError(stdiojsonrpc.CodeInvalidParams, stdiojsonrpc.ClassInvalidParams, "auth_scope must be test_only", false)
+	}
+	connector, ok := handler.authority.(connectTestAuthority)
+	if !ok {
+		rpcErr := stdiojsonrpc.NewRPCError(CodeNotImplemented, ClassNotImplemented, "connect_test authority is unavailable", false)
+		rpcErr.Data.Reason = "loopback_carrier_not_available"
+		return nil, rpcErr
+	}
+	if rpcErr := reportProgress(progress, "validating_complete_bundle", true); rpcErr != nil {
+		return nil, rpcErr
+	}
+	var progressErr error
+	result, err := connector.ConnectTest(ctx, params.CompleteBundle, handler.build.Version, func(stage loopbackcarrier.ProgressStage) error {
+		if progressErr != nil {
+			return progressErr
+		}
+		progressErr = progress.Report(string(stage), true)
+		return progressErr
+	})
+	clear(params.CompleteBundle)
+	if progressErr != nil {
+		return nil, stdiojsonrpc.NewRPCError(stdiojsonrpc.CodeInternalError, stdiojsonrpc.ClassInternalError, "progress notification could not be delivered", false)
+	}
+	if err != nil {
+		return nil, connectTestError(err)
+	}
+	if rpcErr := reportProgress(progress, "terminal_finish_recorded", false); rpcErr != nil {
+		return nil, rpcErr
+	}
+	return ConnectTestResult{
+		Result:        result,
+		PairingLedger: connector.PairingLedgerStatus(),
+	}, nil
+}
+
+func connectTestError(err error) *stdiojsonrpc.RPCError {
+	var code int
+	var class, message string
+	switch {
+	case errors.Is(err, loopbackcarrier.ErrNonLoopbackBlocked):
+		code, class, message = CodeNonLoopbackBlocked, ClassNonLoopbackBlocked, "connect_test permits literal loopback endpoints only"
+	case errors.Is(err, loopbackcarrier.ErrUserScopeBlocked):
+		code, class, message = CodeUserScopeBlocked, ClassUserScopeBlocked, "connect_test requires machine scope on both participants"
+	case errors.Is(err, loopbackcarrier.ErrInvalidBundle):
+		code, class, message = CodeInvalidCompleteBundle, ClassInvalidCompleteBundle, "complete_bundle failed strict validation"
+	case errors.Is(err, governor.ErrPairingAdmissionRejected), errors.Is(err, governor.ErrPairingCredentialUsed), errors.Is(err, governor.ErrPairingAdmissionRateLimited), errors.Is(err, governor.ErrPairingAdmissionCircuitOpen):
+		code, class, message = CodePairingAdmissionBlocked, ClassPairingAdmissionBlocked, "durable pairing admission rejected the attempt"
+	default:
+		code, class, message = CodeConnectTestFailed, ClassConnectTestFailed, "terminal loopback connect_test failed"
+	}
+	rpcErr := stdiojsonrpc.NewRPCError(code, class, message, false)
+	rpcErr.Data.Reason = class
+	return rpcErr
+}
+
+func (handler *handler) pairingLedgerStatus() governor.PairingLedgerStatus {
+	if authority, ok := handler.authority.(interface {
+		PairingLedgerStatus() governor.PairingLedgerStatus
+	}); ok {
+		return authority.PairingLedgerStatus()
+	}
+	return unavailablePairingLedgerStatus("pairing ledger status is unavailable from this authority")
 }
 
 func (handler *handler) safetyTripError() *stdiojsonrpc.RPCError {
