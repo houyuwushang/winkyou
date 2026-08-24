@@ -198,10 +198,12 @@ endpoint、identifier 或任何 handle；它不是额外网络授权。若通知
 下一次发射前终止并记录失败。
 
 每端最坏 envelope 固定为 1 socket、1 target、1 five-tuple、3 packets、3 PPS、
-15 seconds、heavyweight。initiator 成功时实际出站 3 包，responder 为 2 包。成功响应只
-报告一次性证明、实际出站包数、上述最坏 envelope 和脱敏 ledger 状态，不返回 endpoint、
-identifier、PSK、prologue、transcript 或可复用 transport。完整边界见
-[`LOOPBACK-CONNECT-TEST.md`](./LOOPBACK-CONNECT-TEST.md)。
+15 seconds、heavyweight。carrier 在该 envelope 内部把实际执行自限为 13 seconds：
+对端未在此窗口内出现时，attempt 以 `expired` 干净终局并全额消耗预算，不触发持久
+safety trip；`deadline_ms` 大于该窗口时以 carrier 自限为准。initiator 成功时实际出站
+3 包，responder 为 2 包。成功响应只报告一次性证明、实际出站包数、上述最坏 envelope
+和脱敏 ledger 状态，不返回 endpoint、identifier、PSK、prologue、transcript 或可复用
+transport。完整边界见 [`LOOPBACK-CONNECT-TEST.md`](./LOOPBACK-CONNECT-TEST.md)。
 
 ### `cancel`
 

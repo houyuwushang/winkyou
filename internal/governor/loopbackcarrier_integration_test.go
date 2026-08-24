@@ -275,6 +275,66 @@ func TestLoopbackCarrierCrashBeforePromoteBurnsAndRestartEmitsZero(t *testing.T)
 	assertReusable(t, responderLocal)
 }
 
+func TestLoopbackCarrierAbsentPeerExpiresCleanlyWithoutSafetyTrip(t *testing.T) {
+	now := time.Now().UTC().Truncate(time.Second)
+	namespace := t.TempDir()
+	if err := governor.PrepareLoopbackCarrierTestNamespace(namespace, now); err != nil {
+		t.Fatal(err)
+	}
+	machine, err := governor.AcquireLoopbackCarrierTestGovernor(namespace, "loopback-carrier-absent-peer")
+	if err != nil {
+		t.Fatal(err)
+	}
+	local := reserveLoopbackEndpoint(t)
+	absentPeer := reserveLoopbackEndpoint(t)
+	bundle, _ := processBundles(t, local, absentPeer, absentPeer, local, repeatedKey(81), now)
+
+	// The caller deadline is deliberately longer than the 15-second attempt
+	// duration budget. The carrier must self-cancel, append FINISH, and drain
+	// before probeio's duration tripwire latches the persistent safety trip.
+	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
+	defer cancel()
+	start := time.Now()
+	_, connectErr := loopbackcarrier.Connect(ctx, machine, bundle, "loopback-carrier-absent-peer", nil)
+	elapsed := time.Since(start)
+	if connectErr == nil {
+		t.Fatal("absent peer unexpectedly succeeded")
+	}
+	if !errors.Is(connectErr, context.DeadlineExceeded) {
+		t.Fatalf("absent peer error = %v, want context.DeadlineExceeded", connectErr)
+	}
+	if elapsed >= loopbackcarrier.AttemptDuration {
+		t.Fatalf("carrier ran %v, not strictly inside the %v attempt budget", elapsed, loopbackcarrier.AttemptDuration)
+	}
+	if err := machine.Close(); err != nil {
+		t.Fatalf("close governor after absent-peer expiry: %v", err)
+	}
+
+	reacquired, err := governor.AcquireLoopbackCarrierTestGovernor(namespace, "loopback-carrier-absent-peer-verify")
+	if err != nil {
+		t.Fatalf("absent-peer expiry latched the machine namespace: %v", err)
+	}
+	defer reacquired.Close()
+	if trip := reacquired.Snapshot().SafetyTrip; trip.State != governor.SafetyTripClear {
+		t.Fatalf("safety trip after absent-peer expiry = %+v, want clear", trip)
+	}
+	status, err := governor.InspectLoopbackCarrierTestLedger(namespace, time.Now())
+	if err != nil || status.OneHourAdmissions != 1 || status.ConsecutiveFailures != 1 {
+		t.Fatalf("absent-peer ledger = %+v/%v, want one charged admission and one recorded failure", status, err)
+	}
+	assertReusable(t, local)
+}
+
+func reserveLoopbackEndpoint(t *testing.T) netip.AddrPort {
+	t.Helper()
+	holder := listen(t)
+	endpoint := address(holder)
+	if err := holder.Close(); err != nil {
+		t.Fatalf("release reserved endpoint: %v", err)
+	}
+	return endpoint
+}
+
 type carrierProcess struct {
 	command    *exec.Cmd
 	stderr     bytes.Buffer

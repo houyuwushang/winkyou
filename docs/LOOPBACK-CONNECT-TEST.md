@@ -65,6 +65,12 @@ fingerprint 不一致、时效错误、非回环地址或非 machine scope 都�
 initiator 的最坏出站序列为 Noise message 1、SYN、ACK，共 3 包；responder 为 Noise
 message 2、SYN_ACK，共 2 包。没有重传，因此失败成本不会超过预留 envelope。
 
+attempt 时长 15 seconds 是预留的最坏 envelope；carrier 在 envelope 内部自我设限为
+13 seconds（保留 2 seconds 终局余量）。对端始终缺席或停滞时，carrier 在 13 seconds
+处以 `expired` 干净终局：写入 durable FINISH、排水并关闭，不触发持久 safety trip。
+预算照常全额消耗，不退款。probeio 的 15-second duration tripwire 仍然保留，只作为
+carrier 本身卡死时的持久兜底。
+
 ## 4. 证据与剩余门禁
 
 测试使用真实回环 UDP proxy 作为进程外 packet witness，核对正常路径 3/2 包以及错误

@@ -19,6 +19,13 @@ const (
 	MaxOutboundPackets   = 3
 	MaxPacketsPerSecond  = 3
 	handshakePacketBytes = noisecore.PublicKeySize + noisecore.TagSize
+
+	// terminalDrainMargin is reserved out of AttemptDuration so a peerless or
+	// stalled attempt cancels itself, appends its durable FINISH, and stops
+	// the probeio lifecycle strictly before the duration tripwire would latch
+	// the persistent machine safety trip. The worst-case admission envelope
+	// still charges the full AttemptDuration.
+	terminalDrainMargin = 2 * time.Second
 )
 
 // ProgressStage identifies a redacted, non-authoritative lifecycle witness.
@@ -143,6 +150,8 @@ func (carrier *admittedCarrier) run(ctx context.Context) (result Result, err err
 	if carrier == nil || carrier.authorization == nil || carrier.attempt == nil || carrier.bundle == nil {
 		return Result{}, ErrCarrierUnavailable
 	}
+	ctx, cancelRun := context.WithTimeout(ctx, AttemptDuration-terminalDrainMargin)
+	defer cancelRun()
 	reason := governor.PairingTerminalCarrierError
 	var controller *probeio.Controller
 	defer func() {
