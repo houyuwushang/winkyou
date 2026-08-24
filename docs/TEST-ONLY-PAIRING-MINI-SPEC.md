@@ -459,6 +459,164 @@ opaque byte string no larger than 2048 bytes. It MUST NOT be interpreted as an
 endpoint, resource request, governor choice, strategy name, socket count, or
 permission to perform I/O.
 
+### 7.1 N2 non-loopback direct-attempt profile
+
+The preceding JSON envelope remains unchanged for its existing `/1` consumers.
+The zero-network N2 protocol uses a distinct, non-negotiated overlay with all of
+these exact identifiers:
+
+| Purpose | Identifier |
+| --- | --- |
+| OOB artifact | `winkyou-test-direct-attempt-oob/1` |
+| direct-attempt control | `winkyou-test-direct-attempt-control/1` |
+| rendezvous presence | `winkyou-test-direct-presence/1` |
+| frame golden schema | `winkyou-test-direct-attempt-golden/1` |
+
+None of these identifiers aliases the loopback complete bundle or changes its
+parser. An unknown artifact, direct-attempt, rendezvous, pairing, or secure-
+channel profile is rejected before authority acquisition or I/O. There is no
+profile negotiation, fallback, or alternate encoding.
+
+The OOB artifact is a strict JSON object no larger than 4096 bytes. Every value
+is a string. Duplicate and unknown members, trailing documents, invalid UTF-8,
+and non-canonical base64url or UTC values are rejected. Its exact members are:
+
+```json
+{
+  "artifact": "winkyou-test-direct-attempt-oob/1",
+  "direct_attempt_profile": "winkyou-test-direct-attempt-control/1",
+  "rendezvous_profile": "winkyou-test-direct-presence/1",
+  "rendezvous_association_id": "<16-byte unpadded base64url>",
+  "local_role": "initiator|responder",
+  "protocol": "winkyou-test-pairing/1",
+  "auth_scope": "test_only",
+  "credential_id": "<16-byte unpadded base64url>",
+  "pairing_secret": "<32-byte unpadded base64url>",
+  "attempt_id": "<16-byte unpadded base64url>",
+  "observation_generation": "1",
+  "initiator_participant_id": "<16-byte unpadded base64url>",
+  "responder_participant_id": "<16-byte unpadded base64url>",
+  "initiator_governor_scope": "machine",
+  "responder_governor_scope": "machine",
+  "secure_channel_profile": "noise-nnpsk0-25519-chachapoly-sha256/1",
+  "issued_at": "<canonical UTC whole second>",
+  "expires_at": "<canonical UTC whole second, at most 10 minutes later>",
+  "artifact_fingerprint": "<32-byte unpadded base64url SHA-256>"
+}
+```
+
+It contains no local, peer, observed, or candidate direct endpoint. The five
+16-byte identifiers are pairwise distinct. Both governor scopes are exactly
+`machine`; N2 has no `user_acknowledged` form.
+
+`artifact_fingerprint` is SHA-256 over restricted JCS of the object after
+removing `pairing_secret`, `artifact_fingerprint`, and the recipient-local
+delivery selector `local_role`, then canonical unpadded base64url encoding.
+The retained fingerprint keys are therefore, in JCS order:
+`artifact`, `attempt_id`, `auth_scope`, `credential_id`,
+`direct_attempt_profile`, `expires_at`, `initiator_governor_scope`,
+`initiator_participant_id`, `issued_at`, `observation_generation`, `protocol`,
+`rendezvous_association_id`, `rendezvous_profile`,
+`responder_governor_scope`, `responder_participant_id`, and
+`secure_channel_profile`. Removing `local_role` lets the
+two recipient artifacts bind the same handshake context; initiator/responder
+assignment itself remains fixed by both participant IDs, the two channel-role
+members in `PairingContext`, the authenticated sender-role byte, and the legal
+sequence table below. A swapped recipient selector can only terminate the
+attempt; it cannot change a role or authorize a frame.
+
+The Noise handshake payload remains empty in both directions. For this exact
+profile only, the prologue is:
+
+```text
+BuildNoisePrologue(PairingContext) || 0x0a ||
+UTF8("winkyou non-loopback direct-attempt binding v1\n") ||
+UTF8("artifact=winkyou-test-direct-attempt-oob/1\n") ||
+UTF8("control=winkyou-test-direct-attempt-control/1\n") ||
+UTF8("rendezvous=winkyou-test-direct-presence/1\n")
+```
+
+After `TakePacketCipher(7)`, every envelope uses the following 18-byte header.
+All integers are unsigned big-endian and the ciphertext length includes the
+16-byte ChaChaPoly tag:
+
+| Offset | Size | Field | Frozen value |
+| ---: | ---: | --- | --- |
+| 0 | 4 | magic | ASCII `WYDA` |
+| 4 | 1 | version | `1` |
+| 5 | 1 | AD domain | `1=rendezvous-control`, `2=direct-punch` |
+| 6 | 1 | frame type | same numeric value as the table sequence |
+| 7 | 1 | sender role | `1=initiator`, `2=responder` |
+| 8 | 8 | Noise transport sequence | table value, big-endian |
+| 16 | 2 | ciphertext length | big-endian |
+
+The complete header plus ciphertext is at most 1024 bytes, so plaintext is at
+most 990 bytes. This ceiling is compiled; configuration may only lower it.
+Additional data is exactly:
+
+```text
+UTF8("winkyou-test-direct-attempt-ad/1") || 0x00 ||
+UTF8("winkyou-test-direct-attempt-control/1") || 0x00 ||
+UTF8(domain label) || 0x00 ||
+base64url_decode(attempt_id)[16] ||
+SHA256(JCS(PairingContext))[32] ||
+header[18]
+```
+
+The role-specific, intentionally sparse sequence sets are:
+
+| sequence/type | domain | initiator may send | responder may send |
+| ---: | --- | :---: | :---: |
+| 0 / PREPARE | rendezvous-control | yes | yes |
+| 1 / READY | rendezvous-control | yes | yes |
+| 2 / FIRE | rendezvous-control | yes | no |
+| 3 / SYN | direct-punch | yes | no |
+| 4 / SYN_ACK | direct-punch | no | yes |
+| 5 / ACK | direct-punch | yes | no |
+| 6 / VERIFY | rendezvous-control | yes | yes |
+| 7 / CANCEL | rendezvous-control | once while non-terminal | once while non-terminal |
+
+A sequence outside the sender's set, a type/sequence or type/domain mismatch,
+duplicate, replay, malformed length, oversize frame, authentication failure,
+or invalid transition closes the entire attempt. The wrapper does not expose a
+nonce setter and accepts no sequence above 7.
+
+PREPARE, FIRE, SYN, SYN_ACK, ACK, VERIFY, and CANCEL have empty plaintext.
+READY has the following canonical binary plaintext and contains no secret:
+
+| Offset | Size | Field |
+| ---: | ---: | --- |
+| 0 | 5 | ASCII `WYRD` followed by version byte `1` |
+| 5 | 32 | final Noise handshake hash |
+| 37 | 1 | sender role (`1` or `2`) |
+| 38 | 32 | `SHA256(JCS(PairingContext))` |
+| 70 | 8 | observation generation, unsigned big-endian and exactly `1` |
+| 78 | 1 | address family (`4` or `6`) |
+| 79 | 4 or 16 | canonical unicast, non-loopback address bytes |
+| next | 2 | non-zero port, unsigned big-endian |
+| next | 1 | direct-profile UTF-8 byte length |
+| next | variable | exact `winkyou-test-direct-attempt-control/1` bytes |
+
+IPv4-mapped IPv6, zones, unspecified, multicast, loopback, alternate address
+encodings, trailing bytes, wrong role/hash/context/generation/profile, and an
+invalid port are terminal errors. Only an authenticated READY endpoint may
+later be passed to `RegisterTarget`; this pure profile itself owns no such
+capability.
+
+After FIRE, the initiator sends SYN and the responder independently blind-sends
+SYN_ACK without waiting for SYN. The initiator sends ACK only after receiving
+SYN_ACK. The responder treats ACK as its local punch-completion witness and
+does not send a second SYN_ACK. Each side sends VERIFY only after its local
+punch completion; sending and receiving VERIFY is the sole success terminal.
+A unique delayed SYN may be authenticated after ACK but is never required for
+responder completion. Loss causes bounded failure, never retransmission.
+
+The byte-level synthetic vectors, including every legal sequence, both AD
+domains, READY, exact header bytes, ciphertext lengths, and big-endian fields,
+are in
+`internal/v2/directattempt/testdata/direct_attempt.synthetic.golden.json`.
+They contain only synthetic secrets and documentation addresses.
+
 ## 8. State machine and hard limits
 
 Both endpoints send exactly one PREPARE after channel establishment. Each sends
