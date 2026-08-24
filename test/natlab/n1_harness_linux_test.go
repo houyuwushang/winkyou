@@ -742,6 +742,9 @@ func (process *n1EndpointProcess) waitResult(t *testing.T) n1EndpointResult {
 			if !process.await(2 * time.Second) {
 				t.Fatal("N1 endpoint process did not exit after result")
 			}
+			if !result.OK {
+				t.Fatalf("N1 endpoint result failed: class=%s", result.ErrorClass)
+			}
 			process.waitMu.Lock()
 			waitErr := process.waitErr
 			process.waitMu.Unlock()
