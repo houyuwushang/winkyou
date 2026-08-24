@@ -72,12 +72,13 @@ var n1PlaintextSequence = [3][]byte{
 }
 
 type n1EndpointConfig struct {
-	Role        string `json:"role"`
-	GovernorDir string `json:"governor_dir"`
-	ReadyPath   string `json:"ready_path"`
-	ActionPath  string `json:"action_path"`
-	ResultPath  string `json:"result_path"`
-	PPS         int    `json:"pps"`
+	Role               string `json:"role"`
+	GovernorDir        string `json:"governor_dir"`
+	ReadyPath          string `json:"ready_path"`
+	ActionPath         string `json:"action_path"`
+	ActionAcceptedPath string `json:"action_accepted_path"`
+	ResultPath         string `json:"result_path"`
+	PPS                int    `json:"pps"`
 }
 
 type n1SupervisorConfig struct {
@@ -98,6 +99,10 @@ type n1Action struct {
 	Kind       string `json:"kind"`
 	PeerPort   uint16 `json:"peer_port,omitempty"`
 	SecondPort uint16 `json:"second_port,omitempty"`
+}
+
+type n1ActionAccepted struct {
+	Accepted bool `json:"accepted"`
 }
 
 type n1EndpointResult struct {
@@ -276,6 +281,9 @@ func runN1Endpoint(config n1EndpointConfig) (result n1EndpointResult, resultErr 
 	action, err := waitN1Action(harnessContext, config.ActionPath)
 	if err != nil {
 		return result, errors.Join(errors.New("action_wait"), err)
+	}
+	if err := writeN1JSON(config.ActionAcceptedPath, n1ActionAccepted{Accepted: true}); err != nil {
+		return result, errors.Join(errors.New("action_ack"), err)
 	}
 
 	operationDeadline := started.Add(n1HarnessLimit - n1TerminalMargin)
@@ -523,7 +531,7 @@ func readN1EndpointConfig(path string) (n1EndpointConfig, bool) {
 	if config.Role != n1RoleLeft && config.Role != n1RoleRight {
 		return n1EndpointConfig{}, false
 	}
-	if config.GovernorDir == "" || config.ReadyPath == "" || config.ActionPath == "" || config.ResultPath == "" {
+	if config.GovernorDir == "" || config.ReadyPath == "" || config.ActionPath == "" || config.ActionAcceptedPath == "" || config.ResultPath == "" {
 		return n1EndpointConfig{}, false
 	}
 	if config.PPS != 0 && config.PPS != 2 && config.PPS != 3 {
@@ -599,6 +607,7 @@ func classifyN1Error(err error) string {
 		"owner_acquire", "governor_create", "governor_close", "peer_acquire", "peer_close",
 		"attempt_acquire", "factory_create", "controller_create", "controller_close", "socket_open",
 		"local_metadata", "ready_write", "action_wait", "target_build", "target_register",
+		"action_ack",
 		"exchange_send", "exchange_receive", "silent_send", "silent_terminal", "silent_peer_terminal",
 		"cancel_terminal", "hold_terminal", "unregistered_not_blocked", "first_target_register",
 		"second_target_build", "second_target_not_blocked", "budgeted_send", "fourth_packet_not_blocked",
@@ -614,20 +623,21 @@ func classifyN1Error(err error) string {
 }
 
 type n1EndpointProcess struct {
-	command     *exec.Cmd
-	done        chan struct{}
-	waitMu      sync.Mutex
-	waitErr     error
-	readyPath   string
-	actionPath  string
-	resultPath  string
-	governorDir string
-	configPath  string
-	namespace   string
-	role        string
-	port        uint16
-	cleanupOnce sync.Once
-	started     bool
+	command            *exec.Cmd
+	done               chan struct{}
+	waitMu             sync.Mutex
+	waitErr            error
+	readyPath          string
+	actionPath         string
+	actionAcceptedPath string
+	resultPath         string
+	governorDir        string
+	configPath         string
+	namespace          string
+	role               string
+	port               uint16
+	cleanupOnce        sync.Once
+	started            bool
 }
 
 func newN1EndpointProcess(t *testing.T, topology *n1Topology, role string, pps int) *n1EndpointProcess {
@@ -641,13 +651,14 @@ func newN1EndpointProcess(t *testing.T, topology *n1Topology, role string, pps i
 		t.Fatal("N1 governor safety state preparation failed")
 	}
 	process := &n1EndpointProcess{
-		done:        make(chan struct{}),
-		readyPath:   filepath.Join(directory, "ready.json"),
-		actionPath:  filepath.Join(directory, "action.json"),
-		resultPath:  filepath.Join(directory, "result.json"),
-		governorDir: governorDir,
-		configPath:  filepath.Join(directory, "config.json"),
-		role:        role,
+		done:               make(chan struct{}),
+		readyPath:          filepath.Join(directory, "ready.json"),
+		actionPath:         filepath.Join(directory, "action.json"),
+		actionAcceptedPath: filepath.Join(directory, "action-accepted.json"),
+		resultPath:         filepath.Join(directory, "result.json"),
+		governorDir:        governorDir,
+		configPath:         filepath.Join(directory, "config.json"),
+		role:               role,
 	}
 	if role == n1RoleLeft {
 		process.namespace = topology.leftNamespace
@@ -657,12 +668,13 @@ func newN1EndpointProcess(t *testing.T, topology *n1Topology, role string, pps i
 		t.Fatal("N1 endpoint role rejected")
 	}
 	config := n1EndpointConfig{
-		Role:        role,
-		GovernorDir: governorDir,
-		ReadyPath:   process.readyPath,
-		ActionPath:  process.actionPath,
-		ResultPath:  process.resultPath,
-		PPS:         pps,
+		Role:               role,
+		GovernorDir:        governorDir,
+		ReadyPath:          process.readyPath,
+		ActionPath:         process.actionPath,
+		ActionAcceptedPath: process.actionAcceptedPath,
+		ResultPath:         process.resultPath,
+		PPS:                pps,
 	}
 	if err := writeN1JSON(process.configPath, config); err != nil {
 		t.Fatal("N1 endpoint configuration write failed")
@@ -731,6 +743,28 @@ func (process *n1EndpointProcess) writeAction(t *testing.T, action n1Action) {
 	if err := writeN1JSON(process.actionPath, action); err != nil {
 		t.Fatal("N1 endpoint action write failed")
 	}
+}
+
+func (process *n1EndpointProcess) waitActionAccepted(t *testing.T) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		var accepted n1ActionAccepted
+		if readN1JSON(process.actionAcceptedPath, &accepted) && accepted.Accepted {
+			return
+		}
+		var result n1EndpointResult
+		if readN1JSON(process.resultPath, &result) && !result.OK {
+			t.Fatalf("N1 endpoint failed before action acceptance: class=%s", result.ErrorClass)
+		}
+		select {
+		case <-process.done:
+			t.Fatal("N1 endpoint exited before action acceptance")
+		default:
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("N1 endpoint action-acceptance deadline exceeded")
 }
 
 func (process *n1EndpointProcess) waitResult(t *testing.T) n1EndpointResult {

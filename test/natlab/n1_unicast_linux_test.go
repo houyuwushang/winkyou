@@ -162,6 +162,7 @@ func testN1ActiveCancel(t *testing.T) {
 	left.start(t)
 	leftPort := left.waitReady(t)
 	left.writeAction(t, n1Action{Kind: n1ActionWaitCancel})
+	left.waitActionAccepted(t)
 	assertN1SocketCount(t, topology, topology.leftNamespace, leftPort, 1)
 	started := time.Now()
 	left.signal(t, syscall.SIGTERM)
