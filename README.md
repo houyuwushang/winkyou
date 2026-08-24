@@ -11,7 +11,7 @@ WinkYou = connectivity solver + secure WireGuard data plane
 ## 当前状态
 
 - v2 直连优先计划已经 **Accepted**；接受范围、证据与不授权事项见 [`docs/PHASE0-EXIT-RECORD.md`](./docs/PHASE0-EXIT-RECORD.md)，完整计划见 [`docs/proposals/WINKYOU-V2-DIRECT-FIRST-PLAN.md`](./docs/proposals/WINKYOU-V2-DIRECT-FIRST-PLAN.md)。
-- 项目处于 **Phase 1a 构建期**。main 已包含 machine-wide governor、`probeio` 网络能力边界、架构门禁、无发包诊断、test-only 配对 mini-spec/模拟器和首批 solver domain 收敛；后续仍需完成 canonical domain、session 编排、connect-test、stdio API 与 NAT 模拟矩阵。
+- 项目处于 **Phase 1a 构建期**。main 已包含 machine-wide governor、`probeio` 网络能力边界、stdio API v1、NAT 模拟矩阵、test-only 配对协议，以及只允许 literal loopback 的一次性 `connect_test`；非回环 carrier、正式身份、session 编排和数据面接线仍未授权。
 - [`docs/CONNECTIVITY-SOLVER-BASELINE.md`](./docs/CONNECTIVITY-SOLVER-BASELINE.md) 仍是当前实现权威；Accepted v2 计划不会在正式 ADR 合入前取代它。
 - 当前版本仍是开发中的 alpha，不应被描述为 production-ready、零信任网络或已经完成真实公网验收的 v2 产品。
 
@@ -59,6 +59,7 @@ docker compose --env-file deploy/quickstart/.env \
 | 入口 | 当前定位 | 关键边界 |
 | --- | --- | --- |
 | `wink diagnose` | Phase 1a 被动首次检查 | 不开 socket、不发包；主动探测仍受 governor 与安全门禁约束 |
+| `wink solver serve --stdio` / `connect_test` | Phase 1a 一次性回环连通证明 | 仅 canonical 数值 loopback；每端最多 3 包，成功后立即关闭，不返回 transport |
 | 默认 `wink up` | legacy coordinator + ICE/TURN + WireGuard 端到端路径 | 会进行真实网络通信；远程 coordinator 强制 TLS + auth |
 | `connectivity.mode: relay_only` | TURN relay 保活与验收路径 | 仍使用同一 WireGuard 数据面；需要正确开放 coturn relay 端口 |
 | `autonomous_mesh` | 默认关闭的历史实验路径 | birthday recovery 相关配置 fail-closed；不是当前 quickstart，也不得重新启用历史任务 |
@@ -85,7 +86,13 @@ make build-wink-coordinator
 make build-wink-relay
 make check
 make test-race
+make test-loopback-connect
 ```
+
+Windows 或已安装 PowerShell 7 的环境也可直接运行
+`./scripts/verify-loopback-connect.ps1`。该入口只执行受限的回环测试与架构门禁；证据组成、
+预期包数和它没有证明的边界见
+[`docs/LOOPBACK-CONNECT-TEST.md`](./docs/LOOPBACK-CONNECT-TEST.md)。
 
 也可以直接使用 Go 构建当前平台的二进制：
 
@@ -125,6 +132,7 @@ go build -o bin/wink-relay ./cmd/wink-relay
 - 当前实现权威：[`docs/CONNECTIVITY-SOLVER-BASELINE.md`](./docs/CONNECTIVITY-SOLVER-BASELINE.md)
 - Accepted v2 计划：[`docs/proposals/WINKYOU-V2-DIRECT-FIRST-PLAN.md`](./docs/proposals/WINKYOU-V2-DIRECT-FIRST-PLAN.md)
 - Phase 0 出口记录：[`docs/PHASE0-EXIT-RECORD.md`](./docs/PHASE0-EXIT-RECORD.md)
+- Phase 1a 回环 connect-test 与本地验证入口：[`docs/LOOPBACK-CONNECT-TEST.md`](./docs/LOOPBACK-CONNECT-TEST.md)
 - 自托管 quickstart：[`docs/SELFHOST-QUICKSTART.md`](./docs/SELFHOST-QUICKSTART.md)
 - 分层排障：[`docs/TROUBLESHOOTING.md`](./docs/TROUBLESHOOTING.md)
 - 事故记录：[`docs/INCIDENT-2026-07-22-SELF-BOOTSTRAP-UDP-STORM.md`](./docs/INCIDENT-2026-07-22-SELF-BOOTSTRAP-UDP-STORM.md)

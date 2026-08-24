@@ -454,5 +454,6 @@ sudo firewall-cmd --reload
 - 对端 endpoint 的内存生命周期、日志/报告脱敏规则和实验后删除方式；
 - 首次失败、连续写失败、取消超时、safety trip 或异常计数增长时的立即停止条件。
 
-在这些项目未被具名批准前，不得部署 `wink-signal` 到公网、不得开放 TCP 规则、不得把
-`connect_test` 从 `not_implemented` 改为可执行，也不得恢复 birthday punch 或 autonomous recovery。
+在这些项目未被具名批准前，不得部署 `wink-signal` 到公网、不得开放 TCP 规则，也不得把
+已经合入的 literal-loopback `connect_test` 扩展到 LAN/NAT/公网；birthday punch 与
+autonomous recovery 同样不得恢复。

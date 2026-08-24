@@ -1,7 +1,7 @@
 # Pairing Admission Gate and Restart Witness (Phase 1a)
 
-Status: implemented as a zero-network authority transition; deliberately not
-connected to `connect_test`, `noisecore`, `probeio`, or any carrier.
+Status: implemented authority transition; consumed only by the independently
+reviewed exact literal-loopback carrier. Non-loopback consumers remain blocked.
 
 This implementation follows
 [`PAIRING-RESTART-SAFETY-CONTRACT.md`](./PAIRING-RESTART-SAFETY-CONTRACT.md)
@@ -115,7 +115,8 @@ method, or first-emission method. The existing raw-network capability inventory
 must also remain unchanged. Consequently this slice cannot silently activate a
 carrier or `connect_test`.
 
-A future carrier PR requires separate expert approval and must:
+At the time of the gate-only revision, a future carrier PR required separate
+expert approval and had to:
 
 - accept only a consumed `CommittedCarrierAuthorization`;
 - perform `BeforeFirstEmission` at its controlled first-byte boundary and
@@ -127,9 +128,9 @@ A future carrier PR requires separate expert approval and must:
 - update the no-production-consumer architecture gate explicitly as part of
   that review.
 
-Until then, stdio v1 `connect_test` remains the stable `not_implemented` method.
-This PR starts no daemon, creates no pairing material, changes no scheduled
-task, and performs no live-network work.
+Until that review, stdio v1 `connect_test` remained the stable
+`not_implemented` method. The gate-only revision started no daemon, created no
+pairing material, changed no scheduled task, and performed no network work.
 
 Update (2026-08-23): the loopback-only carrier revision satisfies these
 requirements with `internal/v2/loopbackcarrier` as the single approved

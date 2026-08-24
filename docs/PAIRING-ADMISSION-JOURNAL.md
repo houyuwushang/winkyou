@@ -1,8 +1,8 @@
 # Pairing Admission Journal (Phase 1a)
 
-Status: implemented zero-network storage and policy evaluator; consumed by the
-zero-network admission gate, but not connected to `connect_test`, `noisecore`,
-`probeio`, a carrier, or any scheduler.
+Status: implemented storage and policy evaluator; consumed through the
+admission gate by the exact reviewed literal-loopback `connect_test` carrier.
+No scheduler, retry controller, or non-loopback path consumes it.
 
 Normative safety rules remain in
 [`PAIRING-RESTART-SAFETY-CONTRACT.md`](./PAIRING-RESTART-SAFETY-CONTRACT.md).
@@ -149,9 +149,9 @@ stable states are:
 
 Every state except `ready` blocks future active admission. These states are
 independent from the persistent safety-trip latch even though
-`ledger_indeterminate` has the same fail-closed force. The implementation
-provides read-only inspection for later diagnostics, but this PR does not
-change stdio v1 or activate `connect_test`.
+`ledger_indeterminate` has the same fail-closed force. The journal-only
+revision provided read-only inspection without changing stdio v1; the later
+reviewed loopback carrier consumes the same policy without weakening it.
 
 ## Threat boundary and current non-authority
 
@@ -164,11 +164,12 @@ an accidental-corruption detector, not a MAC against a hostile privileged
 writer.
 
 This package creates no socket and imports no network capability. It does not
-call a carrier emission sink, create pairing material, run `noisecore`, start a
-daemon, modify a scheduled task, or implement `connect_test`. The zero-network
-admission gate and parent-process witness are described in
-[`PAIRING-ADMISSION-GATE.md`](./PAIRING-ADMISSION-GATE.md); a separate future
-review is still required before any network carrier can consume its authority.
+create pairing material, run `noisecore`, start a daemon, modify a scheduled
+task, or emit a packet. The admission gate and parent-process witness are
+described in [`PAIRING-ADMISSION-GATE.md`](./PAIRING-ADMISSION-GATE.md). The
+only reviewed active consumer is the exact literal-loopback carrier documented
+in [`LOOPBACK-CONNECT-TEST.md`](./LOOPBACK-CONNECT-TEST.md); every non-loopback
+consumer still requires a separate review.
 
 ## Verification
 

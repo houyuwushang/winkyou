@@ -1,6 +1,6 @@
 # Phase 1a 回环 connect_test
 
-- 状态：**Draft 实现证据，等待独立评审；仅 literal loopback**
+- 状态：**已合入 main；仅 literal loopback；非回环仍为 NO-GO**
 - 入口：`wink solver serve --stdio` 的 `connect_test`
 - 唯一组合边界：`internal/v2/loopbackcarrier`
 - 协议基础：`internal/v2/pairingcontext`、`internal/v2/noisecore`、`internal/v2/punchproto`
@@ -79,5 +79,30 @@ pre-admission 阻断、终局 FINISH 先于 attempt close，以及结束后端�
 goroutine 残留。既有 `pairing_gate_subprocess` 矩阵继续负责 durable burn、并发竞争、
 进程崩溃、1000 次重启和 FINISH torn-write 的零发射证明。
 
-本 PR 不把这些证据解释为非回环授权。真实 NAT/公网现场测试、信令、候选交换、数据面、
+这些证据不构成非回环授权。真实 NAT/公网现场测试、信令、候选交换、数据面、
 自动恢复和任何重试策略仍为独立 NO-GO 边界。
+
+## 5. 可重复验证入口
+
+从仓库根目录运行：
+
+```powershell
+./scripts/verify-loopback-connect.ps1
+```
+
+使用 Make 的环境可运行等价目标：
+
+```bash
+make test-loopback-connect
+```
+
+验证入口固定执行三组证据：stdio framing/handshake/method 与脱敏契约、真实 OS 回环 UDP
+上的双子进程成功/崩溃/对端缺席矩阵，以及网络能力与唯一 consumer 架构门禁。成功标志为
+`LOOPBACK_CONNECT_PROOF: PASS`。GitHub CI 在 Linux 和 Windows 上分别运行同一 PowerShell
+入口，避免本地命令与合并门禁漂移。
+
+这是一组组合式回归证据，不是假装成产品现场验收：双 carrier 子进程使用互相独立的临时
+machine-scope 测试 namespace，stdio server 契约与真实 carrier 分别受测。它不会修改
+canonical machine namespace，不启动已安装的 `wink` runtime，不访问 DNS/LAN/公网，也不
+证明两个生产 stdio owner 可以在同一机器并存。生产设计仍坚持一个机器级 owner；若已有
+owner，第二个进程必须 fail-closed。

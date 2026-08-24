@@ -3,7 +3,7 @@
 - 状态：**Phase 1a loopback-carrier approved 纯密码核心；仅允许被受审的精确回环 carrier 边界使用，非回环仍未授权**
 - 实现：`internal/v2/noisecore`
 - 固定协议：`Noise_NNpsk0_25519_ChaChaPoly_SHA256`
-- ADR：[`ADR-TEST-PAIRING-CRYPTO-CANDIDATE.md`](./adr/ADR-TEST-PAIRING-CRYPTO-CANDIDATE.md)，已于 2026-08-21 Accepted（协议与仿真实现）；当前 exact loopback 接线仍等待独立 Draft 评审
+- ADR：[`ADR-TEST-PAIRING-CRYPTO-CANDIDATE.md`](./adr/ADR-TEST-PAIRING-CRYPTO-CANDIDATE.md)，已于 2026-08-21 Accepted（协议与仿真实现）；exact loopback 接线已独立评审并合入，非回环仍未授权
 
 ## 1. 边界
 

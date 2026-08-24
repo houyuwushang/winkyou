@@ -1,7 +1,7 @@
 # Pairing restart-safety contract (Phase 1a)
 
-Status: **Accepted design contract; durable admission is implemented, while
-the exact loopback carrier remains subject to its independent Draft review.**
+Status: **Accepted design contract; durable admission and the independently
+reviewed exact loopback carrier are implemented. Non-loopback remains gated.**
 
 This document freezes the cross-process and cross-restart safety contract for
 the Phase 1a test-only pairing path. It extends
@@ -12,10 +12,10 @@ implementation can be reviewed.
 The key words MUST, MUST NOT, REQUIRED, SHOULD, SHOULD NOT, and MAY are used as
 normative requirements.
 
-Nothing in this document by itself authorizes a socket, DNS lookup, live probe,
+Nothing in this document by itself authorizes DNS lookup, live-network probe,
 daemon, automatic retry, recovery controller, or non-loopback `connect_test`.
-The separately reviewed loopback-only carrier must still obey every invariant
-in this contract.
+The reviewed loopback-only carrier obeys these invariants and does not extend
+their authority beyond literal loopback.
 
 ## 1. Safety properties
 
