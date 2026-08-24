@@ -413,6 +413,39 @@ func TestPacketConnCopiesPayloadAndSupportsConcurrentClose(t *testing.T) {
 	}
 }
 
+func TestAddrPortAdaptersStayNonblockingAndPreserveQueueAccounting(t *testing.T) {
+	network := mustNetwork(t, Config{})
+	defer network.Close()
+	left := mustPacketConn(t, network, EndpointConfig{LocalAddr: netip.MustParseAddrPort("192.0.2.10:30100")})
+	right := mustPacketConn(t, network, EndpointConfig{LocalAddr: netip.MustParseAddrPort("192.0.2.20:30200")})
+	defer left.Close()
+	defer right.Close()
+
+	buffer := make([]byte, 16)
+	if n, source, ok, err := right.TryReadFromAddrPort(buffer); n != 0 || source.IsValid() || ok || err != nil {
+		t.Fatalf("empty read = %d/%s/%t/%v", n, source, ok, err)
+	}
+	if n, err := left.WriteToAddrPort([]byte("value-copy"), netip.MustParseAddrPort("192.0.2.20:30200")); n != len("value-copy") || err != nil {
+		t.Fatalf("write = %d/%v", n, err)
+	}
+	if snapshot := network.Snapshot(); snapshot.QueuedPackets != 1 {
+		t.Fatalf("queued before read = %+v", snapshot)
+	}
+	n, source, ok, err := right.TryReadFromAddrPort(buffer)
+	if err != nil || !ok || n != len("value-copy") || source != netip.MustParseAddrPort("192.0.2.10:30100") || string(buffer[:n]) != "value-copy" {
+		t.Fatalf("read = %d/%s/%t/%v/%q", n, source, ok, err, buffer[:n])
+	}
+	if snapshot := network.Snapshot(); snapshot.QueuedPackets != 0 {
+		t.Fatalf("queued after read = %+v", snapshot)
+	}
+	if err := right.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if n, source, ok, err := right.TryReadFromAddrPort(buffer); n != 0 || source.IsValid() || ok || !errors.Is(err, net.ErrClosed) {
+		t.Fatalf("closed read = %d/%s/%t/%v", n, source, ok, err)
+	}
+}
+
 func TestHarnessStopsOnFirstFailureAndChecksResources(t *testing.T) {
 	t.Run("fail fast", func(t *testing.T) {
 		injected := errors.New("injected scenario failure")
