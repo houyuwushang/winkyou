@@ -1,6 +1,6 @@
 # 受控同步直连模拟切片
 
-- 状态：**`punchsim` 仍为 Phase 1a simulation-only；抽取的 `punchproto` 仅获准进入精确的未来 loopback carrier，非回环仍未授权**
+- 状态：**`punchsim` 仍为 Phase 1a simulation-only；`punchproto` 已由精确的 terminal-only loopback carrier 消费，非回环仍未授权**
 - 纯协议状态机：`internal/v2/punchproto`
 - 仿真执行 adapter：`internal/v2/punchsim`
 - 组合测试：`internal/v2/testpairing/direct_punch_integration_test.go`
@@ -47,7 +47,8 @@ NAT harness 使用文档保留地址。它验证 EIM × EIM 且 address+port-dep
 
 - 实现真实 STUN candidate gathering 与 socket 保留 API；
 - 批准配对加密实现，或实现身份、roster、生产 `SignalingChannel` 和 PSK 交付；
-- 改动 `connect_test` 的稳定 `not_implemented` 行为；
+- 给 `punchsim` 本身增加任何 CLI/stdio/runtime 接线；回环 `connect_test` 只消费独立的
+  `punchproto`，不导入本模拟器；
 - 接入 birthday 求解、随机端口枚举、端口扫描、Relay 或自动恢复；
 - 修改路由器、端口转发、防火墙、计划任务或 daemon；
 - 声称随机双 hard NAT、UDP blocked 或任意 NAT 都能直连。
@@ -73,13 +74,13 @@ NAT harness 使用文档保留地址。它验证 EIM × EIM 且 address+port-dep
 
 可选 Noise 模式没有改变上表：握手只使用现有纯内存控制 carrier，安全 punch 仍最多出站 2 包、入站 2 包，单包 56 bytes。这个事实只说明当前测试 envelope 不变；未来真实控制 carrier 的 CPU、内存、消息数和 deadline 仍需在独立 admission 设计中计入。
 
-## 4. 下一道门禁
+## 4. 当前边界与下一道门禁
 
-下一步只能在独立评审后，由精确的回环 carrier 消费 `noisecore` 与 `punchproto`；不能让 `punchsim` 进入生产路径。该接线仍须完成：
+精确的 `internal/v2/loopbackcarrier` 已把已提交的一次性授权、`probeio` socket、Noise
+握手、加密 punch、terminal FINISH 与排水接成回环切片；详见
+[`LOOPBACK-CONNECT-TEST.md`](./LOOPBACK-CONNECT-TEST.md)。它没有改变 `punchsim` 的
+simulation-only 身份，也没有复用模拟 `PacketTransport` 承载应用流量。
 
-1. 让 carrier 构造只能消费已提交的一次性授权；
-2. 通过 `probeio` 复用 governor-owned socket，并在首字节前完成最终检查；
-3. 固定握手、加密 punch、terminal、排水与资源核算；
-4. 以真实回环 UDP、崩溃恢复和进程残留测试证明边界。
-
-在这些门禁闭合前，`connect_test` 必须继续返回 `not_implemented`。即使未来回环接线通过，非回环联网仍需单独授权。提升后的模拟 `PacketTransport` 也没有被本模式继续封装；未来真实数据面仍由 WireGuard 负责，而不是复用一次性打洞密钥承载应用流量。
+下一道门禁是**非回环授权**，不由本切片隐含获得。任何 LAN/NAT/公网启用、真实候选
+交换、重传/重连或长期数据面都必须单独设计和评审；未来真实数据面仍由 WireGuard
+负责，而不是复用一次性打洞密钥。

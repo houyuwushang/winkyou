@@ -6,6 +6,7 @@ import (
 
 	"winkyou/internal/governor"
 	"winkyou/internal/stdiojsonrpc"
+	"winkyou/internal/v2/loopbackcarrier"
 )
 
 const (
@@ -36,11 +37,16 @@ func SupportedMethods() []string {
 }
 
 const (
-	CodeSafetyTripActive    = -32010
-	CodeHandshakeRequired   = -32011
-	CodeNotImplemented      = -32012
-	CodeIncompatibleVersion = -32013
-	CodeExportFailed        = -32014
+	CodeSafetyTripActive        = -32010
+	CodeHandshakeRequired       = -32011
+	CodeNotImplemented          = -32012
+	CodeIncompatibleVersion     = -32013
+	CodeExportFailed            = -32014
+	CodeInvalidCompleteBundle   = -32015
+	CodeNonLoopbackBlocked      = -32016
+	CodeUserScopeBlocked        = -32017
+	CodePairingAdmissionBlocked = -32018
+	CodeConnectTestFailed       = -32019
 )
 
 const (
@@ -50,6 +56,11 @@ const (
 	ClassIncompatibleVersion     = "incompatible_version"
 	ClassExportFailed            = "export_failed"
 	ClassGovernorLockUnavailable = "governor_lock_unavailable"
+	ClassInvalidCompleteBundle   = "invalid_complete_bundle"
+	ClassNonLoopbackBlocked      = "non_loopback_blocked"
+	ClassUserScopeBlocked        = "user_scope_blocked"
+	ClassPairingAdmissionBlocked = "pairing_admission_blocked"
+	ClassConnectTestFailed       = "connect_test_failed"
 )
 
 type BuildInfo struct {
@@ -129,14 +140,20 @@ type HandshakeResult struct {
 }
 
 type StatusResult struct {
-	SchemaVersion          string                    `json:"schema_version"`
-	GeneratedAt            time.Time                 `json:"generated_at"`
-	GovernorScope          governor.Scope            `json:"governor_scope"`
-	Namespace              governor.NamespaceStatus  `json:"namespace"`
-	MachineNamespace       *governor.NamespaceStatus `json:"machine_namespace,omitempty"`
-	Owner                  governor.OwnerStatus      `json:"owner"`
-	SafetyTrip             governor.SafetyTripStatus `json:"safety_trip"`
-	NetworkActivityStarted bool                      `json:"network_activity_started"`
+	SchemaVersion          string                       `json:"schema_version"`
+	GeneratedAt            time.Time                    `json:"generated_at"`
+	GovernorScope          governor.Scope               `json:"governor_scope"`
+	Namespace              governor.NamespaceStatus     `json:"namespace"`
+	MachineNamespace       *governor.NamespaceStatus    `json:"machine_namespace,omitempty"`
+	Owner                  governor.OwnerStatus         `json:"owner"`
+	SafetyTrip             governor.SafetyTripStatus    `json:"safety_trip"`
+	PairingLedger          governor.PairingLedgerStatus `json:"pairing_ledger"`
+	NetworkActivityStarted bool                         `json:"network_activity_started"`
+}
+
+type ConnectTestResult struct {
+	Result        loopbackcarrier.Result       `json:"result"`
+	PairingLedger governor.PairingLedgerStatus `json:"pairing_ledger"`
 }
 
 type ExportResult struct {
@@ -161,9 +178,9 @@ type exportParams struct {
 	DeadlineMS *int64 `json:"deadline_ms,omitempty"`
 }
 
-// connectTestParams freezes the v1 envelope while implementation remains
-// blocked. CompleteBundle is intentionally not decoded or reflected by this
-// PR; the crypto ADR must freeze and review its exact contents first.
+// connectTestParams preserves the v1 method envelope. CompleteBundle remains
+// opaque at the JSON-RPC boundary and is strictly decoded only by the exact
+// loopback carrier package so secrets never enter diagnostic DTOs.
 type connectTestParams struct {
 	AuthScope      string          `json:"auth_scope"`
 	CompleteBundle json.RawMessage `json:"complete_bundle"`

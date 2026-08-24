@@ -130,3 +130,9 @@ A future carrier PR requires separate expert approval and must:
 Until then, stdio v1 `connect_test` remains the stable `not_implemented` method.
 This PR starts no daemon, creates no pairing material, changes no scheduled
 task, and performs no live-network work.
+
+Update (2026-08-23): the loopback-only carrier revision satisfies these
+requirements with `internal/v2/loopbackcarrier` as the single approved
+consumer, and stdio v1 `connect_test` now executes only that terminal loopback
+slice. Non-loopback endpoints, retries, and every other network authority stay
+blocked; see [`LOOPBACK-CONNECT-TEST.md`](./LOOPBACK-CONNECT-TEST.md).

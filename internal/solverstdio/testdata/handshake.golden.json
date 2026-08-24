@@ -68,8 +68,10 @@
         }
       }
     },
-    "auth_scope": "none",
-    "supported_auth_scopes": [],
+    "auth_scope": "test_only",
+    "supported_auth_scopes": [
+      "test_only"
+    ],
     "safety_trip": {
       "state": "clear",
       "blocks_active_work": false

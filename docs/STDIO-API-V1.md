@@ -1,8 +1,8 @@
 # WinkYou stdio API v1
 
-状态：Phase 1a 本地 API。传输、方法名、错误类和 notification 语义在
-`winkyou.stdio/v1` 中固定；`connect_test` 的真实行为仍被加密 ADR、测试向量和独立
-安全复审阻断。
+状态：Phase 1a 本地 API。传输、方法名和 notification 语义在 `winkyou.stdio/v1`
+中固定；`connect_test` 现仅实现经 governor 管理的一次性回环切片。非回环 endpoint
+仍稳定阻断，且没有长连接、业务数据、自动重试或重连。
 
 该 API 面向需要嵌入 WinkYou 被动诊断和未来一次性连接测试的本地工具。它不监听
 localhost 或 LAN，不传递 socket，也不授予 Node Runtime、恢复或端口映射权限。
@@ -102,8 +102,8 @@ v1 规则：
 - machine governor scope/profile、当前 owner、硬资源上限和剩余额度；
 - `mode=owner`、`proxy_supported=false`；
 - 当前 safety trip 状态；
-- `auth_scope=none` 和空的 `supported_auth_scopes`。这表示真实 test-only 加密通道尚未
-  获批，不表示匿名连接被允许；
+- `auth_scope=test_only` 和唯一的 `supported_auth_scopes=["test_only"]`。该权限只对应
+  下述一次性回环测试，不是成员身份、匿名连接或非回环联网授权；
 - 下列六个且仅六个方法；
 - `winkyou/progress` notification 能力。
 
@@ -122,9 +122,10 @@ v1 规则：
 {"deadline_ms": 2000}
 ```
 
-所有字段均可省略。返回 governor scope、namespace、owner、safety trip 和
-`network_activity_started=false` 的结构化快照。采集复用 `wink diagnose` 的被动路径，
-不启动 runtime 或主动网络探测。safety trip 生效时仍可调用。
+所有字段均可省略。返回 governor scope、namespace、owner、safety trip、只读
+`pairing_ledger` 和 `network_activity_started=false` 的结构化快照。ledger 字段不包含
+credential、attempt、endpoint 或 secret。采集复用 `wink diagnose` 的被动路径，不启动
+runtime 或主动网络探测。safety trip 生效时仍可调用。
 
 ### `diagnose`
 
@@ -156,26 +157,53 @@ v1 envelope 固定为：
 {
   "auth_scope": "test_only",
   "complete_bundle": {
-    "offer": {},
-    "acceptance": {}
+    "local_role": "initiator|responder",
+    "local_endpoint": "127.0.0.1:<FIXED_PORT>",
+    "peer_endpoint": "127.0.0.1:<FIXED_PORT>",
+    "offer": {"<mini-spec OFFER fields>": "<value>"},
+    "acceptance": {"<mini-spec ACCEPTANCE fields>": "<value>"}
   },
   "deadline_ms": 15000
 }
 ```
 
-`offer` 与 `acceptance` 的最终字段、编码和 context 绑定必须精确符合
-[`TEST-ONLY-PAIRING-MINI-SPEC.md`](./TEST-ONLY-PAIRING-MINI-SPEC.md) §4，并使用后续已
-接受 ADR 唯一选定的 `secure_channel_profile`。当前没有合法的真实 profile；服务器只
-解析顶层 envelope，不验证、不执行、不持久化、不回显 `complete_bundle`，并稳定返回：
+`offer` 与 `acceptance` 的字段、编码、fingerprint 和 context 绑定必须精确符合
+[`TEST-ONLY-PAIRING-MINI-SPEC.md`](./TEST-ONLY-PAIRING-MINI-SPEC.md) §4，并使用 ADR
+选定的 `noise-nnpsk0-25519-chachapoly-sha256/1`。整个 complete bundle 不得超过
+4096 bytes；重复键、未知字段、非 canonical 编码、过期或尚未生效的凭据均在取得
+attempt 前拒绝。
+
+`local_endpoint` 与 `peer_endpoint` 必须是 canonical 数值 loopback `AddrPort`，端口
+非零且二者不同。不解析 hostname，不做 DNS。任一 endpoint 不是 literal loopback 时，
+在取得 peer/attempt、burn credential 或发送报文前稳定返回：
 
 ```json
 {
-  "class": "not_implemented",
-  "reason": "crypto_adr_vectors_and_independent_security_review_required"
+  "class": "non_loopback_blocked",
+  "reason": "non_loopback_blocked"
 }
 ```
 
-在实现 gate 关闭期间不要向该方法提交真实 pairing secret。
+两个 artifact 的 governor scope 都必须为 `machine`；`user_acknowledged` 在 burn 前以
+`user_scope_blocked` 拒绝。通过这些零网络检查后，执行顺序固定为：machine attempt
+完整预留 → durable admission/burn → 一次性授权消费 → `probeio` 回环 socket →
+`BeforeFirstEmission` → 同 socket 上两条 48-byte NNpsk0 握手 → 加密
+`SYN/SYN_ACK/ACK` → `PromoteTerminal` → 立即关闭 transport → durable FINISH →
+attempt 排水。任何错误都不退款，也不会自动生成新 bundle、重试或重连。
+
+成功路径的 progress 顺序固定为 `validating_complete_bundle` →
+`loopback_socket_ready` → `terminal_finish_recorded`。其中
+`loopback_socket_ready` 只在受管 socket 已绑定且唯一 peer target 已登记后发送，通知不含
+endpoint、identifier 或任何 handle；它不是额外网络授权。若通知无法交付，carrier 会在
+下一次发射前终止并记录失败。
+
+每端最坏 envelope 固定为 1 socket、1 target、1 five-tuple、3 packets、3 PPS、
+15 seconds、heavyweight。carrier 在该 envelope 内部把实际执行自限为 13 seconds：
+对端未在此窗口内出现时，attempt 以 `expired` 干净终局并全额消耗预算，不触发持久
+safety trip；`deadline_ms` 大于该窗口时以 carrier 自限为准。initiator 成功时实际出站
+3 包，responder 为 2 包。成功响应只报告一次性证明、实际出站包数、上述最坏 envelope
+和脱敏 ledger 状态，不返回 endpoint、identifier、PSK、prologue、transcript 或可复用
+transport。完整边界见 [`LOOPBACK-CONNECT-TEST.md`](./LOOPBACK-CONNECT-TEST.md)。
 
 ### `cancel`
 
@@ -230,8 +258,13 @@ response 后不再发送该请求的 progress。
 | `handshake_required` | 未完成精确版本握手 |
 | `incompatible_version` | schema/framing 不精确匹配 |
 | `safety_trip_active` | durable safety trip 阻断该方法 |
-| `not_implemented` | v1 已留位但独立实现 gate 未闭合 |
+| `not_implemented` | 当前进程不具备经评审的 loopback carrier authority；正式 machine authority 不走此分支 |
 | `export_failed` | 严格脱敏报告无法安全创建 |
+| `invalid_complete_bundle` | complete bundle 的严格 schema、编码、fingerprint 或时效验证失败 |
+| `non_loopback_blocked` | endpoint 不是 canonical literal loopback；零发射且不 burn |
+| `user_scope_blocked` | bundle 含未获准的 user-acknowledged scope；零发射且不 burn |
+| `pairing_admission_blocked` | credential 已使用或持久化预算、circuit、ledger 阻断 |
+| `connect_test_failed` | 已准入的一次性回环握手、加密 punch、提升或终局失败 |
 | `internal_error` | 未向客户端暴露内部文本的处理失败 |
 
 ## 8. 固定负面清单

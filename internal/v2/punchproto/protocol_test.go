@@ -64,6 +64,32 @@ func TestMachineRejectsInvalidOrderWithoutAdvancing(t *testing.T) {
 	}
 }
 
+func TestMachineAwaitArmsPassiveResponderWithoutEmission(t *testing.T) {
+	machine := NewMachine()
+	if err := machine.Await(); err != nil {
+		t.Fatalf("Await(): %v", err)
+	}
+	transition, err := machine.Receive(MessageSYN)
+	if err != nil || transition.Reply != MessageSYNACK || transition.Complete {
+		t.Fatalf("passive SYN transition = %+v/%v", transition, err)
+	}
+	transition, err = machine.Receive(MessageACK)
+	if err != nil || transition.Reply != "" || !transition.Complete {
+		t.Fatalf("passive ACK transition = %+v/%v", transition, err)
+	}
+	if err := machine.Await(); !errors.Is(err, ErrInvalidTransition) {
+		t.Fatalf("second Await() error = %v", err)
+	}
+	if _, err := NewMachine().Start(); err != nil {
+		t.Fatal(err)
+	}
+	started := NewMachine()
+	_, _ = started.Start()
+	if err := started.Await(); !errors.Is(err, ErrInvalidTransition) {
+		t.Fatalf("Await() after Start error = %v", err)
+	}
+}
+
 func TestPlainPacketRoundTripAndContextBinding(t *testing.T) {
 	attemptID := base64.RawURLEncoding.EncodeToString(bytes.Repeat([]byte{7}, 16))
 	packet, err := EncodePlainPacket(attemptID, 1, RoleInitiator, MessageSYN)

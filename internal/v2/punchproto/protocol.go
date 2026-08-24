@@ -94,6 +94,16 @@ func (machine *Machine) Start() (MessageType, error) {
 	return MessageSYN, nil
 }
 
+// Await arms a passive responder to accept the peer's SYN without emitting a
+// competing SYN. It is mutually exclusive with Start and performs no I/O.
+func (machine *Machine) Await() error {
+	if machine == nil || machine.state != machineNew {
+		return ErrInvalidTransition
+	}
+	machine.state = machineAwaitFirst
+	return nil
+}
+
 func (machine *Machine) Receive(message MessageType) (Transition, error) {
 	if machine == nil || !message.Valid() {
 		return Transition{}, ErrInvalidMessage
