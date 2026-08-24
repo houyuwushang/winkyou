@@ -36,6 +36,55 @@ func TestSimulationOnlyV2BoundaryDetectsNewProductionImporter(t *testing.T) {
 	}
 }
 
+func TestN1IntegrationHarnessStaysOutOfProductionPaths(t *testing.T) {
+	result, err := scanRepository(repositoryRoot(t))
+	if err != nil {
+		t.Fatalf("scan production Go sources: %v", err)
+	}
+
+	violations := n1IntegrationBoundaryViolations(result)
+	if len(violations) > 0 {
+		t.Fatalf("N1 integration-only dependency escaped into a production path:\n  %s", strings.Join(violations, "\n  "))
+	}
+}
+
+func TestN1IntegrationBoundaryDetectsProductionImporter(t *testing.T) {
+	natlab := modulePath + "/test/natlab"
+	result := scanResult{packages: map[string]*packageInfo{
+		modulePath + "/cmd/wink": {imports: map[string]struct{}{natlab: {}}},
+	}}
+	violations := n1IntegrationBoundaryViolations(result)
+	want := modulePath + "/cmd/wink imports integration-only " + natlab
+	if len(violations) != 1 || violations[0] != want {
+		t.Fatalf("violations = %v, want %q", violations, want)
+	}
+}
+
+func TestN1HarnessImplementationFilesAreTestsOnly(t *testing.T) {
+	directory := filepath.Join(repositoryRoot(t), "test", "natlab")
+	violations, err := n1HarnessSourceViolations(directory)
+	if err != nil {
+		t.Fatalf("scan N1 harness sources: %v", err)
+	}
+	if len(violations) != 0 {
+		t.Fatalf("N1 harness gained a product-importable source:\n  %s", strings.Join(violations, "\n  "))
+	}
+}
+
+func TestN1HarnessTestsOnlyGateDetectsProductionSource(t *testing.T) {
+	directory := t.TempDir()
+	if err := os.WriteFile(filepath.Join(directory, "n1_escape.go"), []byte("package natlab\n"), 0o600); err != nil {
+		t.Fatalf("write injected N1 source: %v", err)
+	}
+	violations, err := n1HarnessSourceViolations(directory)
+	if err != nil {
+		t.Fatalf("scan injected N1 source: %v", err)
+	}
+	if len(violations) != 1 || violations[0] != "n1_escape.go is not test-only" {
+		t.Fatalf("violations = %v, want injected production source", violations)
+	}
+}
+
 func TestSimulationOnlyV2BoundaryDetectsPunchSimCapabilityDependency(t *testing.T) {
 	punchSim := modulePath + "/internal/v2/punchsim"
 	probeIO := modulePath + "/internal/probeio"
@@ -224,6 +273,39 @@ func v2RestrictedDependencyViolations(result scanResult) []string {
 	}
 	sort.Strings(violations)
 	return violations
+}
+
+func n1IntegrationBoundaryViolations(result scanResult) []string {
+	natlab := modulePath + "/test/natlab"
+	var violations []string
+	for importer, info := range result.packages {
+		for imported := range info.imports {
+			if (imported == natlab || strings.HasPrefix(imported, natlab+"/")) &&
+				importer != natlab && !strings.HasPrefix(importer, natlab+"/") {
+				violations = append(violations, importer+" imports integration-only "+imported)
+			}
+		}
+	}
+	sort.Strings(violations)
+	return violations
+}
+
+func n1HarnessSourceViolations(directory string) ([]string, error) {
+	entries, err := os.ReadDir(directory)
+	if err != nil {
+		return nil, err
+	}
+	var violations []string
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasPrefix(entry.Name(), "n1_") || !strings.HasSuffix(entry.Name(), ".go") {
+			continue
+		}
+		if !strings.HasSuffix(entry.Name(), "_test.go") {
+			violations = append(violations, entry.Name()+" is not test-only")
+		}
+	}
+	sort.Strings(violations)
+	return violations, nil
 }
 
 func approvedLoopbackPrimitiveImporter(importer, imported string) bool {
