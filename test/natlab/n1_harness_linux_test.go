@@ -708,9 +708,13 @@ func (process *n1EndpointProcess) waitReady(t *testing.T) uint16 {
 			process.port = ready.Port
 			return ready.Port
 		}
+		var result n1EndpointResult
+		if readN1JSON(process.resultPath, &result) && !result.OK {
+			t.Fatalf("N1 endpoint exited before socket-ready: class=%s", result.ErrorClass)
+		}
 		select {
 		case <-process.done:
-			t.Fatal("N1 endpoint exited before socket-ready")
+			t.Fatal("N1 endpoint exited before socket-ready without a result")
 		default:
 		}
 		time.Sleep(10 * time.Millisecond)
