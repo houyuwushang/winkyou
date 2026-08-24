@@ -192,10 +192,12 @@ func (topology *n2dTopology) applyNAT(namespace string, mode n2dMappingMode, pub
 	rules := []string{
 		"-A PREROUTING -i wan0 -p udp -d " + publicAddress + " -j DNAT --to-destination " + privateAddress,
 		"-A POSTROUTING -s " + privateAddress + "/32 -o wan0 -p udp -j SNAT --to-source " + publicAddress,
+		"-A POSTROUTING -s " + privateAddress + "/32 -o wan0 -p tcp -j SNAT --to-source " + publicAddress,
 	}
 	if mode == n2dMappingEDM {
 		rules = []string{
 			"-A POSTROUTING -s " + privateAddress + "/32 -o wan0 -p udp -j SNAT --to-source " + publicAddress + " --random-fully",
+			"-A POSTROUTING -s " + privateAddress + "/32 -o wan0 -p tcp -j SNAT --to-source " + publicAddress,
 		}
 	}
 	scriptLines := []string{
