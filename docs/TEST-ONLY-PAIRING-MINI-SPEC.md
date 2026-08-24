@@ -588,6 +588,14 @@ duplicate, replay, malformed length, oversize frame, authentication failure,
 or invalid transition closes the entire attempt. The wrapper does not expose a
 nonce setter and accepts no sequence above 7.
 
+Carrier binding is part of this freeze: a receiving adapter MUST accept
+`direct-punch` domain frames only from the governed UDP probe socket and
+`rendezvous-control` domain frames only from the rendezvous carrier. A frame
+whose authenticated domain does not match its arrival carrier is a terminal
+error even when it decrypts, so a rendezvous transcript can never substitute
+for UDP reachability. The N2c adapter review must enforce and test this
+binding; the pure protocol layer cannot observe carriers by design.
+
 PREPARE, FIRE, SYN, SYN_ACK, ACK, VERIFY, and CANCEL have empty plaintext.
 READY has the following canonical binary plaintext and contains no secret:
 
