@@ -1,6 +1,6 @@
 # N2d namespace/NAT-lab 双进程组合证明
 
-- 状态：**Draft implementation evidence；必跑 Linux CI 与独立评审通过前不构成接受**
+- 状态：**Draft implementation evidence；必跑 Linux CI 已通过，独立评审接受前不构成 N2d 接受**
 - 权限来源：[`ADR-NON-LOOPBACK-CONNECT-TEST-BOUNDARY.md`](./adr/ADR-NON-LOOPBACK-CONNECT-TEST-BOUNDARY.md) §6、§9 第 5 步
 - 构建约束：`linux && natlab`
 - 产品入口：**无**
@@ -104,3 +104,30 @@ sudo env WINKYOU_N2D_REQUIRED=1 GORACE=halt_on_error=1 \
 
 合入本证明仍只完成 N2 隔离证据。N3 产品入口、现场授权模板以及任何 LAN/公网 I/O 继续
 保持 NO-GO，必须另开 ADR/PR 并接受独立评审。
+
+## 6. Required CI 实测证据
+
+2026-08-24，commit `9b826c4` 的 required Linux race job 在 25.60 秒内完成整个矩阵：
+
+| 场景 | STUN | direct | UDP 合计 | control | TCP frame（写） | 终局 |
+| --- | ---: | ---: | ---: | ---: | ---: | --- |
+| EIM × EIM，repeat 1 | 1/1 | 2/1 | 3/2 | 4/3 | 7/6 | success |
+| EIM × EIM，repeat 2 | 1/1 | 2/1 | 3/2 | 4/3 | 7/6 | success |
+| EIM × EIM，repeat 3 | 1/1 | 2/1 | 3/2 | 4/3 | 7/6 | success |
+| initiator EDM | 1/1 | 1/1 | 2/2 | 3/2 | 6/5 | bounded expired |
+| responder EDM | 1/1 | 1/1 | 2/2 | 3/2 | 6/5 | bounded expired |
+| burn 前缺席 | 0/0 | 0/0 | 0/0 | 0/0 | 1/0 | presence timeout, admission=0 |
+| burn 后缺席 | 0/0 | 0/0 | 0/0 | 0/0 | 3/0 | bounded expired, no trip |
+| punch 中 kill + restart | 1/1 | 1/1 | 2/2 | survivor 2 | survivor 5 | restart ledger reject, zero delta |
+| 三类硬违规合计 | 5/0 | 0/0 | 5/0 | 0/0 | 0/0 | each persisted trip |
+
+表中双值均为 initiator/responder。EIM 的实际 UDP 计数是 3/2，低于冻结的最坏上限 5/4；
+上限没有因一次响应即成功而缩小。三次成功与两个 EDM 用例的 iptables 计数均逐项等于
+应用计数。
+
+所有场景的终局见证均为 `sockets=0 processes=0 active_connections=0`，packet counter
+稳定；owned conntrack 在清理前分别处于 1–8 条的场景内有界值，清理后全部为 0，随后
+netns 与 veth 均删除。required job 证据见
+[`N2d Netns NAT E2E Proof`](https://github.com/houyuwushang/winkyou/actions/runs/32751905287/job/97510574069)。
+
+这些数字是隔离测试证据，不是现场成功率、真实网络地址或产品 SLO。

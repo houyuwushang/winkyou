@@ -1,6 +1,6 @@
 # ADR：首次非回环 connect-test 权限边界
 
-- 状态：**Accepted (2026-08-24)：N1、N2a、N2b、N2c 已合入；N2d 仅获准以 Draft 形式提供隔离 namespace/NAT-lab 组合证据；产品入口和现场 I/O 仍未授权**
+- 状态：**Accepted (2026-08-24)：N1、N2a、N2b、N2c 已合入；N2d Draft 的 required namespace/NAT-lab CI 已通过、正等待独立评审；产品入口和现场 I/O 仍未授权**
 - 日期：2026-08-24
 - 跟踪议题：[#70](https://github.com/houyuwushang/winkyou/issues/70)
 - 决策人：WinkYou 维护者与独立安全评审
@@ -83,7 +83,7 @@ relay 仍是正常的产品结果。这个切片只回答“本次 direct 是否
 | 门 | 目标 | 允许的网络 | 产品入口 | 当前状态 |
 | --- | --- | --- | --- | --- |
 | N1 | 隔离 unicast 传输与排水证明 | 仅 Linux network namespace 内的测试地址 | 无 | 已实现并合入：隔离 harness + 必跑 Linux CI；不授权 N2/N3 或现场 I/O |
-| N2 | 同 socket NAT attempt | 先纯状态机，再隔离 namespace/NAT lab | 无 | N2a/N2b/N2c 已合入；N2d Draft 仅提供双进程隔离组合证据，必跑 CI 与独立评审完成前不视为接受 |
+| N2 | 同 socket NAT attempt | 先纯状态机，再隔离 namespace/NAT lab | 无 | N2a/N2b/N2c 已合入；N2d Draft 双进程矩阵的 required CI 已通过，独立评审完成前不视为接受 |
 | N3 | 用户入口与命名现场窗口 | 单独批准的受控环境 | 审查后才可讨论 | NO-GO |
 
 门必须按顺序通过。N1 成功不能自动批准 N2；N2 的隔离成功也不能自动批准 N3。
@@ -440,8 +440,9 @@ integration harness、不创建 production-importable carrier。以下事项仍�
   active deadline、2-second drain margin，并给出 literal=0 / injected resolver=1 与
   子进程崩溃后 active connection=0 的见证；
 - [x] 用 1600 次基础 NAT 矩阵及故障矩阵校准并固定 N2 最坏成本；
-- [ ] N2d Draft 的双进程 EIM/EDM、缺席、崩溃重启、硬违规与 OS 残留矩阵通过必跑
-  Linux CI，并由独立评审接受；
+- [x] N2d Draft 的双进程 EIM/EDM、缺席、崩溃重启、硬违规与 OS 残留矩阵通过必跑
+  Linux race CI；实测计数与残留摘要见 `N2D-NAMESPACE-E2E.md` §6；
+- [ ] 独立安全评审接受 N2d 的组合实现与证据；
 - [ ] 定义 N3 的 live authorization 模板；
 - [ ] 独立安全评审明确接受以上决策。
 
