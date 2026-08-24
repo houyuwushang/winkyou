@@ -82,8 +82,8 @@
 | 1 | LAN | 两个空 NAT chain 的直接 PacketConn | TODO：等待 v2 strategy adapter |
 | 2 | 双方全局 IPv6 | IPv6 `netip.AddrPort` + 空 NAT chain | TODO：等待 v2 strategy adapter |
 | 3 | EIM × EIM | 双 NAT、EIM、endpoint-independent filter | **参考场景及受控同步 punch 均连续 100 次成功；后者还覆盖 address+port-dependent filter** |
-| 4 | EIM × EDM | 两侧分别选择 EIM/EDM | TODO：模型就绪，等待策略 |
-| 5 | 可预测 EDM × EDM | EDM + preserving/increment allocation | 观察 endpoint 直接复用已验证有界失败；端口预测策略仍 TODO |
+| 4 | EIM × EDM | 两侧分别选择 EIM/EDM | N2 direct-attempt 对 4 种 address/address+port filtering 组合各 100 次稳定有界失败；不做 candidate replacement |
+| 5 | 可预测 EDM × EDM | EDM + preserving/increment allocation | N2 direct-attempt 对 4 种 filtering 组合各 100 次稳定有界失败；端口预测策略仍 TODO |
 | 6 | 随机 EDM × EDM，预期有界失败 | EDM + seeded random allocation | TODO：随机确定性单测已覆盖，等待失败分类策略 |
 | 7 | CGNAT | inner-to-outer 两层 NAT chain | 模型双向转换单测已覆盖；策略场景 TODO |
 | 8 | UDP 完全阻断 | 任一层 `UDPBlocked=true` | **参考场景已覆盖，连续 100 次稳定 `ErrUDPBlocked`** |
@@ -101,5 +101,10 @@
 - read/write deadline 与 Close 唤醒；
 - attempt 中映射行为和公网地址变化；
 - harness 首错即停、peak 越界和 teardown 泄漏见证。
+
+N2 direct-attempt 另在 delivery seam 覆盖 SYN/SYN_ACK/ACK 丢包、乱序与重复，以及
+control replay、跨 AD domain、oversize、认证篡改和 CANCEL 前后语义；详见
+[`N2-DIRECT-ATTEMPT-SIMULATION.md`](./N2-DIRECT-ATTEMPT-SIMULATION.md)。这些注入不增加
+sender emission，也不产生重试。
 
 `WSAENOBUFS`、真实 OS socket 数、governor cancellation drain 和持久化 safety trip 属于 `probeio` 生产 adapter 的验证范围，不由纯内存 NAT 模拟器伪装为已覆盖。签名重放、machine lock、路由安装冲突、Relay 中断和真实进程外指标仍是后续独立故障注入项。

@@ -37,6 +37,18 @@ func TestSimulationOnlyV2BoundaryDetectsNewProductionImporter(t *testing.T) {
 	}
 }
 
+func TestDirectSimulationBoundaryDetectsNewProductionImporter(t *testing.T) {
+	directSim := modulePath + "/internal/v2/directsim"
+	result := scanResult{packages: map[string]*packageInfo{
+		modulePath + "/pkg/runtime": {imports: map[string]struct{}{directSim: {}}},
+	}}
+	violations := v2RestrictedDependencyViolations(result)
+	want := modulePath + "/pkg/runtime imports simulation-only " + directSim
+	if len(violations) != 1 || violations[0] != want {
+		t.Fatalf("violations = %v, want %q", violations, want)
+	}
+}
+
 func TestN1IntegrationHarnessStaysOutOfProductionPaths(t *testing.T) {
 	result, err := scanRepository(repositoryRoot(t))
 	if err != nil {
@@ -234,6 +246,45 @@ func TestDirectAttemptNetworkGateDetectsRawNet(t *testing.T) {
 	}
 }
 
+func TestDirectSimulationOwnsNoRawNetworkCapability(t *testing.T) {
+	directory := filepath.Join(repositoryRoot(t), "internal", "v2", "directsim")
+	violations, err := directAttemptImportViolations(directory)
+	if err != nil {
+		t.Fatalf("scan directsim imports: %v", err)
+	}
+	if len(violations) != 0 {
+		t.Fatalf("directsim gained a raw network import:\n  %s", strings.Join(violations, "\n  "))
+	}
+}
+
+func TestDirectSimulationNetworkGateDetectsRawNet(t *testing.T) {
+	directory := t.TempDir()
+	source := []byte("package directsim\nimport \"net\"\nvar _ net.Conn\n")
+	if err := os.WriteFile(filepath.Join(directory, "bypass.go"), source, 0o600); err != nil {
+		t.Fatalf("write injected directsim import: %v", err)
+	}
+	violations, err := directAttemptImportViolations(directory)
+	if err != nil {
+		t.Fatalf("scan injected directsim import: %v", err)
+	}
+	if len(violations) != 1 || !strings.Contains(violations[0], "imports net") {
+		t.Fatalf("violations = %v, want injected net import", violations)
+	}
+}
+
+func TestDirectSimulationDependencyGateDetectsProbeIO(t *testing.T) {
+	directSim := modulePath + "/internal/v2/directsim"
+	probeIO := modulePath + "/internal/probeio"
+	result := scanResult{packages: map[string]*packageInfo{
+		directSim: {imports: map[string]struct{}{probeIO: {}}},
+	}}
+	violations := v2RestrictedDependencyViolations(result)
+	want := directSim + " imports forbidden simulation dependency " + probeIO
+	if len(violations) != 1 || violations[0] != want {
+		t.Fatalf("violations = %v, want %q", violations, want)
+	}
+}
+
 func TestLoopbackCarrierApprovalIsExactAndBidirectional(t *testing.T) {
 	carrier := modulePath + "/internal/v2/loopbackcarrier"
 	punchSim := modulePath + "/internal/v2/punchsim"
@@ -241,6 +292,7 @@ func TestLoopbackCarrierApprovalIsExactAndBidirectional(t *testing.T) {
 	noiseCore := modulePath + "/internal/v2/noisecore"
 	pairingContext := modulePath + "/internal/v2/pairingcontext"
 	directAttempt := modulePath + "/internal/v2/directattempt"
+	directSim := modulePath + "/internal/v2/directsim"
 
 	checks := []struct {
 		importer string
@@ -256,6 +308,8 @@ func TestLoopbackCarrierApprovalIsExactAndBidirectional(t *testing.T) {
 		{punchProto, noiseCore, true},
 		{directAttempt, noiseCore, true},
 		{directAttempt, pairingContext, true},
+		{directSim, noiseCore, true},
+		{directSim, pairingContext, true},
 		{carrier + "/child", punchProto, false},
 		{carrier + "/child", pairingContext, false},
 		{modulePath + "/cmd/wink", punchProto, false},
@@ -266,6 +320,9 @@ func TestLoopbackCarrierApprovalIsExactAndBidirectional(t *testing.T) {
 		if actual := approvedLoopbackPrimitiveImporter(check.importer, check.imported); actual != check.allowed {
 			t.Errorf("approvedLoopbackPrimitiveImporter(%q, %q) = %t, want %t", check.importer, check.imported, actual, check.allowed)
 		}
+	}
+	if !approvedDirectAttemptImporter(directSim, directAttempt) || approvedDirectAttemptImporter(modulePath+"/cmd/wink", directAttempt) || approvedDirectAttemptImporter(directSim+"/child", directAttempt) {
+		t.Fatal("direct-attempt approval is not exact and bidirectional")
 	}
 
 	result := scanResult{packages: map[string]*packageInfo{
@@ -323,9 +380,11 @@ func v2RestrictedDependencyViolations(result scanResult) []string {
 	punchProto := modulePath + "/internal/v2/punchproto"
 	pairingContext := modulePath + "/internal/v2/pairingcontext"
 	directAttempt := modulePath + "/internal/v2/directattempt"
+	directSim := modulePath + "/internal/v2/directsim"
 	simulationOnlyPackages := map[string]struct{}{
 		testPairing: {},
 		punchSim:    {},
+		directSim:   {},
 	}
 	loopbackPrimitives := map[string]struct{}{
 		noiseCore:      {},
@@ -340,6 +399,12 @@ func v2RestrictedDependencyViolations(result scanResult) []string {
 		modulePath + "/internal/probeio":        {},
 		modulePath + "/internal/v2/testpairing": {},
 	}
+	allowedDirectSimImports := map[string]struct{}{
+		modulePath + "/internal/natsim":            {},
+		modulePath + "/internal/v2/directattempt":  {},
+		modulePath + "/internal/v2/noisecore":      {},
+		modulePath + "/internal/v2/pairingcontext": {},
+	}
 	var violations []string
 	for importer, info := range result.packages {
 		for imported := range info.imports {
@@ -350,6 +415,8 @@ func v2RestrictedDependencyViolations(result scanResult) []string {
 				violations = append(violations, importer+" imports forbidden WinkYou dependency "+imported)
 			case importer == directAttempt && strings.HasPrefix(imported, modulePath+"/") && imported != noiseCore && imported != pairingContext:
 				violations = append(violations, importer+" imports forbidden WinkYou dependency "+imported)
+			case importer == directSim && strings.HasPrefix(imported, modulePath+"/") && !containsImportOrChild(allowedDirectSimImports, imported):
+				violations = append(violations, importer+" imports forbidden simulation dependency "+imported)
 			case importer == punchSim && containsImportOrChild(forbiddenPunchSimImports, imported):
 				violations = append(violations, importer+" imports forbidden simulation dependency "+imported)
 			case containsImportOrChild(simulationOnlyPackages, imported) && !containsImportOrChild(simulationOnlyPackages, importer):
@@ -452,23 +519,24 @@ func approvedLoopbackPrimitiveImporter(importer, imported string) bool {
 	testPairing := modulePath + "/internal/v2/testpairing"
 	carrier := modulePath + "/internal/v2/loopbackcarrier"
 	directAttempt := modulePath + "/internal/v2/directattempt"
+	directSim := modulePath + "/internal/v2/directsim"
 
 	switch imported {
 	case noiseCore:
-		return importer == punchProto || importer == punchSim || importer == carrier || importer == directAttempt
+		return importer == punchProto || importer == punchSim || importer == carrier || importer == directAttempt || importer == directSim
 	case punchProto:
 		return importer == punchSim || importer == carrier
 	case pairingContext:
-		return importer == testPairing || importer == carrier || importer == directAttempt
+		return importer == testPairing || importer == carrier || importer == directAttempt || importer == directSim
 	default:
 		return false
 	}
 }
 
-func approvedDirectAttemptImporter(_, _ string) bool {
+func approvedDirectAttemptImporter(importer, imported string) bool {
 	// N2a freezes only a zero-I/O primitive. N2b adds one exact simulation-only
 	// consumer; production and carrier paths remain deliberately absent here.
-	return false
+	return importer == modulePath+"/internal/v2/directsim" && imported == modulePath+"/internal/v2/directattempt"
 }
 
 func noiseCoreNetworkImportViolations(directory string) ([]string, error) {

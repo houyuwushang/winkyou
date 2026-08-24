@@ -2,6 +2,7 @@ package natsim
 
 import (
 	"errors"
+	"io"
 	"net"
 	"net/netip"
 	"os"
@@ -96,6 +97,55 @@ func (connection *PacketConn) WriteTo(packet []byte, address net.Addr) (int, err
 		return 0, net.ErrClosed
 	}
 	return n, err
+}
+
+// WriteToAddrPort is the zero-OS-I/O value adapter for simulation packages
+// that must not import net merely to construct a UDPAddr. It has the same
+// deadline, copy, routing, and resource semantics as WriteTo.
+func (connection *PacketConn) WriteToAddrPort(packet []byte, destination netip.AddrPort) (int, error) {
+	if connection == nil || connection.network == nil || connection.closed.Load() {
+		return 0, net.ErrClosed
+	}
+	if deadline := connection.writeDeadlineSnapshot(); !deadline.IsZero() && !time.Now().Before(deadline) {
+		return 0, os.ErrDeadlineExceeded
+	}
+	if err := validateEndpoint(destination); err != nil {
+		return 0, err
+	}
+	n, err := connection.network.transmit(connection, packet, destination)
+	if errors.Is(err, ErrClosed) {
+		return 0, net.ErrClosed
+	}
+	return n, err
+}
+
+// TryReadFromAddrPort consumes one already queued in-memory datagram without
+// blocking. ok=false means the deterministic queue is currently empty. It
+// never starts a timer or touches an operating-system socket.
+func (connection *PacketConn) TryReadFromAddrPort(dst []byte) (n int, source netip.AddrPort, ok bool, err error) {
+	if connection == nil || connection.network == nil || connection.closed.Load() {
+		return 0, netip.AddrPort{}, false, net.ErrClosed
+	}
+	select {
+	case datagram := <-connection.inbound:
+		connection.network.consumeQueued()
+		if connection.closed.Load() {
+			clear(datagram.packet)
+			return 0, netip.AddrPort{}, false, net.ErrClosed
+		}
+		if len(datagram.packet) > len(dst) {
+			copy(dst, datagram.packet[:len(dst)])
+			clear(datagram.packet)
+			return len(dst), datagram.source, true, io.ErrShortBuffer
+		}
+		copy(dst, datagram.packet)
+		clear(datagram.packet)
+		return len(datagram.packet), datagram.source, true, nil
+	case <-connection.closedCh:
+		return 0, netip.AddrPort{}, false, net.ErrClosed
+	default:
+		return 0, netip.AddrPort{}, false, nil
+	}
 }
 
 func (connection *PacketConn) Close() error {

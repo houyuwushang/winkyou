@@ -477,6 +477,13 @@ parser. An unknown artifact, direct-attempt, rendezvous, pairing, or secure-
 channel profile is rejected before authority acquisition or I/O. There is no
 profile negotiation, fallback, or alternate encoding.
 
+The rendezvous presence witness has a hard 3-second envelope and contains only
+the presence profile, one opaque 16-byte association identifier, and one of two
+transport-local slots (`a` or `b`). It contains no credential, attempt,
+participant, generation, role, endpoint, payload, or secret. Both presence
+witnesses must arrive before durable burn, and both endpoint-local burns must
+complete before either side can send or accept the first Noise handshake byte.
+
 The OOB artifact is a strict JSON object no larger than 4096 bytes. Every value
 is a string. Duplicate and unknown members, trailing documents, invalid UTF-8,
 and non-canonical base64url or UTC values are rejected. Its exact members are:
@@ -580,6 +587,14 @@ A sequence outside the sender's set, a type/sequence or type/domain mismatch,
 duplicate, replay, malformed length, oversize frame, authentication failure,
 or invalid transition closes the entire attempt. The wrapper does not expose a
 nonce setter and accepts no sequence above 7.
+
+Carrier binding is part of this freeze: a receiving adapter MUST accept
+`direct-punch` domain frames only from the governed UDP probe socket and
+`rendezvous-control` domain frames only from the rendezvous carrier. A frame
+whose authenticated domain does not match its arrival carrier is a terminal
+error even when it decrypts, so a rendezvous transcript can never substitute
+for UDP reachability. The N2c adapter review must enforce and test this
+binding; the pure protocol layer cannot observe carriers by design.
 
 PREPARE, FIRE, SYN, SYN_ACK, ACK, VERIFY, and CANCEL have empty plaintext.
 READY has the following canonical binary plaintext and contains no secret:
