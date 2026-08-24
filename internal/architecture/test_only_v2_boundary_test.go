@@ -93,7 +93,8 @@ func TestN1NatlabGovernorHelperStaysOutOfProductionSources(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read N1 governor helper: %v", err)
 	}
-	if !strings.HasPrefix(string(payload), "//go:build linux && natlab\n") {
+	normalized := strings.ReplaceAll(string(payload), "\r\n", "\n")
+	if !strings.HasPrefix(normalized, "//go:build linux && natlab\n") {
 		t.Fatal("N1 governor helper lost its exact linux && natlab build constraint")
 	}
 	violations, err := n1GovernorHelperUseViolations(root)
