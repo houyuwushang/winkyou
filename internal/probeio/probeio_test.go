@@ -396,6 +396,33 @@ func openSocket(t *testing.T, harness *harness) (*ProbeSocket, *fakeDatagram) {
 	return socket, harness.factory.at(harness.factory.count() - 1)
 }
 
+func TestSocketReservationIsImmutableReadOnlyEvidence(t *testing.T) {
+	harness := newHarness(t, normalResources())
+	socket, _ := openSocket(t, harness)
+	reservation, err := socket.Reservation()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reservation.Operation != governor.OperationConnectTest || reservation.Generation != 7 ||
+		reservation.Cost != harness.lease.request.Cost {
+		t.Fatalf("reservation = %+v, want request %+v generation 7", reservation, harness.lease.request)
+	}
+	reservation.Cost.Resources.Targets = 999
+	again, err := socket.Reservation()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if again.Cost.Resources.Targets != normalResources().Targets {
+		t.Fatalf("caller mutated reservation: %+v", again)
+	}
+	if err := socket.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := socket.Reservation(); !errors.Is(err, ErrSocketClosed) {
+		t.Fatalf("closed reservation error = %v", err)
+	}
+}
+
 func TestSendRejectsUnregisteredTargetWithoutIO(t *testing.T) {
 	harness := newHarness(t, normalResources())
 	socket, datagram := openSocket(t, harness)

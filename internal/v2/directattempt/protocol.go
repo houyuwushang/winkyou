@@ -262,6 +262,38 @@ type OpenedFrame struct {
 	Ready *ReadyPayload
 }
 
+// FrameMetadata is the authenticated-header shape needed by reviewed carrier
+// adapters. InspectFrame validates the complete public header and frame length
+// but deliberately does not authenticate or decrypt the ciphertext.
+type FrameMetadata struct {
+	Domain          Domain
+	Type            FrameType
+	Sender          Role
+	Sequence        uint64
+	CiphertextBytes int
+}
+
+// InspectFrame returns validated, non-secret routing metadata without
+// exposing ciphertext internals or cipher state. A carrier must still pass the
+// frame to Protocol.Open before treating any field as authenticated.
+func InspectFrame(frame []byte) (FrameMetadata, error) {
+	_, ciphertext, sender, frameType, sequence, err := parseFrame(frame)
+	if err != nil {
+		return FrameMetadata{}, err
+	}
+	domain, ok := frameType.Domain()
+	if !ok {
+		return FrameMetadata{}, ErrInvalidFrame
+	}
+	return FrameMetadata{
+		Domain:          domain,
+		Type:            frameType,
+		Sender:          sender,
+		Sequence:        sequence,
+		CiphertextBytes: len(ciphertext),
+	}, nil
+}
+
 type Status struct {
 	Terminal  bool
 	Success   bool

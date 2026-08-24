@@ -174,6 +174,80 @@ func TestDirectAttemptBoundaryDetectsProductionImporter(t *testing.T) {
 	}
 }
 
+func TestN2CRendezvousCarrierStaysDisconnectedFromProduction(t *testing.T) {
+	result, err := scanRepository(repositoryRoot(t))
+	if err != nil {
+		t.Fatalf("scan production Go sources: %v", err)
+	}
+	if violations := v2RestrictedDependencyViolations(result); len(violations) != 0 {
+		t.Fatalf("N2c carrier escaped its disconnected boundary:\n  %s", strings.Join(violations, "\n  "))
+	}
+}
+
+func TestN2CRendezvousCarrierBoundaryDetectsEveryProductEntry(t *testing.T) {
+	carrier := modulePath + "/internal/v2/rendezvouscarrier"
+	for _, importer := range []string{
+		modulePath + "/cmd/wink",
+		modulePath + "/cmd/wink-signal",
+		modulePath + "/internal/stdioapi",
+		modulePath + "/pkg/runtime",
+		modulePath + "/pkg/meshruntime",
+		modulePath + "/pkg/nat",
+	} {
+		result := scanResult{packages: map[string]*packageInfo{
+			importer: {imports: map[string]struct{}{carrier: {}}},
+		}}
+		violations := v2RestrictedDependencyViolations(result)
+		want := importer + " imports disconnected N2c carrier " + carrier
+		if len(violations) != 1 || violations[0] != want {
+			t.Errorf("%s violations = %v, want %q", importer, violations, want)
+		}
+	}
+}
+
+func TestN2CRendezvousCarrierRejectsUnreviewedWinkYouDependency(t *testing.T) {
+	carrier := modulePath + "/internal/v2/rendezvouscarrier"
+	forbidden := modulePath + "/pkg/nat"
+	result := scanResult{packages: map[string]*packageInfo{
+		carrier: {imports: map[string]struct{}{forbidden: {}}},
+	}}
+	violations := v2RestrictedDependencyViolations(result)
+	want := carrier + " imports forbidden disconnected-carrier dependency " + forbidden
+	if len(violations) != 1 || violations[0] != want {
+		t.Fatalf("violations = %v, want %q", violations, want)
+	}
+}
+
+func TestN2CSameSocketEntrypointsStayDisconnected(t *testing.T) {
+	violations, err := n2cSameSocketUseViolations(repositoryRoot(t))
+	if err != nil {
+		t.Fatalf("scan N2c same-socket uses: %v", err)
+	}
+	if len(violations) != 0 {
+		t.Fatalf("N2c same-socket entrypoint escaped into production:\n  %s", strings.Join(violations, "\n  "))
+	}
+}
+
+func TestN2CSameSocketGateDetectsProductMutation(t *testing.T) {
+	root := t.TempDir()
+	directory := filepath.Join(root, "cmd", "wink")
+	if err := os.MkdirAll(directory, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	source := []byte("package main\nimport obs \"winkyou/internal/stunobserve\"\nfunc bypass() { _ = obs.N2SameSocketCost() }\n")
+	if err := os.WriteFile(filepath.Join(directory, "bypass.go"), source, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	violations, err := n2cSameSocketUseViolations(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "cmd/wink/bypass.go uses disconnected N2c stunobserve entry N2SameSocketCost"
+	if len(violations) != 1 || violations[0] != want {
+		t.Fatalf("violations = %v, want %q", violations, want)
+	}
+}
+
 func TestSimulationOnlyV2BoundaryAllowsPunchSimToUseNoiseCore(t *testing.T) {
 	punchSim := modulePath + "/internal/v2/punchsim"
 	noiseCore := modulePath + "/internal/v2/noisecore"
@@ -293,6 +367,7 @@ func TestLoopbackCarrierApprovalIsExactAndBidirectional(t *testing.T) {
 	pairingContext := modulePath + "/internal/v2/pairingcontext"
 	directAttempt := modulePath + "/internal/v2/directattempt"
 	directSim := modulePath + "/internal/v2/directsim"
+	rendezvousCarrier := modulePath + "/internal/v2/rendezvouscarrier"
 
 	checks := []struct {
 		importer string
@@ -310,6 +385,7 @@ func TestLoopbackCarrierApprovalIsExactAndBidirectional(t *testing.T) {
 		{directAttempt, pairingContext, true},
 		{directSim, noiseCore, true},
 		{directSim, pairingContext, true},
+		{rendezvousCarrier, noiseCore, true},
 		{carrier + "/child", punchProto, false},
 		{carrier + "/child", pairingContext, false},
 		{modulePath + "/cmd/wink", punchProto, false},
@@ -321,7 +397,7 @@ func TestLoopbackCarrierApprovalIsExactAndBidirectional(t *testing.T) {
 			t.Errorf("approvedLoopbackPrimitiveImporter(%q, %q) = %t, want %t", check.importer, check.imported, actual, check.allowed)
 		}
 	}
-	if !approvedDirectAttemptImporter(directSim, directAttempt) || approvedDirectAttemptImporter(modulePath+"/cmd/wink", directAttempt) || approvedDirectAttemptImporter(directSim+"/child", directAttempt) {
+	if !approvedDirectAttemptImporter(directSim, directAttempt) || !approvedDirectAttemptImporter(rendezvousCarrier, directAttempt) || approvedDirectAttemptImporter(modulePath+"/cmd/wink", directAttempt) || approvedDirectAttemptImporter(directSim+"/child", directAttempt) {
 		t.Fatal("direct-attempt approval is not exact and bidirectional")
 	}
 
@@ -381,6 +457,7 @@ func v2RestrictedDependencyViolations(result scanResult) []string {
 	pairingContext := modulePath + "/internal/v2/pairingcontext"
 	directAttempt := modulePath + "/internal/v2/directattempt"
 	directSim := modulePath + "/internal/v2/directsim"
+	rendezvousCarrier := modulePath + "/internal/v2/rendezvouscarrier"
 	simulationOnlyPackages := map[string]struct{}{
 		testPairing: {},
 		punchSim:    {},
@@ -405,6 +482,11 @@ func v2RestrictedDependencyViolations(result scanResult) []string {
 		modulePath + "/internal/v2/noisecore":      {},
 		modulePath + "/internal/v2/pairingcontext": {},
 	}
+	allowedRendezvousCarrierImports := map[string]struct{}{
+		modulePath + "/internal/governor":         {},
+		modulePath + "/internal/v2/directattempt": {},
+		modulePath + "/internal/v2/noisecore":     {},
+	}
 	var violations []string
 	for importer, info := range result.packages {
 		for imported := range info.imports {
@@ -417,6 +499,10 @@ func v2RestrictedDependencyViolations(result scanResult) []string {
 				violations = append(violations, importer+" imports forbidden WinkYou dependency "+imported)
 			case importer == directSim && strings.HasPrefix(imported, modulePath+"/") && !containsImportOrChild(allowedDirectSimImports, imported):
 				violations = append(violations, importer+" imports forbidden simulation dependency "+imported)
+			case importer == rendezvousCarrier && strings.HasPrefix(imported, modulePath+"/") && !containsImportOrChild(allowedRendezvousCarrierImports, imported):
+				violations = append(violations, importer+" imports forbidden disconnected-carrier dependency "+imported)
+			case (imported == rendezvousCarrier || strings.HasPrefix(imported, rendezvousCarrier+"/")) && importer != rendezvousCarrier:
+				violations = append(violations, importer+" imports disconnected N2c carrier "+imported)
 			case importer == punchSim && containsImportOrChild(forbiddenPunchSimImports, imported):
 				violations = append(violations, importer+" imports forbidden simulation dependency "+imported)
 			case containsImportOrChild(simulationOnlyPackages, imported) && !containsImportOrChild(simulationOnlyPackages, importer):
@@ -520,10 +606,11 @@ func approvedLoopbackPrimitiveImporter(importer, imported string) bool {
 	carrier := modulePath + "/internal/v2/loopbackcarrier"
 	directAttempt := modulePath + "/internal/v2/directattempt"
 	directSim := modulePath + "/internal/v2/directsim"
+	rendezvousCarrier := modulePath + "/internal/v2/rendezvouscarrier"
 
 	switch imported {
 	case noiseCore:
-		return importer == punchProto || importer == punchSim || importer == carrier || importer == directAttempt || importer == directSim
+		return importer == punchProto || importer == punchSim || importer == carrier || importer == directAttempt || importer == directSim || importer == rendezvousCarrier
 	case punchProto:
 		return importer == punchSim || importer == carrier
 	case pairingContext:
@@ -534,9 +621,84 @@ func approvedLoopbackPrimitiveImporter(importer, imported string) bool {
 }
 
 func approvedDirectAttemptImporter(importer, imported string) bool {
-	// N2a freezes only a zero-I/O primitive. N2b adds one exact simulation-only
-	// consumer; production and carrier paths remain deliberately absent here.
-	return importer == modulePath+"/internal/v2/directsim" && imported == modulePath+"/internal/v2/directattempt"
+	// N2b has one exact simulation consumer. N2c adds the exact disconnected
+	// carrier; all product and legacy paths remain absent.
+	return (importer == modulePath+"/internal/v2/directsim" || importer == modulePath+"/internal/v2/rendezvouscarrier") &&
+		imported == modulePath+"/internal/v2/directattempt"
+}
+
+func n2cSameSocketUseViolations(root string) ([]string, error) {
+	stunobservePath := modulePath + "/internal/stunobserve"
+	restricted := map[string]struct{}{
+		"NewSameSocket":         {},
+		"N2SameSocketCost":      {},
+		"SameSocketConfig":      {},
+		"SameSocketClient":      {},
+		"SameSocketObservation": {},
+	}
+	var violations []string
+	err := filepath.WalkDir(root, func(filename string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if entry.IsDir() {
+			if filename != root && (strings.HasPrefix(entry.Name(), ".") || entry.Name() == "vendor") {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if !strings.HasSuffix(filename, ".go") || strings.HasSuffix(filename, "_test.go") {
+			return nil
+		}
+		relative, err := filepath.Rel(root, filename)
+		if err != nil {
+			return err
+		}
+		relative = filepath.ToSlash(relative)
+		if relative == "internal/stunobserve/same_socket.go" {
+			return nil
+		}
+		parsed, err := parser.ParseFile(token.NewFileSet(), filename, nil, 0)
+		if err != nil {
+			return err
+		}
+		aliases := make(map[string]struct{})
+		for _, specification := range parsed.Imports {
+			imported, err := strconv.Unquote(specification.Path.Value)
+			if err != nil || imported != stunobservePath {
+				continue
+			}
+			alias := "stunobserve"
+			if specification.Name != nil {
+				alias = specification.Name.Name
+			}
+			if alias == "." {
+				violations = append(violations, relative+" dot-imports stunobserve across the N2c boundary")
+				continue
+			}
+			aliases[alias] = struct{}{}
+		}
+		ast.Inspect(parsed, func(node ast.Node) bool {
+			selector, ok := node.(*ast.SelectorExpr)
+			if !ok {
+				return true
+			}
+			identifier, ok := selector.X.(*ast.Ident)
+			if !ok {
+				return true
+			}
+			if _, found := aliases[identifier.Name]; !found {
+				return true
+			}
+			if _, found := restricted[selector.Sel.Name]; found {
+				violations = append(violations, relative+" uses disconnected N2c stunobserve entry "+selector.Sel.Name)
+			}
+			return true
+		})
+		return nil
+	})
+	sort.Strings(violations)
+	return violations, err
 }
 
 func noiseCoreNetworkImportViolations(directory string) ([]string, error) {

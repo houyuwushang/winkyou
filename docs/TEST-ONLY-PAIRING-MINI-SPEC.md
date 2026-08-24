@@ -593,8 +593,11 @@ Carrier binding is part of this freeze: a receiving adapter MUST accept
 `rendezvous-control` domain frames only from the rendezvous carrier. A frame
 whose authenticated domain does not match its arrival carrier is a terminal
 error even when it decrypts, so a rendezvous transcript can never substitute
-for UDP reachability. The N2c adapter review must enforce and test this
-binding; the pure protocol layer cannot observe carriers by design.
+for UDP reachability. The N2c Draft adapter enforces this after authenticated
+open and includes a mutation test in which a direct-punch frame successfully
+opens but is still terminal because it arrived over rendezvous. This remains
+implementation evidence for independent review, not product or live-network
+authorization; the pure protocol layer cannot observe carriers by design.
 
 PREPARE, FIRE, SYN, SYN_ACK, ACK, VERIFY, and CANCEL have empty plaintext.
 READY has the following canonical binary plaintext and contains no secret:
@@ -816,6 +819,14 @@ semantics being independently accepted and the stack merging bottom-up:
 6. secret-redaction tests and fuzz/property tests pass; and
 7. live-network validation receives separate explicit approval and remains
    isolated, bounded, observable, and kill-switch controlled.
+
+N2c Draft evidence closes only the implementation part of item 5: the caller
+must supply the already-acquired heavyweight lease, literal endpoints perform
+zero DNS, an injected resolver may run once, the carrier retains one bounded
+stream, and cancellation owns a registered drain. The architecture gate keeps
+the adapter and same-socket entrypoints out of stdio, CLI, runtime, signal,
+daemon, scheduler, and legacy paths. Independent review and every live-network
+gate above remain open.
 
 Approval of this document would approve only an implementation attempt behind
 these gates. It would not approve public rollout, live probing, daemon startup,

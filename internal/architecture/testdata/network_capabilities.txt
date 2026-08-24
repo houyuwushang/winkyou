@@ -18,6 +18,10 @@ internal/probeio/udp_factory.go | openGovernedUDP | reference:net.ListenUDP | co
 internal/signalserver/server.go | Open | reference:net.Listen | count=1
 # owner=wink-stund; response-only STUN listener with bounded global/per-source rate and state
 internal/stunserver/server.go | Open | reference:net.ListenUDP | count=1
+# owner=governor; disconnected N2c carrier; one bounded stream retained inside the adapter
+internal/v2/rendezvouscarrier/dialer.go | openGovernedRendezvous | call:method.DialContext | count=1
+# owner=governor; disconnected N2c carrier; hostname branch invokes one resolver call and never candidate-falls-back
+internal/v2/rendezvouscarrier/resolver.go | lookupGovernedRendezvousHost | call:method.LookupNetIP | count=1
 pkg/client/inband_control.go | listenInbandUDP | reference:net.ListenUDP | count=1
 pkg/client/ping.go | listenPingUDP | reference:net.ListenUDP | count=1
 pkg/coordinator/client/grpc.go | <init>.func | call:method.DialContext | count=1

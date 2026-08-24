@@ -1,10 +1,10 @@
 # ADR：首次非回环 connect-test 权限边界
 
-- 状态：**Accepted (2026-08-24)：N1 已合入；N2a/N2b 仅获准以 Draft 形式提供零网络协议与模拟证据；N2c/N2d、产品入口和现场 I/O 仍未授权**
+- 状态：**Accepted (2026-08-24)：N1、N2a、N2b 已合入；N2c 仅获准以 Draft 形式提供断开产品入口的 literal-loopback adapter 证据；N2d、产品入口和现场 I/O 仍未授权**
 - 日期：2026-08-24
 - 跟踪议题：[#70](https://github.com/houyuwushang/winkyou/issues/70)
 - 决策人：WinkYou 维护者与独立安全评审
-- 当前权限：**N2a/N2b 仅限纯函数与纯内存；真实 rendezvous、same-socket adapter、真实 STUN、信令接线、LAN/公网与现场测试仍未授权**
+- 当前权限：**N2c 仅限断开产品入口的 carrier、caller-owned same-socket adapter、进程内测试 server 与 literal loopback；信令接线、非回环收发、LAN/公网与现场测试仍未授权**
 - 前置证据：[`LOOPBACK-CONNECT-TEST.md`](../LOOPBACK-CONNECT-TEST.md)
 
 > 本 ADR 冻结 #68 之后下一阶段的权限设计，不是联网许可。它不改变
@@ -83,7 +83,7 @@ relay 仍是正常的产品结果。这个切片只回答“本次 direct 是否
 | 门 | 目标 | 允许的网络 | 产品入口 | 当前状态 |
 | --- | --- | --- | --- | --- |
 | N1 | 隔离 unicast 传输与排水证明 | 仅 Linux network namespace 内的测试地址 | 无 | 已实现并合入：隔离 harness + 必跑 Linux CI；不授权 N2/N3 或现场 I/O |
-| N2 | 同 socket NAT attempt | 先纯状态机，再隔离 namespace/NAT lab | 无 | N2a/N2b Draft：协议与内存矩阵已提供，待独立评审；N2c 仍 NO-GO |
+| N2 | 同 socket NAT attempt | 先纯状态机，再隔离 namespace/NAT lab | 无 | N2a/N2b 已合入；N2c Draft 提供断开产品入口的 literal-loopback adapter 证据，待独立评审；N2d 仍 NO-GO |
 | N3 | 用户入口与命名现场窗口 | 单独批准的受控环境 | 审查后才可讨论 | NO-GO |
 
 门必须按顺序通过。N1 成功不能自动批准 N2；N2 的隔离成功也不能自动批准 N3。
@@ -312,14 +312,18 @@ loopback parser，也没有新增 carrier 或产品导入路径。
 ### 6.7 冻结最坏成本
 
 N2b 对 16 个 EIM/EDM × address/address+port filtering 组合各重复 100 次，并覆盖丢包、
-乱序、重复、认证失败与 CANCEL 矩阵后，将以下数值冻结为编译期 hard ceiling。配置只能
-降低、不能提高；冻结成本仍不是 N2c、产品或现场实现授权。
+乱序、重复、认证失败与 CANCEL 矩阵后，冻结 UDP 与协议成本。N2c 再按真实 literal-loopback
+TCP/UDP adapter 实测冻结 carrier 字节、DNS、deadline 与 drain 成本。以下数值均为编译期
+hard ceiling，配置只能降低、不能提高；冻结成本仍不是 N2d、产品或现场实现授权。
 
 | 资源 | 每端冻结上限 |
 | --- | ---: |
 | rendezvous carrier connection | 1 |
 | rendezvous target | 1 |
-| DNS resolution | 1（固定 adapter 使用 literal endpoint 时实际为 0） |
+| DNS resolution | 1（literal endpoint 实测为 0；package-test 注入式 resolver 实测恰好 1 次调用） |
+| DNS coarse reservation | 1 socket / 1 target / 1 five-tuple（最坏情况预留） |
+| rendezvous application frame | 每方向 8 |
+| rendezvous application bytes | 每方向 8,256 bytes；双向合计 16,512 bytes |
 | governed UDP socket | 1 |
 | UDP target / five-tuple | 2（STUN + peer） |
 | STUN outbound packet | 3 |
@@ -328,6 +332,7 @@ N2b 对 16 个 EIM/EDM × address/address+port filtering 组合各重复 100 次
 | authenticated control envelope | initiator 4 / responder 3，另加全局最多一次 CANCEL |
 | Noise handshake frame | 每方向 1 |
 | presence envelope | 不超过 3 seconds，不含 pairing 数据 |
+| active carrier deadline | 不超过 13 seconds，预留 2 seconds 排水余量 |
 | attempt envelope | 不超过 15 seconds，且短于 credential expiry |
 | 自动 retry / reconnect | 0 |
 
@@ -336,8 +341,15 @@ N2b 对 16 个 EIM/EDM × address/address+port filtering 组合各重复 100 次
 偷换成 peer mapping，不授权 prediction 或 candidate replacement。详见
 [`N2-DIRECT-ATTEMPT-SIMULATION.md`](../N2-DIRECT-ATTEMPT-SIMULATION.md)。
 
-TCP 的 OS packet 数不能仅靠应用帧数推导。carrier adapter 必须同时给出应用字节硬上限、
-coarse machine reservation 和进程外见证，不能把“两条 frame”误写成“两只 TCP 包”。
+TCP 的 OS packet 数不能仅靠应用帧数推导，因此上表不为 TCP 伪造 packet 计数。coarse
+machine reservation 固定为同一个 heavyweight attempt 的 3 sockets、4 targets、4
+five-tuples、5 UDP packets/5 PPS，机器级 governor 同时最多容纳 1 个 heavyweight attempt。
+carrier 自身另守住 1 connection、1 rendezvous target、最多 1 次 DNS、每方向 8 个 frame
+与 8,256 application bytes；DNS/TCP 前消费 attempt-lifetime exclusive claim，失败后不释放，
+从而禁止同 attempt 重连。进程外崩溃见证由父测试进程终止 carrier 子进程，并从独立
+loopback server 观察 active connection 回到 0；N2d 仍须在 namespace 中补充 `ss`/conntrack
+见证。应用 frame 数不得写成 TCP OS packet 数。详见
+[`N2C-RENDEZVOUS-CARRIER.md`](../N2C-RENDEZVOUS-CARRIER.md)。
 
 ### 6.8 失败与终局
 
@@ -400,8 +412,8 @@ N3 的第一轮也只允许一个显式 attempt；不启动 daemon，不启用�
 每个 PR 均需独立 CI、architecture gate、race、重复运行、故障注入和专家审查；不得用
 stacked merge 绕过某一道权限门。
 
-当前 N2a/N2b 只处于 stacked Draft 证据状态；必须分别评审并自底向上合入，才可讨论
-N2c。Draft 创建、CI 通过或本节待决项被实现勾选，都不构成下一门自动授权。
+N2a/N2b 已分别评审并合入。N2c 只能作为独立 Draft 提供 adapter 证据；Draft 创建、CI
+通过或本节待决项被实现勾选，都不构成 N2d/N3 自动授权。
 
 ## 10. Accepted 后的剩余待决项
 
@@ -409,8 +421,9 @@ N2c。Draft 创建、CI 通过或本节待决项被实现勾选，都不构成�
 integration harness、不创建 production-importable carrier。以下事项仍未决，
 必须在对应的 N2 实现 PR（§9 第 2–5 步）之前逐项冻结：
 
-- [ ] 选择 rendezvous carrier 的最小信任模型与部署方式（方向已定：同一窄接口的
-  自托管档与最低信任档，见 §6.4 维护者决策；具体部署与成本随 N2c 评审）；
+- [x] N2c Draft 用同一窄接口固定自托管档与最低信任档；两档使用完全相同的端到端
+  Noise、domain binding 与资源边界，server TLS/运营者身份均不是配对信任锚；是否接受
+  该实现仍由独立评审决定；
 - [x] 冻结 carrier preconnect/presence 与 durable burn 的精确边界：presence 不含
   pairing 数据，双方 burn 后才能接受第一条握手 byte；N2c 必须实现同一边界；
 - [x] 冻结新的 artifact/profile identifier 和 downgrade 规则；
@@ -420,7 +433,9 @@ integration harness、不创建 production-importable carrier。以下事项仍�
   乱序与 filtering NAT 组合下的行为），并据此冻结 punch 状态机；
 - [x] 冻结 rendezvous presence 见证的形式、3-second 上限与“不含配对数据”边界；
 - [x] 证明同一 `PacketCipher` 跨 rendezvous/UDP 使用的 nonce 与 domain separation；
-- [ ] 冻结 TCP/DNS coarse reservation、字节上限、deadline 与 drain；
+- [x] N2c Draft 冻结 TCP/DNS coarse reservation、每方向 8,256-byte 上限、13-second
+  active deadline、2-second drain margin，并给出 literal=0 / injected resolver=1 与
+  子进程崩溃后 active connection=0 的见证；
 - [x] 用 1600 次基础 NAT 矩阵及故障矩阵校准并固定 N2 最坏成本；
 - [ ] 定义 N3 的 live authorization 模板；
 - [ ] 独立安全评审明确接受以上决策。

@@ -338,6 +338,40 @@ func TestAttemptDrainRegistrationsAreBounded(t *testing.T) {
 	}
 }
 
+func TestAttemptExclusiveClaimIsOneShotForLeaseLifetime(t *testing.T) {
+	governor := newTestGovernor(t, ProfilePhase1Machine, nil)
+	peer, err := governor.AcquirePeer("peer-exclusive-claim")
+	if err != nil {
+		t.Fatal(err)
+	}
+	attempt, err := peer.AcquireAttempt(context.Background(), testAttempt("attempt-exclusive-claim"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := attempt.ClaimExclusive("n2-rendezvous-carrier"); err != nil {
+		t.Fatal(err)
+	}
+	drain, err := attempt.RegisterDrain("n2-rendezvous-carrier")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := drain.Complete(); err != nil {
+		t.Fatal(err)
+	}
+	if err := attempt.ClaimExclusive("n2-rendezvous-carrier"); !errors.Is(err, ErrExclusiveClaimUsed) {
+		t.Fatalf("reused exclusive claim = %v, want ErrExclusiveClaimUsed", err)
+	}
+	if err := attempt.ClaimExclusive("different-adapter"); err != nil {
+		t.Fatalf("independent claim = %v", err)
+	}
+	if err := attempt.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := attempt.ClaimExclusive("after-close"); !errors.Is(err, ErrLeaseClosed) {
+		t.Fatalf("claim after close = %v, want ErrLeaseClosed", err)
+	}
+}
+
 func TestAttemptCancellationDrainTimeoutTripsMachine(t *testing.T) {
 	hard, err := HardLimits(ProfilePhase1Machine)
 	if err != nil {

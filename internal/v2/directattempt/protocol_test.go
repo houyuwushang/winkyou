@@ -290,6 +290,27 @@ func TestFrameHeaderADLengthAndBigEndianAreFrozen(t *testing.T) {
 	}
 }
 
+func TestInspectFrameReturnsValidatedNonSecretMetadata(t *testing.T) {
+	initiator, responder, _ := testProtocolPair(t)
+	defer initiator.Close()
+	defer responder.Close()
+	frame := mustSeal(t, initiator, FramePrepare, nil)
+	metadata, err := InspectFrame(frame)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if metadata.Domain != DomainRendezvousControl || metadata.Type != FramePrepare ||
+		metadata.Sender != RoleInitiator || metadata.Sequence != 0 || metadata.CiphertextBytes != noisecore.TagSize {
+		t.Fatalf("metadata = %+v", metadata)
+	}
+	mutated := append([]byte(nil), frame...)
+	mutated[16] = 0
+	mutated[17] = 0
+	if _, err := InspectFrame(mutated); !errors.Is(err, ErrInvalidFrame) {
+		t.Fatalf("mutated metadata error = %v", err)
+	}
+}
+
 func TestAuthenticatedCancelIsSingleUseAndTerminal(t *testing.T) {
 	initiator, responder, _ := testProtocolPair(t)
 	defer initiator.Close()

@@ -8,7 +8,11 @@
 // a reviewed user-opt-in or isolated-lab boundary; it does not grant raw socket
 // access.
 //
-// Client, MappingClient, and AllocationClient are single-use. WorstCaseCost reserves one socket,
+// Client, MappingClient, and AllocationClient are single-use. The N2c
+// SameSocketClient is narrower: it receives an already-open ProbeSocket,
+// performs STUN there, and only then registers one authenticated peer target
+// for the same generation. It owns no Factory and cannot open a second socket.
+// WorstCaseCost reserves one socket,
 // one target, one five-tuple, at most two packets per second, three outbound
 // packets, and four seconds. MappingWorstCaseCost reserves one socket plus the
 // aggregate target, five-tuple, packet, PPS, and duration bounds for two or
