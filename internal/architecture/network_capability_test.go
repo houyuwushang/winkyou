@@ -62,6 +62,7 @@ var receiverCapabilityMethods = names(
 	"DialContext",
 	"Listen",
 	"ListenPacket",
+	"LookupNetIP",
 )
 
 type finding struct {
@@ -88,18 +89,33 @@ type governedCapabilityApproval struct {
 	owner      string
 }
 
-// This is the sole raw capability approved inside a governed v2 package. The
-// adapter returns only probeio.Datagram; its default is loopback and its
-// explicit unicast scope permits only an unspecified ephemeral bind. Any
-// filename, function, capability, package, owner, or count drift must fail
-// review rather than silently widening this exception.
-var governedCapabilityApprovals = []governedCapabilityApproval{{
-	file:       "internal/probeio/udp_factory.go",
-	function:   "openGovernedUDP",
-	capability: "reference:net.ListenUDP",
-	pkg:        modulePath + "/internal/probeio",
-	owner:      "governor",
-}}
+// These are the only raw capabilities approved inside governed v2 packages.
+// probeio returns only Datagram and the disconnected N2c carrier retains its
+// one stream internally. Any filename, function, capability, package, owner,
+// or count drift must fail review rather than silently widening an exception.
+var governedCapabilityApprovals = []governedCapabilityApproval{
+	{
+		file:       "internal/probeio/udp_factory.go",
+		function:   "openGovernedUDP",
+		capability: "reference:net.ListenUDP",
+		pkg:        modulePath + "/internal/probeio",
+		owner:      "governor",
+	},
+	{
+		file:       "internal/v2/rendezvouscarrier/dialer.go",
+		function:   "openGovernedRendezvous",
+		capability: "call:method.DialContext",
+		pkg:        modulePath + "/internal/v2/rendezvouscarrier",
+		owner:      "governor",
+	},
+	{
+		file:       "internal/v2/rendezvouscarrier/resolver.go",
+		function:   "lookupGovernedRendezvousHost",
+		capability: "call:method.LookupNetIP",
+		pkg:        modulePath + "/internal/v2/rendezvouscarrier",
+		owner:      "governor",
+	},
+}
 
 func TestProductionNetworkCapabilityInventory(t *testing.T) {
 	root := repositoryRoot(t)

@@ -17,6 +17,7 @@ var (
 	ErrLeaseClosed              = errors.New("governor lease is closed")
 	ErrDuplicatePeer            = errors.New("peer already has an active lease")
 	ErrDuplicateAttempt         = errors.New("attempt id is already active")
+	ErrExclusiveClaimUsed       = errors.New("attempt exclusive claim is already used")
 	ErrInvalidRequest           = errors.New("invalid governor request")
 	ErrCancellationDrainTimeout = errors.New("attempt cancellation drain timed out")
 	ErrRestrictedScopeRequired  = errors.New("user-acknowledged profile requires the restricted governor capability")
@@ -273,13 +274,14 @@ func (p *PeerLease) AcquireAttempt(ctx context.Context, request AttemptRequest) 
 	}
 
 	lease := &AttemptLease{
-		governor: g,
-		peer:     p,
-		request:  request,
-		stopping: make(chan struct{}),
-		drained:  make(chan struct{}),
-		done:     make(chan struct{}),
-		drains:   make(map[uint64]*attemptDrain),
+		governor:        g,
+		peer:            p,
+		request:         request,
+		stopping:        make(chan struct{}),
+		drained:         make(chan struct{}),
+		done:            make(chan struct{}),
+		drains:          make(map[uint64]*attemptDrain),
+		exclusiveClaims: make(map[string]struct{}),
 	}
 	p.attempts[request.ID] = lease
 	g.attempts[request.ID] = lease
@@ -452,6 +454,7 @@ type AttemptLease struct {
 	drained         chan struct{}
 	done            chan struct{}
 	drains          map[uint64]*attemptDrain
+	exclusiveClaims map[string]struct{}
 	nextDrainID     uint64
 	stoppingStarted bool
 	drainedClosed   bool
@@ -479,6 +482,29 @@ func (a *AttemptLease) PeerID() string {
 		return ""
 	}
 	return a.peer.peerID
+}
+
+// ClaimExclusive consumes one named, attempt-lifetime capability before its
+// adapter performs I/O. Claims never reset, including after an adapter drains,
+// so a failed carrier cannot reconnect under the same reservation.
+func (a *AttemptLease) ClaimExclusive(name string) error {
+	if a == nil || a.governor == nil {
+		return ErrLeaseClosed
+	}
+	if err := validateIdentifier("exclusive claim", name); err != nil {
+		return err
+	}
+	g := a.governor
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.closed || g.closing || a.closed || a.stoppingStarted {
+		return ErrLeaseClosed
+	}
+	if _, used := a.exclusiveClaims[name]; used {
+		return ErrExclusiveClaimUsed
+	}
+	a.exclusiveClaims[name] = struct{}{}
+	return nil
 }
 
 // Trip asks the machine governor to enter its persistent fail-closed state.

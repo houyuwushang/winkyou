@@ -29,6 +29,29 @@ jobs:
       - name: Run core race tests
         run: go test -race ./pkg/session ./pkg/client ./pkg/solver/... -count=1
 
+      - name: Run N2c governed-adapter race tests
+        run: >-
+          go test -race
+          ./internal/v2/rendezvouscarrier
+          ./internal/stunobserve
+          ./internal/probeio
+          ./internal/governor
+          ./internal/architecture
+          ./internal/v2/directattempt
+          -count=1
+
+      - name: Run N2c mutation and stability matrix
+        run: >-
+          go test -race
+          ./internal/v2/rendezvouscarrier
+          ./internal/stunobserve
+          ./internal/probeio
+          ./internal/governor
+          ./internal/architecture
+          ./internal/v2/directattempt
+          -run 'N2C|SameSocket|Reservation|InspectFrame|ExclusiveClaim'
+          -count=20
+
   test-windows:
     name: Test (Windows)
     runs-on: windows-latest

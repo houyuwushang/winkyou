@@ -38,6 +38,24 @@ func connect(ctx context.Context, dialer *stdnet.Dialer) {
 	}
 }
 
+func TestCapabilityScannerTreatsResolverLookupAsCoarseNetworkIO(t *testing.T) {
+	findings := scanSource(t, `
+package sample
+import (
+    "context"
+    "net"
+)
+func resolve(ctx context.Context, resolver *net.Resolver) {
+    _, _ = resolver.LookupNetIP(ctx, "ip", "example.invalid")
+}
+`)
+	actual := aggregateFindings(findings)
+	expected := []string{"sample.go | resolve | call:method.LookupNetIP | count=1"}
+	if !reflect.DeepEqual(actual, expected) {
+		t.Fatalf("findings = %#v, want %#v", actual, expected)
+	}
+}
+
 func TestDotCapabilityImportsCannotHideUnqualifiedCalls(t *testing.T) {
 	parsed, err := parser.ParseFile(token.NewFileSet(), "dot.go", `package sample; import . "net"`, 0)
 	if err != nil {
@@ -108,12 +126,56 @@ func TestProbeIOApprovalIsExactAndDirectBypassStillFails(t *testing.T) {
 	}
 }
 
-func TestProbeIOCapabilityApprovalHasGovernorOwner(t *testing.T) {
-	if len(governedCapabilityApprovals) != 1 {
-		t.Fatalf("governed approvals = %d, want exactly 1", len(governedCapabilityApprovals))
+func TestN2CCarrierCapabilityApprovalIsExactAndBypassStillFails(t *testing.T) {
+	approved := finding{
+		file:       "internal/v2/rendezvouscarrier/dialer.go",
+		function:   "openGovernedRendezvous",
+		capability: "call:method.DialContext",
+		pkg:        "winkyou/internal/v2/rendezvouscarrier",
 	}
-	if owner := governedCapabilityApprovals[0].owner; owner != "governor" {
-		t.Fatalf("probeio capability owner = %q, want governor", owner)
+	bypass := approved
+	bypass.file = "internal/v2/rendezvouscarrier/reconnect.go"
+	bypass.function = "reconnect"
+	result := scanResult{
+		findings: []finding{approved, bypass},
+		packages: map[string]*packageInfo{
+			"winkyou/internal/v2/rendezvouscarrier": {imports: map[string]struct{}{}},
+		},
+	}
+	violations := governedCapabilityViolations(result)
+	want := "winkyou/internal/v2/rendezvouscarrier directly owns call:method.DialContext in internal/v2/rendezvouscarrier/reconnect.go (reconnect)"
+	if len(violations) != 1 || violations[0] != want {
+		t.Fatalf("violations = %#v, want %q", violations, want)
+	}
+	if !approvedGovernedCapability(approved) {
+		t.Fatal("reviewed N2c carrier opener was not recognized")
+	}
+}
+
+func TestN2CDNSCapabilityApprovalIsExact(t *testing.T) {
+	approved := finding{
+		file:       "internal/v2/rendezvouscarrier/resolver.go",
+		function:   "lookupGovernedRendezvousHost",
+		capability: "call:method.LookupNetIP",
+		pkg:        "winkyou/internal/v2/rendezvouscarrier",
+	}
+	if !approvedGovernedCapability(approved) {
+		t.Fatal("reviewed N2c one-call DNS resolver was not recognized")
+	}
+	approved.function = "resolveAgain"
+	if approvedGovernedCapability(approved) {
+		t.Fatal("N2c DNS approval widened beyond the exact reviewed function")
+	}
+}
+
+func TestGovernedCapabilityApprovalsHaveGovernorOwner(t *testing.T) {
+	if len(governedCapabilityApprovals) != 3 {
+		t.Fatalf("governed approvals = %d, want exactly 3", len(governedCapabilityApprovals))
+	}
+	for _, approval := range governedCapabilityApprovals {
+		if approval.owner != "governor" {
+			t.Fatalf("capability %s owner = %q, want governor", approval.file, approval.owner)
+		}
 	}
 }
 

@@ -210,6 +210,16 @@ type ProbeSocket struct {
 	state      *socketState
 }
 
+// SocketReservation is a non-authoritative, read-only view of the attempt
+// reservation already governing a ProbeSocket. It grants no I/O capability
+// and lets narrow adapters reject insufficient budgets before their first
+// target registration or packet emission.
+type SocketReservation struct {
+	Operation  governor.Operation
+	Cost       governor.AttemptCost
+	Generation uint64
+}
+
 // ReplyVerifier authenticates and validates one reply before it can authorize
 // promotion. The byte slice is only valid for the duration of the callback.
 type ReplyVerifier func(packet []byte, from netip.AddrPort) error
@@ -474,6 +484,32 @@ func (socket *ProbeSocket) LocalAddr() (netip.AddrPort, error) {
 		}
 	}
 	return netip.AddrPortFrom(endpoint.Addr().Unmap(), endpoint.Port()), nil
+}
+
+// Reservation returns the immutable attempt cost and observation generation
+// already bound to this socket. It never exposes the Datagram, descriptor,
+// endpoint targets, peer identity, or a way to change the reservation.
+func (socket *ProbeSocket) Reservation() (SocketReservation, error) {
+	c, state, err := socket.parts()
+	if err != nil {
+		return SocketReservation{}, err
+	}
+	c.mu.Lock()
+	if violation := c.guardViolationLocked(c.now()); violation != nil {
+		c.mu.Unlock()
+		return SocketReservation{}, c.handleViolation(violation)
+	}
+	if state.state != socketOpen {
+		c.mu.Unlock()
+		return SocketReservation{}, ErrSocketClosed
+	}
+	reservation := SocketReservation{
+		Operation:  c.request.Operation,
+		Cost:       c.request.Cost,
+		Generation: c.expectedGeneration,
+	}
+	c.mu.Unlock()
+	return reservation, nil
 }
 
 // SendProbe sends only to a registered target and accounts the attempt before

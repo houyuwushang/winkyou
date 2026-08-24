@@ -24,7 +24,6 @@ var unconnectedPairingGateIdentifiers = map[string]struct{}{
 func TestPairingAdmissionGateHasOnlyReviewedCarrierConsumer(t *testing.T) {
 	root := repositoryRoot(t)
 	gateFile := filepath.ToSlash(filepath.Join("internal", "governor", "pairing_gate.go"))
-	carrierFile := filepath.ToSlash(filepath.Join("internal", "v2", "loopbackcarrier", "carrier.go"))
 	var violations []string
 	fset := token.NewFileSet()
 	err := filepath.WalkDir(root, func(filename string, entry fs.DirEntry, walkErr error) error {
@@ -45,7 +44,7 @@ func TestPairingAdmissionGateHasOnlyReviewedCarrierConsumer(t *testing.T) {
 			return err
 		}
 		relative = filepath.ToSlash(relative)
-		if relative == gateFile || relative == carrierFile {
+		if relative == gateFile {
 			return nil
 		}
 		parsed, err := parser.ParseFile(fset, filename, nil, 0)
@@ -58,6 +57,9 @@ func TestPairingAdmissionGateHasOnlyReviewedCarrierConsumer(t *testing.T) {
 				return true
 			}
 			if _, watched := unconnectedPairingGateIdentifiers[identifier.Name]; !watched {
+				return true
+			}
+			if approvedPairingGateReference(relative, identifier.Name) {
 				return true
 			}
 			position := fset.Position(identifier.Pos())
@@ -76,20 +78,29 @@ func TestPairingAdmissionGateHasOnlyReviewedCarrierConsumer(t *testing.T) {
 }
 
 func TestPairingAdmissionGateApprovalIsExact(t *testing.T) {
-	approved := filepath.ToSlash(filepath.Join("internal", "v2", "loopbackcarrier", "carrier.go"))
-	checks := map[string]bool{
-		approved: true,
-		filepath.ToSlash(filepath.Join("internal", "v2", "loopbackcarrier", "child.go")): false,
-		filepath.ToSlash(filepath.Join("internal", "solverstdio", "handler.go")):         false,
-		filepath.ToSlash(filepath.Join("cmd", "wink", "main.go")):                        false,
+	loopback := filepath.ToSlash(filepath.Join("internal", "v2", "loopbackcarrier", "carrier.go"))
+	rendezvous := filepath.ToSlash(filepath.Join("internal", "v2", "rendezvouscarrier", "carrier.go"))
+	checks := []struct {
+		path       string
+		identifier string
+		wanted     bool
+	}{
+		{loopback, "NewPairingAdmissionGate", true},
+		{loopback, "BeforeFirstEmission", true},
+		{rendezvous, "BeforeFirstEmission", true},
+		{rendezvous, "CommittedCarrierAuthorization", true},
+		{rendezvous, "NewPairingAdmissionGate", false},
+		{filepath.ToSlash(filepath.Join("internal", "v2", "rendezvouscarrier", "child.go")), "BeforeFirstEmission", false},
+		{filepath.ToSlash(filepath.Join("internal", "solverstdio", "handler.go")), "BeforeFirstEmission", false},
+		{filepath.ToSlash(filepath.Join("cmd", "wink", "main.go")), "BeforeFirstEmission", false},
 	}
-	for path, wanted := range checks {
-		if actual := path == approved; actual != wanted {
-			t.Errorf("pairing gate approval for %q = %t, want %t", path, actual, wanted)
+	for _, check := range checks {
+		if actual := approvedPairingGateReference(check.path, check.identifier); actual != check.wanted {
+			t.Errorf("pairing gate approval for %q/%q = %t, want %t", check.path, check.identifier, actual, check.wanted)
 		}
 	}
 
-	payload, err := os.ReadFile(filepath.Join(repositoryRoot(t), filepath.FromSlash(approved)))
+	payload, err := os.ReadFile(filepath.Join(repositoryRoot(t), filepath.FromSlash(loopback)))
 	if err != nil {
 		t.Fatalf("read reviewed carrier: %v", err)
 	}
@@ -98,4 +109,29 @@ func TestPairingAdmissionGateApprovalIsExact(t *testing.T) {
 			t.Errorf("reviewed carrier no longer consumes required gate step %s", identifier)
 		}
 	}
+	rendezvousPayload, err := os.ReadFile(filepath.Join(repositoryRoot(t), filepath.FromSlash(rendezvous)))
+	if err != nil {
+		t.Fatalf("read disconnected rendezvous carrier: %v", err)
+	}
+	if !strings.Contains(string(rendezvousPayload), "BeforeFirstEmission") {
+		t.Fatal("rendezvous carrier lost the final post-burn emission check")
+	}
+	if !strings.Contains(string(rendezvousPayload), "CommittedCarrierAuthorization") {
+		t.Fatal("rendezvous carrier lost its concrete post-burn authorization boundary")
+	}
+	for _, forbidden := range []string{"NewPairingAdmissionGate", "ConsumeForCarrier", "CommittedAttempt"} {
+		if strings.Contains(string(rendezvousPayload), forbidden) {
+			t.Errorf("rendezvous carrier must not acquire or consume gate capability %s", forbidden)
+		}
+	}
+}
+
+func approvedPairingGateReference(relative, identifier string) bool {
+	loopback := filepath.ToSlash(filepath.Join("internal", "v2", "loopbackcarrier", "carrier.go"))
+	if relative == loopback {
+		_, approved := unconnectedPairingGateIdentifiers[identifier]
+		return approved
+	}
+	rendezvous := filepath.ToSlash(filepath.Join("internal", "v2", "rendezvouscarrier", "carrier.go"))
+	return relative == rendezvous && (identifier == "BeforeFirstEmission" || identifier == "CommittedCarrierAuthorization")
 }
