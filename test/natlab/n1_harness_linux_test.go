@@ -637,6 +637,9 @@ func newN1EndpointProcess(t *testing.T, topology *n1Topology, role string, pps i
 	if err := os.Mkdir(governorDir, 0o700); err != nil {
 		t.Fatal("N1 governor namespace setup failed")
 	}
+	if err := governor.PrepareN1TestNamespace(governorDir, time.Now().UTC()); err != nil {
+		t.Fatal("N1 governor safety state preparation failed")
+	}
 	process := &n1EndpointProcess{
 		done:        make(chan struct{}),
 		readyPath:   filepath.Join(directory, "ready.json"),

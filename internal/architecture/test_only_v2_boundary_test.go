@@ -1,6 +1,7 @@
 package architecture
 
 import (
+	"go/ast"
 	"go/parser"
 	"go/token"
 	"io/fs"
@@ -82,6 +83,44 @@ func TestN1HarnessTestsOnlyGateDetectsProductionSource(t *testing.T) {
 	}
 	if len(violations) != 1 || violations[0] != "n1_escape.go is not test-only" {
 		t.Fatalf("violations = %v, want injected production source", violations)
+	}
+}
+
+func TestN1NatlabGovernorHelperStaysOutOfProductionSources(t *testing.T) {
+	root := repositoryRoot(t)
+	helperPath := filepath.Join(root, "internal", "governor", "n1_natlab_linux.go")
+	payload, err := os.ReadFile(helperPath)
+	if err != nil {
+		t.Fatalf("read N1 governor helper: %v", err)
+	}
+	if !strings.HasPrefix(string(payload), "//go:build linux && natlab\n") {
+		t.Fatal("N1 governor helper lost its exact linux && natlab build constraint")
+	}
+	violations, err := n1GovernorHelperUseViolations(root)
+	if err != nil {
+		t.Fatalf("scan N1 governor helper uses: %v", err)
+	}
+	if len(violations) != 0 {
+		t.Fatalf("N1 governor helper escaped into production sources:\n  %s", strings.Join(violations, "\n  "))
+	}
+}
+
+func TestN1NatlabGovernorHelperGateDetectsProductionUse(t *testing.T) {
+	root := t.TempDir()
+	directory := filepath.Join(root, "cmd", "wink")
+	if err := os.MkdirAll(directory, 0o700); err != nil {
+		t.Fatalf("create injected production directory: %v", err)
+	}
+	source := []byte("package main\nimport gov \"winkyou/internal/governor\"\nfunc bypass() { _, _ = gov.PrepareN1TestNamespace(\"x\", time.Time{}) }\n")
+	if err := os.WriteFile(filepath.Join(directory, "bypass.go"), source, 0o600); err != nil {
+		t.Fatalf("write injected governor helper use: %v", err)
+	}
+	violations, err := n1GovernorHelperUseViolations(root)
+	if err != nil {
+		t.Fatalf("scan injected governor helper use: %v", err)
+	}
+	if len(violations) != 1 || violations[0] != "cmd/wink/bypass.go uses N1 natlab governor helper" {
+		t.Fatalf("violations = %v, want injected N1 helper use", violations)
 	}
 }
 
@@ -306,6 +345,52 @@ func n1HarnessSourceViolations(directory string) ([]string, error) {
 	}
 	sort.Strings(violations)
 	return violations, nil
+}
+
+func n1GovernorHelperUseViolations(root string) ([]string, error) {
+	const helperName = "PrepareN1TestNamespace"
+	var violations []string
+	err := filepath.WalkDir(root, func(filename string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if entry.IsDir() {
+			if filename != root && (strings.HasPrefix(entry.Name(), ".") || entry.Name() == "vendor") {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if !strings.HasSuffix(entry.Name(), ".go") || strings.HasSuffix(entry.Name(), "_test.go") {
+			return nil
+		}
+		relative, err := filepath.Rel(root, filename)
+		if err != nil {
+			return err
+		}
+		relative = filepath.ToSlash(relative)
+		if relative == "internal/governor/n1_natlab_linux.go" {
+			return nil
+		}
+		parsed, err := parser.ParseFile(token.NewFileSet(), filename, nil, 0)
+		if err != nil {
+			return err
+		}
+		used := false
+		ast.Inspect(parsed, func(node ast.Node) bool {
+			identifier, ok := node.(*ast.Ident)
+			if ok && identifier.Name == helperName {
+				used = true
+				return false
+			}
+			return !used
+		})
+		if used {
+			violations = append(violations, relative+" uses N1 natlab governor helper")
+		}
+		return nil
+	})
+	sort.Strings(violations)
+	return violations, err
 }
 
 func approvedLoopbackPrimitiveImporter(importer, imported string) bool {
