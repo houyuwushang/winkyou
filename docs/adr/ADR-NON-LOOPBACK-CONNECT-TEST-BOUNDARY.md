@@ -267,6 +267,19 @@ coordinator TLS/auth transport 或定义更窄的 rendezvous adapter，但选择
 无论使用哪个 adapter，成功后的数据路径仍是端到端 direct，rendezvous 不获得
 membership、target 或恢复权限。
 
+维护者决策（2026-08-24）：rendezvous 必须以**同一个窄 adapter 接口**支持两个部署
+档位——
+
+1. **自托管档**：跑在维护者自己控制的节点上，用于自举启动；运营方掌握可用性、
+   日志与元数据留存策略；
+2. **最低信任档**：由任意第三方运营也可用；协议上服务端只见有界密文与不可避免的
+   transport metadata。
+
+两档的密码学信任假设完全相同：端到端 NNpsk0 是唯一配对证明，自托管档同样不得把
+server TLS/auth、运营者身份或部署位置当作信任锚，不得因“自己的服务器”而放宽任何
+帧上限、时限或 fail-closed 规则。N2c 只审一次协议信任边界；每个部署档位单独通过
+资源与隐私评审。
+
 ### 6.5 同 socket STUN
 
 `stunobserve` 必须增加“使用调用方已有 `ProbeSocket`”的窄 adapter；它不能为了复用
@@ -396,7 +409,8 @@ N2c。Draft 创建、CI 通过或本节待决项被实现勾选，都不构成�
 integration harness、不创建 production-importable carrier。以下事项仍未决，
 必须在对应的 N2 实现 PR（§9 第 2–5 步）之前逐项冻结：
 
-- [ ] 选择 rendezvous carrier 的最小信任模型与部署方式；
+- [ ] 选择 rendezvous carrier 的最小信任模型与部署方式（方向已定：同一窄接口的
+  自托管档与最低信任档，见 §6.4 维护者决策；具体部署与成本随 N2c 评审）；
 - [x] 冻结 carrier preconnect/presence 与 durable burn 的精确边界：presence 不含
   pairing 数据，双方 burn 后才能接受第一条握手 byte；N2c 必须实现同一边界；
 - [x] 冻结新的 artifact/profile identifier 和 downgrade 规则；
