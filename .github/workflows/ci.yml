@@ -44,6 +44,26 @@ jobs:
       - name: Run go test ./...
         run: go test ./... -count=1
 
+  loopback-connect-proof:
+    name: Loopback Connect Proof (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Run bounded loopback-only proof
+        shell: pwsh
+        run: ./scripts/verify-loopback-connect.ps1
+
   relay-smoke-linux:
     name: Relay Smoke (Linux)
     needs: test-linux
