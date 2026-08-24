@@ -106,3 +106,14 @@ machine-scope 测试 namespace，stdio server 契约与真实 carrier 分别受�
 canonical machine namespace，不启动已安装的 `wink` runtime，不访问 DNS/LAN/公网，也不
 证明两个生产 stdio owner 可以在同一机器并存。生产设计仍坚持一个机器级 owner；若已有
 owner，第二个进程必须 fail-closed。
+
+## 6. 下一权限边界
+
+非回环的下一步不是把 loopback 地址检查替换为 unicast。真实 NAT 路径必须解决同一
+UDP socket 的 STUN 观测、受认证 endpoint 交换、一次 Noise/PSK 使用、rendezvous
+carrier 计费，以及独立现场授权。候选设计见
+[`adr/ADR-NON-LOOPBACK-CONNECT-TEST-BOUNDARY.md`](./adr/ADR-NON-LOOPBACK-CONNECT-TEST-BOUNDARY.md)
+与 [Issue #70](https://github.com/houyuwushang/winkyou/issues/70)。
+
+在该 Draft ADR 通过维护者和安全评审前，本文件的 literal-loopback 限制与
+`non_loopback_blocked` 行为保持不变。

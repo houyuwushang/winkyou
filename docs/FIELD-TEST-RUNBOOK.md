@@ -439,12 +439,19 @@ sudo firewall-cmd --reload
 即使多轮都为 `sequential_uniform`，也不能证明下一次分配、另一个目标或另一个接入网络仍
 使用同一步长，更不能绕过单独的打洞设计评审与 live-network 授权。
 
-## 12. 后续双端实验预告（仅占位）
+## 12. 后续双端实验设计指针（仍未授权）
 
-未来若要让两个客户端在同一短时窗口交换各自的 mapped endpoint，可把
-[`SIGNAL-EXCHANGE.md`](./SIGNAL-EXCHANGE.md) 定义的 `wink-signal` 作为一次性人工信箱：两端先分别
-完成已经授权的有界 STUN 观测，再用带外生成的 code 和不同 role 交换**仅属于操作者自己的观测结果**。
-交换完成后停止信令进程并撤销精确 TCP 入站规则。
+“两端分别完成 STUN 观测、关闭观测 socket，再通过 mailbox 交换 mapped endpoint”不能
+证明后续 punch 使用相同 NAT 映射，因此不再作为后续实验方案。非回环候选必须让
+STUN、authenticated endpoint exchange 与 punch 复用同一个 governed UDP socket；
+设计边界见
+[`adr/ADR-NON-LOOPBACK-CONNECT-TEST-BOUNDARY.md`](./adr/ADR-NON-LOOPBACK-CONNECT-TEST-BOUNDARY.md)
+和 [Issue #70](https://github.com/houyuwushang/winkyou/issues/70)。
+
+现有 [`SIGNAL-EXCHANGE.md`](./SIGNAL-EXCHANGE.md) 中的 `wink-signal` 仍只是明文、
+test-only、未接线的 observation mailbox，不能直接承载该候选的 pairing 或 endpoint
+交换。未来若评估它的 transport，只能在单独审查的 governor adapter 后转发端到端
+密文，不能获得 pairing secret、明文 endpoint 或 target 权限。
 
 这只是依赖关系预告，不是执行步骤或 live-network 授权。进入双端真实打洞前仍须另行确定并复核：
 
