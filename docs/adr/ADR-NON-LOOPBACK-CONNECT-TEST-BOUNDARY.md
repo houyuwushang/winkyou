@@ -142,6 +142,7 @@ N1 只证明隔离 unicast transport 可被控制，不证明 NAT 穿透或产�
 严格验证新的非回环 OOB artifact 与 machine scope（零 I/O）
   -> 预解析并连通一个已审查、受管的 rendezvous carrier
      （不发送 pairing 数据；TCP/DNS 单独计费；零自动重试）
+  -> 经 rendezvous 取得有界的双方在场见证（presence，不含配对数据）
   -> 注册 carrier drain witness
   -> 复核 owner/scope/lease/safety/journal
   -> durable BURN_AND_ADMIT，预扣完整最坏 envelope
@@ -160,9 +161,11 @@ N1 只证明隔离 unicast transport 可被控制，不证明 NAT 穿透或产�
   -> 关闭 UDP 与 rendezvous，durable FINISH，排水
 ```
 
-预连接只允许建立一次无 pairing 数据的受管 carrier；它不是重试漏洞。若预连接失败，
-本地必须有界结束且不 burn credential。只要开始发送或接受第一条 Noise handshake
-byte，credential 必须已经 burn，此后所有失败均消费完整预算。
+预连接只允许建立一次无 pairing 数据的受管 carrier；它不是重试漏洞。若预连接失败或
+对端未在有界 presence 窗口内接入 rendezvous，本地必须有界结束且不 burn credential：
+presence 只见证“双方均已连接本次 attempt 的 rendezvous”，不含任何配对数据，因此
+把它置于 burn 之前不违反“先 burn、后 attempt 数据”。只要开始发送或接受第一条
+Noise handshake byte，credential 必须已经 burn，此后所有失败均消费完整预算。
 
 ### 6.2 为什么不能有第二次 Noise
 
@@ -200,8 +203,15 @@ envelope 都必须先由 `PacketCipher` 认证加密，rendezvous 只看到有�
 - 本地 punch 成功后发送一次 `VERIFY`；发送并收到 `VERIFY` 是唯一成功终局；
 - `CANCEL` 仍只能在非终局状态发送一次；握手完成前的取消直接关闭 carrier，握手完成后
   的取消使用其唯一固定 cipher sequence；
-- payload 不含 pairing secret、PSK、private key、raw bundle、资源请求或 governor
-  选择；
+- `READY` payload 不含 pairing secret、PSK、private key、raw bundle、资源请求或
+  governor 选择；
+- 收到 `FIRE`（initiator 为发送 `FIRE` 后，不等待确认）时，双方各自**立即**发送
+  本 role 唯一的开洞报文：initiator 发送 SYN，responder **盲发** SYN_ACK，均不以
+  收到对端报文为前置条件。该报文同时充当对 address-dependent filtering NAT 的
+  pinhole opener；若把 SYN_ACK 冻结为“收到 SYN 后的回复”，port-restricted ×
+  port-restricted 组合将必然失败，回环 carrier 的被动 responder 语义不得照搬；
+- initiator 收到 SYN_ACK 后发送一次 ACK；responder 以收到 ACK 为本地 punch 完成
+  见证，不补发第二个 SYN_ACK。UDP 丢包造成的不对称由双向 `VERIFY` 终局裁决；
 - duplicate、wrong role、wrong generation、wrong context、non-canonical endpoint、
   replay、乱序、oversize 和认证失败均终止整个 attempt；
 - peer endpoint 只有通过 `READY` 认证后才能交给 `RegisterTarget`；
@@ -220,9 +230,11 @@ envelope 都必须先由 `PacketCipher` 认证加密，rendezvous 只看到有�
 | 6 | VERIFY | 双方各一次 | rendezvous-control |
 | 7 | CANCEL | 任一方至多一次 | rendezvous-control |
 
-发送方向各自使用独立 Split key；同一方向只能发送上表允许其 role 的 sequence。wrapper
-把上限固定为 7，拒绝空洞 sequence、type/sequence 不一致和任意 nonce 设置。现有控制
-envelope 内部的协议 sequence 仍按 mini-spec 从 1 递增，不能与 Noise nonce 混为一层。
+发送方向各自使用独立 Split key；每个方向的合法 sequence 是上表允许其 role 的固定
+**集合**（responder 方向在 2、3、5 处天然留空），收到集合外、type/sequence 不一致或
+重复的 sequence 一律终局；集合内的到达顺序按与 loopback `/1` 相同的有界窗口处理。
+wrapper 把上限固定为 7，拒绝任意 nonce 设置。现有控制 envelope 内部的协议 sequence
+仍按 mini-spec 从 1 递增，不能与 Noise nonce 混为一层。
 
 Rendezvous control 与 UDP punch 的 AD label、header、字节序、最大 frame 长度以及
 `READY` payload schema 都必须在 N2 实现前由 mini-spec 修订和跨语言 golden vector
@@ -239,6 +251,8 @@ Rendezvous 解决“双方如何及时交换一次性信息”，不授予对端
 - pairing secret 永不离开 endpoint；服务端最多看到有界 opaque frames 与不可避免的
   transport metadata；
 - 无离线队列、无限 mailbox、轮询循环、重连、fallback 或跨 attempt 复用；
+- 必须提供一个有界、不含配对数据的双方在场见证，供 caller 在 durable burn 前
+  确认对端已接入本次 attempt；presence 超时是未 burn 的 preflight 失败；
 - 接收方在 durable burn 前不得订阅、读取或接受第一条 secure-channel frame；
 - server TLS/auth 只能保护 transport，不能替代 Noise 的端到端 pairing 证明。
 
@@ -310,6 +324,7 @@ coarse machine reservation 和进程外见证，不能把“两条 frame”误�
 | --- | --- | --- |
 | artifact / scope / preflight 校验失败 | 未 burn | 零 attempt I/O，稳定拒绝 |
 | 单次 carrier 预连接失败 | 未 burn | 有界 preflight 失败，不重连 |
+| 对端未在 presence 窗口内接入 rendezvous | 未 burn | 有界 preflight 失败，不等待、不重试 |
 | burn、预算或 owner 复核失败 | fail-closed | 零 pairing/UDP emission |
 | Noise、STUN、加密控制 envelope、punch 或 promote 失败 | 已消费 | FINISH + drain，不退款 |
 | drain 超时、持续 writer failure、预算矛盾 | 已消费 | 持久 safety trip |
@@ -372,6 +387,9 @@ stacked merge 绕过某一道权限门。
 - [ ] 冻结新的 artifact/profile identifier 和 downgrade 规则；
 - [ ] 冻结加密控制 envelope 与 `READY` endpoint payload 的 canonical schema、AD
   bytes、sequence 与长度；
+- [ ] 用 NAT 模拟矩阵验证双侧同时开洞语义（含 responder 盲发 SYN_ACK 在丢包、
+  乱序与 filtering NAT 组合下的行为），并据此冻结 punch 状态机；
+- [ ] 冻结 rendezvous presence 见证的形式、超时与“不含配对数据”边界；
 - [ ] 证明同一 `PacketCipher` 跨 rendezvous/UDP 使用的 nonce 与 domain separation；
 - [ ] 冻结 TCP/DNS coarse reservation、字节上限、deadline 与 drain；
 - [ ] 用模拟矩阵校准并固定 N2 最坏成本；
