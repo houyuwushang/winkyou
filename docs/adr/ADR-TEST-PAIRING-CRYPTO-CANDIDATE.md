@@ -1,11 +1,11 @@
 # ADR: test-only pairing cryptographic candidate
 
-- Status: **Accepted (2026-08-21): protocol and simulation-only in-repository implementation approved; real-network and `connect_test` authority remain separately gated**
+- Status: **Accepted (2026-08-21): protocol and in-repository implementation approved; exact literal-loopback `connect_test` wiring separately reviewed and merged; non-loopback authority remains gated**
 - Evidence snapshot: 2026-08-13
 - Decision owner: WinkYou maintainers, with independent security review
 - Selected candidate: **Candidate B at protocol level only (2026-08-14)**
 - Selected implementation: **in-repository `internal/v2/noisecore` (PR #59), from-spec, zero new module dependencies; `flynn/noise` not adopted**
-- Implementation authorization: **simulation plus the exact future loopback-carrier import boundary; no socket, signaling, runtime, or `connect_test` authority is added by this boundary-only revision**
+- Implementation authorization: **simulation plus the exact reviewed loopback-carrier import boundary; the crypto revision alone added no socket, signaling, runtime, or `connect_test` authority**
 - Boundary promotion: **`noisecore` and the extracted pure `punchproto` may be imported only by the exact reviewed loopback carrier package; this adds no socket and grants no non-loopback authority**
 
 This ADR evaluates the two candidate families required by
@@ -577,21 +577,21 @@ selection only; every implementation-facing field stays TBD and keeps
   closes this text drift only after independent review; it does not resolve the
   TBD implementation or interop fields above.
 
-This ADR is Accepted for the protocol and its simulation-only in-repository
-implementation. It still grants no real-network authority: `connect_test`
-stays `not_implemented` until its own reviewed wiring change passes the
-mini-spec section 12 gates and the field-test authorization items in the
-runbook.
+This ADR is Accepted for the protocol and its in-repository implementation.
+The later independently reviewed wiring change passed the mini-spec section 12
+gates only for exact literal loopback. This ADR still grants no LAN, NAT, or
+public-network authority; those remain subject to the field-test runbook and a
+separate decision.
 
-## 10. Draft loopback wiring evidence (2026-08-23)
+## 10. Reviewed loopback wiring evidence (2026-08-23)
 
-The separately reviewable loopback wiring revision proposes the exact
+The separately reviewed loopback wiring revision uses the exact
 `internal/v2/loopbackcarrier` as the sole consumer of pairing admission,
 `noisecore`, `punchproto`, and `probeio`. It adds no dependency and does not
 change this ADR's protocol selection or retroactively approve non-loopback
 network use.
 
-The proposed adapter accepts only canonical numeric loopback endpoints, burns
+The adapter accepts only canonical numeric loopback endpoints, burns
 one credential before constructing the carrier, performs the two Noise
 messages and encrypted SYN/SYN_ACK/ACK on the same governed UDP socket, then
 closes immediately after `PromoteTerminal` and durable FINISH. Its per-endpoint
@@ -603,6 +603,5 @@ Real loopback packet witnesses cover the 3/2 successful outbound sequence,
 wrong PSK, tamper, replay, terminal-before-attempt-close ordering, and socket
 and goroutine drainage. Existing restart-safety subprocess tests continue to
 cover durable burn, concurrent processes, crash points, torn FINISH, and zero
-emission after restart. This section is implementation evidence only: the
-revision remains Draft until independent review, and LAN/NAT/public-network
-authorization remains explicitly undecided.
+emission after restart. Independent review accepted this exact loopback slice;
+LAN/NAT/public-network authorization remains explicitly undecided.

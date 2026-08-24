@@ -5,7 +5,7 @@ BUILD_TIME ?= $(shell if command -v powershell >/dev/null 2>&1; then powershell 
 LDFLAGS := -X 'winkyou/pkg/version.Version=$(VERSION)' -X 'winkyou/pkg/version.Commit=$(COMMIT)' -X 'winkyou/pkg/version.BuildTime=$(BUILD_TIME)'
 DIST_DIR ?= dist
 
-.PHONY: tidy fmt vet test test-race check test-unit test-integration test-e2e test-e2e-privileged test-e2e-relay test-e2e-relay-privileged test-phase2d test-phase3a test-phase4a build build-all build-release checksum-release clean-dist build-wink build-wink-coordinator build-wink-relay build-windows-client build-linux-client build-linux-coordinator build-linux-relay build-deploy-preview ensure-bin ensure-dist
+.PHONY: tidy fmt vet test test-race check test-unit test-integration test-e2e test-e2e-privileged test-e2e-relay test-e2e-relay-privileged test-loopback-connect test-phase2d test-phase3a test-phase4a build build-all build-release checksum-release clean-dist build-wink build-wink-coordinator build-wink-relay build-windows-client build-linux-client build-linux-coordinator build-linux-relay build-deploy-preview ensure-bin ensure-dist
 
 ensure-bin:
 	@mkdir -p bin
@@ -48,6 +48,11 @@ test-e2e-relay:
 
 test-e2e-relay-privileged:
 	WINKYOU_E2E_PRIVILEGED=1 WINKYOU_FORCE_RELAY=1 $(GO) test -tags=privileged_e2e ./test/e2e/... -count=1 -run TestRelay
+
+test-loopback-connect:
+	$(GO) test ./internal/stdiojsonrpc ./internal/solverstdio ./internal/v2/loopbackcarrier -count=1 -timeout=60s
+	$(GO) test ./internal/governor -run '^TestLoopbackCarrier' -count=1 -timeout=90s -v
+	$(GO) test ./internal/architecture -run '^(TestProductionNetworkCapabilityInventory|TestPairingAdmissionGateHasOnlyReviewedCarrierConsumer|TestLoopbackCarrierApprovalIsExactAndBidirectional)$$' -count=1
 
 test-phase2d:
 	$(GO) test ./pkg/solver/strategy/legacyice -count=10

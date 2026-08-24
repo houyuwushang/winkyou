@@ -30,6 +30,7 @@ When documents disagree, treat `CONNECTIVITY-SOLVER-BASELINE.md` as the source o
 - Phase 1a bounded cancellation and I/O drain contract: [`CANCELLATION-DRAIN-CONTRACT.md`](./CANCELLATION-DRAIN-CONTRACT.md)
 - Phase 1a default no-packet report and explicit bounded STUN mode: [`PASSIVE-DIAGNOSE.md`](./PASSIVE-DIAGNOSE.md)
 - Phase 1a local JSON-RPC v1 stdio API: [`STDIO-API-V1.md`](./STDIO-API-V1.md)
+- Phase 1a merged literal-loopback connect-test and reproducible proof: [`LOOPBACK-CONNECT-TEST.md`](./LOOPBACK-CONNECT-TEST.md)
 - Phase 1a pure-memory NAT simulation matrix and current coverage: [`NAT-SIMULATION-MATRIX.md`](./NAT-SIMULATION-MATRIX.md)
 - Phase 1a governed synchronized direct-punch simulation boundary: [`DIRECT-PUNCH-SIMULATION.md`](./DIRECT-PUNCH-SIMULATION.md)
 - Phase 1a simulation-only NNpsk0 implementation evidence and limits: [`NOISE-CORE.md`](./NOISE-CORE.md)
