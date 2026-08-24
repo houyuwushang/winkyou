@@ -1,7 +1,8 @@
 # 受控同步直连模拟切片
 
-- 状态：**Phase 1a simulation-only，不是生产直连实现**
-- 纯状态机：`internal/v2/punchsim`
+- 状态：**`punchsim` 仍为 Phase 1a simulation-only；抽取的 `punchproto` 仅获准进入精确的未来 loopback carrier，非回环仍未授权**
+- 纯协议状态机：`internal/v2/punchproto`
+- 仿真执行 adapter：`internal/v2/punchsim`
 - 组合测试：`internal/v2/testpairing/direct_punch_integration_test.go`
 - 测试依赖：`internal/v2/testpairing`、`internal/v2/noisecore`、`internal/probeio`、`internal/natsim`
 - 安全边界：只在纯内存 NAT 模拟中运行；不接线 CLI、stdio API 或 Node Runtime；不授权真实网络探测
@@ -40,7 +41,7 @@ NAT harness 使用文档保留地址。它验证 EIM × EIM 且 address+port-dep
 
 默认模式的模拟数据报仍只是确定性 sentinel，**没有密码学认证能力**。可选 Noise 模式只提供实现与组合测试证据，不代表加密 ADR 已批准，也不能进入真实网络。pairing mini-spec 把 payload 定义为 opaque bytes；安全测试只用它承载两条固定握手消息和 handshake hash，候选 endpoint 仍仅由纯内存测试夹具注入，没有借 payload 引入候选交换或第二套信令协议。
 
-为遵守 mini-spec 的实现门禁，`punchsim` 生产源码既不导入 `testpairing`，也不导入 `probeio` 或 `natsim`；它只定义零网络能力的状态机与窄接口。把现有 pairing 模拟器、受控 socket 和 NAT 模型连起来的代码只存在于 `internal/v2/testpairing` 下的 `_test.go`，不会进入任何命令或运行时构建。
+为遵守 mini-spec 的实现门禁，可复用的消息类型、顺序和验证语义已抽取到零 I/O 的 `punchproto`；`punchsim` 消费该纯状态机，生产源码仍既不导入 `testpairing`，也不导入 `probeio` 或 `natsim`。把现有 pairing 模拟器、受控 socket 和 NAT 模型连起来的代码只存在于 `internal/v2/testpairing` 下的 `_test.go`，不会进入任何命令或运行时构建。
 
 本切片也没有：
 
@@ -51,7 +52,7 @@ NAT harness 使用文档保留地址。它验证 EIM × EIM 且 address+port-dep
 - 修改路由器、端口转发、防火墙、计划任务或 daemon；
 - 声称随机双 hard NAT、UDP blocked 或任意 NAT 都能直连。
 
-`internal/architecture` 会拒绝任何生产包导入 `punchsim` 或 `testpairing`，并继续要求整个 `internal/v2` 依赖闭包不新增 raw network capability。
+`internal/architecture` 会拒绝任何生产包导入 `punchsim` 或 `testpairing`。`noisecore` 与 `punchproto` 的新等级只允许精确的 `internal/v2/loopbackcarrier` 导入；CLI、Runtime、`pkg` 下包或相似命名的 carrier 子包均不在白名单内。整个 `internal/v2` 依赖闭包继续不得新增 raw network capability。
 
 ## 3. 固定资源上限
 
@@ -74,11 +75,11 @@ NAT harness 使用文档保留地址。它验证 EIM × EIM 且 address+port-dep
 
 ## 4. 下一道门禁
 
-下一步不是把这个模拟包接进 `wink connect-test`，而是先完成独立评审：
+下一步只能在独立评审后，由精确的回环 carrier 消费 `noisecore` 与 `punchproto`；不能让 `punchsim` 进入生产路径。该接线仍须完成：
 
-1. 审查 `noisecore` 与受限 `PacketCipher` 是否忠实、可维护且无易误用接口；
-2. 审查固定 packet schema、控制 carrier 握手时序、重放语义和资源核算；
-3. 由维护者填写 ADR 的实现选择与独立审查引用；当前提交只能附实现证据，不能自行翻转状态；
-4. 另行设计生产 PSK 交付、认证信令、持久化 ledger、取消传播和真实网络 admission。
+1. 让 carrier 构造只能消费已提交的一次性授权；
+2. 通过 `probeio` 复用 governor-owned socket，并在首字节前完成最终检查；
+3. 固定握手、加密 punch、terminal、排水与资源核算；
+4. 以真实回环 UDP、崩溃恢复和进程残留测试证明边界。
 
-在这些门禁闭合前，`connect_test` 必须继续返回 `not_implemented`，真实联网仍需单独授权。提升后的模拟 `PacketTransport` 也没有被本模式继续封装；未来真实数据面仍由 WireGuard 负责，而不是复用一次性打洞密钥承载应用流量。
+在这些门禁闭合前，`connect_test` 必须继续返回 `not_implemented`。即使未来回环接线通过，非回环联网仍需单独授权。提升后的模拟 `PacketTransport` 也没有被本模式继续封装；未来真实数据面仍由 WireGuard 负责，而不是复用一次性打洞密钥承载应用流量。
