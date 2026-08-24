@@ -1,13 +1,13 @@
 # ADR：首次非回环 connect-test 权限边界
 
-- 状态：**Draft**
+- 状态：**Accepted (2026-08-24)：N1/N2/N3 权限门与设计边界冻结；仅允许按 §9 顺序开工 N1，实现本身仍不授权任何非隔离网络 I/O**
 - 日期：2026-08-24
 - 跟踪议题：[#70](https://github.com/houyuwushang/winkyou/issues/70)
 - 决策人：WinkYou 维护者与独立安全评审
-- 当前权限：**仅文档设计；不授权非回环 I/O、真实 STUN、信令接线或现场测试**
+- 当前权限：**设计已冻结；N1 限 Linux network namespace 隔离环境。真实 STUN、信令接线、LAN/公网与现场测试仍未授权**
 - 前置证据：[`LOOPBACK-CONNECT-TEST.md`](../LOOPBACK-CONNECT-TEST.md)
 
-> 本 ADR 是 #68 之后的下一阶段候选设计，不是开工或联网许可。它不改变
+> 本 ADR 冻结 #68 之后下一阶段的权限设计，不是联网许可。它不改变
 > [`CONNECTIVITY-SOLVER-BASELINE.md`](../CONNECTIVITY-SOLVER-BASELINE.md) 的权威，
 > 不改变 stdio `connect_test` 的 literal-loopback 限制，也不解除
 > [`INCIDENT-2026-07-22-SELF-BOOTSTRAP-UDP-STORM.md`](../INCIDENT-2026-07-22-SELF-BOOTSTRAP-UDP-STORM.md)
@@ -82,7 +82,7 @@ relay 仍是正常的产品结果。这个切片只回答“本次 direct 是否
 
 | 门 | 目标 | 允许的网络 | 产品入口 | 当前状态 |
 | --- | --- | --- | --- | --- |
-| N1 | 隔离 unicast 传输与排水证明 | 仅 Linux network namespace 内的测试地址 | 无 | 本 ADR 提议 |
+| N1 | 隔离 unicast 传输与排水证明 | 仅 Linux network namespace 内的测试地址 | 无 | Accepted，可按 §9 开工 |
 | N2 | 同 socket NAT attempt | 先纯状态机，再隔离 namespace/NAT lab | 无 | 协议待冻结 |
 | N3 | 用户入口与命名现场窗口 | 单独批准的受控环境 | 审查后才可讨论 | NO-GO |
 
@@ -379,9 +379,12 @@ N3 的第一轮也只允许一个显式 attempt；不启动 daemon，不启用�
 每个 PR 均需独立 CI、architecture gate、race、重复运行、故障注入和专家审查；不得用
 stacked merge 绕过某一道权限门。
 
-## 10. 本 Draft 的待决项
+## 10. Accepted 后的剩余待决项
 
-- [ ] 评审确认 N1 只做 integration harness，不创建 production-importable carrier；
+接受本 ADR 冻结了权限门顺序、N1 范围与 §3 不可变条件，并确认 N1 只做
+integration harness、不创建 production-importable carrier。以下事项仍未决，
+必须在对应的 N2 实现 PR（§9 第 2–5 步）之前逐项冻结：
+
 - [ ] 选择 rendezvous carrier 的最小信任模型与部署方式；
 - [ ] 冻结 carrier preconnect 与 durable burn 的精确边界；
 - [ ] 冻结新的 artifact/profile identifier 和 downgrade 规则；
@@ -396,5 +399,5 @@ stacked merge 绕过某一道权限门。
 - [ ] 定义 N3 的 live authorization 模板；
 - [ ] 独立安全评审明确接受以上决策。
 
-在全部项目闭合前，本 ADR 保持 Draft，#70 保持开放，`connect_test` 非回环仍为稳定
-fail-closed。
+在全部项目闭合前，#70 保持开放，`connect_test` 非回环仍为稳定 fail-closed；
+Accepted 状态本身不授予 N2/N3 任何提前开工权限。

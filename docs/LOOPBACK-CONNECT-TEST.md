@@ -111,9 +111,9 @@ owner，第二个进程必须 fail-closed。
 
 非回环的下一步不是把 loopback 地址检查替换为 unicast。真实 NAT 路径必须解决同一
 UDP socket 的 STUN 观测、受认证 endpoint 交换、一次 Noise/PSK 使用、rendezvous
-carrier 计费，以及独立现场授权。候选设计见
+carrier 计费，以及独立现场授权。已冻结的权限设计见
 [`adr/ADR-NON-LOOPBACK-CONNECT-TEST-BOUNDARY.md`](./adr/ADR-NON-LOOPBACK-CONNECT-TEST-BOUNDARY.md)
-与 [Issue #70](https://github.com/houyuwushang/winkyou/issues/70)。
+（2026-08-24 Accepted）与 [Issue #70](https://github.com/houyuwushang/winkyou/issues/70)。
 
-在该 Draft ADR 通过维护者和安全评审前，本文件的 literal-loopback 限制与
-`non_loopback_blocked` 行为保持不变。
+该 ADR 只允许按其 §9 顺序开工隔离的 N1 证明；在对应实现与激活 PR 分别通过评审前，
+本文件的 literal-loopback 限制与 `non_loopback_blocked` 行为保持不变。
