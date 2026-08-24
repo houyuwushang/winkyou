@@ -601,11 +601,17 @@ func (carrier *Carrier) write(ctx context.Context, kind byte, payload []byte, po
 	operationCtx, cancel := carrier.operationContext(ctx)
 	defer cancel()
 	if err := armWriteDeadline(operationCtx, carrier.conn); err != nil {
+		if cause := carrier.terminalCause(); cause != nil {
+			return cause
+		}
 		return err
 	}
 	written, err := carrier.conn.Write(frame)
 	_ = carrier.conn.SetWriteDeadline(time.Time{})
 	if err != nil {
+		if cause := carrier.terminalCause(); cause != nil {
+			return cause
+		}
 		return contextIOError(operationCtx, err)
 	}
 	if written != len(frame) {
@@ -631,11 +637,17 @@ func (carrier *Carrier) read(ctx context.Context) (boundedFrame, error) {
 	operationCtx, cancel := carrier.operationContext(ctx)
 	defer cancel()
 	if err := armReadDeadline(operationCtx, carrier.conn); err != nil {
+		if cause := carrier.terminalCause(); cause != nil {
+			return boundedFrame{}, cause
+		}
 		return boundedFrame{}, err
 	}
 	frame, readBytes, err := decodeFrame(carrier.conn)
 	_ = carrier.conn.SetReadDeadline(time.Time{})
 	if err != nil {
+		if cause := carrier.terminalCause(); cause != nil {
+			return boundedFrame{}, cause
+		}
 		return boundedFrame{}, contextIOError(operationCtx, err)
 	}
 	carrier.mu.Lock()
@@ -658,6 +670,15 @@ func (carrier *Carrier) beginOperation() bool {
 	}
 	carrier.ops.Add(1)
 	return true
+}
+
+func (carrier *Carrier) terminalCause() error {
+	carrier.mu.Lock()
+	defer carrier.mu.Unlock()
+	if carrier.state == stateClosed && carrier.closeErr != nil {
+		return carrier.closeErr
+	}
+	return nil
 }
 
 func (carrier *Carrier) watch() {
