@@ -477,6 +477,13 @@ parser. An unknown artifact, direct-attempt, rendezvous, pairing, or secure-
 channel profile is rejected before authority acquisition or I/O. There is no
 profile negotiation, fallback, or alternate encoding.
 
+The rendezvous presence witness has a hard 3-second envelope and contains only
+the presence profile, one opaque 16-byte association identifier, and one of two
+transport-local slots (`a` or `b`). It contains no credential, attempt,
+participant, generation, role, endpoint, payload, or secret. Both presence
+witnesses must arrive before durable burn, and both endpoint-local burns must
+complete before either side can send or accept the first Noise handshake byte.
+
 The OOB artifact is a strict JSON object no larger than 4096 bytes. Every value
 is a string. Duplicate and unknown members, trailing documents, invalid UTF-8,
 and non-canonical base64url or UTC values are rejected. Its exact members are:

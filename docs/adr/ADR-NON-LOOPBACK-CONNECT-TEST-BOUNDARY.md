@@ -1,10 +1,10 @@
 # ADR：首次非回环 connect-test 权限边界
 
-- 状态：**Accepted (2026-08-24)：N1/N2/N3 权限门与设计边界冻结；仅允许按 §9 顺序开工 N1，实现本身仍不授权任何非隔离网络 I/O**
+- 状态：**Accepted (2026-08-24)：N1 已合入；N2a/N2b 仅获准以 Draft 形式提供零网络协议与模拟证据；N2c/N2d、产品入口和现场 I/O 仍未授权**
 - 日期：2026-08-24
 - 跟踪议题：[#70](https://github.com/houyuwushang/winkyou/issues/70)
 - 决策人：WinkYou 维护者与独立安全评审
-- 当前权限：**设计已冻结；N1 限 Linux network namespace 隔离环境。真实 STUN、信令接线、LAN/公网与现场测试仍未授权**
+- 当前权限：**N2a/N2b 仅限纯函数与纯内存；真实 rendezvous、same-socket adapter、真实 STUN、信令接线、LAN/公网与现场测试仍未授权**
 - 前置证据：[`LOOPBACK-CONNECT-TEST.md`](../LOOPBACK-CONNECT-TEST.md)
 
 > 本 ADR 冻结 #68 之后下一阶段的权限设计，不是联网许可。它不改变
@@ -83,7 +83,7 @@ relay 仍是正常的产品结果。这个切片只回答“本次 direct 是否
 | 门 | 目标 | 允许的网络 | 产品入口 | 当前状态 |
 | --- | --- | --- | --- | --- |
 | N1 | 隔离 unicast 传输与排水证明 | 仅 Linux network namespace 内的测试地址 | 无 | 已实现并合入：隔离 harness + 必跑 Linux CI；不授权 N2/N3 或现场 I/O |
-| N2 | 同 socket NAT attempt | 先纯状态机，再隔离 namespace/NAT lab | 无 | 协议待冻结 |
+| N2 | 同 socket NAT attempt | 先纯状态机，再隔离 namespace/NAT lab | 无 | N2a/N2b Draft：协议与内存矩阵已提供，待独立评审；N2c 仍 NO-GO |
 | N3 | 用户入口与命名现场窗口 | 单独批准的受控环境 | 审查后才可讨论 | NO-GO |
 
 门必须按顺序通过。N1 成功不能自动批准 N2；N2 的隔离成功也不能自动批准 N3。
@@ -292,19 +292,21 @@ membership、target 或恢复权限。
   context 或固定 AD，避免 downgrade；
 - exact identifier、fingerprint 顺序、JCS 字段和未知字段策略须有 golden vectors。
 
-本 Draft 不自行冻结 wire identifier，避免在 carrier 与 key schedule 尚未评审时制造
-第二套半成品协议。
+N2a 将精确 identifier、fingerprint、prologue/AD、READY 和 sequence 冻结在
+[`TEST-ONLY-PAIRING-MINI-SPEC.md`](../TEST-ONLY-PAIRING-MINI-SPEC.md) §7.1；它没有修改
+loopback parser，也没有新增 carrier 或产品导入路径。
 
-### 6.7 暂定最坏成本
+### 6.7 冻结最坏成本
 
-以下数值只用于证明设计可以落入现有 governor，不是实现授权。N2 编码前必须用 NAT
-模拟矩阵与故障注入冻结最终值，配置只能降低、不能提高。
+N2b 对 16 个 EIM/EDM × address/address+port filtering 组合各重复 100 次，并覆盖丢包、
+乱序、重复、认证失败与 CANCEL 矩阵后，将以下数值冻结为编译期 hard ceiling。配置只能
+降低、不能提高；冻结成本仍不是 N2c、产品或现场实现授权。
 
-| 资源 | 每端暂定上限 |
+| 资源 | 每端冻结上限 |
 | --- | ---: |
 | rendezvous carrier connection | 1 |
 | rendezvous target | 1 |
-| DNS resolution | 0 或 1，取决于固定 adapter |
+| DNS resolution | 1（固定 adapter 使用 literal endpoint 时实际为 0） |
 | governed UDP socket | 1 |
 | UDP target / five-tuple | 2（STUN + peer） |
 | STUN outbound packet | 3 |
@@ -312,8 +314,14 @@ membership、target 或恢复权限。
 | UDP outbound total | initiator 5 / responder 4 |
 | authenticated control envelope | initiator 4 / responder 3，另加全局最多一次 CANCEL |
 | Noise handshake frame | 每方向 1 |
+| presence envelope | 不超过 3 seconds，不含 pairing 数据 |
 | attempt envelope | 不超过 15 seconds，且短于 credential expiry |
 | 自动 retry / reconnect | 0 |
+
+矩阵统计为 EIM×EIM 的四种 filtering 组合 400/400 成功；任何一侧为 EDM 的十二种组合
+1200/1200 有界失败。后者说明对 STUN 目标的 destination-specific observation 不能被
+偷换成 peer mapping，不授权 prediction 或 candidate replacement。详见
+[`N2-DIRECT-ATTEMPT-SIMULATION.md`](../N2-DIRECT-ATTEMPT-SIMULATION.md)。
 
 TCP 的 OS packet 数不能仅靠应用帧数推导。carrier adapter 必须同时给出应用字节硬上限、
 coarse machine reservation 和进程外见证，不能把“两条 frame”误写成“两只 TCP 包”。
@@ -379,6 +387,9 @@ N3 的第一轮也只允许一个显式 attempt；不启动 daemon，不启用�
 每个 PR 均需独立 CI、architecture gate、race、重复运行、故障注入和专家审查；不得用
 stacked merge 绕过某一道权限门。
 
+当前 N2a/N2b 只处于 stacked Draft 证据状态；必须分别评审并自底向上合入，才可讨论
+N2c。Draft 创建、CI 通过或本节待决项被实现勾选，都不构成下一门自动授权。
+
 ## 10. Accepted 后的剩余待决项
 
 接受本 ADR 冻结了权限门顺序、N1 范围与 §3 不可变条件，并确认 N1 只做
@@ -386,16 +397,17 @@ integration harness、不创建 production-importable carrier。以下事项仍�
 必须在对应的 N2 实现 PR（§9 第 2–5 步）之前逐项冻结：
 
 - [ ] 选择 rendezvous carrier 的最小信任模型与部署方式；
-- [ ] 冻结 carrier preconnect 与 durable burn 的精确边界；
-- [ ] 冻结新的 artifact/profile identifier 和 downgrade 规则；
-- [ ] 冻结加密控制 envelope 与 `READY` endpoint payload 的 canonical schema、AD
+- [x] 冻结 carrier preconnect/presence 与 durable burn 的精确边界：presence 不含
+  pairing 数据，双方 burn 后才能接受第一条握手 byte；N2c 必须实现同一边界；
+- [x] 冻结新的 artifact/profile identifier 和 downgrade 规则；
+- [x] 冻结加密控制 envelope 与 `READY` endpoint payload 的 canonical schema、AD
   bytes、sequence 与长度；
-- [ ] 用 NAT 模拟矩阵验证双侧同时开洞语义（含 responder 盲发 SYN_ACK 在丢包、
+- [x] 用 NAT 模拟矩阵验证双侧同时开洞语义（含 responder 盲发 SYN_ACK 在丢包、
   乱序与 filtering NAT 组合下的行为），并据此冻结 punch 状态机；
-- [ ] 冻结 rendezvous presence 见证的形式、超时与“不含配对数据”边界；
-- [ ] 证明同一 `PacketCipher` 跨 rendezvous/UDP 使用的 nonce 与 domain separation；
+- [x] 冻结 rendezvous presence 见证的形式、3-second 上限与“不含配对数据”边界；
+- [x] 证明同一 `PacketCipher` 跨 rendezvous/UDP 使用的 nonce 与 domain separation；
 - [ ] 冻结 TCP/DNS coarse reservation、字节上限、deadline 与 drain；
-- [ ] 用模拟矩阵校准并固定 N2 最坏成本；
+- [x] 用 1600 次基础 NAT 矩阵及故障矩阵校准并固定 N2 最坏成本；
 - [ ] 定义 N3 的 live authorization 模板；
 - [ ] 独立安全评审明确接受以上决策。
 
