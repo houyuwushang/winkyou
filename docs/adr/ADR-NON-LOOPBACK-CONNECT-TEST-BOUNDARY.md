@@ -82,7 +82,7 @@ relay 仍是正常的产品结果。这个切片只回答“本次 direct 是否
 
 | 门 | 目标 | 允许的网络 | 产品入口 | 当前状态 |
 | --- | --- | --- | --- | --- |
-| N1 | 隔离 unicast 传输与排水证明 | 仅 Linux network namespace 内的测试地址 | 无 | 实现待审：本 Draft PR 提供隔离 harness 与必跑 CI；不授权 N2/N3 或现场 I/O |
+| N1 | 隔离 unicast 传输与排水证明 | 仅 Linux network namespace 内的测试地址 | 无 | 已实现并合入：隔离 harness + 必跑 Linux CI；不授权 N2/N3 或现场 I/O |
 | N2 | 同 socket NAT attempt | 先纯状态机，再隔离 namespace/NAT lab | 无 | 协议待冻结 |
 | N3 | 用户入口与命名现场窗口 | 单独批准的受控环境 | 审查后才可讨论 | NO-GO |
 
