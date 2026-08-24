@@ -22,7 +22,8 @@ endpoint A netns -> NAT A netns -> public netns <- NAT B netns <- endpoint B net
 
 - 每个 endpoint 是独立子进程，并使用独立临时 machine governor namespace；
 - 所有接口地址仅来自 RFC 5737 的 TEST-NET-1/2/3；测试结果与日志不记录 endpoint；
-- NAT 通过 netfilter 分别提供 EIM（端口保持）和 EDM（destination-specific 随机映射）档；
+- NAT 通过 netfilter 分别提供显式 1:1、端口保持的 EIM 档，以及保留 conntrack
+  destination-specific 过滤的随机端口 EDM 档；
 - public namespace 内运行现有 `internal/stunserver` 与 N2c 的两方、有界、不透明帧
   test server；两者均由 harness 创建和销毁；
 - 本地 UDP 仍是 wildcard + ephemeral bind。endpoint 只经 `ProbeSocket.LocalAddr` 取得
@@ -77,7 +78,7 @@ namespace 的 iptables OUTPUT 计数器逐项相等；TCP 只核对应用 frame�
 
 - packet 计数器在观察窗口内不再变化；
 - rendezvous active connection 回到 0；
-- 所有 namespace 的 `ss` socket 数和 `ip netns pids` 进程数为 0；
+- 所有 namespace 的 `ss -p` process-owned socket 数和 `ip netns pids` 进程数为 0；
 - owned conntrack 表在显式排水后为 0；
 - namespace 与 veth 删除后均不存在；
 - endpoint 报告中的 peer、attempt 和资源预留均为 0；

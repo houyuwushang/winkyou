@@ -163,10 +163,10 @@ func (topology *n2dTopology) create() error {
 			return err
 		}
 	}
-	if err := topology.applyNAT(topology.natA, topology.leftMode, n2dNATAWAN); err != nil {
+	if err := topology.applyNAT(topology.natA, topology.leftMode, n2dNATAWAN, n2dClientAAddress); err != nil {
 		return err
 	}
-	return topology.applyNAT(topology.natB, topology.rightMode, n2dNATBWAN)
+	return topology.applyNAT(topology.natB, topology.rightMode, n2dNATBWAN, n2dClientBAddress)
 }
 
 func n2dConfigureEnd(namespace, temporaryName, finalName, cidr string) error {
@@ -180,22 +180,31 @@ func n2dConfigureEnd(namespace, temporaryName, finalName, cidr string) error {
 	return err
 }
 
-func (topology *n2dTopology) applyNAT(namespace string, mode n2dMappingMode, publicAddress string) error {
-	if !netip.MustParseAddr(publicAddress).Is4() {
+func (topology *n2dTopology) applyNAT(namespace string, mode n2dMappingMode, publicAddress, privateAddress string) error {
+	if !netip.MustParseAddr(publicAddress).Is4() || !netip.MustParseAddr(privateAddress).Is4() {
 		return errors.New("N2d NAT address is not IPv4")
 	}
-	// EIM explicitly preserves one source mapping across destinations. EDM
-	// asks netfilter for a fresh full-random source port for each conntrack
-	// tuple. Fixed TEST-NET addresses make SNAT deterministic in the disposable
-	// lab; MASQUERADE's interface-lifetime behavior is not needed here.
-	rule := "-A POSTROUTING -o wan0 -j SNAT --to-source " + publicAddress + " --persistent"
-	if mode == n2dMappingEDM {
-		rule = "-A POSTROUTING -o wan0 -j SNAT --to-source " + publicAddress + " --random-fully"
+	// The EIM reference case uses an explicit one-endpoint, port-preserving UDP
+	// mapping in both directions. Plain SNAT is insufficient evidence because
+	// conntrack would still impose destination-specific reply filtering. EDM
+	// deliberately keeps that filtering and requests a fresh random source port
+	// for each destination tuple.
+	rules := []string{
+		"-A PREROUTING -i wan0 -p udp -d " + publicAddress + " -j DNAT --to-destination " + privateAddress,
+		"-A POSTROUTING -s " + privateAddress + "/32 -o wan0 -p udp -j SNAT --to-source " + publicAddress,
 	}
-	script := strings.Join([]string{
+	if mode == n2dMappingEDM {
+		rules = []string{
+			"-A POSTROUTING -s " + privateAddress + "/32 -o wan0 -p udp -j SNAT --to-source " + publicAddress + " --random-fully",
+		}
+	}
+	scriptLines := []string{
 		"*nat", ":PREROUTING ACCEPT [0:0]", ":INPUT ACCEPT [0:0]", ":OUTPUT ACCEPT [0:0]",
-		":POSTROUTING ACCEPT [0:0]", rule, "COMMIT", "",
-	}, "\n")
+		":POSTROUTING ACCEPT [0:0]",
+	}
+	scriptLines = append(scriptLines, rules...)
+	scriptLines = append(scriptLines, "COMMIT", "")
+	script := strings.Join(scriptLines, "\n")
 	_, err := runNamespaced(namespace, "iptables-restore", strings.NewReader(script))
 	return err
 }
@@ -280,15 +289,15 @@ func n2dChainPackets(namespace, chain string) (uint64, error) {
 func (topology *n2dTopology) socketCount() (int, error) {
 	total := 0
 	for _, namespace := range topology.namespaces() {
-		output, err := runNamespaced(namespace, "ss", nil, "-H", "-a", "-n", "-t", "-u")
+		output, err := runNamespaced(namespace, "ss", nil, "-H", "-a", "-n", "-t", "-u", "-p")
 		if err != nil {
 			return 0, err
 		}
 		for _, line := range strings.Split(output, "\n") {
-			fields := strings.Fields(line)
-			// TCP TIME-WAIT is kernel protocol state, not an open process-owned
-			// socket. conntrack is witnessed and flushed separately below.
-			if len(fields) > 0 && fields[0] != "TIME-WAIT" {
+			// ss may retain TCP TIME-WAIT or other kernel protocol state after
+			// every owning process has closed its descriptor. Count only sockets
+			// still owned by a process; conntrack is witnessed separately below.
+			if strings.Contains(line, "users:((") {
 				total++
 			}
 		}
