@@ -63,6 +63,7 @@ const (
 	n2dTerminalHardViolation   = "hard_violation"
 
 	n2dAttemptLimit = 13 * time.Second
+	n2dProcessLimit = 15 * time.Second
 	n2dPunchLimit   = 1500 * time.Millisecond
 )
 

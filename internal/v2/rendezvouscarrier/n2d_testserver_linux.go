@@ -139,6 +139,7 @@ func (server *N2DTestServer) serve(connection net.Conn) {
 	pair.sides[slot] = side
 	peerA, peerB := pair.sides[PresenceSlotA], pair.sides[PresenceSlotB]
 	server.mu.Unlock()
+	defer server.disconnect(association, slot, side)
 	if peerA != nil && peerB != nil {
 		if n2dWriteTestFrame(peerA, wirePresenceReady, nil) != nil || n2dWriteTestFrame(peerB, wirePresenceReady, nil) != nil {
 			return
@@ -183,6 +184,26 @@ func (server *N2DTestServer) serve(connection net.Conn) {
 		if err != nil {
 			return
 		}
+	}
+}
+
+func (server *N2DTestServer) disconnect(association string, slot PresenceSlot, side *n2dTestSide) {
+	server.mu.Lock()
+	pair := server.pairs[association]
+	var peer *n2dTestSide
+	if pair != nil && pair.sides[slot] == side {
+		peerSlot := PresenceSlotA
+		if slot == PresenceSlotA {
+			peerSlot = PresenceSlotB
+		}
+		peer = pair.sides[peerSlot]
+	}
+	server.mu.Unlock()
+	// A two-party relay cannot make progress after either side disappears.
+	// Closing the remaining stream propagates the terminal promptly instead
+	// of leaving it blocked until the 13-second carrier envelope expires.
+	if peer != nil {
+		_ = peer.connection.Close()
 	}
 }
 

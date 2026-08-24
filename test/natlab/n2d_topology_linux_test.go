@@ -163,10 +163,10 @@ func (topology *n2dTopology) create() error {
 			return err
 		}
 	}
-	if err := topology.applyNAT(topology.natA, topology.leftMode); err != nil {
+	if err := topology.applyNAT(topology.natA, topology.leftMode, n2dNATAWAN); err != nil {
 		return err
 	}
-	return topology.applyNAT(topology.natB, topology.rightMode)
+	return topology.applyNAT(topology.natB, topology.rightMode, n2dNATBWAN)
 }
 
 func n2dConfigureEnd(namespace, temporaryName, finalName, cidr string) error {
@@ -180,10 +180,17 @@ func n2dConfigureEnd(namespace, temporaryName, finalName, cidr string) error {
 	return err
 }
 
-func (topology *n2dTopology) applyNAT(namespace string, mode n2dMappingMode) error {
-	rule := "-A POSTROUTING -o wan0 -j MASQUERADE"
+func (topology *n2dTopology) applyNAT(namespace string, mode n2dMappingMode, publicAddress string) error {
+	if !netip.MustParseAddr(publicAddress).Is4() {
+		return errors.New("N2d NAT address is not IPv4")
+	}
+	// EIM explicitly preserves one source mapping across destinations. EDM
+	// asks netfilter for a fresh full-random source port for each conntrack
+	// tuple. Fixed TEST-NET addresses make SNAT deterministic in the disposable
+	// lab; MASQUERADE's interface-lifetime behavior is not needed here.
+	rule := "-A POSTROUTING -o wan0 -j SNAT --to-source " + publicAddress + " --persistent"
 	if mode == n2dMappingEDM {
-		rule += " --random-fully"
+		rule = "-A POSTROUTING -o wan0 -j SNAT --to-source " + publicAddress + " --random-fully"
 	}
 	script := strings.Join([]string{
 		"*nat", ":PREROUTING ACCEPT [0:0]", ":INPUT ACCEPT [0:0]", ":OUTPUT ACCEPT [0:0]",
@@ -278,7 +285,10 @@ func (topology *n2dTopology) socketCount() (int, error) {
 			return 0, err
 		}
 		for _, line := range strings.Split(output, "\n") {
-			if strings.TrimSpace(line) != "" {
+			fields := strings.Fields(line)
+			// TCP TIME-WAIT is kernel protocol state, not an open process-owned
+			// socket. conntrack is witnessed and flushed separately below.
+			if len(fields) > 0 && fields[0] != "TIME-WAIT" {
 				total++
 			}
 		}

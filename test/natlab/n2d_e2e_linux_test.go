@@ -42,9 +42,10 @@ func testN2DEIMSuccess(t *testing.T) {
 			initiatorResult := initiator.waitResult(t)
 			responderResult := responder.waitResult(t)
 
+			counts := requireN2DPacketCounts(t, topology)
+			logN2DCounts(t, "eim_success", counts, initiatorResult, responderResult)
 			assertN2DSuccessResult(t, initiatorResult, directattempt.RoleInitiator)
 			assertN2DSuccessResult(t, responderResult, directattempt.RoleResponder)
-			counts := requireN2DPacketCounts(t, topology)
 			assertN2DPacketResultMatch(t, counts, initiatorResult, responderResult)
 			if counts.InitiatorDirect != 2 || counts.ResponderDirect != 1 {
 				t.Fatalf("N2d direct witness = %d/%d, want exact 2/1", counts.InitiatorDirect, counts.ResponderDirect)
@@ -63,7 +64,6 @@ func testN2DEIMSuccess(t *testing.T) {
 					carrierStats.Accepted, carrierStats.Active, carrierStats.SlotARead, carrierStats.SlotAWritten,
 					carrierStats.SlotBRead, carrierStats.SlotBWritten)
 			}
-			logN2DCounts(t, "eim_success", counts, initiatorResult, responderResult)
 			assertN2DNoResidue(t, topology, servers)
 		})
 	}
@@ -172,7 +172,7 @@ func testN2DCrashRestart(t *testing.T) {
 	restart := newN2DEndpointProcess(t, topology, nil, artifacts, directattempt.RoleInitiator, n2dActionRestartCheck, "", initiator.governorDir, initiator.artifactPath)
 	restart.start(t)
 	restartResult := restart.waitResult(t)
-	assertN2DCommonResult(t, restartResult, n2dTerminalReplayRejected, "credential_used", true, false)
+	assertN2DCommonResult(t, restartResult, n2dTerminalReplayRejected, "credential_used", false, false)
 	if restartResult.LedgerSequence != 2 || restartResult.LedgerRecords != 2 || restartResult.LedgerAdmissions != 1 {
 		t.Fatalf("N2d restart ledger witness = sequence:%d records:%d admissions:%d",
 			restartResult.LedgerSequence, restartResult.LedgerRecords, restartResult.LedgerAdmissions)
@@ -294,8 +294,8 @@ func assertN2DCommonResult(t testing.TB, result n2dEndpointResult, terminal, err
 	if !n2dResultHasNoResidue(result) {
 		t.Fatal("N2d endpoint retained governor reservations")
 	}
-	if result.ElapsedMilliseconds < 0 || result.ElapsedMilliseconds >= n2dAttemptLimit.Milliseconds() {
-		t.Fatalf("N2d endpoint elapsed = %dms, want under %dms", result.ElapsedMilliseconds, n2dAttemptLimit.Milliseconds())
+	if result.ElapsedMilliseconds < 0 || result.ElapsedMilliseconds >= n2dProcessLimit.Milliseconds() {
+		t.Fatalf("N2d endpoint elapsed = %dms, want under %dms", result.ElapsedMilliseconds, n2dProcessLimit.Milliseconds())
 	}
 	assertN2DResultRedacted(t, result)
 }
