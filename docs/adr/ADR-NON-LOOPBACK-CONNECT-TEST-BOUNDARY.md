@@ -1,10 +1,10 @@
 # ADR：首次非回环 connect-test 权限边界
 
-- 状态：**Accepted (2026-08-24)：N1、N2a、N2b 已合入；N2c 仅获准以 Draft 形式提供断开产品入口的 literal-loopback adapter 证据；N2d、产品入口和现场 I/O 仍未授权**
+- 状态：**Accepted (2026-08-24)：N1、N2a、N2b、N2c 已合入；N2d 仅获准以 Draft 形式提供隔离 namespace/NAT-lab 组合证据；产品入口和现场 I/O 仍未授权**
 - 日期：2026-08-24
 - 跟踪议题：[#70](https://github.com/houyuwushang/winkyou/issues/70)
 - 决策人：WinkYou 维护者与独立安全评审
-- 当前权限：**N2c 仅限断开产品入口的 carrier、caller-owned same-socket adapter、进程内测试 server 与 literal loopback；信令接线、非回环收发、LAN/公网与现场测试仍未授权**
+- 当前权限：**N2d 仅限 `linux && natlab`、RFC 5737 TEST-NET、双进程与受控 NAT；信令接线、产品入口、LAN/公网与现场测试仍未授权**
 - 前置证据：[`LOOPBACK-CONNECT-TEST.md`](../LOOPBACK-CONNECT-TEST.md)
 
 > 本 ADR 冻结 #68 之后下一阶段的权限设计，不是联网许可。它不改变
@@ -83,7 +83,7 @@ relay 仍是正常的产品结果。这个切片只回答“本次 direct 是否
 | 门 | 目标 | 允许的网络 | 产品入口 | 当前状态 |
 | --- | --- | --- | --- | --- |
 | N1 | 隔离 unicast 传输与排水证明 | 仅 Linux network namespace 内的测试地址 | 无 | 已实现并合入：隔离 harness + 必跑 Linux CI；不授权 N2/N3 或现场 I/O |
-| N2 | 同 socket NAT attempt | 先纯状态机，再隔离 namespace/NAT lab | 无 | N2a/N2b 已合入；N2c Draft 提供断开产品入口的 literal-loopback adapter 证据，待独立评审；N2d 仍 NO-GO |
+| N2 | 同 socket NAT attempt | 先纯状态机，再隔离 namespace/NAT lab | 无 | N2a/N2b/N2c 已合入；N2d Draft 仅提供双进程隔离组合证据，必跑 CI 与独立评审完成前不视为接受 |
 | N3 | 用户入口与命名现场窗口 | 单独批准的受控环境 | 审查后才可讨论 | NO-GO |
 
 门必须按顺序通过。N1 成功不能自动批准 N2；N2 的隔离成功也不能自动批准 N3。
@@ -346,10 +346,13 @@ machine reservation 固定为同一个 heavyweight attempt 的 3 sockets、4 tar
 five-tuples、5 UDP packets/5 PPS，机器级 governor 同时最多容纳 1 个 heavyweight attempt。
 carrier 自身另守住 1 connection、1 rendezvous target、最多 1 次 DNS、每方向 8 个 frame
 与 8,256 application bytes；DNS/TCP 前消费 attempt-lifetime exclusive claim，失败后不释放，
-从而禁止同 attempt 重连。进程外崩溃见证由父测试进程终止 carrier 子进程，并从独立
-loopback server 观察 active connection 回到 0；N2d 仍须在 namespace 中补充 `ss`/conntrack
-见证。应用 frame 数不得写成 TCP OS packet 数。详见
+从而禁止同 attempt 重连。N2c 的进程外崩溃见证由父测试进程终止 carrier 子进程，并从独立
+loopback server 观察 active connection 回到 0。N2d Draft 在不改变上表 ceiling 的前提下，
+进一步组合真实 namespace socket、EIM/EDM、same-socket STUN 与 durable restart rejection，
+并以 iptables、`ss`、conntrack、netns process 和 server active connection 作为进程外见证。
+应用 frame 数不得写成 TCP OS packet 数。详见
 [`N2C-RENDEZVOUS-CARRIER.md`](../N2C-RENDEZVOUS-CARRIER.md)。
+N2d 证据与复现边界见 [`N2D-NAMESPACE-E2E.md`](../N2D-NAMESPACE-E2E.md)。
 
 ### 6.8 失败与终局
 
@@ -412,8 +415,8 @@ N3 的第一轮也只允许一个显式 attempt；不启动 daemon，不启用�
 每个 PR 均需独立 CI、architecture gate、race、重复运行、故障注入和专家审查；不得用
 stacked merge 绕过某一道权限门。
 
-N2a/N2b 已分别评审并合入。N2c 只能作为独立 Draft 提供 adapter 证据；Draft 创建、CI
-通过或本节待决项被实现勾选，都不构成 N2d/N3 自动授权。
+N2a/N2b/N2c 已分别评审并合入。N2d 只能作为独立 Draft 提供 namespace/NAT-lab 证据；
+Draft 创建、CI 通过或本节待决项被实现勾选，都不构成 N3 自动授权。
 
 ## 10. Accepted 后的剩余待决项
 
@@ -437,6 +440,8 @@ integration harness、不创建 production-importable carrier。以下事项仍�
   active deadline、2-second drain margin，并给出 literal=0 / injected resolver=1 与
   子进程崩溃后 active connection=0 的见证；
 - [x] 用 1600 次基础 NAT 矩阵及故障矩阵校准并固定 N2 最坏成本；
+- [ ] N2d Draft 的双进程 EIM/EDM、缺席、崩溃重启、硬违规与 OS 残留矩阵通过必跑
+  Linux CI，并由独立评审接受；
 - [ ] 定义 N3 的 live authorization 模板；
 - [ ] 独立安全评审明确接受以上决策。
 
