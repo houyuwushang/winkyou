@@ -37,6 +37,7 @@ When documents disagree, treat `CONNECTIVITY-SOLVER-BASELINE.md` as the source o
 - Merged N2d dual-process namespace/NAT-lab composition proof (test-only, required Linux CI; no product/live-network authority): [`N2D-NAMESPACE-E2E.md`](./N2D-NAMESPACE-E2E.md)
 - Accepted N3a product-entry, one-shot rendezvous, pairing-material and named live-window design (N3b implementation may start behind its acceptance gates; live I/O stays disabled), plus the blank authorization template: [`adr/ADR-N3A-PRODUCT-ENTRY-LIVE-WINDOW.md`](./adr/ADR-N3A-PRODUCT-ENTRY-LIVE-WINDOW.md), [`N3-LIVE-AUTHORIZATION-TEMPLATE.md`](./N3-LIVE-AUTHORIZATION-TEMPLATE.md)
 - N3b explicit stdio v2 protocol and review evidence (implementation entry exists, but LAN/public deployment and live attempts remain unauthorized): [`STDIO-API-V2.md`](./STDIO-API-V2.md), [`N3B-PRODUCT-ENTRY-EVIDENCE.md`](./N3B-PRODUCT-ENTRY-EVIDENCE.md)
+- Draft N3c design for adopting an existing bounded OOB stream and handing a verified UDP socket to an independently leased data-plane consumer (no live authorization): [`adr/ADR-N3C-OOB-DIRECT-HANDOFF.md`](./adr/ADR-N3C-OOB-DIRECT-HANDOFF.md), [Issue #85](https://github.com/houyuwushang/winkyou/issues/85)
 - Phase 1a pure-memory NAT simulation matrix and current coverage: [`NAT-SIMULATION-MATRIX.md`](./NAT-SIMULATION-MATRIX.md)
 - Phase 1a governed synchronized direct-punch simulation boundary: [`DIRECT-PUNCH-SIMULATION.md`](./DIRECT-PUNCH-SIMULATION.md)
 - Phase 1a simulation-only NNpsk0 implementation evidence and limits: [`NOISE-CORE.md`](./NOISE-CORE.md)
