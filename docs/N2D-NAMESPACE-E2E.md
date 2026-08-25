@@ -121,6 +121,7 @@ sudo env WINKYOU_N2D_REQUIRED=1 GORACE=halt_on_error=1 \
 | EIM × EIM，repeat 1 | 1/1 | 2/1 | 3/2 | 4/3 | 7/6 | success |
 | EIM × EIM，repeat 2 | 1/1 | 2/1 | 3/2 | 4/3 | 7/6 | success |
 | EIM × EIM，repeat 3 | 1/1 | 2/1 | 3/2 | 4/3 | 7/6 | success |
+| port-restricted × port-restricted | 1/1 | 2/1 | 3/2 | 4/3 | 7/6 | success |
 | initiator EDM | 1/1 | 1/1 | 2/2 | 3/2 | 6/5 | bounded expired |
 | responder EDM | 1/1 | 1/1 | 2/2 | 3/2 | 6/5 | bounded expired |
 | burn 前缺席 | 0/0 | 0/0 | 0/0 | 0/0 | 1/0 | presence timeout, admission=0 |
@@ -138,3 +139,9 @@ netns 与 veth 均删除。required job 证据见
 [`N2d Netns NAT E2E Proof`](https://github.com/houyuwushang/winkyou/actions/runs/32751905287/job/97510574069)。
 
 这些数字是隔离测试证据，不是现场成功率、真实网络地址或产品 SLO。
+
+评审补充（2026-08-25，commit `f698032`）：port-restricted 代表场景由独立评审加入并在
+连续四轮 required run 中通过。前两轮 required CI 依次暴露并修正了两个实验室模型缺陷
+——网关把发往自身 WAN 地址的未经请求 UDP 确认进 conntrack 从而毒化端口保持，以及
+零时延链路反转 FIRE 控制路径与本地 SYN 出站的物理顺序；两处修正都只还原真实路由器
+与真实网络的行为，未改动任何协议或预算语义。
