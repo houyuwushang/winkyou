@@ -11,7 +11,7 @@ WinkYou = connectivity solver + secure WireGuard data plane
 ## 当前状态
 
 - v2 直连优先计划已经 **Accepted**；接受范围、证据与不授权事项见 [`docs/PHASE0-EXIT-RECORD.md`](./docs/PHASE0-EXIT-RECORD.md)，完整计划见 [`docs/proposals/WINKYOU-V2-DIRECT-FIRST-PLAN.md`](./docs/proposals/WINKYOU-V2-DIRECT-FIRST-PLAN.md)。
-- 项目处于 **Phase 1a 构建期**。main 已包含 machine-wide governor、`probeio` 网络能力边界、stdio API v1、NAT 模拟矩阵、test-only 配对协议，以及只允许 literal loopback 的一次性 `connect_test`；非回环 carrier、正式身份、session 编排和数据面接线仍未授权。
+- 项目处于 **Phase 1a 构建期**。当前树已包含 machine-wide governor、`probeio` 网络能力边界、保持不变的 stdio API v1、显式版本的 N3b stdio v2 候选、NAT 模拟矩阵与 test-only 一次性配对协议。v2 direct 目前只由 literal loopback 和 Linux 隔离 namespace 验证；真实 LAN/公网、正式身份、session 编排和数据面接线仍未授权。
 - [`docs/CONNECTIVITY-SOLVER-BASELINE.md`](./docs/CONNECTIVITY-SOLVER-BASELINE.md) 仍是当前实现权威；Accepted v2 计划不会在正式 ADR 合入前取代它。
 - 当前版本仍是开发中的 alpha，不应被描述为 production-ready、零信任网络或已经完成真实公网验收的 v2 产品。
 
@@ -21,6 +21,7 @@ WinkYou = connectivity solver + secure WireGuard data plane
 - 历史部署的计划任务保持 `Disabled`，不得因文档重构而启用；本仓库的普通构建和测试也不授权真实家庭网、办公网或公网探测。
 - 事故根因、影响与恢复门禁见 [`docs/INCIDENT-2026-07-22-SELF-BOOTSTRAP-UDP-STORM.md`](./docs/INCIDENT-2026-07-22-SELF-BOOTSTRAP-UDP-STORM.md)；已去除个人部署细节的停机原则归档在 [`docs/RUNBOOK-EMERGENCY-STOP-HISTORICAL-WINDOWS.md`](./docs/RUNBOOK-EMERGENCY-STOP-HISTORICAL-WINDOWS.md)。
 - v2 计划 Accepted 只授权其明确列出的本地、模拟器与安全基础设施工作，不授权自动恢复、公共 coordinator/DHT/relay、遥测收集或生产发布。
+- N3b 提供代码入口不等于现场许可：`winkyou.stdio/v2` direct arm、`wink-rendezvous` 和离线配对命令在独立安全评审闭合并签发具名窗口前，均不得用于真实 LAN/公网。
 
 ## 快速开始
 
@@ -59,7 +60,10 @@ docker compose --env-file deploy/quickstart/.env \
 | 入口 | 当前定位 | 关键边界 |
 | --- | --- | --- |
 | `wink diagnose` | Phase 1a 被动首次检查 | 不开 socket、不发包；主动探测仍受 governor 与安全门禁约束 |
-| `wink solver serve --stdio` / `connect_test` | Phase 1a 一次性回环连通证明 | 仅 canonical 数值 loopback；每端最多 3 包，成功后立即关闭，不返回 transport |
+| `wink solver serve --stdio` + `winkyou.stdio/v1` | Phase 1a 一次性回环连通证明 | v1 schema/golden 保持不变；仅 canonical 数值 loopback，每端最多 3 包，成功后立即关闭 |
+| `wink solver serve --stdio` + `winkyou.stdio/v2` direct arm | N3b 一次性 direct-attempt 候选 | 显式 exact-version、单 credential、无重试；只获准在回环/隔离 netns 验证，真实 LAN/公网仍为 NO-GO |
+| `wink solver pair direct --out-dir <new-dir>` | 离线生成一对 N2 OOB artifact | 目录必须不存在；manifest 最后写入；PSK 不进终端或日志，使用后即焚 |
+| `wink-rendezvous serve ...` | one-shot 有界密文转发器 | 构建存在不等于部署授权；单 association、双 slot、TLS 1.3、零持久化，不是 coordinator/relay |
 | 默认 `wink up` | legacy coordinator + ICE/TURN + WireGuard 端到端路径 | 会进行真实网络通信；远程 coordinator 强制 TLS + auth |
 | `connectivity.mode: relay_only` | TURN relay 保活与验收路径 | 仍使用同一 WireGuard 数据面；需要正确开放 coturn relay 端口 |
 | `autonomous_mesh` | 默认关闭的历史实验路径 | birthday recovery 相关配置 fail-closed；不是当前 quickstart，也不得重新启用历史任务 |
@@ -100,6 +104,7 @@ Windows 或已安装 PowerShell 7 的环境也可直接运行
 go build -o bin/wink ./cmd/wink
 go build -o bin/wink-coordinator ./cmd/wink-coordinator
 go build -o bin/wink-relay ./cmd/wink-relay
+go build -o bin/wink-rendezvous ./cmd/wink-rendezvous
 ```
 
 跨平台 release 构建与校验流程见 [`docs/RELEASE.md`](./docs/RELEASE.md)。构建产物写入 `bin/` 或 `dist/`，不应提交到源码树。
@@ -114,7 +119,7 @@ go build -o bin/wink-relay ./cmd/wink-relay
 
 ## 目录导览
 
-- [`cmd/`](./cmd)：`wink`、coordinator、relay 与开发工具入口
+- [`cmd/`](./cmd)：`wink`、coordinator、relay、one-shot rendezvous 与开发工具入口
 - [`pkg/solver`](./pkg/solver)：连接求解器 domain 与 strategy portfolio
 - [`pkg/session`](./pkg/session)：session 编排和 wire/domain adapter 边界
 - [`pkg/transport`](./pkg/transport)：统一 packet transport 抽象与适配器
@@ -133,6 +138,8 @@ go build -o bin/wink-relay ./cmd/wink-relay
 - Accepted v2 计划：[`docs/proposals/WINKYOU-V2-DIRECT-FIRST-PLAN.md`](./docs/proposals/WINKYOU-V2-DIRECT-FIRST-PLAN.md)
 - Phase 0 出口记录：[`docs/PHASE0-EXIT-RECORD.md`](./docs/PHASE0-EXIT-RECORD.md)
 - Phase 1a 回环 connect-test 与本地验证入口：[`docs/LOOPBACK-CONNECT-TEST.md`](./docs/LOOPBACK-CONNECT-TEST.md)
+- N3b 显式 stdio v2 协议与实现证据：[`docs/STDIO-API-V2.md`](./docs/STDIO-API-V2.md)、[`docs/N3B-PRODUCT-ENTRY-EVIDENCE.md`](./docs/N3B-PRODUCT-ENTRY-EVIDENCE.md)
+- Accepted N3a 设计与空白现场授权模板：[`docs/adr/ADR-N3A-PRODUCT-ENTRY-LIVE-WINDOW.md`](./docs/adr/ADR-N3A-PRODUCT-ENTRY-LIVE-WINDOW.md)、[`docs/N3-LIVE-AUTHORIZATION-TEMPLATE.md`](./docs/N3-LIVE-AUTHORIZATION-TEMPLATE.md)
 - 自托管 quickstart：[`docs/SELFHOST-QUICKSTART.md`](./docs/SELFHOST-QUICKSTART.md)
 - 分层排障：[`docs/TROUBLESHOOTING.md`](./docs/TROUBLESHOOTING.md)
 - 事故记录：[`docs/INCIDENT-2026-07-22-SELF-BOOTSTRAP-UDP-STORM.md`](./docs/INCIDENT-2026-07-22-SELF-BOOTSTRAP-UDP-STORM.md)

@@ -1,10 +1,10 @@
 # ADR：首次非回环 connect-test 权限边界
 
-- 状态：**Accepted (2026-08-24)：N1、N2a、N2b、N2c、N2d 已合入；N3a docs-only 设计正在 Draft 评审；产品入口和现场 I/O 仍未授权**
+- 状态：**Accepted (2026-08-24)：N1、N2a、N2b、N2c、N2d 已合入，N3a 设计已 Accepted；N3b 实现正在 Draft 评审，现场 I/O 仍未授权**
 - 日期：2026-08-24
 - 跟踪议题：[#70](https://github.com/houyuwushang/winkyou/issues/70)
 - 决策人：WinkYou 维护者与独立安全评审
-- 当前权限：**已合入的 N2d 仍仅限 `linux && natlab`、RFC 5737 TEST-NET、双进程与受控 NAT；N3b、产品入口、LAN/公网与现场测试仍未授权**
+- 当前权限：**已合入的 N2d 与 N3b Draft 验证仍仅限 loopback、`linux && natlab`、RFC 5737 TEST-NET、双进程与受控 NAT；LAN/公网、部署与现场测试仍未授权**
 - 前置证据：[`LOOPBACK-CONNECT-TEST.md`](../LOOPBACK-CONNECT-TEST.md)
 
 > 本 ADR 冻结 #68 之后下一阶段的权限设计，不是联网许可。它不改变
@@ -382,10 +382,10 @@ N3 只有在 N1/N2 全部经过独立评审并合入后才能提出。至少需�
 8. 公开记录只保留脱敏事实，不出现个人 IP、hostname、用户名、本机路径或拓扑。
 
 N3a 对入口版本、request schema、stable error、one-shot rendezvous、配对材料与签发格式的
-Draft 冻结见
+Accepted 冻结见
 [`ADR-N3A-PRODUCT-ENTRY-LIVE-WINDOW.md`](./ADR-N3A-PRODUCT-ENTRY-LIVE-WINDOW.md)，空白模板见
 [`N3-LIVE-AUTHORIZATION-TEMPLATE.md`](../N3-LIVE-AUTHORIZATION-TEMPLATE.md)。这两份文档
-不激活代码，也不是现场许可。
+以及 N3b Draft 代码/CI 都不是现场许可。
 
 N3 的一个授权实例只允许一个显式 attempt；不启动自动重试/恢复，不接数据面。首次
 campaign 的对端缺席、错误 PSK、密文篡改、重放、STUN 静默、进程崩溃和正常成功各使用
@@ -425,8 +425,8 @@ campaign 的对端缺席、错误 PSK、密文篡改、重放、STUN 静默、�
 每个 PR 均需独立 CI、architecture gate、race、重复运行、故障注入和专家审查；不得用
 stacked merge 绕过某一道权限门。
 
-N2a/N2b/N2c/N2d 已分别合入。N2d 仍只提供 namespace/NAT-lab 证据；N3a Draft 创建、CI
-通过、合并或本节待决项被实现勾选，都不构成 N3b 或现场 I/O 自动授权。
+N2a/N2b/N2c/N2d 已分别合入。N2d 仍只提供 namespace/NAT-lab 证据；N3a 已 Accepted，
+N3b Draft 的创建、CI 通过、合并或本节待决项被实现勾选，都不构成现场 I/O 自动授权。
 
 ## 10. Accepted 后的剩余待决项
 
@@ -452,11 +452,12 @@ integration harness、不创建 production-importable carrier。以下事项仍�
 - [x] 用 1600 次基础 NAT 矩阵及故障矩阵校准并固定 N2 最坏成本；
 - [x] N2d Draft 的双进程 EIM/EDM、缺席、崩溃重启、硬违规与 OS 残留矩阵通过必跑
   Linux race CI；实测计数与残留摘要见 `N2D-NAMESPACE-E2E.md` §6；
-- [ ] 独立安全评审接受 N2d 的组合实现与证据；
+- [x] 独立安全评审接受 N2d 的组合实现与证据（2026-08-25，PR #79）；
 - [x] N3a Draft 定义 stdio v2 分流、stable error、one-shot rendezvous、配对材料与
   live authorization 空白模板；这只表示文档齐备，不表示设计已接受或入口已激活；
 - [x] 独立安全评审接受 N3a 设计与空白模板（2026-08-25，评审记录见 PR #80/#81）；
   N3b 实现仍须按其 §6 验收门独立评审；
+- [ ] 独立安全评审接受 N3b 实现与证据；
 - [ ] 独立安全评审明确接受以上决策。
 
 在全部项目闭合前，#70 保持开放，`connect_test` 非回环仍为稳定 fail-closed；

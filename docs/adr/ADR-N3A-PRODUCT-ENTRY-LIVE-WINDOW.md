@@ -11,10 +11,15 @@
   否则窗口内的任意端口扫描都能中止合法 attempt；同时冻结 §2.6 `error.data` 成员与
   `terminal_category` 枚举、§2.7 成功结果完整 JSON、§4.1 `manifest.json` 完整 JSON。
   无语义扩权。
+- N3b 实现状态（Draft）：基于 `main=320dce5` 的候选实现已按本 ADR 接入显式 v2、
+  one-shot server 与离线 pair generator；验证记录见
+  [`N3B-PRODUCT-ENTRY-EVIDENCE.md`](../N3B-PRODUCT-ENTRY-EVIDENCE.md)。该状态不表示独立
+  安全评审已接受，也不签发 live authorization。
 
-> 本 ADR 只冻结 N3b 的实现合同与首次具名现场测试的签发格式。当前二进制仍只实现
-> `winkyou.stdio/v1` 的 literal-loopback `connect_test`；本文件、Draft PR、CI 通过或
-> 合并本身都不会开放非回环网络，也不会授权任何人运行一次现场 attempt。
+> 本 ADR 只冻结 N3b 的实现合同与首次具名现场测试的签发格式。Accepted 基线只实现
+> `winkyou.stdio/v1` 的 literal-loopback `connect_test`；N3b Draft 新增的显式 v2 路径也
+> 仅获准在 loopback/隔离 netns 验证。本文件、Draft PR、CI 通过或合并本身都不会开放
+> 非回环现场网络，也不会授权任何人运行一次现场 attempt。
 
 ## 1. 决策摘要与边界
 
@@ -507,6 +512,11 @@ REMOVE the allow rule at window end and record the rule identifier plus counter 
 
 ## 4. 配对材料生成工具
 
+N3b Draft 已按本节实现离线 `wink solver pair direct`，包括四文件输出、manifest 最后
+落盘、平台权限、O_EXCL/symlink 拒绝、clipboard 双重确认与 secret scan。其存在不改变
+artifact 的 test-only、单 credential、用后即焚属性；在 §6 独立评审闭合前不得把产物
+用于真实网络。
+
 ### 4.1 命令与输出
 
 N3b 的离线命令形态冻结为：
@@ -651,5 +661,11 @@ N3b 至少必须证明：
 8. 现场结束后提交的仓库证据只含脱敏计数与稳定 class，不含个人 IP、hostname、username、
    本机路径、SSID、MAC、设备序列号、运营商账户、artifact、fingerprint 或 topology。
 
-在这些门全部闭合前：当前 v1 非回环仍为 `non_loopback_blocked`，v2 不存在，
-`wink-rendezvous` 与 pair command 不存在，现场 I/O 仍为 NO-GO。
+N3b Draft 已把门 1–6 映射为 golden、负面/故障注入、architecture mutation、loopback 与
+required Linux netns 测试；逐项命令、结果和环境限制记录在
+[`N3B-PRODUCT-ENTRY-EVIDENCE.md`](../N3B-PRODUCT-ENTRY-EVIDENCE.md)。门 7–8 仍是 N3b 合并后
+另行执行的评审与具名窗口条件，不能由实现 PR 自行勾销。
+
+在这些门全部闭合前：v1 非回环继续稳定返回 `non_loopback_blocked`；v2、
+`wink-rendezvous` 与 pair command 即使已存在于候选实现或后续 main，也只具备
+review-gated/test-only 权限，现场 I/O 仍为 NO-GO。
