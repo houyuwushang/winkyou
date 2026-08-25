@@ -11,15 +11,15 @@
   否则窗口内的任意端口扫描都能中止合法 attempt；同时冻结 §2.6 `error.data` 成员与
   `terminal_category` 枚举、§2.7 成功结果完整 JSON、§4.1 `manifest.json` 完整 JSON。
   无语义扩权。
-- N3b 实现状态（Draft）：基于 `main=320dce5` 的候选实现已按本 ADR 接入显式 v2、
-  one-shot server 与离线 pair generator；验证记录见
-  [`N3B-PRODUCT-ENTRY-EVIDENCE.md`](../N3B-PRODUCT-ENTRY-EVIDENCE.md)。该状态不表示独立
-  安全评审已接受，也不签发 live authorization。
+- N3b 实现状态：已经独立评审并合入 main（含实机配对生成、one-shot server、v2 严格
+  分流、gate 变异与真实 netns 产品路径验证）；验证记录见
+  [`N3B-PRODUCT-ENTRY-EVIDENCE.md`](../N3B-PRODUCT-ENTRY-EVIDENCE.md)。合入仍不签发
+  live authorization；现场 I/O 逐实例按模板另行签发。
 
-> 本 ADR 只冻结 N3b 的实现合同与首次具名现场测试的签发格式。Accepted 基线只实现
-> `winkyou.stdio/v1` 的 literal-loopback `connect_test`；N3b Draft 新增的显式 v2 路径也
-> 仅获准在 loopback/隔离 netns 验证。本文件、Draft PR、CI 通过或合并本身都不会开放
-> 非回环现场网络，也不会授权任何人运行一次现场 attempt。
+> 本 ADR 只冻结 N3b 的实现合同与首次具名现场测试的签发格式。已合入的 v2 路径仅在
+> loopback/隔离 netns 得到验证。本文件、PR、CI 通过或合并本身都不会开放非回环现场
+> 网络，也不会授权任何人运行一次现场 attempt；每个现场实例由维护者与第二人按模板
+> 单独签发。
 
 ## 1. 决策摘要与边界
 

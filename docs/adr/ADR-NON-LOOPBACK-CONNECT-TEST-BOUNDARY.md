@@ -1,6 +1,6 @@
 # ADR：首次非回环 connect-test 权限边界
 
-- 状态：**Accepted (2026-08-24)：N1、N2a、N2b、N2c、N2d 已合入，N3a 设计已 Accepted；N3b 实现正在 Draft 评审，现场 I/O 仍未授权**
+- 状态：**Accepted (2026-08-24)：N1、N2a、N2b、N2c、N2d、N3b 已合入，N3a 设计已 Accepted；现场 I/O 仍未授权，逐实例按 live authorization 模板签发**
 - 日期：2026-08-24
 - 跟踪议题：[#70](https://github.com/houyuwushang/winkyou/issues/70)
 - 决策人：WinkYou 维护者与独立安全评审
@@ -84,7 +84,7 @@ relay 仍是正常的产品结果。这个切片只回答“本次 direct 是否
 | --- | --- | --- | --- | --- |
 | N1 | 隔离 unicast 传输与排水证明 | 仅 Linux network namespace 内的测试地址 | 无 | 已实现并合入：隔离 harness + 必跑 Linux CI；不授权 N2/N3 或现场 I/O |
 | N2 | 同 socket NAT attempt | 先纯状态机，再隔离 namespace/NAT lab | 无 | N2a/N2b/N2c/N2d 已合入；所有证据仍为 test-only，不授权产品或现场 I/O |
-| N3 | 用户入口与命名现场窗口 | 单独批准的受控环境 | 审查后才可讨论 | N3a 已 Accepted，N3b 可按其 §6 验收门开工；live I/O 仍为 NO-GO |
+| N3 | 用户入口与命名现场窗口 | 单独批准的受控环境 | `winkyou.stdio/v2` 显式 direct arm（已合入，仅 loopback/netns 验证） | N3a Accepted、N3b 已合入；live I/O 仍为 NO-GO，逐实例签发 |
 
 门必须按顺序通过。N1 成功不能自动批准 N2；N2 的隔离成功也不能自动批准 N3。
 
