@@ -1,6 +1,6 @@
 # N2d namespace/NAT-lab 双进程组合证明
 
-- 状态：**Draft implementation evidence；必跑 Linux CI 已通过，独立评审接受前不构成 N2d 接受**
+- 状态：**已合入 main；必跑 Linux CI 已通过；证据仍为 test-only，独立评审记录与 N3 授权另行闭合**
 - 权限来源：[`ADR-NON-LOOPBACK-CONNECT-TEST-BOUNDARY.md`](./adr/ADR-NON-LOOPBACK-CONNECT-TEST-BOUNDARY.md) §6、§9 第 5 步
 - 构建约束：`linux && natlab`
 - 产品入口：**无**
