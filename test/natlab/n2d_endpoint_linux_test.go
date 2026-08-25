@@ -77,6 +77,7 @@ type n2dEndpointConfig struct {
 	PauseStage         string `json:"pause_stage,omitempty"`
 	ReleasePath        string `json:"release_path,omitempty"`
 	RendezvousEndpoint string `json:"rendezvous_endpoint,omitempty"`
+	RendezvousSPKIPin  string `json:"rendezvous_spki_pin,omitempty"`
 	STUNEndpoint       string `json:"stun_endpoint,omitempty"`
 	PeerProbeEndpoint  string `json:"peer_probe_endpoint,omitempty"`
 }
@@ -176,6 +177,8 @@ func validN2DEndpointConfig(config n2dEndpointConfig) bool {
 	switch config.Action {
 	case n2dActionAttempt:
 		return config.ArtifactPath != "" && config.RendezvousEndpoint != "" && config.STUNEndpoint != ""
+	case n3bActionStdioV2:
+		return config.ArtifactPath != "" && config.RendezvousEndpoint != "" && config.RendezvousSPKIPin != "" && config.STUNEndpoint != ""
 	case n2dActionRestartCheck:
 		return config.ArtifactPath != ""
 	case n2dActionSecondSocket, n2dActionThirdTarget:
@@ -191,6 +194,8 @@ func runN2DEndpoint(config n2dEndpointConfig) (n2dEndpointResult, error) {
 	switch config.Action {
 	case n2dActionAttempt:
 		return runN2DAttempt(config)
+	case n3bActionStdioV2:
+		return runN3BStdioV2Attempt(config)
 	case n2dActionRestartCheck:
 		return runN2DRestartCheck(config)
 	case n2dActionSecondSocket, n2dActionThirdTarget, n2dActionSixthPacket:

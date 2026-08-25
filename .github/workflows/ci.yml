@@ -122,7 +122,7 @@ jobs:
           -test.timeout=4m
 
   n2d-netns-nat-proof:
-    name: N2d Netns NAT E2E Proof (required)
+    name: N2d/N3b Netns NAT E2E Proof (required)
     runs-on: ubuntu-latest
     timeout-minutes: 6
     steps:
@@ -146,12 +146,18 @@ jobs:
           command -v sysctl
 
       - name: Vet natlab-tagged code
-        run: go vet -tags=natlab ./internal/governor ./internal/v2/rendezvouscarrier ./test/natlab
+        run: >-
+          go vet -tags=natlab
+          ./internal/governor
+          ./internal/solverstdio
+          ./internal/v2/directconnect
+          ./internal/v2/rendezvouscarrier
+          ./test/natlab
 
-      - name: Build race-enabled N2d integration binary
+      - name: Build race-enabled N2d/N3b integration binary
         run: go test -race -c -tags=natlab -o "${RUNNER_TEMP}/winkyou-n2d.test" ./test/natlab
 
-      - name: Run mandatory isolated N2d matrix
+      - name: Run mandatory isolated N2d/N3b matrix
         run: >-
           sudo env WINKYOU_N2D_REQUIRED=1 GORACE=halt_on_error=1
           "${RUNNER_TEMP}/winkyou-n2d.test"
