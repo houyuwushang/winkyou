@@ -24,7 +24,9 @@ endpoint A netns -> NAT A netns -> public netns <- NAT B netns <- endpoint B net
 - 所有接口地址仅来自 RFC 5737 的 TEST-NET-1/2/3；测试结果与日志不记录 endpoint；
 - NAT 通过 netfilter 提供三档：显式 1:1、端口保持的 EIM 参考档；仅端口保持 SNAT、
   保留 conntrack address+port-dependent 过滤的 **port-restricted 档**（盲发同时开洞
-  语义所针对的代表场景）；以及随机端口加同样过滤的 EDM 档；
+  语义所针对的代表场景）；以及随机端口加同样过滤的 EDM 档。两个 NAT 网关像消费级
+  路由器一样丢弃发往自身 WAN 地址的未经请求 UDP——否则过早到达的对端开洞报文会被
+  conntrack 确认为网关本地流，毒化 SNAT 端口保持，使被测映射失真；
 - public namespace 内运行现有 `internal/stunserver` 与 N2c 的两方、有界、不透明帧
   test server；两者均由 harness 创建和销毁；
 - 本地 UDP 仍是 wildcard + ephemeral bind。endpoint 只经 `ProbeSocket.LocalAddr` 取得

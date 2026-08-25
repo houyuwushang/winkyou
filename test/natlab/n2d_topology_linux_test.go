@@ -175,7 +175,26 @@ func (topology *n2dTopology) create() error {
 	if err := topology.applyNAT(topology.natA, topology.leftMode, n2dNATAWAN, n2dClientAAddress); err != nil {
 		return err
 	}
-	return topology.applyNAT(topology.natB, topology.rightMode, n2dNATBWAN, n2dClientBAddress)
+	if err := topology.applyNAT(topology.natB, topology.rightMode, n2dNATBWAN, n2dClientBAddress); err != nil {
+		return err
+	}
+	// A consumer router's WAN firewall drops unsolicited UDP addressed to the
+	// gateway itself instead of accepting it into the local stack. Without
+	// this, an early peer opener that races ahead of the local pinhole is
+	// "confirmed" into conntrack as a NAT-local flow, poisons the SNAT port
+	// table, and evicts port preservation for the very mapping under test.
+	// The DNAT-based EIM reference tier translates before INPUT and stays
+	// unaffected; the restricted and EDM tiers rely on this default-deny.
+	for _, gateway := range []struct{ namespace, address string }{
+		{topology.natA, n2dNATAWAN},
+		{topology.natB, n2dNATBWAN},
+	} {
+		if _, err := runNamespaced(gateway.namespace, "iptables", nil,
+			"-w", "5", "-A", "INPUT", "-i", "wan0", "-p", "udp", "-d", gateway.address, "-j", "DROP"); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func n2dConfigureEnd(namespace, temporaryName, finalName, cidr string) error {
