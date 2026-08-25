@@ -35,7 +35,7 @@ When documents disagree, treat `CONNECTIVITY-SOLVER-BASELINE.md` as the source o
 - Merged N2a/N2b zero-network direct-attempt protocol and NAT matrix evidence: [`N2-DIRECT-ATTEMPT-SIMULATION.md`](./N2-DIRECT-ATTEMPT-SIMULATION.md)
 - Merged N2c disconnected governed rendezvous carrier and same-socket STUN evidence (literal loopback only; no product/live-network authority): [`N2C-RENDEZVOUS-CARRIER.md`](./N2C-RENDEZVOUS-CARRIER.md)
 - Merged N2d dual-process namespace/NAT-lab composition proof (test-only, required Linux CI; no product/live-network authority): [`N2D-NAMESPACE-E2E.md`](./N2D-NAMESPACE-E2E.md)
-- Draft N3a product-entry, one-shot rendezvous, pairing-material and named live-window design (docs-only; N3b/live I/O remain disabled), plus the blank authorization template: [`adr/ADR-N3A-PRODUCT-ENTRY-LIVE-WINDOW.md`](./adr/ADR-N3A-PRODUCT-ENTRY-LIVE-WINDOW.md), [`N3-LIVE-AUTHORIZATION-TEMPLATE.md`](./N3-LIVE-AUTHORIZATION-TEMPLATE.md)
+- Accepted N3a product-entry, one-shot rendezvous, pairing-material and named live-window design (N3b implementation may start behind its acceptance gates; live I/O stays disabled), plus the blank authorization template: [`adr/ADR-N3A-PRODUCT-ENTRY-LIVE-WINDOW.md`](./adr/ADR-N3A-PRODUCT-ENTRY-LIVE-WINDOW.md), [`N3-LIVE-AUTHORIZATION-TEMPLATE.md`](./N3-LIVE-AUTHORIZATION-TEMPLATE.md)
 - Phase 1a pure-memory NAT simulation matrix and current coverage: [`NAT-SIMULATION-MATRIX.md`](./NAT-SIMULATION-MATRIX.md)
 - Phase 1a governed synchronized direct-punch simulation boundary: [`DIRECT-PUNCH-SIMULATION.md`](./DIRECT-PUNCH-SIMULATION.md)
 - Phase 1a simulation-only NNpsk0 implementation evidence and limits: [`NOISE-CORE.md`](./NOISE-CORE.md)
