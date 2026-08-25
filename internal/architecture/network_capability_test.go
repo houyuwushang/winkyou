@@ -115,6 +115,13 @@ var governedCapabilityApprovals = []governedCapabilityApproval{
 		pkg:        modulePath + "/internal/v2/rendezvouscarrier",
 		owner:      "governor",
 	},
+	{
+		file:       "internal/v2/rendezvousserver/listener.go",
+		function:   "listenOneShot",
+		capability: "reference:net.Listen",
+		pkg:        modulePath + "/internal/v2/rendezvousserver",
+		owner:      "one-shot-rendezvous",
+	},
 }
 
 func TestProductionNetworkCapabilityInventory(t *testing.T) {
@@ -477,7 +484,7 @@ func governedCapabilityViolations(result scanResult) []string {
 
 func approvedGovernedCapability(current finding) bool {
 	for _, approval := range governedCapabilityApprovals {
-		if approval.owner == "governor" &&
+		if (approval.owner == "governor" || approval.owner == "one-shot-rendezvous") &&
 			current.file == approval.file &&
 			current.function == approval.function &&
 			current.capability == approval.capability &&
