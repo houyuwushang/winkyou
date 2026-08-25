@@ -1,6 +1,6 @@
 # ADR：N3a 产品入口与现场窗口设计冻结
 
-- 状态：**Draft；docs-only；不激活 N3b，不授权 LAN、公网或任何现场 I/O**
+- 状态：**Accepted (2026-08-25)：入口版本、request schema、stable error、one-shot rendezvous、配对材料与签发格式已冻结；仅允许按 §6 验收门开工 N3b。本 ADR 不激活 N3b，不授权 LAN、公网或任何现场 I/O**
 - 日期：2026-08-25
 - 基线：`main` = `afb7de52ee6f2cf81282cf056cd5cd6078c1990a`
 - 跟踪议题：[#70](https://github.com/houyuwushang/winkyou/issues/70)

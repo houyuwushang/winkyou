@@ -84,7 +84,7 @@ relay 仍是正常的产品结果。这个切片只回答“本次 direct 是否
 | --- | --- | --- | --- | --- |
 | N1 | 隔离 unicast 传输与排水证明 | 仅 Linux network namespace 内的测试地址 | 无 | 已实现并合入：隔离 harness + 必跑 Linux CI；不授权 N2/N3 或现场 I/O |
 | N2 | 同 socket NAT attempt | 先纯状态机，再隔离 namespace/NAT lab | 无 | N2a/N2b/N2c/N2d 已合入；所有证据仍为 test-only，不授权产品或现场 I/O |
-| N3 | 用户入口与命名现场窗口 | 单独批准的受控环境 | 审查后才可讨论 | N3a docs-only Draft；N3b 与 live I/O 仍为 NO-GO |
+| N3 | 用户入口与命名现场窗口 | 单独批准的受控环境 | 审查后才可讨论 | N3a 已 Accepted，N3b 可按其 §6 验收门开工；live I/O 仍为 NO-GO |
 
 门必须按顺序通过。N1 成功不能自动批准 N2；N2 的隔离成功也不能自动批准 N3。
 
@@ -455,7 +455,8 @@ integration harness、不创建 production-importable carrier。以下事项仍�
 - [ ] 独立安全评审接受 N2d 的组合实现与证据；
 - [x] N3a Draft 定义 stdio v2 分流、stable error、one-shot rendezvous、配对材料与
   live authorization 空白模板；这只表示文档齐备，不表示设计已接受或入口已激活；
-- [ ] 独立安全评审接受 N3a 设计与空白模板；
+- [x] 独立安全评审接受 N3a 设计与空白模板（2026-08-25，评审记录见 PR #80/#81）；
+  N3b 实现仍须按其 §6 验收门独立评审；
 - [ ] 独立安全评审明确接受以上决策。
 
 在全部项目闭合前，#70 保持开放，`connect_test` 非回环仍为稳定 fail-closed；
