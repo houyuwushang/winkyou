@@ -415,3 +415,32 @@ trip clear、ledger capacity、kill switch、packet/socket/process/conntrack/tra
 
 未答复并接受这些问题前，下一步只能是 zero-network 实现证据；不能安装远端 binary、创建
 machine scope、运行 active STUN、修改 firewall 或发起 direct attempt。
+
+## 15. 独立评审答复（2026-08-25）
+
+1. **Profile 隔离：足够。** 新 identifier 与 N3b 严格不同且全部进入 Noise prologue，跨
+   profile 降级在 AEAD 层不可能成立。Gate A 必过测试补一条硬要求：两套 parser 必须互相
+   拒绝对方的 artifact，并作为 golden 负向用例冻结。
+2. **Burn-only DoS：可接受，不加新机制。** presence 在 burn 之前；OOB operator 掐断
+   stream 最多让本端浪费一张自己生成的一次性 credential 和一个持久限速槽位——这正是
+   “burn 不是分布式事务”的保守语义。任何 burn 前双向 commit 协议都会引入第二个信任
+   锚，拒绝。
+3. **`TransportLease` 落在 `internal/probeio`。** 它是 Promote 语义与 drain 见证的自然
+   延伸；consumer 白名单由 architecture gate 精确列举。不放 `directconnect`（消费方不得
+   自造 lease），也不放 `pkg/transport`（不得把权限泛化给 legacy 路径）。FINISH 顺序沿用
+   现有契约：durable FINISH 先于 attempt 释放，handoff 成功与否都不例外。
+4. **Gate A 仅 test consumer。** WireGuard memory-TUN 是第二个权限升级，留 Gate C；一次
+   评审只开一个权限。
+5. **2 STUN target 与 8/7 ceiling 合理**，仍受 24 小时 2,048 packet 持久预算约束；第三方
+   observation service 的 operator permission 记入现场授权实例的私有记录，不进入 artifact
+   或仓库——按 §5 原文执行。
+6. **是：永久阻断自动 fallback。** `mapping_not_directly_usable` 是本 attempt 的干净终局。
+   即使 Gate B 将来被接受，endpoint-dependent 求解也必须是显式新 attempt、新 credential、
+   新签发授权实例；任何同 attempt 内升级、自动重试或“顺手换策略”都是被拒绝的捷径。
+7. **拆分维持三 gate，实现粒度再细分。** Gate A 一个实现 PR（memory + netns 证据同批）；
+   Gate B 先独立设计 ADR、后独立实现 PR，两步都需评审；Gate C 至少拆 SSH assembly 与
+   产品入口/campaign 两个 PR。
+
+同时明确一个预期事实：§2.2 的脱敏观测显示当前两侧环境均为 endpoint-dependent mapping，
+因此在 Gate B 获准前，本环境的合法 N3c 结果只有有界失败；Gate A 的 nominal easy-NAT
+success 须在满足容易路径条件的环境验证，不得用困难环境冒充。
