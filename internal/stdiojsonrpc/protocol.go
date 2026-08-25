@@ -43,11 +43,14 @@ const (
 // ErrorData carries a stable machine-readable class without exposing internal
 // error strings. Limit and RetryAfterMS are populated only when meaningful.
 type ErrorData struct {
-	Class        string `json:"class"`
-	Retryable    bool   `json:"retryable"`
-	Limit        int64  `json:"limit,omitempty"`
-	RetryAfterMS int64  `json:"retry_after_ms,omitempty"`
-	Reason       string `json:"reason,omitempty"`
+	Class            string `json:"class"`
+	Retryable        bool   `json:"retryable"`
+	Limit            int64  `json:"limit,omitempty"`
+	RetryAfterMS     int64  `json:"retry_after_ms,omitempty"`
+	Reason           string `json:"reason,omitempty"`
+	Stage            string `json:"stage,omitempty"`
+	CredentialBurned *bool  `json:"credential_burned,omitempty"`
+	TerminalCategory string `json:"terminal_category,omitempty"`
 }
 
 // RPCError is a JSON-RPC error object safe to return to a local client.

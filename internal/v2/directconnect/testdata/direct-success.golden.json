@@ -1,0 +1,53 @@
+{
+  "attempt_kind": "direct_oob_artifact",
+  "terminal": "success",
+  "bidirectional": true,
+  "promoted_terminal": true,
+  "credential_burned": true,
+  "finish_recorded": true,
+  "emissions": {
+    "handshake_frames": 1,
+    "control_frames": 4,
+    "cancel_frames": 0,
+    "stun_packets": 1,
+    "direct_packets": 2,
+    "udp_packets_total": 3,
+    "carrier_frames_read": 0,
+    "carrier_frames_written": 0,
+    "carrier_bytes_read": 0,
+    "carrier_bytes_written": 0
+  },
+  "reserved_envelope": {
+    "sockets": 3,
+    "targets": 4,
+    "packets_per_second": 5,
+    "packets": 5,
+    "five_tuples": 4,
+    "duration_ms": 15000,
+    "heavyweight": true
+  },
+  "pairing_ledger": {
+    "state": "ready",
+    "blocks_active_work": false,
+    "high_watermark": "0001-01-01T00:00:00Z",
+    "last_admission_at": "0001-01-01T00:00:00Z",
+    "circuit_opened_at": "0001-01-01T00:00:00Z",
+    "circuit_reset_eligible_at": "0001-01-01T00:00:00Z",
+    "next_admission_at": "0001-01-01T00:00:00Z",
+    "limits": {
+      "minimum_interval": 60000000000,
+      "one_hour_admissions": 4,
+      "twenty_four_hour_admissions": 12,
+      "twenty_four_hour_packets": 2048,
+      "failure_limit": 3,
+      "circuit_horizon": 21600000000000,
+      "clock_rollback_tolerance": 120000000000,
+      "max_journal_bytes": 4194304,
+      "max_journal_records": 8192
+    }
+  },
+  "safety_trip": {
+    "state": "clear",
+    "blocks_active_work": false
+  }
+}

@@ -6,13 +6,20 @@ import (
 
 	"winkyou/internal/governor"
 	"winkyou/internal/stdiojsonrpc"
+	"winkyou/internal/v2/directconnect"
 	"winkyou/internal/v2/loopbackcarrier"
 )
 
 const (
-	SchemaVersion  = "winkyou.stdio/v1"
-	FramingVersion = "lsp-content-length/v1"
+	SchemaVersion   = "winkyou.stdio/v1"
+	SchemaVersionV2 = "winkyou.stdio/v2"
+	FramingVersion  = "lsp-content-length/v1"
 )
+
+var connectTestProfilesV2 = []string{
+	"loopback_complete_bundle",
+	"winkyou-test-direct-attempt-oob/1",
+}
 
 const (
 	MethodHandshake            = "handshake"
@@ -47,6 +54,7 @@ const (
 	CodeUserScopeBlocked        = -32017
 	CodePairingAdmissionBlocked = -32018
 	CodeConnectTestFailed       = -32019
+	CodeDirectConnectFailed     = -32020
 )
 
 const (
@@ -139,6 +147,20 @@ type HandshakeResult struct {
 	Notifications       []NotificationCapability  `json:"notifications"`
 }
 
+type HandshakeResultV2 struct {
+	SchemaVersion       string                    `json:"schema_version"`
+	FramingVersion      string                    `json:"framing_version"`
+	Build               BuildInfo                 `json:"build"`
+	ProtocolLimits      ProtocolLimits            `json:"protocol_limits"`
+	Governor            GovernorHandshake         `json:"governor"`
+	AuthScope           string                    `json:"auth_scope"`
+	SupportedAuthScopes []string                  `json:"supported_auth_scopes"`
+	ConnectTestProfiles []string                  `json:"connect_test_profiles"`
+	SafetyTrip          governor.SafetyTripStatus `json:"safety_trip"`
+	Methods             []string                  `json:"methods"`
+	Notifications       []NotificationCapability  `json:"notifications"`
+}
+
 type StatusResult struct {
 	SchemaVersion          string                       `json:"schema_version"`
 	GeneratedAt            time.Time                    `json:"generated_at"`
@@ -155,6 +177,8 @@ type ConnectTestResult struct {
 	Result        loopbackcarrier.Result       `json:"result"`
 	PairingLedger governor.PairingLedgerStatus `json:"pairing_ledger"`
 }
+
+type DirectConnectTestResult = directconnect.Result
 
 type ExportResult struct {
 	Written   bool   `json:"written"`
@@ -185,6 +209,32 @@ type connectTestParams struct {
 	AuthScope      string          `json:"auth_scope"`
 	CompleteBundle json.RawMessage `json:"complete_bundle"`
 	DeadlineMS     *int64          `json:"deadline_ms,omitempty"`
+}
+
+type connectTestV2Params struct {
+	AuthScope    string                  `json:"auth_scope"`
+	Attempt      json.RawMessage         `json:"attempt"`
+	Rendezvous   *directRendezvousParams `json:"rendezvous,omitempty"`
+	STUNEndpoint string                  `json:"stun_endpoint,omitempty"`
+	DeadlineMS   *int64                  `json:"deadline_ms,omitempty"`
+}
+
+type connectTestAttemptV2 struct {
+	Kind           string          `json:"kind"`
+	CompleteBundle json.RawMessage `json:"complete_bundle,omitempty"`
+	OOBArtifact    json.RawMessage `json:"oob_artifact,omitempty"`
+}
+
+type directRendezvousParams struct {
+	Endpoint       string          `json:"endpoint"`
+	DeploymentTier string          `json:"deployment_tier"`
+	TLS            directTLSParams `json:"tls"`
+}
+
+type directTLSParams struct {
+	Verification string `json:"verification"`
+	ServerName   string `json:"server_name,omitempty"`
+	SPKISHA256   string `json:"spki_sha256,omitempty"`
 }
 
 func protocolLimits(limits stdiojsonrpc.Limits) ProtocolLimits {

@@ -168,13 +168,17 @@ func TestN2CDNSCapabilityApprovalIsExact(t *testing.T) {
 	}
 }
 
-func TestGovernedCapabilityApprovalsHaveGovernorOwner(t *testing.T) {
-	if len(governedCapabilityApprovals) != 3 {
-		t.Fatalf("governed approvals = %d, want exactly 3", len(governedCapabilityApprovals))
+func TestGovernedCapabilityApprovalsHaveExactOwners(t *testing.T) {
+	if len(governedCapabilityApprovals) != 4 {
+		t.Fatalf("governed approvals = %d, want exactly 4", len(governedCapabilityApprovals))
 	}
 	for _, approval := range governedCapabilityApprovals {
-		if approval.owner != "governor" {
-			t.Fatalf("capability %s owner = %q, want governor", approval.file, approval.owner)
+		wanted := "governor"
+		if approval.file == "internal/v2/rendezvousserver/listener.go" {
+			wanted = "one-shot-rendezvous"
+		}
+		if approval.owner != wanted {
+			t.Fatalf("capability %s owner = %q, want %s", approval.file, approval.owner, wanted)
 		}
 	}
 }

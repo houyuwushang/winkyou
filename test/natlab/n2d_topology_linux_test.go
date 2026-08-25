@@ -4,8 +4,17 @@ package natlab
 
 import (
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/sha256"
+	"crypto/tls"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/base64"
 	"errors"
 	"fmt"
+	"math/big"
 	"net"
 	"net/netip"
 	"strconv"
@@ -462,6 +471,7 @@ type n2dServers struct {
 	stunDone           chan error
 	rendezvous         *rendezvouscarrier.N2DTestServer
 	rendezvousEndpoint string
+	rendezvousSPKIPin  string
 	closeOnce          sync.Once
 	closeErr           error
 }
@@ -471,8 +481,35 @@ func startN2DServers(t interface {
 	Fatal(args ...any)
 	Cleanup(func())
 }, topology *n2dTopology) *n2dServers {
+	return startN2DServersMode(t, topology, false)
+}
+
+func startN3BServers(t interface {
+	Helper()
+	Fatal(args ...any)
+	Cleanup(func())
+}, topology *n2dTopology) *n2dServers {
+	return startN2DServersMode(t, topology, true)
+}
+
+func startN2DServersMode(t interface {
+	Helper()
+	Fatal(args ...any)
+	Cleanup(func())
+}, topology *n2dTopology, secure bool) *n2dServers {
 	t.Helper()
 	servers := &n2dServers{stunDone: make(chan error, 1)}
+	var tlsConfig *tls.Config
+	if secure {
+		certificate, pin, err := n3bTestCertificate()
+		if err != nil {
+			t.Fatal("N3b isolated TLS fixture setup failed")
+		}
+		servers.rendezvousSPKIPin = pin
+		tlsConfig = &tls.Config{
+			Certificates: []tls.Certificate{certificate}, MinVersion: tls.VersionTLS13, MaxVersion: tls.VersionTLS13,
+		}
+	}
 	err := RunInNamespace(topology.public, func() error {
 		stun, err := stunserver.Open(stunserver.Config{
 			ListenAddr: netip.AddrPortFrom(netip.MustParseAddr(n2dPublicA), 0), MaxPPS: 20,
@@ -485,7 +522,11 @@ func startN2DServers(t interface {
 			_ = stun.Close()
 			return err
 		}
-		rendezvous, err := rendezvouscarrier.StartN2DTestServer(listener)
+		var rendezvousListener net.Listener = listener
+		if tlsConfig != nil {
+			rendezvousListener = tls.NewListener(listener, tlsConfig.Clone())
+		}
+		rendezvous, err := rendezvouscarrier.StartN2DTestServer(rendezvousListener)
 		if err != nil {
 			_ = listener.Close()
 			_ = stun.Close()
@@ -508,6 +549,33 @@ func startN2DServers(t interface {
 	}
 	t.Cleanup(func() { _ = servers.Close() })
 	return servers
+}
+
+func n3bTestCertificate() (tls.Certificate, string, error) {
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		return tls.Certificate{}, "", err
+	}
+	now := time.Now().UTC()
+	template := &x509.Certificate{
+		SerialNumber: big.NewInt(320), Subject: pkix.Name{CommonName: "natlab-only"},
+		NotBefore: now.Add(-time.Minute), NotAfter: now.Add(time.Hour),
+		KeyUsage: x509.KeyUsageDigitalSignature, ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+		IPAddresses: []net.IP{net.ParseIP(n2dPublicA)},
+	}
+	der, err := x509.CreateCertificate(rand.Reader, template, template, &key.PublicKey, key)
+	if err != nil {
+		return tls.Certificate{}, "", err
+	}
+	leaf, err := x509.ParseCertificate(der)
+	if err != nil {
+		clear(der)
+		return tls.Certificate{}, "", err
+	}
+	digest := sha256.Sum256(leaf.RawSubjectPublicKeyInfo)
+	pin := base64.RawURLEncoding.EncodeToString(digest[:])
+	clear(digest[:])
+	return tls.Certificate{Certificate: [][]byte{der}, PrivateKey: key, Leaf: leaf}, pin, nil
 }
 
 func (servers *n2dServers) Close() error {

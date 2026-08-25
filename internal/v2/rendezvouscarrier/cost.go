@@ -5,6 +5,7 @@ import (
 
 	"winkyou/internal/governor"
 	"winkyou/internal/v2/directattempt"
+	"winkyou/internal/v2/rendezvouswire"
 )
 
 const (
@@ -17,7 +18,7 @@ const (
 	terminalDrainMargin   = 2 * time.Second
 	ActiveEnvelope        = AttemptDuration - terminalDrainMargin
 
-	streamHeaderBytes = 8
+	streamHeaderBytes = rendezvouswire.HeaderBytes
 
 	// MaxApplicationBytes is charged independently per endpoint across reads
 	// and writes. It is deliberately based on the transport frame ceiling, not

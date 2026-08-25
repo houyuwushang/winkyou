@@ -21,6 +21,7 @@ func TestLinuxN2DEndToEndProof(t *testing.T) {
 	requireN2DEnvironment(t)
 
 	t.Run("eim_eim_success_exact_witness", testN2DEIMSuccess)
+	t.Run("n3b_stdio_v2_eim_eim_product_entry", testN3BStdioV2EIMSuccess)
 	t.Run("port_restricted_blind_open_success", testN2DPortRestrictedSuccess)
 	t.Run("edm_participation_bounded_failure", testN2DEDMFailure)
 	t.Run("absent_before_burn", testN2DAbsentBeforeBurn)
