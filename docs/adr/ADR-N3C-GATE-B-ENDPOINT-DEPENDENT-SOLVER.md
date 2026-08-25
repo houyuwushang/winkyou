@@ -85,8 +85,10 @@ solver 通过不同 observation node 取得 `F` 的样本，估计以下状态�
 - mapping lifetime、port reuse 与并发 allocation stealing；
 - 多级 NAT 组合后是否仍存在低熵预测窗口。
 
-输出不是一个永久 NAT type，而是本 attempt 的 `StateModel`：候选端口分布、熵上界、证据
-覆盖和过期时刻。planner 优先枚举高概率候选；birthday 只消除模型剩余的熵。
+输出不是一个永久 NAT type，而是本 attempt 的 `StateModel`：候选端口分布、模型条件下的
+残余熵、证据覆盖和过期时刻。有限样本不能证明真实 allocator 的熵上界；没有编译期认可的
+模型证据时必须退回 full-range/unknown，而不能因为 3–8 个样本“看起来顺序”就缩小
+admission。planner 可优先枚举高概率候选，但 birthday 只消除有明确前提的模型剩余熵。
 
 ### 2.2 可用的状态来源
 
