@@ -138,10 +138,16 @@ type Config struct {
 	Generation         GenerationSource
 	ExpectedGeneration uint64
 	Factory            Factory
-	Now                func() time.Time
-	NewTimer           func(time.Duration) Timer
-	ResourceExhausted  func(error) bool
-	BuildVersion       string
+	// EnforcedCost optionally narrows the aggregate governor reservation for
+	// this controller. It can only lower socket, target, five-tuple, packet,
+	// PPS, and duration ceilings; it never changes the lease reservation. This
+	// is needed when one attempt reserves coarse TCP/DNS capacity alongside a
+	// smaller UDP slice. A nil value preserves the full lease cost.
+	EnforcedCost      *governor.AttemptCost
+	Now               func() time.Time
+	NewTimer          func(time.Duration) Timer
+	ResourceExhausted func(error) bool
+	BuildVersion      string
 }
 
 // Controller owns all probe sockets, target registrations, counters, and the
@@ -249,6 +255,12 @@ func New(config Config) (*Controller, error) {
 	if err := validateResources(request.Cost.Resources); err != nil {
 		return nil, err
 	}
+	if config.EnforcedCost != nil {
+		if err := validateEnforcedCost(request.Cost, *config.EnforcedCost); err != nil {
+			return nil, err
+		}
+		request.Cost = *config.EnforcedCost
+	}
 	if config.Generation.CurrentGeneration() != config.ExpectedGeneration {
 		return nil, fmt.Errorf("%w: expected=%d current=%d", ErrStaleGeneration, config.ExpectedGeneration, config.Generation.CurrentGeneration())
 	}
@@ -309,6 +321,23 @@ func validateResources(resources governor.Resources) error {
 	}
 	if resources == (governor.Resources{}) {
 		return fmt.Errorf("%w: resource reservation is empty", ErrInvalidConfig)
+	}
+	return nil
+}
+
+func validateEnforcedCost(reserved, enforced governor.AttemptCost) error {
+	if enforced.Duration <= 0 || enforced.Duration > reserved.Duration ||
+		enforced.Heavyweight && !reserved.Heavyweight {
+		return fmt.Errorf("%w: enforced cost must be a lower-only slice of the lease", ErrInvalidConfig)
+	}
+	if err := validateResources(enforced.Resources); err != nil {
+		return err
+	}
+	want, have := enforced.Resources, reserved.Resources
+	if want.Sockets > have.Sockets || want.Targets > have.Targets ||
+		want.PacketsPerSecond > have.PacketsPerSecond || want.Packets > have.Packets ||
+		want.FiveTuples > have.FiveTuples {
+		return fmt.Errorf("%w: enforced resources exceed the lease reservation", ErrInvalidConfig)
 	}
 	return nil
 }

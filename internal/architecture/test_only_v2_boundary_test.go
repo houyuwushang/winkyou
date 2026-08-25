@@ -137,6 +137,103 @@ func TestN1NatlabGovernorHelperGateDetectsProductionUse(t *testing.T) {
 	}
 }
 
+func TestN2DNatlabHarnessAndHelpersStayTestOnly(t *testing.T) {
+	root := repositoryRoot(t)
+	directory := filepath.Join(root, "test", "natlab")
+	violations, err := n2dHarnessSourceViolations(directory)
+	if err != nil {
+		t.Fatalf("scan N2d harness sources: %v", err)
+	}
+	if len(violations) != 0 {
+		t.Fatalf("N2d harness gained a product-importable source:\n  %s", strings.Join(violations, "\n  "))
+	}
+
+	for _, relative := range []string{
+		"internal/governor/n2d_natlab_linux.go",
+		"internal/v2/rendezvouscarrier/n2d_testserver_linux.go",
+	} {
+		payload, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(relative)))
+		if err != nil {
+			t.Fatalf("read N2d helper %s: %v", relative, err)
+		}
+		normalized := strings.ReplaceAll(string(payload), "\r\n", "\n")
+		if !strings.HasPrefix(normalized, "//go:build linux && natlab\n") {
+			t.Fatalf("N2d helper %s lost its exact linux && natlab build constraint", relative)
+		}
+	}
+
+	helperViolations, err := n2dHelperUseViolations(root)
+	if err != nil {
+		t.Fatalf("scan N2d helper uses: %v", err)
+	}
+	if len(helperViolations) != 0 {
+		t.Fatalf("N2d helper escaped its exact natlab allowlist:\n  %s", strings.Join(helperViolations, "\n  "))
+	}
+	capabilityViolations, err := n2dIsolatedCapabilityUseViolations(root)
+	if err != nil {
+		t.Fatalf("scan N2d isolated capability uses: %v", err)
+	}
+	if len(capabilityViolations) != 0 {
+		t.Fatalf("N2d isolated-unicast capability escaped its exact natlab allowlist:\n  %s", strings.Join(capabilityViolations, "\n  "))
+	}
+}
+
+func TestN2DNatlabGateDetectsProductionMutations(t *testing.T) {
+	root := t.TempDir()
+	directory := filepath.Join(root, "cmd", "wink")
+	if err := os.MkdirAll(directory, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	source := []byte(`package main
+import (
+  gov "winkyou/internal/governor"
+  obs "winkyou/internal/stunobserve"
+  carrier "winkyou/internal/v2/rendezvouscarrier"
+)
+func bypass() {
+  _ = gov.PrepareN2DTestNamespace
+  _ = carrier.StartN2DTestServer
+  _ = obs.SameSocketConfig{AllowNonLoopback: true}
+  _ = carrier.AllowedTargetIsolatedUnicast
+}
+`)
+	if err := os.WriteFile(filepath.Join(directory, "bypass.go"), source, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	helperViolations, err := n2dHelperUseViolations(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(helperViolations) != 1 || helperViolations[0] != "cmd/wink/bypass.go uses N2d natlab-only helper" {
+		t.Fatalf("helper violations = %v, want injected production use", helperViolations)
+	}
+	capabilityViolations, err := n2dIsolatedCapabilityUseViolations(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{
+		"cmd/wink/bypass.go uses N2d isolated capability AllowNonLoopback",
+		"cmd/wink/bypass.go uses N2d isolated capability AllowedTargetIsolatedUnicast",
+	}
+	if len(capabilityViolations) != len(want) || strings.Join(capabilityViolations, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("capability violations = %v, want %v", capabilityViolations, want)
+	}
+}
+
+func TestN2DHarnessTestsOnlyGateDetectsProductionSource(t *testing.T) {
+	directory := t.TempDir()
+	if err := os.WriteFile(filepath.Join(directory, "n2d_escape.go"), []byte("package natlab\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	violations, err := n2dHarnessSourceViolations(directory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(violations) != 1 || violations[0] != "n2d_escape.go is not test-only" {
+		t.Fatalf("violations = %v, want injected N2d production source", violations)
+	}
+}
+
 func TestSimulationOnlyV2BoundaryDetectsPunchSimCapabilityDependency(t *testing.T) {
 	punchSim := modulePath + "/internal/v2/punchsim"
 	probeIO := modulePath + "/internal/probeio"
@@ -590,6 +687,195 @@ func n1GovernorHelperUseViolations(root string) ([]string, error) {
 		})
 		if used {
 			violations = append(violations, relative+" uses N1 natlab governor helper")
+		}
+		return nil
+	})
+	sort.Strings(violations)
+	return violations, err
+}
+
+func n2dHarnessSourceViolations(directory string) ([]string, error) {
+	entries, err := os.ReadDir(directory)
+	if err != nil {
+		return nil, err
+	}
+	var violations []string
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasPrefix(entry.Name(), "n2d_") || !strings.HasSuffix(entry.Name(), ".go") {
+			continue
+		}
+		if !strings.HasSuffix(entry.Name(), "_test.go") {
+			violations = append(violations, entry.Name()+" is not test-only")
+			continue
+		}
+		payload, err := os.ReadFile(filepath.Join(directory, entry.Name()))
+		if err != nil {
+			return nil, err
+		}
+		normalized := strings.ReplaceAll(string(payload), "\r\n", "\n")
+		if !strings.HasPrefix(normalized, "//go:build linux && natlab\n") {
+			violations = append(violations, entry.Name()+" lacks exact linux && natlab constraint")
+		}
+	}
+	sort.Strings(violations)
+	return violations, nil
+}
+
+func n2dHelperUseViolations(root string) ([]string, error) {
+	restricted := map[string]struct{}{
+		"PrepareN2DTestNamespace": {},
+		"N2DTestPairingLedger":    {},
+		"StartN2DTestServer":      {},
+		"N2DTestServer":           {},
+		"N2DTestServerStats":      {},
+	}
+	definitions := map[string]struct{}{
+		"internal/governor/n2d_natlab_linux.go":                 {},
+		"internal/v2/rendezvouscarrier/n2d_testserver_linux.go": {},
+	}
+	var violations []string
+	err := filepath.WalkDir(root, func(filename string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if entry.IsDir() {
+			if filename != root && (strings.HasPrefix(entry.Name(), ".") || entry.Name() == "vendor") {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if !strings.HasSuffix(entry.Name(), ".go") {
+			return nil
+		}
+		relative, err := filepath.Rel(root, filename)
+		if err != nil {
+			return err
+		}
+		relative = filepath.ToSlash(relative)
+		if _, definition := definitions[relative]; definition ||
+			(strings.HasPrefix(relative, "test/natlab/n2d_") && strings.HasSuffix(relative, "_test.go")) {
+			return nil
+		}
+		parsed, err := parser.ParseFile(token.NewFileSet(), filename, nil, 0)
+		if err != nil {
+			return err
+		}
+		used := false
+		ast.Inspect(parsed, func(node ast.Node) bool {
+			identifier, ok := node.(*ast.Ident)
+			if ok {
+				_, used = restricted[identifier.Name]
+			}
+			return !used
+		})
+		if used {
+			violations = append(violations, relative+" uses N2d natlab-only helper")
+		}
+		return nil
+	})
+	sort.Strings(violations)
+	return violations, err
+}
+
+func n2dIsolatedCapabilityUseViolations(root string) ([]string, error) {
+	definitions := map[string]struct{}{
+		"internal/stunobserve/same_socket.go":      {},
+		"internal/v2/rendezvouscarrier/carrier.go": {},
+	}
+	stunobservePath := modulePath + "/internal/stunobserve"
+	carrierPath := modulePath + "/internal/v2/rendezvouscarrier"
+	var violations []string
+	err := filepath.WalkDir(root, func(filename string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if entry.IsDir() {
+			if filename != root && (strings.HasPrefix(entry.Name(), ".") || entry.Name() == "vendor") {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if !strings.HasSuffix(entry.Name(), ".go") {
+			return nil
+		}
+		relative, err := filepath.Rel(root, filename)
+		if err != nil {
+			return err
+		}
+		relative = filepath.ToSlash(relative)
+		if _, definition := definitions[relative]; definition ||
+			(strings.HasPrefix(relative, "test/natlab/n2d_") && strings.HasSuffix(relative, "_test.go")) {
+			return nil
+		}
+		parsed, err := parser.ParseFile(token.NewFileSet(), filename, nil, 0)
+		if err != nil {
+			return err
+		}
+		stunAliases := make(map[string]struct{})
+		carrierAliases := make(map[string]struct{})
+		for _, specification := range parsed.Imports {
+			imported, err := strconv.Unquote(specification.Path.Value)
+			if err != nil {
+				return err
+			}
+			alias := filepath.Base(imported)
+			if specification.Name != nil {
+				alias = specification.Name.Name
+			}
+			switch imported {
+			case stunobservePath:
+				stunAliases[alias] = struct{}{}
+			case carrierPath:
+				carrierAliases[alias] = struct{}{}
+			}
+		}
+		insideStunobserve := strings.HasPrefix(relative, "internal/stunobserve/")
+		insideCarrier := strings.HasPrefix(relative, "internal/v2/rendezvouscarrier/")
+		seen := make(map[string]struct{})
+		ast.Inspect(parsed, func(node ast.Node) bool {
+			switch value := node.(type) {
+			case *ast.CompositeLit:
+				isSameSocket := false
+				switch typeName := value.Type.(type) {
+				case *ast.Ident:
+					_, dotImport := stunAliases["."]
+					isSameSocket = typeName.Name == "SameSocketConfig" && (insideStunobserve || dotImport)
+				case *ast.SelectorExpr:
+					alias, ok := typeName.X.(*ast.Ident)
+					if ok {
+						_, imported := stunAliases[alias.Name]
+						isSameSocket = imported && typeName.Sel.Name == "SameSocketConfig"
+					}
+				}
+				if isSameSocket {
+					for _, element := range value.Elts {
+						field, ok := element.(*ast.KeyValueExpr)
+						if !ok {
+							continue
+						}
+						key, ok := field.Key.(*ast.Ident)
+						if ok && key.Name == "AllowNonLoopback" {
+							seen["AllowNonLoopback"] = struct{}{}
+						}
+					}
+				}
+			case *ast.SelectorExpr:
+				alias, ok := value.X.(*ast.Ident)
+				if ok {
+					_, imported := carrierAliases[alias.Name]
+					if imported && value.Sel.Name == "AllowedTargetIsolatedUnicast" {
+						seen["AllowedTargetIsolatedUnicast"] = struct{}{}
+					}
+				}
+			case *ast.Ident:
+				if insideCarrier && value.Name == "AllowedTargetIsolatedUnicast" {
+					seen["AllowedTargetIsolatedUnicast"] = struct{}{}
+				}
+			}
+			return true
+		})
+		for name := range seen {
+			violations = append(violations, relative+" uses N2d isolated capability "+name)
 		}
 		return nil
 	})

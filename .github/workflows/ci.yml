@@ -49,7 +49,7 @@ jobs:
           ./internal/governor
           ./internal/architecture
           ./internal/v2/directattempt
-          -run 'N2C|SameSocket|Reservation|InspectFrame|ExclusiveClaim'
+          -run 'N2C|N2D|SameSocket|Reservation|EnforcedCost|InspectFrame|ExclusiveClaim'
           -count=20
 
   test-windows:
@@ -120,6 +120,45 @@ jobs:
           -test.run '^TestLinuxN1UnicastProof$'
           -test.count=1
           -test.timeout=4m
+
+  n2d-netns-nat-proof:
+    name: N2d Netns NAT E2E Proof (required)
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Install isolated-network witness tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y iproute2 iptables conntrack
+          command -v ip
+          command -v iptables
+          command -v iptables-restore
+          command -v ss
+          command -v conntrack
+          command -v sysctl
+
+      - name: Vet natlab-tagged code
+        run: go vet -tags=natlab ./internal/governor ./internal/v2/rendezvouscarrier ./test/natlab
+
+      - name: Build race-enabled N2d integration binary
+        run: go test -race -c -tags=natlab -o "${RUNNER_TEMP}/winkyou-n2d.test" ./test/natlab
+
+      - name: Run mandatory isolated N2d matrix
+        run: >-
+          sudo env WINKYOU_N2D_REQUIRED=1 GORACE=halt_on_error=1
+          "${RUNNER_TEMP}/winkyou-n2d.test"
+          -test.v
+          -test.run '^TestLinuxN2DEndToEndProof$'
+          -test.count=1
+          -test.timeout=5m
 
   relay-smoke-linux:
     name: Relay Smoke (Linux)

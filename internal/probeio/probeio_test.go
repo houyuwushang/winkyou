@@ -423,6 +423,73 @@ func TestSocketReservationIsImmutableReadOnlyEvidence(t *testing.T) {
 	}
 }
 
+func TestEnforcedCostIsLowerOnlyAndStopsBeforeSecondFactoryOpen(t *testing.T) {
+	aggregate := normalResources()
+	lease := newFakeLease(aggregate)
+	factory := &fakeFactory{}
+	generation := NewGeneration(7)
+	enforced := governor.AttemptCost{
+		Resources: governor.Resources{
+			Sockets: 1, Targets: 2, PacketsPerSecond: 5, Packets: 5, FiveTuples: 2,
+		},
+		Duration: 15 * time.Second,
+	}
+	controller, err := New(Config{
+		Lease: lease, Generation: generation, ExpectedGeneration: 7, Factory: factory,
+		EnforcedCost: &enforced, BuildVersion: "probeio-test",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = controller.Close() })
+	socket, err := controller.OpenProbeSocket(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	reservation, err := socket.Reservation()
+	if err != nil || reservation.Cost != enforced {
+		t.Fatalf("enforced reservation = %+v/%v, want %+v", reservation.Cost, err, enforced)
+	}
+	if _, err := controller.OpenProbeSocket(context.Background()); !errors.Is(err, ErrHardLimit) {
+		t.Fatalf("second socket error = %v, want ErrHardLimit", err)
+	}
+	if factory.count() != 1 {
+		t.Fatalf("factory opens = %d, want exactly one", factory.count())
+	}
+	assertTripReason(t, lease, governor.SafetyTripHardLimit)
+}
+
+func TestEnforcedCostRejectsAnyRaisedLeaseDimension(t *testing.T) {
+	for name, mutate := range map[string]func(*governor.AttemptCost){
+		"socket":     func(cost *governor.AttemptCost) { cost.Resources.Sockets++ },
+		"target":     func(cost *governor.AttemptCost) { cost.Resources.Targets++ },
+		"pps":        func(cost *governor.AttemptCost) { cost.Resources.PacketsPerSecond++ },
+		"packet":     func(cost *governor.AttemptCost) { cost.Resources.Packets++ },
+		"five_tuple": func(cost *governor.AttemptCost) { cost.Resources.FiveTuples++ },
+		"duration":   func(cost *governor.AttemptCost) { cost.Duration++ },
+		"heavy":      func(cost *governor.AttemptCost) { cost.Heavyweight = true },
+	} {
+		t.Run(name, func(t *testing.T) {
+			lease := newFakeLease(normalResources())
+			enforced := lease.request.Cost
+			mutate(&enforced)
+			_, err := New(Config{
+				Lease: lease, Generation: NewGeneration(7), ExpectedGeneration: 7,
+				Factory: &fakeFactory{}, EnforcedCost: &enforced, BuildVersion: "probeio-lower-only-test",
+			})
+			if !errors.Is(err, ErrInvalidConfig) {
+				t.Fatalf("raised enforced cost error = %v, want ErrInvalidConfig", err)
+			}
+			lease.mu.Lock()
+			drains := lease.drains
+			lease.mu.Unlock()
+			if drains != 0 {
+				t.Fatal("invalid lower-only cost registered a drain")
+			}
+		})
+	}
+}
+
 func TestSendRejectsUnregisteredTargetWithoutIO(t *testing.T) {
 	harness := newHarness(t, normalResources())
 	socket, datagram := openSocket(t, harness)
