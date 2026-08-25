@@ -270,7 +270,7 @@ func requireN2DEnvironment(t *testing.T) {
 	if os.Geteuid() != 0 {
 		failOrSkip("N2d requires an isolated root network namespace")
 	}
-	for _, program := range []string{"ip", "iptables", "iptables-restore", "ss", "conntrack", "sysctl"} {
+	for _, program := range []string{"ip", "iptables", "iptables-restore", "ss", "conntrack", "sysctl", "tc"} {
 		if _, err := exec.LookPath(program); err != nil {
 			failOrSkip("N2d isolated-network prerequisite is unavailable")
 		}

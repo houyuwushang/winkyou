@@ -26,7 +26,10 @@ endpoint A netns -> NAT A netns -> public netns <- NAT B netns <- endpoint B net
   保留 conntrack address+port-dependent 过滤的 **port-restricted 档**（盲发同时开洞
   语义所针对的代表场景）；以及随机端口加同样过滤的 EDM 档。两个 NAT 网关像消费级
   路由器一样丢弃发往自身 WAN 地址的未经请求 UDP——否则过早到达的对端开洞报文会被
-  conntrack 确认为网关本地流，毒化 SNAT 端口保持，使被测映射失真；
+  conntrack 确认为网关本地流，毒化 SNAT 端口保持，使被测映射失真。WAN 链路统一以
+  netem 建模 5ms 传播时延：真实部署中 FIRE 控制路径必然跨 rendezvous（毫秒级），而
+  SYN 出站紧随本端 FIRE 写出（微秒级），零时延实验室会反转该物理顺序，使被过滤的
+  盲发 SYN_ACK 在无重传的冻结语义下无从恢复；时延建模只还原物理顺序，不改协议；
 - public namespace 内运行现有 `internal/stunserver` 与 N2c 的两方、有界、不透明帧
   test server；两者均由 harness 创建和销毁；
 - 本地 UDP 仍是 wildcard + ephemeral bind。endpoint 只经 `ProbeSocket.LocalAddr` 取得

@@ -194,6 +194,25 @@ func (topology *n2dTopology) create() error {
 			return err
 		}
 	}
+	// Model propagation delay on every WAN-chain link. In any real deployment
+	// the FIRE control path crosses the rendezvous (>= milliseconds) while the
+	// initiator's SYN egress follows its FIRE write within microseconds, so
+	// the initiator's pinhole always exists before the responder's blind
+	// SYN_ACK can arrive. A zero-latency namespace inverts that ordering and
+	// the filtered SYN_ACK has no retransmission by frozen design. 5ms per
+	// link restores the physical ordering deterministically without touching
+	// protocol semantics.
+	for _, hop := range []struct{ namespace, device string }{
+		{topology.natA, "wan0"},
+		{topology.natB, "wan0"},
+		{topology.public, "a0"},
+		{topology.public, "b0"},
+	} {
+		if _, err := runNamespaced(hop.namespace, "tc", nil,
+			"qdisc", "add", "dev", hop.device, "root", "netem", "delay", "5ms"); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
