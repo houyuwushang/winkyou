@@ -6,6 +6,11 @@
 - 跟踪议题：[#70](https://github.com/houyuwushang/winkyou/issues/70)
 - 上位决策：[`ADR-NON-LOOPBACK-CONNECT-TEST-BOUNDARY.md`](./ADR-NON-LOOPBACK-CONNECT-TEST-BOUNDARY.md) §7、§10
 - 空白授权模板：[`N3-LIVE-AUTHORIZATION-TEMPLATE.md`](../N3-LIVE-AUTHORIZATION-TEMPLATE.md)
+- 修订 1（2026-08-25，实现前审计）：解决"第三连接终止 association"与 accepted total=2
+  的硬冲突——双 slot 填满后关闭 listener，后续连接由内核拒绝且不影响在途 attempt，
+  否则窗口内的任意端口扫描都能中止合法 attempt；同时冻结 §2.6 `error.data` 成员与
+  `terminal_category` 枚举、§2.7 成功结果完整 JSON、§4.1 `manifest.json` 完整 JSON。
+  无语义扩权。
 
 > 本 ADR 只冻结 N3b 的实现合同与首次具名现场测试的签发格式。当前二进制仍只实现
 > `winkyou.stdio/v1` 的 literal-loopback `connect_test`；本文件、Draft PR、CI 通过或
@@ -209,7 +214,26 @@ present -> burned -> activated -> handshake -> prepare -> socket -> stun
 兼容性键是 `error.data.class`。每个 direct 错误固定包含同值 `reason`、`retryable=false`、
 一个上述 stage 或 `preflight`、实际 `credential_burned` 布尔值和稳定 terminal category。
 `retryable=false` 表示 server 不自动重试；未来人工新 attempt 必须使用新的授权实例与新
-credential。现有 JSON-RPC/v1 公共类保持不变；N3b 新增以下全集：
+credential。
+
+`error.data` 的新增成员名与枚举冻结为：
+
+```json
+{
+  "class": "<stable_class>",
+  "reason": "<same value as class>",
+  "retryable": false,
+  "stage": "preflight | present | burned | activated | handshake | prepare | socket | stun | ready | fire | punch_sent | punch | verify | terminal",
+  "credential_burned": false,
+  "terminal_category": "preflight_rejected | admission_blocked | attempt_failed | safety_tripped | cancelled"
+}
+```
+
+`terminal_category` 的固定映射：零 authority、零 burn 的拒绝为 `preflight_rejected`；
+durable admission/ledger/circuit 阻断为 `admission_blocked`；burn 后的协议、STUN、punch、
+verify 或 envelope 失败为 `attempt_failed`；触发或撞上持久 safety trip 为
+`safety_tripped`；显式 cancel 与 caller deadline 为 `cancelled`。v1 与 JSON-RPC 公共错误
+不追加这些成员。现有 JSON-RPC/v1 公共类保持不变；N3b 新增以下全集：
 
 | class | 典型阶段 | 通常已 burn | 稳定含义 |
 | --- | --- | --- | --- |
@@ -256,13 +280,37 @@ subject、DNS answer、association/attempt/credential/participant ID、fingerpri
 
 ### 2.7 成功结果与脱敏
 
-v2 direct 成功结果只允许包含：
+v2 direct 成功结果的完整 JSON 结构冻结为（成员名、层级与类型均不可漂移，计数为本端
+实际值）：
 
-- `attempt_kind=direct_oob_artifact`、`terminal=success`；
-- `bidirectional=true`、`promoted_terminal=true`；
-- `credential_burned=true`、`finish_recorded=true`；
-- 每类实际应用 frame 与 UDP outbound packet 计数、预留 envelope；
-- 脱敏 ledger state/sequence 与 safety-trip state。
+```json
+{
+  "attempt_kind": "direct_oob_artifact",
+  "terminal": "success",
+  "bidirectional": true,
+  "promoted_terminal": true,
+  "credential_burned": true,
+  "finish_recorded": true,
+  "emissions": {
+    "handshake_frames": 1,
+    "control_frames": 4,
+    "cancel_frames": 0,
+    "stun_packets": 1,
+    "direct_packets": 2,
+    "udp_packets_total": 3,
+    "carrier_frames_read": 6,
+    "carrier_frames_written": 7,
+    "carrier_bytes_read": 0,
+    "carrier_bytes_written": 0
+  },
+  "reserved_envelope": {"<governor.PairingAdmissionEnvelope 现有 JSON 编码>": "<unchanged>"},
+  "pairing_ledger": {"<governor.PairingLedgerStatus 现有 JSON 编码>": "<unchanged>"},
+  "safety_trip": {"<governor.SafetyTripStatus 现有 JSON 编码>": "<unchanged>"}
+}
+```
+
+`reserved_envelope`、`pairing_ledger` 与 `safety_trip` 直接复用既有 governor 序列化类型，
+不复制、不改字段名。示例中的计数是 initiator 的典型单响应成功值，实际返回按本端实测。
 
 不得返回 local/mapped/peer/STUN/rendezvous endpoint、NAT 类型标签、association/identifier、
 artifact fingerprint、Noise transcript/hash、ciphertext、certificate、socket/handle 或可复用
@@ -318,8 +366,11 @@ authorization；N3b 不提供 plaintext 非回环开关。证书私钥、associa
 
 它不含 PSK、credential/attempt/participant ID、role 或 endpoint。server 只接受该 exact
 association 的 slot `a` 与 `b`；initiator 固定使用 `a`，responder 固定使用 `b`。未知
-association、重复 slot、第三连接或非法首帧都会让本 one-shot process fail-closed 终止，
-不会继续接受下一批连接。该文件虽不是 secret，仍视作私有关联元数据，不得公开或记录。
+association、重复 slot 或非法首帧都会让本 one-shot process fail-closed 终止，不会继续
+接受下一批连接。两个 slot 都被 accept 后 listener 立即关闭：更晚的连接由内核拒绝，
+不占 accepted 计数，也不能影响在途 association——否则任何窗口内的端口扫描都会成为
+中止合法 attempt 的免费按钮。该文件虽不是 secret，仍视作私有关联元数据，不得公开或
+记录。
 
 ### 3.3 生命周期与硬上限
 
@@ -329,9 +380,11 @@ association、重复 slot、第三连接或非法首帧都会让本 one-shot pro
 2. 第一个 TCP socket 被 accept 时立即启动 13-second association wall-clock deadline，
    TLS handshake 与第一条合法 presence 也必须落在其中的 3-second pre-presence deadline；
 3. 第二个 slot 必须在同一个 3-second deadline 内到达，否则关闭 listener/connection 并退出；
-4. 两侧 presence ready 后，只有双方各自发送 ACTIVATE 才进入 opaque relay；
-5. terminal、任一错误、任一连接关闭或 13 秒到期时，同时关闭两侧与 listener；
-6. process 退出前输出一次聚合 terminal record，不自动重启。
+4. 第二个 socket 被 accept 后立即关闭 listener；accepted TCP connection total 因此
+   恒为最多 2，此后的连接尝试由内核拒绝，不影响在途 association；
+5. 两侧 presence ready 后，只有双方各自发送 ACTIVATE 才进入 opaque relay；
+6. terminal、任一错误、任一连接关闭或 13 秒到期时，同时关闭两侧与 listener；
+7. process 退出前输出一次聚合 terminal record，不自动重启。
 
 编译期上限：
 
@@ -349,8 +402,9 @@ association、重复 slot、第三连接或非法首帧都会让本 one-shot pro
 
 TLS handshake bytes 与 TCP OS packet 不伪装成 application frame 计数。server 仍必须给每个
 accept/read/write/TLS operation 使用上述总 deadline；不得让半开 TLS、半帧或 silent peer
-跨过 association 生命周期。最多接受两个 TCP socket：非法连接会消耗本 one-shot
-association 并终止，而不是用无限 accept 抵抗攻击。
+跨过 association 生命周期。最多接受两个 TCP socket：在两个 slot 填满前，非法连接会
+消耗本 one-shot association 并终止，而不是用无限 accept 抵抗攻击；两个 slot 填满后
+listener 已关闭，更晚的连接只会被内核拒绝。
 
 ### 3.4 日志与最小信任档
 
@@ -468,6 +522,27 @@ wink solver pair direct --out-dir <NEW_PRIVATE_DIRECTORY>
 - `rendezvous-admission.json`：§3.2 的 secret-free server admission；
 - `manifest.json`：secret-free 的 profile、共同 artifact fingerprint、issued/expires 时间与
   固定文件名，不含路径、PSK 或其他 identifier。
+
+`manifest.json` 的完整 JSON 结构冻结为（严格 JSON、无未知成员、`files` 为固定顺序的
+纯 basename 数组）：
+
+```json
+{
+  "manifest": "winkyou-test-direct-pair-manifest/1",
+  "artifact_profile": "winkyou-test-direct-attempt-oob/1",
+  "direct_attempt_profile": "winkyou-test-direct-attempt-control/1",
+  "rendezvous_profile": "winkyou-test-direct-presence/1",
+  "secure_channel_profile": "noise-nnpsk0-25519-chachapoly-sha256/1",
+  "artifact_fingerprint": "<32-byte unpadded base64url>",
+  "issued_at": "<canonical UTC whole second>",
+  "expires_at": "<canonical UTC whole second>",
+  "files": [
+    "initiator.winkyou.json",
+    "responder.winkyou.json",
+    "rendezvous-admission.json"
+  ]
+}
+```
 
 不提供按 `--role` 分两次独立生成的模式：两次随机生成会产生不匹配的 PSK/context，也更
 容易误复用 credential。一个 generation 固定等于一对 recipient artifact、一个 association
