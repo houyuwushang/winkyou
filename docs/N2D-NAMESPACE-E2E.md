@@ -22,8 +22,9 @@ endpoint A netns -> NAT A netns -> public netns <- NAT B netns <- endpoint B net
 
 - 每个 endpoint 是独立子进程，并使用独立临时 machine governor namespace；
 - 所有接口地址仅来自 RFC 5737 的 TEST-NET-1/2/3；测试结果与日志不记录 endpoint；
-- NAT 通过 netfilter 分别提供显式 1:1、端口保持的 EIM 档，以及保留 conntrack
-  destination-specific 过滤的随机端口 EDM 档；
+- NAT 通过 netfilter 提供三档：显式 1:1、端口保持的 EIM 参考档；仅端口保持 SNAT、
+  保留 conntrack address+port-dependent 过滤的 **port-restricted 档**（盲发同时开洞
+  语义所针对的代表场景）；以及随机端口加同样过滤的 EDM 档；
 - public namespace 内运行现有 `internal/stunserver` 与 N2c 的两方、有界、不透明帧
   test server；两者均由 harness 创建和销毁；
 - 本地 UDP 仍是 wildcard + ephemeral bind。endpoint 只经 `ProbeSocket.LocalAddr` 取得
@@ -62,6 +63,7 @@ socket。该机制不改变 `N2AttemptCost()`、same-socket 成本或任何既�
 | 场景 | 必须成立的证据 |
 | --- | --- |
 | EIM × EIM | 完整顺序成功；STUN 每端 1–3；direct 精确 2/1；control 精确 4/3；UDP 不超过 5/4；双向 VERIFY 是唯一成功终局 |
+| port-restricted × port-restricted | 与 EIM 相同的精确出站见证；两侧 NAT 保留 conntrack 回复过滤，入站只能穿过本端出站报文打开的 pinhole；initiator 的 SYN 允许早于对端 pinhole 而被过滤，responder 仅凭 ACK 完成 |
 | 任一侧 EDM | 已 burn、不退款、零重试，在既有预算内有界失败 |
 | 对端 burn 前缺席 | presence 在 3 秒内超时；ledger admission 为 0；UDP 为 0 |
 | 对端 burn 后消失 | survivor 有界 `expired`；admission 保留；无持久 safety trip |

@@ -36,7 +36,14 @@ type n2dMappingMode string
 
 const (
 	n2dMappingEIM n2dMappingMode = "eim"
-	n2dMappingEDM n2dMappingMode = "edm"
+	// n2dMappingEIMRestricted keeps endpoint-independent, port-preserving
+	// SNAT but omits the static DNAT, so netfilter conntrack imposes real
+	// address+port-dependent reply filtering. This is the classic
+	// port-restricted cone that the blind simultaneous-open design targets:
+	// an inbound direct packet passes only after the local endpoint has sent
+	// outbound to that exact peer mapping.
+	n2dMappingEIMRestricted n2dMappingMode = "eim_restricted"
+	n2dMappingEDM           n2dMappingMode = "edm"
 )
 
 var n2dTopologySequence atomic.Uint32
@@ -112,7 +119,9 @@ func newN2DTopology(t interface {
 	return topology
 }
 
-func (mode n2dMappingMode) valid() bool { return mode == n2dMappingEIM || mode == n2dMappingEDM }
+func (mode n2dMappingMode) valid() bool {
+	return mode == n2dMappingEIM || mode == n2dMappingEIMRestricted || mode == n2dMappingEDM
+}
 
 func (topology *n2dTopology) namespaces() []string {
 	return []string{topology.clientA, topology.natA, topology.public, topology.natB, topology.clientB}
@@ -193,6 +202,12 @@ func (topology *n2dTopology) applyNAT(namespace string, mode n2dMappingMode, pub
 		"-A PREROUTING -i wan0 -p udp -d " + publicAddress + " -j DNAT --to-destination " + privateAddress,
 		"-A POSTROUTING -s " + privateAddress + "/32 -o wan0 -p udp -j SNAT --to-source " + publicAddress,
 		"-A POSTROUTING -s " + privateAddress + "/32 -o wan0 -p tcp -j SNAT --to-source " + publicAddress,
+	}
+	if mode == n2dMappingEIMRestricted {
+		rules = []string{
+			"-A POSTROUTING -s " + privateAddress + "/32 -o wan0 -p udp -j SNAT --to-source " + publicAddress,
+			"-A POSTROUTING -s " + privateAddress + "/32 -o wan0 -p tcp -j SNAT --to-source " + publicAddress,
+		}
 	}
 	if mode == n2dMappingEDM {
 		rules = []string{

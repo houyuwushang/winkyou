@@ -21,6 +21,7 @@ func TestLinuxN2DEndToEndProof(t *testing.T) {
 	requireN2DEnvironment(t)
 
 	t.Run("eim_eim_success_exact_witness", testN2DEIMSuccess)
+	t.Run("port_restricted_blind_open_success", testN2DPortRestrictedSuccess)
 	t.Run("edm_participation_bounded_failure", testN2DEDMFailure)
 	t.Run("absent_before_burn", testN2DAbsentBeforeBurn)
 	t.Run("absent_after_burn", testN2DAbsentAfterBurn)
@@ -67,6 +68,42 @@ func testN2DEIMSuccess(t *testing.T) {
 			assertN2DNoResidue(t, topology, servers)
 		})
 	}
+}
+
+// testN2DPortRestrictedSuccess is the representative case the blind
+// simultaneous-open semantics were frozen for: both NATs keep conntrack's
+// address+port-dependent reply filtering, so each side's opener must pass only
+// through the pinhole created by its own outbound packet. The initiator's SYN
+// may race ahead of the responder's pinhole and be filtered; the responder
+// still completes on ACK alone, so every asserted outbound count stays exact.
+func testN2DPortRestrictedSuccess(t *testing.T) {
+	topology := newN2DTopology(t, n2dMappingEIMRestricted, n2dMappingEIMRestricted)
+	servers := startN2DServers(t, topology)
+	artifacts := buildN2DArtifacts(t, "port-restricted-success", time.Now())
+	initiator := newN2DEndpointProcess(t, topology, servers, artifacts, directattempt.RoleInitiator, n2dActionAttempt, "", "", "")
+	responder := newN2DEndpointProcess(t, topology, servers, artifacts, directattempt.RoleResponder, n2dActionAttempt, "", "", "")
+
+	initiator.start(t)
+	responder.start(t)
+	initiatorResult := initiator.waitResult(t)
+	responderResult := responder.waitResult(t)
+
+	counts := requireN2DPacketCounts(t, topology)
+	logN2DCounts(t, "port_restricted_success", counts, initiatorResult, responderResult)
+	assertN2DSuccessResult(t, initiatorResult, directattempt.RoleInitiator)
+	assertN2DSuccessResult(t, responderResult, directattempt.RoleResponder)
+	assertN2DPacketResultMatch(t, counts, initiatorResult, responderResult)
+	if counts.InitiatorDirect != 2 || counts.ResponderDirect != 1 {
+		t.Fatalf("N2d port-restricted direct witness = %d/%d, want exact 2/1", counts.InitiatorDirect, counts.ResponderDirect)
+	}
+	if counts.InitiatorTotal > 5 || counts.ResponderTotal > 4 {
+		t.Fatalf("N2d port-restricted UDP witness = %d/%d, exceeds frozen 5/4 envelope", counts.InitiatorTotal, counts.ResponderTotal)
+	}
+	stunStats := servers.stun.Snapshot()
+	if stunStats.Received != counts.InitiatorSTUN+counts.ResponderSTUN || stunStats.Responded != stunStats.Received {
+		t.Fatalf("N2d port-restricted STUN witness = received:%d responded:%d", stunStats.Received, stunStats.Responded)
+	}
+	assertN2DNoResidue(t, topology, servers)
 }
 
 func testN2DEDMFailure(t *testing.T) {
