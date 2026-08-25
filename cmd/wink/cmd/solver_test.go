@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"winkyou/internal/solverstdio"
+	"winkyou/internal/v2/pairgen"
 )
 
 type fakeSolverStdioRunner struct {
@@ -17,6 +18,19 @@ type fakeSolverStdioRunner struct {
 	options  solverstdio.Options
 	err      error
 	response string
+}
+
+type fakeDirectPairGenerator struct {
+	called  int
+	options pairgen.Options
+	result  pairgen.Result
+	err     error
+}
+
+func (generator *fakeDirectPairGenerator) Generate(_ context.Context, options pairgen.Options) (pairgen.Result, error) {
+	generator.called++
+	generator.options = options
+	return generator.result, generator.err
 }
 
 func (runner *fakeSolverStdioRunner) Serve(ctx context.Context, input io.Reader, output io.Writer, options solverstdio.Options) error {
@@ -88,5 +102,66 @@ func TestRootExposesNestedSolverStdioCommand(t *testing.T) {
 	}
 	if command == nil || command.Name() != "serve" || command.Parent() == nil || command.Parent().Name() != "solver" {
 		t.Fatalf("solver command = %+v", command)
+	}
+}
+
+func TestSolverPairDirectWritesOnlyFixedStatus(t *testing.T) {
+	generator := &fakeDirectPairGenerator{}
+	command := newSolverPairDirectCmd(generator)
+	command.SetArgs([]string{"--out-dir", "operator-selected-private-directory"})
+	var stdout, stderr bytes.Buffer
+	command.SetOut(&stdout)
+	command.SetErr(&stderr)
+	if err := command.Execute(); err != nil {
+		t.Fatalf("pair direct: %v", err)
+	}
+	if generator.called != 1 || generator.options.OutDir != "operator-selected-private-directory" ||
+		generator.options.ClipboardRole != "" || generator.options.AcknowledgeClipboardHistory {
+		t.Fatalf("generator = %+v", generator)
+	}
+	if stdout.Len() != 0 || stderr.String() != "pair_created\n" || strings.Contains(stderr.String(), generator.options.OutDir) {
+		t.Fatalf("stdout=%q stderr=%q", stdout.String(), stderr.String())
+	}
+}
+
+func TestSolverPairDirectClipboardRequiresDoubleConsent(t *testing.T) {
+	for _, args := range [][]string{
+		{"--out-dir", "private", "--clipboard-role", "initiator"},
+		{"--out-dir", "private", "--acknowledge-clipboard-history"},
+		{"--out-dir", "private", "--clipboard-role", "both", "--acknowledge-clipboard-history"},
+	} {
+		generator := &fakeDirectPairGenerator{}
+		command := newSolverPairDirectCmd(generator)
+		command.SilenceUsage = true
+		command.SilenceErrors = true
+		command.SetArgs(args)
+		if err := command.Execute(); !errors.Is(err, pairgen.ErrInvalidOptions) || generator.called != 0 {
+			t.Fatalf("args %v error=%v calls=%d", args, err, generator.called)
+		}
+	}
+
+	generator := &fakeDirectPairGenerator{result: pairgen.Result{ClipboardUsed: true}}
+	command := newSolverPairDirectCmd(generator)
+	command.SetArgs([]string{
+		"--out-dir", "private", "--clipboard-role", pairgen.ClipboardRoleResponder,
+		"--acknowledge-clipboard-history",
+	})
+	var stdout, stderr bytes.Buffer
+	command.SetOut(&stdout)
+	command.SetErr(&stderr)
+	if err := command.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	if stdout.Len() != 0 || stderr.String() != "clipboard_history_may_persist_secret\npair_created\n" ||
+		generator.options.ClipboardRole != pairgen.ClipboardRoleResponder || !generator.options.AcknowledgeClipboardHistory {
+		t.Fatalf("stdout=%q stderr=%q options=%+v", stdout.String(), stderr.String(), generator.options)
+	}
+}
+
+func TestRootExposesOfflineDirectPairCommand(t *testing.T) {
+	root := newRootCmd()
+	command, _, err := root.Find([]string{"solver", "pair", "direct"})
+	if err != nil || command == nil || command.Name() != "direct" || command.Parent() == nil || command.Parent().Name() != "pair" {
+		t.Fatalf("pair command=%+v error=%v", command, err)
 	}
 }

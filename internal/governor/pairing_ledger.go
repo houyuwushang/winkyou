@@ -297,6 +297,65 @@ func (o *Owner) PairingLedger() (*PairingAdmissionLedger, error) {
 	return o.pairingLedger, nil
 }
 
+// Preflight performs the same credential, clock, capacity, rate, circuit, and
+// envelope checks as Admit without appending or reserving anything. Admit
+// remains authoritative and rechecks every condition at the burn boundary.
+func (ledger *PairingAdmissionLedger) Preflight(request PairingAdmissionRequest) error {
+	if ledger == nil {
+		return fmt.Errorf("%w: ledger is nil", ErrPairingLedgerInvalidRequest)
+	}
+	if err := validatePairingAdmissionRequest(request); err != nil {
+		return err
+	}
+	ledger.mu.Lock()
+	defer ledger.mu.Unlock()
+	releaseOwner, err := ledger.holdOwner()
+	if err != nil {
+		return err
+	}
+	defer releaseOwner()
+
+	now := ledger.now().UTC()
+	snapshot, err := readPairingLedgerSnapshot(ledger.path, now, ledger.ownerInstanceID, ledger.validateFile)
+	if err != nil && (snapshot.status.State == PairingLedgerNotInitialized || snapshot.status.State == PairingLedgerIndeterminate) {
+		return err
+	}
+	effectiveNow, err := snapshot.effectiveNow(now)
+	if err != nil {
+		return err
+	}
+	if !effectiveNow.Before(request.ExpiresAt) {
+		return fmt.Errorf("%w: bundle expired before admission", ErrPairingLedgerInvalidRequest)
+	}
+	if _, exists := snapshot.admissions[request.CredentialID]; exists {
+		return &PairingLedgerError{Status: snapshot.statusAt(effectiveNow), Cause: ErrPairingCredentialUsed}
+	}
+	if _, exists := snapshot.attempts[request.AttemptID]; exists {
+		return fmt.Errorf("%w: attempt id already recorded", ErrPairingLedgerInvalidRequest)
+	}
+	if err := snapshot.admissionError(effectiveNow, request.Envelope); err != nil {
+		return err
+	}
+	record := pairingJournalRecord{
+		SchemaVersion:   pairingLedgerSchemaVersion,
+		Sequence:        snapshot.sequence + 1,
+		Type:            pairingRecordBurnAndAdmit,
+		RecordedAt:      effectiveNow,
+		CredentialID:    request.CredentialID,
+		AttemptID:       request.AttemptID,
+		ContextDigest:   request.ContextDigest,
+		OwnerInstanceID: ledger.ownerInstanceID,
+		Scope:           ScopeMachine,
+		ExpiresAt:       request.ExpiresAt.UTC(),
+		Envelope:        request.Envelope,
+	}
+	frame, err := encodePairingJournalFrame(record)
+	if err != nil {
+		return err
+	}
+	return snapshot.ensureAdmissionCapacity(int64(len(frame)))
+}
+
 // Admit atomically burns one credential and reserves its full persistent
 // envelope. It returns only after the append is synchronized and verified.
 func (ledger *PairingAdmissionLedger) Admit(request PairingAdmissionRequest) (*PairingAdmissionReceipt, error) {

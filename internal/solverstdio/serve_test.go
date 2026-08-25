@@ -69,6 +69,54 @@ func TestServeHandshakeGolden(t *testing.T) {
 	}
 }
 
+func TestServeHandshakeV2Golden(t *testing.T) {
+	authority := &fakeAuthority{
+		info: governor.OwnerInfo{
+			PID:          4242,
+			InstanceID:   "00000000000000000000000000000001",
+			StartedAt:    time.Date(2026, 8, 13, 1, 2, 3, 0, time.UTC),
+			BuildVersion: "v1.2.3",
+			Scope:        governor.ScopeMachine,
+		},
+		status: clearTrip(),
+	}
+	inputReader, inputWriter := io.Pipe()
+	outputReader, outputWriter := io.Pipe()
+	dependencies := testDependencies(authority)
+	runDone := make(chan error, 1)
+	go func() {
+		runDone <- serveWithDependencies(context.Background(), inputReader, outputWriter, Options{}, dependencies)
+	}()
+	request := `{"jsonrpc":"2.0","id":"handshake-v2","method":"handshake","params":{"schema_version":"winkyou.stdio/v2","framing_version":"lsp-content-length/v1"}}`
+	writeServeFrame(t, inputWriter, request)
+	reader, err := stdiojsonrpc.NewFrameReader(outputReader, dependencies.Limits.MaxHeaderBytes, dependencies.Limits.MaxResponseBytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, err := reader.ReadFrame()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var formatted bytes.Buffer
+	if err := json.Indent(&formatted, body, "", "  "); err != nil {
+		t.Fatal(err)
+	}
+	formatted.WriteByte('\n')
+	want, err := os.ReadFile("testdata/handshake-v2.golden.json")
+	if err != nil {
+		t.Fatalf("read v2 handshake golden: %v\ngot:\n%s", err, formatted.Bytes())
+	}
+	want = bytes.ReplaceAll(want, []byte("\r\n"), []byte("\n"))
+	if !bytes.Equal(formatted.Bytes(), want) {
+		t.Fatalf("v2 handshake changed\ngot:\n%s\nwant:\n%s", formatted.Bytes(), want)
+	}
+	_ = inputWriter.Close()
+	if err := <-runDone; err != nil {
+		t.Fatal(err)
+	}
+	_ = outputWriter.Close()
+}
+
 func TestServePipelinedHandshakeOrdersBeforeLaterRequests(t *testing.T) {
 	// Both frames arrive in one write with stdin closing immediately after.
 	// The handshake must complete before the pipelined status request is

@@ -144,6 +144,66 @@ func TestPairingAdmissionLedgerBurnIsDurableBeforeReceipt(t *testing.T) {
 	}
 }
 
+func TestPairingAdmissionLedgerPreflightMatchesAdmissionWithoutMutation(t *testing.T) {
+	base := time.Date(2026, 8, 21, 3, 30, 0, 0, time.UTC)
+	ledger, clock, path, _ := newTestPairingLedger(t, base, false)
+	request := testPairingRequest("preflight", *clock, 8)
+	before, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	beforeStatus := ledger.Status()
+
+	if err := ledger.Preflight(request); err != nil {
+		t.Fatalf("preflight: %v", err)
+	}
+	after, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(after, before) || !reflect.DeepEqual(ledger.Status(), beforeStatus) {
+		t.Fatal("preflight mutated the durable ledger or its status")
+	}
+	receipt, err := ledger.Admit(request)
+	if err != nil || receipt == nil {
+		t.Fatalf("admit after preflight = %#v/%v", receipt, err)
+	}
+	if err := ledger.Preflight(request); !errors.Is(err, ErrPairingCredentialUsed) {
+		t.Fatalf("used credential preflight = %v", err)
+	}
+}
+
+func TestPairingAdmissionLedgerPreflightDoesNotCreateOrRepair(t *testing.T) {
+	now := time.Date(2026, 8, 21, 3, 45, 0, 0, time.UTC)
+	namespace := t.TempDir()
+	owner, err := AcquirePreparedNamespace(namespace, ScopeMachine, "preflight-no-repair")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = owner.Close() })
+	path := filepath.Join(namespace, pairingLedgerFilename)
+	ledger := testPairingLedgerForOwner(owner, path, &now)
+	request := testPairingRequest("preflight-no-repair", now, 4)
+
+	if err := ledger.Preflight(request); !errors.Is(err, ErrPairingLedgerNotInitialized) {
+		t.Fatalf("missing preflight = %v", err)
+	}
+	if _, err := os.Lstat(path); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("preflight created a missing journal: %v", err)
+	}
+	corrupt := []byte("corrupt-preflight-journal")
+	if err := os.WriteFile(path, corrupt, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := ledger.Preflight(request); !errors.Is(err, ErrPairingLedgerIndeterminate) {
+		t.Fatalf("corrupt preflight = %v", err)
+	}
+	after, err := os.ReadFile(path)
+	if err != nil || !reflect.DeepEqual(after, corrupt) {
+		t.Fatalf("preflight repaired corrupt journal: %q/%v", after, err)
+	}
+}
+
 func TestPairingAdmissionLedgerActivePathNeverCreatesOrRepairs(t *testing.T) {
 	now := time.Date(2026, 8, 21, 4, 0, 0, 0, time.UTC)
 	namespace := t.TempDir()

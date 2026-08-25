@@ -1,0 +1,206 @@
+[
+  {
+    "class": "unsupported_attempt_profile",
+    "stage": "preflight",
+    "credential_burned": false,
+    "terminal_category": "preflight_rejected"
+  },
+  {
+    "class": "invalid_direct_artifact",
+    "stage": "preflight",
+    "credential_burned": false,
+    "terminal_category": "preflight_rejected"
+  },
+  {
+    "class": "direct_artifact_not_yet_valid",
+    "stage": "preflight",
+    "credential_burned": false,
+    "terminal_category": "preflight_rejected"
+  },
+  {
+    "class": "direct_artifact_expired",
+    "stage": "preflight",
+    "credential_burned": false,
+    "terminal_category": "preflight_rejected"
+  },
+  {
+    "class": "rendezvous_endpoint_invalid",
+    "stage": "preflight",
+    "credential_burned": false,
+    "terminal_category": "preflight_rejected"
+  },
+  {
+    "class": "stun_endpoint_invalid",
+    "stage": "preflight",
+    "credential_burned": false,
+    "terminal_category": "preflight_rejected"
+  },
+  {
+    "class": "rendezvous_dns_failed",
+    "stage": "preflight",
+    "credential_burned": false,
+    "terminal_category": "preflight_rejected"
+  },
+  {
+    "class": "rendezvous_dns_ambiguous",
+    "stage": "preflight",
+    "credential_burned": false,
+    "terminal_category": "preflight_rejected"
+  },
+  {
+    "class": "rendezvous_tls_failed",
+    "stage": "preflight",
+    "credential_burned": false,
+    "terminal_category": "preflight_rejected"
+  },
+  {
+    "class": "rendezvous_unreachable",
+    "stage": "preflight",
+    "credential_burned": false,
+    "terminal_category": "preflight_rejected"
+  },
+  {
+    "class": "presence_timeout",
+    "stage": "terminal",
+    "credential_burned": false,
+    "terminal_category": "preflight_rejected"
+  },
+  {
+    "class": "pairing_scope_changed",
+    "stage": "burned",
+    "credential_burned": false,
+    "terminal_category": "admission_blocked"
+  },
+  {
+    "class": "ledger_indeterminate",
+    "stage": "burned",
+    "credential_burned": false,
+    "terminal_category": "admission_blocked"
+  },
+  {
+    "class": "credential_used",
+    "stage": "burned",
+    "credential_burned": false,
+    "terminal_category": "admission_blocked"
+  },
+  {
+    "class": "pairing_rate_limited",
+    "stage": "burned",
+    "credential_burned": false,
+    "terminal_category": "admission_blocked"
+  },
+  {
+    "class": "pairing_circuit_open",
+    "stage": "burned",
+    "credential_burned": false,
+    "terminal_category": "admission_blocked"
+  },
+  {
+    "class": "activation_failed",
+    "stage": "activated",
+    "credential_burned": true,
+    "terminal_category": "attempt_failed"
+  },
+  {
+    "class": "secure_handshake_failed",
+    "stage": "handshake",
+    "credential_burned": true,
+    "terminal_category": "attempt_failed"
+  },
+  {
+    "class": "control_authentication_failed",
+    "stage": "prepare",
+    "credential_burned": true,
+    "terminal_category": "attempt_failed"
+  },
+  {
+    "class": "rendezvous_protocol_violation",
+    "stage": "prepare",
+    "credential_burned": true,
+    "terminal_category": "attempt_failed"
+  },
+  {
+    "class": "carrier_domain_violation",
+    "stage": "prepare",
+    "credential_burned": true,
+    "terminal_category": "attempt_failed"
+  },
+  {
+    "class": "rendezvous_budget_exceeded",
+    "stage": "prepare",
+    "credential_burned": true,
+    "terminal_category": "attempt_failed"
+  },
+  {
+    "class": "stun_silent",
+    "stage": "stun",
+    "credential_burned": true,
+    "terminal_category": "attempt_failed"
+  },
+  {
+    "class": "stun_protocol_error",
+    "stage": "stun",
+    "credential_burned": true,
+    "terminal_category": "attempt_failed"
+  },
+  {
+    "class": "stun_source_mismatch",
+    "stage": "stun",
+    "credential_burned": true,
+    "terminal_category": "attempt_failed"
+  },
+  {
+    "class": "ready_rejected",
+    "stage": "ready",
+    "credential_burned": true,
+    "terminal_category": "attempt_failed"
+  },
+  {
+    "class": "punch_timeout",
+    "stage": "punch",
+    "credential_burned": true,
+    "terminal_category": "attempt_failed"
+  },
+  {
+    "class": "direct_packet_rejected",
+    "stage": "punch",
+    "credential_burned": true,
+    "terminal_category": "attempt_failed"
+  },
+  {
+    "class": "verification_failed",
+    "stage": "verify",
+    "credential_burned": true,
+    "terminal_category": "attempt_failed"
+  },
+  {
+    "class": "peer_cancelled",
+    "stage": "ready",
+    "credential_burned": true,
+    "terminal_category": "cancelled"
+  },
+  {
+    "class": "attempt_expired",
+    "stage": "punch",
+    "credential_burned": true,
+    "terminal_category": "attempt_failed"
+  },
+  {
+    "class": "resource_budget_exceeded",
+    "stage": "socket",
+    "credential_burned": true,
+    "terminal_category": "safety_tripped"
+  },
+  {
+    "class": "drain_failed",
+    "stage": "terminal",
+    "credential_burned": true,
+    "terminal_category": "safety_tripped"
+  },
+  {
+    "class": "direct_attempt_failed",
+    "stage": "preflight",
+    "credential_burned": false,
+    "terminal_category": "preflight_rejected"
+  }
+]

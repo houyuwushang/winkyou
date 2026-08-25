@@ -1,6 +1,7 @@
 package solverstdio
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -15,6 +16,7 @@ import (
 	passivediagnose "winkyou/internal/diagnose"
 	"winkyou/internal/governor"
 	"winkyou/internal/stdiojsonrpc"
+	"winkyou/internal/v2/directconnect"
 	"winkyou/internal/v2/loopbackcarrier"
 )
 
@@ -49,6 +51,30 @@ func TestHandshakeRequiresExactVersions(t *testing.T) {
 	handshake, ok := result.(HandshakeResult)
 	if !ok || handshake.SchemaVersion != SchemaVersion || handshake.FramingVersion != FramingVersion || !handler.handshaken.Load() {
 		t.Fatalf("handshake result = %+v", result)
+	}
+}
+
+func TestHandshakeV2IsExplicitAndCannotSwitchVersions(t *testing.T) {
+	handler := newTestHandler(t, &fakeAuthority{status: clearTrip()}, staticDiagnose{}, nil)
+	result, rpcErr := handler.Handle(context.Background(), testRequest(t, MethodHandshake, `{"schema_version":"winkyou.stdio/v2","framing_version":"lsp-content-length/v1"}`), discardProgress{})
+	if rpcErr != nil {
+		t.Fatalf("v2 handshake: %+v", rpcErr)
+	}
+	handshake, ok := result.(HandshakeResultV2)
+	wantProfiles := []string{"loopback_complete_bundle", "winkyou-test-direct-attempt-oob/1"}
+	if !ok || handshake.SchemaVersion != SchemaVersionV2 || !reflect.DeepEqual(handshake.ConnectTestProfiles, wantProfiles) || handler.version.Load() != 2 {
+		t.Fatalf("v2 handshake = %+v", result)
+	}
+	if _, rpcErr := handler.Handle(context.Background(), testRequest(t, MethodHandshake, validHandshakeParams()), discardProgress{}); rpcErr == nil || rpcErr.Data.Class != ClassIncompatibleVersion {
+		t.Fatalf("v2 to v1 switch = %+v", rpcErr)
+	}
+
+	v1 := newTestHandler(t, &fakeAuthority{status: clearTrip()}, staticDiagnose{}, nil)
+	if _, rpcErr := v1.Handle(context.Background(), testRequest(t, MethodHandshake, validHandshakeParams()), discardProgress{}); rpcErr != nil {
+		t.Fatal(rpcErr)
+	}
+	if _, rpcErr := v1.Handle(context.Background(), testRequest(t, MethodHandshake, `{"schema_version":"winkyou.stdio/v2","framing_version":"lsp-content-length/v1"}`), discardProgress{}); rpcErr == nil || rpcErr.Data.Class != ClassIncompatibleVersion {
+		t.Fatalf("v1 to v2 switch = %+v", rpcErr)
 	}
 }
 
@@ -291,6 +317,219 @@ func TestConnectTestReturnsStableLoopbackErrorsAndRejectsUnknownFields(t *testin
 	}
 }
 
+func TestConnectTestV2LoopbackKeepsExistingParserAndProgress(t *testing.T) {
+	authority := &fakeConnectAuthority{
+		fakeAuthority: fakeAuthority{status: clearTrip()},
+		result:        loopbackcarrier.Result{Established: true, Terminal: "success"},
+	}
+	handler := newTestHandler(t, authority, staticDiagnose{}, nil)
+	handler.handshaken.Store(true)
+	handler.version.Store(2)
+	progress := &recordingProgress{}
+	result, rpcErr := handler.Handle(context.Background(), testRequest(t, MethodConnectTest,
+		`{"auth_scope":"test_only","attempt":{"kind":"loopback_complete_bundle","complete_bundle":{"marker":"secret"}},"deadline_ms":15000}`), progress)
+	if rpcErr != nil {
+		t.Fatalf("v2 loopback: %+v", rpcErr)
+	}
+	if _, ok := result.(ConnectTestResult); !ok || string(authority.payload) != `{"marker":"secret"}` {
+		t.Fatalf("v2 loopback result=%+v payload=%s", result, authority.payload)
+	}
+	if got := progress.stages(); !reflect.DeepEqual(got, []string{"validating_complete_bundle", "loopback_socket_ready", "terminal_finish_recorded"}) {
+		t.Fatalf("progress = %v", got)
+	}
+}
+
+func TestConnectTestCrossVersionRequestsFailClosedBeforeAuthority(t *testing.T) {
+	legacy := &fakeConnectAuthority{fakeAuthority: fakeAuthority{status: clearTrip()}}
+	v2Handler := newTestHandler(t, legacy, staticDiagnose{}, nil)
+	v2Handler.handshaken.Store(true)
+	v2Handler.version.Store(2)
+	_, rpcErr := v2Handler.Handle(context.Background(), testRequest(t, MethodConnectTest,
+		`{"auth_scope":"test_only","complete_bundle":{},"deadline_ms":15000}`), discardProgress{})
+	if rpcErr == nil || rpcErr.Data.Class != stdiojsonrpc.ClassInvalidParams || legacy.calls != 0 {
+		t.Fatalf("v1 request under v2 = %+v calls=%d", rpcErr, legacy.calls)
+	}
+
+	direct := &fakeDirectAuthority{fakeAuthority: fakeAuthority{status: clearTrip()}}
+	v1Handler := newTestHandler(t, direct, staticDiagnose{}, nil)
+	v1Handler.handshaken.Store(true)
+	v1Handler.version.Store(1)
+	_, rpcErr = v1Handler.Handle(context.Background(), testRequest(t, MethodConnectTest,
+		`{"auth_scope":"test_only","attempt":{"kind":"loopback_complete_bundle","complete_bundle":{}},"deadline_ms":15000}`), discardProgress{})
+	if rpcErr == nil || rpcErr.Data.Class != stdiojsonrpc.ClassInvalidParams || direct.calls != 0 {
+		t.Fatalf("v2 request under v1 = %+v calls=%d", rpcErr, direct.calls)
+	}
+}
+
+func TestConnectTestV2DirectUsesOnlyDirectAuthority(t *testing.T) {
+	authority := &fakeDirectAuthority{
+		fakeAuthority: fakeAuthority{status: clearTrip()},
+		result:        directconnect.Result{AttemptKind: "direct_oob_artifact", Terminal: "success", Bidirectional: true},
+	}
+	handler := newTestHandler(t, authority, staticDiagnose{}, nil)
+	handler.handshaken.Store(true)
+	handler.version.Store(2)
+	progress := &recordingProgress{}
+	result, rpcErr := handler.Handle(context.Background(), testRequest(t, MethodConnectTest, validDirectV2Params(`{"artifact":"synthetic"}`)), progress)
+	if rpcErr != nil {
+		t.Fatalf("v2 direct: %+v", rpcErr)
+	}
+	response, ok := result.(directconnect.Result)
+	if !ok || !response.Bidirectional || string(authority.config.Artifact) != `{"artifact":"synthetic"}` {
+		t.Fatalf("direct result=%+v config=%+v", result, authority.config)
+	}
+	wantStages := []string{"present", "burned", "activated", "handshake", "prepare", "socket", "stun", "ready", "fire", "punch_sent", "punch", "verify", "terminal"}
+	if got := progress.stages(); !reflect.DeepEqual(got, wantStages) {
+		t.Fatalf("direct progress = %v", got)
+	}
+}
+
+func TestConnectTestV2TaggedUnionRejectsAmbiguityBeforeAuthority(t *testing.T) {
+	authority := &fakeDirectAuthority{fakeAuthority: fakeAuthority{status: clearTrip()}}
+	handler := newTestHandler(t, authority, staticDiagnose{}, nil)
+	handler.handshaken.Store(true)
+	handler.version.Store(2)
+	tests := []string{
+		`{"auth_scope":"test_only","attempt":{"kind":"loopback_complete_bundle","complete_bundle":{}},"stun_endpoint":""}`,
+		`{"auth_scope":"test_only","attempt":{"kind":"loopback_complete_bundle","complete_bundle":{},"oob_artifact":null}}`,
+		`{"auth_scope":"test_only","attempt":{"kind":"direct_oob_artifact","oob_artifact":{},"complete_bundle":{}},"rendezvous":{},"stun_endpoint":"192.0.2.1:3478"}`,
+		`{"auth_scope":"test_only","attempt":{"kind":"direct_oob_artifact","oob_artifact":{},"unexpected":true},"rendezvous":{},"stun_endpoint":"192.0.2.1:3478"}`,
+		`{"auth_scope":"test_only","auth_scope":"test_only","attempt":{"kind":"direct_oob_artifact","oob_artifact":{}},"rendezvous":{},"stun_endpoint":"192.0.2.1:3478"}`,
+		`{"auth_scope":"test_only","attempt":{"kind":"direct_oob_artifact","kind":"direct_oob_artifact","oob_artifact":{}},"rendezvous":{},"stun_endpoint":"192.0.2.1:3478"}`,
+		`{"auth_scope":"test_only","attempt":{"kind":"direct_oob_artifact","oob_artifact":{}},"rendezvous":{"endpoint":"192.0.2.10:443","endpoint":"192.0.2.11:443","deployment_tier":"self_hosted","tls":{"verification":"spki_sha256","spki_sha256":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"}},"stun_endpoint":"192.0.2.1:3478"}`,
+		`{"auth_scope":"test_only","attempt":{"kind":"direct_oob_artifact","oob_artifact":{}},"rendezvous":{"endpoint":"192.0.2.10:443","deployment_tier":"self_hosted","tls":{"verification":"spki_sha256","verification":"spki_sha256","spki_sha256":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"}},"stun_endpoint":"192.0.2.1:3478"}`,
+	}
+	for _, params := range tests {
+		_, rpcErr := handler.Handle(context.Background(), testRequest(t, MethodConnectTest, params), discardProgress{})
+		if rpcErr == nil || rpcErr.Data.Class != stdiojsonrpc.ClassInvalidParams {
+			t.Fatalf("ambiguous params %s = %+v", params, rpcErr)
+		}
+	}
+	if authority.calls != 0 {
+		t.Fatalf("invalid union reached direct authority %d time(s)", authority.calls)
+	}
+}
+
+func TestConnectTestV2UnknownProfileAndDirectFailureHaveFrozenData(t *testing.T) {
+	handler := newTestHandler(t, &fakeDirectAuthority{fakeAuthority: fakeAuthority{status: clearTrip()}}, staticDiagnose{}, nil)
+	handler.handshaken.Store(true)
+	handler.version.Store(2)
+	progress := &recordingProgress{}
+	_, rpcErr := handler.Handle(context.Background(), testRequest(t, MethodConnectTest,
+		`{"auth_scope":"test_only","attempt":{"kind":"future_profile"}}`), progress)
+	assertDirectErrorData(t, rpcErr, directconnect.ClassUnsupportedAttemptProfile, directconnect.StagePreflight, false, directconnect.CategoryPreflightRejected)
+	if got := progress.stages(); !reflect.DeepEqual(got, []string{"terminal"}) {
+		t.Fatalf("unknown profile progress = %v", got)
+	}
+
+	failing := &fakeDirectAuthority{
+		fakeAuthority: fakeAuthority{status: clearTrip()},
+		err: &directconnect.Failure{
+			Class: directconnect.ClassSTUNSilent, Stage: directconnect.StageSTUN,
+			CredentialBurned: true, TerminalCategory: directconnect.CategoryAttemptFailed,
+		},
+	}
+	handler = newTestHandler(t, failing, staticDiagnose{}, nil)
+	handler.handshaken.Store(true)
+	handler.version.Store(2)
+	_, rpcErr = handler.Handle(context.Background(), testRequest(t, MethodConnectTest, validDirectV2Params(`{}`)), discardProgress{})
+	assertDirectErrorData(t, rpcErr, directconnect.ClassSTUNSilent, directconnect.StageSTUN, true, directconnect.CategoryAttemptFailed)
+}
+
+func TestDirectErrorClassDataGoldenAndCauseRedaction(t *testing.T) {
+	type entry struct {
+		Class            string `json:"class"`
+		Stage            string `json:"stage"`
+		CredentialBurned bool   `json:"credential_burned"`
+		TerminalCategory string `json:"terminal_category"`
+	}
+	entries := []entry{
+		{directconnect.ClassUnsupportedAttemptProfile, directconnect.StagePreflight, false, directconnect.CategoryPreflightRejected},
+		{directconnect.ClassInvalidDirectArtifact, directconnect.StagePreflight, false, directconnect.CategoryPreflightRejected},
+		{directconnect.ClassArtifactNotYetValid, directconnect.StagePreflight, false, directconnect.CategoryPreflightRejected},
+		{directconnect.ClassArtifactExpired, directconnect.StagePreflight, false, directconnect.CategoryPreflightRejected},
+		{directconnect.ClassRendezvousEndpointInvalid, directconnect.StagePreflight, false, directconnect.CategoryPreflightRejected},
+		{directconnect.ClassSTUNEndpointInvalid, directconnect.StagePreflight, false, directconnect.CategoryPreflightRejected},
+		{directconnect.ClassRendezvousDNSFailed, directconnect.StagePreflight, false, directconnect.CategoryPreflightRejected},
+		{directconnect.ClassRendezvousDNSAmbiguous, directconnect.StagePreflight, false, directconnect.CategoryPreflightRejected},
+		{directconnect.ClassRendezvousTLSFailed, directconnect.StagePreflight, false, directconnect.CategoryPreflightRejected},
+		{directconnect.ClassRendezvousUnreachable, directconnect.StagePreflight, false, directconnect.CategoryPreflightRejected},
+		{directconnect.ClassPresenceTimeout, directconnect.StageTerminal, false, directconnect.CategoryPreflightRejected},
+		{directconnect.ClassPairingScopeChanged, directconnect.StageBurned, false, directconnect.CategoryAdmissionBlocked},
+		{directconnect.ClassLedgerIndeterminate, directconnect.StageBurned, false, directconnect.CategoryAdmissionBlocked},
+		{directconnect.ClassCredentialUsed, directconnect.StageBurned, false, directconnect.CategoryAdmissionBlocked},
+		{directconnect.ClassPairingRateLimited, directconnect.StageBurned, false, directconnect.CategoryAdmissionBlocked},
+		{directconnect.ClassPairingCircuitOpen, directconnect.StageBurned, false, directconnect.CategoryAdmissionBlocked},
+		{directconnect.ClassActivationFailed, directconnect.StageActivated, true, directconnect.CategoryAttemptFailed},
+		{directconnect.ClassSecureHandshakeFailed, directconnect.StageHandshake, true, directconnect.CategoryAttemptFailed},
+		{directconnect.ClassControlAuthentication, directconnect.StagePrepare, true, directconnect.CategoryAttemptFailed},
+		{directconnect.ClassRendezvousProtocol, directconnect.StagePrepare, true, directconnect.CategoryAttemptFailed},
+		{directconnect.ClassCarrierDomainViolation, directconnect.StagePrepare, true, directconnect.CategoryAttemptFailed},
+		{directconnect.ClassRendezvousBudgetExceeded, directconnect.StagePrepare, true, directconnect.CategoryAttemptFailed},
+		{directconnect.ClassSTUNSilent, directconnect.StageSTUN, true, directconnect.CategoryAttemptFailed},
+		{directconnect.ClassSTUNProtocol, directconnect.StageSTUN, true, directconnect.CategoryAttemptFailed},
+		{directconnect.ClassSTUNSourceMismatch, directconnect.StageSTUN, true, directconnect.CategoryAttemptFailed},
+		{directconnect.ClassReadyRejected, directconnect.StageReady, true, directconnect.CategoryAttemptFailed},
+		{directconnect.ClassPunchTimeout, directconnect.StagePunch, true, directconnect.CategoryAttemptFailed},
+		{directconnect.ClassDirectPacketRejected, directconnect.StagePunch, true, directconnect.CategoryAttemptFailed},
+		{directconnect.ClassVerificationFailed, directconnect.StageVerify, true, directconnect.CategoryAttemptFailed},
+		{directconnect.ClassPeerCancelled, directconnect.StageReady, true, directconnect.CategoryCancelled},
+		{directconnect.ClassAttemptExpired, directconnect.StagePunch, true, directconnect.CategoryAttemptFailed},
+		{directconnect.ClassResourceBudgetExceeded, directconnect.StageSocket, true, directconnect.CategorySafetyTripped},
+		{directconnect.ClassDrainFailed, directconnect.StageTerminal, true, directconnect.CategorySafetyTripped},
+		{directconnect.ClassDirectAttemptFailed, directconnect.StagePreflight, false, directconnect.CategoryPreflightRejected},
+	}
+	payload, err := json.MarshalIndent(entries, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload = append(payload, '\n')
+	want, err := os.ReadFile("testdata/direct-error-classes.golden.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want = bytes.ReplaceAll(want, []byte("\r\n"), []byte("\n"))
+	if !bytes.Equal(payload, want) {
+		t.Fatalf("direct error class golden changed\ngot:\n%s\nwant:\n%s", payload, want)
+	}
+
+	privateCause := errors.New("dial 192.0.2.91:443 from private-host user-private path-private")
+	for _, current := range entries {
+		rpcErr := directConnectError(&directconnect.Failure{
+			Class: current.Class, Stage: current.Stage, CredentialBurned: current.CredentialBurned,
+			TerminalCategory: current.TerminalCategory, Cause: privateCause,
+		})
+		encoded, err := json.Marshal(rpcErr)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if bytes.Contains(encoded, []byte("192.0.2.91")) || bytes.Contains(encoded, []byte("private-host")) ||
+			bytes.Contains(encoded, []byte("user-private")) || bytes.Contains(encoded, []byte("path-private")) {
+			t.Fatalf("direct error %q leaked an internal cause: %s", current.Class, encoded)
+		}
+		assertDirectErrorData(t, rpcErr, current.Class, current.Stage, current.CredentialBurned, current.TerminalCategory)
+	}
+}
+
+func TestDirectV2DeadlineDefaultsAndCanOnlyDecrease(t *testing.T) {
+	handler := newTestHandler(t, &fakeAuthority{status: clearTrip()}, staticDiagnose{}, nil)
+	handler.version.Store(2)
+	direct, rpcErr := handler.deadline(testRequest(t, MethodConnectTest, validDirectV2Params(`{}`)))
+	if rpcErr != nil || direct != 15*time.Second {
+		t.Fatalf("direct default deadline = %s, %+v", direct, rpcErr)
+	}
+	loopback, rpcErr := handler.deadline(testRequest(t, MethodConnectTest,
+		`{"auth_scope":"test_only","attempt":{"kind":"loopback_complete_bundle","complete_bundle":{}}}`))
+	if rpcErr != nil || loopback != 0 {
+		t.Fatalf("loopback default deadline = %s, %+v", loopback, rpcErr)
+	}
+	raised := strings.TrimSuffix(validDirectV2Params(`{}`), "}") + `,"deadline_ms":15001}`
+	_, rpcErr = handler.deadline(testRequest(t, MethodConnectTest, raised))
+	if rpcErr == nil || rpcErr.Data.Limit != 15000 {
+		t.Fatalf("direct raised deadline = %+v", rpcErr)
+	}
+}
+
 func TestUnknownAndLimitRaisingMethodsAreRejected(t *testing.T) {
 	handler := newTestHandler(t, &fakeAuthority{status: clearTrip()}, staticDiagnose{}, nil)
 	handler.handshaken.Store(true)
@@ -329,9 +568,39 @@ type fakeConnectAuthority struct {
 	err     error
 	payload []byte
 	ledger  governor.PairingLedgerStatus
+	calls   int
+}
+
+type fakeDirectAuthority struct {
+	fakeAuthority
+	result directconnect.Result
+	err    error
+	config directconnect.Config
+	calls  int
+}
+
+func (authority *fakeDirectAuthority) ConnectDirect(_ context.Context, config directconnect.Config) (directconnect.Result, error) {
+	authority.calls++
+	authority.config = config
+	authority.config.Artifact = append([]byte(nil), config.Artifact...)
+	if authority.err == nil && config.Progress != nil {
+		for _, stage := range []string{
+			directconnect.StagePresent, directconnect.StageBurned, directconnect.StageActivated,
+			directconnect.StageHandshake, directconnect.StagePrepare, directconnect.StageSocket,
+			directconnect.StageSTUN, directconnect.StageReady, directconnect.StageFire,
+			directconnect.StagePunchSent, directconnect.StagePunch, directconnect.StageVerify,
+			directconnect.StageTerminal,
+		} {
+			if err := config.Progress(stage, stage != directconnect.StageTerminal); err != nil {
+				return directconnect.Result{}, errors.Join(directconnect.ErrProgressDelivery, err)
+			}
+		}
+	}
+	return authority.result, authority.err
 }
 
 func (authority *fakeConnectAuthority) ConnectTest(_ context.Context, payload []byte, _ string, progress loopbackcarrier.ProgressReporter) (loopbackcarrier.Result, error) {
+	authority.calls++
 	authority.payload = append(authority.payload[:0], payload...)
 	if progress != nil {
 		if err := progress(loopbackcarrier.ProgressStageSocketReady); err != nil {
@@ -441,6 +710,20 @@ func quoteJSON(value string) string {
 
 func validHandshakeParams() string {
 	return `{"schema_version":"winkyou.stdio/v1","framing_version":"lsp-content-length/v1"}`
+}
+
+func validDirectV2Params(artifact string) string {
+	return `{"auth_scope":"test_only","attempt":{"kind":"direct_oob_artifact","oob_artifact":` + artifact +
+		`},"rendezvous":{"endpoint":"192.0.2.10:443","deployment_tier":"self_hosted","tls":{"verification":"spki_sha256","spki_sha256":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"}},"stun_endpoint":"192.0.2.20:3478"}`
+}
+
+func assertDirectErrorData(t *testing.T, rpcErr *stdiojsonrpc.RPCError, class, stage string, burned bool, category string) {
+	t.Helper()
+	if rpcErr == nil || rpcErr.Data.Class != class || rpcErr.Data.Reason != class || rpcErr.Data.Retryable ||
+		rpcErr.Data.Stage != stage || rpcErr.Data.CredentialBurned == nil || *rpcErr.Data.CredentialBurned != burned ||
+		rpcErr.Data.TerminalCategory != category {
+		t.Fatalf("direct error = %+v", rpcErr)
+	}
 }
 
 func clearTrip() governor.SafetyTripStatus {

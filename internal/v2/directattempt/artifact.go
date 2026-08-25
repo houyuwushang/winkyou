@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"winkyou/internal/v2/pairingcontext"
+	"winkyou/internal/v2/rendezvouswire"
 )
 
 const (
@@ -18,7 +19,7 @@ const (
 	// bundle and contains no direct endpoint.
 	ArtifactProfile           = "winkyou-test-direct-attempt-oob/1"
 	DirectAttemptProfile      = "winkyou-test-direct-attempt-control/1"
-	RendezvousPresenceProfile = "winkyou-test-direct-presence/1"
+	RendezvousPresenceProfile = rendezvouswire.PresenceProfile
 	DirectNoiseBindingLabel   = "winkyou non-loopback direct-attempt binding v1\n"
 	MaxArtifactBytes          = 4096
 )

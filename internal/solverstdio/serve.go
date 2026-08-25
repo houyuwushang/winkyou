@@ -9,6 +9,7 @@ import (
 	passivediagnose "winkyou/internal/diagnose"
 	"winkyou/internal/governor"
 	"winkyou/internal/stdiojsonrpc"
+	"winkyou/internal/v2/directconnect"
 	"winkyou/internal/v2/loopbackcarrier"
 	"winkyou/pkg/version"
 )
@@ -26,6 +27,10 @@ type authority interface {
 type connectTestAuthority interface {
 	ConnectTest(context.Context, []byte, string, loopbackcarrier.ProgressReporter) (loopbackcarrier.Result, error)
 	PairingLedgerStatus() governor.PairingLedgerStatus
+}
+
+type directConnectAuthority interface {
+	ConnectDirect(context.Context, directconnect.Config) (directconnect.Result, error)
 }
 
 type machineAuthority struct {
@@ -80,6 +85,37 @@ func (authority *machineAuthority) ConnectTest(ctx context.Context, payload []by
 		return loopbackcarrier.Result{}, loopbackcarrier.ErrCarrierUnavailable
 	}
 	return loopbackcarrier.Connect(ctx, authority.machine, payload, buildVersion, progress)
+}
+
+func (authority *machineAuthority) ConnectDirect(ctx context.Context, config directconnect.Config) (directconnect.Result, error) {
+	if authority == nil || authority.machine == nil || authority.owner == nil {
+		return directconnect.Result{}, &directconnect.Failure{
+			Class: directconnect.ClassDirectAttemptFailed, Stage: directconnect.StagePreflight,
+			TerminalCategory: directconnect.CategoryPreflightRejected,
+		}
+	}
+	ledger, err := authority.owner.PairingLedger()
+	if err != nil {
+		if config.Progress != nil {
+			if progressErr := config.Progress(directconnect.StageTerminal, false); progressErr != nil {
+				return directconnect.Result{}, &directconnect.Failure{
+					Class: directconnect.ClassDirectAttemptFailed, Stage: directconnect.StageTerminal,
+					TerminalCategory: directconnect.CategoryPreflightRejected,
+					Cause:            errors.Join(directconnect.ErrProgressDelivery, progressErr),
+				}
+			}
+		}
+		return directconnect.Result{}, &directconnect.Failure{
+			Class: directconnect.ClassLedgerIndeterminate, Stage: directconnect.StagePreflight,
+			TerminalCategory: directconnect.CategoryAdmissionBlocked, Cause: err,
+		}
+	}
+	config.Machine = authority.machine
+	config.Ledger = ledger
+	if config.BuildVersion == "" {
+		config.BuildVersion = "unknown"
+	}
+	return directconnect.Connect(ctx, config)
 }
 
 func (authority *machineAuthority) Close() error {
