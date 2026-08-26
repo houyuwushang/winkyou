@@ -44,6 +44,10 @@ func TestBilateralPlannerFreezesThreeProfileShapes(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		wantEndpoint := AddressPort{Address: targetGraph.Allocation[0].MappedAddress, Port: targetGraph.Allocation[0].MappedPort}
+		if targetCommitment.ReceiveEndpoint != wantEndpoint {
+			t.Fatalf("target receive endpoint = %+v, want witnessed %+v", targetCommitment.ReceiveEndpoint, wantEndpoint)
+		}
 		pair, err := BuildBilateralPlan(BilateralPlannerInput{First: targetCommitment, Second: mappingCommitment, KeySource: keySource("asymmetric-pair")})
 		if err != nil {
 			t.Fatal(err)
@@ -129,6 +133,9 @@ func TestPredictiveBilateralScheduleTargetsPeerCommitment(t *testing.T) {
 	if err := VerifyJointCommitment(commitment, commitment); err != nil {
 		t.Fatal(err)
 	}
+	if err := VerifyExecutablePlanAgainstCommitment(leftPlan, left, commitment); err != nil {
+		t.Fatalf("verify executable predictive plan: %v", err)
+	}
 	mutated := commitment
 	mutated.Directions[1].Triple.Plan[0]++
 	if err := VerifyJointCommitment(commitment, mutated); !errors.Is(err, ErrPlanMismatch) {
@@ -161,10 +168,30 @@ func TestBilateralPlannerIsDeterministicRoleSeparatedAndOwned(t *testing.T) {
 	if slices.Equal(first.Plans[0].Candidates[:16], first.Plans[1].Candidates[:16]) {
 		t.Fatal("role-separated domain produced the same directional plan")
 	}
+	joint := first.Commitment()
+	for _, check := range []struct {
+		plan   Plan
+		source LocalSourceCommitment
+	}{
+		{first.Plans[0], initiator},
+		{first.Plans[1], responder},
+	} {
+		if err := VerifyPlanAgainstCommitment(check.plan, check.source, joint); err != nil {
+			t.Fatalf("verify generated plan: %v", err)
+		}
+	}
+	if err := VerifyExecutablePlanAgainstCommitment(first.Plans[0], initiator, joint); !errors.Is(err, ErrUnsupportedProfile) {
+		t.Fatalf("plan-only hard resource execution error = %v", err)
+	}
 	clone := first.Plans[0].Clone()
 	clone.Candidates[0].TargetPort = 0
 	if first.Plans[0].Candidates[0].TargetPort == 0 {
 		t.Fatal("Plan.Clone shares candidate ownership")
+	}
+	executableMutation := first.Plans[0].Clone()
+	executableMutation.Executable = true
+	if err := VerifyPlanAgainstCommitment(executableMutation, initiator, joint); !errors.Is(err, ErrPlanMismatch) {
+		t.Fatalf("executable mutation error = %v", err)
 	}
 }
 
@@ -196,12 +223,33 @@ func TestPlanAndSourceDigestsBindScheduleFields(t *testing.T) {
 		func(value *Plan) { value.Candidates[0].Ordinal++ },
 		func(value *Plan) { value.Candidates[0].ExpectedSourcePort++ },
 		func(value *Plan) { value.Candidates[0].TargetPort++ },
+		func(value *Plan) { value.Executable = !value.Executable },
 	} {
 		mutated := plan.Clone()
 		mutate(&mutated)
 		if digestPlan(mutated, graph.AttemptDigest) == baseline {
 			t.Errorf("plan mutation %d did not change digest", index)
 		}
+	}
+}
+
+func TestBilateralPlannerRejectsNonCanonicalProbabilityBeforeKey(t *testing.T) {
+	leftGraph := syntheticEvidence(MappingAPDM, FilteringAPDF, sequentialPorts(50000, 8, 1))
+	rightGraph := syntheticEvidence(MappingAPDM, FilteringAPDF, sequentialPorts(60000, 8, 1))
+	left, err := BuildLocalCommitment(localCommitmentInput(ProfilePredictiveEdm, ResourcePredictive, RoleInitiator, leftGraph))
+	if err != nil {
+		t.Fatal(err)
+	}
+	right, err := BuildLocalCommitment(localCommitmentInput(ProfilePredictiveEdm, ResourcePredictive, RoleResponder, rightGraph))
+	if err != nil {
+		t.Fatal(err)
+	}
+	left.Probability.Model = "forged-model"
+	left.Probability.Universe = "forged-universe"
+	left.SourceDigest = digestSourceCommitment(left)
+	source := &countingKeySource{key: syntheticDigest("must-not-be-called")}
+	if _, err := BuildBilateralPlan(BilateralPlannerInput{First: left, Second: right, KeySource: source}); !errors.Is(err, ErrPlanMismatch) || source.calls != 0 {
+		t.Fatalf("forged probability error/key-calls = %v/%d", err, source.calls)
 	}
 }
 

@@ -92,38 +92,13 @@ func TestRFC5780StateMachineSeparatesMappingAndFiltering(t *testing.T) {
 	for _, mapping := range mappings {
 		for _, filtering := range filterings {
 			machine := NewRFC5780Machine()
-			primary, sameAddress, otherAddress := discoveryMappingObservations(mapping)
-			var err error
-			machine, err = machine.Advance(StepPrimary, DiscoveryObservation{Received: true, Attributes: primary})
-			if err != nil {
-				t.Fatalf("%s/%s primary: %v", mapping, filtering, err)
-			}
-			machine, err = machine.Advance(StepSameAddressOtherPort, DiscoveryObservation{Received: true, Attributes: sameAddress})
-			if err != nil {
-				t.Fatalf("%s/%s same address: %v", mapping, filtering, err)
-			}
-			machine, err = machine.Advance(StepOtherAddress, DiscoveryObservation{Received: true, Attributes: otherAddress})
-			if err != nil {
-				t.Fatalf("%s/%s other address: %v", mapping, filtering, err)
-			}
-			changeIP := DiscoveryObservation{}
-			if filtering == FilteringEIF {
-				changeIP = DiscoveryObservation{Received: true, Attributes: BehaviorAttributes{HasResponseOrigin: true, ResponseOrigin: primary.OtherAddress}}
-			}
-			machine, err = machine.Advance(StepChangeIPPort, changeIP)
-			if err != nil {
-				t.Fatalf("%s/%s change IP: %v", mapping, filtering, err)
-			}
-			changePort := DiscoveryObservation{}
-			if filtering == FilteringADF {
-				changePort = DiscoveryObservation{Received: true, Attributes: BehaviorAttributes{
-					HasResponseOrigin: true,
-					ResponseOrigin:    AddressPort{Address: primary.ResponseOrigin.Address, Port: primary.ResponseOrigin.Port + 1},
-				}}
-			}
-			machine, err = machine.Advance(StepChangePort, changePort)
-			if err != nil {
-				t.Fatalf("%s/%s change port: %v", mapping, filtering, err)
+			observations := discoveryStateObservations(mapping, filtering)
+			for index, step := range orderedRFC5780Steps {
+				var err error
+				machine, err = machine.Advance(step, observations[index])
+				if err != nil {
+					t.Fatalf("%s/%s step %s: %v", mapping, filtering, step, err)
+				}
 			}
 			gotMapping, gotFiltering, err := machine.Result()
 			if err != nil || gotMapping != mapping || gotFiltering != filtering {
@@ -133,17 +108,96 @@ func TestRFC5780StateMachineSeparatesMappingAndFiltering(t *testing.T) {
 	}
 }
 
+func TestRFC5780TranscriptDerivesBehaviorAndReusableEndpoint(t *testing.T) {
+	graph := syntheticEvidence(MappingEIM, FilteringAPDF, apparentlyRandomPorts())
+	model, err := inferStateModel(graph)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantEndpoint := AddressPort{Address: graph.Allocation[0].MappedAddress, Port: graph.Allocation[0].MappedPort}
+	if model.Mapping != MappingEIM || model.Filtering != FilteringAPDF || model.ReusableEndpoint != wantEndpoint {
+		t.Fatalf("derived behavior/endpoint = %s/%s/%+v, want %s/%s/%+v",
+			model.Mapping, model.Filtering, model.ReusableEndpoint, MappingEIM, FilteringAPDF, wantEndpoint)
+	}
+
+	t.Run("self-asserted RFC classification", func(t *testing.T) {
+		forged := graph
+		forged.Mapping = append([]MappingEvidence(nil), graph.Mapping...)
+		forged.Mapping = append(forged.Mapping, MappingEvidence{
+			Meta:     evidenceMeta(forged, 240, SourceRFC5780, OriginLocalTransaction, syntheticAddress(10).Address(), 3478),
+			Behavior: MappingAPDM,
+		})
+		if _, err := InferStateModel(forged, trustedValidation(forged)); !errors.Is(err, ErrInvalidEvidence) {
+			t.Fatalf("self-asserted classification error = %v", err)
+		}
+	})
+
+	t.Run("actual response source mismatch", func(t *testing.T) {
+		tampered := graph
+		tampered.RFC5780 = []RFC5780Transcript{graph.RFC5780[0].Clone()}
+		tampered.RFC5780[0].Exchanges[0].ResponseSource.Port++
+		if _, err := InferStateModel(tampered, trustedValidation(graph)); !errors.Is(err, ErrUnsupportedEvidence) {
+			t.Fatalf("response-source mismatch error = %v", err)
+		}
+	})
+
+	t.Run("unwitnessed endpoint", func(t *testing.T) {
+		tampered := graph
+		tampered.Allocation = append([]AllocationSample(nil), graph.Allocation...)
+		tampered.Allocation[0].MappedPort++
+		if _, err := InferStateModel(tampered, trustedValidation(tampered)); !errors.Is(err, ErrEvidenceInsufficient) {
+			t.Fatalf("unwitnessed endpoint error = %v", err)
+		}
+	})
+
+	t.Run("nonzero witnessed socket slot", func(t *testing.T) {
+		nonzero := graph
+		nonzero.RFC5780 = []RFC5780Transcript{graph.RFC5780[0].Clone()}
+		nonzero.RFC5780[0].SocketSlot = 7
+		nonzero.Allocation = append([]AllocationSample(nil), graph.Allocation...)
+		nonzero.Allocation[0].SocketSlot = 7
+		nonzero.Allocation[0].Meta.SocketSlot = 7
+		input := localCommitmentInput(ProfileAsymmetricBirthday, ResourceAsymmetric, RoleTargetSet, nonzero)
+		commitment, err := BuildLocalCommitment(input)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(commitment.SourceSlots) != 1 || commitment.SourceSlots[0].SocketSlot != 7 {
+			t.Fatalf("nonzero witnessed source slots = %+v", commitment.SourceSlots)
+		}
+		mappingGraph := syntheticEvidence(MappingAPDM, FilteringAPDF, apparentlyRandomPorts())
+		mappingCommitment, buildErr := BuildLocalCommitment(
+			localCommitmentInput(ProfileAsymmetricBirthday, ResourceAsymmetric, RoleMappingSet, mappingGraph),
+		)
+		if buildErr != nil {
+			t.Fatal(buildErr)
+		}
+		pair, buildErr := BuildBilateralPlan(BilateralPlannerInput{
+			First: mappingCommitment, Second: commitment, KeySource: keySource("nonzero-eim-slot"),
+		})
+		if buildErr != nil {
+			t.Fatal(buildErr)
+		}
+		plan, ok := pair.PlanForRole(RoleTargetSet)
+		if !ok || len(plan.Candidates) == 0 || plan.Candidates[0].SocketSlot != 7 {
+			t.Fatalf("nonzero witnessed target plan = %+v", plan)
+		}
+		if verifyErr := VerifyPlanAgainstCommitment(plan, commitment, pair.Commitment()); verifyErr != nil {
+			t.Fatalf("verify nonzero witnessed plan: %v", verifyErr)
+		}
+	})
+}
+
 func TestRFC5780MissingCapabilityAndWrongOrderFailClosed(t *testing.T) {
 	machine := NewRFC5780Machine()
 	if _, err := machine.Advance(StepOtherAddress, DiscoveryObservation{}); !errors.Is(err, ErrRFC5780Order) {
 		t.Fatalf("wrong-order error = %v", err)
 	}
-	primary := BehaviorAttributes{
-		Mapped: AddressPort{Address: syntheticAddress(100).Address(), Port: 50000}, HasMapped: true,
-		ResponseOrigin: AddressPort{Address: syntheticAddress(10).Address(), Port: 3478}, HasResponseOrigin: true,
-		// OTHER-ADDRESS deliberately absent.
-	}
-	if _, err := machine.Advance(StepPrimary, DiscoveryObservation{Received: true, Attributes: primary}); !errors.Is(err, ErrUnsupportedEvidence) {
+	observations := discoveryStateObservations(MappingEIM, FilteringAPDF)
+	missingOther := observations[0]
+	missingOther.Attributes.OtherAddress = AddressPort{}
+	missingOther.Attributes.HasOtherAddress = false
+	if _, err := machine.Advance(StepPrimary, missingOther); !errors.Is(err, ErrUnsupportedEvidence) {
 		t.Fatalf("missing capability error = %v", err)
 	}
 
@@ -152,32 +206,31 @@ func TestRFC5780MissingCapabilityAndWrongOrderFailClosed(t *testing.T) {
 		"same port":    {Address: syntheticAddress(11).Address(), Port: 3478},
 	} {
 		t.Run(name, func(t *testing.T) {
-			invalid := primary
-			invalid.OtherAddress = other
-			invalid.HasOtherAddress = true
-			if _, err := NewRFC5780Machine().Advance(StepPrimary, DiscoveryObservation{Received: true, Attributes: invalid}); !errors.Is(err, ErrUnsupportedEvidence) {
+			invalid := observations[0]
+			invalid.Attributes.OtherAddress = other
+			invalid.Attributes.HasOtherAddress = true
+			if _, err := NewRFC5780Machine().Advance(StepPrimary, invalid); !errors.Is(err, ErrUnsupportedEvidence) {
 				t.Fatalf("invalid OTHER-ADDRESS topology error = %v", err)
 			}
 		})
 	}
 
-	validPrimary, validSame, validOther := discoveryMappingObservations(MappingEIM)
-	advanced, err := NewRFC5780Machine().Advance(StepPrimary, DiscoveryObservation{Received: true, Attributes: validPrimary})
+	advanced, err := NewRFC5780Machine().Advance(StepPrimary, observations[0])
 	if err != nil {
 		t.Fatal(err)
 	}
-	wrongSame := validSame
-	wrongSame.ResponseOrigin.Port = validPrimary.ResponseOrigin.Port + 2
-	if _, err := advanced.Advance(StepSameAddressOtherPort, DiscoveryObservation{Received: true, Attributes: wrongSame}); !errors.Is(err, ErrUnsupportedEvidence) {
+	wrongSame := observations[1]
+	wrongSame.RequestDestination.Port++
+	if _, err := advanced.Advance(StepSameAddressOtherPort, wrongSame); !errors.Is(err, ErrUnsupportedEvidence) {
 		t.Fatalf("wrong A1:P2 identity error = %v", err)
 	}
-	advanced, err = advanced.Advance(StepSameAddressOtherPort, DiscoveryObservation{Received: true, Attributes: validSame})
+	advanced, err = advanced.Advance(StepSameAddressOtherPort, observations[1])
 	if err != nil {
 		t.Fatal(err)
 	}
-	wrongOther := validOther
-	wrongOther.ResponseOrigin.Port = validPrimary.OtherAddress.Port
-	if _, err := advanced.Advance(StepOtherAddress, DiscoveryObservation{Received: true, Attributes: wrongOther}); !errors.Is(err, ErrUnsupportedEvidence) {
+	wrongOther := observations[2]
+	wrongOther.ResponseSource.Port++
+	if _, err := advanced.Advance(StepOtherAddress, wrongOther); !errors.Is(err, ErrUnsupportedEvidence) {
 		t.Fatalf("wrong A2:P1 identity error = %v", err)
 	}
 }
@@ -223,6 +276,32 @@ func discoveryMappingObservations(mapping MappingBehavior) (BehaviorAttributes, 
 	same := BehaviorAttributes{Mapped: mappedB, ResponseOrigin: sameOrigin, HasMapped: true, HasResponseOrigin: true}
 	other := BehaviorAttributes{Mapped: mappedC, ResponseOrigin: otherOrigin, HasMapped: true, HasResponseOrigin: true}
 	return primary, same, other
+}
+
+func discoveryStateObservations(mapping MappingBehavior, filtering FilteringBehavior) [RFC5780ExchangeCount]DiscoveryObservation {
+	primary, same, other := discoveryMappingObservations(mapping)
+	observations := [RFC5780ExchangeCount]DiscoveryObservation{
+		{Received: true, Attributes: primary, RequestDestination: primary.ResponseOrigin, ResponseSource: primary.ResponseOrigin},
+		{Received: true, Attributes: same, RequestDestination: same.ResponseOrigin, ResponseSource: same.ResponseOrigin},
+		{Received: true, Attributes: other, RequestDestination: other.ResponseOrigin, ResponseSource: other.ResponseOrigin},
+		{RequestDestination: primary.ResponseOrigin},
+		{RequestDestination: primary.ResponseOrigin},
+	}
+	for index := range observations {
+		observations[index].TransactionID = TransactionID{0: byte(index + 1), 11: byte(0xa0 + index)}
+	}
+	if filtering == FilteringEIF {
+		observations[3].Received = true
+		observations[3].ResponseSource = primary.OtherAddress
+		observations[3].Attributes = BehaviorAttributes{HasResponseOrigin: true, ResponseOrigin: primary.OtherAddress}
+	}
+	if filtering == FilteringADF {
+		origin := AddressPort{Address: primary.ResponseOrigin.Address, Port: primary.OtherAddress.Port}
+		observations[4].Received = true
+		observations[4].ResponseSource = origin
+		observations[4].Attributes = BehaviorAttributes{HasResponseOrigin: true, ResponseOrigin: origin}
+	}
+	return observations
 }
 
 func syntheticTransaction() TransactionID {

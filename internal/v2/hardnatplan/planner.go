@@ -9,7 +9,7 @@ import (
 )
 
 const (
-	planEncodingLabel   = "winkyou-hardnat-plan-v2\x00"
+	planEncodingLabel   = "winkyou-hardnat-plan-v3\x00"
 	costEncodingLabel   = "winkyou-hardnat-cost-v1\x00"
 	sourceEncodingLabel = "winkyou-hardnat-source-commitment-v1\x00"
 	jointEncodingLabel  = "winkyou-hardnat-joint-plan-v1\x00"
@@ -42,9 +42,6 @@ func BuildLocalCommitment(input LocalCommitmentInput) (LocalSourceCommitment, er
 	if err := validateRole(input.Profile, input.Context.Role); err != nil {
 		return commitment, err
 	}
-	if err := validateReceiveEndpoint(input.Profile, input.Context.Role, input.ReceiveEndpoint); err != nil {
-		return commitment, err
-	}
 
 	model, err := InferStateModel(input.Evidence, input.Validation)
 	commitment.EvidenceDigest = model.EvidenceDigest
@@ -55,6 +52,13 @@ func BuildLocalCommitment(input LocalCommitmentInput) (LocalSourceCommitment, er
 	if err := validateModelForProfile(input.Profile, input.Context.Role, model); err != nil {
 		return commitment, err
 	}
+	receiveEndpoint := AddressPort{}
+	if input.Profile == ProfileAsymmetricBirthday && input.Context.Role == RoleTargetSet {
+		receiveEndpoint = model.ReusableEndpoint
+	}
+	if err := validateReceiveEndpoint(input.Profile, input.Context.Role, receiveEndpoint); err != nil {
+		return commitment, err
+	}
 	shape, err := shapeFor(input.Profile, input.ResourceClass, input.Context.Role, model)
 	if err != nil {
 		return commitment, err
@@ -62,7 +66,7 @@ func BuildLocalCommitment(input LocalCommitmentInput) (LocalSourceCommitment, er
 	commitment.Cost = shape.cost
 	commitment.Universe = shape.universe
 	commitment.Executable = shape.executable
-	commitment.ReceiveEndpoint = input.ReceiveEndpoint
+	commitment.ReceiveEndpoint = receiveEndpoint
 	commitment.CostDigest = digestCost(input.Profile, input.ResourceClass, shape.cost)
 	commitment.Probability, err = probabilityFor(input.Profile, input.ResourceClass, model, shape)
 	if err != nil {
@@ -71,7 +75,7 @@ func BuildLocalCommitment(input LocalCommitmentInput) (LocalSourceCommitment, er
 	if !probabilityAdmitted(input.ResourceClass, commitment.Probability) || !input.Budget.admits(shape.cost) {
 		return commitment, ErrInsufficientBudget
 	}
-	commitment.SourceSlots, err = sourceSlotsFor(input.ResourceClass, input.Context.Role, model, input.ReceiveEndpoint)
+	commitment.SourceSlots, err = sourceSlotsFor(input.ResourceClass, input.Context.Role, model, receiveEndpoint)
 	if err != nil {
 		return commitment, err
 	}
@@ -158,7 +162,7 @@ func validateModelForProfile(profile Profile, role Role, model StateModel) error
 		if role == RoleMappingSet && !model.Mapping.endpointDependent() {
 			return ErrEvidenceInsufficient
 		}
-		if role == RoleTargetSet && model.Mapping != MappingEIM {
+		if role == RoleTargetSet && (model.Mapping != MappingEIM || !model.ReusableEndpoint.Valid()) {
 			return ErrEvidenceInsufficient
 		}
 	case ProfileHardBirthday:
@@ -223,6 +227,14 @@ func shapeForCommitment(commitment LocalSourceCommitment) (planShape, error) {
 		model.PredictedSourcePorts = make([]uint16, len(commitment.SourceSlots))
 	}
 	return shapeFor(commitment.Profile, commitment.ResourceClass, commitment.Role, model)
+}
+
+func probabilityForCommitment(commitment LocalSourceCommitment, shape planShape) (ProbabilityReport, error) {
+	model := StateModel{Coverage: commitment.Probability.ModelCoverage}
+	if commitment.ResourceClass == ResourcePredictive {
+		model.PredictedSourcePorts = make([]uint16, len(commitment.SourceSlots))
+	}
+	return probabilityFor(commitment.Profile, commitment.ResourceClass, model, shape)
 }
 
 func probabilityFor(profile Profile, resource ResourceClass, model StateModel, shape planShape) (ProbabilityReport, error) {
@@ -318,7 +330,9 @@ func sourceSlotsFor(resource ResourceClass, role Role, model StateModel, endpoin
 			return result, nil
 		}
 		if role == RoleTargetSet && endpoint.Valid() {
-			return []SourceSlot{{SocketSlot: 0, Ordinal: 0, ExpectedPublicSourcePort: endpoint.Port}}, nil
+			return []SourceSlot{{
+				SocketSlot: model.ReusableEndpointSlot, Ordinal: 0, ExpectedPublicSourcePort: endpoint.Port,
+			}}, nil
 		}
 	case ResourceHard16KLab:
 		result := make([]SourceSlot, 16)
@@ -370,14 +384,107 @@ func validateLocalCommitment(commitment LocalSourceCommitment) error {
 	if err != nil {
 		return err
 	}
+	probability, err := probabilityForCommitment(commitment, shape)
+	if err != nil {
+		return err
+	}
 	if commitment.Cost != shape.cost || commitment.Universe != shape.universe || commitment.Executable != shape.executable ||
 		commitment.CostDigest != digestCost(commitment.Profile, commitment.ResourceClass, commitment.Cost) ||
 		allZero(commitment.EvidenceDigest[:]) || allZero(commitment.ValidationDigest[:]) ||
-		commitment.SourceDigest != digestSourceCommitment(commitment) || !probabilityAdmitted(commitment.ResourceClass, commitment.Probability) {
+		commitment.SourceDigest != digestSourceCommitment(commitment) || commitment.Probability != probability ||
+		!probabilityAdmitted(commitment.ResourceClass, commitment.Probability) {
 		return ErrPlanMismatch
 	}
 	if err := validateSourceSlots(commitment); err != nil {
 		return err
+	}
+	return nil
+}
+
+// VerifyPlanAgainstCommitment recomputes every local plan binding. The joint
+// commitment is expected to have arrived over the authenticated Gate B
+// control channel.
+func VerifyPlanAgainstCommitment(plan Plan, source LocalSourceCommitment, joint JointPlanCommitment) error {
+	if err := validateLocalCommitment(source); err != nil {
+		return err
+	}
+	if !validJointCommitmentShape(joint) || joint.JointDigest != digestJointCommitment(joint) {
+		return ErrPlanMismatch
+	}
+	if joint.Profile != source.Profile || joint.ResourceClass != source.ResourceClass ||
+		joint.AttemptDigest != source.AttemptDigest || joint.Generation != source.Generation {
+		return ErrPlanMismatch
+	}
+	if plan.Profile != source.Profile || plan.ResourceClass != source.ResourceClass || plan.Role != source.Role ||
+		plan.Generation != source.Generation || plan.Universe != source.Universe || plan.Cost != source.Cost ||
+		plan.Probability != source.Probability || plan.EvidenceDigest != source.EvidenceDigest ||
+		plan.CostDigest != source.CostDigest || plan.Executable != source.Executable ||
+		plan.PlanDigest != digestPlan(plan, source.AttemptDigest) {
+		return ErrPlanMismatch
+	}
+	shape, err := shapeForCommitment(source)
+	if err != nil {
+		return err
+	}
+	if err := validatePlanCandidates(plan, source, shape); err != nil {
+		return err
+	}
+	for _, direction := range joint.Directions {
+		if direction.Role == plan.Role && direction.SourceDigest == source.SourceDigest && direction.Triple == plan.Digests() {
+			return nil
+		}
+	}
+	return ErrPlanMismatch
+}
+
+// VerifyExecutablePlanAgainstCommitment is the mandatory pre-I/O check for a
+// later executor. Plan-only resource classes cannot pass it.
+func VerifyExecutablePlanAgainstCommitment(plan Plan, source LocalSourceCommitment, joint JointPlanCommitment) error {
+	if err := VerifyPlanAgainstCommitment(plan, source, joint); err != nil {
+		return err
+	}
+	if !plan.Executable {
+		return ErrUnsupportedProfile
+	}
+	return nil
+}
+
+func validatePlanCandidates(plan Plan, source LocalSourceCommitment, shape planShape) error {
+	if uint32(len(plan.Candidates)) != shape.candidates {
+		return ErrPlanMismatch
+	}
+	seen := make(map[[2]uint32]struct{}, len(plan.Candidates))
+	for index, candidate := range plan.Candidates {
+		if candidate.Role != plan.Role || candidate.Ordinal != uint32(index) || candidate.TargetPort == 0 ||
+			uint32(candidate.SocketSlot) >= shape.cost.Sockets {
+			return ErrPlanMismatch
+		}
+		key := [2]uint32{uint32(candidate.SocketSlot), uint32(candidate.TargetPort)}
+		if _, duplicate := seen[key]; duplicate {
+			return ErrPlanMismatch
+		}
+		seen[key] = struct{}{}
+		switch source.ResourceClass {
+		case ResourcePredictive:
+			if index >= len(source.SourceSlots) || candidate.SocketSlot != source.SourceSlots[index].SocketSlot ||
+				candidate.ExpectedSourcePort != source.SourceSlots[index].ExpectedPublicSourcePort {
+				return ErrPlanMismatch
+			}
+		case ResourceAsymmetric:
+			if source.Role == RoleMappingSet && candidate.ExpectedSourcePort != 0 {
+				return ErrPlanMismatch
+			}
+			if source.Role == RoleTargetSet && (candidate.SocketSlot != source.SourceSlots[0].SocketSlot ||
+				candidate.ExpectedSourcePort != source.ReceiveEndpoint.Port) {
+				return ErrPlanMismatch
+			}
+		case ResourceHard16KLab, ResourceHard32KCandidate:
+			if candidate.ExpectedSourcePort != 0 {
+				return ErrPlanMismatch
+			}
+		default:
+			return ErrUnsupportedProfile
+		}
 	}
 	return nil
 }
@@ -420,7 +527,10 @@ func validateSourceSlots(commitment LocalSourceCommitment) error {
 			if commitment.Role == RoleMappingSet && (slot.SocketSlot != uint16(index) || slot.ExpectedPublicSourcePort != 0) {
 				return ErrPlanMismatch
 			}
-			if commitment.Role == RoleTargetSet && (slot.SocketSlot != 0 || slot.ExpectedPublicSourcePort != commitment.ReceiveEndpoint.Port) {
+			if commitment.Role == RoleTargetSet && slot.ExpectedPublicSourcePort != commitment.ReceiveEndpoint.Port {
+				return ErrPlanMismatch
+			}
+			if commitment.Role == RoleTargetSet && uint32(slot.SocketSlot) >= commitment.Cost.Sockets {
 				return ErrPlanMismatch
 			}
 		case ResourceHard16KLab, ResourceHard32KCandidate:
@@ -479,7 +589,10 @@ func buildDirectionalCandidates(local, peer LocalSourceCommitment, key [32]byte)
 		ports = ports[:512]
 		result := make([]Candidate, len(ports))
 		for ordinal, port := range ports {
-			result[ordinal] = Candidate{Role: local.Role, SocketSlot: 0, Ordinal: uint32(ordinal), ExpectedSourcePort: local.ReceiveEndpoint.Port, TargetPort: port}
+			result[ordinal] = Candidate{
+				Role: local.Role, SocketSlot: local.SourceSlots[0].SocketSlot, Ordinal: uint32(ordinal),
+				ExpectedSourcePort: local.ReceiveEndpoint.Port, TargetPort: port,
+			}
 		}
 		clear(ports)
 		return result, nil
@@ -607,6 +720,11 @@ func digestPlan(plan Plan, attemptDigest [32]byte) [32]byte {
 	encoded.Write(plan.EvidenceDigest[:])
 	encoded.Write(plan.CostDigest[:])
 	appendProbabilityReport(&encoded, plan.Probability)
+	if plan.Executable {
+		encoded.WriteByte(1)
+	} else {
+		encoded.WriteByte(0)
+	}
 	appendUint32(&encoded, uint32(len(plan.Candidates)))
 	for _, candidate := range plan.Candidates {
 		appendString(&encoded, string(candidate.Role))

@@ -12,6 +12,7 @@ const (
 	stunMagicCookie         uint32 = 0x2112a442
 	stunHeaderBytes                = 20
 	maxBehaviorMessageBytes        = 1024
+	RFC5780ExchangeCount           = 5
 
 	AttributeChangeRequest    uint16 = 0x0003
 	AttributeMappedAddress    uint16 = 0x0001
@@ -371,8 +372,11 @@ const (
 )
 
 type DiscoveryObservation struct {
-	Received   bool
-	Attributes BehaviorAttributes
+	TransactionID      TransactionID
+	RequestDestination AddressPort
+	ResponseSource     AddressPort
+	Received           bool
+	Attributes         BehaviorAttributes
 }
 
 type RFC5780Machine struct {
@@ -382,6 +386,7 @@ type RFC5780Machine struct {
 	otherAddress BehaviorAttributes
 	changeIPPort bool
 	changePort   bool
+	transactions [RFC5780ExchangeCount]TransactionID
 }
 
 func NewRFC5780Machine() RFC5780Machine {
@@ -392,6 +397,7 @@ func (machine RFC5780Machine) State() DiscoveryState { return machine.state }
 
 // Advance returns a new value; callers cannot mutate an accepted prior state.
 func (machine RFC5780Machine) Advance(step DiscoveryStep, observation DiscoveryObservation) (RFC5780Machine, error) {
+	state := machine.state
 	expected := map[DiscoveryState]DiscoveryStep{
 		DiscoveryAwaitPrimary: StepPrimary, DiscoveryAwaitSameAddressOtherPort: StepSameAddressOtherPort,
 		DiscoveryAwaitOtherAddress: StepOtherAddress, DiscoveryAwaitChangeIPPort: StepChangeIPPort,
@@ -400,11 +406,28 @@ func (machine RFC5780Machine) Advance(step DiscoveryStep, observation DiscoveryO
 	if step != expected {
 		return machine, ErrRFC5780Order
 	}
+	if allZero(observation.TransactionID[:]) || !observation.RequestDestination.Valid() {
+		return machine, ErrUnsupportedEvidence
+	}
+	for index := 0; index < int(machine.state) && index < len(machine.transactions); index++ {
+		if machine.transactions[index] == observation.TransactionID {
+			return machine, ErrUnsupportedEvidence
+		}
+	}
+	if observation.Received {
+		if !observation.ResponseSource.Valid() || !observation.Attributes.HasResponseOrigin ||
+			observation.ResponseSource != observation.Attributes.ResponseOrigin {
+			return machine, ErrUnsupportedEvidence
+		}
+	} else if observation.ResponseSource != (AddressPort{}) || observation.Attributes != (BehaviorAttributes{}) {
+		return machine, ErrUnsupportedEvidence
+	}
 	switch machine.state {
 	case DiscoveryAwaitPrimary:
 		attributes := observation.Attributes
 		if !observation.Received || !attributes.HasMapped || !attributes.HasResponseOrigin || !attributes.HasOtherAddress ||
 			!attributes.Mapped.Valid() || !attributes.ResponseOrigin.Valid() || !attributes.OtherAddress.Valid() ||
+			observation.RequestDestination != attributes.ResponseOrigin ||
 			attributes.ResponseOrigin.Address == attributes.OtherAddress.Address || attributes.ResponseOrigin.Port == attributes.OtherAddress.Port {
 			return machine, ErrUnsupportedEvidence
 		}
@@ -413,6 +436,8 @@ func (machine RFC5780Machine) Advance(step DiscoveryStep, observation DiscoveryO
 	case DiscoveryAwaitSameAddressOtherPort:
 		attributes := observation.Attributes
 		if !observation.Received || !attributes.HasMapped || !attributes.HasResponseOrigin || !attributes.Mapped.Valid() ||
+			observation.RequestDestination.Address != machine.primary.ResponseOrigin.Address ||
+			observation.RequestDestination.Port != machine.primary.OtherAddress.Port ||
 			attributes.ResponseOrigin.Address != machine.primary.ResponseOrigin.Address ||
 			attributes.ResponseOrigin.Port != machine.primary.OtherAddress.Port {
 			return machine, ErrUnsupportedEvidence
@@ -422,6 +447,8 @@ func (machine RFC5780Machine) Advance(step DiscoveryStep, observation DiscoveryO
 	case DiscoveryAwaitOtherAddress:
 		attributes := observation.Attributes
 		if !observation.Received || !attributes.HasMapped || !attributes.HasResponseOrigin || !attributes.Mapped.Valid() ||
+			observation.RequestDestination.Address != machine.primary.OtherAddress.Address ||
+			observation.RequestDestination.Port != machine.primary.ResponseOrigin.Port ||
 			attributes.ResponseOrigin.Address != machine.primary.OtherAddress.Address ||
 			attributes.ResponseOrigin.Port != machine.primary.ResponseOrigin.Port {
 			return machine, ErrUnsupportedEvidence
@@ -429,6 +456,9 @@ func (machine RFC5780Machine) Advance(step DiscoveryStep, observation DiscoveryO
 		machine.otherAddress = attributes
 		machine.state = DiscoveryAwaitChangeIPPort
 	case DiscoveryAwaitChangeIPPort:
+		if observation.RequestDestination != machine.primary.ResponseOrigin {
+			return machine, ErrUnsupportedEvidence
+		}
 		if observation.Received {
 			if !observation.Attributes.HasResponseOrigin || observation.Attributes.ResponseOrigin != machine.primary.OtherAddress {
 				return machine, ErrUnsupportedEvidence
@@ -437,6 +467,9 @@ func (machine RFC5780Machine) Advance(step DiscoveryStep, observation DiscoveryO
 		}
 		machine.state = DiscoveryAwaitChangePort
 	case DiscoveryAwaitChangePort:
+		if observation.RequestDestination != machine.primary.ResponseOrigin {
+			return machine, ErrUnsupportedEvidence
+		}
 		if observation.Received {
 			origin := observation.Attributes.ResponseOrigin
 			if !observation.Attributes.HasResponseOrigin || origin.Address != machine.primary.ResponseOrigin.Address ||
@@ -449,6 +482,7 @@ func (machine RFC5780Machine) Advance(step DiscoveryStep, observation DiscoveryO
 	default:
 		return machine, ErrRFC5780Order
 	}
+	machine.transactions[int(state)] = observation.TransactionID
 	return machine, nil
 }
 

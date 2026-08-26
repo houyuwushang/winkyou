@@ -48,6 +48,10 @@ func InferStateModel(graph EvidenceGraph, trusted TrustedValidationContext) (Sta
 	}
 	model.Mapping, model.MappingSource = mapping, mappingSource
 	model.Filtering, model.FilteringSource = filtering, filteringSource
+	reusableEndpoint, reusableEndpointSlot, endpointErr := reusableRFC5780Endpoint(normalized.RFC5780)
+	if endpointErr != nil {
+		return model, ErrEvidenceInsufficient
+	}
 
 	samples, failedSamples, sampleErr := continuousSuccessfulAllocationSuffix(normalized.Allocation)
 	if sampleErr != nil {
@@ -67,6 +71,21 @@ func InferStateModel(graph EvidenceGraph, trusted TrustedValidationContext) (Sta
 			model.Coverage = coverageString(model)
 			return model, ErrEvidenceInsufficient
 		}
+	}
+	if reusableEndpoint.Valid() {
+		witnessed := false
+		for _, sample := range samples {
+			if sample.SocketSlot == reusableEndpointSlot && sample.MappedAddress == reusableEndpoint.Address && sample.MappedPort == reusableEndpoint.Port {
+				witnessed = true
+				break
+			}
+		}
+		if !witnessed {
+			model.Coverage = coverageString(model)
+			return model, ErrEvidenceInsufficient
+		}
+		model.ReusableEndpoint = reusableEndpoint
+		model.ReusableEndpointSlot = reusableEndpointSlot
 	}
 	stable, poolingErr := mergeIPPooling(normalized)
 	if poolingErr != nil || !stable {
@@ -344,6 +363,9 @@ func DigestEvidence(graph EvidenceGraph) ([32]byte, error) {
 	for _, entry := range graph.Allocation {
 		records = append(records, encodeAllocationSample(entry))
 	}
+	for _, transcript := range graph.RFC5780 {
+		records = append(records, encodeRFC5780Transcript(transcript))
+	}
 	sort.Slice(records, func(left, right int) bool { return bytes.Compare(records[left], records[right]) < 0 })
 
 	var encoded bytes.Buffer
@@ -395,6 +417,42 @@ func encodeAllocationSample(entry AllocationSample) []byte {
 		extra.WriteByte(0)
 	}
 	return encodeEvidenceRecord(4, entry.Meta, "", extra.Bytes())
+}
+
+func encodeRFC5780Transcript(transcript RFC5780Transcript) []byte {
+	var encoded bytes.Buffer
+	encoded.WriteByte(5)
+	appendString(&encoded, string(transcript.Origin))
+	appendUint16(&encoded, transcript.SocketSlot)
+	appendUint32(&encoded, RFC5780ExchangeCount)
+	for _, exchange := range transcript.Exchanges {
+		record := encodeRFC5780Exchange(exchange)
+		appendUint32(&encoded, uint32(len(record)))
+		encoded.Write(record)
+		clear(record)
+	}
+	return encoded.Bytes()
+}
+
+func encodeRFC5780Exchange(exchange RFC5780Exchange) []byte {
+	var encoded bytes.Buffer
+	appendString(&encoded, string(exchange.Step))
+	encoded.Write(exchange.TransactionID[:])
+	appendAddress(&encoded, exchange.RequestDestination.Address)
+	appendUint16(&encoded, exchange.RequestDestination.Port)
+	appendAddress(&encoded, exchange.ResponseSource.Address)
+	appendUint16(&encoded, exchange.ResponseSource.Port)
+	appendInt64(&encoded, exchange.ObservedAtMilli)
+	if exchange.Received {
+		encoded.WriteByte(1)
+	} else {
+		encoded.WriteByte(0)
+	}
+	appendUint32(&encoded, uint32(len(exchange.Request)))
+	encoded.Write(exchange.Request)
+	appendUint32(&encoded, uint32(len(exchange.Response)))
+	encoded.Write(exchange.Response)
+	return encoded.Bytes()
 }
 
 func encodeEvidenceRecord(kind byte, meta EvidenceMeta, value string, extra []byte) []byte {

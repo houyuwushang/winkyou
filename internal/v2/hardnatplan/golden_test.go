@@ -235,7 +235,7 @@ func buildHardNATGolden(t *testing.T) hardNATGolden {
 	}
 	predictiveBilateral := buildPredictiveBilateralGolden(t)
 	return hardNATGolden{
-		Schema: "winkyou-hardnatplan-golden/2", ByteOrder: "big-endian", PRPLabelHex: hex.EncodeToString([]byte(prpEncodingLabel)),
+		Schema: "winkyou-hardnatplan-golden/3", ByteOrder: "big-endian", PRPLabelHex: hex.EncodeToString([]byte(prpEncodingLabel)),
 		PlannerKeyHex: hex.EncodeToString(key[:]), Profile: plan.Profile, ResourceClass: plan.ResourceClass, Role: plan.Role,
 		EvidenceBindings: goldenEvidenceBindings{
 			AttemptHex: hex.EncodeToString(graph.AttemptDigest[:]), MachineScopeHex: hex.EncodeToString(graph.MachineScopeDigest[:]),

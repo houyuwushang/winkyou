@@ -38,6 +38,15 @@ func TestNATSimSequentialAPDMPredictiveWindowAndStealing(t *testing.T) {
 }
 
 func TestNATSimBilateralSequentialAPDMPlansActuallyConnect(t *testing.T) {
+	for _, first := range []Role{RoleInitiator, RoleResponder} {
+		t.Run(string(first)+"-first", func(t *testing.T) {
+			runNATSimBilateralSequentialAPDM(t, first)
+		})
+	}
+}
+
+func runNATSimBilateralSequentialAPDM(t *testing.T, first Role) {
+	t.Helper()
 	network, err := natsim.NewNetwork(natsim.Config{MaxPacketConns: 16, MaxMappings: 128, QueueCapacity: 128, MaxDatagram: 32})
 	if err != nil {
 		t.Fatal(err)
@@ -94,16 +103,33 @@ func TestNATSimBilateralSequentialAPDMPlansActuallyConnect(t *testing.T) {
 
 	publicA := netip.MustParseAddr("203.0.113.10")
 	publicB := netip.MustParseAddr("203.0.113.20")
-	writePredictivePlan(t, network, connectionsA, publicB, planA, "syn-a")
-	writePredictivePlan(t, network, connectionsB, publicA, planB, "syn-b")
-	if got := drainVirtualPackets(t, connectionsA); got != len(planB.Candidates) {
-		t.Fatalf("A received %d/%d reciprocal packets", got, len(planB.Candidates))
+	var winner *natsim.PacketConn
+	var winnerSource netip.AddrPort
+	var confirmationConnections []*natsim.PacketConn
+	if first == RoleInitiator {
+		writePredictivePlan(t, network, connectionsA, publicB, planA, "syn-a")
+		writePredictivePlan(t, network, connectionsB, publicA, planB, "syn-b")
+		got, receivedOn, source := drainVirtualPacketsWithWinner(t, connectionsA)
+		if got != len(planB.Candidates) || drainVirtualPackets(t, connectionsB) != 0 {
+			t.Fatalf("initiator-first directional receives = A:%d B:nonzero", got)
+		}
+		winner, winnerSource, confirmationConnections = receivedOn, source, connectionsB
+	} else {
+		writePredictivePlan(t, network, connectionsB, publicA, planB, "syn-b")
+		writePredictivePlan(t, network, connectionsA, publicB, planA, "syn-a")
+		got, receivedOn, source := drainVirtualPacketsWithWinner(t, connectionsB)
+		if got != len(planA.Candidates) || drainVirtualPackets(t, connectionsA) != 0 {
+			t.Fatalf("responder-first directional receives = B:%d A:nonzero", got)
+		}
+		winner, winnerSource, confirmationConnections = receivedOn, source, connectionsA
 	}
-	// The first A flight opened its APDF filters. Reusing the same directional
-	// tuples is the fixed reciprocal confirmation, not candidate expansion.
-	writePredictivePlan(t, network, connectionsA, publicB, planA, "ack-a")
-	if got := drainVirtualPackets(t, connectionsB); got != len(planA.Candidates) {
-		t.Fatalf("B received %d/%d reciprocal confirmations", got, len(planA.Candidates))
+	// Candidate tuples are emitted once. Endpoint learning selects one
+	// authenticated winner, and only that tuple carries the ACK/VERIFY reply.
+	if n, writeErr := winner.WriteToAddrPort([]byte("ack"), winnerSource); writeErr != nil || n != len("ack") {
+		t.Fatalf("write winner ACK = %d/%v", n, writeErr)
+	}
+	if got := drainVirtualPackets(t, confirmationConnections); got != 1 {
+		t.Fatalf("peer received %d winner confirmations, want 1", got)
 	}
 
 	for _, connection := range append(connectionsA, connectionsB...) {
@@ -251,21 +277,40 @@ func collectSequentialEvidence(t *testing.T, network *natsim.Network, connection
 	return ports
 }
 
-func writePredictivePlan(t *testing.T, network *natsim.Network, connections []*natsim.PacketConn, peerAddress netip.Addr, plan Plan, payload string) {
+func writePredictiveCandidate(
+	t *testing.T,
+	network *natsim.Network,
+	connections []*natsim.PacketConn,
+	peerAddress netip.Addr,
+	candidate Candidate,
+	payload string,
+) {
+	t.Helper()
+	destination := netip.AddrPortFrom(peerAddress, candidate.TargetPort)
+	connection := connections[candidate.SocketSlot]
+	if n, err := connection.WriteToAddrPort([]byte(payload), destination); err != nil || n != len(payload) {
+		t.Fatalf("write candidate %+v = %d/%v", candidate, n, err)
+	}
+	mapped, err := network.MappedAddr(connection, destination)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if mapped.Port() != candidate.ExpectedSourcePort {
+		t.Fatalf("candidate %+v produced source %d", candidate, mapped.Port())
+	}
+}
+
+func writePredictivePlan(
+	t *testing.T,
+	network *natsim.Network,
+	connections []*natsim.PacketConn,
+	peerAddress netip.Addr,
+	plan Plan,
+	payload string,
+) {
 	t.Helper()
 	for _, candidate := range plan.Candidates {
-		destination := netip.AddrPortFrom(peerAddress, candidate.TargetPort)
-		connection := connections[candidate.SocketSlot]
-		if n, err := connection.WriteToAddrPort([]byte(payload), destination); err != nil || n != len(payload) {
-			t.Fatalf("write candidate %+v = %d/%v", candidate, n, err)
-		}
-		mapped, err := network.MappedAddr(connection, destination)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if mapped.Port() != candidate.ExpectedSourcePort {
-			t.Fatalf("candidate %+v produced source %d", candidate, mapped.Port())
-		}
+		writePredictiveCandidate(t, network, connections, peerAddress, candidate, payload)
 	}
 }
 
@@ -289,6 +334,36 @@ func drainVirtualPackets(t *testing.T, connections []*natsim.PacketConn) int {
 		}
 	}
 	return count
+}
+
+func drainVirtualPacketsWithWinner(t *testing.T, connections []*natsim.PacketConn) (int, *natsim.PacketConn, netip.AddrPort) {
+	t.Helper()
+	count := 0
+	var winner *natsim.PacketConn
+	var winnerSource netip.AddrPort
+	buffer := make([]byte, 32)
+	for _, connection := range connections {
+		for {
+			n, source, ok, err := connection.TryReadFromAddrPort(buffer)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !ok {
+				break
+			}
+			if n == 0 || !source.IsValid() {
+				t.Fatalf("invalid virtual packet %d/%s", n, source)
+			}
+			if winner == nil {
+				winner, winnerSource = connection, source
+			}
+			count++
+		}
+	}
+	if winner == nil {
+		t.Fatal("no authenticated winner packet")
+	}
+	return count, winner, winnerSource
 }
 
 func natsimRandomMappingSet(t *testing.T, seed uint64, count int, minimum, maximum int) []uint16 {

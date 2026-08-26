@@ -39,64 +39,155 @@ func normalizeEvidence(graph EvidenceGraph, trusted TrustedValidationContext) (E
 	}
 	seen := make(map[issuedTransactionKey][]byte, len(manifest))
 
-	accept := func(kind EvidenceKind, meta EvidenceMeta, record []byte, appendRecord func()) error {
+	acceptBound := func(
+		kind EvidenceKind,
+		transaction TransactionID,
+		source EvidenceSource,
+		observer AddressPort,
+		socketSlot uint16,
+		ordinal uint32,
+		observedAtMilli int64,
+		record []byte,
+	) (bool, error) {
 		defer clear(record)
-		if meta.Origin == OriginRemoteReport {
-			return nil
-		}
-		key := issuedTransactionKey(meta.TransactionID)
+		key := issuedTransactionKey(transaction)
 		issued, ok := manifest[key]
-		if !ok || issued.Kind != kind || !metaMatchesIssued(meta, issued, graph) {
-			return ErrInvalidEvidence
+		if !ok || issued.Kind != kind || issued.TransactionID != transaction || issued.Source != source ||
+			issued.Observer != observer || issued.SocketSlot != socketSlot || issued.Ordinal != ordinal ||
+			observedAtMilli < issued.NotBeforeMilli || observedAtMilli > issued.NotAfterMilli {
+			return false, ErrInvalidEvidence
 		}
 		if previous, duplicate := seen[key]; duplicate {
 			if !bytes.Equal(previous, record) {
-				return ErrEvidenceInsufficient
+				return false, ErrEvidenceInsufficient
 			}
-			return nil
+			return true, nil
 		}
 		seen[key] = append([]byte(nil), record...)
-		appendRecord()
-		return nil
+		return false, nil
 	}
 
 	for _, entry := range graph.Mapping {
 		entry := entry
-		if err := accept(EvidenceKindMapping, entry.Meta, encodeMappingEvidence(entry), func() {
+		if entry.Meta.Origin == OriginRemoteReport {
+			continue
+		}
+		if entry.Meta.Source == SourceRFC5780 || !actionableMeta(entry.Meta, graph) {
+			return empty, validationDigest, ErrInvalidEvidence
+		}
+		duplicate, acceptErr := acceptBound(
+			EvidenceKindMapping, entry.Meta.TransactionID, entry.Meta.Source,
+			AddressPort{Address: entry.Meta.ObserverAddress, Port: entry.Meta.ObserverPort},
+			entry.Meta.SocketSlot, 0, entry.Meta.ObservedAtMilli, encodeMappingEvidence(entry),
+		)
+		if acceptErr != nil {
+			return empty, validationDigest, acceptErr
+		}
+		if !duplicate {
 			normalized.Mapping = append(normalized.Mapping, entry)
-		}); err != nil {
-			return empty, validationDigest, err
 		}
 	}
 	for _, entry := range graph.Filtering {
 		entry := entry
-		if err := accept(EvidenceKindFiltering, entry.Meta, encodeFilteringEvidence(entry), func() {
+		if entry.Meta.Origin == OriginRemoteReport {
+			continue
+		}
+		if entry.Meta.Source == SourceRFC5780 || !actionableMeta(entry.Meta, graph) {
+			return empty, validationDigest, ErrInvalidEvidence
+		}
+		duplicate, acceptErr := acceptBound(
+			EvidenceKindFiltering, entry.Meta.TransactionID, entry.Meta.Source,
+			AddressPort{Address: entry.Meta.ObserverAddress, Port: entry.Meta.ObserverPort},
+			entry.Meta.SocketSlot, 0, entry.Meta.ObservedAtMilli, encodeFilteringEvidence(entry),
+		)
+		if acceptErr != nil {
+			return empty, validationDigest, acceptErr
+		}
+		if !duplicate {
 			normalized.Filtering = append(normalized.Filtering, entry)
-		}); err != nil {
-			return empty, validationDigest, err
 		}
 	}
 	for _, entry := range graph.IPPooling {
 		entry := entry
-		if err := accept(EvidenceKindIPPooling, entry.Meta, encodeIPPoolingEvidence(entry), func() {
+		if entry.Meta.Origin == OriginRemoteReport {
+			continue
+		}
+		if !actionableMeta(entry.Meta, graph) {
+			return empty, validationDigest, ErrInvalidEvidence
+		}
+		duplicate, acceptErr := acceptBound(
+			EvidenceKindIPPooling, entry.Meta.TransactionID, entry.Meta.Source,
+			AddressPort{Address: entry.Meta.ObserverAddress, Port: entry.Meta.ObserverPort},
+			entry.Meta.SocketSlot, 0, entry.Meta.ObservedAtMilli, encodeIPPoolingEvidence(entry),
+		)
+		if acceptErr != nil {
+			return empty, validationDigest, acceptErr
+		}
+		if !duplicate {
 			normalized.IPPooling = append(normalized.IPPooling, entry)
-		}); err != nil {
-			return empty, validationDigest, err
 		}
 	}
 	for _, entry := range graph.Allocation {
 		entry := entry
-		if err := accept(EvidenceKindAllocation, entry.Meta, encodeAllocationSample(entry), func() {
-			normalized.Allocation = append(normalized.Allocation, entry)
-		}); err != nil {
-			return empty, validationDigest, err
+		if entry.Meta.Origin == OriginRemoteReport {
+			continue
 		}
-		if entry.Meta.Origin == OriginLocalTransaction {
-			issued := manifest[issuedTransactionKey(entry.Meta.TransactionID)]
-			if entry.Meta.SocketSlot != entry.SocketSlot || issued.SocketSlot != entry.SocketSlot || issued.Ordinal != entry.Ordinal {
-				return empty, validationDigest, ErrInvalidEvidence
+		if !actionableMeta(entry.Meta, graph) || entry.Meta.SocketSlot != entry.SocketSlot {
+			return empty, validationDigest, ErrInvalidEvidence
+		}
+		duplicate, acceptErr := acceptBound(
+			EvidenceKindAllocation, entry.Meta.TransactionID, entry.Meta.Source,
+			AddressPort{Address: entry.Meta.ObserverAddress, Port: entry.Meta.ObserverPort},
+			entry.SocketSlot, entry.Ordinal, entry.Meta.ObservedAtMilli, encodeAllocationSample(entry),
+		)
+		if acceptErr != nil {
+			return empty, validationDigest, acceptErr
+		}
+		if !duplicate {
+			normalized.Allocation = append(normalized.Allocation, entry)
+		}
+	}
+	for _, transcript := range graph.RFC5780 {
+		if transcript.Origin == OriginRemoteReport {
+			continue
+		}
+		if transcript.Origin != OriginLocalTransaction {
+			return empty, validationDigest, ErrInvalidEvidence
+		}
+		derived, deriveErr := deriveRFC5780Transcript(transcript)
+		if deriveErr != nil {
+			return empty, validationDigest, deriveErr
+		}
+		duplicates := 0
+		for index, exchange := range transcript.Exchanges {
+			duplicate, acceptErr := acceptBound(
+				EvidenceKindRFC5780, exchange.TransactionID, SourceRFC5780, exchange.RequestDestination,
+				transcript.SocketSlot, uint32(index), exchange.ObservedAtMilli, encodeRFC5780Exchange(exchange),
+			)
+			if acceptErr != nil {
+				return empty, validationDigest, acceptErr
+			}
+			if duplicate {
+				duplicates++
 			}
 		}
+		if duplicates != 0 && duplicates != RFC5780ExchangeCount {
+			return empty, validationDigest, ErrEvidenceInsufficient
+		}
+		if duplicates == RFC5780ExchangeCount {
+			continue
+		}
+		normalized.RFC5780 = append(normalized.RFC5780, transcript.Clone())
+		mappingExchange := transcript.Exchanges[2]
+		filteringExchange := transcript.Exchanges[4]
+		normalized.Mapping = append(normalized.Mapping, MappingEvidence{
+			Meta:     derivedRFC5780Meta(graph, transcript, mappingExchange),
+			Behavior: derived.mapping,
+		})
+		normalized.Filtering = append(normalized.Filtering, FilteringEvidence{
+			Meta:     derivedRFC5780Meta(graph, transcript, filteringExchange),
+			Behavior: derived.filtering,
+		})
 	}
 	if len(seen) != len(manifest) {
 		return empty, validationDigest, ErrEvidenceInsufficient
@@ -140,17 +231,20 @@ func validIssuedTransaction(issued IssuedTransaction, trusted TrustedValidationC
 		return issued.Ordinal == 0
 	case EvidenceKindAllocation:
 		return true
+	case EvidenceKindRFC5780:
+		return issued.Source == SourceRFC5780 && issued.Ordinal < RFC5780ExchangeCount
 	default:
 		return false
 	}
 }
 
-func metaMatchesIssued(meta EvidenceMeta, issued IssuedTransaction, graph EvidenceGraph) bool {
-	return meta.Origin == OriginLocalTransaction && meta.Source == issued.Source &&
-		meta.ObserverAddress == issued.Observer.Address && meta.ObserverPort == issued.Observer.Port &&
-		meta.SocketSlot == issued.SocketSlot &&
-		meta.AttemptDigest == graph.AttemptDigest && meta.Generation == graph.Generation &&
-		meta.ObservedAtMilli >= issued.NotBeforeMilli && meta.ObservedAtMilli <= issued.NotAfterMilli
+func derivedRFC5780Meta(graph EvidenceGraph, transcript RFC5780Transcript, exchange RFC5780Exchange) EvidenceMeta {
+	return EvidenceMeta{
+		Source: SourceRFC5780, Origin: OriginLocalTransaction,
+		ObserverAddress: exchange.RequestDestination.Address, ObserverPort: exchange.RequestDestination.Port,
+		SocketSlot: transcript.SocketSlot, TransactionID: exchange.TransactionID,
+		AttemptDigest: graph.AttemptDigest, Generation: graph.Generation, ObservedAtMilli: exchange.ObservedAtMilli,
+	}
 }
 
 // DigestValidationContext commits the stable trust anchors and issued

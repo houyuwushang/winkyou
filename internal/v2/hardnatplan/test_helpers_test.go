@@ -48,12 +48,7 @@ func syntheticEvidence(mapping MappingBehavior, filtering FilteringBehavior, por
 	}
 	public := syntheticAddress(200).Address()
 	pool := syntheticDigest("pool")
-	graph.Mapping = []MappingEvidence{{
-		Meta: evidenceMeta(graph, 200, SourceRFC5780, OriginLocalTransaction, syntheticAddress(10).Address(), 3478), Behavior: mapping,
-	}}
-	graph.Filtering = []FilteringEvidence{{
-		Meta: evidenceMeta(graph, 201, SourceRFC5780, OriginLocalTransaction, syntheticAddress(10).Address(), 3478), Behavior: filtering,
-	}}
+	graph.RFC5780 = []RFC5780Transcript{syntheticRFC5780Transcript(mapping, filtering, public, ports[0])}
 	graph.IPPooling = []IPPoolingEvidence{{
 		Meta: evidenceMeta(graph, 202, SourceRFC5780, OriginLocalTransaction, syntheticAddress(10).Address(), 3478), Stable: true, PoolDigest: pool,
 	}}
@@ -74,6 +69,69 @@ func syntheticEvidence(mapping MappingBehavior, filtering FilteringBehavior, por
 		})
 	}
 	return graph
+}
+
+func syntheticRFC5780Transcript(mapping MappingBehavior, filtering FilteringBehavior, public Address, port uint16) RFC5780Transcript {
+	primaryOrigin := AddressPort{Address: syntheticAddress(10).Address(), Port: 3478}
+	sameOrigin := AddressPort{Address: primaryOrigin.Address, Port: 3479}
+	otherOrigin := AddressPort{Address: syntheticAddress(11).Address(), Port: primaryOrigin.Port}
+	otherAddress := AddressPort{Address: otherOrigin.Address, Port: sameOrigin.Port}
+	mappedPrimary := AddressPort{Address: public, Port: port}
+	mappedSame, mappedOther := mappedPrimary, mappedPrimary
+	switch mapping {
+	case MappingADM:
+		mappedOther.Port = addPort(mappedOther.Port, 1)
+	case MappingAPDM:
+		mappedSame.Port = addPort(mappedSame.Port, 1)
+		mappedOther.Port = addPort(mappedOther.Port, 2)
+	}
+	attributes := [RFC5780ExchangeCount]BehaviorAttributes{
+		{
+			Mapped: mappedPrimary, ResponseOrigin: primaryOrigin, OtherAddress: otherAddress,
+			HasMapped: true, HasResponseOrigin: true, HasOtherAddress: true,
+		},
+		{Mapped: mappedSame, ResponseOrigin: sameOrigin, HasMapped: true, HasResponseOrigin: true},
+		{Mapped: mappedOther, ResponseOrigin: otherOrigin, HasMapped: true, HasResponseOrigin: true},
+		{},
+		{},
+	}
+	received := [RFC5780ExchangeCount]bool{true, true, true, false, false}
+	if filtering == FilteringEIF {
+		received[3] = true
+		attributes[3] = BehaviorAttributes{
+			Mapped: mappedPrimary, ResponseOrigin: otherAddress, HasMapped: true, HasResponseOrigin: true,
+		}
+	}
+	if filtering == FilteringADF {
+		received[4] = true
+		attributes[4] = BehaviorAttributes{
+			Mapped: mappedPrimary, ResponseOrigin: sameOrigin, HasMapped: true, HasResponseOrigin: true,
+		}
+	}
+	destinations := [RFC5780ExchangeCount]AddressPort{primaryOrigin, sameOrigin, otherOrigin, primaryOrigin, primaryOrigin}
+	var transcript RFC5780Transcript
+	transcript.Origin = OriginLocalTransaction
+	for index, step := range orderedRFC5780Steps {
+		transaction := TransactionID{0: byte(230 + index), 11: byte(0x5a ^ (230 + index))}
+		request, err := BuildBehaviorBindingRequest(transaction, expectedRFC5780Change(step))
+		if err != nil {
+			panic(err)
+		}
+		exchange := RFC5780Exchange{
+			Step: step, TransactionID: transaction, RequestDestination: destinations[index],
+			ObservedAtMilli: int64(1_300 + index), Received: received[index], Request: request,
+		}
+		if received[index] {
+			response, buildErr := BuildBehaviorBindingSuccess(transaction, attributes[index])
+			if buildErr != nil {
+				panic(buildErr)
+			}
+			exchange.ResponseSource = attributes[index].ResponseOrigin
+			exchange.Response = response
+		}
+		transcript.Exchanges[index] = exchange
+	}
+	return transcript
 }
 
 func evidenceMeta(graph EvidenceGraph, marker byte, source EvidenceSource, origin EvidenceOrigin, observer Address, port uint16) EvidenceMeta {
@@ -130,6 +188,20 @@ func trustedValidation(graph EvidenceGraph) TrustedValidationContext {
 	for _, entry := range graph.Allocation {
 		appendIssued(EvidenceKindAllocation, entry.Meta, entry.SocketSlot, entry.Ordinal)
 	}
+	for _, transcript := range graph.RFC5780 {
+		if transcript.Origin != OriginLocalTransaction {
+			continue
+		}
+		for index, exchange := range transcript.Exchanges {
+			meta := EvidenceMeta{
+				Source: SourceRFC5780, Origin: transcript.Origin,
+				ObserverAddress: exchange.RequestDestination.Address, ObserverPort: exchange.RequestDestination.Port,
+				SocketSlot: transcript.SocketSlot, TransactionID: exchange.TransactionID,
+				AttemptDigest: graph.AttemptDigest, Generation: graph.Generation, ObservedAtMilli: exchange.ObservedAtMilli,
+			}
+			appendIssued(EvidenceKindRFC5780, meta, transcript.SocketSlot, uint32(index))
+		}
+	}
 	return trusted
 }
 
@@ -138,15 +210,11 @@ func inferStateModel(graph EvidenceGraph) (StateModel, error) {
 }
 
 func localCommitmentInput(profile Profile, resource ResourceClass, role Role, graph EvidenceGraph) LocalCommitmentInput {
-	input := LocalCommitmentInput{
+	return LocalCommitmentInput{
 		Profile: profile, ResourceClass: resource,
 		Context:  AttemptContext{AttemptDigest: graph.AttemptDigest, Generation: graph.Generation, Role: role},
 		Evidence: graph, Validation: trustedValidation(graph), Budget: generousBudget(),
 	}
-	if profile == ProfileAsymmetricBirthday && role == RoleTargetSet {
-		input.ReceiveEndpoint = AddressPort{Address: syntheticAddress(220).Address(), Port: 55000}
-	}
-	return input
 }
 
 func buildPlanForRole(t testing.TB, profile Profile, resource ResourceClass, role Role, graph EvidenceGraph) Plan {

@@ -560,6 +560,8 @@ packet count、PPS、span 或任意 target candidate：
   `left_source[i] -> right_source[p(i)]` 都有严格互逆的
   `right_source[p(i)] -> left_source[i]`，不会因两侧各自独立 shuffle 而破坏 reciprocal APDF；
 - `asymmetric_birthday/1`：`target_set_role` 只承诺一个已认证、可复用的 receive endpoint；
+  该 endpoint 不接受 caller/peer 另行填写，必须由本 attempt 的 RFC 5780 transcript 产生 EIM
+  结论，并与同一 socket slot 的成功 allocation sample 精确一致；
   `mapping_set_role` 的 128 个 slot 与 `target_set_role` 的 512 个 target 仍由共享 planner key
   的 role-separated PRP 决定；
 - `hard_birthday_campaign/1`：不接受远端自报 source window；两侧 target permutation 仍只由
@@ -586,6 +588,12 @@ JointPlanDigest = H(profile || resource || attempt || generation ||
 不一致、source commitment 不一致或任一 directional triple 不一致均为终局。旧的
 `VerifyDigestTriple(local, remote)` 相等语义必须删除。FIRE 前必须完成 joint 互认。
 
+`Executable` 是 PlanDigest 的显式字段，不得只依赖 resource class 或 source digest 间接推导。
+执行方还必须用 source commitment 与已认证 joint commitment 重算 profile/resource shape、
+canonical probability、cost、candidate tuple、PlanDigest 与 directional triple；只比较已经
+存储的 digest 不构成执行授权。peer 提交的 probability report 不能只凭 floor 过门，除
+`model_coverage` 诊断文本外的全部数学字段必须由固定 profile/resource/source shape 重算。
+
 ### 15.3 trusted evidence validation context
 
 `EvidenceGraph` 中的非零 digest 只是被验证对象，不是信任来源。B1 必须另外接收调用者提供的
@@ -596,6 +604,13 @@ JointPlanDigest = H(profile || resource || attempt || generation ||
 - trusted started/finished/expires 时间与当前 evaluation time；
 - 预先签发的 transaction manifest：evidence kind、transaction ID、source class、destination
   endpoint、socket slot、ordinal 与允许响应时间窗。
+
+RFC 5780 的 mapping/filtering 不接受 `MappingEvidence.Behavior` 或
+`FilteringEvidence.Behavior` 直接填枚举。actionable 输入必须保留五步固定 transcript：
+每步的 request bytes、transaction ID、request destination、实际 datagram response source、
+response bytes、socket slot、ordinal 与 observation time。归一化过程重新解析 request/response，
+核对 manifest、`MAPPED-ADDRESS`/`XOR-MAPPED-ADDRESS`、实际 source 与四地址 topology，再由
+状态机生成 mapping/filtering。直接标记为 `SourceRFC5780` 的结论记录稳定拒绝。
 
 v1 提案冻结 acquisition window 不超过 5 秒、finished 到 evaluation 不超过 5 秒；evaluation
 必须早于 trusted expiry，trusted expiry 不得晚于 finished 后 5 秒。任一 graph header、record
@@ -629,14 +644,16 @@ other-address-same-port=`A2:P1`、change-IP-and-port=`A2:P2`，其中 `A1 != A2`
 ### 15.6 重新进入评审的最低证据
 
 1. 两个 disjoint predictive windows 的 natsim APDM×APDM 测试，使用两个真实 natsim NAT
-   与 reciprocal APDF filtering，证明双方按 peer source schedule 互通；旧的“本机 next mapping
-   位于本机 plan”测试删除或改为 source-commitment 单元测试；
+   与 reciprocal APDF filtering，证明双方按 peer source schedule 互通；candidate tuple 每个
+   只发一次，endpoint learning 后只允许选中的一个 winner tuple 发 ACK/VERIFY；旧的“本机
+   next mapping 位于本机 plan”测试删除或改为 source-commitment 单元测试；
 2. trusted context 的外来 machine/socket、过期、未来时间、manifest 缺失/篡改、稀疏 ordinal、
    末尾失败全部零 candidate；
 3. remote diagnostics 与完全相同 transaction replay 只改变 raw digest；
 4. RFC 5780 双 mapped-address 与四地址 topology 正/负 golden；
 5. 128×512 decimal interval 包含 exact rational、large-exponent Poisson 有界、MaxUint64 强制相交；
 6. 双方不同 directional triples 组成相同 joint digest，任一 side mutation 均被拒绝；
+   `Executable` mutation、非 canonical probability 与执行前 Plan 重算失败均被拒绝；
 7. architecture zero-network 门禁、全仓、race×20 与跨语言 golden 重新通过。
 
 以上全部通过仍只表示 Gate B1 可重新送审；必须由独立评审明确接受本节后，PR #90 才可合并，

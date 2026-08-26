@@ -209,6 +209,36 @@ type AllocationSample struct {
 	Success       bool
 }
 
+type RFC5780Exchange struct {
+	Step               DiscoveryStep
+	TransactionID      TransactionID
+	RequestDestination AddressPort
+	ResponseSource     AddressPort
+	ObservedAtMilli    int64
+	Received           bool
+	Request            []byte
+	Response           []byte
+}
+
+func (exchange RFC5780Exchange) Clone() RFC5780Exchange {
+	exchange.Request = append([]byte(nil), exchange.Request...)
+	exchange.Response = append([]byte(nil), exchange.Response...)
+	return exchange
+}
+
+type RFC5780Transcript struct {
+	Origin     EvidenceOrigin
+	SocketSlot uint16
+	Exchanges  [RFC5780ExchangeCount]RFC5780Exchange
+}
+
+func (transcript RFC5780Transcript) Clone() RFC5780Transcript {
+	for index := range transcript.Exchanges {
+		transcript.Exchanges[index] = transcript.Exchanges[index].Clone()
+	}
+	return transcript
+}
+
 type EvidenceKind string
 
 const (
@@ -216,6 +246,7 @@ const (
 	EvidenceKindFiltering  EvidenceKind = "filtering"
 	EvidenceKindIPPooling  EvidenceKind = "ip_pooling"
 	EvidenceKindAllocation EvidenceKind = "allocation"
+	EvidenceKindRFC5780    EvidenceKind = "rfc5780_exchange"
 )
 
 type IssuedTransaction struct {
@@ -259,6 +290,7 @@ type EvidenceGraph struct {
 	Filtering            []FilteringEvidence
 	IPPooling            []IPPoolingEvidence
 	Allocation           []AllocationSample
+	RFC5780              []RFC5780Transcript
 }
 
 type StateModel struct {
@@ -278,6 +310,8 @@ type StateModel struct {
 	ResidualUniverse     uint32
 	AllocationLimitation string
 	PredictedSourcePorts []uint16
+	ReusableEndpoint     AddressPort
+	ReusableEndpointSlot uint16
 	EvidenceDigest       [32]byte
 	RawEvidenceDigest    [32]byte
 	ValidationDigest     [32]byte
@@ -450,13 +484,12 @@ func (commitment LocalSourceCommitment) Clone() LocalSourceCommitment {
 }
 
 type LocalCommitmentInput struct {
-	Profile         Profile
-	ResourceClass   ResourceClass
-	Context         AttemptContext
-	Evidence        EvidenceGraph
-	Validation      TrustedValidationContext
-	Budget          Cost
-	ReceiveEndpoint AddressPort
+	Profile       Profile
+	ResourceClass ResourceClass
+	Context       AttemptContext
+	Evidence      EvidenceGraph
+	Validation    TrustedValidationContext
+	Budget        Cost
 }
 
 type BilateralPlannerInput struct {

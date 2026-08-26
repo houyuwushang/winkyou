@@ -224,7 +224,7 @@ func TestRemoteReportsAndExactReplayDoNotChangeActionableInputs(t *testing.T) {
 	}
 
 	replayedGraph := graph
-	replayedGraph.Mapping = append(append([]MappingEvidence(nil), graph.Mapping...), graph.Mapping[0])
+	replayedGraph.RFC5780 = append(append([]RFC5780Transcript(nil), graph.RFC5780...), graph.RFC5780[0].Clone())
 	replayed, err := inferStateModel(replayedGraph)
 	if err != nil {
 		t.Fatal(err)
@@ -263,6 +263,7 @@ func TestEvidenceSourceStrengthPoolingOrderAndClone(t *testing.T) {
 	slices.Reverse(graph.Filtering)
 	slices.Reverse(graph.IPPooling)
 	slices.Reverse(graph.Allocation)
+	slices.Reverse(graph.RFC5780)
 	second, err := inferStateModel(graph)
 	if err != nil {
 		t.Fatal(err)
