@@ -486,3 +486,38 @@ endpoint。Gate C 不得跳过 Gate B2 后只发布普通直连。
 
 这些问题未接受前，只允许 docs、pure function 与 memory/natsim 工作；不创建 machine scope、
 不部署 binary、不运行 active STUN、不修改 firewall，也不向 LAN/公网发出 birthday packet。
+
+## 14. 独立评审答复（2026-08-26）
+
+数学基准已复核：表中双 EDM 概率与 1−exp(−q²/(R²)) 模型精确一致（含
+16,384→6.06%、32,768→22.12%、65,535→63.21%），无非一致性。
+
+1. **接受。** Gate B 就是 direct solver 的验收目标；Gate A easy path 只是底座。但兑现
+   现有“失败是正常结果”产品承诺：artifact 必须把求解 profile 作为显式用户可见选择，
+   不允许发起后默默跑 birthday 而用户只看到“连接中”。
+2. **8 样本/32 窗口可进入实现**，但 §4.1 原文的条件用语必须强制化：证据低于阈值或
+   分类超出 sequential_uniform/低离散 monotonic_nonuniform 时**零 direct 发射**，不是
+   降级重试的输入。
+3. **接受 128×512 作为首个联网 profile**，理由正确：它恰好落进现有 machine 数值
+   ceiling（128/512/512/64PPS/60s），证明算法不抬高任何既有上限。63.21% 必须始终带
+   “模型前提成立”条件标注展示。
+4. **`hard_16k_lab/1` 使用编译期固定 universe**：IANA dynamic/private 段
+   49152–65535（避开 well-known 49151 及以下的注册服务面），不在私有授权中选择形状、
+   不进入 artifact。universe 形状只能由新 ADR 修订改变。
+5. **失败即开 circuit 不过严，保持原文。** 松动的替代方案无一不与“一次失败即终局”
+   冲突；compensating 机制是 Gate C 的 campaign 排期纪律，不是代码路径。circuit 只能靠
+   显式人工 reset（现有 safety 语义）解除。
+6. **接受同一 journal、独立更严窗口。** 单写者不变量是核心；但实现测试必须证明
+   campaign record 不挤占普通 pairing 的 2,048 包窗口，且 campaign 窗口与 ordinary 窗口
+   互相独立计数、互不低偿。
+7. **明确拒绝 full 65,535 live profile**，保留为纯数学基准（本文 §3.2 表格）。解锁条件
+   只可能是：CGNAT/网关容量外证 + 新 ADR，永不靠实现 PR 解锁。
+8. **接受 B1 先于 Gate A 实现**（§12 顺序正确）。planner 冻结后 Gate A 接口才不至于
+   只能表达 easy endpoint；Gate A 实现时应携带 B1 的冻结 cost/plan 类型。
+9. **接受“状态层析优先、birthday 只覆盖残余熵”为默认结构。** 首批 observer 只有
+   RFC 5780 与 peer-reflector 两类；TTL/ICMP 保持 research 标签、不得进 v1；PCP/NAT-PMP
+   只在已有 `OperationPortMapping` 显式授权时**消费既有 mapping 证据**，Gate B 不获得
+   主动分配或配置网关的任何权限。
+
+附一条冻结增补：planner 的 without-replacement 精确概率计算使用高精度有理数
+（big.Rat 或等价），golden 覆盖均匀近似的偏差量级；admission 判定只接受下取整。
