@@ -1,6 +1,6 @@
 # ADR：N3c Gate B 困难 NAT 有界求解器
 
-- 状态：**Draft；等待维护者与独立安全评审，不授权任何现场 I/O**
+- 状态：**Accepted (2026-08-26)：三 profile、成本表、planner 结构与 §14 评审答复已冻结；仅允许按 §12 顺序开工 Gate B1 纯函数。不授权任何现场 I/O**
 - 日期：2026-08-25
 - 基线：`main` = `dc59d73bdc643e1a230d32acb82d97bfd3cb6d65`
 - 跟踪议题：[#87](https://github.com/houyuwushang/winkyou/issues/87)
