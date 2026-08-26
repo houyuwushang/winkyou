@@ -19,6 +19,9 @@ const (
 
 	ProbabilityPrecisionBits = 512
 	ProbabilityScale         = uint64(1_000_000_000_000)
+
+	MaxEvidenceWindowMillis = int64(5_000)
+	MaxEvidenceAgeMillis    = int64(5_000)
 )
 
 var (
@@ -174,6 +177,7 @@ type EvidenceMeta struct {
 	Origin          EvidenceOrigin
 	ObserverAddress Address
 	ObserverPort    uint16
+	SocketSlot      uint16
 	TransactionID   [12]byte
 	AttemptDigest   [32]byte
 	Generation      uint64
@@ -203,6 +207,42 @@ type AllocationSample struct {
 	MappedAddress Address
 	MappedPort    uint16
 	Success       bool
+}
+
+type EvidenceKind string
+
+const (
+	EvidenceKindMapping    EvidenceKind = "mapping"
+	EvidenceKindFiltering  EvidenceKind = "filtering"
+	EvidenceKindIPPooling  EvidenceKind = "ip_pooling"
+	EvidenceKindAllocation EvidenceKind = "allocation"
+)
+
+type IssuedTransaction struct {
+	Kind           EvidenceKind
+	TransactionID  [12]byte
+	Source         EvidenceSource
+	Observer       AddressPort
+	SocketSlot     uint16
+	Ordinal        uint32
+	NotBeforeMilli int64
+	NotAfterMilli  int64
+}
+
+// TrustedValidationContext is supplied by the attempt authority from values
+// fixed before responses arrive. It must never be derived from EvidenceGraph.
+type TrustedValidationContext struct {
+	NowMilli                     int64
+	ExpectedAttemptDigest        [32]byte
+	ExpectedMachineScopeDigest   [32]byte
+	ExpectedPeerDigest           [32]byte
+	ExpectedObservationSetDigest [32]byte
+	ExpectedSocketOwnerDigest    [32]byte
+	ExpectedGeneration           uint64
+	ExpectedStartedAtMilli       int64
+	ExpectedFinishedAtMilli      int64
+	ExpectedExpiresAtMilli       int64
+	Issued                       []IssuedTransaction
 }
 
 type EvidenceGraph struct {
@@ -237,16 +277,17 @@ type StateModel struct {
 	PredictedNextPort    uint16
 	ResidualUniverse     uint32
 	AllocationLimitation string
-	CandidateWindow      []uint16
+	PredictedSourcePorts []uint16
 	EvidenceDigest       [32]byte
 	RawEvidenceDigest    [32]byte
+	ValidationDigest     [32]byte
 	ExpiresAtMilli       int64
 	Conditional          bool
 	Coverage             string
 }
 
 func (model StateModel) Clone() StateModel {
-	model.CandidateWindow = append([]uint16(nil), model.CandidateWindow...)
+	model.PredictedSourcePorts = append([]uint16(nil), model.PredictedSourcePorts...)
 	return model
 }
 
@@ -292,10 +333,11 @@ func (budget Cost) admits(cost Cost) bool {
 }
 
 type Candidate struct {
-	Role       Role   `json:"role"`
-	SocketSlot uint16 `json:"socket_slot"`
-	Ordinal    uint32 `json:"ordinal"`
-	TargetPort uint16 `json:"target_port"`
+	Role               Role   `json:"role"`
+	SocketSlot         uint16 `json:"socket_slot"`
+	Ordinal            uint32 `json:"ordinal"`
+	ExpectedSourcePort uint16 `json:"expected_source_port,omitempty"`
+	TargetPort         uint16 `json:"target_port"`
 }
 
 type Universe struct {
@@ -357,27 +399,19 @@ func (plan Plan) Digests() DigestTriple {
 	return DigestTriple{Plan: plan.PlanDigest, Cost: plan.CostDigest, Evidence: plan.EvidenceDigest}
 }
 
-func VerifyDigestTriple(local, remote DigestTriple) error {
-	if local != remote {
-		return ErrPlanMismatch
-	}
-	return nil
-}
-
 type AttemptContext struct {
 	AttemptDigest [32]byte
 	Generation    uint64
 	Role          Role
-	FixedPeerPort uint16
 }
 
 type PlannerKeyContext struct {
-	AttemptDigest  [32]byte
-	EvidenceDigest [32]byte
-	Generation     uint64
-	Profile        Profile
-	ResourceClass  ResourceClass
-	Role           Role
+	AttemptDigest        [32]byte
+	Generation           uint64
+	Profile              Profile
+	ResourceClass        ResourceClass
+	FirstEvidenceDigest  [32]byte
+	SecondEvidenceDigest [32]byte
 }
 
 // PlannerKeySource is the only planner-key boundary reserved for Gate B2. A
@@ -386,13 +420,133 @@ type PlannerKeySource interface {
 	DerivePlannerKey(PlannerKeyContext) ([32]byte, error)
 }
 
-type PlannerInput struct {
+type SourceSlot struct {
+	SocketSlot               uint16 `json:"socket_slot"`
+	Ordinal                  uint32 `json:"ordinal"`
+	ExpectedPublicSourcePort uint16 `json:"expected_public_source_port"`
+}
+
+type LocalSourceCommitment struct {
+	Profile          Profile
+	ResourceClass    ResourceClass
+	Role             Role
+	AttemptDigest    [32]byte
+	Generation       uint64
+	SourceSlots      []SourceSlot
+	ReceiveEndpoint  AddressPort
+	Universe         Universe
+	Cost             Cost
+	Probability      ProbabilityReport
+	EvidenceDigest   [32]byte
+	ValidationDigest [32]byte
+	CostDigest       [32]byte
+	SourceDigest     [32]byte
+	Executable       bool
+}
+
+func (commitment LocalSourceCommitment) Clone() LocalSourceCommitment {
+	commitment.SourceSlots = append([]SourceSlot(nil), commitment.SourceSlots...)
+	return commitment
+}
+
+type LocalCommitmentInput struct {
+	Profile         Profile
+	ResourceClass   ResourceClass
+	Context         AttemptContext
+	Evidence        EvidenceGraph
+	Validation      TrustedValidationContext
+	Budget          Cost
+	ReceiveEndpoint AddressPort
+}
+
+type BilateralPlannerInput struct {
+	First     LocalSourceCommitment
+	Second    LocalSourceCommitment
+	KeySource PlannerKeySource
+}
+
+type DirectionalCommitment struct {
+	Role         Role
+	SourceDigest [32]byte
+	Triple       DigestTriple
+}
+
+type JointPlanCommitment struct {
 	Profile       Profile
 	ResourceClass ResourceClass
-	Context       AttemptContext
-	Evidence      EvidenceGraph
-	Budget        Cost
-	KeySource     PlannerKeySource
+	AttemptDigest [32]byte
+	Generation    uint64
+	Directions    [2]DirectionalCommitment
+	JointDigest   [32]byte
+}
+
+type BilateralPlan struct {
+	Profile       Profile
+	ResourceClass ResourceClass
+	AttemptDigest [32]byte
+	Generation    uint64
+	Plans         [2]Plan
+	SourceDigests [2][32]byte
+	JointDigest   [32]byte
+}
+
+func (plan BilateralPlan) PlanForRole(role Role) (Plan, bool) {
+	for _, candidate := range plan.Plans {
+		if candidate.Role == role {
+			return candidate.Clone(), true
+		}
+	}
+	return Plan{}, false
+}
+
+func (plan BilateralPlan) Commitment() JointPlanCommitment {
+	return JointPlanCommitment{
+		Profile: plan.Profile, ResourceClass: plan.ResourceClass, AttemptDigest: plan.AttemptDigest, Generation: plan.Generation,
+		Directions: [2]DirectionalCommitment{
+			{Role: plan.Plans[0].Role, SourceDigest: plan.SourceDigests[0], Triple: plan.Plans[0].Digests()},
+			{Role: plan.Plans[1].Role, SourceDigest: plan.SourceDigests[1], Triple: plan.Plans[1].Digests()},
+		},
+		JointDigest: plan.JointDigest,
+	}
+}
+
+func VerifyJointCommitment(expected, received JointPlanCommitment) error {
+	if !validJointCommitmentShape(expected) || !validJointCommitmentShape(received) ||
+		expected.JointDigest != digestJointCommitment(expected) || received.JointDigest != digestJointCommitment(received) ||
+		expected != received {
+		return ErrPlanMismatch
+	}
+	return nil
+}
+
+func validJointCommitmentShape(commitment JointPlanCommitment) bool {
+	if commitment.Generation == 0 || allZero(commitment.AttemptDigest[:]) || allZero(commitment.JointDigest[:]) {
+		return false
+	}
+	var firstRole, secondRole Role
+	switch commitment.Profile {
+	case ProfilePredictiveEdm, ProfileHardBirthday:
+		firstRole, secondRole = RoleInitiator, RoleResponder
+	case ProfileAsymmetricBirthday:
+		firstRole, secondRole = RoleMappingSet, RoleTargetSet
+	default:
+		return false
+	}
+	if (commitment.Profile == ProfilePredictiveEdm && commitment.ResourceClass != ResourcePredictive) ||
+		(commitment.Profile == ProfileAsymmetricBirthday && commitment.ResourceClass != ResourceAsymmetric) ||
+		(commitment.Profile == ProfileHardBirthday && commitment.ResourceClass != ResourceHard16KLab && commitment.ResourceClass != ResourceHard32KCandidate) {
+		return false
+	}
+	if commitment.Directions[0].Role != firstRole || commitment.Directions[1].Role != secondRole {
+		return false
+	}
+	for _, direction := range commitment.Directions {
+		if allZero(direction.SourceDigest[:]) || allZero(direction.Triple.Plan[:]) ||
+			allZero(direction.Triple.Cost[:]) || allZero(direction.Triple.Evidence[:]) {
+			return false
+		}
+	}
+	return true
 }
 
 func validateRole(profile Profile, role Role) error {

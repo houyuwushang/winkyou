@@ -10,6 +10,7 @@ const (
 	probabilityDecimalDigits = 50
 	exactRationalDrawLimit   = uint64(4096)
 	poissonSeriesTerms       = 192
+	poissonSaturation        = int64(128)
 )
 
 // Probability is a directed-rounding interval for the exact
@@ -43,10 +44,9 @@ func CollisionProbabilityWithoutReplacement(universe, leftDraws, rightDraws uint
 	if leftDraws == 0 || rightDraws == 0 {
 		return exactBoundaryProbability(result, false), nil
 	}
-	if leftDraws > math.MaxUint64-rightDraws {
-		return result, ErrProbabilityInputOverflow
-	}
-	if leftDraws+rightDraws > universe {
+	// Both draws were already proved <= universe. This subtraction form
+	// detects a forced intersection without overflowing at MaxUint64.
+	if leftDraws > universe-rightDraws {
 		return exactBoundaryProbability(result, true), nil
 	}
 
@@ -81,8 +81,8 @@ func CollisionProbabilityWithoutReplacement(universe, leftDraws, rightDraws uint
 	if successUpper.Cmp(probabilityFloat(big.ToPositiveInf).SetInt64(1)) > 0 {
 		successUpper.SetInt64(1)
 	}
-	result.LowerDecimal = successLower.Text('f', probabilityDecimalDigits)
-	result.UpperDecimal = successUpper.Text('f', probabilityDecimalDigits)
+	result.LowerDecimal = directedDecimal(successLower, probabilityDecimalDigits, false)
+	result.UpperDecimal = directedDecimal(successUpper, probabilityDecimalDigits, true)
 	result.FloorPartsPerTrillion = floorScaled(successLower, ProbabilityScale)
 	if draws <= exactRationalDrawLimit {
 		result.ExactRational = exactCollisionRational(universe, blocked, draws).RatString()
@@ -140,23 +140,47 @@ func exactCollisionRational(universe, blocked, draws uint64) *big.Rat {
 }
 
 // PoissonApproximation returns the ADR's uniform approximation
-// 1-exp(-(left*right)/universe) without float64. The exponential is a fixed
-// 192-term rational series, making the cross-language golden deterministic.
+// 1-exp(-(left*right)/universe) without float64. Range reduction keeps the
+// positive rational series bounded; repeated squaring reconstructs exp(-x).
 func PoissonApproximation(universe, leftDraws, rightDraws uint64) (string, error) {
 	if universe == 0 {
 		return "", ErrInvalidProbabilityInput
 	}
 	product := new(big.Int).Mul(new(big.Int).SetUint64(leftDraws), new(big.Int).SetUint64(rightDraws))
 	x := new(big.Rat).SetFrac(product, new(big.Int).SetUint64(universe))
-	negativeX := new(big.Rat).Neg(new(big.Rat).Set(x))
+	if x.Sign() == 0 {
+		return new(big.Rat).FloatString(probabilityDecimalDigits), nil
+	}
+	if x.Cmp(new(big.Rat).SetInt64(poissonSaturation)) >= 0 {
+		return new(big.Rat).SetInt64(1).FloatString(probabilityDecimalDigits), nil
+	}
+
+	reduced := new(big.Rat).Set(x)
+	oneEighth := new(big.Rat).SetFrac64(1, 8)
+	reductions := 0
+	for reduced.Cmp(oneEighth) > 0 {
+		reduced.Quo(reduced, new(big.Rat).SetInt64(2))
+		reductions++
+	}
+	// Compute exp(reduced) with positive terms, then invert. This avoids the
+	// catastrophic cancellation of a direct alternating exp(-x) series.
 	term := new(big.Rat).SetInt64(1)
 	sum := new(big.Rat).SetInt64(1)
 	for index := int64(1); index <= poissonSeriesTerms; index++ {
-		term.Mul(term, negativeX)
+		term.Mul(term, reduced)
 		term.Quo(term, new(big.Rat).SetInt64(index))
 		sum.Add(sum, term)
 	}
-	probability := new(big.Rat).Sub(new(big.Rat).SetInt64(1), sum)
+	miss := new(big.Rat).Inv(sum)
+	for index := 0; index < reductions; index++ {
+		miss.Mul(miss, miss)
+	}
+	probability := new(big.Rat).Sub(new(big.Rat).SetInt64(1), miss)
+	if probability.Sign() < 0 {
+		probability.SetInt64(0)
+	} else if probability.Cmp(new(big.Rat).SetInt64(1)) > 0 {
+		probability.SetInt64(1)
+	}
 	return probability.FloatString(probabilityDecimalDigits), nil
 }
 
@@ -181,6 +205,30 @@ func checkedProduct(left, right uint64) (uint64, error) {
 		return 0, ErrProbabilityInputOverflow
 	}
 	return left * right, nil
+}
+
+// directedDecimal converts a non-negative binary bound into a fixed-scale
+// decimal bound without undoing its rounding direction. Lower endpoints use
+// floor; upper endpoints use ceil.
+func directedDecimal(value *big.Float, digits int, upper bool) string {
+	if value == nil || value.Sign() <= 0 {
+		return "0." + zeroDigits(digits)
+	}
+	rational, _ := value.Rat(nil)
+	scale := new(big.Int).Exp(big.NewInt(10), big.NewInt(int64(digits)), nil)
+	scaledNumerator := new(big.Int).Mul(rational.Num(), scale)
+	quotient, remainder := new(big.Int), new(big.Int)
+	quotient.QuoRem(scaledNumerator, rational.Denom(), remainder)
+	if upper && remainder.Sign() != 0 {
+		quotient.Add(quotient, big.NewInt(1))
+	}
+	integer, fraction := new(big.Int), new(big.Int)
+	integer.QuoRem(quotient, scale, fraction)
+	fractionText := fraction.String()
+	if padding := digits - len(fractionText); padding > 0 {
+		fractionText = zeroDigits(padding) + fractionText
+	}
+	return integer.String() + "." + fractionText
 }
 
 func zeroDigits(count int) string {

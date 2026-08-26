@@ -9,9 +9,11 @@ import (
 )
 
 const (
-	planEncodingLabel = "winkyou-hardnat-plan-v1\x00"
-	costEncodingLabel = "winkyou-hardnat-cost-v1\x00"
-	prpEncodingLabel  = "winkyou-hardnat-prp-v1\x00"
+	planEncodingLabel   = "winkyou-hardnat-plan-v2\x00"
+	costEncodingLabel   = "winkyou-hardnat-cost-v1\x00"
+	sourceEncodingLabel = "winkyou-hardnat-source-commitment-v1\x00"
+	jointEncodingLabel  = "winkyou-hardnat-joint-plan-v1\x00"
+	prpEncodingLabel    = "winkyou-hardnat-prp-v1\x00"
 
 	minimumAsymmetricPPTrillion = uint64(632_000_000_000)
 	minimumHard16FullPPTrillion = uint64(60_000_000_000)
@@ -25,73 +27,119 @@ type planShape struct {
 	executable bool
 }
 
-// BuildPlan performs the Gate B1 pipeline without I/O. Cost is selected and
-// digested before a planner key is requested or a candidate slice is created.
-// Any evidence, budget, key, profile, or role failure therefore returns zero
-// candidates.
-func BuildPlan(input PlannerInput) (Plan, error) {
-	plan := Plan{Profile: input.Profile, ResourceClass: input.ResourceClass, Role: input.Context.Role, Generation: input.Context.Generation}
-	if input.Context.Generation == 0 || allZero(input.Context.AttemptDigest[:]) || input.Context.AttemptDigest != input.Evidence.AttemptDigest ||
-		input.Context.Generation != input.Evidence.Generation {
-		return plan, ErrInvalidEvidence
+// BuildLocalCommitment validates one side's trusted evidence and freezes its
+// own predicted source schedule. It never guesses or consumes the peer's
+// schedule. Cost admission precedes source-slot allocation.
+func BuildLocalCommitment(input LocalCommitmentInput) (LocalSourceCommitment, error) {
+	commitment := LocalSourceCommitment{
+		Profile: input.Profile, ResourceClass: input.ResourceClass, Role: input.Context.Role,
+		AttemptDigest: input.Context.AttemptDigest, Generation: input.Context.Generation,
+	}
+	if input.Context.Generation == 0 || allZero(input.Context.AttemptDigest[:]) ||
+		input.Context.AttemptDigest != input.Evidence.AttemptDigest || input.Context.Generation != input.Evidence.Generation {
+		return commitment, ErrInvalidEvidence
 	}
 	if err := validateRole(input.Profile, input.Context.Role); err != nil {
-		return plan, err
+		return commitment, err
+	}
+	if err := validateReceiveEndpoint(input.Profile, input.Context.Role, input.ReceiveEndpoint); err != nil {
+		return commitment, err
 	}
 
-	model, err := InferStateModel(input.Evidence)
-	plan.EvidenceDigest = model.EvidenceDigest
+	model, err := InferStateModel(input.Evidence, input.Validation)
+	commitment.EvidenceDigest = model.EvidenceDigest
+	commitment.ValidationDigest = model.ValidationDigest
 	if err != nil {
-		return plan, err
+		return commitment, err
 	}
 	if err := validateModelForProfile(input.Profile, input.Context.Role, model); err != nil {
-		return plan, err
+		return commitment, err
 	}
-
 	shape, err := shapeFor(input.Profile, input.ResourceClass, input.Context.Role, model)
 	if err != nil {
-		return plan, err
+		return commitment, err
 	}
-	plan.Cost = shape.cost
-	plan.Universe = shape.universe
-	plan.Executable = shape.executable
-	plan.CostDigest = digestCost(input.Profile, input.ResourceClass, shape.cost)
-	plan.Probability, err = probabilityFor(input.Profile, input.ResourceClass, model, shape)
+	commitment.Cost = shape.cost
+	commitment.Universe = shape.universe
+	commitment.Executable = shape.executable
+	commitment.ReceiveEndpoint = input.ReceiveEndpoint
+	commitment.CostDigest = digestCost(input.Profile, input.ResourceClass, shape.cost)
+	commitment.Probability, err = probabilityFor(input.Profile, input.ResourceClass, model, shape)
 	if err != nil {
-		return plan, err
+		return commitment, err
 	}
-	if !probabilityAdmitted(input.ResourceClass, plan.Probability) {
-		return plan, ErrInsufficientBudget
+	if !probabilityAdmitted(input.ResourceClass, commitment.Probability) || !input.Budget.admits(shape.cost) {
+		return commitment, ErrInsufficientBudget
 	}
-	// The complete frozen cost is admitted before calling the key source or
-	// allocating the candidate slice.
-	if !input.Budget.admits(shape.cost) {
-		return plan, ErrInsufficientBudget
+	commitment.SourceSlots, err = sourceSlotsFor(input.ResourceClass, input.Context.Role, model, input.ReceiveEndpoint)
+	if err != nil {
+		return commitment, err
+	}
+	commitment.SourceDigest = digestSourceCommitment(commitment)
+	return commitment, nil
+}
+
+// BuildBilateralPlan combines two independently validated source commitments.
+// Direction A targets B's committed source schedule and direction B targets
+// A's schedule. The two directional digest triples are intentionally distinct
+// and are bound by one canonical joint digest.
+func BuildBilateralPlan(input BilateralPlannerInput) (BilateralPlan, error) {
+	var bilateral BilateralPlan
+	first, second, err := canonicalCommitments(input.First, input.Second)
+	if err != nil {
+		return bilateral, err
+	}
+	if err := validateLocalCommitment(first); err != nil {
+		return bilateral, err
+	}
+	if err := validateLocalCommitment(second); err != nil {
+		return bilateral, err
 	}
 	if input.KeySource == nil {
-		return plan, ErrInvalidPlannerKey
+		return bilateral, ErrInvalidPlannerKey
 	}
 	key, err := input.KeySource.DerivePlannerKey(PlannerKeyContext{
-		AttemptDigest: input.Context.AttemptDigest, EvidenceDigest: model.EvidenceDigest,
-		Generation: input.Context.Generation, Profile: input.Profile, ResourceClass: input.ResourceClass, Role: input.Context.Role,
+		AttemptDigest: first.AttemptDigest, Generation: first.Generation, Profile: first.Profile, ResourceClass: first.ResourceClass,
+		FirstEvidenceDigest: first.EvidenceDigest, SecondEvidenceDigest: second.EvidenceDigest,
 	})
 	if err != nil || allZero(key[:]) {
 		clear(key[:])
-		return plan, ErrInvalidPlannerKey
+		return bilateral, ErrInvalidPlannerKey
 	}
 	defer clear(key[:])
 
-	candidates, err := buildCandidates(input.Context, input.ResourceClass, model, key)
-	if err != nil {
-		return plan, err
+	commitments := [2]LocalSourceCommitment{first, second}
+	for index := range commitments {
+		local := commitments[index]
+		peer := commitments[1-index]
+		candidates, candidateErr := buildDirectionalCandidates(local, peer, key)
+		if candidateErr != nil {
+			return BilateralPlan{}, candidateErr
+		}
+		shape, shapeErr := shapeForCommitment(local)
+		if shapeErr != nil || uint32(len(candidates)) != shape.candidates {
+			clearCandidates(candidates)
+			if shapeErr != nil {
+				return BilateralPlan{}, shapeErr
+			}
+			return BilateralPlan{}, fmt.Errorf("%w: candidate shape mismatch", ErrUnsupportedProfile)
+		}
+		plan := Plan{
+			Profile: local.Profile, ResourceClass: local.ResourceClass, Role: local.Role, Generation: local.Generation,
+			Universe: local.Universe, Cost: local.Cost, Candidates: candidates, Probability: local.Probability,
+			EvidenceDigest: local.EvidenceDigest, CostDigest: local.CostDigest, Executable: local.Executable,
+		}
+		plan.PlanDigest = digestPlan(plan, local.AttemptDigest)
+		bilateral.Plans[index] = plan
+		bilateral.SourceDigests[index] = local.SourceDigest
 	}
-	if uint32(len(candidates)) != shape.candidates {
-		clearCandidates(candidates)
-		return plan, fmt.Errorf("%w: candidate shape mismatch", ErrUnsupportedProfile)
-	}
-	plan.Candidates = candidates
-	plan.PlanDigest = digestPlan(plan, input.Context.AttemptDigest)
-	return plan, nil
+	bilateral.Profile = first.Profile
+	bilateral.ResourceClass = first.ResourceClass
+	bilateral.AttemptDigest = first.AttemptDigest
+	bilateral.Generation = first.Generation
+	commitment := bilateral.Commitment()
+	bilateral.JointDigest = digestJointCommitment(commitment)
+	return bilateral, nil
 }
 
 func validateModelForProfile(profile Profile, role Role, model StateModel) error {
@@ -103,7 +151,7 @@ func validateModelForProfile(profile Profile, role Role, model StateModel) error
 	case ProfilePredictiveEdm:
 		if !model.Mapping.endpointDependent() ||
 			(model.Allocation != AllocationSequentialUniform && model.Allocation != AllocationMonotonicNonuniform) ||
-			len(model.CandidateWindow) == 0 || len(model.CandidateWindow) > PredictiveWindowPorts {
+			len(model.PredictedSourcePorts) != PredictiveWindowPorts {
 			return ErrEvidenceInsufficient
 		}
 	case ProfileAsymmetricBirthday:
@@ -123,13 +171,24 @@ func validateModelForProfile(profile Profile, role Role, model StateModel) error
 	return nil
 }
 
+func validateReceiveEndpoint(profile Profile, role Role, endpoint AddressPort) error {
+	required := profile == ProfileAsymmetricBirthday && role == RoleTargetSet
+	if required && !endpoint.Valid() {
+		return ErrInvalidEvidence
+	}
+	if !required && endpoint != (AddressPort{}) {
+		return ErrInvalidEvidence
+	}
+	return nil
+}
+
 func shapeFor(profile Profile, resource ResourceClass, role Role, model StateModel) (planShape, error) {
 	switch {
 	case profile == ProfilePredictiveEdm && resource == ResourcePredictive:
 		return planShape{
 			cost:       Cost{Sockets: 8, Targets: 64, FiveTuples: 64, Packets: 64, PacketsPerSecond: 32, ActiveMillis: 13_000},
-			universe:   Universe{Name: "evidence-ranked-window/1", Count: uint32(len(model.CandidateWindow))},
-			candidates: uint32(len(model.CandidateWindow)), executable: true,
+			universe:   Universe{Name: "peer-source-schedule/1", Count: uint32(len(model.PredictedSourcePorts))},
+			candidates: uint32(len(model.PredictedSourcePorts)), executable: true,
 		}, nil
 	case profile == ProfileAsymmetricBirthday && resource == ResourceAsymmetric:
 		count := uint32(512)
@@ -158,14 +217,22 @@ func shapeFor(profile Profile, resource ResourceClass, role Role, model StateMod
 	}
 }
 
+func shapeForCommitment(commitment LocalSourceCommitment) (planShape, error) {
+	model := StateModel{}
+	if commitment.ResourceClass == ResourcePredictive {
+		model.PredictedSourcePorts = make([]uint16, len(commitment.SourceSlots))
+	}
+	return shapeFor(commitment.Profile, commitment.ResourceClass, commitment.Role, model)
+}
+
 func probabilityFor(profile Profile, resource ResourceClass, model StateModel, shape planShape) (ProbabilityReport, error) {
 	report := ProbabilityReport{Conditional: true, ModelCoverage: model.Coverage}
 	switch resource {
 	case ResourcePredictive:
 		report.Model = string(ProfilePredictiveEdm)
 		report.Universe = shape.universe.Name
-		report.Assumptions = "next allocation remains inside the evidence-derived 32-port window"
-		primary, err := CollisionProbabilityWithoutReplacement(uint64(len(model.CandidateWindow)), uint64(len(model.CandidateWindow)), 1)
+		report.Assumptions = "both committed source schedules remain valid for the directional attempt"
+		primary, err := CollisionProbabilityWithoutReplacement(uint64(len(model.PredictedSourcePorts)), uint64(len(model.PredictedSourcePorts)), 1)
 		if err != nil {
 			return report, err
 		}
@@ -231,60 +298,208 @@ func probabilityAdmitted(resource ResourceClass, report ProbabilityReport) bool 
 	}
 }
 
-func buildCandidates(context AttemptContext, resource ResourceClass, model StateModel, key [32]byte) ([]Candidate, error) {
+func sourceSlotsFor(resource ResourceClass, role Role, model StateModel, endpoint AddressPort) ([]SourceSlot, error) {
 	switch resource {
 	case ResourcePredictive:
-		ports := append([]uint16(nil), model.CandidateWindow...)
-		shuffleUint16(key, string(context.Role)+"\x00predictive-window", ports)
-		result := make([]Candidate, len(ports))
-		for ordinal, port := range ports {
-			result[ordinal] = Candidate{Role: context.Role, SocketSlot: uint16(ordinal % 8), Ordinal: uint32(ordinal), TargetPort: port}
+		result := make([]SourceSlot, len(model.PredictedSourcePorts))
+		for ordinal, port := range model.PredictedSourcePorts {
+			if port == 0 {
+				return nil, ErrEvidenceInsufficient
+			}
+			result[ordinal] = SourceSlot{SocketSlot: uint16(ordinal % 8), Ordinal: uint32(ordinal), ExpectedPublicSourcePort: port}
 		}
-		clear(ports)
 		return result, nil
 	case ResourceAsymmetric:
-		if context.Role == RoleMappingSet {
-			if context.FixedPeerPort == 0 {
-				return nil, ErrInvalidEvidence
+		if role == RoleMappingSet {
+			result := make([]SourceSlot, 128)
+			for ordinal := range result {
+				result[ordinal] = SourceSlot{SocketSlot: uint16(ordinal), Ordinal: uint32(ordinal)}
 			}
-			slots := make([]uint16, 128)
-			for index := range slots {
-				slots[index] = uint16(index)
+			return result, nil
+		}
+		if role == RoleTargetSet && endpoint.Valid() {
+			return []SourceSlot{{SocketSlot: 0, Ordinal: 0, ExpectedPublicSourcePort: endpoint.Port}}, nil
+		}
+	case ResourceHard16KLab:
+		result := make([]SourceSlot, 16)
+		for index := range result {
+			result[index] = SourceSlot{SocketSlot: uint16(index), Ordinal: uint32(index)}
+		}
+		return result, nil
+	case ResourceHard32KCandidate:
+		result := make([]SourceSlot, 32)
+		for index := range result {
+			result[index] = SourceSlot{SocketSlot: uint16(index), Ordinal: uint32(index)}
+		}
+		return result, nil
+	}
+	return nil, ErrUnsupportedProfile
+}
+
+func canonicalCommitments(left, right LocalSourceCommitment) (LocalSourceCommitment, LocalSourceCommitment, error) {
+	if left.Profile != right.Profile || left.ResourceClass != right.ResourceClass || left.AttemptDigest != right.AttemptDigest ||
+		left.Generation != right.Generation || left.Generation == 0 || allZero(left.AttemptDigest[:]) {
+		return LocalSourceCommitment{}, LocalSourceCommitment{}, ErrPlanMismatch
+	}
+	var firstRole, secondRole Role
+	switch left.Profile {
+	case ProfilePredictiveEdm, ProfileHardBirthday:
+		firstRole, secondRole = RoleInitiator, RoleResponder
+	case ProfileAsymmetricBirthday:
+		firstRole, secondRole = RoleMappingSet, RoleTargetSet
+	default:
+		return LocalSourceCommitment{}, LocalSourceCommitment{}, ErrUnsupportedProfile
+	}
+	if left.Role == firstRole && right.Role == secondRole {
+		return left.Clone(), right.Clone(), nil
+	}
+	if right.Role == firstRole && left.Role == secondRole {
+		return right.Clone(), left.Clone(), nil
+	}
+	return LocalSourceCommitment{}, LocalSourceCommitment{}, ErrPlanMismatch
+}
+
+func validateLocalCommitment(commitment LocalSourceCommitment) error {
+	if err := validateRole(commitment.Profile, commitment.Role); err != nil {
+		return err
+	}
+	if err := validateReceiveEndpoint(commitment.Profile, commitment.Role, commitment.ReceiveEndpoint); err != nil {
+		return err
+	}
+	shape, err := shapeForCommitment(commitment)
+	if err != nil {
+		return err
+	}
+	if commitment.Cost != shape.cost || commitment.Universe != shape.universe || commitment.Executable != shape.executable ||
+		commitment.CostDigest != digestCost(commitment.Profile, commitment.ResourceClass, commitment.Cost) ||
+		allZero(commitment.EvidenceDigest[:]) || allZero(commitment.ValidationDigest[:]) ||
+		commitment.SourceDigest != digestSourceCommitment(commitment) || !probabilityAdmitted(commitment.ResourceClass, commitment.Probability) {
+		return ErrPlanMismatch
+	}
+	if err := validateSourceSlots(commitment); err != nil {
+		return err
+	}
+	return nil
+}
+
+func validateSourceSlots(commitment LocalSourceCommitment) error {
+	want := 0
+	switch commitment.ResourceClass {
+	case ResourcePredictive:
+		want = PredictiveWindowPorts
+	case ResourceAsymmetric:
+		want = 128
+		if commitment.Role == RoleTargetSet {
+			want = 1
+		}
+	case ResourceHard16KLab:
+		want = 16
+	case ResourceHard32KCandidate:
+		want = 32
+	default:
+		return ErrUnsupportedProfile
+	}
+	if len(commitment.SourceSlots) != want {
+		return ErrPlanMismatch
+	}
+	seenPorts := make(map[uint16]struct{}, len(commitment.SourceSlots))
+	for index, slot := range commitment.SourceSlots {
+		if slot.Ordinal != uint32(index) {
+			return ErrPlanMismatch
+		}
+		switch commitment.ResourceClass {
+		case ResourcePredictive:
+			if slot.SocketSlot != uint16(index%8) || slot.ExpectedPublicSourcePort == 0 {
+				return ErrPlanMismatch
 			}
-			shuffleUint16(key, string(context.Role)+"\x00mapping-slots", slots)
+			if _, duplicate := seenPorts[slot.ExpectedPublicSourcePort]; duplicate {
+				return ErrPlanMismatch
+			}
+			seenPorts[slot.ExpectedPublicSourcePort] = struct{}{}
+		case ResourceAsymmetric:
+			if commitment.Role == RoleMappingSet && (slot.SocketSlot != uint16(index) || slot.ExpectedPublicSourcePort != 0) {
+				return ErrPlanMismatch
+			}
+			if commitment.Role == RoleTargetSet && (slot.SocketSlot != 0 || slot.ExpectedPublicSourcePort != commitment.ReceiveEndpoint.Port) {
+				return ErrPlanMismatch
+			}
+		case ResourceHard16KLab, ResourceHard32KCandidate:
+			if slot.SocketSlot != uint16(index) || slot.ExpectedPublicSourcePort != 0 {
+				return ErrPlanMismatch
+			}
+		}
+	}
+	return nil
+}
+
+func buildDirectionalCandidates(local, peer LocalSourceCommitment, key [32]byte) ([]Candidate, error) {
+	switch local.ResourceClass {
+	case ResourcePredictive:
+		permutation := make([]uint16, len(peer.SourceSlots))
+		for index := range permutation {
+			permutation[index] = uint16(index)
+		}
+		shuffleUint16(key, "predictive-bilateral-pairing\x00initiator\x00responder", permutation)
+		if local.Role == RoleResponder {
+			inverse := make([]uint16, len(permutation))
+			for index, target := range permutation {
+				inverse[target] = uint16(index)
+			}
+			clear(permutation)
+			permutation = inverse
+		}
+		result := make([]Candidate, len(local.SourceSlots))
+		for ordinal, slot := range local.SourceSlots {
+			result[ordinal] = Candidate{
+				Role: local.Role, SocketSlot: slot.SocketSlot, Ordinal: uint32(ordinal), ExpectedSourcePort: slot.ExpectedPublicSourcePort,
+				TargetPort: peer.SourceSlots[permutation[ordinal]].ExpectedPublicSourcePort,
+			}
+		}
+		clear(permutation)
+		return result, nil
+	case ResourceAsymmetric:
+		if local.Role == RoleMappingSet {
+			if !peer.ReceiveEndpoint.Valid() {
+				return nil, ErrPlanMismatch
+			}
+			slots := make([]uint16, len(local.SourceSlots))
+			for index, slot := range local.SourceSlots {
+				slots[index] = slot.SocketSlot
+			}
+			shuffleUint16(key, string(local.Role)+"\x00mapping-slots", slots)
 			result := make([]Candidate, len(slots))
 			for ordinal, slot := range slots {
-				result[ordinal] = Candidate{Role: context.Role, SocketSlot: slot, Ordinal: uint32(ordinal), TargetPort: context.FixedPeerPort}
+				result[ordinal] = Candidate{Role: local.Role, SocketSlot: slot, Ordinal: uint32(ordinal), TargetPort: peer.ReceiveEndpoint.Port}
 			}
 			clear(slots)
 			return result, nil
 		}
 		ports := portRange(1, 65535)
-		shuffleUint16(key, string(context.Role)+"\x00target-ports", ports)
+		shuffleUint16(key, string(local.Role)+"\x00target-ports", ports)
 		ports = ports[:512]
 		result := make([]Candidate, len(ports))
 		for ordinal, port := range ports {
-			result[ordinal] = Candidate{Role: context.Role, SocketSlot: 0, Ordinal: uint32(ordinal), TargetPort: port}
+			result[ordinal] = Candidate{Role: local.Role, SocketSlot: 0, Ordinal: uint32(ordinal), ExpectedSourcePort: local.ReceiveEndpoint.Port, TargetPort: port}
 		}
 		clear(ports)
 		return result, nil
 	case ResourceHard16KLab:
 		ports := portRange(DynamicPortMin, DynamicPortMax)
-		shuffleUint16(key, string(context.Role)+"\x00hard-16k", ports)
+		shuffleUint16(key, string(local.Role)+"\x00hard-16k", ports)
 		result := make([]Candidate, len(ports))
 		for ordinal, port := range ports {
-			result[ordinal] = Candidate{Role: context.Role, SocketSlot: uint16(ordinal / 1024), Ordinal: uint32(ordinal), TargetPort: port}
+			result[ordinal] = Candidate{Role: local.Role, SocketSlot: uint16(ordinal / 1024), Ordinal: uint32(ordinal), TargetPort: port}
 		}
 		clear(ports)
 		return result, nil
 	case ResourceHard32KCandidate:
 		ports := portRange(DynamicPortMin, DynamicPortMax)
-		shuffleUint16(key, string(context.Role)+"\x00hard-32k", ports)
+		shuffleUint16(key, string(local.Role)+"\x00hard-32k", ports)
 		result := make([]Candidate, 0, 32_768)
 		for round := 0; round < 2; round++ {
 			for index, port := range ports {
 				ordinal := round*len(ports) + index
-				result = append(result, Candidate{Role: context.Role, SocketSlot: uint16(ordinal / 1024), Ordinal: uint32(ordinal), TargetPort: port})
+				result = append(result, Candidate{Role: local.Role, SocketSlot: uint16(ordinal / 1024), Ordinal: uint32(ordinal), TargetPort: port})
 			}
 		}
 		clear(ports)
@@ -345,6 +560,38 @@ func digestCost(profile Profile, resource ResourceClass, cost Cost) [32]byte {
 	return sha256.Sum256(encoded.Bytes())
 }
 
+func digestSourceCommitment(commitment LocalSourceCommitment) [32]byte {
+	var encoded bytes.Buffer
+	encoded.WriteString(sourceEncodingLabel)
+	appendString(&encoded, string(commitment.Profile))
+	appendString(&encoded, string(commitment.ResourceClass))
+	appendString(&encoded, string(commitment.Role))
+	encoded.Write(commitment.AttemptDigest[:])
+	appendUint64(&encoded, commitment.Generation)
+	appendString(&encoded, commitment.Universe.Name)
+	appendUint16(&encoded, commitment.Universe.Min)
+	appendUint16(&encoded, commitment.Universe.Max)
+	appendUint32(&encoded, commitment.Universe.Count)
+	appendAddress(&encoded, commitment.ReceiveEndpoint.Address)
+	appendUint16(&encoded, commitment.ReceiveEndpoint.Port)
+	encoded.Write(commitment.EvidenceDigest[:])
+	encoded.Write(commitment.ValidationDigest[:])
+	encoded.Write(commitment.CostDigest[:])
+	appendProbabilityReport(&encoded, commitment.Probability)
+	if commitment.Executable {
+		encoded.WriteByte(1)
+	} else {
+		encoded.WriteByte(0)
+	}
+	appendUint32(&encoded, uint32(len(commitment.SourceSlots)))
+	for _, slot := range commitment.SourceSlots {
+		appendUint16(&encoded, slot.SocketSlot)
+		appendUint32(&encoded, slot.Ordinal)
+		appendUint16(&encoded, slot.ExpectedPublicSourcePort)
+	}
+	return sha256.Sum256(encoded.Bytes())
+}
+
 func digestPlan(plan Plan, attemptDigest [32]byte) [32]byte {
 	var encoded bytes.Buffer
 	encoded.WriteString(planEncodingLabel)
@@ -356,26 +603,61 @@ func digestPlan(plan Plan, attemptDigest [32]byte) [32]byte {
 	appendString(&encoded, plan.Universe.Name)
 	appendUint16(&encoded, plan.Universe.Min)
 	appendUint16(&encoded, plan.Universe.Max)
-	appendUint32(&encoded, plan.Universe.Size())
+	appendUint32(&encoded, plan.Universe.Count)
 	encoded.Write(plan.EvidenceDigest[:])
 	encoded.Write(plan.CostDigest[:])
-	appendString(&encoded, plan.Probability.Model)
-	appendString(&encoded, plan.Probability.Universe)
-	appendString(&encoded, plan.Probability.Assumptions)
-	if plan.Probability.Conditional {
-		encoded.WriteByte(1)
-	} else {
-		encoded.WriteByte(0)
-	}
-	appendString(&encoded, plan.Probability.ModelCoverage)
-	appendString(&encoded, plan.Probability.Primary.LowerDecimal)
-	appendString(&encoded, plan.Probability.Primary.UpperDecimal)
+	appendProbabilityReport(&encoded, plan.Probability)
 	appendUint32(&encoded, uint32(len(plan.Candidates)))
 	for _, candidate := range plan.Candidates {
 		appendString(&encoded, string(candidate.Role))
 		appendUint16(&encoded, candidate.SocketSlot)
 		appendUint32(&encoded, candidate.Ordinal)
+		appendUint16(&encoded, candidate.ExpectedSourcePort)
 		appendUint16(&encoded, candidate.TargetPort)
+	}
+	return sha256.Sum256(encoded.Bytes())
+}
+
+func appendProbabilityReport(encoded *bytes.Buffer, report ProbabilityReport) {
+	appendString(encoded, report.Model)
+	appendString(encoded, report.Universe)
+	appendString(encoded, report.Assumptions)
+	if report.Conditional {
+		encoded.WriteByte(1)
+	} else {
+		encoded.WriteByte(0)
+	}
+	appendString(encoded, report.ModelCoverage)
+	appendProbability(encoded, report.Primary)
+	appendProbability(encoded, report.FullRangeBaseline)
+	appendString(encoded, report.PoissonApproximation)
+	appendString(encoded, report.ApproximationDelta)
+}
+
+func appendProbability(encoded *bytes.Buffer, probability Probability) {
+	appendUint64(encoded, probability.Universe)
+	appendUint64(encoded, probability.LeftDraws)
+	appendUint64(encoded, probability.RightDraws)
+	appendUint64(encoded, uint64(probability.PrecisionBits))
+	appendString(encoded, probability.LowerDecimal)
+	appendString(encoded, probability.UpperDecimal)
+	appendUint64(encoded, probability.FloorPartsPerTrillion)
+	appendString(encoded, probability.ExactRational)
+}
+
+func digestJointCommitment(commitment JointPlanCommitment) [32]byte {
+	var encoded bytes.Buffer
+	encoded.WriteString(jointEncodingLabel)
+	appendString(&encoded, string(commitment.Profile))
+	appendString(&encoded, string(commitment.ResourceClass))
+	encoded.Write(commitment.AttemptDigest[:])
+	appendUint64(&encoded, commitment.Generation)
+	for _, direction := range commitment.Directions {
+		appendString(&encoded, string(direction.Role))
+		encoded.Write(direction.SourceDigest[:])
+		encoded.Write(direction.Triple.Plan[:])
+		encoded.Write(direction.Triple.Cost[:])
+		encoded.Write(direction.Triple.Evidence[:])
 	}
 	return sha256.Sum256(encoded.Bytes())
 }

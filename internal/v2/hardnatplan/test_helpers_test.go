@@ -3,6 +3,7 @@ package hardnatplan
 import (
 	"crypto/sha256"
 	"fmt"
+	"testing"
 )
 
 type fixedKeySource struct {
@@ -65,8 +66,10 @@ func syntheticEvidence(mapping MappingBehavior, filtering FilteringBehavior, por
 		case 2:
 			observerAddress = syntheticAddress(11).Address()
 		}
+		meta := evidenceMeta(graph, byte(index+1), SourceLocalTomography, OriginLocalTransaction, observerAddress, observerPort)
+		meta.SocketSlot = uint16(index)
 		graph.Allocation = append(graph.Allocation, AllocationSample{
-			Meta:       evidenceMeta(graph, byte(index+1), SourceLocalTomography, OriginLocalTransaction, observerAddress, observerPort),
+			Meta:       meta,
 			SocketSlot: uint16(index), Ordinal: uint32(index), MappedAddress: public, MappedPort: port, Success: true,
 		})
 	}
@@ -91,10 +94,97 @@ func keySource(label string) fixedKeySource {
 	return fixedKeySource{key: syntheticDigest("planner-key:" + label)}
 }
 
-func planInput(profile Profile, resource ResourceClass, role Role, graph EvidenceGraph) PlannerInput {
-	return PlannerInput{
-		Profile: profile, ResourceClass: resource,
-		Context:  AttemptContext{AttemptDigest: graph.AttemptDigest, Generation: graph.Generation, Role: role, FixedPeerPort: 55000},
-		Evidence: graph, Budget: generousBudget(), KeySource: keySource(fmt.Sprintf("%s:%s", profile, role)),
+func trustedValidation(graph EvidenceGraph) TrustedValidationContext {
+	trusted := TrustedValidationContext{
+		NowMilli:              graph.FinishedAtMilli + 500,
+		ExpectedAttemptDigest: graph.AttemptDigest, ExpectedMachineScopeDigest: graph.MachineScopeDigest,
+		ExpectedPeerDigest: graph.PeerDigest, ExpectedObservationSetDigest: graph.ObservationSetDigest,
+		ExpectedSocketOwnerDigest: graph.SocketOwnerDigest, ExpectedGeneration: graph.Generation,
+		ExpectedStartedAtMilli: graph.StartedAtMilli, ExpectedFinishedAtMilli: graph.FinishedAtMilli,
+		ExpectedExpiresAtMilli: graph.ExpiresAtMilli,
 	}
+	seen := make(map[[12]byte]struct{})
+	appendIssued := func(kind EvidenceKind, meta EvidenceMeta, slot uint16, ordinal uint32) {
+		if meta.Origin != OriginLocalTransaction {
+			return
+		}
+		if _, duplicate := seen[meta.TransactionID]; duplicate {
+			return
+		}
+		seen[meta.TransactionID] = struct{}{}
+		trusted.Issued = append(trusted.Issued, IssuedTransaction{
+			Kind: kind, TransactionID: meta.TransactionID, Source: meta.Source,
+			Observer: AddressPort{Address: meta.ObserverAddress, Port: meta.ObserverPort}, SocketSlot: slot, Ordinal: ordinal,
+			NotBeforeMilli: graph.StartedAtMilli, NotAfterMilli: graph.FinishedAtMilli,
+		})
+	}
+	for _, entry := range graph.Mapping {
+		appendIssued(EvidenceKindMapping, entry.Meta, 0, 0)
+	}
+	for _, entry := range graph.Filtering {
+		appendIssued(EvidenceKindFiltering, entry.Meta, 0, 0)
+	}
+	for _, entry := range graph.IPPooling {
+		appendIssued(EvidenceKindIPPooling, entry.Meta, 0, 0)
+	}
+	for _, entry := range graph.Allocation {
+		appendIssued(EvidenceKindAllocation, entry.Meta, entry.SocketSlot, entry.Ordinal)
+	}
+	return trusted
+}
+
+func inferStateModel(graph EvidenceGraph) (StateModel, error) {
+	return InferStateModel(graph, trustedValidation(graph))
+}
+
+func localCommitmentInput(profile Profile, resource ResourceClass, role Role, graph EvidenceGraph) LocalCommitmentInput {
+	input := LocalCommitmentInput{
+		Profile: profile, ResourceClass: resource,
+		Context:  AttemptContext{AttemptDigest: graph.AttemptDigest, Generation: graph.Generation, Role: role},
+		Evidence: graph, Validation: trustedValidation(graph), Budget: generousBudget(),
+	}
+	if profile == ProfileAsymmetricBirthday && role == RoleTargetSet {
+		input.ReceiveEndpoint = AddressPort{Address: syntheticAddress(220).Address(), Port: 55000}
+	}
+	return input
+}
+
+func buildPlanForRole(t testing.TB, profile Profile, resource ResourceClass, role Role, graph EvidenceGraph) Plan {
+	t.Helper()
+	var peerRole Role
+	peerGraph := graph
+	switch profile {
+	case ProfilePredictiveEdm, ProfileHardBirthday:
+		peerRole = RoleResponder
+		if role == RoleResponder {
+			peerRole = RoleInitiator
+		}
+	case ProfileAsymmetricBirthday:
+		if role == RoleMappingSet {
+			peerRole = RoleTargetSet
+			peerGraph = syntheticEvidence(MappingEIM, FilteringAPDF, apparentlyRandomPorts())
+		} else {
+			peerRole = RoleMappingSet
+			peerGraph = syntheticEvidence(MappingAPDM, FilteringAPDF, apparentlyRandomPorts())
+		}
+	default:
+		t.Fatalf("unsupported profile %q", profile)
+	}
+	local, err := BuildLocalCommitment(localCommitmentInput(profile, resource, role, graph))
+	if err != nil {
+		t.Fatalf("build local commitment: %v", err)
+	}
+	peer, err := BuildLocalCommitment(localCommitmentInput(profile, resource, peerRole, peerGraph))
+	if err != nil {
+		t.Fatalf("build peer commitment: %v", err)
+	}
+	pair, err := BuildBilateralPlan(BilateralPlannerInput{First: local, Second: peer, KeySource: keySource(fmt.Sprintf("%s:pair", profile))})
+	if err != nil {
+		t.Fatalf("build bilateral plan: %v", err)
+	}
+	plan, ok := pair.PlanForRole(role)
+	if !ok {
+		t.Fatalf("role %q missing from bilateral plan", role)
+	}
+	return plan
 }

@@ -14,199 +14,296 @@ func TestEvidenceGraphDeterministicallyInfersAllocationModels(t *testing.T) {
 		minimum    uint16
 		maximum    uint16
 		predicted  uint16
-		window     int
+		schedule   int
 		residual   uint32
 	}{
-		{name: "sequential uniform", ports: sequentialPorts(50000, 8, 1), allocation: AllocationSequentialUniform, minimum: 1, maximum: 1, predicted: 50008, window: 32, residual: 32},
-		{name: "low dispersion monotonic", ports: []uint16{50000, 50002, 50005, 50007, 50010, 50012, 50015, 50017}, allocation: AllocationMonotonicNonuniform, minimum: 2, maximum: 3, predicted: 50019, window: 32, residual: 32},
-		{name: "apparently random", ports: apparentlyRandomPorts(), allocation: AllocationApparentlyRandom, minimum: 1117, maximum: 63721, predicted: 5940, window: 0, residual: 65535},
+		{name: "sequential uniform", ports: sequentialPorts(50000, 8, 1), allocation: AllocationSequentialUniform, minimum: 1, maximum: 1, predicted: 50008, schedule: 32, residual: 32},
+		{name: "low dispersion monotonic", ports: []uint16{50000, 50002, 50005, 50007, 50010, 50012, 50015, 50017}, allocation: AllocationMonotonicNonuniform, minimum: 2, maximum: 3, predicted: 50019, schedule: 32, residual: 32},
+		{name: "apparently random", ports: apparentlyRandomPorts(), allocation: AllocationApparentlyRandom, minimum: 1117, maximum: 63721, predicted: 5940, schedule: 0, residual: 65535},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			graph := syntheticEvidence(MappingAPDM, FilteringAPDF, test.ports)
-			model, err := InferStateModel(graph)
+			model, err := inferStateModel(graph)
 			if err != nil {
 				t.Fatalf("infer model: %v", err)
 			}
 			if model.Mapping != MappingAPDM || model.Filtering != FilteringAPDF || model.Allocation != test.allocation ||
 				model.MinimumDelta != test.minimum || model.MaximumDelta != test.maximum || model.PredictedNextPort != test.predicted ||
-				len(model.CandidateWindow) != test.window || !model.PublicAddressStable || model.SuccessfulSamples != len(test.ports) ||
+				len(model.PredictedSourcePorts) != test.schedule || !model.PublicAddressStable || model.SuccessfulSamples != len(test.ports) ||
 				model.ObserverAddressCount != 2 || !model.HasAlternatePort || model.FailedSamples != 0 || model.ResidualUniverse != test.residual ||
-				model.AllocationLimitation == "" {
+				model.AllocationLimitation == "" || allZero(model.ValidationDigest[:]) {
 				t.Fatalf("model = %+v", model)
 			}
-			for _, port := range model.CandidateWindow {
+			if test.schedule > 0 && model.PredictedSourcePorts[0] != test.predicted {
+				t.Fatalf("first predicted source = %d, want %d", model.PredictedSourcePorts[0], test.predicted)
+			}
+			for _, port := range model.PredictedSourcePorts {
 				if port == 0 {
-					t.Fatal("predictive window contains port zero")
+					t.Fatal("predicted source schedule contains port zero")
 				}
 			}
 		})
 	}
 }
 
-func TestEvidenceBindsObserverSetSocketOwnerAndFailureTotals(t *testing.T) {
+func TestTrustedValidationBindsHeaderFreshnessAndIssuedManifest(t *testing.T) {
 	graph := syntheticEvidence(MappingAPDM, FilteringAPDF, sequentialPorts(50000, 8, 1))
-	failure := graph.Allocation[0]
-	failure.Meta = evidenceMeta(graph, 220, SourceLocalTomography, OriginLocalTransaction, syntheticAddress(11).Address(), 3478)
-	failure.Ordinal = 8
-	failure.Success = false
-	failure.MappedAddress = Address{}
-	failure.MappedPort = 0
-	graph.Allocation = append(graph.Allocation, failure)
-	model, err := InferStateModel(graph)
-	if err != nil || model.SuccessfulSamples != 8 || model.FailedSamples != 1 || model.ResidualUniverse != 32 {
-		t.Fatalf("bound failure model/error = %+v/%v", model, err)
+	trusted := trustedValidation(graph)
+	baseline, err := InferStateModel(graph, trusted)
+	if err != nil {
+		t.Fatal(err)
 	}
-	graph.Allocation = append(graph.Allocation, failure)
-	deduplicated, err := InferStateModel(graph)
-	if err != nil || deduplicated.FailedSamples != 1 {
-		t.Fatalf("duplicate failure model/error = %+v/%v", deduplicated, err)
+	later := trusted
+	later.NowMilli++
+	laterModel, err := InferStateModel(graph, later)
+	if err != nil || laterModel.EvidenceDigest != baseline.EvidenceDigest || laterModel.ValidationDigest != baseline.ValidationDigest {
+		t.Fatalf("evaluation clock changed actionable digest: %+v/%v", laterModel, err)
 	}
-	conflicting := failure
-	conflicting.SocketSlot++
-	graph.Allocation = append(graph.Allocation, conflicting)
-	if _, err := InferStateModel(graph); !errors.Is(err, ErrEvidenceInsufficient) {
-		t.Fatalf("conflicting transaction error = %v", err)
-	}
-	graph.Allocation = graph.Allocation[:len(graph.Allocation)-1]
 
 	for name, mutate := range map[string]func(*EvidenceGraph){
-		"observer set": func(value *EvidenceGraph) { value.ObservationSetDigest = [32]byte{} },
-		"socket owner": func(value *EvidenceGraph) { value.SocketOwnerDigest = [32]byte{} },
+		"machine scope": func(value *EvidenceGraph) { value.MachineScopeDigest = syntheticDigest("foreign-machine") },
+		"socket owner":  func(value *EvidenceGraph) { value.SocketOwnerDigest = syntheticDigest("foreign-socket") },
+		"peer":          func(value *EvidenceGraph) { value.PeerDigest = syntheticDigest("foreign-peer") },
+		"attempt":       func(value *EvidenceGraph) { value.AttemptDigest = syntheticDigest("foreign-attempt") },
 	} {
 		t.Run(name, func(t *testing.T) {
 			mutated := graph
 			mutate(&mutated)
-			failed, err := InferStateModel(mutated)
-			if !errors.Is(err, ErrInvalidEvidence) || len(failed.CandidateWindow) != 0 {
-				t.Fatalf("unbound graph model/error = %+v/%v", failed, err)
+			model, err := InferStateModel(mutated, trusted)
+			if !errors.Is(err, ErrInvalidEvidence) || len(model.PredictedSourcePorts) != 0 {
+				t.Fatalf("model/error = %+v/%v", model, err)
+			}
+		})
+	}
+
+	t.Run("stale evaluation", func(t *testing.T) {
+		stale := trusted
+		stale.NowMilli = graph.FinishedAtMilli + MaxEvidenceAgeMillis + 1
+		model, err := InferStateModel(graph, stale)
+		if !errors.Is(err, ErrEvidenceInsufficient) || len(model.PredictedSourcePorts) != 0 {
+			t.Fatalf("model/error = %+v/%v", model, err)
+		}
+	})
+	t.Run("evaluation before acquisition finished", func(t *testing.T) {
+		future := trusted
+		future.NowMilli = graph.FinishedAtMilli - 1
+		model, err := InferStateModel(graph, future)
+		if !errors.Is(err, ErrEvidenceInsufficient) || len(model.PredictedSourcePorts) != 0 {
+			t.Fatalf("model/error = %+v/%v", model, err)
+		}
+	})
+	t.Run("acquisition window exceeds bound", func(t *testing.T) {
+		longWindow := graph
+		longWindow.FinishedAtMilli = longWindow.StartedAtMilli + MaxEvidenceWindowMillis + 1
+		longWindow.ExpiresAtMilli = longWindow.FinishedAtMilli + 1_000
+		longTrusted := trustedValidation(longWindow)
+		model, err := InferStateModel(longWindow, longTrusted)
+		if !errors.Is(err, ErrEvidenceInsufficient) || len(model.PredictedSourcePorts) != 0 {
+			t.Fatalf("model/error = %+v/%v", model, err)
+		}
+	})
+	t.Run("manifest missing issued transaction", func(t *testing.T) {
+		missing := trusted
+		missing.Issued = append([]IssuedTransaction(nil), trusted.Issued[:len(trusted.Issued)-1]...)
+		model, err := InferStateModel(graph, missing)
+		if !errors.Is(err, ErrInvalidEvidence) || len(model.PredictedSourcePorts) != 0 {
+			t.Fatalf("model/error = %+v/%v", model, err)
+		}
+	})
+	t.Run("issued response missing from graph", func(t *testing.T) {
+		missing := graph
+		missing.Allocation = append([]AllocationSample(nil), graph.Allocation[:len(graph.Allocation)-1]...)
+		model, err := InferStateModel(missing, trusted)
+		if !errors.Is(err, ErrEvidenceInsufficient) || len(model.PredictedSourcePorts) != 0 {
+			t.Fatalf("model/error = %+v/%v", model, err)
+		}
+	})
+
+	for name, mutate := range map[string]func(*EvidenceGraph){
+		"unissued transaction":  func(value *EvidenceGraph) { value.Allocation[7].Meta.TransactionID = TransactionID{0xff} },
+		"wrong destination":     func(value *EvidenceGraph) { value.Allocation[7].Meta.ObserverPort++ },
+		"wrong observed socket": func(value *EvidenceGraph) { value.Allocation[7].Meta.SocketSlot++ },
+		"wrong sample socket":   func(value *EvidenceGraph) { value.Allocation[7].SocketSlot++ },
+		"wrong ordinal":         func(value *EvidenceGraph) { value.Allocation[7].Ordinal++ },
+	} {
+		t.Run(name, func(t *testing.T) {
+			mutated := graph
+			mutated.Allocation = append([]AllocationSample(nil), graph.Allocation...)
+			mutate(&mutated)
+			model, err := InferStateModel(mutated, trusted)
+			if !errors.Is(err, ErrInvalidEvidence) || len(model.PredictedSourcePorts) != 0 {
+				t.Fatalf("model/error = %+v/%v", model, err)
 			}
 		})
 	}
 }
 
-func TestEvidenceBelowEightOrDriftedFailsWithNoWindow(t *testing.T) {
-	t.Run("below threshold", func(t *testing.T) {
-		model, err := InferStateModel(syntheticEvidence(MappingAPDM, FilteringAPDF, sequentialPorts(50000, 7, 1)))
-		if !errors.Is(err, ErrEvidenceInsufficient) || len(model.CandidateWindow) != 0 || model.Allocation != AllocationInsufficientData {
+func TestAllocationRequiresContinuousSuccessfulSuffix(t *testing.T) {
+	t.Run("sparse ordinals", func(t *testing.T) {
+		graph := syntheticEvidence(MappingAPDM, FilteringAPDF, sequentialPorts(50000, 8, 1))
+		for index := range graph.Allocation {
+			graph.Allocation[index].Ordinal = uint32(index * 100)
+		}
+		model, err := inferStateModel(graph)
+		if !errors.Is(err, ErrEvidenceInsufficient) || len(model.PredictedSourcePorts) != 0 {
 			t.Fatalf("model/error = %+v/%v", model, err)
 		}
 	})
 
-	t.Run("mapping drift", func(t *testing.T) {
+	t.Run("latest failure invalidates older successes", func(t *testing.T) {
 		graph := syntheticEvidence(MappingAPDM, FilteringAPDF, sequentialPorts(50000, 8, 1))
-		graph.Mapping = append(graph.Mapping, MappingEvidence{
-			Meta: evidenceMeta(graph, 203, SourcePeerReflector, OriginLocalTransaction, syntheticAddress(11).Address(), 3478), Behavior: MappingEIM,
-		})
-		model, err := InferStateModel(graph)
-		if !errors.Is(err, ErrEvidenceInsufficient) || len(model.CandidateWindow) != 0 {
+		failure := graph.Allocation[0]
+		failure.Meta = evidenceMeta(graph, 220, SourceLocalTomography, OriginLocalTransaction, syntheticAddress(11).Address(), 3478)
+		failure.Ordinal = 8
+		failure.SocketSlot = 8
+		failure.Meta.SocketSlot = failure.SocketSlot
+		failure.Success = false
+		failure.MappedAddress = Address{}
+		failure.MappedPort = 0
+		graph.Allocation = append(graph.Allocation, failure)
+		model, err := inferStateModel(graph)
+		if !errors.Is(err, ErrEvidenceInsufficient) || len(model.PredictedSourcePorts) != 0 {
 			t.Fatalf("model/error = %+v/%v", model, err)
 		}
 	})
 
-	t.Run("public address drift", func(t *testing.T) {
+	t.Run("failure before eight-success suffix is diagnostic only", func(t *testing.T) {
 		graph := syntheticEvidence(MappingAPDM, FilteringAPDF, sequentialPorts(50000, 8, 1))
-		graph.Allocation[7].MappedAddress = syntheticAddress(201).Address()
-		model, err := InferStateModel(graph)
-		if !errors.Is(err, ErrEvidenceInsufficient) || len(model.CandidateWindow) != 0 {
+		for index := range graph.Allocation {
+			graph.Allocation[index].Ordinal++
+		}
+		failure := graph.Allocation[0]
+		failure.Meta = evidenceMeta(graph, 220, SourceLocalTomography, OriginLocalTransaction, syntheticAddress(11).Address(), 3478)
+		failure.Ordinal = 0
+		failure.SocketSlot = 0
+		failure.Meta.SocketSlot = failure.SocketSlot
+		failure.Success = false
+		failure.MappedAddress = Address{}
+		failure.MappedPort = 0
+		graph.Allocation = append(graph.Allocation, failure)
+		model, err := inferStateModel(graph)
+		if err != nil || model.SuccessfulSamples != 8 || model.FailedSamples != 1 || len(model.PredictedSourcePorts) != 32 {
 			t.Fatalf("model/error = %+v/%v", model, err)
 		}
 	})
 }
 
-func TestRemoteReportsAreUntrustedAndCannotChangeActionableModel(t *testing.T) {
+func TestRemoteReportsAndExactReplayDoNotChangeActionableInputs(t *testing.T) {
 	graph := syntheticEvidence(MappingAPDM, FilteringAPDF, sequentialPorts(50000, 8, 1))
-	baseline, err := InferStateModel(graph)
+	baseline, err := inferStateModel(graph)
 	if err != nil {
 		t.Fatal(err)
 	}
+	baselineCommitment, err := BuildLocalCommitment(localCommitmentInput(ProfilePredictiveEdm, ResourcePredictive, RoleInitiator, graph))
+	if err != nil {
+		t.Fatal(err)
+	}
+
 	remote := graph.Allocation[0]
 	remote.Meta = evidenceMeta(graph, 210, SourcePeerReflector, OriginRemoteReport, syntheticAddress(99).Address(), 9999)
 	remote.MappedPort = 1
 	remote.MappedAddress = syntheticAddress(99).Address()
-	graph.Allocation = append(graph.Allocation, remote)
-	graph.Mapping = append(graph.Mapping, MappingEvidence{Meta: remote.Meta, Behavior: MappingEIM})
-	withRemote, err := InferStateModel(graph)
+	withDiagnostics := graph
+	withDiagnostics.Allocation = append(append([]AllocationSample(nil), graph.Allocation...), remote)
+	withDiagnostics.Mapping = append(append([]MappingEvidence(nil), graph.Mapping...), MappingEvidence{Meta: remote.Meta, Behavior: MappingEIM})
+	withRemote, err := inferStateModel(withDiagnostics)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if baseline.Mapping != withRemote.Mapping || baseline.Allocation != withRemote.Allocation ||
-		!slices.Equal(baseline.CandidateWindow, withRemote.CandidateWindow) || baseline.EvidenceDigest != withRemote.EvidenceDigest {
-		t.Fatalf("remote report changed actionable model\nbaseline=%+v\nremote=%+v", baseline, withRemote)
+	remoteCommitment, err := BuildLocalCommitment(localCommitmentInput(ProfilePredictiveEdm, ResourcePredictive, RoleInitiator, withDiagnostics))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if baseline.EvidenceDigest != withRemote.EvidenceDigest || baseline.ValidationDigest != withRemote.ValidationDigest ||
+		!slices.Equal(baseline.PredictedSourcePorts, withRemote.PredictedSourcePorts) || baselineCommitment.SourceDigest != remoteCommitment.SourceDigest {
+		t.Fatal("remote diagnostics changed actionable model or source commitment")
 	}
 	if baseline.RawEvidenceDigest == withRemote.RawEvidenceDigest {
-		t.Fatal("raw evidence digest did not witness added remote report")
+		t.Fatal("raw evidence digest did not witness remote diagnostics")
+	}
+
+	replayedGraph := graph
+	replayedGraph.Mapping = append(append([]MappingEvidence(nil), graph.Mapping...), graph.Mapping[0])
+	replayed, err := inferStateModel(replayedGraph)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if replayed.EvidenceDigest != baseline.EvidenceDigest || replayed.RawEvidenceDigest == baseline.RawEvidenceDigest {
+		t.Fatal("exact replay changed actionable digest or escaped raw witness")
 	}
 }
 
-func TestEvidenceSourceStrengthAndPoolingAreMergedIndependently(t *testing.T) {
-	graph := syntheticEvidence(MappingADM, FilteringADF, sequentialPorts(50000, 8, 1))
+func TestConflictingReplayFailsClosedBeforeDigest(t *testing.T) {
+	graph := syntheticEvidence(MappingAPDM, FilteringAPDF, sequentialPorts(50000, 8, 1))
+	trusted := trustedValidation(graph)
+	conflict := graph.Allocation[7]
+	conflict.MappedPort++
+	graph.Allocation = append(graph.Allocation, conflict)
+	model, err := InferStateModel(graph, trusted)
+	if !errors.Is(err, ErrEvidenceInsufficient) || !allZero(model.EvidenceDigest[:]) || len(model.PredictedSourcePorts) != 0 {
+		t.Fatalf("model/error = %+v/%v", model, err)
+	}
+}
+
+func TestEvidenceSourceStrengthPoolingOrderAndClone(t *testing.T) {
+	graph := syntheticEvidence(MappingADM, FilteringADF, sequentialPorts(65530, 8, 1))
 	graph.Mapping = append(graph.Mapping,
 		MappingEvidence{Meta: evidenceMeta(graph, 211, SourcePeerReflector, OriginLocalTransaction, syntheticAddress(11).Address(), 3478), Behavior: MappingADM},
 		MappingEvidence{Meta: evidenceMeta(graph, 212, SourceAuthorizedGateway, OriginLocalTransaction, syntheticAddress(12).Address(), 3478), Behavior: MappingADM},
 	)
-	model, err := InferStateModel(graph)
+	first, err := inferStateModel(graph)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if model.Mapping != MappingADM || model.MappingSource != SourceAuthorizedGateway || model.Filtering != FilteringADF || model.FilteringSource != SourceRFC5780 {
-		t.Fatalf("source-ranked model = %+v", model)
-	}
-
-	drifted := graph
-	drifted.IPPooling = append([]IPPoolingEvidence(nil), graph.IPPooling...)
-	drifted.IPPooling = append(drifted.IPPooling, IPPoolingEvidence{
-		Meta:   evidenceMeta(drifted, 213, SourcePeerReflector, OriginLocalTransaction, syntheticAddress(11).Address(), 3478),
-		Stable: false, PoolDigest: syntheticDigest("different-pool"),
-	})
-	driftedModel, err := InferStateModel(drifted)
-	if !errors.Is(err, ErrEvidenceInsufficient) || len(driftedModel.CandidateWindow) != 0 {
-		t.Fatalf("pooling drift model/error = %+v/%v", driftedModel, err)
-	}
-}
-
-func TestEvidenceOrderAndCloneOwnershipAreDeterministic(t *testing.T) {
-	graph := syntheticEvidence(MappingADM, FilteringADF, sequentialPorts(65530, 8, 1))
-	first, err := InferStateModel(graph)
-	if err != nil {
-		t.Fatal(err)
+	if first.MappingSource != SourceAuthorizedGateway || first.FilteringSource != SourceRFC5780 {
+		t.Fatalf("source-ranked model = %+v", first)
 	}
 	slices.Reverse(graph.Mapping)
 	slices.Reverse(graph.Filtering)
 	slices.Reverse(graph.IPPooling)
 	slices.Reverse(graph.Allocation)
-	second, err := InferStateModel(graph)
+	second, err := inferStateModel(graph)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if first.EvidenceDigest != second.EvidenceDigest || first.RawEvidenceDigest != second.RawEvidenceDigest ||
-		!slices.Equal(first.CandidateWindow, second.CandidateWindow) {
-		t.Fatalf("reordered graph changed result\nfirst=%+v\nsecond=%+v", first, second)
+		!slices.Equal(first.PredictedSourcePorts, second.PredictedSourcePorts) {
+		t.Fatal("evidence order changed deterministic result")
 	}
 	clone := first.Clone()
-	clone.CandidateWindow[0] = 1
-	if first.CandidateWindow[0] == 1 {
-		t.Fatal("StateModel.Clone shares candidate-window ownership")
+	clone.PredictedSourcePorts[0] = 1
+	if first.PredictedSourcePorts[0] == 1 {
+		t.Fatal("StateModel.Clone shares predicted-source ownership")
 	}
 }
 
-func TestReplayDuplicateAndQuorumOnlyReduceEvidence(t *testing.T) {
-	t.Run("cross attempt replay", func(t *testing.T) {
+func TestEvidenceDriftAndCoverageFailClosed(t *testing.T) {
+	t.Run("mapping drift", func(t *testing.T) {
 		graph := syntheticEvidence(MappingAPDM, FilteringAPDF, sequentialPorts(50000, 8, 1))
-		graph.Allocation[7].Meta.AttemptDigest = syntheticDigest("other-attempt")
-		model, err := InferStateModel(graph)
-		if !errors.Is(err, ErrEvidenceInsufficient) || model.SuccessfulSamples != 7 {
+		graph.Mapping = append(graph.Mapping, MappingEvidence{
+			Meta: evidenceMeta(graph, 203, SourcePeerReflector, OriginLocalTransaction, syntheticAddress(11).Address(), 3478), Behavior: MappingEIM,
+		})
+		model, err := inferStateModel(graph)
+		if !errors.Is(err, ErrEvidenceInsufficient) || len(model.PredictedSourcePorts) != 0 {
 			t.Fatalf("model/error = %+v/%v", model, err)
 		}
 	})
-
-	t.Run("duplicate observer address lacks quorum", func(t *testing.T) {
+	t.Run("public address drift", func(t *testing.T) {
+		graph := syntheticEvidence(MappingAPDM, FilteringAPDF, sequentialPorts(50000, 8, 1))
+		graph.Allocation[7].MappedAddress = syntheticAddress(201).Address()
+		model, err := inferStateModel(graph)
+		if !errors.Is(err, ErrEvidenceInsufficient) || len(model.PredictedSourcePorts) != 0 {
+			t.Fatalf("model/error = %+v/%v", model, err)
+		}
+	})
+	t.Run("observer quorum", func(t *testing.T) {
 		graph := syntheticEvidence(MappingAPDM, FilteringAPDF, sequentialPorts(50000, 8, 1))
 		for index := range graph.Allocation {
 			graph.Allocation[index].Meta.ObserverAddress = syntheticAddress(10).Address()
 			graph.Allocation[index].Meta.ObserverPort = 3478
 		}
-		model, err := InferStateModel(graph)
+		model, err := inferStateModel(graph)
 		if !errors.Is(err, ErrEvidenceInsufficient) || model.ObserverAddressCount != 1 || model.HasAlternatePort {
 			t.Fatalf("model/error = %+v/%v", model, err)
 		}

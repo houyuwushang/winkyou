@@ -2,6 +2,7 @@ package hardnatplan
 
 import (
 	"errors"
+	"math/big"
 	"testing"
 )
 
@@ -32,8 +33,50 @@ func TestWithoutReplacementProbabilityExactSmallAndBoundaries(t *testing.T) {
 	if _, err := CollisionProbabilityWithoutReplacement(10, 11, 1); !errors.Is(err, ErrInvalidProbabilityInput) {
 		t.Fatalf("overdraw error = %v", err)
 	}
-	if _, err := CollisionProbabilityWithoutReplacement(^uint64(0), ^uint64(0), 1); !errors.Is(err, ErrProbabilityInputOverflow) {
-		t.Fatalf("sum overflow error = %v", err)
+	forced, err := CollisionProbabilityWithoutReplacement(^uint64(0), ^uint64(0), 1)
+	if err != nil || forced.ExactRational != "1" || forced.FloorPartsPerTrillion != ProbabilityScale {
+		t.Fatalf("forced-intersection overflow boundary = %+v/%v", forced, err)
+	}
+}
+
+func TestSerializedProbabilityIntervalContainsExactValue(t *testing.T) {
+	probability, err := CollisionProbabilityWithoutReplacement(65535, 128, 512)
+	if err != nil {
+		t.Fatal(err)
+	}
+	exact, ok := new(big.Rat).SetString(probability.ExactRational)
+	if !ok {
+		t.Fatalf("invalid exact rational %q", probability.ExactRational)
+	}
+	lower, ok := new(big.Rat).SetString(probability.LowerDecimal)
+	if !ok {
+		t.Fatalf("invalid lower decimal %q", probability.LowerDecimal)
+	}
+	upper, ok := new(big.Rat).SetString(probability.UpperDecimal)
+	if !ok {
+		t.Fatalf("invalid upper decimal %q", probability.UpperDecimal)
+	}
+	if lower.Cmp(exact) > 0 || upper.Cmp(exact) < 0 {
+		t.Fatalf("serialized interval [%s,%s] does not contain exact %s", lower, upper, exact)
+	}
+}
+
+func TestPoissonApproximationRemainsBoundedForLargeExponent(t *testing.T) {
+	for _, input := range [][3]uint64{{1000, 1000, 1000}, {^uint64(0), ^uint64(0), ^uint64(0)}, {65535, 0, 65535}} {
+		approximation, err := PoissonApproximation(input[0], input[1], input[2])
+		if err != nil {
+			t.Fatal(err)
+		}
+		value, ok := new(big.Rat).SetString(approximation)
+		if !ok || value.Sign() < 0 || value.Cmp(new(big.Rat).SetInt64(1)) > 0 {
+			t.Fatalf("input %v approximation = %q", input, approximation)
+		}
+	}
+}
+
+func TestCheckedProductStillRejectsActualOverflow(t *testing.T) {
+	if _, err := checkedProduct(^uint64(0), 2); !errors.Is(err, ErrProbabilityInputOverflow) {
+		t.Fatalf("product overflow error = %v", err)
 	}
 }
 

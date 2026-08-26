@@ -12,8 +12,8 @@ const evidenceEncodingLabel = "winkyou-hardnat-evidence-v1\x00"
 // InferStateModel deterministically validates and merges one attempt's
 // evidence. Invalid, replayed, duplicate, or remote-reported observations can
 // never become candidate-control input. Insufficient or drifted evidence
-// returns the same fail-closed class and an empty candidate window.
-func InferStateModel(graph EvidenceGraph) (StateModel, error) {
+// returns the same fail-closed class and an empty predicted source schedule.
+func InferStateModel(graph EvidenceGraph, trusted TrustedValidationContext) (StateModel, error) {
 	model := StateModel{
 		Mapping:              MappingUnknown,
 		Filtering:            FilteringUnknown,
@@ -27,27 +27,29 @@ func InferStateModel(graph EvidenceGraph) (StateModel, error) {
 	if digestErr != nil {
 		return model, digestErr
 	}
-	if !validGraphHeader(graph) {
-		return model, ErrInvalidEvidence
+	normalized, validationDigest, normalizeErr := normalizeEvidence(graph, trusted)
+	model.ValidationDigest = validationDigest
+	if normalizeErr != nil {
+		return model, normalizeErr
 	}
-	digest, digestErr := DigestEvidence(actionableEvidenceGraph(graph))
+	digest, digestErr := digestValidatedEvidence(normalized, validationDigest)
 	model.EvidenceDigest = digest
 	if digestErr != nil {
 		return model, digestErr
 	}
 
-	mapping, mappingSource, mappingErr := mergeMapping(graph)
+	mapping, mappingSource, mappingErr := mergeMapping(normalized)
 	if mappingErr != nil {
 		return model, ErrEvidenceInsufficient
 	}
-	filtering, filteringSource, filteringErr := mergeFiltering(graph)
+	filtering, filteringSource, filteringErr := mergeFiltering(normalized)
 	if filteringErr != nil {
 		return model, ErrEvidenceInsufficient
 	}
 	model.Mapping, model.MappingSource = mapping, mappingSource
 	model.Filtering, model.FilteringSource = filtering, filteringSource
 
-	samples, failedSamples, remoteReports, sampleErr := actionableAllocation(graph)
+	samples, failedSamples, sampleErr := continuousSuccessfulAllocationSuffix(normalized.Allocation)
 	if sampleErr != nil {
 		return model, ErrEvidenceInsufficient
 	}
@@ -55,38 +57,38 @@ func InferStateModel(graph EvidenceGraph) (StateModel, error) {
 	model.FailedSamples = failedSamples
 	model.ObserverAddressCount, model.HasAlternatePort = observerCoverage(samples)
 	if len(samples) < MinSuccessfulAllocationSamples || model.ObserverAddressCount < 2 || !model.HasAlternatePort {
-		model.Coverage = coverageString(graph, model, remoteReports)
+		model.Coverage = coverageString(model)
 		return model, ErrEvidenceInsufficient
 	}
 
 	publicAddress := samples[0].MappedAddress
 	for _, sample := range samples[1:] {
 		if sample.MappedAddress != publicAddress {
-			model.Coverage = coverageString(graph, model, remoteReports)
+			model.Coverage = coverageString(model)
 			return model, ErrEvidenceInsufficient
 		}
 	}
-	stable, poolingErr := mergeIPPooling(graph)
+	stable, poolingErr := mergeIPPooling(normalized)
 	if poolingErr != nil || !stable {
-		model.Coverage = coverageString(graph, model, remoteReports)
+		model.Coverage = coverageString(model)
 		return model, ErrEvidenceInsufficient
 	}
 	model.PublicAddressStable = true
 
-	allocation, minimum, maximum, predicted := classifyAllocation(samples)
+	allocation, minimum, maximum, predicted, predictedStep := classifyAllocation(samples)
 	model.Allocation = allocation
 	model.MinimumDelta = minimum
 	model.MaximumDelta = maximum
 	model.PredictedNextPort = predicted
 	if allocation == AllocationSequentialUniform || allocation == AllocationMonotonicNonuniform {
-		model.CandidateWindow = predictiveWindow(predicted)
-		model.ResidualUniverse = uint32(len(model.CandidateWindow))
+		model.PredictedSourcePorts = predictiveSourceSchedule(samples[len(samples)-1].MappedPort, predictedStep)
+		model.ResidualUniverse = uint32(len(model.PredictedSourcePorts))
 		model.AllocationLimitation = "short_window_only;competing_allocations_unbounded"
 	} else {
 		model.ResidualUniverse = 65535
 		model.AllocationLimitation = "samples_do_not_bound_future_allocator;full_range_unknown"
 	}
-	model.Coverage = coverageString(graph, model, remoteReports)
+	model.Coverage = coverageString(model)
 	return model, nil
 }
 
@@ -197,52 +199,51 @@ func mergeIPPooling(graph EvidenceGraph) (bool, error) {
 	return true, nil
 }
 
-func actionableAllocation(graph EvidenceGraph) ([]AllocationSample, int, int, error) {
-	entries := append([]AllocationSample(nil), graph.Allocation...)
-	sort.Slice(entries, func(left, right int) bool {
-		return bytes.Compare(encodeAllocationSample(entries[left]), encodeAllocationSample(entries[right])) < 0
-	})
-	seenTransactions := make(map[[12]byte]AllocationSample)
-	remoteReports := 0
+func continuousSuccessfulAllocationSuffix(entries []AllocationSample) ([]AllocationSample, int, error) {
+	byOrdinal := make(map[uint32]AllocationSample, len(entries))
 	failedSamples := 0
-	var samples []AllocationSample
+	var maximumOrdinal uint32
+	hasAllocation := false
 	for _, entry := range entries {
-		if entry.Meta.Origin == OriginRemoteReport {
-			remoteReports++
-			continue
+		if _, duplicate := byOrdinal[entry.Ordinal]; duplicate {
+			return nil, failedSamples, ErrEvidenceInsufficient
 		}
-		if !actionableMeta(entry.Meta, graph) {
-			continue
-		}
-		if previous, duplicate := seenTransactions[entry.Meta.TransactionID]; duplicate {
-			if previous != entry {
-				return nil, failedSamples, remoteReports, ErrEvidenceInsufficient
-			}
-			continue
-		}
-		seenTransactions[entry.Meta.TransactionID] = entry
+		byOrdinal[entry.Ordinal] = entry
 		if !entry.Success {
 			failedSamples++
-			continue
 		}
-		if !entry.MappedAddress.Valid() || entry.MappedPort == 0 {
-			continue
+		if !hasAllocation || entry.Ordinal > maximumOrdinal {
+			maximumOrdinal = entry.Ordinal
+			hasAllocation = true
 		}
-		samples = append(samples, entry)
 	}
-	sort.Slice(samples, func(left, right int) bool {
-		if samples[left].Ordinal != samples[right].Ordinal {
-			return samples[left].Ordinal < samples[right].Ordinal
+	if !hasAllocation {
+		return nil, failedSamples, ErrEvidenceInsufficient
+	}
+	var reversed []AllocationSample
+	for ordinal := maximumOrdinal; ; ordinal-- {
+		entry, ok := byOrdinal[ordinal]
+		if !ok || !entry.Success || !entry.MappedAddress.Valid() || entry.MappedPort == 0 {
+			break
 		}
-		return bytes.Compare(samples[left].Meta.TransactionID[:], samples[right].Meta.TransactionID[:]) < 0
-	})
+		reversed = append(reversed, entry)
+		if ordinal == 0 {
+			break
+		}
+	}
+	if len(reversed) < MinSuccessfulAllocationSamples {
+		return nil, failedSamples, ErrEvidenceInsufficient
+	}
+	samples := make([]AllocationSample, len(reversed))
+	for index := range reversed {
+		samples[len(reversed)-1-index] = reversed[index]
+	}
 	for index := 1; index < len(samples); index++ {
-		if samples[index-1].Ordinal == samples[index].Ordinal ||
-			samples[index-1].Meta.ObservedAtMilli > samples[index].Meta.ObservedAtMilli {
-			return nil, failedSamples, remoteReports, ErrEvidenceInsufficient
+		if samples[index-1].Ordinal+1 != samples[index].Ordinal || samples[index-1].Meta.ObservedAtMilli > samples[index].Meta.ObservedAtMilli {
+			return nil, failedSamples, ErrEvidenceInsufficient
 		}
 	}
-	return samples, failedSamples, remoteReports, nil
+	return samples, failedSamples, nil
 }
 
 func observerCoverage(samples []AllocationSample) (int, bool) {
@@ -264,9 +265,9 @@ func observerCoverage(samples []AllocationSample) (int, bool) {
 	return len(addresses), hasAlternatePort
 }
 
-func classifyAllocation(samples []AllocationSample) (AllocationBehavior, uint16, uint16, uint16) {
+func classifyAllocation(samples []AllocationSample) (AllocationBehavior, uint16, uint16, uint16, uint16) {
 	if len(samples) < MinSuccessfulAllocationSamples {
-		return AllocationInsufficientData, 0, 0, 0
+		return AllocationInsufficientData, 0, 0, 0, 0
 	}
 	deltas := make([]uint16, 0, len(samples)-1)
 	minimum, maximum := uint16(65535), uint16(0)
@@ -288,8 +289,9 @@ func classifyAllocation(samples []AllocationSample) (AllocationBehavior, uint16,
 	}
 	median := append([]uint16(nil), deltas...)
 	sort.Slice(median, func(left, right int) bool { return median[left] < median[right] })
-	predicted := addPort(samples[len(samples)-1].MappedPort, median[len(median)/2])
-	return behavior, minimum, maximum, predicted
+	predictedStep := median[len(median)/2]
+	predicted := addPort(samples[len(samples)-1].MappedPort, predictedStep)
+	return behavior, minimum, maximum, predicted, predictedStep
 }
 
 func forwardPortDelta(previous, next uint16) uint16 {
@@ -304,35 +306,23 @@ func addPort(port, delta uint16) uint16 {
 	return uint16(value)
 }
 
-func predictiveWindow(predicted uint16) []uint16 {
-	if predicted == 0 {
+func predictiveSourceSchedule(last, step uint16) []uint16 {
+	if last == 0 || step == 0 {
 		return nil
 	}
 	result := make([]uint16, 0, PredictiveWindowPorts)
-	seen := make(map[uint16]struct{}, PredictiveWindowPorts)
-	for radius := uint16(0); len(result) < PredictiveWindowPorts; radius++ {
-		values := []uint16{addPort(predicted, radius)}
-		if radius > 0 {
-			values = append(values, addPort(predicted, uint16(65535)-radius))
-		}
-		for _, value := range values {
-			if _, duplicate := seen[value]; duplicate {
-				continue
-			}
-			seen[value] = struct{}{}
-			result = append(result, value)
-			if len(result) == PredictiveWindowPorts {
-				break
-			}
-		}
+	current := last
+	for len(result) < PredictiveWindowPorts {
+		current = addPort(current, step)
+		result = append(result, current)
 	}
 	return result
 }
 
-func coverageString(graph EvidenceGraph, model StateModel, remoteReports int) string {
+func coverageString(model StateModel) string {
 	return fmt.Sprintf(
-		"local_successes=%d;local_failures=%d;observer_addresses=%d;alternate_port=%t;remote_reports_untrusted=%d;mapping=%s;filtering=%s;allocation=%s;residual_universe=%d;limitation=%s",
-		model.SuccessfulSamples, model.FailedSamples, model.ObserverAddressCount, model.HasAlternatePort, remoteReports,
+		"local_successes=%d;local_failures=%d;observer_addresses=%d;alternate_port=%t;mapping=%s;filtering=%s;allocation=%s;residual_universe=%d;limitation=%s",
+		model.SuccessfulSamples, model.FailedSamples, model.ObserverAddressCount, model.HasAlternatePort,
 		model.Mapping, model.Filtering, model.Allocation, model.ResidualUniverse, model.AllocationLimitation,
 	)
 }
@@ -376,35 +366,6 @@ func DigestEvidence(graph EvidenceGraph) ([32]byte, error) {
 	return sha256.Sum256(encoded.Bytes()), nil
 }
 
-func actionableEvidenceGraph(graph EvidenceGraph) EvidenceGraph {
-	filtered := EvidenceGraph{
-		AttemptDigest: graph.AttemptDigest, MachineScopeDigest: graph.MachineScopeDigest, PeerDigest: graph.PeerDigest,
-		ObservationSetDigest: graph.ObservationSetDigest, SocketOwnerDigest: graph.SocketOwnerDigest,
-		Generation: graph.Generation, StartedAtMilli: graph.StartedAtMilli, FinishedAtMilli: graph.FinishedAtMilli, ExpiresAtMilli: graph.ExpiresAtMilli,
-	}
-	for _, entry := range graph.Mapping {
-		if actionableMeta(entry.Meta, graph) && entry.Behavior.valid() {
-			filtered.Mapping = append(filtered.Mapping, entry)
-		}
-	}
-	for _, entry := range graph.Filtering {
-		if actionableMeta(entry.Meta, graph) && entry.Behavior.valid() {
-			filtered.Filtering = append(filtered.Filtering, entry)
-		}
-	}
-	for _, entry := range graph.IPPooling {
-		if actionableMeta(entry.Meta, graph) && entry.Stable && !allZero(entry.PoolDigest[:]) {
-			filtered.IPPooling = append(filtered.IPPooling, entry)
-		}
-	}
-	for _, entry := range graph.Allocation {
-		if actionableMeta(entry.Meta, graph) && ((!entry.Success) || (entry.MappedAddress.Valid() && entry.MappedPort != 0)) {
-			filtered.Allocation = append(filtered.Allocation, entry)
-		}
-	}
-	return filtered
-}
-
 func encodeMappingEvidence(entry MappingEvidence) []byte {
 	return encodeEvidenceRecord(1, entry.Meta, string(entry.Behavior), nil)
 }
@@ -443,6 +404,7 @@ func encodeEvidenceRecord(kind byte, meta EvidenceMeta, value string, extra []by
 	appendString(&encoded, string(meta.Origin))
 	appendAddress(&encoded, meta.ObserverAddress)
 	appendUint16(&encoded, meta.ObserverPort)
+	appendUint16(&encoded, meta.SocketSlot)
 	encoded.Write(meta.TransactionID[:])
 	encoded.Write(meta.AttemptDigest[:])
 	appendUint64(&encoded, meta.Generation)

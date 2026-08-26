@@ -75,7 +75,7 @@ func ParseRemoteIntent(payload []byte) (RemoteIntent, error) {
 	if len(seen) != 4 || intent.Generation != "1" || validateRole(intent.Profile, intent.Role) != nil {
 		return RemoteIntent{}, ErrUnsupportedProfile
 	}
-	if _, err := shapeFor(intent.Profile, intent.ResourceClass, intent.Role, StateModel{CandidateWindow: make([]uint16, PredictiveWindowPorts)}); err != nil {
+	if _, err := shapeFor(intent.Profile, intent.ResourceClass, intent.Role, StateModel{PredictedSourcePorts: make([]uint16, PredictiveWindowPorts)}); err != nil {
 		return RemoteIntent{}, ErrUnsupportedProfile
 	}
 	return intent, nil

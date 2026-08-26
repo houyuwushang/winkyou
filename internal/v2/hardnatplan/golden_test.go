@@ -13,10 +13,11 @@ import (
 )
 
 type goldenCandidate struct {
-	Role       Role   `json:"role"`
-	SocketSlot uint16 `json:"socket_slot"`
-	Ordinal    uint32 `json:"ordinal"`
-	TargetPort uint16 `json:"target_port"`
+	Role               Role   `json:"role"`
+	SocketSlot         uint16 `json:"socket_slot"`
+	Ordinal            uint32 `json:"ordinal"`
+	ExpectedSourcePort uint16 `json:"expected_source_port,omitempty"`
+	TargetPort         uint16 `json:"target_port"`
 }
 
 type goldenProbabilityRow struct {
@@ -37,6 +38,23 @@ type goldenProbabilityError struct {
 	Left       uint64 `json:"left"`
 	Right      uint64 `json:"right"`
 	ErrorClass string `json:"error_class"`
+}
+
+type goldenPredictiveDirection struct {
+	Role                Role         `json:"role"`
+	EvidenceDigestHex   string       `json:"evidence_digest_hex"`
+	ValidationDigestHex string       `json:"validation_digest_hex"`
+	SourceDigestHex     string       `json:"source_digest_hex"`
+	CostDigestHex       string       `json:"cost_digest_hex"`
+	PlanDigestHex       string       `json:"plan_digest_hex"`
+	SourceSlots         []SourceSlot `json:"source_slots"`
+	Candidates          []Candidate  `json:"candidates"`
+}
+
+type goldenPredictiveBilateral struct {
+	PlannerKeyHex  string                       `json:"planner_key_hex"`
+	JointDigestHex string                       `json:"joint_digest_hex"`
+	Directions     [2]goldenPredictiveDirection `json:"directions"`
 }
 
 type goldenEvidenceBindings struct {
@@ -63,39 +81,44 @@ type goldenStateModel struct {
 	PredictedNextPort    uint16             `json:"predicted_next_port"`
 	ResidualUniverse     uint32             `json:"residual_universe"`
 	AllocationLimitation string             `json:"allocation_limitation"`
-	CandidateWindow      []uint16           `json:"candidate_window"`
+	PredictedSourcePorts []uint16           `json:"predicted_source_ports"`
 	EvidenceDigestHex    string             `json:"evidence_digest_hex"`
 	RawEvidenceDigestHex string             `json:"raw_evidence_digest_hex"`
+	ValidationDigestHex  string             `json:"validation_digest_hex"`
 	ExpiresAtMilli       int64              `json:"expires_at_milli"`
 	Conditional          bool               `json:"conditional"`
 	Coverage             string             `json:"coverage"`
 }
 
 type hardNATGolden struct {
-	Schema                   string                   `json:"schema"`
-	ByteOrder                string                   `json:"byte_order"`
-	PRPLabelHex              string                   `json:"prp_label_hex"`
-	PlannerKeyHex            string                   `json:"planner_key_hex"`
-	Profile                  Profile                  `json:"profile"`
-	ResourceClass            ResourceClass            `json:"resource_class"`
-	Role                     Role                     `json:"role"`
-	EvidenceBindings         goldenEvidenceBindings   `json:"evidence_bindings"`
-	StateModel               goldenStateModel         `json:"state_model"`
-	Universe                 Universe                 `json:"universe"`
-	Cost                     Cost                     `json:"cost"`
-	FirstCandidates          []goldenCandidate        `json:"first_16_candidates"`
-	LastCandidates           []goldenCandidate        `json:"last_16_candidates"`
-	EvidenceDigestHex        string                   `json:"evidence_digest_hex"`
-	CostDigestHex            string                   `json:"cost_digest_hex"`
-	PlanDigestHex            string                   `json:"plan_digest_hex"`
-	Probability              ProbabilityReport        `json:"probability"`
-	ProbabilityRows          []goldenProbabilityRow   `json:"probability_rows"`
-	ProbabilityErrors        []goldenProbabilityError `json:"probability_errors"`
-	ChangeRequestHex         string                   `json:"change_request_hex"`
-	BehaviorSuccessHex       string                   `json:"behavior_success_hex"`
-	MinimumAllocationSamples int                      `json:"minimum_allocation_samples"`
-	MonotonicDeltaMaximum    int                      `json:"monotonic_delta_maximum"`
-	MonotonicDeltaSpread     int                      `json:"monotonic_delta_spread"`
+	Schema                   string                    `json:"schema"`
+	ByteOrder                string                    `json:"byte_order"`
+	PRPLabelHex              string                    `json:"prp_label_hex"`
+	PlannerKeyHex            string                    `json:"planner_key_hex"`
+	Profile                  Profile                   `json:"profile"`
+	ResourceClass            ResourceClass             `json:"resource_class"`
+	Role                     Role                      `json:"role"`
+	EvidenceBindings         goldenEvidenceBindings    `json:"evidence_bindings"`
+	StateModel               goldenStateModel          `json:"state_model"`
+	Universe                 Universe                  `json:"universe"`
+	Cost                     Cost                      `json:"cost"`
+	FirstCandidates          []goldenCandidate         `json:"first_16_candidates"`
+	LastCandidates           []goldenCandidate         `json:"last_16_candidates"`
+	EvidenceDigestHex        string                    `json:"evidence_digest_hex"`
+	CostDigestHex            string                    `json:"cost_digest_hex"`
+	PlanDigestHex            string                    `json:"plan_digest_hex"`
+	SourceDigestHex          string                    `json:"source_digest_hex"`
+	PeerSourceDigestHex      string                    `json:"peer_source_digest_hex"`
+	JointDigestHex           string                    `json:"joint_digest_hex"`
+	Probability              ProbabilityReport         `json:"probability"`
+	ProbabilityRows          []goldenProbabilityRow    `json:"probability_rows"`
+	ProbabilityErrors        []goldenProbabilityError  `json:"probability_errors"`
+	PredictiveBilateral      goldenPredictiveBilateral `json:"predictive_bilateral"`
+	ChangeRequestHex         string                    `json:"change_request_hex"`
+	BehaviorSuccessHex       string                    `json:"behavior_success_hex"`
+	MinimumAllocationSamples int                       `json:"minimum_allocation_samples"`
+	MonotonicDeltaMaximum    int                       `json:"monotonic_delta_maximum"`
+	MonotonicDeltaSpread     int                       `json:"monotonic_delta_spread"`
 }
 
 func TestHardNATCrossLanguageGoldenIsByteStable(t *testing.T) {
@@ -125,16 +148,26 @@ func TestHardNATCrossLanguageGoldenIsByteStable(t *testing.T) {
 func buildHardNATGolden(t *testing.T) hardNATGolden {
 	t.Helper()
 	graph := syntheticEvidence(MappingAPDM, FilteringAPDF, apparentlyRandomPorts())
-	model, err := InferStateModel(graph)
+	model, err := inferStateModel(graph)
 	if err != nil {
 		t.Fatal(err)
 	}
-	input := planInput(ProfileHardBirthday, ResourceHard16KLab, RoleInitiator, graph)
-	key := syntheticDigest("planner-key:" + string(ProfileHardBirthday) + ":" + string(RoleInitiator))
-	input.KeySource = fixedKeySource{key: key}
-	plan, err := BuildPlan(input)
+	initiator, err := BuildLocalCommitment(localCommitmentInput(ProfileHardBirthday, ResourceHard16KLab, RoleInitiator, graph))
 	if err != nil {
 		t.Fatal(err)
+	}
+	responder, err := BuildLocalCommitment(localCommitmentInput(ProfileHardBirthday, ResourceHard16KLab, RoleResponder, graph))
+	if err != nil {
+		t.Fatal(err)
+	}
+	key := syntheticDigest("planner-key:bilateral-hard")
+	pair, err := BuildBilateralPlan(BilateralPlannerInput{First: initiator, Second: responder, KeySource: fixedKeySource{key: key}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan, ok := pair.PlanForRole(RoleInitiator)
+	if !ok {
+		t.Fatal("initiator plan missing")
 	}
 	first := make([]goldenCandidate, 16)
 	last := make([]goldenCandidate, 16)
@@ -153,6 +186,7 @@ func buildHardNATGolden(t *testing.T) hardNATGolden {
 		{name: "boundary_zero_draw", universe: 65535, left: 0, right: 65535},
 		{name: "boundary_one", universe: 1, left: 1, right: 1},
 		{name: "boundary_65535", universe: 65535, left: 65535, right: 1},
+		{name: "boundary_max_uint64_forced", universe: ^uint64(0), left: ^uint64(0), right: 1},
 		{name: "asymmetric_128x512", universe: 65535, left: 128, right: 512},
 		{name: "hard_512", universe: full, left: 512, right: 512},
 		{name: "hard_2048", universe: full, left: 2048, right: 2048},
@@ -199,8 +233,9 @@ func buildHardNATGolden(t *testing.T) hardNATGolden {
 	if err != nil {
 		t.Fatal(err)
 	}
+	predictiveBilateral := buildPredictiveBilateralGolden(t)
 	return hardNATGolden{
-		Schema: "winkyou-hardnatplan-golden/1", ByteOrder: "big-endian", PRPLabelHex: hex.EncodeToString([]byte(prpEncodingLabel)),
+		Schema: "winkyou-hardnatplan-golden/2", ByteOrder: "big-endian", PRPLabelHex: hex.EncodeToString([]byte(prpEncodingLabel)),
 		PlannerKeyHex: hex.EncodeToString(key[:]), Profile: plan.Profile, ResourceClass: plan.ResourceClass, Role: plan.Role,
 		EvidenceBindings: goldenEvidenceBindings{
 			AttemptHex: hex.EncodeToString(graph.AttemptDigest[:]), MachineScopeHex: hex.EncodeToString(graph.MachineScopeDigest[:]),
@@ -213,18 +248,53 @@ func buildHardNATGolden(t *testing.T) hardNATGolden {
 			FailedSamples: model.FailedSamples, ObserverAddressCount: model.ObserverAddressCount, HasAlternatePort: model.HasAlternatePort,
 			MinimumDelta: model.MinimumDelta, MaximumDelta: model.MaximumDelta, PredictedNextPort: model.PredictedNextPort,
 			ResidualUniverse: model.ResidualUniverse, AllocationLimitation: model.AllocationLimitation,
-			CandidateWindow: append([]uint16{}, model.CandidateWindow...), EvidenceDigestHex: hex.EncodeToString(model.EvidenceDigest[:]),
-			RawEvidenceDigestHex: hex.EncodeToString(model.RawEvidenceDigest[:]), ExpiresAtMilli: model.ExpiresAtMilli,
+			PredictedSourcePorts: append([]uint16{}, model.PredictedSourcePorts...), EvidenceDigestHex: hex.EncodeToString(model.EvidenceDigest[:]),
+			RawEvidenceDigestHex: hex.EncodeToString(model.RawEvidenceDigest[:]), ValidationDigestHex: hex.EncodeToString(model.ValidationDigest[:]), ExpiresAtMilli: model.ExpiresAtMilli,
 			Conditional: model.Conditional, Coverage: model.Coverage,
 		},
 		Universe: plan.Universe, Cost: plan.Cost, FirstCandidates: first, LastCandidates: last,
 		EvidenceDigestHex: hex.EncodeToString(plan.EvidenceDigest[:]), CostDigestHex: hex.EncodeToString(plan.CostDigest[:]), PlanDigestHex: hex.EncodeToString(plan.PlanDigest[:]),
+		SourceDigestHex: hex.EncodeToString(initiator.SourceDigest[:]), PeerSourceDigestHex: hex.EncodeToString(responder.SourceDigest[:]), JointDigestHex: hex.EncodeToString(pair.JointDigest[:]),
 		Probability: plan.Probability, ProbabilityRows: probabilityRows,
-		ProbabilityErrors: []goldenProbabilityError{
-			{Name: "zero_universe", Universe: 0, Left: 0, Right: 0, ErrorClass: ErrInvalidProbabilityInput.Error()},
-			{Name: "sum_overflow", Universe: ^uint64(0), Left: ^uint64(0), Right: 1, ErrorClass: ErrProbabilityInputOverflow.Error()},
-		},
-		ChangeRequestHex: hex.EncodeToString(changeRequest), BehaviorSuccessHex: hex.EncodeToString(behaviorSuccess),
+		ProbabilityErrors:   []goldenProbabilityError{{Name: "zero_universe", Universe: 0, Left: 0, Right: 0, ErrorClass: ErrInvalidProbabilityInput.Error()}},
+		PredictiveBilateral: predictiveBilateral,
+		ChangeRequestHex:    hex.EncodeToString(changeRequest), BehaviorSuccessHex: hex.EncodeToString(behaviorSuccess),
 		MinimumAllocationSamples: MinSuccessfulAllocationSamples, MonotonicDeltaMaximum: MaxMonotonicDelta, MonotonicDeltaSpread: MaxMonotonicDeltaSpread,
 	}
+}
+
+func buildPredictiveBilateralGolden(t *testing.T) goldenPredictiveBilateral {
+	t.Helper()
+	leftGraph := syntheticEvidence(MappingAPDM, FilteringAPDF, sequentialPorts(50000, 8, 1))
+	rightGraph := syntheticEvidence(MappingAPDM, FilteringAPDF, sequentialPorts(60000, 8, 1))
+	left, err := BuildLocalCommitment(localCommitmentInput(ProfilePredictiveEdm, ResourcePredictive, RoleInitiator, leftGraph))
+	if err != nil {
+		t.Fatal(err)
+	}
+	right, err := BuildLocalCommitment(localCommitmentInput(ProfilePredictiveEdm, ResourcePredictive, RoleResponder, rightGraph))
+	if err != nil {
+		t.Fatal(err)
+	}
+	key := syntheticDigest("planner-key:bilateral-predictive-golden")
+	pair, err := BuildBilateralPlan(BilateralPlannerInput{First: left, Second: right, KeySource: fixedKeySource{key: key}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	commitments := [2]LocalSourceCommitment{left, right}
+	var result goldenPredictiveBilateral
+	result.PlannerKeyHex = hex.EncodeToString(key[:])
+	result.JointDigestHex = hex.EncodeToString(pair.JointDigest[:])
+	for index, commitment := range commitments {
+		plan, ok := pair.PlanForRole(commitment.Role)
+		if !ok {
+			t.Fatalf("predictive role %q missing", commitment.Role)
+		}
+		result.Directions[index] = goldenPredictiveDirection{
+			Role: commitment.Role, EvidenceDigestHex: hex.EncodeToString(commitment.EvidenceDigest[:]),
+			ValidationDigestHex: hex.EncodeToString(commitment.ValidationDigest[:]), SourceDigestHex: hex.EncodeToString(commitment.SourceDigest[:]),
+			CostDigestHex: hex.EncodeToString(plan.CostDigest[:]), PlanDigestHex: hex.EncodeToString(plan.PlanDigest[:]),
+			SourceSlots: append([]SourceSlot(nil), commitment.SourceSlots...), Candidates: append([]Candidate(nil), plan.Candidates...),
+		}
+	}
+	return result
 }

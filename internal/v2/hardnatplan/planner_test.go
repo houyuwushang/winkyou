@@ -17,166 +17,237 @@ func (source *countingKeySource) DerivePlannerKey(PlannerKeyContext) ([32]byte, 
 	return source.key, nil
 }
 
-func TestPlannerFreezesThreeProfileShapes(t *testing.T) {
+func TestBilateralPlannerFreezesThreeProfileShapes(t *testing.T) {
 	t.Run("predictive", func(t *testing.T) {
-		graph := syntheticEvidence(MappingAPDM, FilteringAPDF, sequentialPorts(50000, 8, 1))
-		plan, err := BuildPlan(planInput(ProfilePredictiveEdm, ResourcePredictive, RoleInitiator, graph))
-		if err != nil {
-			t.Fatal(err)
-		}
+		plan := buildPlanForRole(t, ProfilePredictiveEdm, ResourcePredictive, RoleInitiator,
+			syntheticEvidence(MappingAPDM, FilteringAPDF, sequentialPorts(50000, 8, 1)))
 		if len(plan.Candidates) != 32 || plan.Cost != (Cost{Sockets: 8, Targets: 64, FiveTuples: 64, Packets: 64, PacketsPerSecond: 32, ActiveMillis: 13_000}) ||
 			!plan.Executable || plan.Probability.Primary.FloorPartsPerTrillion != ProbabilityScale {
 			t.Fatalf("predictive plan = %+v", plan)
 		}
 		assertCandidateShape(t, plan, 8, 1, 65535)
-	})
-
-	t.Run("asymmetric both fixed roles", func(t *testing.T) {
-		mappingGraph := syntheticEvidence(MappingAPDM, FilteringAPDF, apparentlyRandomPorts())
-		mapping, err := BuildPlan(planInput(ProfileAsymmetricBirthday, ResourceAsymmetric, RoleMappingSet, mappingGraph))
-		if err != nil {
-			t.Fatal(err)
-		}
-		targetGraph := syntheticEvidence(MappingEIM, FilteringAPDF, apparentlyRandomPorts())
-		target, err := BuildPlan(planInput(ProfileAsymmetricBirthday, ResourceAsymmetric, RoleTargetSet, targetGraph))
-		if err != nil {
-			t.Fatal(err)
-		}
-		wantCost := Cost{Sockets: 128, Targets: 512, FiveTuples: 512, Packets: 512, PacketsPerSecond: 64, ActiveMillis: 13_000}
-		if len(mapping.Candidates) != 128 || len(target.Candidates) != 512 || mapping.Cost != wantCost || target.Cost != wantCost ||
-			mapping.CostDigest != target.CostDigest || mapping.Probability.Primary.FloorPartsPerTrillion < minimumAsymmetricPPTrillion {
-			t.Fatalf("asymmetric mapping/target = %d/%d costs=%+v/%+v probability=%+v", len(mapping.Candidates), len(target.Candidates), mapping.Cost, target.Cost, target.Probability)
-		}
-		assertCandidateShape(t, mapping, 128, 1, 65535)
-		assertCandidateShape(t, target, 1, 1, 65535)
-		for _, candidate := range mapping.Candidates {
-			if candidate.TargetPort != 55000 {
-				t.Fatalf("mapping-set target port = %d, want fixed authenticated port", candidate.TargetPort)
+		for _, candidate := range plan.Candidates {
+			if candidate.ExpectedSourcePort == 0 {
+				t.Fatal("predictive plan omitted committed source port")
 			}
 		}
 	})
 
-	t.Run("hard 16k lab", func(t *testing.T) {
-		graph := syntheticEvidence(MappingAPDM, FilteringAPDF, apparentlyRandomPorts())
-		plan, err := BuildPlan(planInput(ProfileHardBirthday, ResourceHard16KLab, RoleInitiator, graph))
+	t.Run("asymmetric both fixed roles", func(t *testing.T) {
+		mappingGraph := syntheticEvidence(MappingAPDM, FilteringAPDF, apparentlyRandomPorts())
+		targetGraph := syntheticEvidence(MappingEIM, FilteringAPDF, apparentlyRandomPorts())
+		mappingCommitment, err := BuildLocalCommitment(localCommitmentInput(ProfileAsymmetricBirthday, ResourceAsymmetric, RoleMappingSet, mappingGraph))
 		if err != nil {
 			t.Fatal(err)
 		}
-		if len(plan.Candidates) != DynamicPortCount || plan.Executable || plan.Universe.Min != DynamicPortMin || plan.Universe.Max != DynamicPortMax ||
-			plan.Cost.Sockets != 16 || plan.Cost.Targets != 16_400 || plan.Cost.Packets != 16_432 ||
-			plan.Probability.Primary.FloorPartsPerTrillion < 632_000_000_000 || plan.Probability.FullRangeBaseline.FloorPartsPerTrillion < minimumHard16FullPPTrillion {
-			t.Fatalf("hard16 plan = candidates=%d executable=%t universe=%+v cost=%+v probability=%+v", len(plan.Candidates), plan.Executable, plan.Universe, plan.Cost, plan.Probability)
+		targetCommitment, err := BuildLocalCommitment(localCommitmentInput(ProfileAsymmetricBirthday, ResourceAsymmetric, RoleTargetSet, targetGraph))
+		if err != nil {
+			t.Fatal(err)
 		}
-		assertCandidateShape(t, plan, 16, DynamicPortMin, DynamicPortMax)
+		pair, err := BuildBilateralPlan(BilateralPlannerInput{First: targetCommitment, Second: mappingCommitment, KeySource: keySource("asymmetric-pair")})
+		if err != nil {
+			t.Fatal(err)
+		}
+		mapping, _ := pair.PlanForRole(RoleMappingSet)
+		target, _ := pair.PlanForRole(RoleTargetSet)
+		wantCost := Cost{Sockets: 128, Targets: 512, FiveTuples: 512, Packets: 512, PacketsPerSecond: 64, ActiveMillis: 13_000}
+		if len(mapping.Candidates) != 128 || len(target.Candidates) != 512 || mapping.Cost != wantCost || target.Cost != wantCost ||
+			mapping.CostDigest != target.CostDigest || mapping.Probability.Primary.FloorPartsPerTrillion < minimumAsymmetricPPTrillion {
+			t.Fatalf("asymmetric mapping/target = %d/%d costs=%+v/%+v", len(mapping.Candidates), len(target.Candidates), mapping.Cost, target.Cost)
+		}
+		assertCandidateShape(t, mapping, 128, 1, 65535)
+		assertCandidateShape(t, target, 1, 1, 65535)
+		for _, candidate := range mapping.Candidates {
+			if candidate.TargetPort != targetCommitment.ReceiveEndpoint.Port {
+				t.Fatalf("mapping-set target = %d, want peer commitment %d", candidate.TargetPort, targetCommitment.ReceiveEndpoint.Port)
+			}
+		}
 	})
 
-	t.Run("hard 32k comparison only", func(t *testing.T) {
+	t.Run("hard profiles remain plan-only", func(t *testing.T) {
 		graph := syntheticEvidence(MappingAPDM, FilteringAPDF, apparentlyRandomPorts())
-		plan, err := BuildPlan(planInput(ProfileHardBirthday, ResourceHard32KCandidate, RoleResponder, graph))
-		if err != nil {
-			t.Fatal(err)
+		hard16 := buildPlanForRole(t, ProfileHardBirthday, ResourceHard16KLab, RoleInitiator, graph)
+		if len(hard16.Candidates) != DynamicPortCount || hard16.Executable || hard16.Universe.Min != DynamicPortMin || hard16.Universe.Max != DynamicPortMax ||
+			hard16.Cost.Sockets != 16 || hard16.Cost.Targets != 16_400 || hard16.Cost.Packets != 16_432 ||
+			hard16.Probability.FullRangeBaseline.FloorPartsPerTrillion < minimumHard16FullPPTrillion {
+			t.Fatalf("hard16 = candidates=%d executable=%t universe=%+v cost=%+v", len(hard16.Candidates), hard16.Executable, hard16.Universe, hard16.Cost)
 		}
-		if len(plan.Candidates) != 32_768 || plan.Executable || plan.Cost.Sockets != 32 || plan.Probability.FullRangeBaseline.FloorPartsPerTrillion < minimumHard32FullPPTrillion {
-			t.Fatalf("hard32 plan = candidates=%d executable=%t cost=%+v probability=%+v", len(plan.Candidates), plan.Executable, plan.Cost, plan.Probability)
+		assertCandidateShape(t, hard16, 16, DynamicPortMin, DynamicPortMax)
+
+		hard32 := buildPlanForRole(t, ProfileHardBirthday, ResourceHard32KCandidate, RoleResponder, graph)
+		if len(hard32.Candidates) != 32_768 || hard32.Executable || hard32.Cost.Sockets != 32 ||
+			hard32.Probability.FullRangeBaseline.FloorPartsPerTrillion < minimumHard32FullPPTrillion {
+			t.Fatalf("hard32 = candidates=%d executable=%t cost=%+v", len(hard32.Candidates), hard32.Executable, hard32.Cost)
 		}
-		assertCandidateShape(t, plan, 32, DynamicPortMin, DynamicPortMax)
+		assertCandidateShape(t, hard32, 32, DynamicPortMin, DynamicPortMax)
 	})
 }
 
-func TestPlannerIsDeterministicRoleSeparatedAndOwned(t *testing.T) {
+func TestPredictiveBilateralScheduleTargetsPeerCommitment(t *testing.T) {
+	leftGraph := syntheticEvidence(MappingAPDM, FilteringAPDF, sequentialPorts(50000, 8, 1))
+	rightGraph := syntheticEvidence(MappingAPDM, FilteringAPDF, sequentialPorts(60000, 8, 1))
+	left, err := BuildLocalCommitment(localCommitmentInput(ProfilePredictiveEdm, ResourcePredictive, RoleInitiator, leftGraph))
+	if err != nil {
+		t.Fatal(err)
+	}
+	right, err := BuildLocalCommitment(localCommitmentInput(ProfilePredictiveEdm, ResourcePredictive, RoleResponder, rightGraph))
+	if err != nil {
+		t.Fatal(err)
+	}
+	pair, err := BuildBilateralPlan(BilateralPlannerInput{First: left, Second: right, KeySource: keySource("different-windows")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	reversed, err := BuildBilateralPlan(BilateralPlannerInput{First: right, Second: left, KeySource: keySource("different-windows")})
+	if err != nil || reversed.JointDigest != pair.JointDigest || reversed.Commitment() != pair.Commitment() {
+		t.Fatalf("input order changed canonical bilateral plan: %+v/%v", reversed.Commitment(), err)
+	}
+	leftPlan, _ := pair.PlanForRole(RoleInitiator)
+	rightPlan, _ := pair.PlanForRole(RoleResponder)
+	leftSources := sourcePortSet(left.SourceSlots)
+	rightSources := sourcePortSet(right.SourceSlots)
+	for _, candidate := range leftPlan.Candidates {
+		if _, ok := leftSources[candidate.ExpectedSourcePort]; !ok {
+			t.Fatalf("left source %d was not locally committed", candidate.ExpectedSourcePort)
+		}
+		if _, ok := rightSources[candidate.TargetPort]; !ok {
+			t.Fatalf("left target %d was not committed by right", candidate.TargetPort)
+		}
+	}
+	for _, candidate := range rightPlan.Candidates {
+		if _, ok := rightSources[candidate.ExpectedSourcePort]; !ok {
+			t.Fatalf("right source %d was not locally committed", candidate.ExpectedSourcePort)
+		}
+		if _, ok := leftSources[candidate.TargetPort]; !ok {
+			t.Fatalf("right target %d was not committed by left", candidate.TargetPort)
+		}
+	}
+	if leftPlan.PlanDigest == rightPlan.PlanDigest || leftPlan.EvidenceDigest == rightPlan.EvidenceDigest {
+		t.Fatal("distinct directional evidence/plans were incorrectly collapsed")
+	}
+	commitment := pair.Commitment()
+	if err := VerifyJointCommitment(commitment, commitment); err != nil {
+		t.Fatal(err)
+	}
+	mutated := commitment
+	mutated.Directions[1].Triple.Plan[0]++
+	if err := VerifyJointCommitment(commitment, mutated); !errors.Is(err, ErrPlanMismatch) {
+		t.Fatalf("joint mismatch error = %v", err)
+	}
+}
+
+func TestBilateralPlannerIsDeterministicRoleSeparatedAndOwned(t *testing.T) {
 	graph := syntheticEvidence(MappingAPDM, FilteringAPDF, apparentlyRandomPorts())
-	initiatorInput := planInput(ProfileHardBirthday, ResourceHard16KLab, RoleInitiator, graph)
-	first, err := BuildPlan(initiatorInput)
+	initiator, err := BuildLocalCommitment(localCommitmentInput(ProfileHardBirthday, ResourceHard16KLab, RoleInitiator, graph))
 	if err != nil {
 		t.Fatal(err)
 	}
-	second, err := BuildPlan(initiatorInput)
+	responder, err := BuildLocalCommitment(localCommitmentInput(ProfileHardBirthday, ResourceHard16KLab, RoleResponder, graph))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if first.PlanDigest != second.PlanDigest || first.CostDigest != second.CostDigest || !slices.Equal(first.Candidates, second.Candidates) {
-		t.Fatal("same planner inputs were not deterministic")
-	}
-	responder, err := BuildPlan(planInput(ProfileHardBirthday, ResourceHard16KLab, RoleResponder, graph))
+	input := BilateralPlannerInput{First: initiator, Second: responder, KeySource: keySource("hard-determinism")}
+	first, err := BuildBilateralPlan(input)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if first.PlanDigest == responder.PlanDigest || slices.Equal(first.Candidates[:16], responder.Candidates[:16]) {
-		t.Fatal("role-separated domain produced the same plan")
+	second, err := BuildBilateralPlan(input)
+	if err != nil {
+		t.Fatal(err)
 	}
-	clone := first.Clone()
+	if first.JointDigest != second.JointDigest || first.Commitment() != second.Commitment() || !slices.Equal(first.Plans[0].Candidates, second.Plans[0].Candidates) {
+		t.Fatal("same bilateral inputs were not deterministic")
+	}
+	if slices.Equal(first.Plans[0].Candidates[:16], first.Plans[1].Candidates[:16]) {
+		t.Fatal("role-separated domain produced the same directional plan")
+	}
+	clone := first.Plans[0].Clone()
 	clone.Candidates[0].TargetPort = 0
-	if first.Candidates[0].TargetPort == clone.Candidates[0].TargetPort {
+	if first.Plans[0].Candidates[0].TargetPort == 0 {
 		t.Fatal("Plan.Clone shares candidate ownership")
 	}
-	if err := VerifyDigestTriple(first.Digests(), second.Digests()); err != nil {
-		t.Fatal(err)
-	}
-	if err := VerifyDigestTriple(first.Digests(), responder.Digests()); !errors.Is(err, ErrPlanMismatch) {
-		t.Fatalf("mismatch error = %v", err)
-	}
 }
 
-func TestPlanDigestBindsRoleSlotOrdinalAndTargetPort(t *testing.T) {
-	graph := syntheticEvidence(MappingAPDM, FilteringAPDF, apparentlyRandomPorts())
-	plan, err := BuildPlan(planInput(ProfileHardBirthday, ResourceHard16KLab, RoleInitiator, graph))
+func TestPlanAndSourceDigestsBindScheduleFields(t *testing.T) {
+	graph := syntheticEvidence(MappingAPDM, FilteringAPDF, sequentialPorts(50000, 8, 1))
+	commitment, err := BuildLocalCommitment(localCommitmentInput(ProfilePredictiveEdm, ResourcePredictive, RoleInitiator, graph))
 	if err != nil {
 		t.Fatal(err)
 	}
+	for index, mutate := range []func(*LocalSourceCommitment){
+		func(value *LocalSourceCommitment) { value.Role = RoleResponder },
+		func(value *LocalSourceCommitment) { value.SourceSlots[0].SocketSlot++ },
+		func(value *LocalSourceCommitment) { value.SourceSlots[0].Ordinal++ },
+		func(value *LocalSourceCommitment) { value.SourceSlots[0].ExpectedPublicSourcePort++ },
+	} {
+		mutated := commitment.Clone()
+		mutate(&mutated)
+		if digestSourceCommitment(mutated) == commitment.SourceDigest {
+			t.Errorf("source mutation %d did not change digest", index)
+		}
+	}
+
+	plan := buildPlanForRole(t, ProfilePredictiveEdm, ResourcePredictive, RoleInitiator, graph)
 	baseline := plan.PlanDigest
-	mutations := []func(*Plan){
+	for index, mutate := range []func(*Plan){
 		func(value *Plan) { value.Role = RoleResponder },
 		func(value *Plan) { value.Candidates[0].Role = RoleResponder },
 		func(value *Plan) { value.Candidates[0].SocketSlot++ },
 		func(value *Plan) { value.Candidates[0].Ordinal++ },
+		func(value *Plan) { value.Candidates[0].ExpectedSourcePort++ },
 		func(value *Plan) { value.Candidates[0].TargetPort++ },
-	}
-	for index, mutate := range mutations {
+	} {
 		mutated := plan.Clone()
 		mutate(&mutated)
-		if got := digestPlan(mutated, graph.AttemptDigest); got == baseline {
-			t.Errorf("mutation %d did not change plan digest", index)
+		if digestPlan(mutated, graph.AttemptDigest) == baseline {
+			t.Errorf("plan mutation %d did not change digest", index)
 		}
 	}
 }
 
-func TestPlannerFreezesCostBeforeCandidateGeneration(t *testing.T) {
+func TestPlannerFreezesCostBeforeSourceOrCandidateGeneration(t *testing.T) {
 	graph := syntheticEvidence(MappingAPDM, FilteringAPDF, apparentlyRandomPorts())
-	input := planInput(ProfileHardBirthday, ResourceHard16KLab, RoleInitiator, graph)
-	source := &countingKeySource{key: syntheticDigest("must-not-be-called")}
-	input.KeySource = source
-	input.Budget.Packets = 16_431
-	plan, err := BuildPlan(input)
-	if !errors.Is(err, ErrInsufficientBudget) || len(plan.Candidates) != 0 || source.calls != 0 || plan.Cost.Packets != 16_432 || allZero(plan.CostDigest[:]) {
-		t.Fatalf("budget failure plan/error/key-calls = %+v/%v/%d", plan, err, source.calls)
-	}
-
 	for _, mutate := range []func(*Cost){
-		func(cost *Cost) { cost.Sockets = 15 }, func(cost *Cost) { cost.Targets = 16_399 },
-		func(cost *Cost) { cost.FiveTuples = 16_399 }, func(cost *Cost) { cost.PacketsPerSecond = 511 },
+		func(cost *Cost) { cost.Sockets = 15 },
+		func(cost *Cost) { cost.Targets = 16_399 },
+		func(cost *Cost) { cost.FiveTuples = 16_399 },
+		func(cost *Cost) { cost.Packets = 16_431 },
+		func(cost *Cost) { cost.PacketsPerSecond = 511 },
 		func(cost *Cost) { cost.ActiveMillis = 44_999 },
 	} {
-		input := planInput(ProfileHardBirthday, ResourceHard16KLab, RoleInitiator, graph)
-		source := &countingKeySource{key: syntheticDigest("not-called")}
-		input.KeySource = source
+		input := localCommitmentInput(ProfileHardBirthday, ResourceHard16KLab, RoleInitiator, graph)
 		mutate(&input.Budget)
-		plan, err := BuildPlan(input)
-		if !errors.Is(err, ErrInsufficientBudget) || len(plan.Candidates) != 0 || source.calls != 0 {
-			t.Fatalf("dimension mutation plan/error/key-calls = %d/%v/%d", len(plan.Candidates), err, source.calls)
+		commitment, err := BuildLocalCommitment(input)
+		if !errors.Is(err, ErrInsufficientBudget) || len(commitment.SourceSlots) != 0 || commitment.Cost.Packets != 16_432 || allZero(commitment.CostDigest[:]) {
+			t.Fatalf("budget failure commitment/error = %+v/%v", commitment, err)
 		}
+	}
+
+	valid, err := BuildLocalCommitment(localCommitmentInput(ProfileHardBirthday, ResourceHard16KLab, RoleInitiator, graph))
+	if err != nil {
+		t.Fatal(err)
+	}
+	peer, err := BuildLocalCommitment(localCommitmentInput(ProfileHardBirthday, ResourceHard16KLab, RoleResponder, graph))
+	if err != nil {
+		t.Fatal(err)
+	}
+	valid.SourceSlots[0].SocketSlot++
+	source := &countingKeySource{key: syntheticDigest("must-not-be-called")}
+	if _, err := BuildBilateralPlan(BilateralPlannerInput{First: valid, Second: peer, KeySource: source}); !errors.Is(err, ErrPlanMismatch) || source.calls != 0 {
+		t.Fatalf("tampered commitment error/key-calls = %v/%d", err, source.calls)
 	}
 }
 
 func TestPlannerRejectsEvidenceOrProfileWithoutFallback(t *testing.T) {
-	tests := []PlannerInput{
-		planInput(ProfilePredictiveEdm, ResourcePredictive, RoleInitiator, syntheticEvidence(MappingAPDM, FilteringAPDF, apparentlyRandomPorts())),
-		planInput(ProfileHardBirthday, ResourceHard16KLab, RoleInitiator, syntheticEvidence(MappingAPDM, FilteringAPDF, sequentialPorts(50000, 8, 1))),
-		planInput(ProfileAsymmetricBirthday, ResourceAsymmetric, RoleTargetSet, syntheticEvidence(MappingAPDM, FilteringAPDF, apparentlyRandomPorts())),
+	tests := []LocalCommitmentInput{
+		localCommitmentInput(ProfilePredictiveEdm, ResourcePredictive, RoleInitiator, syntheticEvidence(MappingAPDM, FilteringAPDF, apparentlyRandomPorts())),
+		localCommitmentInput(ProfileHardBirthday, ResourceHard16KLab, RoleInitiator, syntheticEvidence(MappingAPDM, FilteringAPDF, sequentialPorts(50000, 8, 1))),
+		localCommitmentInput(ProfileAsymmetricBirthday, ResourceAsymmetric, RoleTargetSet, syntheticEvidence(MappingAPDM, FilteringAPDF, apparentlyRandomPorts())),
 	}
 	for index, input := range tests {
-		plan, err := BuildPlan(input)
-		if !errors.Is(err, ErrEvidenceInsufficient) || len(plan.Candidates) != 0 {
-			t.Errorf("case %d plan/error = %+v/%v", index, plan, err)
+		commitment, err := BuildLocalCommitment(input)
+		if !errors.Is(err, ErrEvidenceInsufficient) || len(commitment.SourceSlots) != 0 {
+			t.Errorf("case %d commitment/error = %+v/%v", index, commitment, err)
 		}
 	}
 }
@@ -202,6 +273,14 @@ func TestRemoteIntentRejectsCandidateAndBudgetControl(t *testing.T) {
 	if _, err := ParseRemoteIntent(duplicate); !errors.Is(err, ErrRemoteControlField) {
 		t.Fatalf("duplicate error = %v", err)
 	}
+}
+
+func sourcePortSet(slots []SourceSlot) map[uint16]struct{} {
+	result := make(map[uint16]struct{}, len(slots))
+	for _, slot := range slots {
+		result[slot.ExpectedPublicSourcePort] = struct{}{}
+	}
+	return result
 }
 
 func assertCandidateShape(t *testing.T, plan Plan, sockets int, minimum, maximum uint16) {

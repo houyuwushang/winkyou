@@ -35,6 +35,16 @@ func TestRFC5780ResponseOriginOtherAddressCodecRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	attributeTypes := make(map[uint16]bool)
+	if err := walkAttributes(packet, func(attributeType uint16, _ []byte) error {
+		attributeTypes[attributeType] = true
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if !attributeTypes[0x0001] || !attributeTypes[AttributeXORMappedAddress] {
+		t.Fatalf("RFC 5780 response attributes = %v, require MAPPED-ADDRESS and XOR-MAPPED-ADDRESS", attributeTypes)
+	}
 	parsed, err := ParseBehaviorBindingSuccess(packet, transaction)
 	if err != nil || parsed != want {
 		t.Fatalf("parsed response = %+v/%v, want %+v", parsed, err, want)
@@ -49,6 +59,30 @@ func TestRFC5780ResponseOriginOtherAddressCodecRoundTrip(t *testing.T) {
 	packet = appendAttribute(packet[:len(packet)-8], 0x000f, []byte{0, 0, 0, 0})
 	if _, err := ParseBehaviorBindingSuccess(packet, transaction); !errors.Is(err, ErrUnsupportedEvidence) {
 		t.Fatalf("required attribute error = %v", err)
+	}
+}
+
+func TestRFC5780RequiresConsistentMappedAndXORMappedAddress(t *testing.T) {
+	transaction := syntheticTransaction()
+	packet, err := BuildBehaviorBindingSuccess(transaction, BehaviorAttributes{
+		Mapped: AddressPort{Address: syntheticAddress(100).Address(), Port: 50000}, HasMapped: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	withoutMapped := append([]byte(nil), packet[:stunHeaderBytes]...)
+	withoutMapped = append(withoutMapped, packet[stunHeaderBytes+12:]...)
+	binary.BigEndian.PutUint16(withoutMapped[2:4], uint16(len(withoutMapped)-stunHeaderBytes))
+	if _, err := ParseBehaviorBindingSuccess(withoutMapped, transaction); !errors.Is(err, ErrUnsupportedEvidence) {
+		t.Fatalf("missing MAPPED-ADDRESS error = %v", err)
+	}
+
+	inconsistent := append([]byte(nil), packet...)
+	// The second 12-byte attribute is XOR-MAPPED-ADDRESS; changing its encoded
+	// port preserves framing while making the two mapped forms disagree.
+	inconsistent[stunHeaderBytes+12+6] ^= 0x01
+	if _, err := ParseBehaviorBindingSuccess(inconsistent, transaction); !errors.Is(err, ErrRFC5780Message) {
+		t.Fatalf("inconsistent mapped attributes error = %v", err)
 	}
 }
 
@@ -112,6 +146,40 @@ func TestRFC5780MissingCapabilityAndWrongOrderFailClosed(t *testing.T) {
 	if _, err := machine.Advance(StepPrimary, DiscoveryObservation{Received: true, Attributes: primary}); !errors.Is(err, ErrUnsupportedEvidence) {
 		t.Fatalf("missing capability error = %v", err)
 	}
+
+	for name, other := range map[string]AddressPort{
+		"same address": {Address: syntheticAddress(10).Address(), Port: 3479},
+		"same port":    {Address: syntheticAddress(11).Address(), Port: 3478},
+	} {
+		t.Run(name, func(t *testing.T) {
+			invalid := primary
+			invalid.OtherAddress = other
+			invalid.HasOtherAddress = true
+			if _, err := NewRFC5780Machine().Advance(StepPrimary, DiscoveryObservation{Received: true, Attributes: invalid}); !errors.Is(err, ErrUnsupportedEvidence) {
+				t.Fatalf("invalid OTHER-ADDRESS topology error = %v", err)
+			}
+		})
+	}
+
+	validPrimary, validSame, validOther := discoveryMappingObservations(MappingEIM)
+	advanced, err := NewRFC5780Machine().Advance(StepPrimary, DiscoveryObservation{Received: true, Attributes: validPrimary})
+	if err != nil {
+		t.Fatal(err)
+	}
+	wrongSame := validSame
+	wrongSame.ResponseOrigin.Port = validPrimary.ResponseOrigin.Port + 2
+	if _, err := advanced.Advance(StepSameAddressOtherPort, DiscoveryObservation{Received: true, Attributes: wrongSame}); !errors.Is(err, ErrUnsupportedEvidence) {
+		t.Fatalf("wrong A1:P2 identity error = %v", err)
+	}
+	advanced, err = advanced.Advance(StepSameAddressOtherPort, DiscoveryObservation{Received: true, Attributes: validSame})
+	if err != nil {
+		t.Fatal(err)
+	}
+	wrongOther := validOther
+	wrongOther.ResponseOrigin.Port = validPrimary.OtherAddress.Port
+	if _, err := advanced.Advance(StepOtherAddress, DiscoveryObservation{Received: true, Attributes: wrongOther}); !errors.Is(err, ErrUnsupportedEvidence) {
+		t.Fatalf("wrong A2:P1 identity error = %v", err)
+	}
 }
 
 func TestRFC5780CodecRejectsMalformedVectors(t *testing.T) {
@@ -139,7 +207,8 @@ func TestRFC5780CodecRejectsMalformedVectors(t *testing.T) {
 func discoveryMappingObservations(mapping MappingBehavior) (BehaviorAttributes, BehaviorAttributes, BehaviorAttributes) {
 	origin := AddressPort{Address: syntheticAddress(10).Address(), Port: 3478}
 	sameOrigin := AddressPort{Address: origin.Address, Port: 3479}
-	otherOrigin := AddressPort{Address: syntheticAddress(11).Address(), Port: 3479}
+	otherAddress := AddressPort{Address: syntheticAddress(11).Address(), Port: 3479}
+	otherOrigin := AddressPort{Address: otherAddress.Address, Port: origin.Port}
 	mappedA := AddressPort{Address: syntheticAddress(100).Address(), Port: 50000}
 	mappedB := mappedA
 	mappedC := mappedA
@@ -150,7 +219,7 @@ func discoveryMappingObservations(mapping MappingBehavior) (BehaviorAttributes, 
 		mappedB.Port = 50001
 		mappedC.Port = 50002
 	}
-	primary := BehaviorAttributes{Mapped: mappedA, ResponseOrigin: origin, OtherAddress: otherOrigin, HasMapped: true, HasResponseOrigin: true, HasOtherAddress: true}
+	primary := BehaviorAttributes{Mapped: mappedA, ResponseOrigin: origin, OtherAddress: otherAddress, HasMapped: true, HasResponseOrigin: true, HasOtherAddress: true}
 	same := BehaviorAttributes{Mapped: mappedB, ResponseOrigin: sameOrigin, HasMapped: true, HasResponseOrigin: true}
 	other := BehaviorAttributes{Mapped: mappedC, ResponseOrigin: otherOrigin, HasMapped: true, HasResponseOrigin: true}
 	return primary, same, other

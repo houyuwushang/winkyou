@@ -14,6 +14,7 @@ const (
 	maxBehaviorMessageBytes        = 1024
 
 	AttributeChangeRequest    uint16 = 0x0003
+	AttributeMappedAddress    uint16 = 0x0001
 	AttributeXORMappedAddress uint16 = 0x0020
 	AttributeResponseOrigin   uint16 = 0x802b
 	AttributeOtherAddress     uint16 = 0x802c
@@ -113,17 +114,28 @@ func ParseBehaviorBindingSuccess(packet []byte, expected TransactionID) (Behavio
 	if !bytes.Equal(packet[8:20], expected[:]) {
 		return result, ErrRFC5780Message
 	}
+	var mappedAddress, xorMappedAddress AddressPort
+	hasMappedAddress, hasXORMappedAddress := false, false
 	err := walkAttributes(packet, func(attributeType uint16, value []byte) error {
 		var endpoint AddressPort
 		var err error
 		switch attributeType {
-		case AttributeXORMappedAddress:
-			if result.HasMapped {
+		case AttributeMappedAddress:
+			if hasMappedAddress {
 				return ErrRFC5780Message
 			}
-			endpoint, err = decodeSTUNAddress(value, expected, true)
+			mappedAddress, err = decodeSTUNAddress(value, expected, false)
 			if err == nil {
-				result.Mapped, result.HasMapped = endpoint, true
+				hasMappedAddress = true
+			}
+			return err
+		case AttributeXORMappedAddress:
+			if hasXORMappedAddress {
+				return ErrRFC5780Message
+			}
+			xorMappedAddress, err = decodeSTUNAddress(value, expected, true)
+			if err == nil {
+				hasXORMappedAddress = true
 			}
 			return err
 		case AttributeResponseOrigin:
@@ -151,7 +163,17 @@ func ParseBehaviorBindingSuccess(packet []byte, expected TransactionID) (Behavio
 			return nil
 		}
 	})
-	return result, err
+	if err != nil {
+		return result, err
+	}
+	if !hasMappedAddress || !hasXORMappedAddress {
+		return result, ErrUnsupportedEvidence
+	}
+	if mappedAddress != xorMappedAddress {
+		return result, ErrRFC5780Message
+	}
+	result.Mapped, result.HasMapped = mappedAddress, true
+	return result, nil
 }
 
 // BuildBehaviorBindingSuccess constructs a synthetic response vector. It is
@@ -161,11 +183,16 @@ func BuildBehaviorBindingSuccess(transaction TransactionID, attributes BehaviorA
 		return nil, ErrRFC5780Message
 	}
 	var encoded [][]byte
-	mapped, err := encodeSTUNAddress(AttributeXORMappedAddress, attributes.Mapped, transaction, true)
+	mapped, err := encodeSTUNAddress(AttributeMappedAddress, attributes.Mapped, transaction, false)
 	if err != nil {
 		return nil, err
 	}
 	encoded = append(encoded, mapped)
+	xorMapped, err := encodeSTUNAddress(AttributeXORMappedAddress, attributes.Mapped, transaction, true)
+	if err != nil {
+		return nil, err
+	}
+	encoded = append(encoded, xorMapped)
 	if attributes.HasResponseOrigin {
 		value, err := encodeSTUNAddress(AttributeResponseOrigin, attributes.ResponseOrigin, transaction, false)
 		if err != nil {
@@ -377,7 +404,8 @@ func (machine RFC5780Machine) Advance(step DiscoveryStep, observation DiscoveryO
 	case DiscoveryAwaitPrimary:
 		attributes := observation.Attributes
 		if !observation.Received || !attributes.HasMapped || !attributes.HasResponseOrigin || !attributes.HasOtherAddress ||
-			!attributes.Mapped.Valid() || !attributes.ResponseOrigin.Valid() || !attributes.OtherAddress.Valid() {
+			!attributes.Mapped.Valid() || !attributes.ResponseOrigin.Valid() || !attributes.OtherAddress.Valid() ||
+			attributes.ResponseOrigin.Address == attributes.OtherAddress.Address || attributes.ResponseOrigin.Port == attributes.OtherAddress.Port {
 			return machine, ErrUnsupportedEvidence
 		}
 		machine.primary = attributes
@@ -386,7 +414,7 @@ func (machine RFC5780Machine) Advance(step DiscoveryStep, observation DiscoveryO
 		attributes := observation.Attributes
 		if !observation.Received || !attributes.HasMapped || !attributes.HasResponseOrigin || !attributes.Mapped.Valid() ||
 			attributes.ResponseOrigin.Address != machine.primary.ResponseOrigin.Address ||
-			attributes.ResponseOrigin.Port == machine.primary.ResponseOrigin.Port {
+			attributes.ResponseOrigin.Port != machine.primary.OtherAddress.Port {
 			return machine, ErrUnsupportedEvidence
 		}
 		machine.sameAddress = attributes
@@ -394,7 +422,8 @@ func (machine RFC5780Machine) Advance(step DiscoveryStep, observation DiscoveryO
 	case DiscoveryAwaitOtherAddress:
 		attributes := observation.Attributes
 		if !observation.Received || !attributes.HasMapped || !attributes.HasResponseOrigin || !attributes.Mapped.Valid() ||
-			attributes.ResponseOrigin != machine.primary.OtherAddress {
+			attributes.ResponseOrigin.Address != machine.primary.OtherAddress.Address ||
+			attributes.ResponseOrigin.Port != machine.primary.ResponseOrigin.Port {
 			return machine, ErrUnsupportedEvidence
 		}
 		machine.otherAddress = attributes
@@ -411,7 +440,7 @@ func (machine RFC5780Machine) Advance(step DiscoveryStep, observation DiscoveryO
 		if observation.Received {
 			origin := observation.Attributes.ResponseOrigin
 			if !observation.Attributes.HasResponseOrigin || origin.Address != machine.primary.ResponseOrigin.Address ||
-				origin.Port == machine.primary.ResponseOrigin.Port {
+				origin.Port != machine.primary.OtherAddress.Port {
 				return machine, ErrUnsupportedEvidence
 			}
 			machine.changePort = true
