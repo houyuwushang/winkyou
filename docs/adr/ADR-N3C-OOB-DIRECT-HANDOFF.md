@@ -484,3 +484,31 @@ Gate A 已进入单独 Draft 实现阶段；协议面、成本、失败类、own
 独立评审，不表示 Gate A 已通过评审，更不授权 Gate B2、SSH assembly、WireGuard、产品入口
 或任何现场 I/O。required CI 的 implementation SHA、运行链接、实测数字与残留摘要已记录在
 上述 evidence 文档；最终 PR head 仍须全绿并经独立评审。
+
+## 18. Gate A 实现独立评审裁决（Accepted，2026-08-27）
+
+- 复审对象：PR #92 最终 head `1d27dd90c3f4ccdd8c3f6e854117f8ff64f139ac`（base `5cc24bb6`）
+  的完整差异；复审方未参与实现提交，裁决经维护者明确授权。
+- 攻击与验证结论：无阻断项。逐项在代码层核实：N3b 既有路径逐字节不变（六个被改文件
+  经 `*ForProfile` 垫层委托，profile 进 AEAD/presence 字节，两套 parser 互拒并有 golden
+  负向）；§6 成本表为编译期常量并在 stream/socket 打开前拒绝不匹配；§16 顺序成立
+  （PromoteToLease 保留 attempt lease，成败皆先 durable FINISH 再释放，FINISH 写失败
+  fail-closed 保留 attempt，崩溃子进程重启见证 attempt 仍占用且零泄漏 socket，顺序由持久
+  journal 断言）；oobcarrier 零网络能力、架构/变异门禁、artifact 严格隔离、mapping gate
+  fail-closed、§8 失败类与 progress golden、`WINKYOU_GATE_A_REQUIRED=1` 防静默跳过、
+  隐私扫描（仅 loopback 与 RFC 5737）全部通过；全仓测试与受影响包 race 运行全绿。
+- 六项非阻断观察及处置（不阻塞本裁决）：
+  1. oobcarrier 的 `time.AfterFunc` deadline 解除存在极小竞态窗，最坏产生一次多余的干净
+     `oob_stream_closed` 终局；Gate B2 前按 probeio `armContextDeadline` 模式对齐。
+  2. partial-frame `io.ErrUnexpectedEOF` 不置 witness `eofSeen`，终局类正确；随手修。
+  3. 重放的 punch/challenge datagram 因 Noise Open 失败即终局，属设计内；Gate B2 继承
+     transport 语义时必须显式重审该悬崖。
+  4. burn 后 FINISH 写失败时进程内 attempt 永久占用，符合 §16 fail-closed；长驻进程的
+     运维含义留 Gate C 评审。
+  5. 崩溃子进程测试用重绑端口证明零泄漏，存在他进程抢占端口造成 CI 假阳性的小概率；
+     出现时按 flake 处理而非放宽断言。
+  6. `classify()` 对 punch 期 `ErrProgressDelivery` 与任意 `context.Canceled` 的 stage 归因
+     不精确，类集合仍在 §8 冻结集内；Gate B2 触碰 classify 时一并精确化。
+- 裁决：接受 Gate A 实现，PR #92 可合并。本裁决不授权 Gate B2/B3、SSH assembly、
+  WireGuard/memory-TUN、产品入口或任何现场 I/O；下一步按 §12（Gate B ADR §12 顺序）
+  另行评审 Gate B2。
