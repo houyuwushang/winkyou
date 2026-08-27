@@ -274,6 +274,61 @@ func TestDirectAttemptBoundaryDetectsProductionImporter(t *testing.T) {
 	}
 }
 
+func TestHardNATPlannerStaysZeroNetworkAndDisconnected(t *testing.T) {
+	result, err := scanRepository(repositoryRoot(t))
+	if err != nil {
+		t.Fatalf("scan production Go sources: %v", err)
+	}
+	if violations := v2RestrictedDependencyViolations(result); len(violations) != 0 {
+		t.Fatalf("Gate B1 planner escaped its zero-network boundary:\n  %s", strings.Join(violations, "\n  "))
+	}
+	directory := filepath.Join(repositoryRoot(t), "internal", "v2", "hardnatplan")
+	if violations, err := hardNATPlanImportViolations(directory); err != nil {
+		t.Fatalf("scan Gate B1 imports: %v", err)
+	} else if len(violations) != 0 {
+		t.Fatalf("Gate B1 planner gained a forbidden import:\n  %s", strings.Join(violations, "\n  "))
+	}
+}
+
+func TestHardNATPlannerBoundaryDetectsProductionAndCapabilityMutations(t *testing.T) {
+	planner := modulePath + "/internal/v2/hardnatplan"
+	probeIO := modulePath + "/internal/probeio"
+	for _, test := range []struct {
+		importer string
+		imported string
+		want     string
+	}{
+		{modulePath + "/cmd/wink", planner, modulePath + "/cmd/wink imports Gate B1 zero-network planner " + planner + " without approval"},
+		{planner, probeIO, planner + " imports forbidden Gate B1 dependency " + probeIO},
+	} {
+		result := scanResult{packages: map[string]*packageInfo{
+			test.importer: {imports: map[string]struct{}{test.imported: {}}},
+		}}
+		violations := v2RestrictedDependencyViolations(result)
+		if len(violations) != 1 || violations[0] != test.want {
+			t.Errorf("%s -> %s violations = %v, want %q", test.importer, test.imported, violations, test.want)
+		}
+	}
+
+	directory := t.TempDir()
+	source := []byte("package hardnatplan\nimport (\n\"net\"\n\"winkyou/internal/governor\"\n\"winkyou/internal/probeio\"\n)\nvar _ net.Conn\nvar _ = governor.OperationBirthday\nvar _ probeio.Factory\n")
+	if err := os.WriteFile(filepath.Join(directory, "bypass.go"), source, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	violations, err := hardNATPlanImportViolations(directory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{
+		filepath.ToSlash(filepath.Join(directory, "bypass.go")) + " imports net",
+		filepath.ToSlash(filepath.Join(directory, "bypass.go")) + " imports winkyou/internal/governor",
+		filepath.ToSlash(filepath.Join(directory, "bypass.go")) + " imports winkyou/internal/probeio",
+	}
+	if len(violations) != len(want) || strings.Join(violations, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("mutation violations = %v, want %v", violations, want)
+	}
+}
+
 func TestN3BProductBoundaryIsExactAndMutationChecked(t *testing.T) {
 	directConnect := modulePath + "/internal/v2/directconnect"
 	server := modulePath + "/internal/v2/rendezvousserver"
@@ -587,6 +642,7 @@ func v2RestrictedDependencyViolations(result scanResult) []string {
 	punchProto := modulePath + "/internal/v2/punchproto"
 	pairingContext := modulePath + "/internal/v2/pairingcontext"
 	directAttempt := modulePath + "/internal/v2/directattempt"
+	hardNATPlan := modulePath + "/internal/v2/hardnatplan"
 	directSim := modulePath + "/internal/v2/directsim"
 	rendezvousCarrier := modulePath + "/internal/v2/rendezvouscarrier"
 	directConnect := modulePath + "/internal/v2/directconnect"
@@ -608,6 +664,9 @@ func v2RestrictedDependencyViolations(result scanResult) []string {
 	}
 	directAttemptPrimitives := map[string]struct{}{
 		directAttempt: {},
+	}
+	hardNATPlanPrimitives := map[string]struct{}{
+		hardNATPlan: {},
 	}
 	forbiddenPunchSimImports := map[string]struct{}{
 		modulePath + "/internal/natsim":         {},
@@ -647,6 +706,8 @@ func v2RestrictedDependencyViolations(result scanResult) []string {
 	for importer, info := range result.packages {
 		for imported := range info.imports {
 			switch {
+			case importer == hardNATPlan && strings.HasPrefix(imported, modulePath+"/"):
+				violations = append(violations, importer+" imports forbidden Gate B1 dependency "+imported)
 			case importer == noiseCore && strings.HasPrefix(imported, modulePath+"/"):
 				violations = append(violations, importer+" imports forbidden WinkYou dependency "+imported)
 			case importer == punchProto && strings.HasPrefix(imported, modulePath+"/") && imported != noiseCore:
@@ -677,6 +738,8 @@ func v2RestrictedDependencyViolations(result scanResult) []string {
 				violations = append(violations, importer+" imports simulation-only "+imported)
 			case containsImportOrChild(directAttemptPrimitives, imported) && !approvedDirectAttemptImporter(importer, imported):
 				violations = append(violations, importer+" imports zero-network direct-attempt "+imported+" without approval")
+			case containsImportOrChild(hardNATPlanPrimitives, imported) && importer != hardNATPlan:
+				violations = append(violations, importer+" imports Gate B1 zero-network planner "+imported+" without approval")
 			case containsImportOrChild(loopbackPrimitives, imported) && !approvedLoopbackPrimitiveImporter(importer, imported):
 				violations = append(violations, importer+" imports loopback-carrier-approved "+imported+" without approval")
 			}
@@ -1113,6 +1176,34 @@ func directAttemptImportViolations(directory string) ([]string, error) {
 				return err
 			}
 			if path == "net" || strings.HasPrefix(path, "net/") && path != "net/netip" {
+				violations = append(violations, filepath.ToSlash(filename)+" imports "+path)
+			}
+		}
+		return nil
+	})
+	sort.Strings(violations)
+	return violations, err
+}
+
+func hardNATPlanImportViolations(directory string) ([]string, error) {
+	var violations []string
+	err := filepath.WalkDir(directory, func(filename string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".go") || strings.HasSuffix(entry.Name(), "_test.go") {
+			return nil
+		}
+		parsed, err := parser.ParseFile(token.NewFileSet(), filename, nil, parser.ImportsOnly)
+		if err != nil {
+			return err
+		}
+		for _, imported := range parsed.Imports {
+			path, err := strconv.Unquote(imported.Path.Value)
+			if err != nil {
+				return err
+			}
+			if path == "net" || strings.HasPrefix(path, "net/") || strings.HasPrefix(path, modulePath+"/") {
 				violations = append(violations, filepath.ToSlash(filename)+" imports "+path)
 			}
 		}

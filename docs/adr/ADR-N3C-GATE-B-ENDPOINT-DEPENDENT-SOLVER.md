@@ -1,6 +1,7 @@
 # ADR：N3c Gate B 困难 NAT 有界求解器
 
-- 状态：**Accepted (2026-08-26)：三 profile、成本表、planner 结构与 §14 评审答复已冻结；仅允许按 §12 顺序开工 Gate B1 纯函数。不授权任何现场 I/O**
+- 状态：**Accepted（含 §15 纠错增补，2026-08-27）；Gate B1 planner（PR #90）已通过三轮独立复审并解除
+  Blocked，可合并。Gate A、Gate B2/B3 仍未授权，只可按 §12 顺序另行评审。不授权任何现场 I/O**
 - 日期：2026-08-25
 - 基线：`main` = `dc59d73bdc643e1a230d32acb82d97bfd3cb6d65`
 - 跟踪议题：[#87](https://github.com/houyuwushang/winkyou/issues/87)
@@ -521,3 +522,168 @@ endpoint。Gate C 不得跳过 Gate B2 后只发布普通直连。
 
 附一条冻结增补：planner 的 without-replacement 精确概率计算使用高精度有理数
 （big.Rat 或等价），golden 覆盖均匀近似的偏差量级；admission 判定只接受下取整。
+
+## 15. Gate B1 独立复审纠错增补（Accepted，2026-08-27）
+
+本节响应 PR #90 第一轮独立复审。复审用八个临时最小复现证明：原实现把本机预测窗口
+误当作本机发送目标、把双方必然不同的 directional digest 互相判等、接受自报/过期 evidence、
+不兼容 RFC 5780 的双 mapped-address 要求、让诊断/重放改变 plan，以及输出不包围真值的
+概率区间。八个复现已转成永久回归测试。
+
+本节最初为待独立接受的纠错提案，不得由实现者自行翻转为 Accepted；2026-08-27 由未参与
+实现提交的独立复审方在维护者明确授权下执行裁决并接受（见 §15.7）。它覆盖 §5 中与下述
+语义冲突的解释，但不授权 Gate A、Gate B2、executor、carrier 或任何网络 I/O。
+
+### 15.1 双边 source commitment 与 directional schedule
+
+单侧 tomography 的输出是该侧对自己未来 public source mapping 的
+`LocalSourceCommitment`，**不是该侧要发送的 target list**。对 predictive profile：
+
+```text
+left local evidence  -> left ordered source schedule
+right local evidence -> right ordered source schedule
+
+pairing p = shared-key PRP; responder uses inverse p^-1
+
+left directional plan[i]  = (left source slot[i],  right expected source port[p(i)])
+right directional plan[j] = (right source slot[j], left expected source port[p^-1(j)])
+```
+
+因此 A 预测自己的下一 source 为 50000、B 预测自己的下一 source 为 60000 时，A 必须向
+B 的 60000 schedule 发射，B 必须向 A 的 50000 schedule 发射。任何仍向本机窗口发射的
+plan 都是错误实现，即使其条件概率显示 100%。
+
+`LocalSourceCommitment` 只允许固定 schema：profile、resource class、role、attempt、
+generation、evidence/cost digest，以及 profile 决定的有界 source shape。它不允许携带
+packet count、PPS、span 或任意 target candidate：
+
+- `predictive_edm/1`：恰好 32 个有 ordinal 的 expected-source slots；共享 planner key 生成一个
+  固定 PRP，initiator 使用正向置换、responder 使用逆置换。由此每一个
+  `left_source[i] -> right_source[p(i)]` 都有严格互逆的
+  `right_source[p(i)] -> left_source[i]`，不会因两侧各自独立 shuffle 而破坏 reciprocal APDF；
+- `asymmetric_birthday/1`：`target_set_role` 只承诺一个已认证、可复用的 receive endpoint；
+  该 endpoint 不接受 caller/peer 另行填写，必须由本 attempt 的 RFC 5780 transcript 产生 EIM
+  结论，并与同一 socket slot 的成功 allocation sample 精确一致；
+  `mapping_set_role` 的 128 个 slot 与 `target_set_role` 的 512 个 target 仍由共享 planner key
+  的 role-separated PRP 决定；
+- `hard_birthday_campaign/1`：不接受远端自报 source window；两侧 target permutation 仍只由
+  编译期 universe、固定 shape 与共享 planner key 生成。
+
+这是对“远端不得上传 candidate list”的窄化澄清：对端可以在后续认证 wire 中提交自己的
+固定形状 source commitment，不能提交本机 target plan，也不能改变任何 cost/admission 维度。
+虚假 source commitment 最多使本 attempt 失败，不得扩窗、重试或提高预算。B1 只冻结值类型
+与确定性编码，wire/authentication 仍由后续 gate 评审。
+
+### 15.2 directional triples 与 joint commitment
+
+两侧 role、evidence 与 directional candidates 本来就不同，因此双方的
+`plan/cost/evidence` triple **不得互相判等**。双方交换的是两个不同的 directional triples，
+再按 profile 固定 role 顺序组成同一个 `JointPlanCommitment`：
+
+```text
+JointPlanDigest = H(profile || resource || attempt || generation ||
+                    left-source-commitment || left-directional-triple ||
+                    right-source-commitment || right-directional-triple)
+```
+
+双方只比较完整 joint commitment 与 joint digest；缺一侧、role 重复、attempt/generation
+不一致、source commitment 不一致或任一 directional triple 不一致均为终局。旧的
+`VerifyDigestTriple(local, remote)` 相等语义必须删除。FIRE 前必须完成 joint 互认。
+
+`Executable` 是 PlanDigest 的显式字段，不得只依赖 resource class 或 source digest 间接推导。
+执行方还必须用 source commitment 与已认证 joint commitment 重算 profile/resource shape、
+canonical probability、cost、candidate tuple、PlanDigest 与 directional triple；只比较已经
+存储的 digest 不构成执行授权。peer 提交的 probability report 不能只凭 floor 过门，除
+`model_coverage` 诊断文本外的全部数学字段必须由固定 profile/resource/source shape 重算。
+
+### 15.3 trusted evidence validation context
+
+`EvidenceGraph` 中的非零 digest 只是被验证对象，不是信任来源。B1 必须另外接收调用者提供的
+纯值 `TrustedValidationContext`，且该 context 不得从待验证 graph 自动派生。它至少固定：
+
+- expected machine scope、peer、attempt、generation、observation-service set 与 socket-owner
+  digest；
+- trusted started/finished/expires 时间与当前 evaluation time；
+- 预先签发的 transaction manifest：evidence kind、transaction ID、source class、destination
+  endpoint、socket slot、ordinal 与允许响应时间窗。
+
+RFC 5780 的 mapping/filtering 不接受 `MappingEvidence.Behavior` 或
+`FilteringEvidence.Behavior` 直接填枚举。actionable 输入必须保留五步固定 transcript：
+每步的 request bytes、transaction ID、request destination、实际 datagram response source、
+response bytes、socket slot、ordinal 与 observation time。归一化过程重新解析 request/response，
+核对 manifest、`MAPPED-ADDRESS`/`XOR-MAPPED-ADDRESS`、实际 source 与四地址 topology，再由
+状态机生成 mapping/filtering。直接标记为 `SourceRFC5780` 的结论记录稳定拒绝。
+
+v1 提案冻结 acquisition window 不超过 5 秒、finished 到 evaluation 不超过 5 秒；evaluation
+必须早于 trusted expiry，trusted expiry 不得晚于 finished 后 5 秒。任一 graph header、record
+或时间与 trusted context 不一致均零 candidate。
+
+allocation 分类只使用以最高已签发 ordinal 结尾的**连续成功后缀**；后缀至少 8 个、ordinal
+逐一递增、observed time 不回退。`0,100,...,700`、缺失 transaction、末尾失败或跨 socket-owner
+样本都返回 `hard_nat_evidence_insufficient`，不得按 sequential 分类。
+
+归一化顺序固定为：绑定校验 -> transaction 冲突检查 -> 完全相同重放去重 -> 生成 actionable
+graph/digest -> 状态归并。remote report 和 remote report 数量只进入 `RawEvidenceDigest` 及本地
+诊断，不进入 actionable evidence digest、model coverage、probability 或 plan digest。
+
+### 15.4 RFC 5780 兼容性纠错
+
+RFC 5780 success response 必须同时包含 `MAPPED-ADDRESS` 与 `XOR-MAPPED-ADDRESS`，解析后两者
+必须表示同一个 endpoint；缺少任一属性为 `unsupported_evidence`，不一致为协议错误。
+behavior topology 必须验证四个地址身份：primary=`A1:P1`、same-address-other-port=`A1:P2`、
+other-address-same-port=`A2:P1`、change-IP-and-port=`A2:P2`，其中 `A1 != A2` 且 `P1 != P2`。
+`OTHER-ADDRESS` 不满足双 IP/双端口时不得猜测 mapping/filtering。
+
+### 15.5 数学契约纠错
+
+- 对外序列化的 decimal lower 必须向负无穷取整、upper 必须向正无穷取整，并用独立 exact
+  `big.Rat` 证明 `lower <= exact <= upper`；内部 lower 仍是 admission 唯一输入；
+- Poisson approximation 对任意合法 `uint64` 输入保持 `[0,1]`，使用高精度 range reduction，
+  不得依赖固定长度、在大指数下发散的直接 Taylor 多项式；
+- 在不做溢出加法的前提下先判定强制相交。`N=MaxUint64, left=MaxUint64, right=1`
+  必须返回精确 1，而不是 overflow；真正的乘法 overflow 继续稳定拒绝。
+
+### 15.6 重新进入评审的最低证据
+
+1. 两个 disjoint predictive windows 的 natsim APDM×APDM 测试，使用两个真实 natsim NAT
+   与 reciprocal APDF filtering，证明双方按 peer source schedule 互通；candidate tuple 每个
+   只发一次，endpoint learning 后只允许选中的一个 winner tuple 发 ACK/VERIFY；旧的“本机
+   next mapping 位于本机 plan”测试删除或改为 source-commitment 单元测试；
+2. trusted context 的外来 machine/socket、过期、未来时间、manifest 缺失/篡改、稀疏 ordinal、
+   末尾失败全部零 candidate；
+3. remote diagnostics 与完全相同 transaction replay 只改变 raw digest；
+4. RFC 5780 双 mapped-address 与四地址 topology 正/负 golden；
+5. 128×512 decimal interval 包含 exact rational、large-exponent Poisson 有界、MaxUint64 强制相交；
+6. 双方不同 directional triples 组成相同 joint digest，任一 side mutation 均被拒绝；
+   `Executable` mutation、非 canonical probability 与执行前 Plan 重算失败均被拒绝；
+7. architecture zero-network 门禁、全仓、race×20 与跨语言 golden 重新通过。
+
+以上全部通过仍只表示 Gate B1 可重新送审；必须由独立评审明确接受本节后，PR #90 才可合并，
+且不得据此自动进入 Gate A/B2。
+
+### 15.7 独立复审裁决（Accepted，2026-08-27）
+
+- 复审方式：针对最终 head `d2d7fdeb3578913872bc06abebf7eb282c3fae8f` 的完整 main..HEAD
+  差异执行第三轮对抗式独立复审，重点攻击最新的 transcript 派生、归一化去重、endpoint
+  witness、plan-v3 digest 与执行前 verifier；复审方未参与实现提交，裁决经维护者明确授权。
+- 攻击结论：全部 fail-closed，无阻断项。验证包括：篡改 CHANGE-REQUEST 标志、跨 transcript
+  部分重放、transcript SocketSlot 伪造、不同 slot 双 EIM transcript 冲突、manifest 缺漏与
+  多余 transaction、直接自报 `SourceRFC5780` mapping/filtering 枚举、伪造 probability report、
+  `Executable` mutation、诚实重算 digest 的 in-shape 伪造 target 经 joint triple 拒绝、双写序
+  natsim 双向 schedule 互通与单 winner ACK、架构门禁覆盖新增文件、race×20 与 `go vet`。
+- §15.6 七项最低证据全部满足；接受 §15.1–15.6 为规范性语义，PR #90 解除 Blocked 并可合并。
+- 六项非阻断观察及处置（不阻塞本裁决）：
+  1. `VerifyPlanAgainstCommitment` 设计上不重算 TargetPort；目标正确性依赖双方各自独立
+     运行 `BuildBilateralPlan` 并互认 joint digest（§15.2 设计）。Gate B2 wire 评审必须
+     显式携带并验证此前提。
+  2. transcript 五步未强制 `ObservedAtMilli` 跨步单调；未发现错误分类路径，列为 Gate B2
+     前的防御纵深候选。
+  3. socket slot 超出 profile socket 上限的合法 EIM transcript 会在 verifier 处 fail-closed；
+     仅可用性怪癖，不要求改动。
+  4. IPPooling 证据仍可携带 `SourceRFC5780` 标签而无 transcript 派生；当前 pooling 无正向
+     权威，Gate B2 若赋予 pooling 更强权威必须先收紧到 transcript 派生。
+  5. asymmetric natsim 的两个 orientation 子测试仅差 PRP key label、物理角色相同；覆盖度
+     命名偏高，Gate B2 应补真实反向角色测试。
+  6. golden 仅通过 PlanDigest 与 schema v3 隐式冻结 `Executable`；后续 golden 修订应显式化。
+- 本裁决不授权 Gate A、Gate B2、B3、executor、carrier、stdio/CLI/runtime 接线或任何
+  现场/网络 I/O；上述均需按 §12 顺序另行评审。

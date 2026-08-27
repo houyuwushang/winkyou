@@ -1,0 +1,1250 @@
+{
+  "schema": "winkyou-hardnatplan-golden/3",
+  "byte_order": "big-endian",
+  "prp_label_hex": "77696e6b796f752d686172646e61742d7072702d763100",
+  "planner_key_hex": "71f023a95644ba62b72613d16f01f67ded4b6b97914dae1a4e47130dbed61605",
+  "profile": "hard_birthday_campaign/1",
+  "resource_class": "hard_16k_lab/1",
+  "role": "initiator",
+  "evidence_bindings": {
+    "attempt_hex": "c7ce66d0fb14e3c2d4d920918cc6cc7e488668b08dddeb7b85e44de3b9f3eb01",
+    "machine_scope_hex": "bc020a35b7f9cb1382e7b534c68e3c531d849b119bf14f75ddead6cc45c3ccc1",
+    "peer_hex": "2ffc1d06387ef8bb7a34312b6c6c3f691550684508c3ce7ee3889375a18d6fa0",
+    "observation_set_hex": "dcaefa7d3d0ae4ff75fe1be897fa4c3aae7f1d644a7f70faff61d81297262d79",
+    "socket_owner_hex": "d8acf6a8381123cc8988afad3e4a199fc5e5866bd04ab7e66e6a98ce4d6a718a"
+  },
+  "state_model": {
+    "mapping": "apdm",
+    "mapping_source": "rfc5780",
+    "filtering": "apdf",
+    "filtering_source": "rfc5780",
+    "allocation": "apparently_random",
+    "public_address_stable": true,
+    "successful_samples": 8,
+    "failed_samples": 0,
+    "observer_address_count": 2,
+    "has_alternate_port": true,
+    "minimum_delta": 1117,
+    "maximum_delta": 63721,
+    "predicted_next_port": 5940,
+    "residual_universe": 65535,
+    "allocation_limitation": "samples_do_not_bound_future_allocator;full_range_unknown",
+    "predicted_source_ports": [],
+    "evidence_digest_hex": "4f2575fe410653e53f0b9668cadea29f264aaf54d6214c03f8de99ecec205919",
+    "raw_evidence_digest_hex": "b74e04f74b5de6dd7d561804cc905a5b9f3fac7bd2a247573dc4f95ea21483a9",
+    "validation_digest_hex": "e41d8fa8262f12db670cfe3a00b884ad22af537c8003d6d9305e1b77699e2f41",
+    "expires_at_milli": 3000,
+    "conditional": true,
+    "coverage": "local_successes=8;local_failures=0;observer_addresses=2;alternate_port=true;mapping=apdm;filtering=apdf;allocation=apparently_random;residual_universe=65535;limitation=samples_do_not_bound_future_allocator;full_range_unknown"
+  },
+  "universe": {
+    "name": "iana-dynamic-private-49152-65535/1",
+    "min": 49152,
+    "max": 65535
+  },
+  "cost": {
+    "sockets": 16,
+    "targets": 16400,
+    "five_tuples": 16400,
+    "packets": 16432,
+    "packets_per_second": 512,
+    "active_millis": 45000
+  },
+  "first_16_candidates": [
+    {
+      "role": "initiator",
+      "socket_slot": 0,
+      "ordinal": 0,
+      "target_port": 59503
+    },
+    {
+      "role": "initiator",
+      "socket_slot": 0,
+      "ordinal": 1,
+      "target_port": 58771
+    },
+    {
+      "role": "initiator",
+      "socket_slot": 0,
+      "ordinal": 2,
+      "target_port": 59023
+    },
+    {
+      "role": "initiator",
+      "socket_slot": 0,
+      "ordinal": 3,
+      "target_port": 54121
+    },
+    {
+      "role": "initiator",
+      "socket_slot": 0,
+      "ordinal": 4,
+      "target_port": 61102
+    },
+    {
+      "role": "initiator",
+      "socket_slot": 0,
+      "ordinal": 5,
+      "target_port": 55552
+    },
+    {
+      "role": "initiator",
+      "socket_slot": 0,
+      "ordinal": 6,
+      "target_port": 50323
+    },
+    {
+      "role": "initiator",
+      "socket_slot": 0,
+      "ordinal": 7,
+      "target_port": 56439
+    },
+    {
+      "role": "initiator",
+      "socket_slot": 0,
+      "ordinal": 8,
+      "target_port": 52191
+    },
+    {
+      "role": "initiator",
+      "socket_slot": 0,
+      "ordinal": 9,
+      "target_port": 61858
+    },
+    {
+      "role": "initiator",
+      "socket_slot": 0,
+      "ordinal": 10,
+      "target_port": 58865
+    },
+    {
+      "role": "initiator",
+      "socket_slot": 0,
+      "ordinal": 11,
+      "target_port": 57608
+    },
+    {
+      "role": "initiator",
+      "socket_slot": 0,
+      "ordinal": 12,
+      "target_port": 53401
+    },
+    {
+      "role": "initiator",
+      "socket_slot": 0,
+      "ordinal": 13,
+      "target_port": 52677
+    },
+    {
+      "role": "initiator",
+      "socket_slot": 0,
+      "ordinal": 14,
+      "target_port": 57893
+    },
+    {
+      "role": "initiator",
+      "socket_slot": 0,
+      "ordinal": 15,
+      "target_port": 49608
+    }
+  ],
+  "last_16_candidates": [
+    {
+      "role": "initiator",
+      "socket_slot": 15,
+      "ordinal": 16368,
+      "target_port": 53871
+    },
+    {
+      "role": "initiator",
+      "socket_slot": 15,
+      "ordinal": 16369,
+      "target_port": 55890
+    },
+    {
+      "role": "initiator",
+      "socket_slot": 15,
+      "ordinal": 16370,
+      "target_port": 55946
+    },
+    {
+      "role": "initiator",
+      "socket_slot": 15,
+      "ordinal": 16371,
+      "target_port": 60583
+    },
+    {
+      "role": "initiator",
+      "socket_slot": 15,
+      "ordinal": 16372,
+      "target_port": 49263
+    },
+    {
+      "role": "initiator",
+      "socket_slot": 15,
+      "ordinal": 16373,
+      "target_port": 51079
+    },
+    {
+      "role": "initiator",
+      "socket_slot": 15,
+      "ordinal": 16374,
+      "target_port": 52722
+    },
+    {
+      "role": "initiator",
+      "socket_slot": 15,
+      "ordinal": 16375,
+      "target_port": 58205
+    },
+    {
+      "role": "initiator",
+      "socket_slot": 15,
+      "ordinal": 16376,
+      "target_port": 63437
+    },
+    {
+      "role": "initiator",
+      "socket_slot": 15,
+      "ordinal": 16377,
+      "target_port": 49640
+    },
+    {
+      "role": "initiator",
+      "socket_slot": 15,
+      "ordinal": 16378,
+      "target_port": 56901
+    },
+    {
+      "role": "initiator",
+      "socket_slot": 15,
+      "ordinal": 16379,
+      "target_port": 63734
+    },
+    {
+      "role": "initiator",
+      "socket_slot": 15,
+      "ordinal": 16380,
+      "target_port": 61414
+    },
+    {
+      "role": "initiator",
+      "socket_slot": 15,
+      "ordinal": 16381,
+      "target_port": 54393
+    },
+    {
+      "role": "initiator",
+      "socket_slot": 15,
+      "ordinal": 16382,
+      "target_port": 55931
+    },
+    {
+      "role": "initiator",
+      "socket_slot": 15,
+      "ordinal": 16383,
+      "target_port": 55137
+    }
+  ],
+  "evidence_digest_hex": "4f2575fe410653e53f0b9668cadea29f264aaf54d6214c03f8de99ecec205919",
+  "cost_digest_hex": "a6343e36dd016bfc47d4edd495232140c402790e832be5933c77583452c86f31",
+  "plan_digest_hex": "59dfa39312bc3fc59f6e0e5c841d9d34f2236f73e86fc56671f9f5f7e2f239ef",
+  "source_digest_hex": "2dfac5bd2e9d710544c41ff405a02e608a1503ef81f9010d7eaf914d4c8f11a5",
+  "peer_source_digest_hex": "d85f63b7dfe7f22df31173c97bb7b94e9e89a626a51a92027741407ca050cdc9",
+  "joint_digest_hex": "59493d34498501b81069cc1c3bbd2f1ef106b62c24ddc30d6c4239771ab14cd5",
+  "probability": {
+    "model": "hard_birthday_campaign/1",
+    "universe": "iana-dynamic-private-49152-65535/1",
+    "assumptions": "public mappings remain uniformly inside the compiled 49152-65535 model universe",
+    "conditional": true,
+    "model_coverage": "local_successes=8;local_failures=0;observer_addresses=2;alternate_port=true;mapping=apdm;filtering=apdf;allocation=apparently_random;residual_universe=65535;limitation=samples_do_not_bound_future_allocator;full_range_unknown",
+    "primary": {
+      "universe": 268435456,
+      "left_draws": 16384,
+      "right_draws": 16384,
+      "precision_bits": 512,
+      "lower_decimal": "0.63214301263614035920567238597995344762934356589441",
+      "upper_decimal": "0.63214301263614035920567238597995344762934356589442",
+      "floor_parts_per_trillion": 632143012636
+    },
+    "full_range_baseline": {
+      "universe": 4294836225,
+      "left_draws": 16384,
+      "right_draws": 16384,
+      "precision_bits": 512,
+      "lower_decimal": "0.06058895299495374161403057371107399190779153090828",
+      "upper_decimal": "0.06058895299495374161403057371107399190779153090829",
+      "floor_parts_per_trillion": 60588952994
+    },
+    "poisson_approximation": "0.63212055882855767840447622983853913255418886896823",
+    "approximation_delta": "2.24538075826808011962e-05"
+  },
+  "probability_rows": [
+    {
+      "name": "boundary_zero_draw",
+      "universe": 65535,
+      "left": 0,
+      "right": 65535,
+      "lower": "0.00000000000000000000000000000000000000000000000000",
+      "upper": "0.00000000000000000000000000000000000000000000000000",
+      "floor_parts_per_trillion": 0,
+      "poisson_approximation": "0.00000000000000000000000000000000000000000000000000",
+      "approximation_delta": "0.00000000000000000000e+00"
+    },
+    {
+      "name": "boundary_one",
+      "universe": 1,
+      "left": 1,
+      "right": 1,
+      "lower": "1.00000000000000000000000000000000000000000000000000",
+      "upper": "1.00000000000000000000000000000000000000000000000000",
+      "floor_parts_per_trillion": 1000000000000,
+      "poisson_approximation": "0.63212055882855767840447622983853913255418886896823",
+      "approximation_delta": "3.67879441171442321596e-01"
+    },
+    {
+      "name": "boundary_65535",
+      "universe": 65535,
+      "left": 65535,
+      "right": 1,
+      "lower": "1.00000000000000000000000000000000000000000000000000",
+      "upper": "1.00000000000000000000000000000000000000000000000000",
+      "floor_parts_per_trillion": 1000000000000,
+      "poisson_approximation": "0.63212055882855767840447622983853913255418886896823",
+      "approximation_delta": "3.67879441171442321596e-01"
+    },
+    {
+      "name": "boundary_max_uint64_forced",
+      "universe": 18446744073709551615,
+      "left": 18446744073709551615,
+      "right": 1,
+      "lower": "1.00000000000000000000000000000000000000000000000000",
+      "upper": "1.00000000000000000000000000000000000000000000000000",
+      "floor_parts_per_trillion": 1000000000000,
+      "poisson_approximation": "0.63212055882855767840447622983853913255418886896823",
+      "approximation_delta": "3.67879441171442321596e-01"
+    },
+    {
+      "name": "asymmetric_128x512",
+      "universe": 65535,
+      "left": 128,
+      "right": 512,
+      "lower": "0.63392606585249865609835285312942768195216240908390",
+      "upper": "0.63392606585249865609835285312942768195216240908391",
+      "floor_parts_per_trillion": 633926065852,
+      "poisson_approximation": "0.63212617226617796518580286822815145981447294301726",
+      "approximation_delta": "1.79989358632069091255e-03"
+    },
+    {
+      "name": "hard_512",
+      "universe": 4294836225,
+      "left": 512,
+      "right": 512,
+      "lower": "0.00006103516348569394766681700587915481179751988662",
+      "upper": "0.00006103516348569394766681700587915481179751988663",
+      "floor_parts_per_trillion": 61035163,
+      "poisson_approximation": "0.00006103515621684076076265949953517549670725411584",
+      "approximation_delta": "7.26885318690415750634e-12"
+    },
+    {
+      "name": "hard_2048",
+      "universe": 4294836225,
+      "left": 2048,
+      "right": 2048,
+      "lower": "0.00097611605705994556210783262044986718933956496091",
+      "upper": "0.00097611605705994556210783262044986718933956496092",
+      "floor_parts_per_trillion": 976116057,
+      "poisson_approximation": "0.00097611559193812663991229952709090474404157063640",
+      "approximation_delta": "4.65121818922195533093e-10"
+    },
+    {
+      "name": "hard_8192",
+      "universe": 4294836225,
+      "left": 8192,
+      "right": 8192,
+      "lower": "0.01550406179003892207404057318818663037058445783921",
+      "upper": "0.01550406179003892207404057318818663037058445783922",
+      "floor_parts_per_trillion": 15504061790,
+      "poisson_approximation": "0.01550403244970789750803543845060553707143110313892",
+      "approximation_delta": "2.93403310245660051347e-08"
+    },
+    {
+      "name": "hard_16384",
+      "universe": 4294836225,
+      "left": 16384,
+      "right": 16384,
+      "lower": "0.06058895299495374161403057371107399190779153090828",
+      "upper": "0.06058895299495374161403057371107399190779153090829",
+      "floor_parts_per_trillion": 60588952994,
+      "poisson_approximation": "0.06058872901404796996762600594582215546475689966731",
+      "approximation_delta": "2.23980905771646404568e-07"
+    },
+    {
+      "name": "hard_32768",
+      "universe": 4294836225,
+      "left": 32768,
+      "right": 32768,
+      "lower": "0.22120664433344402967980363959024304169278188149743",
+      "upper": "0.22120664433344402967980363959024304169278188149744",
+      "floor_parts_per_trillion": 221206644333,
+      "poisson_approximation": "0.22120515882036264665071556861911718622387374082544",
+      "approximation_delta": "1.48551308138302908807e-06"
+    },
+    {
+      "name": "hard_49152",
+      "universe": 4294836225,
+      "left": 49152,
+      "right": 49152,
+      "lower": "0.43023062440409572264627822225000192073222299431549",
+      "upper": "0.43023062440409572264627822225000192073222299431550",
+      "floor_parts_per_trillion": 430230624404,
+      "poisson_approximation": "0.43022695637942184165968480782261278616460743299609",
+      "approximation_delta": "3.66802467388098659341e-06"
+    },
+    {
+      "name": "hard_65535",
+      "universe": 4294836225,
+      "left": 65535,
+      "right": 65535,
+      "lower": "0.63212617232328189473295962004443921259183475658575",
+      "upper": "0.63212617232328189473295962004443921259183475658576",
+      "floor_parts_per_trillion": 632126172323,
+      "poisson_approximation": "0.63212055882855767840447622983853913255418886896823",
+      "approximation_delta": "5.61349472421632848339e-06"
+    },
+    {
+      "name": "conditional_16k",
+      "universe": 268435456,
+      "left": 16384,
+      "right": 16384,
+      "lower": "0.63214301263614035920567238597995344762934356589441",
+      "upper": "0.63214301263614035920567238597995344762934356589442",
+      "floor_parts_per_trillion": 632143012636,
+      "poisson_approximation": "0.63212055882855767840447622983853913255418886896823",
+      "approximation_delta": "2.24538075826808011962e-05"
+    },
+    {
+      "name": "conditional_32k",
+      "universe": 268435456,
+      "left": 32768,
+      "right": 32768,
+      "lower": "0.98169330324807387714854678504567132440333754853156",
+      "upper": "0.98169330324807387714854678504567132440333754853157",
+      "floor_parts_per_trillion": 981693303248,
+      "poisson_approximation": "0.98168436111126581970628197872675875778808793244652",
+      "approximation_delta": "8.94213680805744226481e-06"
+    }
+  ],
+  "probability_errors": [
+    {
+      "name": "zero_universe",
+      "universe": 0,
+      "left": 0,
+      "right": 0,
+      "error_class": "hard_nat_probability_invalid"
+    }
+  ],
+  "predictive_bilateral": {
+    "planner_key_hex": "8550481e470d27a3b783114f1552e3216f6f4f09f6ccb58b94ee077da33401bb",
+    "joint_digest_hex": "7664f3afb130861db8fd7a6961bf114d52f4d1af203021d7ccfa314635b3fa59",
+    "directions": [
+      {
+        "role": "initiator",
+        "evidence_digest_hex": "f1a9f7cb12ebb4d67a27a34980b3e705e17cade7022ff2270824ffbcfbfead3a",
+        "validation_digest_hex": "e41d8fa8262f12db670cfe3a00b884ad22af537c8003d6d9305e1b77699e2f41",
+        "source_digest_hex": "3820ce5ca69945b667a05eeca56cf0a56545b0c9d457c68f44c384c44c485417",
+        "cost_digest_hex": "ac0624d2930f778ee2d2909cd19f50ec3c38f1b866d7582492b27bfa13302394",
+        "plan_digest_hex": "f862924ab8a381a6d27836cde5c672f18603590feb553ab7b329dfe472346ca5",
+        "source_slots": [
+          {
+            "socket_slot": 0,
+            "ordinal": 0,
+            "expected_public_source_port": 50008
+          },
+          {
+            "socket_slot": 1,
+            "ordinal": 1,
+            "expected_public_source_port": 50009
+          },
+          {
+            "socket_slot": 2,
+            "ordinal": 2,
+            "expected_public_source_port": 50010
+          },
+          {
+            "socket_slot": 3,
+            "ordinal": 3,
+            "expected_public_source_port": 50011
+          },
+          {
+            "socket_slot": 4,
+            "ordinal": 4,
+            "expected_public_source_port": 50012
+          },
+          {
+            "socket_slot": 5,
+            "ordinal": 5,
+            "expected_public_source_port": 50013
+          },
+          {
+            "socket_slot": 6,
+            "ordinal": 6,
+            "expected_public_source_port": 50014
+          },
+          {
+            "socket_slot": 7,
+            "ordinal": 7,
+            "expected_public_source_port": 50015
+          },
+          {
+            "socket_slot": 0,
+            "ordinal": 8,
+            "expected_public_source_port": 50016
+          },
+          {
+            "socket_slot": 1,
+            "ordinal": 9,
+            "expected_public_source_port": 50017
+          },
+          {
+            "socket_slot": 2,
+            "ordinal": 10,
+            "expected_public_source_port": 50018
+          },
+          {
+            "socket_slot": 3,
+            "ordinal": 11,
+            "expected_public_source_port": 50019
+          },
+          {
+            "socket_slot": 4,
+            "ordinal": 12,
+            "expected_public_source_port": 50020
+          },
+          {
+            "socket_slot": 5,
+            "ordinal": 13,
+            "expected_public_source_port": 50021
+          },
+          {
+            "socket_slot": 6,
+            "ordinal": 14,
+            "expected_public_source_port": 50022
+          },
+          {
+            "socket_slot": 7,
+            "ordinal": 15,
+            "expected_public_source_port": 50023
+          },
+          {
+            "socket_slot": 0,
+            "ordinal": 16,
+            "expected_public_source_port": 50024
+          },
+          {
+            "socket_slot": 1,
+            "ordinal": 17,
+            "expected_public_source_port": 50025
+          },
+          {
+            "socket_slot": 2,
+            "ordinal": 18,
+            "expected_public_source_port": 50026
+          },
+          {
+            "socket_slot": 3,
+            "ordinal": 19,
+            "expected_public_source_port": 50027
+          },
+          {
+            "socket_slot": 4,
+            "ordinal": 20,
+            "expected_public_source_port": 50028
+          },
+          {
+            "socket_slot": 5,
+            "ordinal": 21,
+            "expected_public_source_port": 50029
+          },
+          {
+            "socket_slot": 6,
+            "ordinal": 22,
+            "expected_public_source_port": 50030
+          },
+          {
+            "socket_slot": 7,
+            "ordinal": 23,
+            "expected_public_source_port": 50031
+          },
+          {
+            "socket_slot": 0,
+            "ordinal": 24,
+            "expected_public_source_port": 50032
+          },
+          {
+            "socket_slot": 1,
+            "ordinal": 25,
+            "expected_public_source_port": 50033
+          },
+          {
+            "socket_slot": 2,
+            "ordinal": 26,
+            "expected_public_source_port": 50034
+          },
+          {
+            "socket_slot": 3,
+            "ordinal": 27,
+            "expected_public_source_port": 50035
+          },
+          {
+            "socket_slot": 4,
+            "ordinal": 28,
+            "expected_public_source_port": 50036
+          },
+          {
+            "socket_slot": 5,
+            "ordinal": 29,
+            "expected_public_source_port": 50037
+          },
+          {
+            "socket_slot": 6,
+            "ordinal": 30,
+            "expected_public_source_port": 50038
+          },
+          {
+            "socket_slot": 7,
+            "ordinal": 31,
+            "expected_public_source_port": 50039
+          }
+        ],
+        "candidates": [
+          {
+            "role": "initiator",
+            "socket_slot": 0,
+            "ordinal": 0,
+            "expected_source_port": 50008,
+            "target_port": 60032
+          },
+          {
+            "role": "initiator",
+            "socket_slot": 1,
+            "ordinal": 1,
+            "expected_source_port": 50009,
+            "target_port": 60022
+          },
+          {
+            "role": "initiator",
+            "socket_slot": 2,
+            "ordinal": 2,
+            "expected_source_port": 50010,
+            "target_port": 60018
+          },
+          {
+            "role": "initiator",
+            "socket_slot": 3,
+            "ordinal": 3,
+            "expected_source_port": 50011,
+            "target_port": 60013
+          },
+          {
+            "role": "initiator",
+            "socket_slot": 4,
+            "ordinal": 4,
+            "expected_source_port": 50012,
+            "target_port": 60028
+          },
+          {
+            "role": "initiator",
+            "socket_slot": 5,
+            "ordinal": 5,
+            "expected_source_port": 50013,
+            "target_port": 60034
+          },
+          {
+            "role": "initiator",
+            "socket_slot": 6,
+            "ordinal": 6,
+            "expected_source_port": 50014,
+            "target_port": 60024
+          },
+          {
+            "role": "initiator",
+            "socket_slot": 7,
+            "ordinal": 7,
+            "expected_source_port": 50015,
+            "target_port": 60037
+          },
+          {
+            "role": "initiator",
+            "socket_slot": 0,
+            "ordinal": 8,
+            "expected_source_port": 50016,
+            "target_port": 60014
+          },
+          {
+            "role": "initiator",
+            "socket_slot": 1,
+            "ordinal": 9,
+            "expected_source_port": 50017,
+            "target_port": 60020
+          },
+          {
+            "role": "initiator",
+            "socket_slot": 2,
+            "ordinal": 10,
+            "expected_source_port": 50018,
+            "target_port": 60008
+          },
+          {
+            "role": "initiator",
+            "socket_slot": 3,
+            "ordinal": 11,
+            "expected_source_port": 50019,
+            "target_port": 60025
+          },
+          {
+            "role": "initiator",
+            "socket_slot": 4,
+            "ordinal": 12,
+            "expected_source_port": 50020,
+            "target_port": 60010
+          },
+          {
+            "role": "initiator",
+            "socket_slot": 5,
+            "ordinal": 13,
+            "expected_source_port": 50021,
+            "target_port": 60017
+          },
+          {
+            "role": "initiator",
+            "socket_slot": 6,
+            "ordinal": 14,
+            "expected_source_port": 50022,
+            "target_port": 60027
+          },
+          {
+            "role": "initiator",
+            "socket_slot": 7,
+            "ordinal": 15,
+            "expected_source_port": 50023,
+            "target_port": 60011
+          },
+          {
+            "role": "initiator",
+            "socket_slot": 0,
+            "ordinal": 16,
+            "expected_source_port": 50024,
+            "target_port": 60035
+          },
+          {
+            "role": "initiator",
+            "socket_slot": 1,
+            "ordinal": 17,
+            "expected_source_port": 50025,
+            "target_port": 60029
+          },
+          {
+            "role": "initiator",
+            "socket_slot": 2,
+            "ordinal": 18,
+            "expected_source_port": 50026,
+            "target_port": 60016
+          },
+          {
+            "role": "initiator",
+            "socket_slot": 3,
+            "ordinal": 19,
+            "expected_source_port": 50027,
+            "target_port": 60021
+          },
+          {
+            "role": "initiator",
+            "socket_slot": 4,
+            "ordinal": 20,
+            "expected_source_port": 50028,
+            "target_port": 60031
+          },
+          {
+            "role": "initiator",
+            "socket_slot": 5,
+            "ordinal": 21,
+            "expected_source_port": 50029,
+            "target_port": 60030
+          },
+          {
+            "role": "initiator",
+            "socket_slot": 6,
+            "ordinal": 22,
+            "expected_source_port": 50030,
+            "target_port": 60026
+          },
+          {
+            "role": "initiator",
+            "socket_slot": 7,
+            "ordinal": 23,
+            "expected_source_port": 50031,
+            "target_port": 60009
+          },
+          {
+            "role": "initiator",
+            "socket_slot": 0,
+            "ordinal": 24,
+            "expected_source_port": 50032,
+            "target_port": 60012
+          },
+          {
+            "role": "initiator",
+            "socket_slot": 1,
+            "ordinal": 25,
+            "expected_source_port": 50033,
+            "target_port": 60036
+          },
+          {
+            "role": "initiator",
+            "socket_slot": 2,
+            "ordinal": 26,
+            "expected_source_port": 50034,
+            "target_port": 60023
+          },
+          {
+            "role": "initiator",
+            "socket_slot": 3,
+            "ordinal": 27,
+            "expected_source_port": 50035,
+            "target_port": 60039
+          },
+          {
+            "role": "initiator",
+            "socket_slot": 4,
+            "ordinal": 28,
+            "expected_source_port": 50036,
+            "target_port": 60015
+          },
+          {
+            "role": "initiator",
+            "socket_slot": 5,
+            "ordinal": 29,
+            "expected_source_port": 50037,
+            "target_port": 60033
+          },
+          {
+            "role": "initiator",
+            "socket_slot": 6,
+            "ordinal": 30,
+            "expected_source_port": 50038,
+            "target_port": 60019
+          },
+          {
+            "role": "initiator",
+            "socket_slot": 7,
+            "ordinal": 31,
+            "expected_source_port": 50039,
+            "target_port": 60038
+          }
+        ]
+      },
+      {
+        "role": "responder",
+        "evidence_digest_hex": "33b8de01274c5e9c64ae86f6d1f02474a084a4008948af2b244f24346792e375",
+        "validation_digest_hex": "e41d8fa8262f12db670cfe3a00b884ad22af537c8003d6d9305e1b77699e2f41",
+        "source_digest_hex": "80f19fc9e8eaf8b6170f77b52abc7fb272361147fabd9a4b95504278e80a1013",
+        "cost_digest_hex": "ac0624d2930f778ee2d2909cd19f50ec3c38f1b866d7582492b27bfa13302394",
+        "plan_digest_hex": "3697bf47e14aa55a38f57db4f68ccc05ac2d53d05fcb67c9b682f1977e9e2f56",
+        "source_slots": [
+          {
+            "socket_slot": 0,
+            "ordinal": 0,
+            "expected_public_source_port": 60008
+          },
+          {
+            "socket_slot": 1,
+            "ordinal": 1,
+            "expected_public_source_port": 60009
+          },
+          {
+            "socket_slot": 2,
+            "ordinal": 2,
+            "expected_public_source_port": 60010
+          },
+          {
+            "socket_slot": 3,
+            "ordinal": 3,
+            "expected_public_source_port": 60011
+          },
+          {
+            "socket_slot": 4,
+            "ordinal": 4,
+            "expected_public_source_port": 60012
+          },
+          {
+            "socket_slot": 5,
+            "ordinal": 5,
+            "expected_public_source_port": 60013
+          },
+          {
+            "socket_slot": 6,
+            "ordinal": 6,
+            "expected_public_source_port": 60014
+          },
+          {
+            "socket_slot": 7,
+            "ordinal": 7,
+            "expected_public_source_port": 60015
+          },
+          {
+            "socket_slot": 0,
+            "ordinal": 8,
+            "expected_public_source_port": 60016
+          },
+          {
+            "socket_slot": 1,
+            "ordinal": 9,
+            "expected_public_source_port": 60017
+          },
+          {
+            "socket_slot": 2,
+            "ordinal": 10,
+            "expected_public_source_port": 60018
+          },
+          {
+            "socket_slot": 3,
+            "ordinal": 11,
+            "expected_public_source_port": 60019
+          },
+          {
+            "socket_slot": 4,
+            "ordinal": 12,
+            "expected_public_source_port": 60020
+          },
+          {
+            "socket_slot": 5,
+            "ordinal": 13,
+            "expected_public_source_port": 60021
+          },
+          {
+            "socket_slot": 6,
+            "ordinal": 14,
+            "expected_public_source_port": 60022
+          },
+          {
+            "socket_slot": 7,
+            "ordinal": 15,
+            "expected_public_source_port": 60023
+          },
+          {
+            "socket_slot": 0,
+            "ordinal": 16,
+            "expected_public_source_port": 60024
+          },
+          {
+            "socket_slot": 1,
+            "ordinal": 17,
+            "expected_public_source_port": 60025
+          },
+          {
+            "socket_slot": 2,
+            "ordinal": 18,
+            "expected_public_source_port": 60026
+          },
+          {
+            "socket_slot": 3,
+            "ordinal": 19,
+            "expected_public_source_port": 60027
+          },
+          {
+            "socket_slot": 4,
+            "ordinal": 20,
+            "expected_public_source_port": 60028
+          },
+          {
+            "socket_slot": 5,
+            "ordinal": 21,
+            "expected_public_source_port": 60029
+          },
+          {
+            "socket_slot": 6,
+            "ordinal": 22,
+            "expected_public_source_port": 60030
+          },
+          {
+            "socket_slot": 7,
+            "ordinal": 23,
+            "expected_public_source_port": 60031
+          },
+          {
+            "socket_slot": 0,
+            "ordinal": 24,
+            "expected_public_source_port": 60032
+          },
+          {
+            "socket_slot": 1,
+            "ordinal": 25,
+            "expected_public_source_port": 60033
+          },
+          {
+            "socket_slot": 2,
+            "ordinal": 26,
+            "expected_public_source_port": 60034
+          },
+          {
+            "socket_slot": 3,
+            "ordinal": 27,
+            "expected_public_source_port": 60035
+          },
+          {
+            "socket_slot": 4,
+            "ordinal": 28,
+            "expected_public_source_port": 60036
+          },
+          {
+            "socket_slot": 5,
+            "ordinal": 29,
+            "expected_public_source_port": 60037
+          },
+          {
+            "socket_slot": 6,
+            "ordinal": 30,
+            "expected_public_source_port": 60038
+          },
+          {
+            "socket_slot": 7,
+            "ordinal": 31,
+            "expected_public_source_port": 60039
+          }
+        ],
+        "candidates": [
+          {
+            "role": "responder",
+            "socket_slot": 0,
+            "ordinal": 0,
+            "expected_source_port": 60008,
+            "target_port": 50018
+          },
+          {
+            "role": "responder",
+            "socket_slot": 1,
+            "ordinal": 1,
+            "expected_source_port": 60009,
+            "target_port": 50031
+          },
+          {
+            "role": "responder",
+            "socket_slot": 2,
+            "ordinal": 2,
+            "expected_source_port": 60010,
+            "target_port": 50020
+          },
+          {
+            "role": "responder",
+            "socket_slot": 3,
+            "ordinal": 3,
+            "expected_source_port": 60011,
+            "target_port": 50023
+          },
+          {
+            "role": "responder",
+            "socket_slot": 4,
+            "ordinal": 4,
+            "expected_source_port": 60012,
+            "target_port": 50032
+          },
+          {
+            "role": "responder",
+            "socket_slot": 5,
+            "ordinal": 5,
+            "expected_source_port": 60013,
+            "target_port": 50011
+          },
+          {
+            "role": "responder",
+            "socket_slot": 6,
+            "ordinal": 6,
+            "expected_source_port": 60014,
+            "target_port": 50016
+          },
+          {
+            "role": "responder",
+            "socket_slot": 7,
+            "ordinal": 7,
+            "expected_source_port": 60015,
+            "target_port": 50036
+          },
+          {
+            "role": "responder",
+            "socket_slot": 0,
+            "ordinal": 8,
+            "expected_source_port": 60016,
+            "target_port": 50026
+          },
+          {
+            "role": "responder",
+            "socket_slot": 1,
+            "ordinal": 9,
+            "expected_source_port": 60017,
+            "target_port": 50021
+          },
+          {
+            "role": "responder",
+            "socket_slot": 2,
+            "ordinal": 10,
+            "expected_source_port": 60018,
+            "target_port": 50010
+          },
+          {
+            "role": "responder",
+            "socket_slot": 3,
+            "ordinal": 11,
+            "expected_source_port": 60019,
+            "target_port": 50038
+          },
+          {
+            "role": "responder",
+            "socket_slot": 4,
+            "ordinal": 12,
+            "expected_source_port": 60020,
+            "target_port": 50017
+          },
+          {
+            "role": "responder",
+            "socket_slot": 5,
+            "ordinal": 13,
+            "expected_source_port": 60021,
+            "target_port": 50027
+          },
+          {
+            "role": "responder",
+            "socket_slot": 6,
+            "ordinal": 14,
+            "expected_source_port": 60022,
+            "target_port": 50009
+          },
+          {
+            "role": "responder",
+            "socket_slot": 7,
+            "ordinal": 15,
+            "expected_source_port": 60023,
+            "target_port": 50034
+          },
+          {
+            "role": "responder",
+            "socket_slot": 0,
+            "ordinal": 16,
+            "expected_source_port": 60024,
+            "target_port": 50014
+          },
+          {
+            "role": "responder",
+            "socket_slot": 1,
+            "ordinal": 17,
+            "expected_source_port": 60025,
+            "target_port": 50019
+          },
+          {
+            "role": "responder",
+            "socket_slot": 2,
+            "ordinal": 18,
+            "expected_source_port": 60026,
+            "target_port": 50030
+          },
+          {
+            "role": "responder",
+            "socket_slot": 3,
+            "ordinal": 19,
+            "expected_source_port": 60027,
+            "target_port": 50022
+          },
+          {
+            "role": "responder",
+            "socket_slot": 4,
+            "ordinal": 20,
+            "expected_source_port": 60028,
+            "target_port": 50012
+          },
+          {
+            "role": "responder",
+            "socket_slot": 5,
+            "ordinal": 21,
+            "expected_source_port": 60029,
+            "target_port": 50025
+          },
+          {
+            "role": "responder",
+            "socket_slot": 6,
+            "ordinal": 22,
+            "expected_source_port": 60030,
+            "target_port": 50029
+          },
+          {
+            "role": "responder",
+            "socket_slot": 7,
+            "ordinal": 23,
+            "expected_source_port": 60031,
+            "target_port": 50028
+          },
+          {
+            "role": "responder",
+            "socket_slot": 0,
+            "ordinal": 24,
+            "expected_source_port": 60032,
+            "target_port": 50008
+          },
+          {
+            "role": "responder",
+            "socket_slot": 1,
+            "ordinal": 25,
+            "expected_source_port": 60033,
+            "target_port": 50037
+          },
+          {
+            "role": "responder",
+            "socket_slot": 2,
+            "ordinal": 26,
+            "expected_source_port": 60034,
+            "target_port": 50013
+          },
+          {
+            "role": "responder",
+            "socket_slot": 3,
+            "ordinal": 27,
+            "expected_source_port": 60035,
+            "target_port": 50024
+          },
+          {
+            "role": "responder",
+            "socket_slot": 4,
+            "ordinal": 28,
+            "expected_source_port": 60036,
+            "target_port": 50033
+          },
+          {
+            "role": "responder",
+            "socket_slot": 5,
+            "ordinal": 29,
+            "expected_source_port": 60037,
+            "target_port": 50015
+          },
+          {
+            "role": "responder",
+            "socket_slot": 6,
+            "ordinal": 30,
+            "expected_source_port": 60038,
+            "target_port": 50039
+          },
+          {
+            "role": "responder",
+            "socket_slot": 7,
+            "ordinal": 31,
+            "expected_source_port": 60039,
+            "target_port": 50035
+          }
+        ]
+      }
+    ]
+  },
+  "change_request_hex": "000100082112a4420102030405060708090a0b0c0003000400000006",
+  "behavior_success_hex": "010100302112a4420102030405060708090a0b0c000100080001c350c0000264002000080001e242e112a626802b000800010d96c000020a802c000800010d97c000020b",
+  "minimum_allocation_samples": 8,
+  "monotonic_delta_maximum": 32,
+  "monotonic_delta_spread": 4
+}
