@@ -1,6 +1,8 @@
 # ADR：N3c 带外控制流到可复用直连数据面的交接
 
-- 状态：**Draft；等待维护者与独立安全评审，不授权任何现场 I/O**
+- 状态：**Accepted（含 §16 handoff 顺序修订，2026-08-27）：§15 七条答复具约束力，仅授权
+  Gate A 实现（memory/loopback/required netns 证据）。SSH assembly、WireGuard/memory-TUN、
+  产品入口、Gate B2 与任何现场 I/O 均未授权**
 - 日期：2026-08-25
 - 基线：`main` = `edca985e91333b17bbd0c88e7878b08ad94bc36b`
 - 跟踪议题：[#85](https://github.com/houyuwushang/winkyou/issues/85)
@@ -271,12 +273,16 @@ packets=0，不换 STUN、不增加 target、不切换 address family、不进�
 新的 handoff helper 必须按顺序：
 
 1. 验证 direct protocol 已双向 VERIFY；
-2. 验证 `TransportLease` active 且绑定相同 peer/attempt/generation；
-3. `ProbeSocket.Promote` 关闭 sibling、毒化旧句柄并释放 attempt lease；
+2. 验证 `TransportLease` 已签发、未被消费且绑定相同 peer/attempt/generation；
+3. lease-bound `ProbeSocket.PromoteToLease`：原子关闭 sibling、毒化旧句柄，把 fixed-target
+   transport 转入 `active=false` 的 `TransportLease`；governor attempt lease 此时**保留**
+   （§16 修订：不得在 adopt/challenge 结果可知前释放）；
 4. consumer 在 1 秒内 adopt exact transport；
 5. adopt 成功后才把 direct path 标记为 standby/usable；
 6. 独立 data-plane challenge 通过后，调用方才可选择该 path；
-7. 任一步失败都关闭 transport、session lease 和 OOB carrier，记录 FINISH。
+7. adopt 与 data-plane challenge 结束后（无论成败）先记录 durable FINISH，再关闭并释放
+   attempt lease；任一步失败还必须关闭 transport、session lease 和 OOB carrier。成功后
+   `TransportLease` 独立持有 transport，其生命周期不再依赖已 FINISH 的 attempt。
 
 OOB 父管理信道不是 WinkYou 所有，N3c 不关闭、重配或禁用它；只关闭为本次 attempt
 交入的独立子流。direct 失败只返回稳定原因，不会为了“迁移”破坏现有可达性。
@@ -343,7 +349,8 @@ Gate A 必须证明：
 - lease-before-Promote 双向断言；
 - peer/attempt/generation/target 不匹配全部零 handoff；
 - consumer adopt timeout/failure 关闭 transport；
-- successful adopt 后旧 ProbeSocket、Controller 和 attempt lease 不可用；
+- successful adopt 后旧 ProbeSocket、Controller 句柄不可用；attempt lease 冻结为零新发射，
+  直至 challenge 后 durable FINISH 先落盘再释放（§16 顺序）；
 - test consumer 3-packet challenge 精确计数；
 - consumer crash、parent kill 和 cancellation 后 transport/session/OOB 全部有界排空；
 - 100 次 fresh run，`-race -count=20`，无 goroutine/fd/lock residue。
@@ -444,3 +451,27 @@ machine scope、运行 active STUN、修改 firewall 或发起 direct attempt。
 同时明确一个预期事实：§2.2 的脱敏观测显示当前两侧环境均为 endpoint-dependent mapping，
 因此在 Gate B 获准前，本环境的合法 N3c 结果只有有界失败；Gate A 的 nominal easy-NAT
 success 须在满足容易路径条件的环境验证，不得用困难环境冒充。
+
+## 16. Gate A 开工前规范矛盾裁决（Accepted，2026-08-27）
+
+实现方在开工审计中发现硬矛盾并按停止条件报告：§7.2 step 3 原文要求 `Promote` 在关闭
+sibling 的同时释放 attempt lease，但 consumer adopt（step 4）与 data-plane challenge
+（step 6）的结果只能在其后得知，而 §15 答复 3 冻结"durable FINISH 先于 attempt 释放，
+handoff 成功与否都不例外"。二者无法同时逐字满足：按原 step 3 释放后，FINISH 只能落在
+释放之后；若 step 3 后进程崩溃，还会出现"单飞槽位已释放、无 FINISH 见证"的窗口。
+
+裁决：**§15 答复 3 是承重不变量（沿自 pairing restart-safety 契约），§7.2 step 3 原文让位。**
+采纳 lease-bound 修订（正文已按此更新）：
+
+- step 3 改为 `PromoteToLease`：原子关闭 sibling、毒化旧句柄，把 fixed-target transport
+  转入 `active=false` 的 `TransportLease`，governor attempt lease 保留；
+- lease 仅在 consumer 成功 adopt 后转 active，challenge 通过后 direct path 才 standby；
+- adopt 与 challenge 结束后，无论成败先记录 durable FINISH，再关闭并释放 attempt lease；
+- 失败路径额外关闭 transport、session lease 与 OOB carrier，同一 FINISH 先行顺序；
+- 成功后 `TransportLease` 独立持有 transport；旧 ProbeSocket、Controller 句柄保持毒化；
+- 现有 N3b `Promote`/`PromoteTerminal` 语义与 golden 逐字节不变；`PromoteTerminal`
+  "保留 attempt lease" 的先例（§2.1）正是本修订的既有形态；
+- 本裁决不新增任何权限；attempt 在 FINISH 前始终占用单飞预算，不产生第二 attempt 窗口。
+
+必过测试补两条硬要求：PromoteToLease 之后、FINISH 之前崩溃时，重启见证 attempt 仍被
+占用且无泄漏 socket；FINISH 与 attempt 释放的顺序由持久 journal 断言，不得只靠内存状态。
