@@ -475,3 +475,11 @@ handoff 成功与否都不例外"。二者无法同时逐字满足：按原 step
 
 必过测试补两条硬要求：PromoteToLease 之后、FINISH 之前崩溃时，重启见证 attempt 仍被
 占用且无泄漏 socket；FINISH 与 attempt 释放的顺序由持久 journal 断言，不得只靠内存状态。
+
+## 17. Gate A Draft 实现证据（2026-08-27）
+
+Gate A 已进入单独 Draft 实现阶段；协议面、成本、失败类、ownership 顺序、memory/loopback、
+100 次 NAT simulation 与 required Linux netns harness 的可复核清单见
+[`GATE-A-OOB-HANDOFF-EVIDENCE.md`](../GATE-A-OOB-HANDOFF-EVIDENCE.md)。该状态只表示实现可提交
+独立评审，不表示 Gate A 已通过评审，更不授权 Gate B2、SSH assembly、WireGuard、产品入口
+或任何现场 I/O。required CI 的 exact SHA 与实测数字必须在 Draft PR 全绿后补齐。
