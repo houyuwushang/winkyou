@@ -482,4 +482,5 @@ Gate A 已进入单独 Draft 实现阶段；协议面、成本、失败类、own
 100 次 NAT simulation 与 required Linux netns harness 的可复核清单见
 [`GATE-A-OOB-HANDOFF-EVIDENCE.md`](../GATE-A-OOB-HANDOFF-EVIDENCE.md)。该状态只表示实现可提交
 独立评审，不表示 Gate A 已通过评审，更不授权 Gate B2、SSH assembly、WireGuard、产品入口
-或任何现场 I/O。required CI 的 exact SHA 与实测数字必须在 Draft PR 全绿后补齐。
+或任何现场 I/O。required CI 的 implementation SHA、运行链接、实测数字与残留摘要已记录在
+上述 evidence 文档；最终 PR head 仍须全绿并经独立评审。

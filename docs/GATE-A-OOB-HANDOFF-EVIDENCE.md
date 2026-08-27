@@ -140,12 +140,26 @@ process 为 0、conntrack 排水后为 0、machine lock 可重新取得，以及
 `WINKYOU_GATE_A_REQUIRED=1`，任何权限或工具缺失都会失败，不能静默跳过。该 job 使用
 race binary，test timeout 为 5 分钟、job timeout 为 6 分钟。
 
-## 6. 本地验证与未证明事项
+## 6. 验证结果与未证明事项
 
-Windows 本地已覆盖 unit、loopback、纯内存 natsim、architecture/mutation、Linux tagged
-vet 与 cross-compile。本机没有可用的 Docker/WSL Linux netns，因此本 Draft 的真实 netns
-数值必须由 required CI 产生；CI 通过后把 exact SHA、运行链接、各场景计数和残留摘要补入
-本节，再交独立专家评审。
+实现 SHA `ff876ca2b02adf98d80f373effd1e550a9b234c0` 的
+[required Gate A netns job](https://github.com/houyuwushang/winkyou/actions/runs/33078137455/job/98537712708)
+使用 race binary 在 13.70 秒内通过五个场景：
+
+- EIM×EIM：STUN `2/2`、authenticated direct `2/1`、test data `3/3`、OS UDP
+  `7/6`、OS peer-path UDP `5/4`，双向 handoff 成功；
+- EDM 参与：STUN `2/2`，direct `0/0`，READY 前有界终止；
+- peer absence：3 秒 presence timeout，`burned=false`、UDP `0`；
+- post-burn crash/restart：journal 保留 `ADMIT+BURN` 与一个 unfinished admission，同
+  credential 重启返回 `credential_used`，UDP delta `0`；
+- handoff consumer crash：survivor durable FINISH，killed attempt 保留 unfinished 见证，
+  OS socket 回收为 `0`。
+
+五个场景的终局 packet counter 均保持稳定，namespace process 与 process-owned socket 均为
+`0`；conntrack 清理前分别为 `6/4/0/0/6`，清理后全部为 `0`，machine lock 可重新取得，
+netns/veth teardown 后无残留。Windows 本地同时覆盖 unit、loopback、纯内存 natsim、
+architecture/mutation、全仓测试与受影响包 race；Linux tagged vet 与 cross-compile 也通过。
+本机没有可用的 Docker/WSL Linux netns，因此上面的真实 OS 数值以 required CI 为权威证据。
 
 本实现没有产品 consumer，没有 SSH/Tailscale assembly，没有 WireGuard、stdio/CLI/runtime
 接线，也没有预测、端口窗口、birthday、Gate B2 executor、retry 或 fallback。它不证明真实
