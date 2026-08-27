@@ -1,6 +1,7 @@
 # ADR：N3c Gate B 困难 NAT 有界求解器
 
-- 状态：**Accepted baseline；Gate B1 独立复审发现模型错误，§15 纠错增补为 Draft，未获独立接受前 PR #90、Gate A 与 Gate B2 均为 Blocked。不授权任何现场 I/O**
+- 状态：**Accepted（含 §15 纠错增补，2026-08-27）；Gate B1 planner（PR #90）已通过三轮独立复审并解除
+  Blocked，可合并。Gate A、Gate B2/B3 仍未授权，只可按 §12 顺序另行评审。不授权任何现场 I/O**
 - 日期：2026-08-25
 - 基线：`main` = `dc59d73bdc643e1a230d32acb82d97bfd3cb6d65`
 - 跟踪议题：[#87](https://github.com/houyuwushang/winkyou/issues/87)
@@ -522,15 +523,16 @@ endpoint。Gate C 不得跳过 Gate B2 后只发布普通直连。
 附一条冻结增补：planner 的 without-replacement 精确概率计算使用高精度有理数
 （big.Rat 或等价），golden 覆盖均匀近似的偏差量级；admission 判定只接受下取整。
 
-## 15. Gate B1 独立复审纠错增补（Draft，2026-08-26）
+## 15. Gate B1 独立复审纠错增补（Accepted，2026-08-27）
 
 本节响应 PR #90 第一轮独立复审。复审用八个临时最小复现证明：原实现把本机预测窗口
 误当作本机发送目标、把双方必然不同的 directional digest 互相判等、接受自报/过期 evidence、
 不兼容 RFC 5780 的双 mapped-address 要求、让诊断/重放改变 plan，以及输出不包围真值的
 概率区间。八个复现已转成永久回归测试。
 
-本节目前是**待独立接受的纠错提案**，不得由实现者自行翻转为 Accepted。它在评审期间覆盖
-§5 中与下述语义冲突的解释，但不授权 Gate A、Gate B2、executor、carrier 或任何网络 I/O。
+本节最初为待独立接受的纠错提案，不得由实现者自行翻转为 Accepted；2026-08-27 由未参与
+实现提交的独立复审方在维护者明确授权下执行裁决并接受（见 §15.7）。它覆盖 §5 中与下述
+语义冲突的解释，但不授权 Gate A、Gate B2、executor、carrier 或任何网络 I/O。
 
 ### 15.1 双边 source commitment 与 directional schedule
 
@@ -658,3 +660,30 @@ other-address-same-port=`A2:P1`、change-IP-and-port=`A2:P2`，其中 `A1 != A2`
 
 以上全部通过仍只表示 Gate B1 可重新送审；必须由独立评审明确接受本节后，PR #90 才可合并，
 且不得据此自动进入 Gate A/B2。
+
+### 15.7 独立复审裁决（Accepted，2026-08-27）
+
+- 复审方式：针对最终 head `d2d7fdeb3578913872bc06abebf7eb282c3fae8f` 的完整 main..HEAD
+  差异执行第三轮对抗式独立复审，重点攻击最新的 transcript 派生、归一化去重、endpoint
+  witness、plan-v3 digest 与执行前 verifier；复审方未参与实现提交，裁决经维护者明确授权。
+- 攻击结论：全部 fail-closed，无阻断项。验证包括：篡改 CHANGE-REQUEST 标志、跨 transcript
+  部分重放、transcript SocketSlot 伪造、不同 slot 双 EIM transcript 冲突、manifest 缺漏与
+  多余 transaction、直接自报 `SourceRFC5780` mapping/filtering 枚举、伪造 probability report、
+  `Executable` mutation、诚实重算 digest 的 in-shape 伪造 target 经 joint triple 拒绝、双写序
+  natsim 双向 schedule 互通与单 winner ACK、架构门禁覆盖新增文件、race×20 与 `go vet`。
+- §15.6 七项最低证据全部满足；接受 §15.1–15.6 为规范性语义，PR #90 解除 Blocked 并可合并。
+- 六项非阻断观察及处置（不阻塞本裁决）：
+  1. `VerifyPlanAgainstCommitment` 设计上不重算 TargetPort；目标正确性依赖双方各自独立
+     运行 `BuildBilateralPlan` 并互认 joint digest（§15.2 设计）。Gate B2 wire 评审必须
+     显式携带并验证此前提。
+  2. transcript 五步未强制 `ObservedAtMilli` 跨步单调；未发现错误分类路径，列为 Gate B2
+     前的防御纵深候选。
+  3. socket slot 超出 profile socket 上限的合法 EIM transcript 会在 verifier 处 fail-closed；
+     仅可用性怪癖，不要求改动。
+  4. IPPooling 证据仍可携带 `SourceRFC5780` 标签而无 transcript 派生；当前 pooling 无正向
+     权威，Gate B2 若赋予 pooling 更强权威必须先收紧到 transcript 派生。
+  5. asymmetric natsim 的两个 orientation 子测试仅差 PRP key label、物理角色相同；覆盖度
+     命名偏高，Gate B2 应补真实反向角色测试。
+  6. golden 仅通过 PlanDigest 与 schema v3 隐式冻结 `Executable`；后续 golden 修订应显式化。
+- 本裁决不授权 Gate A、Gate B2、B3、executor、carrier、stdio/CLI/runtime 接线或任何
+  现场/网络 I/O；上述均需按 §12 顺序另行评审。
