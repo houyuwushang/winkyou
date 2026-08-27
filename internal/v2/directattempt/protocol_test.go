@@ -153,6 +153,40 @@ func TestProtocolRejectsDuplicateWrongTypeRoleDomainContextAndAuthenticationTerm
 	})
 }
 
+func TestOOBProtocolProfileRejectsRoleGenerationContextDomainReplayAndDowngrade(t *testing.T) {
+	mutations := []struct {
+		name   string
+		mutate func([]byte, *Protocol)
+	}{
+		{"wrong role", func(frame []byte, _ *Protocol) { frame[7] = roleCode(RoleResponder) }},
+		{"wrong generation", func(_ []byte, receiver *Protocol) { receiver.binding.Generation++ }},
+		{"wrong context", func(_ []byte, receiver *Protocol) { receiver.binding.ContextDigest[0] ^= 1 }},
+		{"cross carrier domain", func(frame []byte, _ *Protocol) { frame[5] = domainCode(DomainDirectPunch) }},
+		{"profile downgrade", func(_ []byte, receiver *Protocol) { receiver.profile = DirectAttemptProfile }},
+	}
+	for _, testCase := range mutations {
+		t.Run(testCase.name, func(t *testing.T) {
+			initiator, responder, _ := testProtocolPairForProfile(t, OOBDirectAttemptProfile)
+			defer initiator.Close()
+			defer responder.Close()
+			frame := mustSeal(t, initiator, FramePrepare, nil)
+			testCase.mutate(frame, responder)
+			if _, err := responder.Open(frame); err == nil || !responder.Status().Terminal {
+				t.Fatalf("OOB mutation accepted or remained active: %v / %+v", err, responder.Status())
+			}
+		})
+	}
+
+	initiator, responder, _ := testProtocolPairForProfile(t, OOBDirectAttemptProfile)
+	defer initiator.Close()
+	defer responder.Close()
+	frame := mustSeal(t, initiator, FramePrepare, nil)
+	mustOpen(t, responder, frame, FramePrepare)
+	if _, err := responder.Open(frame); err == nil || !responder.Status().Terminal {
+		t.Fatalf("OOB replay accepted or remained active: %v / %+v", err, responder.Status())
+	}
+}
+
 func TestReadyPayloadCanonicalEncodingAndNegativeBoundaries(t *testing.T) {
 	_, _, binding := testProtocolPair(t)
 	ready4, err := NewReadyPayload(binding, RoleInitiator, netip.MustParseAddrPort("192.0.2.9:4660"))
@@ -210,6 +244,47 @@ func TestReadyPayloadCanonicalEncodingAndNegativeBoundaries(t *testing.T) {
 				t.Fatalf("error = %v", err)
 			}
 		})
+	}
+}
+
+func TestExplicitOOBProfileDoesNotWidenLegacyReadyParser(t *testing.T) {
+	_, _, binding := testProtocolPair(t)
+	endpoint := netip.MustParseAddrPort("192.0.2.10:4242")
+	ready, err := NewReadyPayloadForProfile(binding, RoleInitiator, endpoint, OOBDirectAttemptProfile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload, err := ready.MarshalBinaryForProfile(OOBDirectAttemptProfile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ParseReadyPayload(payload); !errors.Is(err, ErrInvalidReady) {
+		t.Fatalf("legacy parser error = %v", err)
+	}
+	parsed, err := ParseReadyPayloadForProfile(payload, OOBDirectAttemptProfile)
+	if err != nil || parsed.Profile != OOBDirectAttemptProfile {
+		t.Fatalf("explicit parser = %+v, %v", parsed, err)
+	}
+}
+
+func TestOOBProfileAllowsOnlyItsReviewedLoopbackTestSlice(t *testing.T) {
+	initiator, responder, binding := testProtocolPair(t)
+	defer initiator.Close()
+	defer responder.Close()
+	loopback := netip.MustParseAddrPort("127.0.0.1:41000")
+	if _, err := NewReadyPayload(binding, RoleInitiator, loopback); !errors.Is(err, ErrInvalidReady) {
+		t.Fatalf("legacy READY loopback = %v, want rejection", err)
+	}
+	ready, err := NewReadyPayloadForProfile(binding, RoleInitiator, loopback, OOBDirectAttemptProfile)
+	if err != nil {
+		t.Fatalf("Gate A loopback READY = %v", err)
+	}
+	payload, err := ready.MarshalBinaryForProfile(OOBDirectAttemptProfile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ParseReadyPayload(payload); !errors.Is(err, ErrInvalidReady) {
+		t.Fatalf("legacy parser accepted Gate A loopback READY: %v", err)
 	}
 }
 
@@ -333,6 +408,10 @@ type fixedPSK [noisecore.PSKSize]byte
 func (source fixedPSK) LoadPSK() ([noisecore.PSKSize]byte, error) { return source, nil }
 
 func testProtocolPair(t testing.TB) (*Protocol, *Protocol, Binding) {
+	return testProtocolPairForProfile(t, DirectAttemptProfile)
+}
+
+func testProtocolPairForProfile(t testing.TB, profile string) (*Protocol, *Protocol, Binding) {
 	t.Helper()
 	now := time.Date(2026, 8, 24, 9, 10, 11, 0, time.UTC)
 	iArtifact, err := ParseArtifact(testArtifactPayload(t, RoleInitiator, now), now.Add(time.Second))
@@ -405,11 +484,11 @@ func testProtocolPair(t testing.TB) (*Protocol, *Protocol, Binding) {
 	}
 	digest, _ := iArtifact.ContextDigest()
 	binding := Binding{AttemptID: iArtifact.AttemptID, ContextDigest: digest, HandshakeHash: iHash, Generation: Generation}
-	initiator, err := NewProtocol(RoleInitiator, binding, iPackets)
+	initiator, err := NewProtocolForProfile(RoleInitiator, binding, iPackets, profile)
 	if err != nil {
 		t.Fatal(err)
 	}
-	responder, err := NewProtocol(RoleResponder, binding, rPackets)
+	responder, err := NewProtocolForProfile(RoleResponder, binding, rPackets, profile)
 	if err != nil {
 		initiator.Close()
 		t.Fatal(err)
