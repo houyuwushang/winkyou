@@ -20,6 +20,9 @@ const (
 	MaxFrameBytes    = 1024
 	MaxSequence      = 7
 	Generation       = 1
+	// OOBDirectAttemptProfile is the Gate A control profile. Existing callers
+	// continue to use DirectAttemptProfile through the legacy wrappers below.
+	OOBDirectAttemptProfile = "winkyou-test-direct-oob-control/1"
 
 	additionalDataLabel = "winkyou-test-direct-attempt-ad/1"
 	readyPayloadMagic   = "WYRD\x01"
@@ -153,30 +156,47 @@ type ReadyPayload struct {
 }
 
 func NewReadyPayload(binding Binding, role Role, endpoint netip.AddrPort) (ReadyPayload, error) {
+	return NewReadyPayloadForProfile(binding, role, endpoint, DirectAttemptProfile)
+}
+
+// NewReadyPayloadForProfile constructs READY for one exact, locally selected
+// profile. It never negotiates or falls back between the N3b and Gate A
+// profiles.
+func NewReadyPayloadForProfile(binding Binding, role Role, endpoint netip.AddrPort, profile string) (ReadyPayload, error) {
 	ready := ReadyPayload{
 		HandshakeHash: binding.HandshakeHash,
 		SenderRole:    role,
 		ContextDigest: binding.ContextDigest,
 		Generation:    binding.Generation,
 		Endpoint:      endpoint,
-		Profile:       DirectAttemptProfile,
+		Profile:       profile,
 	}
-	if err := ready.Validate(); err != nil {
+	if err := ready.validateForProfile(profile); err != nil {
 		return ReadyPayload{}, err
 	}
 	return ready, nil
 }
 
 func (ready ReadyPayload) Validate() error {
+	return ready.validateForProfile(DirectAttemptProfile)
+}
+
+func (ready ReadyPayload) validateForProfile(profile string) error {
 	if allZero(ready.HandshakeHash[:]) || !ready.SenderRole.Valid() || allZero(ready.ContextDigest[:]) ||
-		ready.Generation != Generation || ready.Profile != DirectAttemptProfile || !canonicalDirectEndpoint(ready.Endpoint) {
+		ready.Generation != Generation || !validControlProfile(profile) || ready.Profile != profile || !canonicalDirectEndpointForProfile(ready.Endpoint, profile) {
 		return ErrInvalidReady
 	}
 	return nil
 }
 
 func (ready ReadyPayload) MarshalBinary() ([]byte, error) {
-	if err := ready.Validate(); err != nil {
+	return ready.MarshalBinaryForProfile(DirectAttemptProfile)
+}
+
+// MarshalBinaryForProfile preserves the legacy MarshalBinary acceptance while
+// allowing the explicitly selected Gate A profile to use the same wire shape.
+func (ready ReadyPayload) MarshalBinaryForProfile(profile string) ([]byte, error) {
+	if err := ready.validateForProfile(profile); err != nil {
 		return nil, err
 	}
 	address := ready.Endpoint.Addr()
@@ -209,6 +229,14 @@ func (ready ReadyPayload) MarshalBinary() ([]byte, error) {
 }
 
 func ParseReadyPayload(payload []byte) (ReadyPayload, error) {
+	return ParseReadyPayloadForProfile(payload, DirectAttemptProfile)
+}
+
+// ParseReadyPayloadForProfile accepts exactly one caller-selected profile.
+func ParseReadyPayloadForProfile(payload []byte, profile string) (ReadyPayload, error) {
+	if !validControlProfile(profile) {
+		return ReadyPayload{}, ErrInvalidReady
+	}
 	minimum := len(readyPayloadMagic) + 32 + 1 + 32 + 8 + 1 + 4 + 2 + 1
 	if len(payload) < minimum || !bytes.HasPrefix(payload, []byte(readyPayloadMagic)) {
 		return ReadyPayload{}, ErrInvalidReady
@@ -251,7 +279,7 @@ func ParseReadyPayload(payload []byte) (ReadyPayload, error) {
 	}
 	ready.Endpoint = netip.AddrPortFrom(address, port)
 	ready.Profile = string(payload[offset:])
-	if err := ready.Validate(); err != nil {
+	if err := ready.validateForProfile(profile); err != nil {
 		return ReadyPayload{}, err
 	}
 	return ready, nil
@@ -321,15 +349,22 @@ type Protocol struct {
 	mu      sync.Mutex
 	role    Role
 	binding Binding
+	profile string
 	packets *noisecore.PacketCipher
 	state   protocolState
 }
 
 func NewProtocol(role Role, binding Binding, packets *noisecore.PacketCipher) (*Protocol, error) {
-	if !role.Valid() || binding.Validate() != nil || packets == nil || !packets.Ready() {
+	return NewProtocolForProfile(role, binding, packets, DirectAttemptProfile)
+}
+
+// NewProtocolForProfile selects one exact local profile. Unknown profiles are
+// rejected without negotiation or fallback.
+func NewProtocolForProfile(role Role, binding Binding, packets *noisecore.PacketCipher, profile string) (*Protocol, error) {
+	if !role.Valid() || binding.Validate() != nil || packets == nil || !packets.Ready() || !validControlProfile(profile) {
 		return nil, ErrInvalidBinding
 	}
-	return &Protocol{role: role, binding: binding, packets: packets}, nil
+	return &Protocol{role: role, binding: binding, profile: profile, packets: packets}, nil
 }
 
 func (protocol *Protocol) Seal(frameType FrameType, ready *ReadyPayload) ([]byte, error) {
@@ -357,7 +392,7 @@ func (protocol *Protocol) Seal(frameType FrameType, ready *ReadyPayload) ([]byte
 	if err != nil {
 		return nil, protocol.failLocked(err)
 	}
-	additionalData, err := BuildAdditionalData(protocol.binding, header)
+	additionalData, err := BuildAdditionalDataForProfile(protocol.binding, header, protocol.profile)
 	if err != nil {
 		clear(header)
 		return nil, protocol.failLocked(err)
@@ -400,7 +435,7 @@ func (protocol *Protocol) Open(frame []byte) (OpenedFrame, error) {
 	if err := protocol.validateReceiveLocked(frameType); err != nil {
 		return OpenedFrame{}, protocol.failLocked(err)
 	}
-	additionalData, err := BuildAdditionalData(protocol.binding, header)
+	additionalData, err := BuildAdditionalDataForProfile(protocol.binding, header, protocol.profile)
 	if err != nil {
 		return OpenedFrame{}, protocol.failLocked(err)
 	}
@@ -412,10 +447,10 @@ func (protocol *Protocol) Open(frame []byte) (OpenedFrame, error) {
 	defer clear(plaintext)
 	opened := OpenedFrame{Type: frameType}
 	if frameType == FrameReady {
-		ready, err := ParseReadyPayload(plaintext)
+		ready, err := ParseReadyPayloadForProfile(plaintext, protocol.profile)
 		if err != nil || ready.SenderRole != sender || ready.HandshakeHash != protocol.binding.HandshakeHash ||
 			ready.ContextDigest != protocol.binding.ContextDigest || ready.Generation != protocol.binding.Generation ||
-			ready.Profile != DirectAttemptProfile {
+			ready.Profile != protocol.profile {
 			return OpenedFrame{}, protocol.failLocked(ErrInvalidReady)
 		}
 		opened.Ready = &ready
@@ -465,10 +500,10 @@ func (protocol *Protocol) payloadForSend(frameType FrameType, ready *ReadyPayloa
 	}
 	if ready == nil || ready.SenderRole != protocol.role || ready.HandshakeHash != protocol.binding.HandshakeHash ||
 		ready.ContextDigest != protocol.binding.ContextDigest || ready.Generation != protocol.binding.Generation ||
-		ready.Profile != DirectAttemptProfile {
+		ready.Profile != protocol.profile {
 		return nil, ErrInvalidReady
 	}
-	return ready.MarshalBinary()
+	return ready.MarshalBinaryForProfile(protocol.profile)
 }
 
 func (protocol *Protocol) validateSendLocked(frameType FrameType) error {
@@ -649,7 +684,13 @@ func BuildFrameHeader(sender Role, frameType FrameType, ciphertextLength int) ([
 
 // BuildAdditionalData returns the exact authenticated bytes for a frame.
 func BuildAdditionalData(binding Binding, header []byte) ([]byte, error) {
-	if binding.Validate() != nil || len(header) != FrameHeaderBytes {
+	return BuildAdditionalDataForProfile(binding, header, DirectAttemptProfile)
+}
+
+// BuildAdditionalDataForProfile binds one exact direct-attempt profile into
+// every authenticated frame while keeping the N3b byte sequence unchanged.
+func BuildAdditionalDataForProfile(binding Binding, header []byte, profile string) ([]byte, error) {
+	if binding.Validate() != nil || len(header) != FrameHeaderBytes || !validControlProfile(profile) {
 		return nil, ErrInvalidBinding
 	}
 	if err := validateFrameHeader(header); err != nil {
@@ -665,10 +706,10 @@ func BuildAdditionalData(binding Binding, header []byte) ([]byte, error) {
 		clear(attempt)
 		return nil, ErrInvalidFrame
 	}
-	additionalData := make([]byte, 0, len(additionalDataLabel)+1+len(DirectAttemptProfile)+1+len(domain)+1+16+32+len(header))
+	additionalData := make([]byte, 0, len(additionalDataLabel)+1+len(profile)+1+len(domain)+1+16+32+len(header))
 	additionalData = append(additionalData, additionalDataLabel...)
 	additionalData = append(additionalData, 0)
-	additionalData = append(additionalData, DirectAttemptProfile...)
+	additionalData = append(additionalData, profile...)
 	additionalData = append(additionalData, 0)
 	additionalData = append(additionalData, domain...)
 	additionalData = append(additionalData, 0)
@@ -677,6 +718,10 @@ func BuildAdditionalData(binding Binding, header []byte) ([]byte, error) {
 	additionalData = append(additionalData, header...)
 	clear(attempt)
 	return additionalData, nil
+}
+
+func validControlProfile(profile string) bool {
+	return profile == DirectAttemptProfile || profile == OOBDirectAttemptProfile
 }
 
 func validateFrameHeader(header []byte) error {
@@ -728,6 +773,17 @@ func canonicalDirectEndpoint(endpoint netip.AddrPort) bool {
 	address := endpoint.Addr()
 	return address.IsValid() && address.Zone() == "" && address.Unmap() == address &&
 		!address.IsUnspecified() && !address.IsMulticast() && !address.IsLoopback()
+}
+
+func canonicalDirectEndpointForProfile(endpoint netip.AddrPort, profile string) bool {
+	if canonicalDirectEndpoint(endpoint) {
+		return true
+	}
+	if profile != OOBDirectAttemptProfile || !endpoint.IsValid() || endpoint.Port() == 0 {
+		return false
+	}
+	address := endpoint.Addr()
+	return address.Zone() == "" && address.Unmap() == address && address.IsLoopback()
 }
 
 func domainCode(domain Domain) byte {

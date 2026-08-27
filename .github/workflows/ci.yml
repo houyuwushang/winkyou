@@ -166,6 +166,50 @@ jobs:
           -test.count=1
           -test.timeout=5m
 
+  gate-a-netns-handoff-proof:
+    name: Gate A OOB Handoff Netns Proof (required)
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Install isolated-network witness tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y iproute2 iptables conntrack
+          command -v ip
+          command -v iptables
+          command -v iptables-restore
+          command -v ss
+          command -v conntrack
+          command -v sysctl
+          command -v tc
+
+      - name: Vet Gate A natlab-tagged code
+        run: >-
+          go vet -tags=natlab
+          ./internal/governor
+          ./internal/v2/directconnect/gatea
+          ./test/natlab
+
+      - name: Build race-enabled Gate A integration binary
+        run: go test -race -c -tags=natlab -o "${RUNNER_TEMP}/winkyou-gatea.test" ./test/natlab
+
+      - name: Run mandatory isolated Gate A matrix
+        run: >-
+          sudo env WINKYOU_GATE_A_REQUIRED=1 GORACE=halt_on_error=1
+          "${RUNNER_TEMP}/winkyou-gatea.test"
+          -test.v
+          -test.run '^TestLinuxGateAOOBHandoffProof$'
+          -test.count=1
+          -test.timeout=5m
+
   relay-smoke-linux:
     name: Relay Smoke (Linux)
     needs: test-linux

@@ -210,7 +210,7 @@ func runBindingExchange(
 		if errors.Is(receiveErr, probeio.ErrUnregisteredTarget) || errors.Is(receiveErr, ErrSourceMismatch) {
 			return finishBindingObservation(now, observation, transmissions, netip.AddrPort{}, "", ErrSourceMismatch)
 		}
-		if errors.Is(receiveErr, context.DeadlineExceeded) {
+		if errors.Is(receiveErr, context.DeadlineExceeded) || timeoutReported(receiveErr) {
 			if err := callerCtx.Err(); err != nil {
 				return finishBindingObservation(now, observation, transmissions, netip.AddrPort{}, "", err)
 			}
@@ -222,6 +222,12 @@ func runBindingExchange(
 		return finishBindingObservation(now, observation, transmissions, netip.AddrPort{}, "", unwrapReplyError(receiveErr))
 	}
 	return finishBindingObservation(now, observation, transmissions, netip.AddrPort{}, "", ErrTimeout)
+}
+
+func timeoutReported(err error) bool {
+	type timeoutError interface{ Timeout() bool }
+	var timeout timeoutError
+	return errors.As(err, &timeout) && timeout.Timeout()
 }
 
 func newBindingObservation(startedAt time.Time, target netip.AddrPort) solver.Observation {

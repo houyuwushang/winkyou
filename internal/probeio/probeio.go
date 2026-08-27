@@ -36,6 +36,9 @@ var (
 	ErrAlreadyPromoted     = errors.New("probeio: controller already promoted a socket")
 	ErrDatagramContract    = errors.New("probeio: datagram implementation violated its contract")
 	ErrFactoryUnauthorized = errors.New("probeio: factory open is not controller-authorized")
+	ErrTransportLease      = errors.New("probeio: transport lease is unavailable")
+	ErrTransportBinding    = errors.New("probeio: transport lease binding mismatch")
+	ErrTransportInactive   = errors.New("probeio: transport lease is not active")
 )
 
 // AttemptLease is the narrow governor capability required by probeio.
@@ -709,6 +712,40 @@ func (socket *ProbeSocket) Promote(target netip.AddrPort, pathID string) (Promot
 // close the Controller; the promoted Transport remains independently owned.
 func (socket *ProbeSocket) PromoteTerminal(target netip.AddrPort, pathID string) (Promotion, error) {
 	return socket.promote(target, pathID, false)
+}
+
+// PromoteToLease performs the one-time socket handoff into an already-issued
+// inactive TransportLease. It retains the governor attempt lease so the
+// caller can durably append FINISH before releasing the attempt. No raw
+// PacketTransport is returned and a failed attach closes the promoted
+// transport; the old ProbeSocket can never be recovered or retried.
+func (socket *ProbeSocket) PromoteToLease(target netip.AddrPort, pathID string, destination *TransportLease) error {
+	if destination == nil {
+		return ErrTransportLease
+	}
+	canonical, err := canonicalTarget(target)
+	if err != nil {
+		return err
+	}
+	c, _, err := socket.parts()
+	if err != nil {
+		return err
+	}
+	if err := destination.checkPromotionBinding(TransportLeaseBinding{
+		PeerID: c.lease.PeerID(), AttemptID: c.request.ID, Generation: c.expectedGeneration,
+		PathID: pathID, Target: canonical, ConsumerKind: GateATestConsumer,
+	}); err != nil {
+		return err
+	}
+	promotion, err := socket.promote(canonical, pathID, false)
+	if err != nil {
+		return err
+	}
+	if err := destination.attach(promotion); err != nil {
+		_ = promotion.Transport.Close()
+		return err
+	}
+	return nil
 }
 
 func (socket *ProbeSocket) promote(target netip.AddrPort, pathID string, closeLease bool) (Promotion, error) {

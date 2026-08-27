@@ -19,6 +19,9 @@ const (
 	MaxPayloadBytes      = 1024
 
 	PresenceProfile = "winkyou-test-direct-presence/1"
+	// CallerProvidedStreamProfile is the Gate A presence profile used only on
+	// an already-established, attempt-dedicated bounded child stream.
+	CallerProvidedStreamProfile = "caller-provided-bounded-stream/1"
 
 	// The WYRC v1 handshake carries one NNpsk0 public key plus its AEAD tag.
 	HandshakePayloadBytes = 48
@@ -56,28 +59,42 @@ type Frame struct {
 }
 
 func PresencePayload(associationID string, slot Slot) ([]byte, error) {
+	return PresencePayloadForProfile(PresenceProfile, associationID, slot)
+}
+
+func PresencePayloadForProfile(profile, associationID string, slot Slot) ([]byte, error) {
+	if !validPresenceProfile(profile) {
+		return nil, ErrInvalidFrame
+	}
 	association, err := base64.RawURLEncoding.DecodeString(associationID)
 	if err != nil || len(association) != 16 || base64.RawURLEncoding.EncodeToString(association) != associationID || !slot.Valid() {
 		clear(association)
 		return nil, ErrInvalidFrame
 	}
-	profile := []byte(PresenceProfile)
-	payload := make([]byte, 1+len(profile)+len(association)+1)
-	payload[0] = byte(len(profile))
-	copy(payload[1:], profile)
-	copy(payload[1+len(profile):], association)
+	profileBytes := []byte(profile)
+	payload := make([]byte, 1+len(profileBytes)+len(association)+1)
+	payload[0] = byte(len(profileBytes))
+	copy(payload[1:], profileBytes)
+	copy(payload[1+len(profileBytes):], association)
 	payload[len(payload)-1] = byte(slot)
 	clear(association)
 	return payload, nil
 }
 
 func ParsePresencePayload(payload []byte) (string, Slot, error) {
+	return ParsePresencePayloadForProfile(PresenceProfile, payload)
+}
+
+func ParsePresencePayloadForProfile(profile string, payload []byte) (string, Slot, error) {
+	if !validPresenceProfile(profile) {
+		return "", 0, ErrInvalidFrame
+	}
 	if len(payload) < 19 {
 		return "", 0, ErrInvalidFrame
 	}
 	profileLength := int(payload[0])
 	if profileLength == 0 || len(payload) != 1+profileLength+16+1 ||
-		!bytes.Equal(payload[1:1+profileLength], []byte(PresenceProfile)) {
+		!bytes.Equal(payload[1:1+profileLength], []byte(profile)) {
 		return "", 0, ErrInvalidFrame
 	}
 	association := base64.RawURLEncoding.EncodeToString(payload[1+profileLength : 1+profileLength+16])
@@ -89,9 +106,13 @@ func ParsePresencePayload(payload []byte) (string, Slot, error) {
 }
 
 func ValidatePayload(kind Kind, payload []byte) error {
+	return ValidatePayloadForProfile(PresenceProfile, kind, payload)
+}
+
+func ValidatePayloadForProfile(profile string, kind Kind, payload []byte) error {
 	switch kind {
 	case KindPresence:
-		_, _, err := ParsePresencePayload(payload)
+		_, _, err := ParsePresencePayloadForProfile(profile, payload)
 		return err
 	case KindPresenceReady, KindActivate, KindActivateReady:
 		if len(payload) != 0 {
@@ -115,7 +136,11 @@ func ValidatePayload(kind Kind, payload []byte) error {
 }
 
 func Encode(kind Kind, payload []byte) ([]byte, error) {
-	if err := ValidatePayload(kind, payload); err != nil {
+	return EncodeForProfile(PresenceProfile, kind, payload)
+}
+
+func EncodeForProfile(profile string, kind Kind, payload []byte) ([]byte, error) {
+	if err := ValidatePayloadForProfile(profile, kind, payload); err != nil {
 		return nil, err
 	}
 	frame := make([]byte, HeaderBytes+len(payload))
@@ -128,6 +153,13 @@ func Encode(kind Kind, payload []byte) ([]byte, error) {
 }
 
 func Decode(reader io.Reader) (Frame, int, error) {
+	return DecodeForProfile(reader, PresenceProfile)
+}
+
+func DecodeForProfile(reader io.Reader, profile string) (Frame, int, error) {
+	if !validPresenceProfile(profile) {
+		return Frame{}, 0, ErrInvalidFrame
+	}
 	header := make([]byte, HeaderBytes)
 	if _, err := io.ReadFull(reader, header); err != nil {
 		return Frame{}, 0, err
@@ -145,9 +177,13 @@ func Decode(reader io.Reader) (Frame, int, error) {
 		return Frame{}, len(header), err
 	}
 	kind := Kind(header[5])
-	if err := ValidatePayload(kind, payload); err != nil {
+	if err := ValidatePayloadForProfile(profile, kind, payload); err != nil {
 		clear(payload)
 		return Frame{}, len(header) + len(payload), err
 	}
 	return Frame{Kind: kind, Payload: payload}, len(header) + len(payload), nil
+}
+
+func validPresenceProfile(profile string) bool {
+	return profile == PresenceProfile || profile == CallerProvidedStreamProfile
 }

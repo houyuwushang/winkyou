@@ -149,6 +149,7 @@ func TestN2DNatlabHarnessAndHelpersStayTestOnly(t *testing.T) {
 	}
 
 	for _, relative := range []string{
+		"internal/governor/gate_a_natlab_linux.go",
 		"internal/governor/n2d_natlab_linux.go",
 		"internal/solverstdio/n3b_natlab_linux.go",
 		"internal/v2/rendezvouscarrier/n2d_testserver_linux.go",
@@ -194,6 +195,8 @@ import (
 )
 func bypass() {
   _ = gov.PrepareN2DTestNamespace
+  _ = gov.PrepareGateATestNamespace
+  _, _, _ = gov.GateATestLedgerOccupancy(nil)
   _ = solver.ServeN3BNatlab
   _ = carrier.StartN2DTestServer
   _ = obs.SameSocketConfig{AllowNonLoopback: true}
@@ -224,16 +227,20 @@ func bypass() {
 }
 
 func TestN2DHarnessTestsOnlyGateDetectsProductionSource(t *testing.T) {
-	directory := t.TempDir()
-	if err := os.WriteFile(filepath.Join(directory, "n2d_escape.go"), []byte("package natlab\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	violations, err := n2dHarnessSourceViolations(directory)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(violations) != 1 || violations[0] != "n2d_escape.go is not test-only" {
-		t.Fatalf("violations = %v, want injected N2d production source", violations)
+	for _, filename := range []string{"n2d_escape.go", "gate_a_escape.go"} {
+		t.Run(filename, func(t *testing.T) {
+			directory := t.TempDir()
+			if err := os.WriteFile(filepath.Join(directory, filename), []byte("package natlab\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			violations, err := n2dHarnessSourceViolations(directory)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(violations) != 1 || violations[0] != filename+" is not test-only" {
+				t.Fatalf("violations = %v, want injected natlab production source", violations)
+			}
+		})
 	}
 }
 
@@ -549,6 +556,9 @@ func TestLoopbackCarrierApprovalIsExactAndBidirectional(t *testing.T) {
 	directSim := modulePath + "/internal/v2/directsim"
 	rendezvousCarrier := modulePath + "/internal/v2/rendezvouscarrier"
 	directConnect := modulePath + "/internal/v2/directconnect"
+	gateA := modulePath + "/internal/v2/directconnect/gatea"
+	oobAttempt := modulePath + "/internal/v2/oobattempt"
+	oobCarrier := modulePath + "/internal/v2/oobcarrier"
 	pairgen := modulePath + "/internal/v2/pairgen"
 
 	checks := []struct {
@@ -569,6 +579,9 @@ func TestLoopbackCarrierApprovalIsExactAndBidirectional(t *testing.T) {
 		{directSim, pairingContext, true},
 		{rendezvousCarrier, noiseCore, true},
 		{directConnect, noiseCore, true},
+		{oobCarrier, noiseCore, true},
+		{gateA, noiseCore, true},
+		{oobAttempt, pairingContext, true},
 		{pairgen, pairingContext, true},
 		{carrier + "/child", punchProto, false},
 		{carrier + "/child", pairingContext, false},
@@ -582,7 +595,9 @@ func TestLoopbackCarrierApprovalIsExactAndBidirectional(t *testing.T) {
 		}
 	}
 	if !approvedDirectAttemptImporter(directSim, directAttempt) || !approvedDirectAttemptImporter(rendezvousCarrier, directAttempt) ||
-		!approvedDirectAttemptImporter(directConnect, directAttempt) || !approvedDirectAttemptImporter(pairgen, directAttempt) ||
+		!approvedDirectAttemptImporter(directConnect, directAttempt) || !approvedDirectAttemptImporter(gateA, directAttempt) ||
+		!approvedDirectAttemptImporter(oobAttempt, directAttempt) || !approvedDirectAttemptImporter(oobCarrier, directAttempt) ||
+		!approvedDirectAttemptImporter(pairgen, directAttempt) ||
 		approvedDirectAttemptImporter(modulePath+"/cmd/wink", directAttempt) || approvedDirectAttemptImporter(directSim+"/child", directAttempt) {
 		t.Fatal("direct-attempt approval is not exact and bidirectional")
 	}
@@ -643,6 +658,9 @@ func v2RestrictedDependencyViolations(result scanResult) []string {
 	pairingContext := modulePath + "/internal/v2/pairingcontext"
 	directAttempt := modulePath + "/internal/v2/directattempt"
 	hardNATPlan := modulePath + "/internal/v2/hardnatplan"
+	oobAttempt := modulePath + "/internal/v2/oobattempt"
+	oobCarrier := modulePath + "/internal/v2/oobcarrier"
+	gateA := modulePath + "/internal/v2/directconnect/gatea"
 	directSim := modulePath + "/internal/v2/directsim"
 	rendezvousCarrier := modulePath + "/internal/v2/rendezvouscarrier"
 	directConnect := modulePath + "/internal/v2/directconnect"
@@ -678,6 +696,27 @@ func v2RestrictedDependencyViolations(result scanResult) []string {
 		modulePath + "/internal/v2/directattempt":  {},
 		modulePath + "/internal/v2/noisecore":      {},
 		modulePath + "/internal/v2/pairingcontext": {},
+	}
+	allowedOOBAttemptImports := map[string]struct{}{
+		directAttempt: {},
+		modulePath + "/internal/v2/pairingcontext": {},
+	}
+	allowedOOBCarrierImports := map[string]struct{}{
+		modulePath + "/internal/governor":          {},
+		directAttempt:                              {},
+		modulePath + "/internal/v2/noisecore":      {},
+		oobAttempt:                                 {},
+		modulePath + "/internal/v2/rendezvouswire": {},
+	}
+	allowedGateAImports := map[string]struct{}{
+		modulePath + "/internal/governor":     {},
+		modulePath + "/internal/probeio":      {},
+		modulePath + "/internal/stunobserve":  {},
+		directAttempt:                         {},
+		modulePath + "/internal/v2/noisecore": {},
+		oobAttempt:                            {},
+		oobCarrier:                            {},
+		modulePath + "/pkg/transport":         {},
 	}
 	allowedRendezvousCarrierImports := map[string]struct{}{
 		modulePath + "/internal/governor":         {},
@@ -716,6 +755,12 @@ func v2RestrictedDependencyViolations(result scanResult) []string {
 				violations = append(violations, importer+" imports forbidden WinkYou dependency "+imported)
 			case importer == directSim && strings.HasPrefix(imported, modulePath+"/") && !containsImportOrChild(allowedDirectSimImports, imported):
 				violations = append(violations, importer+" imports forbidden simulation dependency "+imported)
+			case importer == oobAttempt && strings.HasPrefix(imported, modulePath+"/") && !containsImportOrChild(allowedOOBAttemptImports, imported):
+				violations = append(violations, importer+" imports forbidden Gate A artifact dependency "+imported)
+			case importer == oobCarrier && strings.HasPrefix(imported, modulePath+"/") && !containsImportOrChild(allowedOOBCarrierImports, imported):
+				violations = append(violations, importer+" imports forbidden Gate A carrier dependency "+imported)
+			case importer == gateA && strings.HasPrefix(imported, modulePath+"/") && !containsImportOrChild(allowedGateAImports, imported):
+				violations = append(violations, importer+" imports forbidden Gate A harness dependency "+imported)
 			case importer == rendezvousCarrier && strings.HasPrefix(imported, modulePath+"/") && !containsImportOrChild(allowedRendezvousCarrierImports, imported):
 				violations = append(violations, importer+" imports forbidden disconnected-carrier dependency "+imported)
 			case importer == directConnect && strings.HasPrefix(imported, modulePath+"/") && !containsImportOrChild(allowedDirectConnectImports, imported):
@@ -726,10 +771,16 @@ func v2RestrictedDependencyViolations(result scanResult) []string {
 				violations = append(violations, importer+" imports forbidden admission dependency "+imported)
 			case importer == rendezvousServer && strings.HasPrefix(imported, modulePath+"/") && !containsImportOrChild(allowedRendezvousServerImports, imported):
 				violations = append(violations, importer+" imports forbidden one-shot-server dependency "+imported)
+			case imported == gateA || strings.HasPrefix(imported, gateA+"/"):
+				violations = append(violations, importer+" imports Gate A test-only boundary "+imported)
 			case (imported == directConnect || strings.HasPrefix(imported, directConnect+"/")) && importer != solverStdio:
 				violations = append(violations, importer+" imports product direct-connect boundary "+imported)
 			case (imported == rendezvousServer || strings.HasPrefix(imported, rendezvousServer+"/")) && importer != rendezvousCommand:
 				violations = append(violations, importer+" imports one-shot rendezvous server "+imported)
+			case (imported == oobCarrier || strings.HasPrefix(imported, oobCarrier+"/")) && importer != gateA:
+				violations = append(violations, importer+" imports Gate A bounded carrier "+imported+" without approval")
+			case (imported == oobAttempt || strings.HasPrefix(imported, oobAttempt+"/")) && importer != oobCarrier && importer != gateA:
+				violations = append(violations, importer+" imports Gate A OOB artifact "+imported+" without approval")
 			case (imported == rendezvousCarrier || strings.HasPrefix(imported, rendezvousCarrier+"/")) && importer != rendezvousCarrier && importer != directConnect:
 				violations = append(violations, importer+" imports disconnected N2c carrier "+imported)
 			case importer == punchSim && containsImportOrChild(forbiddenPunchSimImports, imported):
@@ -835,7 +886,8 @@ func n2dHarnessSourceViolations(directory string) ([]string, error) {
 	}
 	var violations []string
 	for _, entry := range entries {
-		if entry.IsDir() || (!strings.HasPrefix(entry.Name(), "n2d_") && !strings.HasPrefix(entry.Name(), "n3b_")) || !strings.HasSuffix(entry.Name(), ".go") {
+		if entry.IsDir() || (!strings.HasPrefix(entry.Name(), "n2d_") && !strings.HasPrefix(entry.Name(), "n3b_") &&
+			!strings.HasPrefix(entry.Name(), "gate_a_")) || !strings.HasSuffix(entry.Name(), ".go") {
 			continue
 		}
 		if !strings.HasSuffix(entry.Name(), "_test.go") {
@@ -857,14 +909,18 @@ func n2dHarnessSourceViolations(directory string) ([]string, error) {
 
 func n2dHelperUseViolations(root string) ([]string, error) {
 	restricted := map[string]struct{}{
-		"PrepareN2DTestNamespace": {},
-		"N2DTestPairingLedger":    {},
-		"StartN2DTestServer":      {},
-		"N2DTestServer":           {},
-		"N2DTestServerStats":      {},
-		"ServeN3BNatlab":          {},
+		"PrepareN2DTestNamespace":   {},
+		"N2DTestPairingLedger":      {},
+		"PrepareGateATestNamespace": {},
+		"GateATestPairingLedger":    {},
+		"GateATestLedgerOccupancy":  {},
+		"StartN2DTestServer":        {},
+		"N2DTestServer":             {},
+		"N2DTestServerStats":        {},
+		"ServeN3BNatlab":            {},
 	}
 	definitions := map[string]struct{}{
+		"internal/governor/gate_a_natlab_linux.go":              {},
 		"internal/governor/n2d_natlab_linux.go":                 {},
 		"internal/solverstdio/n3b_natlab_linux.go":              {},
 		"internal/v2/rendezvouscarrier/n2d_testserver_linux.go": {},
@@ -889,7 +945,8 @@ func n2dHelperUseViolations(root string) ([]string, error) {
 		}
 		relative = filepath.ToSlash(relative)
 		if _, definition := definitions[relative]; definition ||
-			((strings.HasPrefix(relative, "test/natlab/n2d_") || strings.HasPrefix(relative, "test/natlab/n3b_")) && strings.HasSuffix(relative, "_test.go")) {
+			((strings.HasPrefix(relative, "test/natlab/n2d_") || strings.HasPrefix(relative, "test/natlab/n3b_") ||
+				strings.HasPrefix(relative, "test/natlab/gate_a_")) && strings.HasSuffix(relative, "_test.go")) {
 			return nil
 		}
 		parsed, err := parser.ParseFile(token.NewFileSet(), filename, nil, 0)
@@ -1031,15 +1088,18 @@ func approvedLoopbackPrimitiveImporter(importer, imported string) bool {
 	directSim := modulePath + "/internal/v2/directsim"
 	rendezvousCarrier := modulePath + "/internal/v2/rendezvouscarrier"
 	directConnect := modulePath + "/internal/v2/directconnect"
+	gateA := modulePath + "/internal/v2/directconnect/gatea"
+	oobAttempt := modulePath + "/internal/v2/oobattempt"
+	oobCarrier := modulePath + "/internal/v2/oobcarrier"
 	pairgen := modulePath + "/internal/v2/pairgen"
 
 	switch imported {
 	case noiseCore:
-		return importer == punchProto || importer == punchSim || importer == carrier || importer == directAttempt || importer == directSim || importer == rendezvousCarrier || importer == directConnect
+		return importer == punchProto || importer == punchSim || importer == carrier || importer == directAttempt || importer == directSim || importer == rendezvousCarrier || importer == directConnect || importer == oobCarrier || importer == gateA
 	case punchProto:
 		return importer == punchSim || importer == carrier
 	case pairingContext:
-		return importer == testPairing || importer == carrier || importer == directAttempt || importer == directSim || importer == pairgen
+		return importer == testPairing || importer == carrier || importer == directAttempt || importer == directSim || importer == pairgen || importer == oobAttempt
 	default:
 		return false
 	}
@@ -1051,6 +1111,9 @@ func approvedDirectAttemptImporter(importer, imported string) bool {
 	return (importer == modulePath+"/internal/v2/directsim" ||
 		importer == modulePath+"/internal/v2/rendezvouscarrier" ||
 		importer == modulePath+"/internal/v2/directconnect" ||
+		importer == modulePath+"/internal/v2/directconnect/gatea" ||
+		importer == modulePath+"/internal/v2/oobattempt" ||
+		importer == modulePath+"/internal/v2/oobcarrier" ||
 		importer == modulePath+"/internal/v2/pairgen") &&
 		imported == modulePath+"/internal/v2/directattempt"
 }
