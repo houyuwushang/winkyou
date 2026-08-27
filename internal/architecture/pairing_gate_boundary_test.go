@@ -81,6 +81,8 @@ func TestPairingAdmissionGateApprovalIsExact(t *testing.T) {
 	loopback := filepath.ToSlash(filepath.Join("internal", "v2", "loopbackcarrier", "carrier.go"))
 	rendezvous := filepath.ToSlash(filepath.Join("internal", "v2", "rendezvouscarrier", "carrier.go"))
 	directConnect := filepath.ToSlash(filepath.Join("internal", "v2", "directconnect", "connect.go"))
+	gateA := filepath.ToSlash(filepath.Join("internal", "v2", "directconnect", "gatea", "connect.go"))
+	oobCarrier := filepath.ToSlash(filepath.Join("internal", "v2", "oobcarrier", "carrier.go"))
 	checks := []struct {
 		path       string
 		identifier string
@@ -95,6 +97,14 @@ func TestPairingAdmissionGateApprovalIsExact(t *testing.T) {
 		{directConnect, "ConsumeForCarrier", true},
 		{directConnect, "CommittedCarrierAuthorization", true},
 		{directConnect, "BeforeFirstEmission", false},
+		{gateA, "NewPairingAdmissionGate", true},
+		{gateA, "ConsumeForCarrier", true},
+		{gateA, "CommittedCarrierAuthorization", true},
+		{gateA, "BeforeFirstEmission", false},
+		{oobCarrier, "BeforeFirstEmission", true},
+		{oobCarrier, "CommittedCarrierAuthorization", true},
+		{oobCarrier, "NewPairingAdmissionGate", false},
+		{oobCarrier, "ConsumeForCarrier", false},
 		{filepath.ToSlash(filepath.Join("internal", "v2", "rendezvouscarrier", "child.go")), "BeforeFirstEmission", false},
 		{filepath.ToSlash(filepath.Join("internal", "solverstdio", "handler.go")), "BeforeFirstEmission", false},
 		{filepath.ToSlash(filepath.Join("cmd", "wink", "main.go")), "BeforeFirstEmission", false},
@@ -129,6 +139,20 @@ func TestPairingAdmissionGateApprovalIsExact(t *testing.T) {
 			t.Errorf("rendezvous carrier must not acquire or consume gate capability %s", forbidden)
 		}
 	}
+	oobPayload, err := os.ReadFile(filepath.Join(repositoryRoot(t), filepath.FromSlash(oobCarrier)))
+	if err != nil {
+		t.Fatalf("read Gate A bounded carrier: %v", err)
+	}
+	for _, required := range []string{"BeforeFirstEmission", "CommittedCarrierAuthorization"} {
+		if !strings.Contains(string(oobPayload), required) {
+			t.Errorf("Gate A bounded carrier lost required post-burn boundary %s", required)
+		}
+	}
+	for _, forbidden := range []string{"NewPairingAdmissionGate", "ConsumeForCarrier", "CommittedAttempt"} {
+		if strings.Contains(string(oobPayload), forbidden) {
+			t.Errorf("Gate A bounded carrier must not acquire or consume gate capability %s", forbidden)
+		}
+	}
 }
 
 func approvedPairingGateReference(relative, identifier string) bool {
@@ -142,6 +166,16 @@ func approvedPairingGateReference(relative, identifier string) bool {
 		return identifier == "BeforeFirstEmission" || identifier == "CommittedCarrierAuthorization"
 	}
 	directConnect := filepath.ToSlash(filepath.Join("internal", "v2", "directconnect", "connect.go"))
-	return relative == directConnect && (identifier == "NewPairingAdmissionGate" ||
-		identifier == "ConsumeForCarrier" || identifier == "CommittedCarrierAuthorization")
+	if relative == directConnect {
+		return identifier == "NewPairingAdmissionGate" || identifier == "ConsumeForCarrier" ||
+			identifier == "CommittedCarrierAuthorization"
+	}
+	gateA := filepath.ToSlash(filepath.Join("internal", "v2", "directconnect", "gatea", "connect.go"))
+	if relative == gateA {
+		return identifier == "NewPairingAdmissionGate" || identifier == "ConsumeForCarrier" ||
+			identifier == "CommittedCarrierAuthorization"
+	}
+	oobCarrier := filepath.ToSlash(filepath.Join("internal", "v2", "oobcarrier", "carrier.go"))
+	return relative == oobCarrier && (identifier == "BeforeFirstEmission" ||
+		identifier == "CommittedCarrierAuthorization")
 }

@@ -54,4 +54,56 @@ func InspectLoopbackCarrierTestLedger(namespace string, at time.Time) (PairingLe
 	return snapshot.status, err
 }
 
+// InspectLoopbackCarrierTestOccupancy exposes unfinished durable charge only
+// inside the governor test binary; it does not extend PairingLedgerStatus or
+// any stdio/product schema.
+func InspectLoopbackCarrierTestOccupancy(namespace string, at time.Time) (int, int, error) {
+	snapshot, err := readPairingLedgerSnapshot(filepath.Join(namespace, pairingLedgerFilename), at.UTC(), "", validateTestPairingLedgerFile)
+	if err != nil {
+		return 0, 0, err
+	}
+	return unfinishedTestOccupancy(snapshot)
+}
+
+// LoopbackCarrierTestLedger returns the already owner-bound test journal. It
+// exists only in the governor test binary and cannot weaken a normal build.
+func LoopbackCarrierTestLedger(machine *Governor) (*PairingAdmissionLedger, error) {
+	if machine == nil || machine.owner == nil {
+		return nil, ErrPairingMachineScopeRequired
+	}
+	return machine.owner.PairingLedger()
+}
+
+// LoopbackCarrierTestOccupancy reads the held test journal without exposing
+// its unfinished state through production status DTOs.
+func LoopbackCarrierTestOccupancy(machine *Governor) (int, int, error) {
+	ledger, err := LoopbackCarrierTestLedger(machine)
+	if err != nil {
+		return 0, 0, err
+	}
+	ledger.mu.Lock()
+	defer ledger.mu.Unlock()
+	releaseOwner, err := ledger.holdOwner()
+	if err != nil {
+		return 0, 0, err
+	}
+	defer releaseOwner()
+	snapshot, err := readPairingLedgerSnapshot(ledger.path, ledger.now().UTC(), ledger.ownerInstanceID, ledger.validateFile)
+	if err != nil {
+		return 0, 0, err
+	}
+	return unfinishedTestOccupancy(snapshot)
+}
+
+func unfinishedTestOccupancy(snapshot pairingLedgerSnapshot) (int, int, error) {
+	admissions, packets := 0, 0
+	for _, admission := range snapshot.admissionOrder {
+		if admission.finish == nil {
+			admissions++
+			packets += admission.record.Envelope.Packets
+		}
+	}
+	return admissions, packets, nil
+}
+
 func LoopbackCarrierSubprocessRaceEnabled() bool { return pairingGateRaceEnabled }
