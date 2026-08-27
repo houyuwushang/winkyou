@@ -1,0 +1,32 @@
+{
+  "progress": [
+    "preflight",
+    "oob_adopt",
+    "present",
+    "burned",
+    "activated",
+    "handshake",
+    "prepare",
+    "socket",
+    "stun",
+    "ready",
+    "fire",
+    "punch_sent",
+    "punch",
+    "verify",
+    "transport_lease",
+    "handoff",
+    "data_plane_challenge",
+    "terminal"
+  ],
+  "failures": [
+    "oob_stream_invalid",
+    "oob_presence_timeout",
+    "oob_stream_closed",
+    "oob_protocol_violation",
+    "mapping_not_directly_usable",
+    "transport_lease_unavailable",
+    "transport_handoff_failed",
+    "data_plane_challenge_failed"
+  ]
+}

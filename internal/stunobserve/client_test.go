@@ -132,6 +132,25 @@ func TestClientRejectsInsufficientBudgetBeforeOpeningSocket(t *testing.T) {
 	}
 }
 
+func TestClientTreatsEarlyDatagramTimeoutAsBoundedSilence(t *testing.T) {
+	factory := &immediateTimeoutFactory{}
+	client, err := newClient(Config{
+		Lease:              newTestLease(acceleratedTestCost()),
+		Generation:         probeio.NewGeneration(1),
+		ExpectedGeneration: 1,
+		Factory:            factory,
+		BuildVersion:       "stunobserve-timeout-test",
+	}, deterministicRandom(), time.Now, testRTO)
+	if err != nil {
+		t.Fatal(err)
+	}
+	observation, err := client.Observe(context.Background(), netip.MustParseAddrPort("127.0.0.1:3478"))
+	if !errors.Is(err, ErrTimeout) || observation.Details["transmissions"] != intString(MaxTransmissions) ||
+		factory.writes.Load() != MaxTransmissions {
+		t.Fatalf("early datagram timeout = %v transmissions=%q writes=%d", err, observation.Details["transmissions"], factory.writes.Load())
+	}
+}
+
 func TestWorstCaseCostIsFrozenAndCoversProductionSchedule(t *testing.T) {
 	cost := WorstCaseCost()
 	want := governor.Resources{
@@ -273,6 +292,35 @@ type countingFactory struct {
 	opens  atomic.Int32
 	writes atomic.Int32
 }
+
+type immediateTimeoutFactory struct{ writes atomic.Int32 }
+
+func (factory *immediateTimeoutFactory) Open(context.Context) (probeio.Datagram, error) {
+	return &immediateTimeoutDatagram{writes: &factory.writes}, nil
+}
+
+type immediateTimeoutDatagram struct{ writes *atomic.Int32 }
+
+func (*immediateTimeoutDatagram) ReadFrom(context.Context, []byte) (int, netip.AddrPort, error) {
+	return 0, netip.AddrPort{}, immediateTimeoutError{}
+}
+
+func (datagram *immediateTimeoutDatagram) WriteTo(_ context.Context, packet []byte, _ netip.AddrPort) (int, error) {
+	datagram.writes.Add(1)
+	return len(packet), nil
+}
+
+func (*immediateTimeoutDatagram) SetDeadline(time.Time) error { return nil }
+func (*immediateTimeoutDatagram) LocalAddr() net.Addr {
+	return net.UDPAddrFromAddrPort(netip.MustParseAddrPort("127.0.0.1:40000"))
+}
+func (*immediateTimeoutDatagram) Close() error { return nil }
+
+type immediateTimeoutError struct{}
+
+func (immediateTimeoutError) Error() string   { return "synthetic datagram timeout" }
+func (immediateTimeoutError) Timeout() bool   { return true }
+func (immediateTimeoutError) Temporary() bool { return true }
 
 func (factory *countingFactory) Open(ctx context.Context) (probeio.Datagram, error) {
 	datagram, err := factory.inner.Open(ctx)
