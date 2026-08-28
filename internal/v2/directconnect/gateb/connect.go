@@ -76,6 +76,7 @@ type runtime struct {
 	emissionsMu     sync.Mutex
 	emissions       Emissions
 	candidateStart  time.Time
+	candidateLast   time.Time
 }
 
 func run(ctx context.Context, config Config) (Result, error) {
@@ -847,6 +848,22 @@ func (runtime *runtime) punch(ctx context.Context) (*probeio.ProbeSocket, netip.
 				if !chooser {
 					continue
 				}
+				// The asymmetric target-set must finish its one-shot 512-packet
+				// schedule before sealing a winner. Otherwise a fast peer hit can
+				// race the sender and place the ACK in the last 64-packet PPS
+				// window. This waits for the already-frozen schedule; it does not
+				// add a packet, retry, candidate, or fallback.
+				if runtime.artifact.PlannerProfile == hardnatplan.ProfileAsymmetricBirthday &&
+					runtime.artifact.LocalPlannerRole == hardnatplan.RoleTargetSet && senderDone != nil {
+					sendErr := <-senderDone
+					senderFinished = true
+					senderDone = nil
+					if sendErr != nil {
+						cancel()
+						readers.Wait()
+						return nil, netip.AddrPort{}, sendErr
+					}
+				}
 				winner, err := runtime.protocol.ChooseWinner(event.opened, event.socketSlot)
 				if err != nil {
 					cancel()
@@ -923,7 +940,20 @@ func (runtime *runtime) waitForAsymmetricWinnerSlot(ctx context.Context) error {
 		runtime.artifact.LocalPlannerRole != hardnatplan.RoleTargetSet {
 		return nil
 	}
-	remaining := asymmetricWinnerFloor - time.Since(runtime.candidateStart)
+	runtime.emissionsMu.Lock()
+	lastCandidate := runtime.candidateLast
+	runtime.emissionsMu.Unlock()
+	if lastCandidate.IsZero() {
+		return hardnatcontrol.ErrInvalidTransition
+	}
+	readyAt := runtime.candidateStart.Add(asymmetricWinnerFloor)
+	// Batches are separated from their *starts*. Account for the actual time
+	// spent emitting the final batch so the winner is never the 65th packet in
+	// a rolling one-second window on a real OS scheduler.
+	if afterLast := lastCandidate.Add(candidateBatchPeriod + time.Millisecond); afterLast.After(readyAt) {
+		readyAt = afterLast
+	}
+	remaining := time.Until(readyAt)
 	if remaining <= 0 {
 		return nil
 	}
@@ -1058,6 +1088,7 @@ func (runtime *runtime) sendCandidates(ctx context.Context) error {
 		runtime.emissionsMu.Lock()
 		runtime.emissions.CandidatePackets++
 		runtime.emissions.UDPPacketsTotal++
+		runtime.candidateLast = time.Now()
 		runtime.emissionsMu.Unlock()
 	}
 	return nil

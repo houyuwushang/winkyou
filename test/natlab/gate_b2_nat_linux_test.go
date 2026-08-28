@@ -265,7 +265,7 @@ func (router *gateB2NATRouter) configureNamespace() error {
 }
 
 func openGateB2TUN(name string) (*os.File, error) {
-	fd, err := unix.Open("/dev/net/tun", unix.O_RDWR|unix.O_CLOEXEC, 0)
+	fd, err := unix.Open("/dev/net/tun", unix.O_RDWR|unix.O_CLOEXEC|unix.O_NONBLOCK, 0)
 	if err != nil {
 		return nil, err
 	}
@@ -294,6 +294,18 @@ func (router *gateB2NATRouter) readTUN(tun *os.File, packets chan<- gateB2TUNPac
 	for {
 		n, err := tun.Read(buffer)
 		if err != nil {
+			if errors.Is(err, unix.EAGAIN) || errors.Is(err, unix.EWOULDBLOCK) {
+				timer := time.NewTimer(time.Millisecond)
+				select {
+				case <-timer.C:
+				case <-router.ctx.Done():
+					if !timer.Stop() {
+						<-timer.C
+					}
+					return
+				}
+				continue
+			}
 			select {
 			case failures <- err:
 			case <-router.ctx.Done():
