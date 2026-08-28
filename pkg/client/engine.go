@@ -66,6 +66,9 @@ type engine struct {
 	runCtx    context.Context
 	runCancel context.CancelFunc
 	wg        sync.WaitGroup
+
+	solverDispatchReady     chan struct{}
+	solverDispatchReadyOnce sync.Once
 }
 
 func NewEngine(cfg *config.Config, log logger.Logger, statePath string) (Engine, error) {
@@ -96,6 +99,7 @@ func NewEngine(cfg *config.Config, log logger.Logger, statePath string) (Engine,
 			CoordinatorURL: merged.Coordinator.URL,
 			NATType:        nat.NATTypeUnknown.String(),
 		},
+		solverDispatchReady: make(chan struct{}),
 	}, nil
 }
 
@@ -253,6 +257,13 @@ func (e *engine) Start(ctx context.Context) (err error) {
 	if err := e.startInbandControl(virtualIP); err != nil {
 		e.log.Warn("in-band peer control disabled", logger.Error(err))
 	}
+
+	// The coordinator signal stream has been live since Register, so peer
+	// solver messages can already be arriving. Only now is every dependency of
+	// a peer session (node id, netif, tunnel, NAT, observation store, peer
+	// manager, run context) constructed; release the dispatch barrier so early
+	// messages are processed instead of being dropped by a not-ready engine.
+	e.markSolverDispatchReady()
 
 	if err := e.refreshPeers(ctx); err != nil {
 		e.log.Warn("initial peer refresh failed", logger.Error(err))

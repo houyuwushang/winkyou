@@ -64,9 +64,28 @@ func TestResponseServerRoundTripsThroughProductionObserver(t *testing.T) {
 	if observation.Details["mapped_attribute"] != "xor_mapped_address" || observation.Details["transmissions"] != "1" {
 		t.Fatalf("observation details = %#v", observation.Details)
 	}
-	stats := server.Snapshot()
-	if stats.Received != 1 || stats.Responded != 1 {
+	// The client validating the response is not a synchronization witness for
+	// the server-side Responded counter: the datagram can be received before
+	// the responder loop resumes to increment it (issue #69). Wait with a
+	// bounded conditional deadline; the final exact assertions are unchanged.
+	stats := waitForResponderStats(t, server, 1)
+	if stats.Received != 1 || stats.Responded != 1 || stats.Dropped.WriteFailure != 0 {
 		t.Fatalf("responder stats = %+v", stats)
+	}
+}
+
+// waitForResponderStats polls Snapshot with a bounded deadline until both
+// Received and Responded reach want, then returns the final snapshot for
+// exact assertions. It never sleeps past the observation becoming true.
+func waitForResponderStats(t *testing.T, server *stunserver.Server, want uint64) stunserver.Stats {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		stats := server.Snapshot()
+		if (stats.Received >= want && stats.Responded >= want) || !time.Now().Before(deadline) {
+			return stats
+		}
+		time.Sleep(2 * time.Millisecond)
 	}
 }
 
@@ -170,8 +189,8 @@ func TestOneResponseServerObservesThroughMultipleGovernedSockets(t *testing.T) {
 			t.Fatalf("mapped endpoint=%q local=%v err=%v", socketResult.Observation.Details["mapped_address"], socketResult.Local, parseErr)
 		}
 	}
-	stats := server.Snapshot()
-	if stats.Received != sockets || stats.Responded != sockets {
+	stats := waitForResponderStats(t, server, sockets)
+	if stats.Received != sockets || stats.Responded != sockets || stats.Dropped.WriteFailure != 0 {
 		t.Fatalf("responder stats = %+v", stats)
 	}
 }

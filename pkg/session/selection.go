@@ -255,29 +255,33 @@ func (s *Session) currentExecutor() solver.PlanExecutor {
 	return s.executor
 }
 
-func (s *Session) strategyHandlerSnapshot() (strategyMessageTarget, string, bool) {
-	s.strategyMu.RLock()
-	defer s.strategyMu.RUnlock()
-	if s.executor != nil {
-		return s.executor, s.activePlan, false
-	}
-	if s.strategy == nil {
-		return nil, "", true
-	}
-	if _, ok := s.strategy.(solver.ExecutorFactory); ok {
-		return nil, "", true
-	}
-	handler, ok := s.strategy.(solver.MessageHandler)
-	if !ok {
-		return nil, "", false
-	}
-	return handler, "", false
-}
-
-func (s *Session) enqueueStrategyMessage(msg solver.Message) {
+// routeStrategyMessage atomically either records msg for a future pending
+// flush or returns the currently-installed handler for direct delivery. The
+// readiness check and the enqueue share one strategyMu critical section, so a
+// one-shot strategy message (for example a legacy ICE offer) can never be
+// appended after an executor's final pending flush without anyone left to
+// deliver it: once setActiveExecutor has run, deliverable messages are handed
+// to the executor directly instead of being enqueued.
+func (s *Session) routeStrategyMessage(msg solver.Message) strategyMessageTarget {
 	s.strategyMu.Lock()
 	defer s.strategyMu.Unlock()
-	s.pending = append(s.pending, cloneMessage(msg))
+
+	var target strategyMessageTarget
+	activePlan := ""
+	if s.executor != nil {
+		target, activePlan = s.executor, s.activePlan
+	} else if s.strategy != nil {
+		if _, factory := s.strategy.(solver.ExecutorFactory); !factory {
+			if handler, ok := s.strategy.(solver.MessageHandler); ok {
+				target = handler
+			}
+		}
+	}
+	if target == nil || shouldBufferForFuturePlan(msg, activePlan) {
+		s.pending = append(s.pending, cloneMessage(msg))
+		return nil
+	}
+	return target
 }
 
 func (s *Session) flushPendingStrategyMessages(ctx context.Context, handler strategyMessageTarget, activePlan string) error {

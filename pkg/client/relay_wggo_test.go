@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -541,6 +542,7 @@ func dumpRelayWGGoTestDiagnostics(t *testing.T, relayAddr string, engines ...*en
 		}
 		status := eng.Status()
 		t.Logf("relay diagnostics: node=%s engine_status=%+v client_peers=%s", eng.cfg.Node.Name, status, formatClientPeerDiagnostics(eng.GetPeers()))
+		t.Logf("relay diagnostics: node=%s peer_sessions=%s", eng.cfg.Node.Name, formatPeerSessionDiagnostics(eng))
 		if eng.tun != nil {
 			t.Logf("relay diagnostics: node=%s tunnel_peers=%s", eng.cfg.Node.Name, formatTunnelPeerDiagnostics(eng.tun.GetPeers()))
 		}
@@ -551,6 +553,60 @@ func dumpRelayWGGoTestDiagnostics(t *testing.T, relayAddr string, engines ...*en
 		}
 		t.Logf("relay diagnostics: node=%s runtime_state=%+v", eng.cfg.Node.Name, state)
 	}
+}
+
+// formatPeerSessionDiagnostics distinguishes how far each peer session
+// progressed: capability exchange (peer discovery/signaling), strategy
+// selection, plan execution (relay session establishment), and binding
+// (WireGuard peer installation). Combined with tunnel_peers (installed WG
+// peers plus first handshake) and client_peers (relay candidates), a stall can
+// be attributed to a specific stage instead of a generic connecting state.
+func formatPeerSessionDiagnostics(eng *engine) string {
+	eng.mu.RLock()
+	sessions := make(map[string]*peerSession)
+	if eng.peerMgr != nil {
+		for nodeID, session := range eng.peerMgr.sessions {
+			sessions[nodeID] = session
+		}
+	}
+	eng.mu.RUnlock()
+	if len(sessions) == 0 {
+		return "[]"
+	}
+
+	nodeIDs := make([]string, 0, len(sessions))
+	for nodeID := range sessions {
+		nodeIDs = append(nodeIDs, nodeID)
+	}
+	sort.Strings(nodeIDs)
+
+	parts := make([]string, 0, len(sessions))
+	for _, nodeID := range nodeIDs {
+		session := sessions[nodeID]
+		runner := peerSessionRunner(session)
+		if runner == nil {
+			parts = append(parts, fmt.Sprintf("{node=%s runner=closed}", nodeID))
+			continue
+		}
+		snapshot := runner.Snapshot()
+		session.connectMu.Lock()
+		flags := fmt.Sprintf("connecting=%t bound=%t improving=%t retry_pending=%t",
+			session.connecting, session.bound, session.improving, session.retryPending)
+		session.connectMu.Unlock()
+		parts = append(parts, fmt.Sprintf(
+			"{node=%s state=%s strategy=%q negotiated=%t %s capability_at=%s last_envelope=%s@%s last_path_commit=%q}",
+			nodeID,
+			snapshot.State,
+			snapshot.SelectedStrategy,
+			snapshot.SelectionNegotiated,
+			flags,
+			formatHandshake(snapshot.CapabilityExchangeAt),
+			snapshot.LastEnvelopeType,
+			formatHandshake(snapshot.LastEnvelopeAt),
+			snapshot.LastPathCommit.PathID,
+		))
+	}
+	return "[" + strings.Join(parts, " ") + "]"
 }
 
 func formatClientPeerDiagnostics(peers []*PeerStatus) string {

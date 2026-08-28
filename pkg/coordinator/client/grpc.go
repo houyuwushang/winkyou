@@ -47,6 +47,7 @@ type grpcClient struct {
 
 	heartbeatMu     sync.Mutex
 	heartbeatCancel context.CancelFunc
+	heartbeatDone   chan struct{}
 
 	closeOnce sync.Once
 }
@@ -179,19 +180,31 @@ func (c *grpcClient) StartHeartbeat(ctx context.Context, interval time.Duration)
 	}
 	heartbeatCtx, cancel := context.WithCancel(baseCtx)
 	c.heartbeatCancel = cancel
+	done := make(chan struct{})
+	c.heartbeatDone = done
 
-	go c.heartbeatLoop(heartbeatCtx, interval)
+	go func() {
+		defer close(done)
+		c.heartbeatLoop(heartbeatCtx, interval)
+	}()
 	return nil
 }
 
 func (c *grpcClient) StopHeartbeat() {
 	c.heartbeatMu.Lock()
 	cancel := c.heartbeatCancel
+	done := c.heartbeatDone
 	c.heartbeatCancel = nil
+	c.heartbeatDone = nil
 	c.heartbeatMu.Unlock()
 
 	if cancel != nil {
 		cancel()
+	}
+	// Join the loop so no new heartbeat RPC can be started after StopHeartbeat
+	// returns; the canceled context bounds any in-flight call (issue #46).
+	if done != nil {
+		<-done
 	}
 }
 

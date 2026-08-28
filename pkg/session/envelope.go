@@ -22,13 +22,8 @@ func (s *Session) HandleMessage(ctx context.Context, msg solver.Message) error {
 		if target := s.boundTransportMessageTarget(msg); target != nil {
 			return target.HandleMessage(ctx, s.io, msg)
 		}
-		target, activePlan, pending := s.strategyHandlerSnapshot()
-		if pending || target == nil {
-			s.enqueueStrategyMessage(msg)
-			return nil
-		}
-		if shouldBufferForFuturePlan(msg, activePlan) {
-			s.enqueueStrategyMessage(msg)
+		target := s.routeStrategyMessage(msg)
+		if target == nil {
 			return nil
 		}
 		return target.HandleMessage(ctx, s.io, msg)

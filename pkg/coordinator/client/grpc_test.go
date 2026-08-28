@@ -128,7 +128,25 @@ func TestStartHeartbeatAndStopHeartbeat(t *testing.T) {
 
 	c.StopHeartbeat()
 
-	before := atomic.LoadInt64(&counting.heartbeats)
+	// StopHeartbeat joins the loop, so no new RPC starts after it returns, but
+	// the final in-flight heartbeat's server-side increment can still land
+	// marginally later. Absorb it with a bounded quiet window instead of a
+	// fixed sleep, then assert the counter no longer grows (issue #46).
+	quietDeadline := time.Now().Add(2 * time.Second)
+	stable := atomic.LoadInt64(&counting.heartbeats)
+	stableSince := time.Now()
+	for time.Since(stableSince) < 150*time.Millisecond {
+		if time.Now().After(quietDeadline) {
+			t.Fatalf("heartbeat count kept growing after StopHeartbeat(): %d", atomic.LoadInt64(&counting.heartbeats))
+		}
+		time.Sleep(10 * time.Millisecond)
+		if current := atomic.LoadInt64(&counting.heartbeats); current != stable {
+			stable = current
+			stableSince = time.Now()
+		}
+	}
+
+	before := stable
 	time.Sleep(100 * time.Millisecond)
 	after := atomic.LoadInt64(&counting.heartbeats)
 	if after != before {
