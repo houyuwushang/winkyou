@@ -151,14 +151,38 @@ packet prefix 一致、socket/process 为 0、packet counter 静止、machine lo
 缺少 root/netns/TUN 权限时本地明确 skip；required job 设置 `WINKYOU_GATE_B2_REQUIRED=1`，
 任何缺失都会失败，不能静默跳过。job 使用 race binary，test timeout 5 分钟、job timeout 6 分钟。
 
-## 7. 当前验证状态与未证明事项
+## 7. Required CI 实测
+
+实现 SHA `4553e67add7fc4bb459ce56868a3304116d605ea` 的 PR CI run `33150175416` 中，required
+Gate B2 job `98780079367` 使用 race-enabled binary 完成三场矩阵；场景执行耗时 30.40 秒：
+
+| 场景 | application/OS 发射见证 | NAT/终局见证 |
+| --- | --- | --- |
+| predictive APDM×APDM | evidence 13/13；candidate 31/32；winner 1；socket 8/8 | NAT mapping peak 41/42；conntrack 166→0 |
+| asymmetric，mapping role 为 initiator | mapping candidate 64、data 3；target candidate 512、winner 1、data 3；OS total 80/529 | favorable set 512；NAT peak 74/8；conntrack 1192→0 |
+| asymmetric，target role 为 initiator | target candidate 512、winner 1、data 3；mapping candidate 64、data 3；OS total 529/80 | 物理角色反转；NAT peak 8/74；conntrack 1192→0 |
+
+三场终局均为：双方 3/3 data-plane challenge、safety trip clear、socket/process 0、packet counter
+静止、conntrack 清理后 0、machine lock 可重取、netns/veth 无残留。mapping-set 在第 64 个
+one-shot candidate 已命中后停止尚未发送的固定后缀；这只降低实际发射，不生成替代 candidate，
+不退款、不重试、不扩窗。
+
+首次 required run 还实际抓住并闭合两项问题：
+
+1. 继承拓扑的 EIM DNAT 会先于 TUN router 抢走入站包；底层 netfilter 现固定为无静态 DNAT
+   的 EDM，EIM/APDM 语义只由本 harness 的 TUN router 定义；
+2. winner ACK 原按 batch 起点留 PPS 间隔，忽略最后一批 64 包的真实发送耗时；现先见证冻结
+   sender 完成，再从最后一包实际发送时刻留满 1 秒，真实 required run 不再触发第 65 包 trip。
+
+两项修正都没有改变 B1 plan、candidate 数量、9 秒窗口、PPS、envelope 或 0-retry 规则。
 
 Windows 已通过 Gate B2 聚焦测试、candidate exhaustion、hard-limit mutation、architecture、
 Linux tagged cross-compile 与 tagged vet；`go vet ./...` 和 `go test ./... -count=1` 均完整通过。
-受影响包的 race×20 已通过；本 PR 未触碰已隔离的 #31/#33/#46 代码或期望。
+受影响包 race×20 已通过，其中 asymmetric 双 role orientation 在 winner 调度修复后再次完成
+race×20。该 PR CI 的 Linux、Windows、N1、N2d/N3b、Gate A 与 Gate B2 required jobs 均通过；
+本 PR 未触碰已隔离的 #31/#33/#46 代码或期望。
 
-required Linux netns 的权威实测数字必须来自本 Draft PR 的 CI；在 CI 通过并把 SHA、wall time、
-packet/socket/tuple/NAT mapping/conntrack/drain 数字回填前，本文件不声称 Gate B2 已完成验收。
+## 8. 未证明事项
 
 本实现不证明 random EDM×EDM 的现场成功，不实现 Gate B3 `hard_16k_lab/1`，不发布产品入口，
 不启动任何 observer/rendezvous/daemon，也不签发 live authorization。README 仍不得声称
