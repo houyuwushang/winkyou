@@ -111,7 +111,7 @@ func TestGateANATSimulationEDMStopsBeforeREADYInEitherRole(t *testing.T) {
 						case gatea.ClassOOBStreamClosed:
 							peerTerminals++
 						default:
-							return fmt.Errorf("unexpected EDM peer class: failure=%+v", failure)
+							return fmt.Errorf("unexpected EDM peer class: failure=%+v cause=%v", failure, failure.Cause)
 						}
 					}
 					if mappingFailures != 1 || peerTerminals != 1 {

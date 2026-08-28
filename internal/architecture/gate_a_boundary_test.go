@@ -240,16 +240,19 @@ func gateAConstructionViolations(root string) ([]string, error) {
 func transportLeaseUseViolations(root string) ([]string, error) {
 	restricted := map[string]struct{}{
 		"GateATestConsumer":     {},
+		"GateB2TestConsumer":    {},
 		"IssueTransportLease":   {},
 		"TransportLease":        {},
 		"TransportLeaseBinding": {},
 		"PromoteToLease":        {},
+		"PromoteToHardNATLease": {},
 		"MarkStandby":           {},
 		"MarkChallengePassed":   {},
 		"DetachAfterFinish":     {},
 	}
 	allowed := map[string]struct{}{
 		filepath.ToSlash(filepath.Join("internal", "v2", "directconnect", "gatea", "connect.go")): {},
+		filepath.ToSlash(filepath.Join("internal", "v2", "directconnect", "gateb", "connect.go")): {},
 	}
 	var violations []string
 	err := filepath.WalkDir(root, func(filename string, entry fs.DirEntry, walkErr error) error {

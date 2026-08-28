@@ -210,6 +210,58 @@ jobs:
           -test.count=1
           -test.timeout=5m
 
+  gate-b2-netns-hard-nat-proof:
+    name: Gate B2 Hard NAT Netns Proof (required)
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Install isolated-network witness tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y iproute2 iptables conntrack
+          sudo modprobe tun || true
+          command -v ip
+          command -v iptables
+          command -v iptables-restore
+          command -v ss
+          command -v conntrack
+          command -v sysctl
+          command -v tc
+          test -c /dev/net/tun
+
+      - name: Vet Gate B2 natlab-tagged code
+        run: >-
+          go vet -tags=natlab
+          ./internal/governor
+          ./internal/probeio
+          ./internal/v2/hardnatattempt
+          ./internal/v2/hardnatbudget
+          ./internal/v2/hardnatcontrol
+          ./internal/v2/hardnatobserve
+          ./internal/v2/hardnatplan
+          ./internal/v2/directconnect/gateb
+          ./test/natlab
+
+      - name: Build race-enabled Gate B2 integration binary
+        run: go test -race -c -tags=natlab -o "${RUNNER_TEMP}/winkyou-gateb2.test" ./test/natlab
+
+      - name: Run mandatory isolated Gate B2 matrix
+        run: >-
+          sudo env WINKYOU_GATE_B2_REQUIRED=1 GORACE=halt_on_error=1
+          "${RUNNER_TEMP}/winkyou-gateb2.test"
+          -test.v
+          -test.run '^TestLinuxGateB2HardNATProof$'
+          -test.count=1
+          -test.timeout=5m
+
   relay-smoke-linux:
     name: Relay Smoke (Linux)
     needs: test-linux

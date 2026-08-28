@@ -658,6 +658,11 @@ func v2RestrictedDependencyViolations(result scanResult) []string {
 	pairingContext := modulePath + "/internal/v2/pairingcontext"
 	directAttempt := modulePath + "/internal/v2/directattempt"
 	hardNATPlan := modulePath + "/internal/v2/hardnatplan"
+	hardNATBudget := modulePath + "/internal/v2/hardnatbudget"
+	hardNATAttempt := modulePath + "/internal/v2/hardnatattempt"
+	hardNATControl := modulePath + "/internal/v2/hardnatcontrol"
+	hardNATObserve := modulePath + "/internal/v2/hardnatobserve"
+	gateB := modulePath + "/internal/v2/directconnect/gateb"
 	oobAttempt := modulePath + "/internal/v2/oobattempt"
 	oobCarrier := modulePath + "/internal/v2/oobcarrier"
 	gateA := modulePath + "/internal/v2/directconnect/gatea"
@@ -686,6 +691,12 @@ func v2RestrictedDependencyViolations(result scanResult) []string {
 	hardNATPlanPrimitives := map[string]struct{}{
 		hardNATPlan: {},
 	}
+	hardNATB2Primitives := map[string]struct{}{
+		hardNATBudget:  {},
+		hardNATAttempt: {},
+		hardNATControl: {},
+		hardNATObserve: {},
+	}
 	forbiddenPunchSimImports := map[string]struct{}{
 		modulePath + "/internal/natsim":         {},
 		modulePath + "/internal/probeio":        {},
@@ -702,10 +713,13 @@ func v2RestrictedDependencyViolations(result scanResult) []string {
 		modulePath + "/internal/v2/pairingcontext": {},
 	}
 	allowedOOBCarrierImports := map[string]struct{}{
-		modulePath + "/internal/governor":          {},
-		directAttempt:                              {},
-		modulePath + "/internal/v2/noisecore":      {},
-		oobAttempt:                                 {},
+		modulePath + "/internal/governor":     {},
+		directAttempt:                         {},
+		hardNATBudget:                         {},
+		hardNATControl:                        {},
+		hardNATPlan:                           {},
+		modulePath + "/internal/v2/noisecore": {},
+		oobAttempt:                            {},
 		modulePath + "/internal/v2/rendezvouswire": {},
 	}
 	allowedGateAImports := map[string]struct{}{
@@ -717,6 +731,41 @@ func v2RestrictedDependencyViolations(result scanResult) []string {
 		oobAttempt:                            {},
 		oobCarrier:                            {},
 		modulePath + "/pkg/transport":         {},
+	}
+	allowedHardNATBudgetImports := map[string]struct{}{
+		modulePath + "/internal/governor": {},
+		hardNATPlan:                       {},
+	}
+	allowedHardNATAttemptImports := map[string]struct{}{
+		directAttempt: {},
+		hardNATBudget: {},
+		hardNATPlan:   {},
+		modulePath + "/internal/v2/pairingcontext": {},
+	}
+	allowedHardNATControlImports := map[string]struct{}{
+		directAttempt:                         {},
+		hardNATAttempt:                        {},
+		hardNATPlan:                           {},
+		modulePath + "/internal/v2/noisecore": {},
+	}
+	allowedHardNATObserveImports := map[string]struct{}{
+		modulePath + "/internal/probeio": {},
+		hardNATBudget:                    {},
+		hardNATPlan:                      {},
+	}
+	allowedGateBImports := map[string]struct{}{
+		modulePath + "/internal/governor":          {},
+		modulePath + "/internal/probeio":           {},
+		directAttempt:                              {},
+		hardNATAttempt:                             {},
+		hardNATBudget:                              {},
+		hardNATControl:                             {},
+		hardNATObserve:                             {},
+		hardNATPlan:                                {},
+		modulePath + "/internal/v2/noisecore":      {},
+		oobCarrier:                                 {},
+		modulePath + "/internal/v2/pairingcontext": {},
+		modulePath + "/pkg/transport":              {},
 	}
 	allowedRendezvousCarrierImports := map[string]struct{}{
 		modulePath + "/internal/governor":         {},
@@ -747,6 +796,16 @@ func v2RestrictedDependencyViolations(result scanResult) []string {
 			switch {
 			case importer == hardNATPlan && strings.HasPrefix(imported, modulePath+"/"):
 				violations = append(violations, importer+" imports forbidden Gate B1 dependency "+imported)
+			case importer == hardNATBudget && strings.HasPrefix(imported, modulePath+"/") && !containsImportOrChild(allowedHardNATBudgetImports, imported):
+				violations = append(violations, importer+" imports forbidden Gate B2 budget dependency "+imported)
+			case importer == hardNATAttempt && strings.HasPrefix(imported, modulePath+"/") && !containsImportOrChild(allowedHardNATAttemptImports, imported):
+				violations = append(violations, importer+" imports forbidden Gate B2 artifact dependency "+imported)
+			case importer == hardNATControl && strings.HasPrefix(imported, modulePath+"/") && !containsImportOrChild(allowedHardNATControlImports, imported):
+				violations = append(violations, importer+" imports forbidden Gate B2 control dependency "+imported)
+			case importer == hardNATObserve && strings.HasPrefix(imported, modulePath+"/") && !containsImportOrChild(allowedHardNATObserveImports, imported):
+				violations = append(violations, importer+" imports forbidden Gate B2 observation dependency "+imported)
+			case importer == gateB && strings.HasPrefix(imported, modulePath+"/") && !containsImportOrChild(allowedGateBImports, imported):
+				violations = append(violations, importer+" imports forbidden Gate B2 executor dependency "+imported)
 			case importer == noiseCore && strings.HasPrefix(imported, modulePath+"/"):
 				violations = append(violations, importer+" imports forbidden WinkYou dependency "+imported)
 			case importer == punchProto && strings.HasPrefix(imported, modulePath+"/") && imported != noiseCore:
@@ -771,13 +830,15 @@ func v2RestrictedDependencyViolations(result scanResult) []string {
 				violations = append(violations, importer+" imports forbidden admission dependency "+imported)
 			case importer == rendezvousServer && strings.HasPrefix(imported, modulePath+"/") && !containsImportOrChild(allowedRendezvousServerImports, imported):
 				violations = append(violations, importer+" imports forbidden one-shot-server dependency "+imported)
+			case imported == gateB || strings.HasPrefix(imported, gateB+"/"):
+				violations = append(violations, importer+" imports disconnected Gate B2 executor "+imported)
 			case imported == gateA || strings.HasPrefix(imported, gateA+"/"):
 				violations = append(violations, importer+" imports Gate A test-only boundary "+imported)
 			case (imported == directConnect || strings.HasPrefix(imported, directConnect+"/")) && importer != solverStdio:
 				violations = append(violations, importer+" imports product direct-connect boundary "+imported)
 			case (imported == rendezvousServer || strings.HasPrefix(imported, rendezvousServer+"/")) && importer != rendezvousCommand:
 				violations = append(violations, importer+" imports one-shot rendezvous server "+imported)
-			case (imported == oobCarrier || strings.HasPrefix(imported, oobCarrier+"/")) && importer != gateA:
+			case (imported == oobCarrier || strings.HasPrefix(imported, oobCarrier+"/")) && importer != gateA && importer != gateB:
 				violations = append(violations, importer+" imports Gate A bounded carrier "+imported+" without approval")
 			case (imported == oobAttempt || strings.HasPrefix(imported, oobAttempt+"/")) && importer != oobCarrier && importer != gateA:
 				violations = append(violations, importer+" imports Gate A OOB artifact "+imported+" without approval")
@@ -789,8 +850,10 @@ func v2RestrictedDependencyViolations(result scanResult) []string {
 				violations = append(violations, importer+" imports simulation-only "+imported)
 			case containsImportOrChild(directAttemptPrimitives, imported) && !approvedDirectAttemptImporter(importer, imported):
 				violations = append(violations, importer+" imports zero-network direct-attempt "+imported+" without approval")
-			case containsImportOrChild(hardNATPlanPrimitives, imported) && importer != hardNATPlan:
+			case containsImportOrChild(hardNATPlanPrimitives, imported) && !approvedHardNATPlannerImporter(importer):
 				violations = append(violations, importer+" imports Gate B1 zero-network planner "+imported+" without approval")
+			case containsImportOrChild(hardNATB2Primitives, imported) && !approvedHardNATB2Importer(importer, imported):
+				violations = append(violations, importer+" imports Gate B2 restricted primitive "+imported+" without approval")
 			case containsImportOrChild(loopbackPrimitives, imported) && !approvedLoopbackPrimitiveImporter(importer, imported):
 				violations = append(violations, importer+" imports loopback-carrier-approved "+imported+" without approval")
 			}
@@ -1092,14 +1155,48 @@ func approvedLoopbackPrimitiveImporter(importer, imported string) bool {
 	oobAttempt := modulePath + "/internal/v2/oobattempt"
 	oobCarrier := modulePath + "/internal/v2/oobcarrier"
 	pairgen := modulePath + "/internal/v2/pairgen"
+	hardNATAttempt := modulePath + "/internal/v2/hardnatattempt"
+	hardNATControl := modulePath + "/internal/v2/hardnatcontrol"
+	gateB := modulePath + "/internal/v2/directconnect/gateb"
 
 	switch imported {
 	case noiseCore:
-		return importer == punchProto || importer == punchSim || importer == carrier || importer == directAttempt || importer == directSim || importer == rendezvousCarrier || importer == directConnect || importer == oobCarrier || importer == gateA
+		return importer == punchProto || importer == punchSim || importer == carrier || importer == directAttempt || importer == directSim || importer == rendezvousCarrier || importer == directConnect || importer == oobCarrier || importer == gateA || importer == hardNATControl || importer == gateB
 	case punchProto:
 		return importer == punchSim || importer == carrier
 	case pairingContext:
-		return importer == testPairing || importer == carrier || importer == directAttempt || importer == directSim || importer == pairgen || importer == oobAttempt
+		return importer == testPairing || importer == carrier || importer == directAttempt || importer == directSim || importer == pairgen || importer == oobAttempt || importer == hardNATAttempt || importer == gateB
+	default:
+		return false
+	}
+}
+
+func approvedHardNATPlannerImporter(importer string) bool {
+	approved := map[string]struct{}{
+		modulePath + "/internal/v2/hardnatplan":         {},
+		modulePath + "/internal/v2/hardnatbudget":       {},
+		modulePath + "/internal/v2/hardnatattempt":      {},
+		modulePath + "/internal/v2/hardnatcontrol":      {},
+		modulePath + "/internal/v2/hardnatobserve":      {},
+		modulePath + "/internal/v2/oobcarrier":          {},
+		modulePath + "/internal/v2/directconnect/gateb": {},
+	}
+	_, ok := approved[importer]
+	return ok
+}
+
+func approvedHardNATB2Importer(importer, imported string) bool {
+	gateB := modulePath + "/internal/v2/directconnect/gateb"
+	switch imported {
+	case modulePath + "/internal/v2/hardnatbudget":
+		return importer == gateB || importer == modulePath+"/internal/v2/hardnatattempt" ||
+			importer == modulePath+"/internal/v2/hardnatobserve" || importer == modulePath+"/internal/v2/oobcarrier"
+	case modulePath + "/internal/v2/hardnatattempt":
+		return importer == gateB || importer == modulePath+"/internal/v2/hardnatcontrol"
+	case modulePath + "/internal/v2/hardnatcontrol":
+		return importer == gateB || importer == modulePath+"/internal/v2/oobcarrier"
+	case modulePath + "/internal/v2/hardnatobserve":
+		return importer == gateB
 	default:
 		return false
 	}
@@ -1114,7 +1211,10 @@ func approvedDirectAttemptImporter(importer, imported string) bool {
 		importer == modulePath+"/internal/v2/directconnect/gatea" ||
 		importer == modulePath+"/internal/v2/oobattempt" ||
 		importer == modulePath+"/internal/v2/oobcarrier" ||
-		importer == modulePath+"/internal/v2/pairgen") &&
+		importer == modulePath+"/internal/v2/pairgen" ||
+		importer == modulePath+"/internal/v2/hardnatattempt" ||
+		importer == modulePath+"/internal/v2/hardnatcontrol" ||
+		importer == modulePath+"/internal/v2/directconnect/gateb") &&
 		imported == modulePath+"/internal/v2/directattempt"
 }
 

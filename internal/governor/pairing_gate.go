@@ -132,8 +132,8 @@ func precheckPairingAdmission(ctx context.Context, attempt *AttemptLease, reques
 	if request.Envelope != PairingEnvelopeFromAttemptCost(attempt.request.Cost) {
 		return "", fmt.Errorf("%w: journal envelope does not match the reserved lease cost", ErrPairingLedgerInvalidRequest)
 	}
-	if attempt.request.Operation != OperationConnectTest {
-		return "", fmt.Errorf("%w: pairing admission requires connect_test", ErrNotAllowed)
+	if !pairingOperationAllowed(attempt.governor.profile, attempt.request.Operation) {
+		return "", fmt.Errorf("%w: pairing admission profile/operation mismatch", ErrNotAllowed)
 	}
 	return inspectPairingAttempt(ctx, attempt, "", request.ExpiresAt, time.Now)
 }
@@ -163,7 +163,8 @@ func inspectPairingAttempt(ctx context.Context, attempt *AttemptLease, expectedO
 	g := attempt.governor
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	if g.scope != ScopeMachine || g.profile != ProfilePhase1Machine || g.owner == nil || g.owner.Scope() != ScopeMachine {
+	if g.scope != ScopeMachine || !pairingOperationAllowed(g.profile, attempt.request.Operation) ||
+		g.owner == nil || g.owner.Scope() != ScopeMachine {
 		return "", ErrPairingMachineScopeRequired
 	}
 	if g.trip.BlocksActiveWork {
@@ -186,6 +187,11 @@ func inspectPairingAttempt(ctx context.Context, attempt *AttemptLease, expectedO
 		return "", fmt.Errorf("%w: machine owner instance changed", ErrCommittedAttemptInvalid)
 	}
 	return owner.InstanceID, nil
+}
+
+func pairingOperationAllowed(profile Profile, operation Operation) bool {
+	return profile == ProfilePhase1Machine && operation == OperationConnectTest ||
+		profile == ProfilePhase1ManualTraversal && (operation == OperationPrediction || operation == OperationBirthday)
 }
 
 func pairingTerminalReasonForGateError(err error) PairingTerminalReason {

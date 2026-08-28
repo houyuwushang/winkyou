@@ -185,6 +185,41 @@ func TestTakePacketCipherRejectsUnboundedSequenceWithoutConsumingSession(t *test
 	}
 }
 
+func TestPlannerKeySourceMatchesRolesAndSeparatesContext(t *testing.T) {
+	initiator, responder := completeHandshake(t, []byte("planner-export"), []byte("planner-export"), repeatedKey(0x59), repeatedKey(0x59))
+	initiatorPackets, initiatorPlanner, err := initiator.TakePacketCipherAndPlannerKeySource(530)
+	if err != nil {
+		t.Fatal(err)
+	}
+	responderPackets, responderPlanner, err := responder.TakePacketCipherAndPlannerKeySource(530)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer initiatorPackets.Close()
+	defer responderPackets.Close()
+	defer initiatorPlanner.Close()
+	defer responderPlanner.Close()
+	left, err := initiatorPlanner.Derive([]byte("canonical-context"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	right, err := responderPlanner.Derive([]byte("canonical-context"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	separated, err := responderPlanner.Derive([]byte("other-context"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if left != right || left == separated || left == ([32]byte{}) {
+		t.Fatalf("planner keys role/context = %x/%x/%x", left, right, separated)
+	}
+	initiatorPlanner.Close()
+	if _, err := initiatorPlanner.Derive([]byte("canonical-context")); !errors.Is(err, noisecore.ErrClosed) {
+		t.Fatalf("derive after close = %v", err)
+	}
+}
+
 func takePackets(t testingTB, session *noisecore.Session, maxSequence uint64) *noisecore.PacketCipher {
 	t.Helper()
 	packets, err := session.TakePacketCipher(maxSequence)

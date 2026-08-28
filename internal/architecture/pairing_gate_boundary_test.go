@@ -82,6 +82,7 @@ func TestPairingAdmissionGateApprovalIsExact(t *testing.T) {
 	rendezvous := filepath.ToSlash(filepath.Join("internal", "v2", "rendezvouscarrier", "carrier.go"))
 	directConnect := filepath.ToSlash(filepath.Join("internal", "v2", "directconnect", "connect.go"))
 	gateA := filepath.ToSlash(filepath.Join("internal", "v2", "directconnect", "gatea", "connect.go"))
+	gateB := filepath.ToSlash(filepath.Join("internal", "v2", "directconnect", "gateb", "connect.go"))
 	oobCarrier := filepath.ToSlash(filepath.Join("internal", "v2", "oobcarrier", "carrier.go"))
 	checks := []struct {
 		path       string
@@ -101,6 +102,10 @@ func TestPairingAdmissionGateApprovalIsExact(t *testing.T) {
 		{gateA, "ConsumeForCarrier", true},
 		{gateA, "CommittedCarrierAuthorization", true},
 		{gateA, "BeforeFirstEmission", false},
+		{gateB, "NewPairingAdmissionGate", true},
+		{gateB, "ConsumeForCarrier", true},
+		{gateB, "CommittedCarrierAuthorization", true},
+		{gateB, "BeforeFirstEmission", false},
 		{oobCarrier, "BeforeFirstEmission", true},
 		{oobCarrier, "CommittedCarrierAuthorization", true},
 		{oobCarrier, "NewPairingAdmissionGate", false},
@@ -172,6 +177,11 @@ func approvedPairingGateReference(relative, identifier string) bool {
 	}
 	gateA := filepath.ToSlash(filepath.Join("internal", "v2", "directconnect", "gatea", "connect.go"))
 	if relative == gateA {
+		return identifier == "NewPairingAdmissionGate" || identifier == "ConsumeForCarrier" ||
+			identifier == "CommittedCarrierAuthorization"
+	}
+	gateB := filepath.ToSlash(filepath.Join("internal", "v2", "directconnect", "gateb", "connect.go"))
+	if relative == gateB {
 		return identifier == "NewPairingAdmissionGate" || identifier == "ConsumeForCarrier" ||
 			identifier == "CommittedCarrierAuthorization"
 	}

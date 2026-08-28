@@ -2,7 +2,10 @@ package noisecore
 
 import (
 	"crypto/ecdh"
+	"crypto/hmac"
 	"crypto/rand"
+	"crypto/sha256"
+	"encoding/binary"
 	"errors"
 	"io"
 	"sync"
@@ -48,21 +51,47 @@ type PSKSource interface {
 // This narrow simulation seam implements the out-of-order transport guidance
 // in Noise revision 34 section 11.4 without exposing keys or mutable SetNonce.
 func (session *Session) TakePacketCipher(maxSequence uint64) (*PacketCipher, error) {
+	packetCipher, planner, err := session.takePacketCipher(maxSequence, false)
+	if planner != nil {
+		planner.Close()
+	}
+	return packetCipher, err
+}
+
+const maxPlannerContextBytes = 4096
+
+// PlannerKeySource owns a domain-separated secret derived from the canonical
+// ordered Noise Split keys. It cannot encrypt traffic or expose either
+// transport key and exists only for Gate B's deterministic planner PRF.
+type PlannerKeySource struct {
+	mu     sync.Mutex
+	secret [HashSize]byte
+	closed bool
+}
+
+// TakePacketCipherAndPlannerKeySource atomically transfers the transport keys
+// into PacketCipher and derives one narrow planner-key source. Initiator and
+// responder canonicalize the two directional Split keys in the same order.
+func (session *Session) TakePacketCipherAndPlannerKeySource(maxSequence uint64) (*PacketCipher, *PlannerKeySource, error) {
+	return session.takePacketCipher(maxSequence, true)
+}
+
+func (session *Session) takePacketCipher(maxSequence uint64, withPlanner bool) (*PacketCipher, *PlannerKeySource, error) {
 	if session == nil {
-		return nil, ErrClosed
+		return nil, nil, ErrClosed
 	}
 	session.mu.Lock()
 	if session.closed {
 		session.mu.Unlock()
-		return nil, ErrClosed
+		return nil, nil, ErrClosed
 	}
 	if !session.complete || session.send == nil || session.receive == nil {
 		session.mu.Unlock()
-		return nil, ErrHandshakeIncomplete
+		return nil, nil, ErrHandshakeIncomplete
 	}
 	if maxSequence == ^uint64(0) {
 		session.mu.Unlock()
-		return nil, ErrSequenceOutOfRange
+		return nil, nil, ErrSequenceOutOfRange
 	}
 	send := session.send
 	receive := session.receive
@@ -76,10 +105,25 @@ func (session *Session) TakePacketCipher(maxSequence uint64) (*PacketCipher, err
 		session.receive = nil
 		session.mu.Unlock()
 		closeCipherStates(send, receive)
-		return nil, ErrTransportAlreadyUsed
+		return nil, nil, ErrTransportAlreadyUsed
 	}
 	sendKey := send.core.key
 	receiveKey := receive.core.key
+	var planner *PlannerKeySource
+	if withPlanner {
+		first, second := sendKey, receiveKey
+		if session.role == roleResponder {
+			first, second = receiveKey, sendKey
+		}
+		mac := hmac.New(sha256.New, first[:])
+		_, _ = mac.Write([]byte("winkyou-hardnat-planner-exporter-v1\x00"))
+		_, _ = mac.Write(second[:])
+		_, _ = mac.Write(session.handshakeHash[:])
+		var secret [HashSize]byte
+		copy(secret[:], mac.Sum(nil))
+		planner = &PlannerKeySource{secret: secret}
+		zeroBytes(secret[:])
+	}
 	send.core.zeroize()
 	receive.core.zeroize()
 	receive.mu.Unlock()
@@ -93,7 +137,40 @@ func (session *Session) TakePacketCipher(maxSequence uint64) (*PacketCipher, err
 	packetCipher := newPacketCipher(sendKey, receiveKey, maxSequence)
 	zeroBytes(sendKey[:])
 	zeroBytes(receiveKey[:])
-	return packetCipher, nil
+	return packetCipher, planner, nil
+}
+
+// Derive deterministically expands the planner exporter for one canonical
+// Gate B context. It does not consume the source, so both local recomputation
+// passes can prove the same plan; Close invalidates all future derivations.
+func (source *PlannerKeySource) Derive(context []byte) ([HashSize]byte, error) {
+	if source == nil || len(context) == 0 || len(context) > maxPlannerContextBytes {
+		return [HashSize]byte{}, ErrInvalidConfig
+	}
+	source.mu.Lock()
+	defer source.mu.Unlock()
+	if source.closed || allZero(source.secret[:]) {
+		return [HashSize]byte{}, ErrClosed
+	}
+	mac := hmac.New(sha256.New, source.secret[:])
+	_, _ = mac.Write([]byte("winkyou-hardnat-planner-key-v1\x00"))
+	var length [4]byte
+	binary.BigEndian.PutUint32(length[:], uint32(len(context)))
+	_, _ = mac.Write(length[:])
+	_, _ = mac.Write(context)
+	var result [HashSize]byte
+	copy(result[:], mac.Sum(nil))
+	return result, nil
+}
+
+func (source *PlannerKeySource) Close() {
+	if source == nil {
+		return
+	}
+	source.mu.Lock()
+	zeroBytes(source.secret[:])
+	source.closed = true
+	source.mu.Unlock()
 }
 
 // Config contains only caller-owned in-memory inputs. Random defaults to

@@ -653,18 +653,41 @@ func validatePairingEnvelope(envelope PairingAdmissionEnvelope) error {
 	if envelope.DurationMillis <= 0 {
 		return fmt.Errorf("%w: duration must be positive", ErrPairingLedgerInvalidRequest)
 	}
-	hard, err := HardLimits(ProfilePhase1Machine)
+	machine, err := HardLimits(ProfilePhase1Machine)
 	if err != nil {
 		return err
 	}
-	if field, current, maximum, exceeded := firstResourceExcess(resources, hard.PerAttempt); exceeded {
+	manual, err := HardLimits(ProfilePhase1ManualTraversal)
+	if err != nil {
+		return err
+	}
+	hard := resourceMaximum(machine.PerAttempt, manual.PerAttempt)
+	if field, current, maximum, exceeded := firstResourceExcess(resources, hard); exceeded {
 		return &LimitError{Field: "pairing_per_attempt_" + field, Requested: current, Maximum: maximum}
 	}
-	if envelope.DurationMillis > hard.MaxAttemptDuration.Milliseconds() {
-		return &LimitError{Field: "pairing_attempt_duration_ms", Requested: envelope.DurationMillis, Maximum: hard.MaxAttemptDuration.Milliseconds()}
+	maximumDuration := machine.MaxAttemptDuration
+	if manual.MaxAttemptDuration > maximumDuration {
+		maximumDuration = manual.MaxAttemptDuration
 	}
-	if envelope.Heavyweight && hard.MaxHeavyweightAttempts == 0 {
+	if envelope.DurationMillis > maximumDuration.Milliseconds() {
+		return &LimitError{Field: "pairing_attempt_duration_ms", Requested: envelope.DurationMillis, Maximum: maximumDuration.Milliseconds()}
+	}
+	if envelope.Heavyweight && machine.MaxHeavyweightAttempts == 0 && manual.MaxHeavyweightAttempts == 0 {
 		return fmt.Errorf("%w: heavyweight attempt is unavailable", ErrPairingLedgerInvalidRequest)
 	}
 	return nil
+}
+
+func resourceMaximum(left, right Resources) Resources {
+	maximum := func(a, b int) int {
+		if a > b {
+			return a
+		}
+		return b
+	}
+	return Resources{
+		Sockets: maximum(left.Sockets, right.Sockets), Targets: maximum(left.Targets, right.Targets),
+		PacketsPerSecond: maximum(left.PacketsPerSecond, right.PacketsPerSecond),
+		Packets:          maximum(left.Packets, right.Packets), FiveTuples: maximum(left.FiveTuples, right.FiveTuples),
+	}
 }

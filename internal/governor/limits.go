@@ -18,12 +18,13 @@ type Profile string
 
 const (
 	ProfilePhase1Machine          Profile = "phase1_machine"
+	ProfilePhase1ManualTraversal  Profile = "phase1_manual_traversal"
 	ProfilePhase1UserAcknowledged Profile = "phase1_user_acknowledged"
 )
 
 func (p Profile) Scope() (Scope, error) {
 	switch p {
-	case ProfilePhase1Machine:
+	case ProfilePhase1Machine, ProfilePhase1ManualTraversal:
 		return ScopeMachine, nil
 	case ProfilePhase1UserAcknowledged:
 		return ScopeUserAcknowledged, nil
@@ -50,6 +51,8 @@ func (p Profile) Allows(operation Operation) bool {
 	switch p {
 	case ProfilePhase1Machine, ProfilePhase1UserAcknowledged:
 		return operation == OperationDiagnose || operation == OperationConnectTest
+	case ProfilePhase1ManualTraversal:
+		return operation == OperationPrediction || operation == OperationBirthday
 	default:
 		return false
 	}
@@ -140,6 +143,29 @@ func HardLimits(profile Profile) (Limits, error) {
 				PacketsPerSecond: 64,
 				Packets:          512,
 				FiveTuples:       512,
+			},
+		}, nil
+	case ProfilePhase1ManualTraversal:
+		return Limits{
+			MaxActivePeers:           1,
+			MaxActiveAttempts:        1,
+			MaxAttemptsPerPeer:       1,
+			MaxHeavyweightAttempts:   1,
+			MaxAttemptDuration:       22 * time.Second,
+			CancellationDrainTimeout: 2 * time.Second,
+			Aggregate: Resources{
+				Sockets:          128,
+				Targets:          516,
+				PacketsPerSecond: 64,
+				Packets:          526,
+				FiveTuples:       523,
+			},
+			PerAttempt: Resources{
+				Sockets:          128,
+				Targets:          516,
+				PacketsPerSecond: 64,
+				Packets:          526,
+				FiveTuples:       523,
 			},
 		}, nil
 	case ProfilePhase1UserAcknowledged:

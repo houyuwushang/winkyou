@@ -13,9 +13,10 @@ import (
 )
 
 const (
-	// GateATestConsumer is the only consumer kind authorized by Gate A. It is
-	// deliberately test-only; later data-plane consumers require another gate.
+	// GateATestConsumer and GateB2TestConsumer are separately reviewed,
+	// disconnected test consumers. Neither authorizes a product data plane.
 	GateATestConsumer     = "gate-a-test-consumer/1"
+	GateB2TestConsumer    = "gate-b2-test-consumer/1"
 	TransportAdoptTimeout = time.Second
 )
 
@@ -100,7 +101,11 @@ func issueTransportLease(attempt AttemptLease, binding TransportLeaseBinding) (*
 	if attempt == nil || !validTransportLeaseBinding(attempt, binding) {
 		return nil, ErrTransportBinding
 	}
-	drain, err := attempt.RegisterDrain("gate-a-transport-lease")
+	drainName := "gate-a-transport-lease"
+	if binding.ConsumerKind == GateB2TestConsumer {
+		drainName = "gate-b2-transport-lease"
+	}
+	drain, err := attempt.RegisterDrain(drainName)
 	if err != nil {
 		return nil, errors.Join(ErrTransportLease, err)
 	}
@@ -115,15 +120,19 @@ func issueTransportLease(attempt AttemptLease, binding TransportLeaseBinding) (*
 }
 
 func validTransportLeaseBinding(attempt AttemptLease, binding TransportLeaseBinding) bool {
-	if binding.ConsumerKind != GateATestConsumer || binding.Generation == 0 ||
+	if !validTransportConsumer(binding.ConsumerKind, attempt.Request().Operation) || binding.Generation == 0 ||
 		binding.PeerID == "" || binding.AttemptID == "" || binding.PathID == "" ||
-		binding.PeerID != attempt.PeerID() || binding.AttemptID != attempt.Request().ID ||
-		attempt.Request().Operation != governor.OperationConnectTest {
+		binding.PeerID != attempt.PeerID() || binding.AttemptID != attempt.Request().ID {
 		return false
 	}
 	target, err := canonicalTarget(binding.Target)
 	return err == nil && target == binding.Target &&
 		validateText("path id", binding.PathID, 256, false) == nil
+}
+
+func validTransportConsumer(consumer string, operation governor.Operation) bool {
+	return consumer == GateATestConsumer && operation == governor.OperationConnectTest ||
+		consumer == GateB2TestConsumer && (operation == governor.OperationPrediction || operation == governor.OperationBirthday)
 }
 
 func (lease *TransportLease) checkPromotionBinding(binding TransportLeaseBinding) error {
