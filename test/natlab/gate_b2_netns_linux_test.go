@@ -491,11 +491,9 @@ func assertGateB2NoResidue(t testing.TB, topology *n2dTopology, observer *gateB2
 		t.Fatalf("Gate B2 isolated NAT drain failed: left=%s right=%s",
 			gateB2NATDrainClass(leftDrain), gateB2NATDrainClass(rightDrain))
 	}
-	if sockets, err := topology.socketCount(); err != nil || sockets != 0 {
-		t.Fatalf("Gate B2 OS socket residue = %d", sockets)
-	}
-	if processes, err := topology.processCount(); err != nil || processes != 0 {
-		t.Fatalf("Gate B2 namespace process residue = %d", processes)
+	sockets, processes, err := waitGateB2NoOSResidue(topology, gateB2TerminalMargin)
+	if err != nil || sockets != 0 || processes != 0 {
+		t.Fatalf("Gate B2 OS residue after bounded drain: sockets=%d processes=%d", sockets, processes)
 	}
 	for _, namespace := range governorDirs {
 		status := inspectGateALedger(t, namespace)
@@ -514,6 +512,27 @@ func assertGateB2NoResidue(t testing.TB, topology *n2dTopology, observer *gateB2
 	}
 	if err := topology.assertNoLeaks(); err != nil {
 		t.Fatal("Gate B2 namespace or veth leak witness failed")
+	}
+}
+
+func waitGateB2NoOSResidue(topology *n2dTopology, limit time.Duration) (sockets, processes int, resultErr error) {
+	deadline := time.Now().Add(limit)
+	for {
+		sockets, resultErr = topology.socketCount()
+		if resultErr != nil {
+			return sockets, processes, resultErr
+		}
+		processes, resultErr = topology.processCount()
+		if resultErr != nil {
+			return sockets, processes, resultErr
+		}
+		if sockets == 0 && processes == 0 {
+			return 0, 0, nil
+		}
+		if !time.Now().Before(deadline) {
+			return sockets, processes, nil
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }
 

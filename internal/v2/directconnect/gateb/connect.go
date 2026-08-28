@@ -11,6 +11,7 @@ import (
 	"net/netip"
 	"slices"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"winkyou/internal/governor"
@@ -45,41 +46,42 @@ type staticPSK [noisecore.PSKSize]byte
 func (source staticPSK) LoadPSK() ([noisecore.PSKSize]byte, error) { return source, nil }
 
 type runtime struct {
-	config           Config
-	activeContext    context.Context
-	activeCancel     context.CancelCauseFunc
-	deadlineCancel   context.CancelFunc
-	carrierWatchDone chan struct{}
-	artifact         *hardnatattempt.Artifact
-	request          governor.PairingAdmissionRequest
-	peer             *governor.PeerLease
-	attempt          *governor.AttemptLease
-	carrier          *oobcarrier.Carrier
-	authorization    *governor.CommittedCarrierAuthorization
-	protocol         *hardnatcontrol.Protocol
-	plannerSource    *noisecore.PlannerKeySource
-	controller       *probeio.Controller
-	sockets          []*probeio.ProbeSocket
-	transportLease   *probeio.TransportLease
-	transport        transport.PacketTransport
-	binding          hardnatcontrol.Binding
-	observation      hardnatobserve.Result
-	localCommitment  hardnatplan.LocalSourceCommitment
-	peerCommitment   hardnatplan.LocalSourceCommitment
-	localPlan        hardnatplan.Plan
-	peerPlan         hardnatplan.Plan
-	joint            hardnatplan.JointPlanCommitment
-	executionDigest  [32]byte
-	localPublic      hardnatplan.Address
-	peerPublic       hardnatplan.Address
-	stage            string
-	burned           bool
-	finishRecorded   bool
-	success          bool
-	emissionsMu      sync.Mutex
-	emissions        Emissions
-	candidateStart   time.Time
-	candidateLast    time.Time
+	config            Config
+	activeContext     context.Context
+	activeCancel      context.CancelCauseFunc
+	deadlineCancel    context.CancelFunc
+	carrierWatchDone  chan struct{}
+	artifact          *hardnatattempt.Artifact
+	request           governor.PairingAdmissionRequest
+	peer              *governor.PeerLease
+	attempt           *governor.AttemptLease
+	carrier           *oobcarrier.Carrier
+	authorization     *governor.CommittedCarrierAuthorization
+	protocol          *hardnatcontrol.Protocol
+	plannerSource     *noisecore.PlannerKeySource
+	controller        *probeio.Controller
+	sockets           []*probeio.ProbeSocket
+	transportLease    *probeio.TransportLease
+	transport         transport.PacketTransport
+	binding           hardnatcontrol.Binding
+	observation       hardnatobserve.Result
+	localCommitment   hardnatplan.LocalSourceCommitment
+	peerCommitment    hardnatplan.LocalSourceCommitment
+	localPlan         hardnatplan.Plan
+	peerPlan          hardnatplan.Plan
+	joint             hardnatplan.JointPlanCommitment
+	executionDigest   [32]byte
+	localPublic       hardnatplan.Address
+	peerPublic        hardnatplan.Address
+	stage             string
+	burned            bool
+	finishRecorded    bool
+	success           bool
+	challengeComplete atomic.Bool
+	emissionsMu       sync.Mutex
+	emissions         Emissions
+	candidateStart    time.Time
+	candidateLast     time.Time
 }
 
 func run(ctx context.Context, config Config) (Result, error) {
@@ -208,7 +210,12 @@ func (runtime *runtime) execute(ctx context.Context) error {
 		defer close(runtime.carrierWatchDone)
 		select {
 		case <-runtime.carrier.Done():
-			runtime.activeCancel(runtime.carrier.TerminalCause())
+			// Once the data-plane challenge has completed there are no further
+			// UDP emissions to cancel. Before that point every carrier terminal
+			// event cancels the one absolute active-attempt context immediately.
+			if !runtime.challengeComplete.Load() {
+				runtime.activeCancel(runtime.carrier.TerminalCause())
+			}
 		case <-runtime.activeContext.Done():
 		}
 	}()
@@ -1279,30 +1286,50 @@ func (runtime *runtime) wait(ctx context.Context, duration time.Duration) error 
 func (runtime *runtime) challenge(ctx context.Context) error {
 	challengeCtx, cancel := context.WithTimeout(ctx, challengeDeadline)
 	defer cancel()
-	for ordinal := 0; ordinal < challengePackets; ordinal++ {
-		packet := challengePacket(runtime.binding, runtime.artifact.LocalRole, uint8(ordinal))
-		if err := runtime.transport.WritePacket(challengeCtx, packet); err != nil {
-			clear(packet)
-			return err
-		}
-		clear(packet)
-		runtime.emissions.DataPacketsWritten++
-	}
-	seen := [challengePackets]bool{}
 	buffer := make([]byte, 64)
 	defer clear(buffer)
-	for received := 0; received < challengePackets; received++ {
+	write := func(ordinal int) error {
+		packet := challengePacket(runtime.binding, runtime.artifact.LocalRole, uint8(ordinal))
+		defer clear(packet)
+		if err := runtime.transport.WritePacket(challengeCtx, packet); err != nil {
+			return err
+		}
+		runtime.emissions.DataPacketsWritten++
+		return nil
+	}
+	read := func(ordinal int) error {
 		n, _, err := runtime.transport.ReadPacket(challengeCtx, buffer)
 		if err != nil {
 			return err
 		}
-		ordinal, err := validateChallengePacket(buffer[:n], runtime.binding, runtime.artifact.LocalRole.Peer())
-		if err != nil || seen[ordinal] {
-			return errors.Join(err, errors.New("duplicate data-plane challenge"))
+		actual, err := validateChallengePacket(buffer[:n], runtime.binding, runtime.artifact.LocalRole.Peer())
+		if err != nil || int(actual) != ordinal {
+			return errors.Join(err, errors.New("out-of-order data-plane challenge"))
 		}
-		seen[ordinal] = true
 		runtime.emissions.DataPacketsRead++
+		return nil
 	}
+	for ordinal := 0; ordinal < challengePackets; ordinal++ {
+		if runtime.artifact.LocalRole == directattempt.RoleInitiator {
+			if err := write(ordinal); err != nil {
+				return err
+			}
+			if err := read(ordinal); err != nil {
+				return err
+			}
+			continue
+		}
+		if err := read(ordinal); err != nil {
+			return err
+		}
+		if err := write(ordinal); err != nil {
+			return err
+		}
+	}
+	// The alternating order means initiator completion proves responder
+	// completion. From this point onward no executor path can emit another UDP
+	// packet, so a peer's clean carrier close cannot race queued challenge reads.
+	runtime.challengeComplete.Store(true)
 	return nil
 }
 
@@ -1386,6 +1413,18 @@ func (runtime *runtime) cleanup(reason governor.PairingTerminalReason) error {
 		runtime.protocol = nil
 	}
 	if runtime.carrier != nil {
+		if runtime.success && runtime.challengeComplete.Load() &&
+			runtime.artifact.LocalRole == directattempt.RoleResponder {
+			// The initiator can complete only after receiving the responder's
+			// third challenge packet. It closes the carrier after recording
+			// FINISH; the responder waits for that bounded terminal signal before
+			// closing its side. This is a rendezvous-free close handshake and
+			// emits no network traffic.
+			select {
+			case <-runtime.carrier.Done():
+			case <-runtime.activeContext.Done():
+			}
+		}
 		_ = runtime.carrier.Close()
 		witness := runtime.carrier.Witness()
 		runtime.emissions.CarrierFramesRead = witness.FramesRead

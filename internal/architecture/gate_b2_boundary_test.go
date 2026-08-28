@@ -359,7 +359,11 @@ func gateB2NonLoopbackAuthorityViolations(root string) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	if !strings.HasPrefix(string(payload), "//go:build linux && natlab\n") {
+	// Git may materialize the source with CRLF on Windows. Normalize only for
+	// this exact first-line capability check so the gate has identical meaning
+	// on every CI runner.
+	normalized := strings.ReplaceAll(string(payload), "\r\n", "\n")
+	if !strings.HasPrefix(normalized, "//go:build linux && natlab\n") {
 		violations = append(violations, "internal/probeio/gate_b2_natlab_linux.go lacks exact linux+natlab build constraint")
 	}
 
