@@ -1,7 +1,8 @@
 # ADR：N3c Gate B 困难 NAT 有界求解器
 
-- 状态：**Accepted（含 §15 纠错增补，2026-08-27）；Gate B1 planner（PR #90）已通过三轮独立复审并解除
-  Blocked，可合并。Gate A、Gate B2/B3 仍未授权，只可按 §12 顺序另行评审。不授权任何现场 I/O**
+- 状态：**Accepted（含 §15 纠错增补与 §16 Gate B2 资源裁决）；Gate B1 planner 与 Gate A 已合并，
+  2026-08-28 维护者仅授权 Gate B2 在 memory/loopback/natsim/netns 中实现并提交 Draft PR。
+  Gate B3、产品入口与任何现场 I/O 仍未授权**
 - 日期：2026-08-25
 - 基线：`main` = `dc59d73bdc643e1a230d32acb82d97bfd3cb6d65`
 - 跟踪议题：[#87](https://github.com/houyuwushang/winkyou/issues/87)
@@ -228,12 +229,14 @@ mapping 不可预测；filtering 按最保守 APDF 处理。
 - `mapping_set_role`：最多 128 sockets，每 socket 向 EIM fixed endpoint 发一个认证 probe；
 - `target_set_role`：1 socket，对 EDM public address 的 512 个不重复端口各发一个认证 probe；
 - candidate 由 attempt key 派生的 role-separated permutation 生成，远端不能指定；
-- 每侧都预留 512 packets/targets/five-tuples，尽管 mapping-set 一侧通常只消费 128；
+- B1 搜索片段每侧冻结 512 candidate packets/targets/five-tuples，尽管 mapping-set 一侧通常
+  只消费 128；完整 B2 attempt 的观测与 winner ACK 预算按 §16 单独冻结；
 - 总 PPS 64、active 13 秒、0 retry；
 - 模型前提成立时声明约 63.21%，evidence 漂移则在 FIRE 前终止。
 
-该 profile 可在现有数值 ceiling 内证明算法，但仍需要新的 explicit operation/profile，因为
-`phase1_machine` 当前刻意不允许 `OperationBirthday`。
+该 profile 的 128×512 搜索片段可在原数值 ceiling 内证明算法；完整 attempt 还必须支付观测
+与 winner ACK 成本，因此使用 §16 修订后的 explicit operation/profile。`phase1_machine`
+继续不允许 `OperationBirthday`。
 
 ### 4.3 `hard_birthday_campaign/1`
 
@@ -333,11 +336,13 @@ profile、role、socket slot、ordinal 与 plan digest。任意未认证 packet 
 
 ### 7.1 低成本 manual traversal profile
 
-新增 exact machine-only profile（暂名 `phase1_manual_traversal`）：
+新增 exact machine-only profile `phase1_manual_traversal`：
 
 - 只允许 `OperationPrediction` 与 `OperationBirthday`；
-- 复用现有 machine 数值 ceiling：128 sockets、512 targets/five-tuples、512 packets、64 PPS、
-  60 秒；
+- hard ceiling 为 1 active peer/attempt/heavyweight、128 sockets、516 targets、523 five-tuples、
+  526 packets、64 PPS、20 秒 active + 2 秒 drain；
+- 每个 artifact 仍须使用 §16 的 profile-specific exact envelope；不得因为 profile hard ceiling
+  更高而让 `predictive_edm/1` 取得 asymmetric 额度；
 - 只允许 `predictive_edm/1` 与 `asymmetric_birthday/1`；
 - 仍由同一个 machine OS owner lock 与 pairing journal 单写者负责；
 - user-acknowledged、runtime、scheduler、recovery 永远不能取得。
@@ -417,7 +422,9 @@ append-only journal，但使用独立更严格窗口：
 - 1,000 restart 后零续跑；
 - candidate exhaustion、cancel、writer error、parent/child kill 后 socket/goroutine/process 为零；
 - 进程外 packet/socket/conntrack witness 精确等于 plan 已发前缀；
-- 第 513 个低成本 packet、第二个 heavyweight attempt 与任一未登记 tuple 在 OS I/O 前拒绝；
+- predictive 第 65 个总 packet、asymmetric 第 527 个总 packet、asymmetric 第 517 个
+  target / 第 524 个 five-tuple、任一 profile 的超计划 candidate、第二个 heavyweight attempt 与任一
+  未登记 tuple 均在 OS I/O 前拒绝并触发持久 trip；
 - campaign 第 16,433 个 packet、16,401 个 tuple、17th socket、513 PPS 触发持久 trip；
 - mutation tests 抓住 direct `net.ListenUDP`、legacy/Pion import、candidate API、fallback/retry 与
   journal bypass。
@@ -499,9 +506,9 @@ endpoint。Gate C 不得跳过 Gate B2 后只发布普通直连。
 2. **8 样本/32 窗口可进入实现**，但 §4.1 原文的条件用语必须强制化：证据低于阈值或
    分类超出 sequential_uniform/低离散 monotonic_nonuniform 时**零 direct 发射**，不是
    降级重试的输入。
-3. **接受 128×512 作为首个联网 profile**，理由正确：它恰好落进现有 machine 数值
-   ceiling（128/512/512/64PPS/60s），证明算法不抬高任何既有上限。63.21% 必须始终带
-   “模型前提成立”条件标注展示。
+3. **接受 128×512 作为首个联网 profile**。本答复当时把 512 candidate packets 误作完整
+   attempt packets；§16 已纠正观测与 winner ACK 的遗漏。128×512 搜索形状和 63.21% 条件
+   概率保持不变，且必须始终带“模型前提成立”条件标注展示。
 4. **`hard_16k_lab/1` 使用编译期固定 universe**：IANA dynamic/private 段
    49152–65535（避开 well-known 49151 及以下的注册服务面），不在私有授权中选择形状、
    不进入 artifact。universe 形状只能由新 ADR 修订改变。
@@ -687,3 +694,44 @@ other-address-same-port=`A2:P1`、change-IP-and-port=`A2:P2`，其中 `A1 != A2`
   6. golden 仅通过 PlanDigest 与 schema v3 隐式冻结 `Executable`；后续 golden 修订应显式化。
 - 本裁决不授权 Gate A、Gate B2、B3、executor、carrier、stdio/CLI/runtime 接线或任何
   现场/网络 I/O；上述均需按 §12 顺序另行评审。
+
+## 16. Gate B2 完整执行 envelope 裁决（Accepted，2026-08-28）
+
+Gate B2 开工审计发现，§4.2/§7.1/§14.3 把 B1 的 512 个 candidate packets 同时当成完整
+attempt packet ceiling，但固定状态机又要求在 candidate 生成前采集 fresh evidence。按已合并
+B1 的最小证据，完整 asymmetric attempt 需要五次 RFC 5780 exchange、八次独立 allocation
+sample、512 个 one-shot candidate，以及最多一个 authenticated winner ACK。若仍用 512 总包
+上限，合法执行会在第 500 个 candidate 前后触发持久 hard-limit safety trip；把候选静默减到
+498 又会改变已冻结的 plan、joint digest、golden 与条件概率。维护者因此作出以下约束性裁决：
+
+1. B1 的 `asymmetric_birthday/1`、128×512 candidate shape、概率、plan、directional triple 与
+   joint commitment 全部保持不变。B1 `Cost` 描述 candidate-search slice，不是完整 B2 attempt
+   envelope。
+2. `predictive_edm/1` 的完整 exact envelope 为 8 sockets、64 targets、64 five-tuples、
+   64 outbound UDP packets、32 PPS。至少八个 allocation sample、可选五步 RFC 5780 evidence、
+   最多 32 个 candidate 与一个 winner ACK 必须共同装入该总量，不得另行借额。
+3. `asymmetric_birthday/1` 的完整、双侧对称 exact envelope 为 128 sockets、516 targets、
+   523 five-tuples、526 outbound UDP packets、64 PPS：13 个 fresh evidence packets +
+   512 个 one-shot candidates + 最多 1 个 authenticated winner ACK。RFC 5780 向三个
+   observer endpoint 发请求，但合法的 change-IP-and-port 响应来自第四个 endpoint，四者都必须
+   预登记；八个 allocation socket 与 slot 0 的三个额外 alternate-source tuple 合计最坏 11 个
+   observation five-tuples，target-set role 再登记 512 个 candidate five-tuples。candidate、
+   observer 与 ACK 不得产生未计费 target 或发送。
+4. `phase1_manual_traversal` 是唯一能取得上述 envelope 的 machine-only profile；
+   `ProfilePhase1Machine`、user-acknowledged、Gate A/N3b、diagnose、stdio/CLI/runtime、scheduler、
+   recovery 均不得继承。ordinary pairing ledger 按 exact envelope 计费且继续使用
+   2,048 packets/24h 上限，因此最多容纳三次完整 asymmetric admission，第四次零 I/O 拒绝；
+   不提高或重置任何 rolling window。
+5. B1 的 13 秒是 governed UDP execution slice。B2 从 adopt OOB stream 到 handoff/terminal 的
+   完整 active envelope 为 20 秒，另有 2 秒 drain；fresh evidence 最长 3 秒，candidate
+   emission 与 winner ACK 最长 9 秒。0 retry、0 fallback、0 扩窗，证据丢失或漂移即终局。
+   Gate A 原有 13 秒 active + 2 秒 drain 不变。
+6. B2 在 FIRE 前必须交换并认证 `ExecutionEnvelopeDigest`，并与双方独立重算的 B1
+   `JointPlanCommitment` 一起核验。profile、role、attempt、generation、plan/cost/evidence、
+   envelope 任一不一致均零 direct 发射；只比较 peer 提交的 digest 不构成执行授权。
+7. 普通 absence、证据不足、candidate exhaustion、cancel 或 timeout 是干净终局，不触发持久
+   trip；超 candidate shape、packet/target/five-tuple/PPS ceiling、未登记 tuple、第二 attempt
+   或 ownership/generation 违规仍须在 OS I/O 前触发持久 trip并排水。
+8. 本裁决只授权 Gate B2 的 disconnected memory、loopback、natsim 与 required Linux netns
+   实现和一个未合并 Draft PR。它不授权 Gate B3、stdio/CLI/runtime、SSH/WireGuard、daemon、
+   scheduler、LAN/公网、现场 STUN/observer 或任何 live authorization。

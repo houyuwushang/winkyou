@@ -249,7 +249,8 @@ func New(config Config) (*Controller, error) {
 		return nil, fmt.Errorf("%w: lease, generation, and factory are required", ErrInvalidConfig)
 	}
 	request := config.Lease.Request()
-	if request.Operation != governor.OperationDiagnose && request.Operation != governor.OperationConnectTest {
+	if request.Operation != governor.OperationDiagnose && request.Operation != governor.OperationConnectTest &&
+		request.Operation != governor.OperationPrediction && request.Operation != governor.OperationBirthday {
 		return nil, fmt.Errorf("%w: operation %q cannot probe", ErrInvalidConfig, request.Operation)
 	}
 	if request.Cost.Duration <= 0 {
@@ -720,6 +721,17 @@ func (socket *ProbeSocket) PromoteTerminal(target netip.AddrPort, pathID string)
 // PacketTransport is returned and a failed attach closes the promoted
 // transport; the old ProbeSocket can never be recovered or retried.
 func (socket *ProbeSocket) PromoteToLease(target netip.AddrPort, pathID string, destination *TransportLease) error {
+	return socket.promoteToLease(target, pathID, GateATestConsumer, destination)
+}
+
+// PromoteToHardNATLease is the isolated Gate B2 counterpart to
+// PromoteToLease. It preserves the same lease-bound FINISH-before-release
+// ordering but binds the handoff to the separately reviewed B2 test consumer.
+func (socket *ProbeSocket) PromoteToHardNATLease(target netip.AddrPort, pathID string, destination *TransportLease) error {
+	return socket.promoteToLease(target, pathID, GateB2TestConsumer, destination)
+}
+
+func (socket *ProbeSocket) promoteToLease(target netip.AddrPort, pathID, consumerKind string, destination *TransportLease) error {
 	if destination == nil {
 		return ErrTransportLease
 	}
@@ -733,7 +745,7 @@ func (socket *ProbeSocket) PromoteToLease(target netip.AddrPort, pathID string, 
 	}
 	if err := destination.checkPromotionBinding(TransportLeaseBinding{
 		PeerID: c.lease.PeerID(), AttemptID: c.request.ID, Generation: c.expectedGeneration,
-		PathID: pathID, Target: canonical, ConsumerKind: GateATestConsumer,
+		PathID: pathID, Target: canonical, ConsumerKind: consumerKind,
 	}); err != nil {
 		return err
 	}

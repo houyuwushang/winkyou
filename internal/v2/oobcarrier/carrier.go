@@ -9,6 +9,9 @@ import (
 
 	"winkyou/internal/governor"
 	"winkyou/internal/v2/directattempt"
+	"winkyou/internal/v2/hardnatbudget"
+	"winkyou/internal/v2/hardnatcontrol"
+	"winkyou/internal/v2/hardnatplan"
 	"winkyou/internal/v2/noisecore"
 	"winkyou/internal/v2/oobattempt"
 	"winkyou/internal/v2/rendezvouswire"
@@ -41,6 +44,20 @@ type Config struct {
 	Stream       BoundedStream
 	OOBChannelID string
 	Role         directattempt.Role
+
+	testLease attemptLease
+}
+
+// HardNATConfig is the separate Gate B2 adoption surface. Its profile and
+// resource class are checked against the exact manual-traversal reservation
+// before ownership of the stream is taken.
+type HardNATConfig struct {
+	Lease          *governor.AttemptLease
+	Stream         BoundedStream
+	OOBChannelID   string
+	Role           directattempt.Role
+	PlannerProfile hardnatplan.Profile
+	ResourceClass  hardnatplan.ResourceClass
 
 	testLease attemptLease
 }
@@ -87,6 +104,13 @@ const (
 
 const carrierClaimName = "gate-a-oob-carrier"
 
+type carrierMode uint8
+
+const (
+	carrierModeGateA carrierMode = iota + 1
+	carrierModeGateB2
+)
+
 type Carrier struct {
 	mu      sync.Mutex
 	readMu  sync.Mutex
@@ -98,6 +122,7 @@ type Carrier struct {
 	authorization emissionAuthorization
 	channelID     string
 	role          directattempt.Role
+	mode          carrierMode
 	state         carrierState
 	expiresAt     time.Time
 	framesRead    int
@@ -144,7 +169,36 @@ func Adopt(config Config) (*Carrier, error) {
 	}
 	carrier := &Carrier{
 		stream: config.Stream, lease: lease, drain: drain, channelID: config.OOBChannelID,
-		role: config.Role, state: stateAdopted, expiresAt: time.Now().Add(ActiveEnvelope),
+		role: config.Role, mode: carrierModeGateA, state: stateAdopted, expiresAt: time.Now().Add(ActiveEnvelope),
+		closed: make(chan struct{}), drained: make(chan struct{}), watchDone: make(chan struct{}),
+	}
+	go carrier.watch()
+	return carrier, nil
+}
+
+// AdoptHardNAT takes the same single bounded stream under Gate B2's distinct
+// exact operation/profile authority. It neither opens nor discovers a stream.
+func AdoptHardNAT(config HardNATConfig) (*Carrier, error) {
+	var lease attemptLease
+	if config.Lease != nil {
+		lease = config.Lease
+	} else {
+		lease = config.testLease
+	}
+	if lease == nil || config.Stream == nil || !config.Role.Valid() || !validIdentifier(config.OOBChannelID) ||
+		!hardnatbudget.Exact(config.PlannerProfile, config.ResourceClass, lease.Request().Operation, lease.Request().Cost) {
+		return nil, ErrInvalidConfig
+	}
+	if err := lease.ClaimExclusive("gate-b2-oob-carrier"); err != nil {
+		return nil, errors.Join(ErrInvalidConfig, err)
+	}
+	drain, err := lease.RegisterDrain("gate-b2-oob-carrier")
+	if err != nil {
+		return nil, errors.Join(ErrInvalidConfig, err)
+	}
+	carrier := &Carrier{
+		stream: config.Stream, lease: lease, drain: drain, channelID: config.OOBChannelID,
+		role: config.Role, mode: carrierModeGateB2, state: stateAdopted, expiresAt: time.Now().Add(hardnatbudget.ActiveEnvelope),
 		closed: make(chan struct{}), drained: make(chan struct{}), watchDone: make(chan struct{}),
 	}
 	go carrier.watch()
@@ -332,7 +386,7 @@ func (carrier *Carrier) MarkHandshakeComplete() error {
 }
 
 func (carrier *Carrier) SendControl(ctx context.Context, frame []byte) error {
-	if carrier == nil || ctx == nil {
+	if carrier == nil || ctx == nil || carrier.mode != carrierModeGateA {
 		return ErrCarrierTerminal
 	}
 	metadata, err := directattempt.InspectFrame(frame)
@@ -355,7 +409,7 @@ func (carrier *Carrier) SendControl(ctx context.Context, frame []byte) error {
 }
 
 func (carrier *Carrier) ReceiveControl(ctx context.Context, protocol *directattempt.Protocol) (directattempt.OpenedFrame, error) {
-	if carrier == nil || ctx == nil || protocol == nil {
+	if carrier == nil || ctx == nil || protocol == nil || carrier.mode != carrierModeGateA {
 		return directattempt.OpenedFrame{}, ErrCarrierTerminal
 	}
 	carrier.mu.Lock()
@@ -388,6 +442,71 @@ func (carrier *Carrier) ReceiveControl(ctx context.Context, protocol *directatte
 	if metadata.Domain != directattempt.DomainRendezvousControl {
 		_ = protocol.Close()
 		return directattempt.OpenedFrame{}, carrier.terminate(ErrCarrierDomain)
+	}
+	return opened, nil
+}
+
+// SendHardNATControl accepts only the Gate B rendezvous-control domain and
+// the carrier's authenticated sender role.
+func (carrier *Carrier) SendHardNATControl(ctx context.Context, frame []byte) error {
+	if carrier == nil || ctx == nil || carrier.mode != carrierModeGateB2 {
+		return ErrCarrierTerminal
+	}
+	metadata, err := hardnatcontrol.InspectFrame(frame)
+	if err != nil || metadata.Domain != hardnatcontrol.DomainRendezvousControl || metadata.Sender != carrier.role {
+		if err == nil {
+			err = ErrCarrierDomain
+		}
+		return carrier.terminate(err)
+	}
+	carrier.mu.Lock()
+	ready := carrier.state == stateHandshakeComplete
+	carrier.mu.Unlock()
+	if !ready {
+		return ErrHandshakeOrder
+	}
+	if err := carrier.write(ctx, rendezvouswire.KindControl, frame, true, false); err != nil {
+		return carrier.terminate(err)
+	}
+	return nil
+}
+
+// ReceiveHardNATControl decrypts exactly one Gate B rendezvous-control frame.
+// Direct candidate/winner frames are permanently rejected on the OOB carrier.
+func (carrier *Carrier) ReceiveHardNATControl(ctx context.Context, protocol *hardnatcontrol.Protocol) (hardnatcontrol.OpenedFrame, error) {
+	if carrier == nil || ctx == nil || protocol == nil || carrier.mode != carrierModeGateB2 {
+		return hardnatcontrol.OpenedFrame{}, ErrCarrierTerminal
+	}
+	carrier.mu.Lock()
+	ready := carrier.state == stateHandshakeComplete
+	carrier.mu.Unlock()
+	if !ready {
+		return hardnatcontrol.OpenedFrame{}, ErrHandshakeOrder
+	}
+	if err := carrier.authorization.CheckActive(ctx); err != nil {
+		return hardnatcontrol.OpenedFrame{}, carrier.terminate(err)
+	}
+	frame, err := carrier.read(ctx)
+	if err != nil {
+		return hardnatcontrol.OpenedFrame{}, carrier.terminate(err)
+	}
+	defer clear(frame.Payload)
+	if frame.Kind != rendezvouswire.KindControl {
+		_ = protocol.Close()
+		return hardnatcontrol.OpenedFrame{}, carrier.terminate(ErrInvalidFrame)
+	}
+	metadata, err := hardnatcontrol.InspectFrame(frame.Payload)
+	if err != nil {
+		_ = protocol.Close()
+		return hardnatcontrol.OpenedFrame{}, carrier.terminate(err)
+	}
+	if metadata.Domain != hardnatcontrol.DomainRendezvousControl {
+		_ = protocol.Close()
+		return hardnatcontrol.OpenedFrame{}, carrier.terminate(ErrCarrierDomain)
+	}
+	opened, err := protocol.Open(frame.Payload)
+	if err != nil {
+		return hardnatcontrol.OpenedFrame{}, carrier.terminate(err)
 	}
 	return opened, nil
 }

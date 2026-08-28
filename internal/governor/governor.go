@@ -269,6 +269,18 @@ func (p *PeerLease) AcquireAttempt(ctx context.Context, request AttemptRequest) 
 		return nil, ErrLeaseClosed
 	}
 	if err := g.validateAttemptLocked(p, request); err != nil {
+		var limit *LimitError
+		if g.profile == ProfilePhase1ManualTraversal && errors.As(err, &limit) {
+			event := SafetyTripEvent{
+				Reason:       SafetyTripHardLimit,
+				Detail:       fmt.Sprintf("manual traversal hard limit %s exceeded", limit.Field),
+				PeerID:       p.peerID,
+				AttemptID:    request.ID,
+				BuildVersion: g.owner.Info().BuildVersion,
+			}
+			_, tripErr := g.tripLocked(event)
+			err = errors.Join(err, tripErr)
+		}
 		g.mu.Unlock()
 		return nil, err
 	}
