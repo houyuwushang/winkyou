@@ -104,6 +104,7 @@ type HarnessHooks struct {
 	Now               func() time.Time
 	NewTimer          func(time.Duration) probeio.Timer
 	Wait              func(context.Context, time.Duration) error
+	ActiveEnvelope    time.Duration // zero uses 20s; tests may only lower it
 	CandidateWindow   time.Duration // zero uses the frozen production window; tests may only lower it
 }
 
@@ -113,13 +114,17 @@ type Config struct {
 	Artifact         []byte
 	Stream           oobcarrier.BoundedStream
 	ObserverTopology hardnatobserve.Topology
-	AllowNonLoopback bool
 	BuildVersion     string
 	Progress         ProgressReporter
 
-	// ProbeFactory is an isolated harness seam. A nil value selects the
-	// reviewed probeio UDP factory but never widens live-network authority.
+	// ProbeFactory is an in-memory harness seam. A concrete *probeio.UDPFactory
+	// is rejected here; the nil production default remains loopback-only.
 	ProbeFactory probeio.Factory
+
+	// NATLabFactory is a sealed linux+natlab capability. No ordinary build can
+	// construct a value, and the factory validates the current namespace plus
+	// the repository's fixed TEST-NET topology before any socket opens.
+	NATLabFactory probeio.IsolatedNATLabFactory
 
 	Harness *HarnessHooks
 }

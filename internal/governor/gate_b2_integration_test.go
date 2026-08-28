@@ -97,7 +97,7 @@ func TestGateB2PredictiveAPDMNATSimEndToEndHandoff(t *testing.T) {
 		var stages []string
 		result, runErr := gateb.Run(context.Background(), gateb.Config{
 			Machine: machine, Ledger: ledger, Artifact: artifact, Stream: stream,
-			ObserverTopology: topology, AllowNonLoopback: true, BuildVersion: "gate-b2-predictive",
+			ObserverTopology: topology, BuildVersion: "gate-b2-predictive",
 			ProbeFactory: factory,
 			Progress:     func(stage string, _ bool) error { stages = append(stages, stage); return nil },
 		})
@@ -250,7 +250,7 @@ func TestGateB2PredictiveCandidateExhaustionIsCleanAndDoesNotRetry(t *testing.T)
 		factory probeio.Factory, clock *gateB2ManualClock, randomByte byte) {
 		result, runErr := gateb.Run(context.Background(), gateb.Config{
 			Machine: machine, Ledger: ledger, Artifact: artifact, Stream: stream, ObserverTopology: topology,
-			AllowNonLoopback: true, BuildVersion: "gate-b2-exhaustion", ProbeFactory: factory,
+			BuildVersion: "gate-b2-exhaustion", ProbeFactory: factory,
 			Progress: func(string, bool) error { return nil },
 			Harness: &gateb.HarnessHooks{
 				NoiseRandom: bytes.NewReader(bytes.Repeat([]byte{randomByte}, 64)), ObservationRandom: gateB2ObservationRandom(randomByte),
@@ -328,6 +328,172 @@ func TestGateB2AsymmetricEIMEDMNATSimBothCarrierRoleAssignments(t *testing.T) {
 	}
 }
 
+func TestGateB2FIREFreshnessAndCarrierTerminalStopDirectEmissions(t *testing.T) {
+	for _, mode := range []string{"stale_at_fire", "carrier_closed_at_candidates", "active_envelope_at_candidates"} {
+		t.Run(mode, func(t *testing.T) {
+			outcomes := runGateB2SafetyRegression(t, mode)
+			for index, outcome := range outcomes {
+				var failure *gateb.Failure
+				if !errors.As(outcome.err, &failure) {
+					t.Fatalf("side %d error=%v, want stable failure", index, outcome.err)
+				}
+				if mode == "stale_at_fire" {
+					if failure.Class != gateb.ClassEvidenceDrifted || failure.Stage != gateb.StageFire {
+						t.Fatalf("side %d failure=%+v, want FIRE evidence drift", index, failure)
+					}
+				} else if mode == "carrier_closed_at_candidates" && failure.Class != gateb.ClassOOBStreamClosed {
+					t.Fatalf("side %d failure=%+v, want OOB stream closed", index, failure)
+				} else if mode == "active_envelope_at_candidates" && failure.Class != gateb.ClassAttemptExpired {
+					t.Fatalf("side %d failure=%+v, want active-envelope expiry", index, failure)
+				}
+				if outcome.result.Emissions.CandidatePackets != 0 || outcome.result.Emissions.WinnerPackets != 0 ||
+					outcome.result.Emissions.DataPacketsRead != 0 || outcome.result.Emissions.DataPacketsWritten != 0 ||
+					!outcome.result.CredentialBurned || !outcome.result.FinishRecorded || outcome.result.SafetyTrip.BlocksActiveWork {
+					t.Fatalf("side %d emitted after terminal barrier: %+v", index, outcome.result)
+				}
+			}
+		})
+	}
+}
+
+type gateB2SafetyOutcome struct {
+	result gateb.Result
+	err    error
+}
+
+func runGateB2SafetyRegression(t testing.TB, mode string) []gateB2SafetyOutcome {
+	t.Helper()
+	namespaceNow := time.Now().UTC().Truncate(time.Second)
+	artifactNow := time.Unix(2_000_100_000, 0).UTC()
+	leftNamespace, rightNamespace := t.TempDir(), t.TempDir()
+	for _, namespace := range []string{leftNamespace, rightNamespace} {
+		if err := governor.PrepareLoopbackCarrierTestNamespace(namespace, namespaceNow); err != nil {
+			t.Fatal(err)
+		}
+	}
+	leftMachine, err := governor.AcquireManualTraversalTestGovernor(leftNamespace, "gate-b2-safety-left")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer leftMachine.Close()
+	rightMachine, err := governor.AcquireManualTraversalTestGovernor(rightNamespace, "gate-b2-safety-right")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rightMachine.Close()
+	leftLedger, _ := governor.LoopbackCarrierTestLedger(leftMachine)
+	rightLedger, _ := governor.LoopbackCarrierTestLedger(rightMachine)
+	if err := governor.SetCarrierTestLedgerTime(leftMachine, artifactNow); err != nil {
+		t.Fatal(err)
+	}
+	if err := governor.SetCarrierTestLedgerTime(rightMachine, artifactNow); err != nil {
+		t.Fatal(err)
+	}
+
+	network, err := natsim.NewNetwork(natsim.Config{MaxPacketConns: 32, MaxMappings: 256, QueueCapacity: 2048, MaxDatagram: 2048})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer network.Close()
+	model := natsim.Model{Mapping: natsim.MappingEndpointDependent, Allocation: natsim.PortIncrement,
+		Filtering: natsim.FilterAddressPortDependent, PortMin: 40000, PortMax: 45000}
+	leftNAT, err := network.NewNAT(natsim.NATConfig{Name: "safety-left", PublicAddr: netip.MustParseAddr("198.51.100.70"), Model: model})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rightNAT, err := network.NewNAT(natsim.NATConfig{Name: "safety-right", PublicAddr: netip.MustParseAddr("198.51.100.80"), Model: model})
+	if err != nil {
+		t.Fatal(err)
+	}
+	topology := hardnatobserve.Topology{Primary: netip.MustParseAddrPort("203.0.113.70:3478"), Other: netip.MustParseAddrPort("203.0.113.71:3479")}
+	_ = startNATSimRFC5780Responders(t, network, topology)
+	set, err := hardnatattempt.EncodeArtifactSet(hardnatattempt.ArtifactMaterial{
+		CredentialID: gateB2OpaqueID(mode + "-credential"), AttemptID: gateB2OpaqueID(mode + "-attempt"),
+		InitiatorParticipantID: gateB2OpaqueID(mode + "-initiator"), ResponderParticipantID: gateB2OpaqueID(mode + "-responder"),
+		OOBChannelID: gateB2OpaqueID(mode + "-channel"), PlannerProfile: hardnatplan.ProfilePredictiveEdm,
+		ResourceClass: hardnatplan.ResourcePredictive, InitiatorPlannerRole: hardnatplan.RoleInitiator,
+		ResponderPlannerRole: hardnatplan.RoleResponder, IssuedAt: artifactNow, ExpiresAt: artifactNow.Add(10 * time.Minute),
+	}, [32]byte{8, 6, 7, 5, 3, 0, 9})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer set.Close()
+	leftStream, rightStream := net.Pipe()
+	leftClock, rightClock := newGateB2ManualClock(artifactNow), newGateB2ManualClock(artifactNow)
+	results := make(chan gateB2SafetyOutcome, 2)
+	var candidateSides atomic.Int32
+	candidateBarrier := make(chan struct{})
+	var closeStreams sync.Once
+	progress := func(clock *gateB2ManualClock) gateb.ProgressReporter {
+		return func(stage string, _ bool) error {
+			if mode == "stale_at_fire" && stage == gateb.StageReady {
+				clock.Advance(6 * time.Second)
+			}
+			if (mode == "carrier_closed_at_candidates" || mode == "active_envelope_at_candidates") && stage == gateb.StageCandidates {
+				if candidateSides.Add(1) == 2 {
+					closeStreams.Do(func() {
+						if mode == "carrier_closed_at_candidates" {
+							_ = leftStream.Close()
+							_ = rightStream.Close()
+						}
+						close(candidateBarrier)
+					})
+				}
+				select {
+				case <-candidateBarrier:
+				case <-time.After(time.Second):
+					return errors.New("candidate barrier timed out")
+				}
+				if mode == "active_envelope_at_candidates" {
+					time.Sleep(600 * time.Millisecond)
+				} else {
+					time.Sleep(20 * time.Millisecond)
+				}
+			}
+			return nil
+		}
+	}
+	runSide := func(machine *governor.Governor, ledger *governor.PairingAdmissionLedger, artifact []byte,
+		stream net.Conn, factory probeio.Factory, clock *gateB2ManualClock, randomByte byte) {
+		activeEnvelope := 2 * time.Second
+		if mode == "active_envelope_at_candidates" {
+			activeEnvelope = 500 * time.Millisecond
+		}
+		result, runErr := gateb.Run(context.Background(), gateb.Config{
+			Machine: machine, Ledger: ledger, Artifact: artifact, Stream: stream, ObserverTopology: topology,
+			BuildVersion: "gate-b2-safety", ProbeFactory: factory, Progress: progress(clock),
+			Harness: &gateb.HarnessHooks{
+				NoiseRandom: bytes.NewReader(bytes.Repeat([]byte{randomByte}, 64)), ObservationRandom: gateB2ObservationRandom(randomByte),
+				Now: clock.Now, NewTimer: clock.NewTimer, Wait: clock.Wait, ActiveEnvelope: activeEnvelope,
+				CandidateWindow: 200 * time.Millisecond,
+			},
+		})
+		results <- gateB2SafetyOutcome{result: result, err: runErr}
+	}
+	go runSide(leftMachine, leftLedger, set.Initiator, leftStream,
+		&natSimProbeFactory{network: network, nat: leftNAT, localAddress: netip.MustParseAddr("192.0.2.70"), basePort: 36000,
+			plannerRole: hardnatplan.RoleInitiator, witness: newCandidateWitness()}, leftClock, 0xd1)
+	go runSide(rightMachine, rightLedger, set.Responder, rightStream,
+		&natSimProbeFactory{network: network, nat: rightNAT, localAddress: netip.MustParseAddr("192.0.2.80"), basePort: 37000,
+			plannerRole: hardnatplan.RoleResponder, witness: newCandidateWitness()}, rightClock, 0xe2)
+	outcomes := make([]gateB2SafetyOutcome, 0, 2)
+	for range 2 {
+		select {
+		case outcome := <-results:
+			outcomes = append(outcomes, outcome)
+		case <-time.After(5 * time.Second):
+			t.Fatal("Gate B2 safety regression exceeded bounded terminal window")
+		}
+	}
+	for label, machine := range map[string]*governor.Governor{"left": leftMachine, "right": rightMachine} {
+		snapshot := machine.Snapshot()
+		if snapshot.ActivePeers != 0 || snapshot.ActiveAttempts != 0 || snapshot.Reserved != (governor.Resources{}) || snapshot.SafetyTrip.BlocksActiveWork {
+			t.Fatalf("%s safety regression residue=%+v", label, snapshot)
+		}
+	}
+	return outcomes
+}
+
 func runGateB2AsymmetricCase(t *testing.T, initiatorRole, responderRole hardnatplan.Role, initiatorRandom, responderRandom byte) {
 	t.Helper()
 	namespaceNow := time.Now().UTC().Truncate(time.Second)
@@ -402,7 +568,7 @@ func runGateB2AsymmetricCase(t *testing.T, initiatorRole, responderRole hardnatp
 		factory probeio.Factory, clock *gateB2ManualClock, randomByte byte) {
 		result, runErr := gateb.Run(context.Background(), gateb.Config{
 			Machine: machine, Ledger: ledger, Artifact: artifact, Stream: stream, ObserverTopology: topology,
-			AllowNonLoopback: true, BuildVersion: "gate-b2-asymmetric", ProbeFactory: factory,
+			BuildVersion: "gate-b2-asymmetric", ProbeFactory: factory,
 			Progress: func(string, bool) error { return nil },
 			Harness: &gateb.HarnessHooks{
 				NoiseRandom: bytes.NewReader(bytes.Repeat([]byte{randomByte}, 64)), ObservationRandom: gateB2ObservationRandom(randomByte),
@@ -663,6 +829,11 @@ func (clock *gateB2ManualClock) Wait(ctx context.Context, duration time.Duration
 	case <-timer.C:
 	}
 	return nil
+}
+func (clock *gateB2ManualClock) Advance(duration time.Duration) {
+	clock.mu.Lock()
+	clock.now = clock.now.Add(duration)
+	clock.mu.Unlock()
 }
 func (clock *gateB2ManualClock) NewTimer(time.Duration) probeio.Timer {
 	return gateB2InertTimer{make(chan time.Time)}

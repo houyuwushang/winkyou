@@ -78,6 +78,19 @@ type Factory interface {
 	Open(ctx context.Context) (Datagram, error)
 }
 
+// IsolatedNATLabFactory is the only factory capability that may attest a
+// Gate B2 non-loopback OS topology. The unexported marker keeps arbitrary
+// callers from manufacturing that authority; its constructor exists only in
+// linux+natlab builds and validates both the current network namespace and the
+// fixed TEST-NET topology before returning a value.
+type IsolatedNATLabFactory interface {
+	Factory
+	ValidateObserverEndpoints([4]netip.AddrPort) error
+	ValidateLocalAddress(netip.Addr) error
+	ValidatePeerAddress(netip.Addr) error
+	isolatedNATLabFactory()
+}
+
 // GenerationSource lets every active operation reject handles created for an
 // obsolete network observation generation.
 type GenerationSource interface {

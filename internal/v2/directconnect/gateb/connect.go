@@ -45,38 +45,41 @@ type staticPSK [noisecore.PSKSize]byte
 func (source staticPSK) LoadPSK() ([noisecore.PSKSize]byte, error) { return source, nil }
 
 type runtime struct {
-	config          Config
-	requestContext  context.Context
-	artifact        *hardnatattempt.Artifact
-	request         governor.PairingAdmissionRequest
-	peer            *governor.PeerLease
-	attempt         *governor.AttemptLease
-	carrier         *oobcarrier.Carrier
-	authorization   *governor.CommittedCarrierAuthorization
-	protocol        *hardnatcontrol.Protocol
-	plannerSource   *noisecore.PlannerKeySource
-	controller      *probeio.Controller
-	sockets         []*probeio.ProbeSocket
-	transportLease  *probeio.TransportLease
-	transport       transport.PacketTransport
-	binding         hardnatcontrol.Binding
-	observation     hardnatobserve.Result
-	localCommitment hardnatplan.LocalSourceCommitment
-	peerCommitment  hardnatplan.LocalSourceCommitment
-	localPlan       hardnatplan.Plan
-	peerPlan        hardnatplan.Plan
-	joint           hardnatplan.JointPlanCommitment
-	executionDigest [32]byte
-	localPublic     hardnatplan.Address
-	peerPublic      hardnatplan.Address
-	stage           string
-	burned          bool
-	finishRecorded  bool
-	success         bool
-	emissionsMu     sync.Mutex
-	emissions       Emissions
-	candidateStart  time.Time
-	candidateLast   time.Time
+	config           Config
+	activeContext    context.Context
+	activeCancel     context.CancelCauseFunc
+	deadlineCancel   context.CancelFunc
+	carrierWatchDone chan struct{}
+	artifact         *hardnatattempt.Artifact
+	request          governor.PairingAdmissionRequest
+	peer             *governor.PeerLease
+	attempt          *governor.AttemptLease
+	carrier          *oobcarrier.Carrier
+	authorization    *governor.CommittedCarrierAuthorization
+	protocol         *hardnatcontrol.Protocol
+	plannerSource    *noisecore.PlannerKeySource
+	controller       *probeio.Controller
+	sockets          []*probeio.ProbeSocket
+	transportLease   *probeio.TransportLease
+	transport        transport.PacketTransport
+	binding          hardnatcontrol.Binding
+	observation      hardnatobserve.Result
+	localCommitment  hardnatplan.LocalSourceCommitment
+	peerCommitment   hardnatplan.LocalSourceCommitment
+	localPlan        hardnatplan.Plan
+	peerPlan         hardnatplan.Plan
+	joint            hardnatplan.JointPlanCommitment
+	executionDigest  [32]byte
+	localPublic      hardnatplan.Address
+	peerPublic       hardnatplan.Address
+	stage            string
+	burned           bool
+	finishRecorded   bool
+	success          bool
+	emissionsMu      sync.Mutex
+	emissions        Emissions
+	candidateStart   time.Time
+	candidateLast    time.Time
 }
 
 func run(ctx context.Context, config Config) (Result, error) {
@@ -121,14 +124,19 @@ func prepare(ctx context.Context, config Config) (*runtime, error) {
 		return nil, preflightFailure(cause)
 	}
 	if config.Machine == nil || config.Ledger == nil || config.Stream == nil || config.Progress == nil || config.BuildVersion == "" ||
-		(config.Harness != nil && (config.ProbeFactory == nil || config.Harness.CandidateWindow < 0 ||
+		(config.ProbeFactory != nil && config.NATLabFactory != nil) ||
+		(config.Harness != nil && (config.ProbeFactory == nil || config.Harness.ActiveEnvelope < 0 ||
+			config.Harness.ActiveEnvelope > hardnatbudget.ActiveEnvelope || config.Harness.CandidateWindow < 0 ||
 			config.Harness.CandidateWindow > hardnatbudget.CandidateWindow)) {
+		return fail(oobcarrier.ErrInvalidConfig)
+	}
+	if _, rawOSFactory := config.ProbeFactory.(*probeio.UDPFactory); rawOSFactory {
 		return fail(oobcarrier.ErrInvalidConfig)
 	}
 	if config.Machine.Snapshot().Profile != governor.ProfilePhase1ManualTraversal {
 		return fail(governor.ErrNotAllowed)
 	}
-	if _, err := validateTopology(config.ObserverTopology, config.AllowNonLoopback); err != nil {
+	if _, err := validateTopology(config.ObserverTopology, topologyAuthorityFor(config)); err != nil {
 		return fail(err)
 	}
 	if err := ctx.Err(); err != nil {
@@ -159,7 +167,6 @@ func prepare(ctx context.Context, config Config) (*runtime, error) {
 }
 
 func (runtime *runtime) execute(ctx context.Context) error {
-	runtime.requestContext = ctx
 	if err := runtime.emit(StagePreflight); err != nil {
 		return runtime.failure(ClassOOBStreamInvalid, StagePreflight, err)
 	}
@@ -183,14 +190,28 @@ func (runtime *runtime) execute(ctx context.Context) error {
 	if err != nil {
 		return runtime.classify(StagePreflight, err)
 	}
+	activeDeadline := time.Now().Add(runtime.activeEnvelope())
+	activeBase, activeCancel := context.WithCancelCause(ctx)
+	activeContext, deadlineCancel := context.WithDeadline(activeBase, activeDeadline)
+	runtime.activeContext, runtime.activeCancel, runtime.deadlineCancel = activeContext, activeCancel, deadlineCancel
+	ctx = activeContext
 	runtime.carrier, err = oobcarrier.AdoptHardNAT(oobcarrier.HardNATConfig{
 		Lease: runtime.attempt, Stream: runtime.config.Stream, OOBChannelID: runtime.artifact.OOBChannelID,
 		Role: runtime.artifact.LocalRole, PlannerProfile: runtime.artifact.PlannerProfile,
-		ResourceClass: runtime.artifact.ResourceClass,
+		ResourceClass: runtime.artifact.ResourceClass, ActiveDeadline: activeDeadline,
 	})
 	if err != nil {
 		return runtime.classify(StageOOBAdopt, err)
 	}
+	runtime.carrierWatchDone = make(chan struct{})
+	go func() {
+		defer close(runtime.carrierWatchDone)
+		select {
+		case <-runtime.carrier.Done():
+			runtime.activeCancel(runtime.carrier.TerminalCause())
+		case <-runtime.activeContext.Done():
+		}
+	}()
 	if err := runtime.emit(StageOOBAdopt); err != nil {
 		return runtime.failure(ClassOOBStreamInvalid, StageOOBAdopt, err)
 	}
@@ -201,7 +222,10 @@ func (runtime *runtime) execute(ctx context.Context) error {
 		return runtime.failure(ClassOOBProtocolViolation, StagePresent, err)
 	}
 	before := runtime.config.Ledger.Status().Sequence
-	committed, err := governor.NewPairingAdmissionGate().Commit(ctx, runtime.attempt, runtime.request)
+	// The active I/O context must stop emission immediately, but it must not
+	// race the explicit stable terminal reason into the durable journal. FINISH
+	// remains owned by cleanup and always precedes attempt release.
+	committed, err := governor.NewPairingAdmissionGate().Commit(context.WithoutCancel(ctx), runtime.attempt, runtime.request)
 	if err != nil {
 		runtime.burned = runtime.config.Ledger.Status().Sequence > before
 		return runtime.classify(StageBurned, err)
@@ -281,6 +305,9 @@ func (runtime *runtime) execute(ctx context.Context) error {
 		return runtime.classify(StageFire, err)
 	}
 	if err := runtime.fire(ctx); err != nil {
+		if errors.Is(err, hardnatplan.ErrEvidenceInsufficient) {
+			return runtime.failure(ClassEvidenceDrifted, StageFire, err)
+		}
 		return runtime.classify(StageFire, err)
 	}
 	if err := runtime.emit(StageFire); err != nil {
@@ -486,30 +513,49 @@ func (runtime *runtime) openSockets(ctx context.Context, envelope hardnatbudget.
 }
 
 func (runtime *runtime) probeFactory() (probeio.Factory, error) {
+	if runtime.config.NATLabFactory != nil {
+		endpoints, err := validateTopology(runtime.config.ObserverTopology, topologyNATLab)
+		if err != nil || runtime.config.NATLabFactory.ValidateObserverEndpoints(endpoints) != nil {
+			return nil, oobcarrier.ErrInvalidConfig
+		}
+		return runtime.config.NATLabFactory, nil
+	}
 	if runtime.config.ProbeFactory != nil {
+		if _, rawOSFactory := runtime.config.ProbeFactory.(*probeio.UDPFactory); rawOSFactory {
+			return nil, oobcarrier.ErrInvalidConfig
+		}
 		return runtime.config.ProbeFactory, nil
 	}
-	endpoints, err := validateTopology(runtime.config.ObserverTopology, runtime.config.AllowNonLoopback)
+	endpoints, err := validateTopology(runtime.config.ObserverTopology, topologyLoopback)
 	if err != nil {
 		return nil, err
 	}
 	local := netip.AddrPortFrom(netip.MustParseAddr("127.0.0.1"), 0)
-	scope := probeio.AllowedTargetScopeLoopback
 	if endpoints[0].Addr().Is6() {
 		local = netip.AddrPortFrom(netip.IPv6Loopback(), 0)
 	}
-	if runtime.config.AllowNonLoopback {
-		scope = probeio.AllowedTargetScopeUnicast
-		if endpoints[0].Addr().Is4() {
-			local = netip.MustParseAddrPort("0.0.0.0:0")
-		} else {
-			local = netip.MustParseAddrPort("[::]:0")
-		}
-	}
-	return probeio.NewUDPFactory(probeio.UDPFactoryConfig{LocalAddr: local, AllowedTargetScope: scope})
+	return probeio.NewUDPFactory(probeio.UDPFactoryConfig{LocalAddr: local, AllowedTargetScope: probeio.AllowedTargetScopeLoopback})
 }
 
-func validateTopology(topology hardnatobserve.Topology, allowNonLoopback bool) ([4]netip.AddrPort, error) {
+type topologyAuthority uint8
+
+const (
+	topologyLoopback topologyAuthority = iota
+	topologySimulation
+	topologyNATLab
+)
+
+func topologyAuthorityFor(config Config) topologyAuthority {
+	if config.NATLabFactory != nil {
+		return topologyNATLab
+	}
+	if config.ProbeFactory != nil {
+		return topologySimulation
+	}
+	return topologyLoopback
+}
+
+func validateTopology(topology hardnatobserve.Topology, authority topologyAuthority) ([4]netip.AddrPort, error) {
 	endpoints, err := topology.Endpoints()
 	if err != nil {
 		return endpoints, err
@@ -518,11 +564,10 @@ func validateTopology(topology hardnatobserve.Topology, allowNonLoopback bool) (
 		if endpoint.Addr().Is4() != endpoints[0].Addr().Is4() {
 			return [4]netip.AddrPort{}, oobcarrier.ErrInvalidConfig
 		}
-		if allowNonLoopback {
-			if !endpoint.Addr().IsGlobalUnicast() || endpoint.Addr().IsLoopback() {
-				return [4]netip.AddrPort{}, oobcarrier.ErrInvalidConfig
-			}
-		} else if !endpoint.Addr().IsLoopback() {
+		if authority == topologyLoopback && !endpoint.Addr().IsLoopback() {
+			return [4]netip.AddrPort{}, oobcarrier.ErrInvalidConfig
+		}
+		if authority != topologyLoopback && (!endpoint.Addr().IsGlobalUnicast() || endpoint.Addr().IsLoopback()) {
 			return [4]netip.AddrPort{}, oobcarrier.ErrInvalidConfig
 		}
 	}
@@ -580,6 +625,9 @@ func (runtime *runtime) freezeAndExchangePlan(ctx context.Context, envelope hard
 	if err != nil {
 		return err
 	}
+	if err := runtime.validateExecutionAddresses(runtime.observation.PublicAddress, peerPayload.PublicAddress); err != nil {
+		return err
+	}
 	peer, err := peerPayload.Commitment(runtime.artifact.PlannerProfile, runtime.artifact.ResourceClass)
 	if err != nil || peer.Role != runtime.artifact.PeerPlannerRole {
 		return errors.Join(hardnatplan.ErrPlanMismatch, err)
@@ -630,6 +678,34 @@ func (runtime *runtime) freezeAndExchangePlan(ctx context.Context, envelope hard
 	return nil
 }
 
+func (runtime *runtime) validateExecutionAddresses(localAddress, peerAddress hardnatplan.Address) error {
+	local, err := fromPlanAddress(localAddress)
+	if err != nil {
+		return err
+	}
+	peer, err := fromPlanAddress(peerAddress)
+	if err != nil {
+		return err
+	}
+	if runtime.config.NATLabFactory != nil {
+		if runtime.config.NATLabFactory.ValidateLocalAddress(local) != nil ||
+			runtime.config.NATLabFactory.ValidatePeerAddress(peer) != nil {
+			return oobcarrier.ErrInvalidConfig
+		}
+		return nil
+	}
+	if runtime.config.ProbeFactory != nil {
+		if !local.IsGlobalUnicast() || local.IsLoopback() || !peer.IsGlobalUnicast() || peer.IsLoopback() {
+			return oobcarrier.ErrInvalidConfig
+		}
+		return nil
+	}
+	if !local.IsLoopback() || !peer.IsLoopback() {
+		return oobcarrier.ErrInvalidConfig
+	}
+	return nil
+}
+
 func (runtime *runtime) exchangeControl(ctx context.Context, frameType hardnatcontrol.FrameType) error {
 	if runtime.artifact.LocalRole == directattempt.RoleInitiator {
 		if err := runtime.sendControl(ctx, frameType); err != nil {
@@ -651,6 +727,8 @@ func (runtime *runtime) sendControl(ctx context.Context, frameType hardnatcontro
 		frame, err = runtime.protocol.SealPrepare()
 	case hardnatcontrol.FrameReady:
 		frame, err = runtime.protocol.SealReady()
+	case hardnatcontrol.FrameFire:
+		frame, err = runtime.protocol.SealFire()
 	case hardnatcontrol.FrameVerify:
 		frame, err = runtime.protocol.SealVerify()
 	default:
@@ -721,19 +799,33 @@ func (runtime *runtime) exchangeSource(ctx context.Context, local hardnatcontrol
 }
 
 func (runtime *runtime) fire(ctx context.Context) error {
-	if runtime.artifact.LocalRole == directattempt.RoleInitiator {
-		frame, err := runtime.protocol.SealFire()
-		if err != nil {
-			return err
-		}
-		defer clear(frame)
-		if err := runtime.carrier.SendHardNATControl(ctx, frame); err != nil {
-			return err
-		}
-		runtime.emissions.ControlFrames++
-		return nil
+	// Each endpoint proves it reached the FIRE barrier with the exact evidence,
+	// joint plan, and execution envelope already bound into authenticated AD.
+	// Candidate sealing remains impossible until both directions of this frame
+	// have been observed. Rechecking after the exchange closes the READY-to-FIRE
+	// expiry window on both roles before any direct packet can be emitted.
+	if err := runtime.revalidateFreshEvidence(); err != nil {
+		return err
 	}
-	return runtime.receiveControl(ctx, hardnatcontrol.FrameFire)
+	if runtime.artifact.LocalRole == directattempt.RoleInitiator {
+		if err := runtime.sendControl(ctx, hardnatcontrol.FrameFire); err != nil {
+			return err
+		}
+		if err := runtime.receiveControl(ctx, hardnatcontrol.FrameFire); err != nil {
+			return err
+		}
+	} else {
+		if err := runtime.receiveControl(ctx, hardnatcontrol.FrameFire); err != nil {
+			return err
+		}
+		if err := runtime.revalidateFreshEvidence(); err != nil {
+			return err
+		}
+		if err := runtime.sendControl(ctx, hardnatcontrol.FrameFire); err != nil {
+			return err
+		}
+	}
+	return runtime.revalidateFreshEvidence()
 }
 
 func (runtime *runtime) revalidateFreshEvidence() error {
@@ -923,6 +1015,13 @@ func (runtime *runtime) punch(ctx context.Context) (*probeio.ProbeSocket, netip.
 			readers.Wait()
 			if senderDone != nil {
 				<-senderDone
+			}
+			if runtime.activeContext != nil && runtime.activeContext.Err() != nil {
+				return nil, netip.AddrPort{}, context.Cause(runtime.activeContext)
+			}
+			if cause := context.Cause(punchCtx); cause != nil &&
+				!errors.Is(cause, context.DeadlineExceeded) && !errors.Is(cause, context.Canceled) {
+				return nil, netip.AddrPort{}, cause
 			}
 			if senderFinished || errors.Is(punchCtx.Err(), context.DeadlineExceeded) {
 				return nil, netip.AddrPort{}, ErrCandidateExhausted
@@ -1149,6 +1248,13 @@ func (runtime *runtime) candidateWindow() time.Duration {
 	return hardnatbudget.CandidateWindow
 }
 
+func (runtime *runtime) activeEnvelope() time.Duration {
+	if runtime != nil && runtime.config.Harness != nil && runtime.config.Harness.ActiveEnvelope > 0 {
+		return runtime.config.Harness.ActiveEnvelope
+	}
+	return hardnatbudget.ActiveEnvelope
+}
+
 func (runtime *runtime) now() time.Time {
 	if now := runtime.harnessNow(); now != nil {
 		return now()
@@ -1322,6 +1428,15 @@ func (runtime *runtime) cleanup(reason governor.PairingTerminalReason) error {
 	if runtime.transportLease != nil {
 		cleanupErr = errors.Join(cleanupErr, runtime.transportLease.Close())
 		runtime.transport = nil
+	}
+	if runtime.activeCancel != nil {
+		runtime.activeCancel(context.Canceled)
+	}
+	if runtime.deadlineCancel != nil {
+		runtime.deadlineCancel()
+	}
+	if runtime.carrierWatchDone != nil {
+		<-runtime.carrierWatchDone
 	}
 	return cleanupErr
 }

@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"winkyou/internal/governor"
+	"winkyou/internal/probeio"
 	"winkyou/internal/v2/directattempt"
 	"winkyou/internal/v2/directconnect/gateb"
 	"winkyou/internal/v2/hardnatobserve"
@@ -31,6 +32,7 @@ const (
 
 type gateB2EndpointConfig struct {
 	Role            string `json:"role"`
+	Namespace       string `json:"namespace"`
 	GovernorDir     string `json:"governor_dir"`
 	ArtifactPath    string `json:"artifact_path"`
 	ResultPath      string `json:"result_path"`
@@ -125,7 +127,8 @@ func TestGateB2EndpointProcess(t *testing.T) {
 
 func validGateB2EndpointConfig(config gateB2EndpointConfig) bool {
 	role := directattempt.Role(config.Role)
-	if !role.Valid() || config.GovernorDir == "" || config.ArtifactPath == "" || config.ResultPath == "" {
+	if !role.Valid() || !safeNamePattern.MatchString(config.Namespace) || config.GovernorDir == "" ||
+		config.ArtifactPath == "" || config.ResultPath == "" {
 		return false
 	}
 	primary, primaryErr := netip.ParseAddrPort(config.ObserverPrimary)
@@ -157,6 +160,22 @@ func runGateB2Endpoint(config gateB2EndpointConfig) (result gateB2EndpointResult
 	defer clear(artifact)
 	primary, _ := netip.ParseAddrPort(config.ObserverPrimary)
 	other, _ := netip.ParseAddrPort(config.ObserverOther)
+	topology := hardnatobserve.Topology{Primary: primary, Other: other}
+	endpoints, err := topology.Endpoints()
+	if err != nil {
+		return result, err
+	}
+	side := probeio.GateB2NATLabLeft
+	if directattempt.Role(config.Role) == directattempt.RoleResponder {
+		side = probeio.GateB2NATLabRight
+	}
+	natLabFactory, err := probeio.NewGateB2NATLabFactory(config.Namespace, side, endpoints)
+	if err != nil {
+		return result, err
+	}
+	if natLabFactory.ValidatePeerAddress(netip.MustParseAddr("192.0.2.200")) == nil {
+		return result, errors.New("natlab factory accepted an address outside the fixed topology")
+	}
 
 	owner, err := governor.AcquirePreparedNamespace(config.GovernorDir, governor.ScopeMachine, "gate-b2-netns")
 	if err != nil {
@@ -179,8 +198,7 @@ func runGateB2Endpoint(config gateB2EndpointConfig) (result gateB2EndpointResult
 	defer cancel()
 	gateResult, runErr := gateb.Run(ctx, gateb.Config{
 		Machine: machine, Ledger: ledger, Artifact: artifact, Stream: stream,
-		ObserverTopology: hardnatobserve.Topology{Primary: primary, Other: other},
-		AllowNonLoopback: true, BuildVersion: "gate-b2-netns",
+		ObserverTopology: topology, NATLabFactory: natLabFactory, BuildVersion: "gate-b2-netns",
 		Progress: func(string, bool) error { return nil },
 	})
 	result.Terminal = gateResult.Terminal

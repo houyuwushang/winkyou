@@ -578,7 +578,7 @@ func (protocol *Protocol) validateSendLocked(frameType FrameType, ordinal uint32
 			return ErrInvalidTransition
 		}
 	case FrameFire:
-		if protocol.role != RoleInitiator || !s.sentReady || !s.receivedReady || s.sentFire {
+		if !s.sentReady || !s.receivedReady || s.sentFire {
 			return ErrInvalidTransition
 		}
 	case FrameCandidate:
@@ -622,7 +622,7 @@ func (protocol *Protocol) validateReceiveLocked(metadata FrameMetadata) error {
 			return ErrInvalidTransition
 		}
 	case FrameFire:
-		if protocol.role != RoleResponder || !s.sentReady || !s.receivedReady || s.receivedFire || metadata.Sequence != 3 {
+		if !s.sentReady || !s.receivedReady || s.receivedFire || metadata.Sequence != 3 {
 			return ErrInvalidTransition
 		}
 	case FrameCandidate:
@@ -651,7 +651,7 @@ func (protocol *Protocol) validateReceiveLocked(metadata FrameMetadata) error {
 }
 
 func (protocol *Protocol) fireSeenLocked() bool {
-	return protocol.role == RoleInitiator && protocol.state.sentFire || protocol.role == RoleResponder && protocol.state.receivedFire
+	return protocol.state.sentFire && protocol.state.receivedFire
 }
 
 func (protocol *Protocol) applySendLocked(frameType FrameType, ordinal uint32) {

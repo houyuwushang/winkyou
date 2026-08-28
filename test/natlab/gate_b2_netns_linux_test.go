@@ -240,7 +240,7 @@ func newGateB2EndpointProcess(t testing.TB, namespace string, role directattempt
 	resultPath := filepath.Join(directory, "result.json")
 	configPath := filepath.Join(directory, "config.json")
 	config := gateB2EndpointConfig{
-		Role: string(role), GovernorDir: governorDir, ArtifactPath: artifactPath, ResultPath: resultPath,
+		Role: string(role), Namespace: namespace, GovernorDir: governorDir, ArtifactPath: artifactPath, ResultPath: resultPath,
 		ObserverPrimary: observer.Primary.String(), ObserverOther: observer.Other.String(),
 	}
 	if err := writeN1JSON(configPath, config); err != nil {

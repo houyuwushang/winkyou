@@ -76,6 +76,12 @@ func TestHardNATAdoptRequiresExactManualEnvelope(t *testing.T) {
 		PlannerProfile: hardnatplan.ProfileAsymmetricBirthday, ResourceClass: hardnatplan.ResourceAsymmetric, testLease: wrongAttempt}); !errors.Is(err, ErrInvalidConfig) {
 		t.Fatalf("inexact hard NAT reservation = %v", err)
 	}
+	wideAttempt := &fakeAttempt{request: governor.AttemptRequest{ID: "EBESExQVFhcYGRobHB0eHw", Operation: governor.OperationBirthday, Cost: envelope.Cost}, stopping: make(chan struct{})}
+	if _, err := AdoptHardNAT(HardNATConfig{Stream: &memoryStream{}, OOBChannelID: testChannelID, Role: directattempt.RoleInitiator,
+		PlannerProfile: hardnatplan.ProfileAsymmetricBirthday, ResourceClass: hardnatplan.ResourceAsymmetric,
+		ActiveDeadline: time.Now().Add(hardnatbudget.ActiveEnvelope + time.Second), testLease: wideAttempt}); !errors.Is(err, ErrInvalidConfig) {
+		t.Fatalf("widened active deadline = %v", err)
+	}
 }
 func (attempt *fakeAttempt) RegisterDrain(string) (governor.DrainHandle, error) {
 	attempt.mu.Lock()
@@ -442,6 +448,48 @@ func TestCarrierCloseUnblocksPendingReadAndDrains(t *testing.T) {
 	}
 	if witness := victim.Witness(); !witness.Drained || !witness.Closed {
 		t.Fatalf("witness = %+v", witness)
+	}
+}
+
+func TestPostHandshakeEOFSignalsTerminalWithoutReceiveCall(t *testing.T) {
+	envelope, err := hardnatbudget.For(hardnatplan.ProfilePredictiveEdm, hardnatplan.ResourcePredictive)
+	if err != nil {
+		t.Fatal(err)
+	}
+	attempt := &fakeAttempt{request: governor.AttemptRequest{
+		ID: "EBESExQVFhcYGRobHB0eHw", Operation: governor.OperationPrediction, Cost: envelope.Cost,
+	}, stopping: make(chan struct{})}
+	localStream, peerStream := net.Pipe()
+	carrier, err := AdoptHardNAT(HardNATConfig{
+		Stream: localStream, OOBChannelID: testChannelID, Role: directattempt.RoleInitiator,
+		PlannerProfile: hardnatplan.ProfilePredictiveEdm, ResourceClass: hardnatplan.ResourcePredictive,
+		testLease: attempt,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	carrier.mu.Lock()
+	carrier.state = stateActive
+	carrier.handshakeSent = true
+	carrier.handshakeRead = true
+	carrier.mu.Unlock()
+	if err := carrier.MarkHandshakeComplete(); err != nil {
+		t.Fatal(err)
+	}
+	if err := peerStream.Close(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-carrier.Done():
+	case <-time.After(250 * time.Millisecond):
+		t.Fatal("post-handshake EOF was not observed while no Receive call was active")
+	}
+	if !errors.Is(carrier.TerminalCause(), ErrCarrierTransport) {
+		t.Fatalf("terminal cause = %v, want carrier transport", carrier.TerminalCause())
+	}
+	_ = carrier.Close()
+	if witness := carrier.Witness(); !witness.Closed || !witness.Drained {
+		t.Fatalf("EOF witness = %+v", witness)
 	}
 }
 

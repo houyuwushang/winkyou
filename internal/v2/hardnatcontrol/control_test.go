@@ -129,6 +129,8 @@ func TestProtocolBindsBilateralPlanAndWinner(t *testing.T) {
 	exchange(rightProtocol, leftProtocol, frame)
 	frame, _ = leftProtocol.SealFire()
 	exchange(leftProtocol, rightProtocol, frame)
+	frame, _ = rightProtocol.SealFire()
+	exchange(rightProtocol, leftProtocol, frame)
 	peerCandidate := rightPlan.Candidates[0]
 	frame, err = rightProtocol.SealCandidate(peerCandidate)
 	if err != nil {
@@ -167,7 +169,7 @@ func TestProtocolBindsBilateralPlanAndWinner(t *testing.T) {
 }
 
 func TestCandidateReplayAndCrossDomainMutationAreTerminal(t *testing.T) {
-	left, right, leftPlan, _, _, _ := preparedProtocols(t)
+	left, right, leftPlan, _, _, _ := preparedProtocols(t, true)
 	defer left.Close()
 	defer right.Close()
 	frame, err := left.SealCandidate(leftPlan.Candidates[0])
@@ -180,13 +182,22 @@ func TestCandidateReplayAndCrossDomainMutationAreTerminal(t *testing.T) {
 	if _, err := right.Open(frame); err == nil {
 		t.Fatal("candidate replay accepted")
 	}
-	left2, right2, leftPlan2, _, _, _ := preparedProtocols(t)
+	left2, right2, leftPlan2, _, _, _ := preparedProtocols(t, true)
 	defer left2.Close()
 	defer right2.Close()
 	frame, _ = left2.SealCandidate(leftPlan2.Candidates[0])
 	frame[5] = byte(DomainRendezvousControl)
 	if _, err := right2.Open(frame); !errors.Is(err, ErrInvalidFrame) {
 		t.Fatalf("cross-domain mutation = %v", err)
+	}
+}
+
+func TestUnilateralFireCannotAuthorizeDirectPacket(t *testing.T) {
+	left, right, leftPlan, _, _, _ := preparedProtocols(t, false)
+	defer left.Close()
+	defer right.Close()
+	if _, err := left.SealCandidate(leftPlan.Candidates[0]); !errors.Is(err, ErrInvalidTransition) {
+		t.Fatalf("candidate after unilateral FIRE = %v, want invalid transition", err)
 	}
 }
 
@@ -238,7 +249,7 @@ func completeNoise(t *testing.T) (*noisecore.Session, *noisecore.Session) {
 
 func sha256Bytes(value string) ([32]byte, error) { return sha256.Sum256([]byte(value)), nil }
 
-func preparedProtocols(t *testing.T) (*Protocol, *Protocol, hardnatplan.Plan, hardnatplan.Plan, hardnatplan.JointPlanCommitment, [32]byte) {
+func preparedProtocols(t *testing.T, mutualFire bool) (*Protocol, *Protocol, hardnatplan.Plan, hardnatplan.Plan, hardnatplan.JointPlanCommitment, [32]byte) {
 	t.Helper()
 	attempt := sha256.Sum256([]byte("prepared-attempt"))
 	leftSource := compactPredictive(t, hardnatplan.RoleInitiator, attempt, 51000, "prepared-left")
@@ -287,5 +298,9 @@ func preparedProtocols(t *testing.T) (*Protocol, *Protocol, hardnatplan.Plan, ha
 	_, _ = left.Open(frame)
 	frame, _ = left.SealFire()
 	_, _ = right.Open(frame)
+	if mutualFire {
+		frame, _ = right.SealFire()
+		_, _ = left.Open(frame)
+	}
 	return left, right, leftPlan, rightPlan, joint, execution
 }
