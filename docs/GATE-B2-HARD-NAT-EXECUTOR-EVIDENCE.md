@@ -187,3 +187,30 @@ race×20。该 PR CI 的 Linux、Windows、N1、N2d/N3b、Gate A 与 Gate B2 req
 本实现不证明 random EDM×EDM 的现场成功，不实现 Gate B3 `hard_16k_lab/1`，不发布产品入口，
 不启动任何 observer/rendezvous/daemon，也不签发 live authorization。README 仍不得声称
 “universal symmetric NAT traversal”。
+
+## 9. PR #93 首轮独立评审阻断修正
+
+首轮 head `661c21f1d48ff2193de8cc04e46b17466519ea6a` 的 21 项 CI 虽全部通过，独立评审仍用最小
+动态复现证明：配置可把真实 UDP target 扩到任意 global-unicast；OOB 在 candidates 阶段断开
+后仍会完成 31 个 candidate 与 1 个 winner 发射；READY 后等待 6 秒可让五秒 evidence 过期，
+但单向 FIRE 仍继续直连。该 head 不构成可合并证据。
+
+修正后的实现证据边界为：
+
+- 删除 `gateb.Config.AllowNonLoopback`。默认 factory 逐项拒绝非 loopback topology；普通 harness
+  seam 拒绝原始 `*probeio.UDPFactory`。唯一真实非回环 factory 由 `linux && natlab` 文件提供，
+  在构造与每次 Open/地址核验时确认 netns，并把 observer/local/peer/WriteTo 全部限制在固定
+  TEST-NET topology；architecture mutation gate 同时禁止产品注入 factory 或恢复布尔开关。
+- Gate B2 建立一个 adoption-to-challenge 的绝对 active context，并把同一个 deadline 交给
+  `oobcarrier`。握手后 carrier 的受控 reader 在没有业务 `Receive` 调用时仍能发现 EOF/terminal，
+  立即取消所有候选 sender/reader；durable FINISH 使用独立的单写终局顺序，随后才释放 attempt。
+- FIRE 使用双方各一帧的认证 barrier；`hardnatcontrol` 只有在两方向 FIRE 都完成后才允许
+  candidate。READY 前、FIRE 交换中和交换后均复核本地 evidence，过期稳定落入
+  `hard_nat_evidence_drifted`。
+
+新增纯内存/natsim 回归已本地证明三种终局均无越界发射：StageCandidates 强制关闭 OOB 时
+candidate/winner/data=`0/0/0`；把共享 active envelope 下调为 500ms 并停在 StageCandidates 时
+candidate/winner/data=`0/0/0`；StageReady 后把可信时钟推进 6 秒时在 FIRE 返回
+`hard_nat_evidence_drifted`，candidate/winner/data=`0/0/0`。三者均 durable FINISH、资源归零且
+safety trip 保持 clear。最终 head 的 required Linux netns 与公开 CI run 编号须在推送后补录；
+在此之前本节不替代独立复审。

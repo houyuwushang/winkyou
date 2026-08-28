@@ -1,6 +1,6 @@
 # ADR：N3c Gate B 困难 NAT 有界求解器
 
-- 状态：**Accepted（含 §15 纠错增补与 §16 Gate B2 资源裁决）；Gate B1 planner 与 Gate A 已合并，
+- 状态：**Accepted（含 §15 纠错增补、§16 Gate B2 资源裁决与 §17 安全阻断处置）；Gate B1 planner 与 Gate A 已合并，
   2026-08-28 维护者仅授权 Gate B2 在 memory/loopback/natsim/netns 中实现并提交 Draft PR。
   Gate B3、产品入口与任何现场 I/O 仍未授权**
 - 日期：2026-08-25
@@ -735,3 +735,41 @@ sample、512 个 one-shot candidate，以及最多一个 authenticated winner AC
 8. 本裁决只授权 Gate B2 的 disconnected memory、loopback、natsim 与 required Linux netns
    实现和一个未合并 Draft PR。它不授权 Gate B3、stdio/CLI/runtime、SSH/WireGuard、daemon、
    scheduler、LAN/公网、现场 STUN/observer 或任何 live authorization。
+
+## 17. Gate B2 独立评审安全阻断处置（Accepted，2026-08-28）
+
+PR #93 首轮实现虽然 21/21 CI 全绿，独立评审仍复现了三项模型级阻断：生产配置中的
+`AllowNonLoopback` 可创建面向任意 global-unicast 的 wildcard UDP factory；OOB stream 在
+candidate 阶段断开或 20 秒到期时没有取消独立 UDP executor；fresh evidence 只在 READY 前
+复核，READY 与单向 FIRE 之间可过期。维护者接受以下约束性修正，PR 仍须保持 Draft 并重新
+通过独立复审：
+
+1. **删除生产非回环布尔能力。** Gate B2 的 nil factory 默认只能绑定和访问 loopback；普通
+   `ProbeFactory` 只允许仓库内 `_test.go` 的纯内存/natsim consumer，直接注入
+   `*probeio.UDPFactory` 必须拒绝。真实非回环 OS socket 只能由 `linux && natlab` 编译的密封
+   `probeio.IsolatedNATLabFactory` 提供。其构造必须用 `os.SameFile` 证明当前进程位于调用方声明
+   的 netns，并固定现有 N2d TEST-NET observer、两侧 NAT public address、wildcard-ephemeral
+   bind 与 target allowlist；任意远端 `SourcePayload.PublicAddress` 在注册 target 前必须同时
+   通过本地/对端固定地址核验。私网、其他 TEST-NET 地址或公网地址均不能借此成为 target。
+2. **一个绝对 active lifetime。** 从成功取得 attempt 后、adopt 单一 OOB stream 之前创建一个
+   最长 20 秒的绝对 context；同一个 deadline 必须传给 carrier，并一直覆盖 presence、burn、
+   handshake、observation、plan、READY/FIRE、candidate、VERIFY、handoff 与 data-plane
+   challenge。握手完成后 carrier 使用单一受控 read worker 持续观察 EOF、deadline、非法域帧
+   与 transport terminal；任一 terminal 立即以 cause 取消 active context。candidate 的 9 秒
+   timeout 与 probeio 的 22 秒 reservation 只能进一步收窄，不能成为独立存活期。2 秒只用于
+   FINISH 后排水，绝不授权继续发包。durable FINISH 的稳定 reason 仍由 cleanup 单写，并先于
+   attempt release，active context 取消不得抢先写入另一个 terminal reason。
+3. **FIRE 改为双方认证 barrier。** initiator 与 responder 都必须发送并接收 sequence 3 的
+   authenticated FIRE；两方向 key 独立，因此可使用相同固定 sequence。协议只有在
+   `sentFire && receivedFire` 后才允许封装或接收任何 direct candidate。两端在进入 barrier
+   前复核本地 evidence；responder 收到 initiator FIRE 后、发送自己的 FIRE 前再次复核；双方
+   在完成双向交换后立即再复核。FIRE 的 AD 继续绑定 exact profile、attempt、generation、
+   bilateral joint digest、双方 evidence/source commitment 与 execution-envelope digest。
+   任一复核过期或漂移稳定返回 `hard_nat_evidence_drifted`，direct packet 必须为 0。双向 FIRE
+   使两端 OOB frame 使用量都恰好达到既有 8 frame ceiling，不提高 frame/byte 成本。
+
+永久回归必须至少覆盖：产品默认/普通 factory 无法取得非回环 OS 能力；natlab namespace、固定
+topology 与 target allowlist 变异失败；StageCandidates 关闭 OOB 后 candidate/winner/data 均为
+0；压缩 active envelope 到期后 direct=0；READY 后推进证据时钟超过五秒时 FIRE 前
+`hard_nat_evidence_drifted` 且 direct=0；单向 FIRE 后封装 candidate 必须终局。以上修正仍只在
+memory、loopback、natsim 与 required netns 范围内，不新增 Gate B3、产品入口或现场授权。
