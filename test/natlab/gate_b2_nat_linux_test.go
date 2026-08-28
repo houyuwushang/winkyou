@@ -29,6 +29,14 @@ const (
 	gateB2RouterDrain     = 2 * time.Second
 )
 
+var (
+	errGateB2NATOutbound  = errors.New("Gate B2 isolated NAT outbound forwarding failed")
+	errGateB2NATInbound   = errors.New("Gate B2 isolated NAT inbound injection failed")
+	errGateB2NATTUNRead   = errors.New("Gate B2 isolated NAT TUN read failed")
+	errGateB2NATNamespace = errors.New("Gate B2 isolated NAT namespace runner failed")
+	errGateB2NATDrain     = errors.New("Gate B2 isolated NAT drain timed out")
+)
+
 type gateB2NATMode uint8
 
 const (
@@ -209,14 +217,18 @@ func (router *gateB2NATRouter) run() error {
 	for runErr == nil {
 		select {
 		case packet := <-outbound:
-			runErr = router.forwardOutbound(packet, replies)
+			if err := router.forwardOutbound(packet, replies); err != nil {
+				runErr = errors.Join(errGateB2NATOutbound, err)
+			}
 			clear(packet.payload)
 		case reply := <-replies:
-			runErr = router.forwardInbound(tun, reply)
+			if err := router.forwardInbound(tun, reply); err != nil {
+				runErr = errors.Join(errGateB2NATInbound, err)
+			}
 			clear(reply.payload)
 		case err := <-readErr:
 			if router.ctx.Err() == nil {
-				runErr = err
+				runErr = errors.Join(errGateB2NATTUNRead, err)
 			}
 		case <-router.ctx.Done():
 			runErr = router.ctx.Err()
@@ -489,11 +501,34 @@ func (router *gateB2NATRouter) Close() error {
 		router.closeDescriptors()
 		select {
 		case closeErr = <-router.done:
+			if closeErr != nil && !errors.Is(closeErr, errGateB2NATOutbound) &&
+				!errors.Is(closeErr, errGateB2NATInbound) && !errors.Is(closeErr, errGateB2NATTUNRead) {
+				closeErr = errors.Join(errGateB2NATNamespace, closeErr)
+			}
 		case <-time.After(gateB2RouterDrain):
-			closeErr = errors.New("Gate B2 isolated NAT drain timed out")
+			closeErr = errGateB2NATDrain
 		}
 	})
 	return closeErr
+}
+
+func gateB2NATDrainClass(err error) string {
+	switch {
+	case err == nil:
+		return "clean"
+	case errors.Is(err, errGateB2NATOutbound):
+		return "outbound_forward"
+	case errors.Is(err, errGateB2NATInbound):
+		return "inbound_inject"
+	case errors.Is(err, errGateB2NATTUNRead):
+		return "tun_read"
+	case errors.Is(err, errGateB2NATNamespace):
+		return "namespace_runner"
+	case errors.Is(err, errGateB2NATDrain):
+		return "drain_timeout"
+	default:
+		return "unknown"
+	}
 }
 
 func parseGateB2IPv4UDP(packet []byte) (gateB2TUNPacket, error) {

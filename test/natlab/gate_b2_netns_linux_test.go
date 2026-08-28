@@ -4,7 +4,6 @@ package natlab
 
 import (
 	"crypto/sha256"
-	"errors"
 	"fmt"
 	"io"
 	"net/netip"
@@ -107,13 +106,15 @@ func testGateB2PredictiveAPDM(t *testing.T) {
 }
 
 func testGateB2Asymmetric(t *testing.T, initiatorPlannerRole, responderPlannerRole hardnatplan.Role) {
-	leftMode, rightMode := n2dMappingEDM, n2dMappingEIM
 	leftNATMode, rightNATMode := gateB2NATAPDM, gateB2NATEIM
 	if initiatorPlannerRole == hardnatplan.RoleTargetSet {
-		leftMode, rightMode = n2dMappingEIM, n2dMappingEDM
 		leftNATMode, rightNATMode = gateB2NATEIM, gateB2NATAPDM
 	}
-	topology := newN2DTopology(t, leftMode, rightMode)
+	// The inherited topology's netfilter NAT is deliberately kept in EDM mode
+	// on both sides. Gate B2's TUN routers own the EIM/APDM semantics for this
+	// proof; enabling the inherited EIM DNAT would steal packets from their
+	// mapped UDP sockets before the harness can enforce its filtering model.
+	topology := newN2DTopology(t, n2dMappingEDM, n2dMappingEDM)
 	observer := startGateB2ObserverSet(t, topology.public)
 	favorable := newGateB2FavorablePorts()
 	leftConfig := gateB2NATConfig{
@@ -481,8 +482,10 @@ func assertGateB2NoResidue(t testing.TB, topology *n2dTopology, observer *gateB2
 	if err := observer.Close(); err != nil {
 		t.Fatal("Gate B2 observer drain failed")
 	}
-	if err := errors.Join(leftRouter.Close(), rightRouter.Close()); err != nil {
-		t.Fatal("Gate B2 isolated NAT drain failed")
+	leftDrain, rightDrain := leftRouter.Close(), rightRouter.Close()
+	if leftDrain != nil || rightDrain != nil {
+		t.Fatalf("Gate B2 isolated NAT drain failed: left=%s right=%s",
+			gateB2NATDrainClass(leftDrain), gateB2NATDrainClass(rightDrain))
 	}
 	if sockets, err := topology.socketCount(); err != nil || sockets != 0 {
 		t.Fatalf("Gate B2 OS socket residue = %d", sockets)
