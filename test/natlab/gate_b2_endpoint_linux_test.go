@@ -80,6 +80,7 @@ type gateB2EndpointResult struct {
 	TransportDetached   bool   `json:"transport_detached"`
 	TransportDrained    bool   `json:"transport_drained"`
 	SafetyState         string `json:"safety_state"`
+	SafetyReason        string `json:"safety_reason,omitempty"`
 	SafetyBlocksWork    bool   `json:"safety_blocks_work"`
 	LedgerSequence      uint64 `json:"ledger_sequence"`
 	LedgerRecords       int    `json:"ledger_records"`
@@ -248,6 +249,7 @@ func runGateB2Endpoint(config gateB2EndpointConfig) (result gateB2EndpointResult
 	result.ReservedFiveTuples = snapshot.Reserved.FiveTuples
 	result.ReservedPackets = snapshot.Reserved.Packets
 	result.SafetyState = string(snapshot.SafetyTrip.State)
+	result.SafetyReason = string(snapshot.SafetyTrip.Record.Reason)
 	result.SafetyBlocksWork = snapshot.SafetyTrip.BlocksActiveWork
 	resultErr = errors.Join(resultErr, machine.Close())
 	result.OK = resultErr == nil

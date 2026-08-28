@@ -145,6 +145,10 @@ func testGateB2Asymmetric(t *testing.T, initiatorPlannerRole, responderPlannerRo
 	defer clearGateB2Artifacts(&artifacts)
 	initiator, responder := startGateB2Pair(t, topology, observer.topology, artifacts)
 	initiatorResult, responderResult := initiator.waitResult(t), responder.waitResult(t)
+	preassertCounts := requireGateB2PacketCounts(t, topology)
+	t.Logf("Gate B2 asymmetric preassert: initiator={%s} responder={%s} os=%+v nat=%+v/%+v favorable=%d",
+		gateB2WitnessSummary(initiatorResult), gateB2WitnessSummary(responderResult), preassertCounts,
+		leftRouter.Witness(), rightRouter.Witness(), favorable.count())
 
 	assertGateB2Success(t, initiatorResult, hardnatplan.ProfileAsymmetricBirthday, hardnatplan.ResourceAsymmetric, 128, 516, 523)
 	assertGateB2Success(t, responderResult, hardnatplan.ProfileAsymmetricBirthday, hardnatplan.ResourceAsymmetric, 128, 516, 523)
@@ -539,6 +543,8 @@ func requireGateB2Environment(t *testing.T) {
 }
 
 func gateB2WitnessSummary(result gateB2EndpointResult) string {
-	return fmt.Sprintf("profile=%s packets=%d sockets=%d targets=%d tuples=%d",
-		result.Profile, result.UDPPackets, result.SocketsOpened, result.TargetsRegistered, result.FiveTuples)
+	return fmt.Sprintf("role=%s profile=%s terminal=%s class=%s evidence=%d candidate=%d winner=%d data=%d/%d sockets=%d targets=%d tuples=%d safety=%s/%s",
+		result.Role, result.Profile, result.Terminal, result.ErrorClass, result.EvidencePackets, result.CandidatePackets,
+		result.WinnerPackets, result.DataPacketsRead, result.DataPacketsWritten, result.SocketsOpened,
+		result.TargetsRegistered, result.FiveTuples, result.SafetyState, result.SafetyReason)
 }
