@@ -125,6 +125,25 @@ func (authorization *fakeAuthorization) CheckActive(context.Context) error {
 	return authorization.checkErr
 }
 
+func TestCarrierCancellationDoesNotDelegateDurableTerminalChoice(t *testing.T) {
+	authorization := &fakeAuthorization{}
+	carrier := &Carrier{authorization: authorization}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := carrier.checkAuthorization(ctx, false); !errors.Is(err, context.Canceled) {
+		t.Fatalf("canceled authorization check = %v", err)
+	}
+	authorization.mu.Lock()
+	checks := authorization.checks
+	authorization.mu.Unlock()
+	if checks != 0 {
+		t.Fatalf("canceled operation reached durable authorization %d times", checks)
+	}
+	if err := carrier.checkAuthorization(context.Background(), false); err != nil {
+		t.Fatalf("active authorization check = %v", err)
+	}
+}
+
 type fixedPSK [noisecore.PSKSize]byte
 
 func (source fixedPSK) LoadPSK() ([noisecore.PSKSize]byte, error) { return source, nil }

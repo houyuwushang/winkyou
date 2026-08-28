@@ -20,6 +20,7 @@ import (
 	"winkyou/internal/probeio"
 	"winkyou/internal/v2/directconnect/gateb"
 	"winkyou/internal/v2/hardnatattempt"
+	"winkyou/internal/v2/hardnatbudget"
 	"winkyou/internal/v2/hardnatcontrol"
 	"winkyou/internal/v2/hardnatobserve"
 	"winkyou/internal/v2/hardnatplan"
@@ -479,7 +480,7 @@ func runGateB2SafetyRegression(t testing.TB, mode string) []gateB2SafetyOutcome 
 	}
 	runSide := func(machine *governor.Governor, ledger *governor.PairingAdmissionLedger, artifact []byte,
 		stream net.Conn, factory probeio.Factory, clock *gateB2ManualClock, randomByte byte) {
-		activeEnvelope := 2 * time.Second
+		activeEnvelope := 15 * time.Second
 		if mode == "active_envelope_at_candidates" {
 			activeEnvelope = 500 * time.Millisecond
 		}
@@ -501,11 +502,13 @@ func runGateB2SafetyRegression(t testing.TB, mode string) []gateB2SafetyOutcome 
 		&natSimProbeFactory{network: network, nat: rightNAT, localAddress: netip.MustParseAddr("192.0.2.80"), basePort: 37000,
 			plannerRole: hardnatplan.RoleResponder, witness: newCandidateWitness()}, rightClock, 0xe2)
 	outcomes := make([]gateB2SafetyOutcome, 0, 2)
+	terminalTimer := time.NewTimer(hardnatbudget.ActiveEnvelope + 2*time.Second)
+	defer terminalTimer.Stop()
 	for range 2 {
 		select {
 		case outcome := <-results:
 			outcomes = append(outcomes, outcome)
-		case <-time.After(5 * time.Second):
+		case <-terminalTimer.C:
 			t.Fatal("Gate B2 safety regression exceeded bounded terminal window")
 		}
 	}

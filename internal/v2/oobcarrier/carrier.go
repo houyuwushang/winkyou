@@ -328,7 +328,7 @@ func (carrier *Carrier) activate(ctx context.Context, authorization emissionAuth
 
 func (carrier *Carrier) expect(ctx context.Context, kind rendezvouswire.Kind, requireActive bool) error {
 	if requireActive {
-		if err := carrier.authorization.CheckActive(ctx); err != nil {
+		if err := carrier.checkAuthorization(ctx, false); err != nil {
 			return err
 		}
 	}
@@ -380,7 +380,7 @@ func (carrier *Carrier) ReceiveHandshake(ctx context.Context) ([]byte, error) {
 		}
 		return nil, ErrHandshakeOrder
 	}
-	if err := carrier.authorization.CheckActive(ctx); err != nil {
+	if err := carrier.checkAuthorization(ctx, false); err != nil {
 		return nil, carrier.terminate(err)
 	}
 	frame, err := carrier.read(ctx)
@@ -470,7 +470,7 @@ func (carrier *Carrier) ReceiveControl(ctx context.Context, protocol *directatte
 		}
 		return directattempt.OpenedFrame{}, ErrHandshakeOrder
 	}
-	if err := carrier.authorization.CheckActive(ctx); err != nil {
+	if err := carrier.checkAuthorization(ctx, false); err != nil {
 		return directattempt.OpenedFrame{}, carrier.terminate(err)
 	}
 	frame, err := carrier.read(ctx)
@@ -543,7 +543,7 @@ func (carrier *Carrier) ReceiveHardNATControl(ctx context.Context, protocol *har
 		}
 		return hardnatcontrol.OpenedFrame{}, ErrHandshakeOrder
 	}
-	if err := carrier.authorization.CheckActive(ctx); err != nil {
+	if err := carrier.checkAuthorization(ctx, false); err != nil {
 		return hardnatcontrol.OpenedFrame{}, carrier.terminate(err)
 	}
 	frame, err := carrier.read(ctx)
@@ -587,11 +587,7 @@ func (carrier *Carrier) write(ctx context.Context, kind rendezvouswire.Kind, pay
 	}
 	defer carrier.ops.Done()
 	if postburn {
-		if first {
-			err = carrier.authorization.BeforeFirstEmission(ctx)
-		} else {
-			err = carrier.authorization.CheckActive(ctx)
-		}
+		err = carrier.checkAuthorization(ctx, first)
 		if err != nil {
 			return err
 		}
@@ -754,6 +750,25 @@ func (carrier *Carrier) operationContext(ctx context.Context) (context.Context, 
 		deadline = callerDeadline
 	}
 	return context.WithDeadline(ctx, deadline)
+}
+
+// checkAuthorization separates the operation's cancellation authority from
+// the durable terminal writer. A canceled operation must stop before I/O, but
+// passing that canceled context into the committed authorization would also
+// choose a terminal reason. Runtime cleanup is the sole FINISH writer and
+// still receives every non-cancellation lease/scope/expiry validation here.
+func (carrier *Carrier) checkAuthorization(ctx context.Context, first bool) error {
+	if carrier == nil || carrier.authorization == nil || ctx == nil {
+		return ErrCarrierTerminal
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	stable := context.WithoutCancel(ctx)
+	if first {
+		return carrier.authorization.BeforeFirstEmission(stable)
+	}
+	return carrier.authorization.CheckActive(stable)
 }
 
 func (carrier *Carrier) armDeadline(ctx context.Context) (func(), error) {
