@@ -105,6 +105,14 @@ func TestRoutedEchoThreeNodesOverRealSockets(t *testing.T) {
 	if !slices.Equal(receivedReply.PathVector, []string{"C", "B", "A"}) {
 		t.Fatalf("reply path = %v, want [C B A]", receivedReply.PathVector)
 	}
+	// A receiving the reply proves both forwards succeeded, but B's post-send
+	// EventForwarded callback may not have resumed yet (issue #31). Wait with a
+	// bounded deadline for the second event instead of asserting immediately;
+	// the exact assertions below are unchanged.
+	forwardedDeadline := time.Now().Add(2 * time.Second)
+	for forwardedAtB.Load() < 2 && time.Now().Before(forwardedDeadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
 	if got := deliveredAtB.Load(); got != 0 {
 		t.Fatalf("B delivered %d payloads, want 0", got)
 	}

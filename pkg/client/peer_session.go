@@ -190,19 +190,75 @@ func (e *engine) multipathPathPolicy() solver.PathPolicy {
 	}
 }
 
+// solverDispatchReadyTimeout bounds how long an early peer solver message may
+// wait for engine startup to finish. It covers the worst-case window between
+// the signal stream going live inside Register and the peer-session
+// infrastructure becoming usable, while staying far below strategy run
+// timeouts so a genuinely broken start still fails fast and observably.
+const solverDispatchReadyTimeout = 10 * time.Second
+
+func (e *engine) markSolverDispatchReady() {
+	if e.solverDispatchReady == nil {
+		return
+	}
+	e.solverDispatchReadyOnce.Do(func() { close(e.solverDispatchReady) })
+}
+
+// waitSolverDispatchReady blocks until engine startup has constructed the
+// peer-session infrastructure, or the bound expires. A nil channel (zero-value
+// engine in unit tests) is treated as ready.
+func (e *engine) waitSolverDispatchReady(bound time.Duration) bool {
+	if e.solverDispatchReady == nil {
+		return true
+	}
+	select {
+	case <-e.solverDispatchReady:
+		return true
+	default:
+	}
+	timer := time.NewTimer(bound)
+	defer timer.Stop()
+	select {
+	case <-e.solverDispatchReady:
+		return true
+	case <-timer.C:
+		return false
+	}
+}
+
 func (e *engine) handlePeerSolverMessage(nodeID string, msg solver.Message) {
+	if !e.waitSolverDispatchReady(solverDispatchReadyTimeout) {
+		e.warnDroppedSolverMessage(nodeID, msg, fmt.Errorf("engine not ready within %s", solverDispatchReadyTimeout))
+		return
+	}
 	s, err := e.ensurePeerSession(nodeID)
 	if err != nil {
+		e.warnDroppedSolverMessage(nodeID, msg, err)
 		return
 	}
 	e.startPeerSession(s)
 	runner := peerSessionRunner(s)
 	if runner == nil {
+		e.warnDroppedSolverMessage(nodeID, msg, fmt.Errorf("peer session runner is closed"))
 		return
 	}
 	if err := runner.HandleMessage(e.sessionContext(), msg); err != nil {
 		e.handlePeerSessionError(nodeID, s, err)
 	}
+}
+
+// warnDroppedSolverMessage keeps every solver-message drop observable; a
+// silent drop of a one-shot strategy message (for example a legacy ICE offer)
+// stalls the peer data path until both sides' run timeouts expire.
+func (e *engine) warnDroppedSolverMessage(nodeID string, msg solver.Message, cause error) {
+	if e.log == nil {
+		return
+	}
+	e.log.Warn("dropping peer solver message",
+		logger.String("node_id", nodeID),
+		logger.String("message_kind", string(msg.Kind)),
+		logger.String("message_type", msg.Type),
+		logger.Error(cause))
 }
 
 func (e *engine) handlePeerSessionState(nodeID string, s *peerSession, state sesspkg.State) {
