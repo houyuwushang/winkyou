@@ -29,6 +29,17 @@ func PrepareLoopbackCarrierTestNamespace(namespace string, at time.Time) error {
 // a temp namespace. The production carrier still receives a real Governor,
 // PairingAdmissionGate, journal, AttemptLease, and OS owner lock.
 func AcquireLoopbackCarrierTestGovernor(namespace, buildVersion string) (*Governor, error) {
+	return acquireCarrierTestGovernor(namespace, buildVersion, ProfilePhase1Machine)
+}
+
+// AcquireManualTraversalTestGovernor is compiled only into governor tests. It
+// preserves the same OS owner and durable journal while selecting Gate B2's
+// exact manual-traversal profile.
+func AcquireManualTraversalTestGovernor(namespace, buildVersion string) (*Governor, error) {
+	return acquireCarrierTestGovernor(namespace, buildVersion, ProfilePhase1ManualTraversal)
+}
+
+func acquireCarrierTestGovernor(namespace, buildVersion string, profile Profile) (*Governor, error) {
 	owner, err := AcquirePreparedNamespace(namespace, ScopeMachine, buildVersion)
 	if err != nil {
 		return nil, err
@@ -41,7 +52,7 @@ func AcquireLoopbackCarrierTestGovernor(namespace, buildVersion string) (*Govern
 	owner.mu.Lock()
 	owner.pairingLedger = ledger
 	owner.mu.Unlock()
-	machine, err := New(owner, ProfilePhase1Machine, nil)
+	machine, err := New(owner, profile, nil)
 	if err != nil {
 		_ = owner.Close()
 		return nil, err
@@ -72,6 +83,20 @@ func LoopbackCarrierTestLedger(machine *Governor) (*PairingAdmissionLedger, erro
 		return nil, ErrPairingMachineScopeRequired
 	}
 	return machine.owner.PairingLedger()
+}
+
+// SetCarrierTestLedgerTime freezes only the test journal clock. It is not
+// compiled into production and cannot alter governor or safety-trip clocks.
+func SetCarrierTestLedgerTime(machine *Governor, at time.Time) error {
+	ledger, err := LoopbackCarrierTestLedger(machine)
+	if err != nil {
+		return err
+	}
+	fixed := at.UTC()
+	ledger.mu.Lock()
+	ledger.now = func() time.Time { return fixed }
+	ledger.mu.Unlock()
+	return nil
 }
 
 // LoopbackCarrierTestOccupancy reads the held test journal without exposing

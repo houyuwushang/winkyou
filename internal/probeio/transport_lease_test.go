@@ -230,3 +230,34 @@ func TestIssueTransportLeaseRejectsNonConnectAttempt(t *testing.T) {
 		t.Fatalf("diagnostic lease = %v, want binding rejection", err)
 	}
 }
+
+func TestGateB2TransportLeaseConsumerIsOperationSeparated(t *testing.T) {
+	for _, operation := range []governor.Operation{governor.OperationPrediction, governor.OperationBirthday} {
+		lease := newFakeLease(normalResources())
+		lease.request.Operation = operation
+		binding := TransportLeaseBinding{
+			PeerID: lease.PeerID(), AttemptID: lease.Request().ID, Generation: 7,
+			PathID: "gate-b2/frozen-plan", Target: targetA, ConsumerKind: GateB2TestConsumer,
+		}
+		session, err := issueTransportLease(lease, binding)
+		if err != nil {
+			t.Fatalf("%s Gate B2 lease = %v", operation, err)
+		}
+		if err := session.Close(); err != nil {
+			t.Fatal(err)
+		}
+		binding.ConsumerKind = GateATestConsumer
+		if _, err := issueTransportLease(lease, binding); !errors.Is(err, ErrTransportBinding) {
+			t.Fatalf("%s accepted Gate A consumer = %v", operation, err)
+		}
+	}
+
+	connect := newFakeLease(normalResources())
+	binding := TransportLeaseBinding{
+		PeerID: connect.PeerID(), AttemptID: connect.Request().ID, Generation: 7,
+		PathID: "gate-b2/frozen-plan", Target: targetA, ConsumerKind: GateB2TestConsumer,
+	}
+	if _, err := issueTransportLease(connect, binding); !errors.Is(err, ErrTransportBinding) {
+		t.Fatalf("connect_test accepted Gate B2 consumer = %v", err)
+	}
+}

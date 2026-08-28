@@ -552,6 +552,63 @@ func TestGovernorConfigurationCanLowerButNotRaiseHardLimits(t *testing.T) {
 	}
 }
 
+func TestManualTraversalProfileIsExactAndIsolated(t *testing.T) {
+	limits, err := HardLimits(ProfilePhase1ManualTraversal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := Resources{Sockets: 128, Targets: 516, FiveTuples: 523, Packets: 526, PacketsPerSecond: 64}
+	if limits.Aggregate != want || limits.PerAttempt != want || limits.MaxActivePeers != 1 ||
+		limits.MaxActiveAttempts != 1 || limits.MaxAttemptsPerPeer != 1 || limits.MaxHeavyweightAttempts != 1 ||
+		limits.MaxAttemptDuration != 22*time.Second || limits.CancellationDrainTimeout != 2*time.Second {
+		t.Fatalf("manual traversal limits = %+v", limits)
+	}
+	if scope, err := ProfilePhase1ManualTraversal.Scope(); err != nil || scope != ScopeMachine {
+		t.Fatalf("manual scope = %q/%v", scope, err)
+	}
+	for _, operation := range []Operation{OperationPrediction, OperationBirthday} {
+		if !ProfilePhase1ManualTraversal.Allows(operation) {
+			t.Errorf("manual traversal rejected %s", operation)
+		}
+	}
+	if ProfilePhase1ManualTraversal.Allows(OperationConnectTest) || ProfilePhase1Machine.Allows(OperationPrediction) ||
+		ProfilePhase1UserAcknowledged.Allows(OperationBirthday) {
+		t.Fatal("manual traversal authority leaked into an existing profile or operation")
+	}
+}
+
+func TestManualTraversalSecondHeavyweightAttemptPersistsTrip(t *testing.T) {
+	machine := newTestGovernor(t, ProfilePhase1ManualTraversal, nil)
+	peer, err := machine.AcquirePeer("manual-peer")
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := AttemptRequest{
+		ID: "manual-first", Operation: OperationBirthday,
+		Cost: AttemptCost{
+			Resources: Resources{Sockets: 128, Targets: 516, FiveTuples: 523, Packets: 526, PacketsPerSecond: 64},
+			Duration:  22 * time.Second, Heavyweight: true,
+		},
+	}
+	first, err := peer.AcquireAttempt(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.ID = "manual-second"
+	if second, err := peer.AcquireAttempt(context.Background(), request); second != nil || !errors.Is(err, ErrLimitExceeded) {
+		t.Fatalf("second heavyweight=%v/%v", second, err)
+	}
+	status := machine.Snapshot().SafetyTrip
+	if !status.BlocksActiveWork || status.Record.Reason != SafetyTripHardLimit || status.Record.AttemptID != request.ID {
+		t.Fatalf("manual hard-limit trip=%+v", status)
+	}
+	select {
+	case <-first.Stopping():
+	case <-time.After(time.Second):
+		t.Fatal("manual hard-limit trip did not revoke the first attempt")
+	}
+}
+
 func TestUserAcknowledgedProfileRejectsPrivilegedOperations(t *testing.T) {
 	governor := newTestGovernor(t, ProfilePhase1UserAcknowledged, nil)
 	peer, err := governor.AcquirePeer("peer-a")

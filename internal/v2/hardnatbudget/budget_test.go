@@ -1,0 +1,45 @@
+package hardnatbudget
+
+import (
+	"fmt"
+	"testing"
+
+	"winkyou/internal/governor"
+	"winkyou/internal/v2/hardnatplan"
+)
+
+func TestFrozenExecutionEnvelopes(t *testing.T) {
+	tests := []struct {
+		profile  hardnatplan.Profile
+		resource hardnatplan.ResourceClass
+		op       governor.Operation
+		want     governor.Resources
+		wantHash string
+	}{
+		{hardnatplan.ProfilePredictiveEdm, hardnatplan.ResourcePredictive, governor.OperationPrediction,
+			governor.Resources{Sockets: 8, Targets: 64, FiveTuples: 64, Packets: 64, PacketsPerSecond: 32}, "4d4a2b8d8c26f878153b9edc90d70d906322de3f6f503da10de9061d47bc3c7d"},
+		{hardnatplan.ProfileAsymmetricBirthday, hardnatplan.ResourceAsymmetric, governor.OperationBirthday,
+			governor.Resources{Sockets: 128, Targets: 516, FiveTuples: 523, Packets: 526, PacketsPerSecond: 64}, "aa62e575a98c007ce43d065bf5a1ad74a18d4e7f71ce4180b16bf1896eaa3e9d"},
+	}
+	for _, test := range tests {
+		envelope, err := For(test.profile, test.resource)
+		if err != nil || envelope.Cost.Resources != test.want || envelope.Cost.Duration != AttemptDuration || !envelope.Cost.Heavyweight {
+			t.Fatalf("For(%s) = %+v, %v", test.profile, envelope, err)
+		}
+		if !Exact(test.profile, test.resource, test.op, envelope.Cost) {
+			t.Fatalf("exact envelope rejected for %s", test.profile)
+		}
+		if digest, err := Digest(envelope); err != nil || digest == ([32]byte{}) || fmt.Sprintf("%x", digest) != test.wantHash {
+			t.Fatalf("Digest(%s) = %x, %v; want %s", test.profile, digest, err, test.wantHash)
+		}
+	}
+}
+
+func TestEnvelopeCannotBorrowAcrossProfiles(t *testing.T) {
+	predictive, _ := For(hardnatplan.ProfilePredictiveEdm, hardnatplan.ResourcePredictive)
+	asymmetric, _ := For(hardnatplan.ProfileAsymmetricBirthday, hardnatplan.ResourceAsymmetric)
+	if Exact(hardnatplan.ProfilePredictiveEdm, hardnatplan.ResourcePredictive, governor.OperationPrediction, asymmetric.Cost) ||
+		Exact(hardnatplan.ProfileAsymmetricBirthday, hardnatplan.ResourceAsymmetric, governor.OperationBirthday, predictive.Cost) {
+		t.Fatal("cross-profile envelope was accepted")
+	}
+}

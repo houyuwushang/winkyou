@@ -298,6 +298,20 @@ func TestPairingAdmissionWindowsUseWorstCaseReservations(t *testing.T) {
 			newPackets:  49,
 			wantBlocked: true,
 		},
+		{
+			name:        "three full asymmetric reservations leave only 470 packets",
+			offsets:     []time.Duration{-6 * time.Hour, -4 * time.Hour, -2 * time.Hour},
+			packets:     []int{526, 526, 526},
+			newPackets:  470,
+			wantBlocked: false,
+		},
+		{
+			name:        "fourth full asymmetric reservation is blocked",
+			offsets:     []time.Duration{-6 * time.Hour, -4 * time.Hour, -2 * time.Hour},
+			packets:     []int{526, 526, 526},
+			newPackets:  526,
+			wantBlocked: true,
+		},
 	}
 
 	for _, test := range tests {

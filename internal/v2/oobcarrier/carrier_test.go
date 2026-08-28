@@ -13,6 +13,8 @@ import (
 
 	"winkyou/internal/governor"
 	"winkyou/internal/v2/directattempt"
+	"winkyou/internal/v2/hardnatbudget"
+	"winkyou/internal/v2/hardnatplan"
 	"winkyou/internal/v2/noisecore"
 	"winkyou/internal/v2/rendezvouswire"
 )
@@ -44,11 +46,36 @@ func (attempt *fakeAttempt) Stopping() <-chan struct{}        { return attempt.s
 func (attempt *fakeAttempt) ClaimExclusive(name string) error {
 	attempt.mu.Lock()
 	defer attempt.mu.Unlock()
-	if name != carrierClaimName || attempt.claim {
+	if (name != carrierClaimName && name != "gate-b2-oob-carrier") || attempt.claim {
 		return governor.ErrExclusiveClaimUsed
 	}
 	attempt.claim = true
 	return nil
+}
+
+func TestHardNATAdoptRequiresExactManualEnvelope(t *testing.T) {
+	envelope, err := hardnatbudget.For(hardnatplan.ProfileAsymmetricBirthday, hardnatplan.ResourceAsymmetric)
+	if err != nil {
+		t.Fatal(err)
+	}
+	attempt := &fakeAttempt{request: governor.AttemptRequest{ID: "EBESExQVFhcYGRobHB0eHw", Operation: governor.OperationBirthday, Cost: envelope.Cost}, stopping: make(chan struct{})}
+	stream := &memoryStream{}
+	carrier, err := AdoptHardNAT(HardNATConfig{Stream: stream, OOBChannelID: testChannelID, Role: directattempt.RoleInitiator,
+		PlannerProfile: hardnatplan.ProfileAsymmetricBirthday, ResourceClass: hardnatplan.ResourceAsymmetric, testLease: attempt})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := carrier.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	wrong := envelope.Cost
+	wrong.Resources.Targets--
+	wrongAttempt := &fakeAttempt{request: governor.AttemptRequest{ID: "EBESExQVFhcYGRobHB0eHw", Operation: governor.OperationBirthday, Cost: wrong}, stopping: make(chan struct{})}
+	if _, err := AdoptHardNAT(HardNATConfig{Stream: &memoryStream{}, OOBChannelID: testChannelID, Role: directattempt.RoleInitiator,
+		PlannerProfile: hardnatplan.ProfileAsymmetricBirthday, ResourceClass: hardnatplan.ResourceAsymmetric, testLease: wrongAttempt}); !errors.Is(err, ErrInvalidConfig) {
+		t.Fatalf("inexact hard NAT reservation = %v", err)
+	}
 }
 func (attempt *fakeAttempt) RegisterDrain(string) (governor.DrainHandle, error) {
 	attempt.mu.Lock()
