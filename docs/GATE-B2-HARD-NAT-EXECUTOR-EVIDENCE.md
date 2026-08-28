@@ -203,7 +203,9 @@ race×20。该 PR CI 的 Linux、Windows、N1、N2d/N3b、Gate A 与 Gate B2 req
   TEST-NET topology；architecture mutation gate 同时禁止产品注入 factory 或恢复布尔开关。
 - Gate B2 建立一个 adoption-to-challenge 的绝对 active context，并把同一个 deadline 交给
   `oobcarrier`。握手后 carrier 的受控 reader 在没有业务 `Receive` 调用时仍能发现 EOF/terminal，
-  立即取消所有候选 sender/reader；durable FINISH 使用独立的单写终局顺序，随后才释放 attempt。
+  立即取消所有候选 sender/reader；3/3 data-plane challenge 使用 initiator-write/responder-reply
+  的三轮有序会合，成功端在关闭 OOB 前完成有界 close rendezvous。operation cancellation 只负责
+  停止 I/O，不再抢先选择 ledger terminal；durable FINISH 由 cleanup 单写，随后才释放 attempt。
 - FIRE 使用双方各一帧的认证 barrier；`hardnatcontrol` 只有在两方向 FIRE 都完成后才允许
   candidate。READY 前、FIRE 交换中和交换后均复核本地 evidence，过期稳定落入
   `hard_nat_evidence_drifted`。
@@ -212,5 +214,13 @@ race×20。该 PR CI 的 Linux、Windows、N1、N2d/N3b、Gate A 与 Gate B2 req
 candidate/winner/data=`0/0/0`；把共享 active envelope 下调为 500ms 并停在 StageCandidates 时
 candidate/winner/data=`0/0/0`；StageReady 后把可信时钟推进 6 秒时在 FIRE 返回
 `hard_nat_evidence_drifted`，candidate/winner/data=`0/0/0`。三者均 durable FINISH、资源归零且
-safety trip 保持 clear。最终 head 的 required Linux netns 与公开 CI run 编号须在推送后补录；
-在此之前本节不替代独立复审。
+safety trip 保持 clear。
+
+实现 head `0e28d6f4b3f5282e69a28fe5426f35d7fbafeae7` 的 push run `33167057595`
+（job `98834873672`）与 PR run `33167054783`（job `98834864638`）均完成 required
+race-enabled Linux netns 三场矩阵，耗时分别为 29.72 秒与 30.33 秒；两组计数一致：predictive
+evidence=13/13、candidate=31/32、winner=1、socket=8/8、NAT peak=41/42、conntrack 166→0；
+两种 asymmetric carrier/planner role orientation 均为 target=512、mapping=64、winner=1、
+NAT peak=74/8 与 8/74、conntrack 1192→0。六个场景的 terminal witness 均为 socket=0、
+process=0、packet counter 静止、conntrack=0。该实现 head 的两组完整 CI 共 21/21 通过；PR
+仍为 Draft，本节只构成重新送交独立复审的证据，不构成合并、Gate B3 或现场授权。
