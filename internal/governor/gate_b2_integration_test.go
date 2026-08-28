@@ -332,14 +332,24 @@ func TestGateB2FIREFreshnessAndCarrierTerminalStopDirectEmissions(t *testing.T) 
 	for _, mode := range []string{"stale_at_fire", "carrier_closed_at_candidates", "active_envelope_at_candidates"} {
 		t.Run(mode, func(t *testing.T) {
 			outcomes := runGateB2SafetyRegression(t, mode)
+			drifted := 0
 			for index, outcome := range outcomes {
 				var failure *gateb.Failure
 				if !errors.As(outcome.err, &failure) {
 					t.Fatalf("side %d error=%v, want stable failure", index, outcome.err)
 				}
 				if mode == "stale_at_fire" {
-					if failure.Class != gateb.ClassEvidenceDrifted || failure.Stage != gateb.StageFire {
-						t.Fatalf("side %d failure=%+v, want FIRE evidence drift", index, failure)
+					switch failure.Class {
+					case gateb.ClassEvidenceDrifted:
+						if failure.Stage != gateb.StageFire {
+							t.Fatalf("side %d failure=%+v, want FIRE evidence drift", index, failure)
+						}
+						drifted++
+					case gateb.ClassOOBStreamClosed, gateb.ClassAttemptExpired:
+						// The peer may only observe the terminal caused by the
+						// endpoint that first proves its local evidence stale.
+					default:
+						t.Fatalf("side %d failure=%+v, want FIRE evidence drift or peer terminal", index, failure)
 					}
 				} else if mode == "carrier_closed_at_candidates" && failure.Class != gateb.ClassOOBStreamClosed {
 					t.Fatalf("side %d failure=%+v, want OOB stream closed", index, failure)
@@ -351,6 +361,9 @@ func TestGateB2FIREFreshnessAndCarrierTerminalStopDirectEmissions(t *testing.T) 
 					!outcome.result.CredentialBurned || !outcome.result.FinishRecorded || outcome.result.SafetyTrip.BlocksActiveWork {
 					t.Fatalf("side %d emitted after terminal barrier: %+v", index, outcome.result)
 				}
+			}
+			if mode == "stale_at_fire" && drifted == 0 {
+				t.Fatal("stale FIRE barrier lacked a local evidence-drift witness")
 			}
 		})
 	}
@@ -423,11 +436,22 @@ func runGateB2SafetyRegression(t testing.TB, mode string) []gateB2SafetyOutcome 
 	results := make(chan gateB2SafetyOutcome, 2)
 	var candidateSides atomic.Int32
 	candidateBarrier := make(chan struct{})
+	var readySides atomic.Int32
+	readyBarrier := make(chan struct{})
 	var closeStreams sync.Once
 	progress := func(clock *gateB2ManualClock) gateb.ProgressReporter {
 		return func(stage string, _ bool) error {
 			if mode == "stale_at_fire" && stage == gateb.StageReady {
-				clock.Advance(6 * time.Second)
+				if readySides.Add(1) == 2 {
+					leftClock.Advance(6 * time.Second)
+					rightClock.Advance(6 * time.Second)
+					close(readyBarrier)
+				}
+				select {
+				case <-readyBarrier:
+				case <-time.After(time.Second):
+					return errors.New("READY freshness barrier timed out")
+				}
 			}
 			if (mode == "carrier_closed_at_candidates" || mode == "active_envelope_at_candidates") && stage == gateb.StageCandidates {
 				if candidateSides.Add(1) == 2 {

@@ -348,9 +348,13 @@ func (carrier *Carrier) SendHandshake(ctx context.Context, message []byte) error
 		return ErrInvalidFrame
 	}
 	carrier.mu.Lock()
-	ready := carrier.state == stateActive && !carrier.handshakeSent
+	state := carrier.state
+	ready := state == stateActive && !carrier.handshakeSent
 	carrier.mu.Unlock()
 	if !ready {
+		if state == stateClosed {
+			return carrier.TerminalCause()
+		}
 		return ErrHandshakeOrder
 	}
 	if err := carrier.write(ctx, rendezvouswire.KindHandshake, message, true, false); err != nil {
@@ -367,9 +371,13 @@ func (carrier *Carrier) ReceiveHandshake(ctx context.Context) ([]byte, error) {
 		return nil, ErrCarrierTerminal
 	}
 	carrier.mu.Lock()
-	ready := carrier.state == stateActive && !carrier.handshakeRead
+	state := carrier.state
+	ready := state == stateActive && !carrier.handshakeRead
 	carrier.mu.Unlock()
 	if !ready {
+		if state == stateClosed {
+			return nil, carrier.TerminalCause()
+		}
 		return nil, ErrHandshakeOrder
 	}
 	if err := carrier.authorization.CheckActive(ctx); err != nil {
@@ -394,8 +402,12 @@ func (carrier *Carrier) MarkHandshakeComplete() error {
 		return ErrCarrierTerminal
 	}
 	carrier.mu.Lock()
-	if carrier.state != stateActive || !carrier.handshakeSent || !carrier.handshakeRead {
+	state := carrier.state
+	if state != stateActive || !carrier.handshakeSent || !carrier.handshakeRead {
 		carrier.mu.Unlock()
+		if state == stateClosed {
+			return carrier.TerminalCause()
+		}
 		return ErrHandshakeOrder
 	}
 	carrier.state = stateHandshakeComplete
@@ -429,9 +441,13 @@ func (carrier *Carrier) SendControl(ctx context.Context, frame []byte) error {
 		return carrier.terminate(err)
 	}
 	carrier.mu.Lock()
-	ready := carrier.state == stateHandshakeComplete
+	state := carrier.state
+	ready := state == stateHandshakeComplete
 	carrier.mu.Unlock()
 	if !ready {
+		if state == stateClosed {
+			return carrier.TerminalCause()
+		}
 		return ErrHandshakeOrder
 	}
 	if err := carrier.write(ctx, rendezvouswire.KindControl, frame, true, false); err != nil {
@@ -445,9 +461,13 @@ func (carrier *Carrier) ReceiveControl(ctx context.Context, protocol *directatte
 		return directattempt.OpenedFrame{}, ErrCarrierTerminal
 	}
 	carrier.mu.Lock()
-	ready := carrier.state == stateHandshakeComplete
+	state := carrier.state
+	ready := state == stateHandshakeComplete
 	carrier.mu.Unlock()
 	if !ready {
+		if state == stateClosed {
+			return directattempt.OpenedFrame{}, carrier.TerminalCause()
+		}
 		return directattempt.OpenedFrame{}, ErrHandshakeOrder
 	}
 	if err := carrier.authorization.CheckActive(ctx); err != nil {
@@ -492,9 +512,13 @@ func (carrier *Carrier) SendHardNATControl(ctx context.Context, frame []byte) er
 		return carrier.terminate(err)
 	}
 	carrier.mu.Lock()
-	ready := carrier.state == stateHandshakeComplete
+	state := carrier.state
+	ready := state == stateHandshakeComplete
 	carrier.mu.Unlock()
 	if !ready {
+		if state == stateClosed {
+			return carrier.TerminalCause()
+		}
 		return ErrHandshakeOrder
 	}
 	if err := carrier.write(ctx, rendezvouswire.KindControl, frame, true, false); err != nil {
@@ -510,9 +534,13 @@ func (carrier *Carrier) ReceiveHardNATControl(ctx context.Context, protocol *har
 		return hardnatcontrol.OpenedFrame{}, ErrCarrierTerminal
 	}
 	carrier.mu.Lock()
-	ready := carrier.state == stateHandshakeComplete
+	state := carrier.state
+	ready := state == stateHandshakeComplete
 	carrier.mu.Unlock()
 	if !ready {
+		if state == stateClosed {
+			return hardnatcontrol.OpenedFrame{}, carrier.TerminalCause()
+		}
 		return hardnatcontrol.OpenedFrame{}, ErrHandshakeOrder
 	}
 	if err := carrier.authorization.CheckActive(ctx); err != nil {
@@ -555,7 +583,7 @@ func (carrier *Carrier) write(ctx context.Context, kind rendezvouswire.Kind, pay
 	carrier.writeMu.Lock()
 	defer carrier.writeMu.Unlock()
 	if !carrier.beginOperation() {
-		return ErrCarrierTerminal
+		return carrier.TerminalCause()
 	}
 	defer carrier.ops.Done()
 	if postburn {
@@ -626,7 +654,7 @@ func (carrier *Carrier) read(ctx context.Context) (rendezvouswire.Frame, error) 
 
 func (carrier *Carrier) decode(ctx context.Context) (rendezvouswire.Frame, error) {
 	if !carrier.beginOperation() {
-		return rendezvouswire.Frame{}, ErrCarrierTerminal
+		return rendezvouswire.Frame{}, carrier.TerminalCause()
 	}
 	defer carrier.ops.Done()
 	return carrier.decodeFrame(ctx)

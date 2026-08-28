@@ -487,6 +487,11 @@ func TestPostHandshakeEOFSignalsTerminalWithoutReceiveCall(t *testing.T) {
 	if !errors.Is(carrier.TerminalCause(), ErrCarrierTransport) {
 		t.Fatalf("terminal cause = %v, want carrier transport", carrier.TerminalCause())
 	}
+	payload := make([]byte, rendezvouswire.MinControlPayloadBytes)
+	if err := carrier.write(context.Background(), rendezvouswire.KindControl, payload, false, false); !errors.Is(err, ErrCarrierTransport) {
+		t.Fatalf("post-terminal write = %v, want preserved carrier transport cause", err)
+	}
+	clear(payload)
 	_ = carrier.Close()
 	if witness := carrier.Witness(); !witness.Closed || !witness.Drained {
 		t.Fatalf("EOF witness = %+v", witness)
