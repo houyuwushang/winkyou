@@ -978,7 +978,9 @@ Gate B3 开工核验发现，§18.7 第 4 条把“每个 NAT namespace 的可�
    保留 50% headroom，并在子测试终局立即恢复 40,000；
 5. 每个终局仍须证明 router mapping、per-netns conntrack、packet、socket、process、governor
    lock、namespace 与 veth 零残留。产品、stdio/CLI/runtime、daemon、scheduler、Gate C 与现场
-   路径不得导入 guardian、写 sysctl 或构造 test router。
+   路径不得导入 guardian、写 sysctl 或构造 test router。16K topology 删除且零残留断言通过后，
+   test-only harness 可留固定 750ms 给内核回收已删除 namespace 的 conntrack/RCU 对象；这不是
+   attempt retry，不得重建 campaign、补发 packet 或改变任何预算。setup 失败日志只能暴露稳定阶段类。
 
 因此 §18.7 的“runner 不支持可验证的 per-netns cap 则 fail-closed”按本节解释为：必须同时证明
 test-router 独立 mapping cap、init-owned 共同内核 ceiling、两侧各自的真实 count 与精确恢复；不再

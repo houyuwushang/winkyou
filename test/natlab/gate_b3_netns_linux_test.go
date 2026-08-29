@@ -41,6 +41,10 @@ const (
 	gateB3PortMin                     = uint16(hardnatplan.DynamicPortMin)
 	gateB3PortMax                     = uint16(hardnatplan.DynamicPortMax)
 	gateB3ProcessLimit                = 52 * time.Second
+	// Deleting a namespace removes its named handle synchronously, while RCU
+	// reclamation of a 16K conntrack table may continue briefly. This test-only
+	// margin separates independent campaigns; it never retries an attempt.
+	gateB3KernelReleaseMargin = 750 * time.Millisecond
 	// Socket zero registers all four authenticated RFC 5780 reply sources but
 	// emits to only three of them. The protocol therefore owns 16,395 registered
 	// five-tuples while each APDM test router opens exactly 16,394 mappings.
@@ -85,6 +89,7 @@ func TestLinuxGateB3Hard16Proof(t *testing.T) {
 	requireGateB3Environment(t)
 	requireGateB3HostConntrackGuard(t)
 	t.Run("conntrack_counter_boundary", testGateB3ConntrackCounterBoundary)
+	t.Run("topology_setup_error_redaction", testGateB3TopologySetupErrorRedaction)
 	t.Run("router_mapping_cap_pre_io", testGateB3RouterMappingCapPreIO)
 	t.Run("full_shape_tail_hit", func(t *testing.T) { testGateB3FullShape(t, 0, gateB3ConntrackCap) })
 	t.Run("full_exhaustion", func(t *testing.T) { testGateB3FullShape(t, 1, gateB3ConntrackCap) })
@@ -216,6 +221,14 @@ func testGateB3ConntrackCounterBoundary(t *testing.T) {
 			t.Fatalf("Gate B3 conntrack witness terminal=%d peak=%d valid=%t, want %t",
 				test.terminal, test.peak, got, test.valid)
 		}
+	}
+}
+
+func testGateB3TopologySetupErrorRedaction(t *testing.T) {
+	setupErr := &n2dTopologySetupError{stage: "link_create", cause: errors.New("sensitive setup detail")}
+	if setupErr.Error() != "link_create" || n2dTopologySetupStage(setupErr) != "link_create" ||
+		strings.Contains(setupErr.Error(), "sensitive") {
+		t.Fatal("Gate B3 topology setup error was not reduced to a stable stage")
 	}
 }
 
@@ -684,6 +697,7 @@ func assertGateB3NoResidue(t testing.TB, topology *n2dTopology, observer *gateB2
 	if err := topology.assertNoLeaks(); err != nil {
 		t.Fatal("Gate B3 namespace or veth leak witness failed")
 	}
+	time.Sleep(gateB3KernelReleaseMargin)
 }
 
 func assertGateB3TripNoResidue(t testing.TB, topology *n2dTopology, observer *gateB2ObserverSet,
@@ -727,6 +741,7 @@ func assertGateB3TripNoResidue(t testing.TB, topology *n2dTopology, observer *ga
 	if err := topology.assertNoLeaks(); err != nil {
 		t.Fatal("Gate B3 fault namespace or veth residue")
 	}
+	time.Sleep(gateB3KernelReleaseMargin)
 }
 
 func inspectGateB3Ledger(t testing.TB, namespace string) (governor.PairingLedgerStatus, governor.HardNATCampaignStatus) {
@@ -798,7 +813,7 @@ func setGateB3HostConntrackCapForSubtest(t *testing.T, value int) {
 	if err := writeGateB3HostConntrackMax(value); err != nil {
 		t.Fatal("Gate B3 conntrack fault cap could not be installed")
 	}
-	if installed, err := readGateB3ConntrackMax(""); err != nil || installed != value {
+	if !waitGateB3ConntrackMax(value) {
 		_ = writeGateB3HostConntrackMax(gateB3ConntrackCap)
 		t.Fatal("Gate B3 conntrack fault cap verification failed")
 	}
@@ -807,10 +822,30 @@ func setGateB3HostConntrackCapForSubtest(t *testing.T, value int) {
 			t.Error("Gate B3 conntrack fault cap restoration failed")
 			return
 		}
-		if restored, err := readGateB3ConntrackMax(""); err != nil || restored != gateB3ConntrackCap {
+		if !waitGateB3ConntrackMax(gateB3ConntrackCap) {
 			t.Error("Gate B3 conntrack fault cap restoration could not be verified")
 		}
 	})
+}
+
+func waitGateB3ConntrackMax(value int) bool {
+	deadline := time.Now().Add(250 * time.Millisecond)
+	consecutive := 0
+	for {
+		current, err := readGateB3ConntrackMax("")
+		if err == nil && current == value {
+			consecutive++
+			if consecutive == 2 {
+				return true
+			}
+		} else {
+			consecutive = 0
+		}
+		if !time.Now().Before(deadline) {
+			return false
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 }
 
 func verifyGateB3NamespacedConntrackCap(leftNamespace, rightNamespace string, value int) error {

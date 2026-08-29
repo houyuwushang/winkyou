@@ -165,7 +165,10 @@ conntrack/governor lock/netns/veth 全部为零。共同 ceiling 不是 per-netn
 namespace count 的聚合值。内核先递增 `nf_conntrack_count` 再比较 ceiling；单 writer 的
 conntrack-full 故障允许采样到被拒分配造成的瞬时 `max+1`，但 terminal 必须 `<= max`，瞬时
 `max+2` 仍失败。该计数语义不是额外 mapping/packet 授权；产品代码不获得 sysctl 或 test-router
-capability。
+capability。高负载 topology 删除并通过 namespace/veth 零残留断言后，harness 另留固定 750ms
+供内核回收已删除 namespace 的 conntrack/RCU 对象；它不重建、不重试 campaign，也不进入 attempt
+时长或发包预算。后续 topology 若仍失败，只输出稳定 setup stage，不输出 namespace、设备名或底层
+命令文本。
 
 ENOBUFS seam 只存在于 `linux && natlab`，在冻结的 13-packet evidence slice 后对首个 candidate
 返回 OS `ENOBUFS`；它不改变 endpoint allowlist，并必须触发持久
