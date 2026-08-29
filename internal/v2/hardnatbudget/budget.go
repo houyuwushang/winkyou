@@ -14,6 +14,9 @@ import (
 )
 
 const (
+	// ActiveEnvelope and AttemptDuration are the frozen Gate B2 values. Keep
+	// these names for the existing golden contract; Gate B3 uses the exact
+	// profile helpers below and never raises B2.
 	ActiveEnvelope  = 20 * time.Second
 	DrainTimeout    = 2 * time.Second
 	AttemptDuration = ActiveEnvelope + DrainTimeout
@@ -21,6 +24,19 @@ const (
 	FreshEvidencePackets = 13
 	CandidateWindow      = 9 * time.Second
 	EvidenceWindow       = 3 * time.Second
+
+	Hard16ActiveEnvelope  = 45 * time.Second
+	Hard16DrainTimeout    = 2 * time.Second
+	Hard16AttemptDuration = Hard16ActiveEnvelope + Hard16DrainTimeout
+	// A 16,384-packet schedule at 512 PPS occupies 32 one-second batches.
+	// Thirty-four seconds leaves only bounded scheduling/winner-drain margin;
+	// the absolute 45-second context remains authoritative.
+	Hard16CandidateWindow = 34 * time.Second
+
+	Hard16CandidatePackets       = 16_384
+	Hard16ActualPacketsMaximum   = 16_398
+	Hard16ActualTargetsMaximum   = 16_388
+	Hard16ActualFiveTupleMaximum = 16_395
 )
 
 var ErrUnsupportedEnvelope = errors.New("hardnatbudget: unsupported execution envelope")
@@ -47,12 +63,21 @@ func For(profile hardnatplan.Profile, resource hardnatplan.ResourceClass) (Envel
 			Sockets: 128, Targets: 516, FiveTuples: 523,
 			Packets: 526, PacketsPerSecond: 64,
 		}
+	case profile == hardnatplan.ProfileHardBirthday && resource == hardnatplan.ResourceHard16KLab:
+		resources = governor.Resources{
+			Sockets: 16, Targets: 16_400, FiveTuples: 16_400,
+			Packets: 16_432, PacketsPerSecond: 512,
+		}
 	default:
 		return Envelope{}, ErrUnsupportedEnvelope
 	}
+	duration := AttemptDuration
+	if profile == hardnatplan.ProfileHardBirthday {
+		duration = Hard16AttemptDuration
+	}
 	return Envelope{
 		Profile: profile, ResourceClass: resource,
-		Cost: governor.AttemptCost{Resources: resources, Duration: AttemptDuration, Heavyweight: true},
+		Cost: governor.AttemptCost{Resources: resources, Duration: duration, Heavyweight: true},
 	}, nil
 }
 
@@ -62,9 +87,47 @@ func Operation(profile hardnatplan.Profile) (governor.Operation, error) {
 		return governor.OperationPrediction, nil
 	case hardnatplan.ProfileAsymmetricBirthday:
 		return governor.OperationBirthday, nil
+	case hardnatplan.ProfileHardBirthday:
+		return governor.OperationBirthday, nil
 	default:
 		return "", ErrUnsupportedEnvelope
 	}
+}
+
+// GovernorProfile returns the only machine profile that may carry this exact
+// envelope. The hard campaign never borrows the ordinary manual profile.
+func GovernorProfile(profile hardnatplan.Profile, resource hardnatplan.ResourceClass) (governor.Profile, error) {
+	if _, err := For(profile, resource); err != nil {
+		return "", err
+	}
+	if profile == hardnatplan.ProfileHardBirthday {
+		return governor.ProfilePhase1HardNATCampaign, nil
+	}
+	return governor.ProfilePhase1ManualTraversal, nil
+}
+
+func ActiveDuration(profile hardnatplan.Profile, resource hardnatplan.ResourceClass) (time.Duration, error) {
+	if _, err := For(profile, resource); err != nil {
+		return 0, err
+	}
+	if profile == hardnatplan.ProfileHardBirthday {
+		return Hard16ActiveEnvelope, nil
+	}
+	return ActiveEnvelope, nil
+}
+
+func CandidateDuration(profile hardnatplan.Profile, resource hardnatplan.ResourceClass) (time.Duration, error) {
+	if _, err := For(profile, resource); err != nil {
+		return 0, err
+	}
+	if profile == hardnatplan.ProfileHardBirthday {
+		return Hard16CandidateWindow, nil
+	}
+	return CandidateWindow, nil
+}
+
+func IsHardCampaign(profile hardnatplan.Profile, resource hardnatplan.ResourceClass) bool {
+	return profile == hardnatplan.ProfileHardBirthday && resource == hardnatplan.ResourceHard16KLab
 }
 
 func Exact(profile hardnatplan.Profile, resource hardnatplan.ResourceClass, operation governor.Operation, cost governor.AttemptCost) bool {

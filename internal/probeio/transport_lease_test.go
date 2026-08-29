@@ -261,3 +261,49 @@ func TestGateB2TransportLeaseConsumerIsOperationSeparated(t *testing.T) {
 		t.Fatalf("connect_test accepted Gate B2 consumer = %v", err)
 	}
 }
+
+func TestGateB3TransportLeaseRequiresExactCampaignReservation(t *testing.T) {
+	lease := newFakeLease(governor.Resources{
+		Sockets: 16, Targets: 16_400, FiveTuples: 16_400, Packets: 16_432, PacketsPerSecond: 512,
+	})
+	lease.request.Operation = governor.OperationBirthday
+	lease.request.Cost.Duration = 47 * time.Second
+	lease.request.Cost.Heavyweight = true
+	binding := TransportLeaseBinding{
+		PeerID: lease.PeerID(), AttemptID: lease.Request().ID, Generation: 7,
+		PathID: "gate-b3/hard_birthday_campaign/1", Target: netip.MustParseAddrPort("192.0.2.10:49152"),
+		ConsumerKind: GateB3TestConsumer,
+	}
+	session, err := issueTransportLease(lease, binding)
+	if err != nil {
+		t.Fatalf("exact Gate B3 lease = %v", err)
+	}
+	if err := session.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	tests := []struct {
+		name   string
+		mutate func(*fakeLease, *TransportLeaseBinding)
+	}{
+		{name: "lower cost", mutate: func(lease *fakeLease, _ *TransportLeaseBinding) { lease.request.Cost.Resources.Packets-- }},
+		{name: "wrong path", mutate: func(_ *fakeLease, binding *TransportLeaseBinding) {
+			binding.PathID = "gate-b2/hard_birthday_campaign/1"
+		}},
+		{name: "port outside universe", mutate: func(_ *fakeLease, binding *TransportLeaseBinding) {
+			binding.Target = netip.MustParseAddrPort("192.0.2.10:49151")
+		}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			candidate := newFakeLease(lease.request.Cost.Resources)
+			candidate.request.Operation = governor.OperationBirthday
+			candidate.request.Cost = lease.request.Cost
+			candidateBinding := binding
+			test.mutate(candidate, &candidateBinding)
+			if _, err := issueTransportLease(candidate, candidateBinding); !errors.Is(err, ErrTransportBinding) {
+				t.Fatalf("mutation accepted: %v", err)
+			}
+		})
+	}
+}

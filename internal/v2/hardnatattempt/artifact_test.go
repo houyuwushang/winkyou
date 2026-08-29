@@ -59,6 +59,55 @@ func TestArtifactSetRoundTripAndParserSeparation(t *testing.T) {
 	}
 }
 
+func TestHard16ArtifactExactArmAndParserSeparation(t *testing.T) {
+	set := syntheticSet(t, hardnatplan.ProfileHardBirthday, hardnatplan.ResourceHard16KLab,
+		hardnatplan.RoleInitiator, hardnatplan.RoleResponder)
+	defer set.Close()
+	now := time.Date(2026, 8, 28, 0, 1, 0, 0, time.UTC)
+	for _, payload := range [][]byte{set.Initiator, set.Responder} {
+		artifact, err := ParseArtifact(payload, now)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if artifact.PlannerProfile != hardnatplan.ProfileHardBirthday || artifact.ResourceClass != hardnatplan.ResourceHard16KLab ||
+			artifact.InitiatorPlannerRole != hardnatplan.RoleInitiator || artifact.ResponderPlannerRole != hardnatplan.RoleResponder {
+			t.Fatalf("hard16 artifact = %+v", artifact)
+		}
+		artifact.Close()
+		if _, err := directattempt.ParseArtifact(payload, now); err == nil {
+			t.Fatal("N3b parser accepted hard16 artifact")
+		}
+		if _, err := oobattempt.ParseArtifact(payload, now); err == nil {
+			t.Fatal("Gate A parser accepted hard16 artifact")
+		}
+	}
+
+	var object map[string]any
+	if err := json.Unmarshal(set.Initiator, &object); err != nil {
+		t.Fatal(err)
+	}
+	for name, mutate := range map[string]func(map[string]any){
+		"hard32":        func(value map[string]any) { value["resource_class"] = string(hardnatplan.ResourceHard32KCandidate) },
+		"wrong role":    func(value map[string]any) { value["initiator_planner_role"] = string(hardnatplan.RoleMappingSet) },
+		"cross profile": func(value map[string]any) { value["planner_profile"] = string(hardnatplan.ProfileAsymmetricBirthday) },
+	} {
+		t.Run(name, func(t *testing.T) {
+			clone := make(map[string]any, len(object))
+			for key, value := range object {
+				clone[key] = value
+			}
+			mutate(clone)
+			payload, err := json.Marshal(clone)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := ParseArtifact(payload, now); err == nil {
+				t.Fatal("mutated hard16 arm was accepted")
+			}
+		})
+	}
+}
+
 func TestArtifactRejectsProfileFallbackAndUnknownFields(t *testing.T) {
 	set := syntheticSet(t, hardnatplan.ProfilePredictiveEdm, hardnatplan.ResourcePredictive,
 		hardnatplan.RoleInitiator, hardnatplan.RoleResponder)

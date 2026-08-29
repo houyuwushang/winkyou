@@ -252,6 +252,8 @@ func validPlannerRoles(profile hardnatplan.Profile, initiator, responder hardnat
 		return initiator != responder &&
 			(initiator == hardnatplan.RoleMappingSet || initiator == hardnatplan.RoleTargetSet) &&
 			(responder == hardnatplan.RoleMappingSet || responder == hardnatplan.RoleTargetSet)
+	case hardnatplan.ProfileHardBirthday:
+		return initiator == hardnatplan.RoleInitiator && responder == hardnatplan.RoleResponder
 	default:
 		return false
 	}

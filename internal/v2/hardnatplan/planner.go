@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/binary"
 	"fmt"
+	"sync"
 )
 
 const (
@@ -26,6 +27,27 @@ type planShape struct {
 	candidates uint32
 	executable bool
 }
+
+type hardProbabilityCacheKey struct {
+	profile    Profile
+	resource   ResourceClass
+	universe   Universe
+	candidates uint32
+}
+
+type hardProbabilityCacheValue struct {
+	once   sync.Once
+	report ProbabilityReport
+	err    error
+}
+
+// The hard profiles have exactly one compile-time shape each. Probability is
+// immutable for that shape and expensive enough that independently verifying
+// both commitments must not repeatedly spend the active attempt envelope on
+// identical high-precision arithmetic. The cache remains bounded to the two
+// accepted hard resources; caller-specific evidence coverage is restored on
+// the returned value and never stored.
+var hardProbabilityCache sync.Map
 
 // BuildLocalCommitment validates one side's trusted evidence and freezes its
 // own predicted source schedule. It never guesses or consumes the peer's
@@ -206,9 +228,12 @@ func shapeFor(profile Profile, resource ResourceClass, role Role, model StateMod
 		}, nil
 	case profile == ProfileHardBirthday && resource == ResourceHard16KLab:
 		return planShape{
-			cost:       Cost{Sockets: 16, Targets: 16_400, FiveTuples: 16_400, Packets: 16_432, PacketsPerSecond: 512, ActiveMillis: 45_000},
-			universe:   Universe{Name: "iana-dynamic-private-49152-65535/1", Min: DynamicPortMin, Max: DynamicPortMax},
-			candidates: DynamicPortCount, executable: false,
+			cost:     Cost{Sockets: 16, Targets: 16_400, FiveTuples: 16_400, Packets: 16_432, PacketsPerSecond: 512, ActiveMillis: 45_000},
+			universe: Universe{Name: "iana-dynamic-private-49152-65535/1", Min: DynamicPortMin, Max: DynamicPortMax},
+			// Gate B3 acceptance atomically makes this exact, compiled plan
+			// executable. Executable is part of PlanDigest, so older B1 builds
+			// fail joint commitment rather than negotiating or falling back.
+			candidates: DynamicPortCount, executable: true,
 		}, nil
 	case profile == ProfileHardBirthday && resource == ResourceHard32KCandidate:
 		return planShape{
@@ -238,6 +263,9 @@ func probabilityForCommitment(commitment LocalSourceCommitment, shape planShape)
 }
 
 func probabilityFor(profile Profile, resource ResourceClass, model StateModel, shape planShape) (ProbabilityReport, error) {
+	if resource == ResourceHard16KLab || resource == ResourceHard32KCandidate {
+		return probabilityForHardShape(profile, resource, model.Coverage, shape)
+	}
 	report := ProbabilityReport{Conditional: true, ModelCoverage: model.Coverage}
 	switch resource {
 	case ResourcePredictive:
@@ -258,28 +286,6 @@ func probabilityFor(profile Profile, resource ResourceClass, model StateModel, s
 			return report, err
 		}
 		report.Primary, report.FullRangeBaseline = primary, primary
-	case ResourceHard16KLab, ResourceHard32KCandidate:
-		q := uint64(shape.candidates)
-		fullUniverse, err := checkedProduct(65535, 65535)
-		if err != nil {
-			return report, err
-		}
-		conditionalUniverse, err := checkedProduct(DynamicPortCount, DynamicPortCount)
-		if err != nil {
-			return report, err
-		}
-		primary, err := CollisionProbabilityWithoutReplacement(conditionalUniverse, q, q)
-		if err != nil {
-			return report, err
-		}
-		baseline, err := CollisionProbabilityWithoutReplacement(fullUniverse, q, q)
-		if err != nil {
-			return report, err
-		}
-		report.Model = string(ProfileHardBirthday)
-		report.Universe = shape.universe.Name
-		report.Assumptions = "public mappings remain uniformly inside the compiled 49152-65535 model universe"
-		report.Primary, report.FullRangeBaseline = primary, baseline
 	default:
 		return report, ErrUnsupportedProfile
 	}
@@ -293,6 +299,43 @@ func probabilityFor(profile Profile, resource ResourceClass, model StateModel, s
 	}
 	report.PoissonApproximation, report.ApproximationDelta = approximation, delta
 	return report, nil
+}
+
+func probabilityForHardShape(profile Profile, resource ResourceClass, coverage string, shape planShape) (ProbabilityReport, error) {
+	key := hardProbabilityCacheKey{profile: profile, resource: resource, universe: shape.universe, candidates: shape.candidates}
+	entryValue, _ := hardProbabilityCache.LoadOrStore(key, &hardProbabilityCacheValue{})
+	entry := entryValue.(*hardProbabilityCacheValue)
+	entry.once.Do(func() {
+		report := ProbabilityReport{
+			Model:         string(ProfileHardBirthday),
+			Universe:      shape.universe.Name,
+			Assumptions:   "public mappings remain uniformly inside the compiled 49152-65535 model universe",
+			Conditional:   true,
+			ModelCoverage: "",
+		}
+		q := uint64(shape.candidates)
+		fullUniverse, err := checkedProduct(65535, 65535)
+		if err == nil {
+			var conditionalUniverse uint64
+			conditionalUniverse, err = checkedProduct(DynamicPortCount, DynamicPortCount)
+			if err == nil {
+				report.Primary, err = CollisionProbabilityWithoutReplacement(conditionalUniverse, q, q)
+			}
+		}
+		if err == nil {
+			report.FullRangeBaseline, err = CollisionProbabilityWithoutReplacement(fullUniverse, q, q)
+		}
+		if err == nil {
+			report.PoissonApproximation, err = PoissonApproximation(report.Primary.Universe, report.Primary.LeftDraws, report.Primary.RightDraws)
+		}
+		if err == nil {
+			report.ApproximationDelta, err = ApproximationDelta(report.Primary, report.PoissonApproximation)
+		}
+		entry.report, entry.err = report, err
+	})
+	report := entry.report
+	report.ModelCoverage = coverage
+	return report, entry.err
 }
 
 func probabilityAdmitted(resource ResourceClass, report ProbabilityReport) bool {

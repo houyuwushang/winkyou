@@ -58,10 +58,14 @@ type Model struct {
 	Mapping    MappingBehavior
 	Allocation PortAllocation
 	Filtering  FilteringBehavior
-	UDPBlocked bool
-	PortMin    int
-	PortMax    int
-	RandomSeed uint64
+	// EndpointDependentPortReuse models APDM NATs that may reuse one public
+	// port for mappings bound to distinct remote endpoints. It is needed for
+	// the Gate B3 fixed 16K universe and is invalid for EIM.
+	EndpointDependentPortReuse bool
+	UDPBlocked                 bool
+	PortMin                    int
+	PortMax                    int
+	RandomSeed                 uint64
 }
 
 // BehaviorChange replaces a NAT model immediately before the first outbound
@@ -107,6 +111,9 @@ func normalizeModel(model Model) (Model, error) {
 	}
 	if model.RandomSeed == 0 {
 		model.RandomSeed = 1
+	}
+	if model.EndpointDependentPortReuse && model.Mapping != MappingEndpointDependent {
+		return Model{}, fmt.Errorf("%w: endpoint-dependent port reuse requires EDM", ErrInvalidConfig)
 	}
 	return model, nil
 }

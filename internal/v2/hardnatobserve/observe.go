@@ -226,6 +226,16 @@ func Collect(ctx context.Context, config Config) (Result, error) {
 	if err != nil {
 		return Result{}, errors.Join(ErrObservationFailed, err)
 	}
+	if hardnatbudget.IsHardCampaign(config.Profile, config.ResourceClass) {
+		if model.Mapping != hardnatplan.MappingAPDM || model.Allocation != hardnatplan.AllocationApparentlyRandom {
+			return Result{}, errors.Join(ErrObservationFailed, hardnatplan.ErrEvidenceInsufficient)
+		}
+		for _, sample := range graph.Allocation {
+			if sample.MappedPort < hardnatplan.DynamicPortMin || sample.MappedPort > hardnatplan.DynamicPortMax {
+				return Result{}, errors.Join(ErrObservationFailed, hardnatplan.ErrEvidenceInsufficient)
+			}
+		}
+	}
 	publicAddress := graph.Allocation[0].MappedAddress
 	return Result{Graph: graph, Trusted: trusted, Model: model, PublicAddress: publicAddress,
 		PacketsSent: packets, Targets: 4, FiveTuples: 11}, nil

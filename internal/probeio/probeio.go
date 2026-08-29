@@ -91,6 +91,17 @@ type IsolatedNATLabFactory interface {
 	isolatedNATLabFactory()
 }
 
+// HardNATCampaignNATLabFactory is a separate, sealed linux+natlab capability
+// for the fixed 16K campaign. Unlike Gate B2, its datagrams accept peer
+// targets only inside the compiled IANA dynamic/private port universe.
+type HardNATCampaignNATLabFactory interface {
+	Factory
+	ValidateObserverEndpoints([4]netip.AddrPort) error
+	ValidateLocalAddress(netip.Addr) error
+	ValidatePeerAddress(netip.Addr) error
+	hardNATCampaignNATLabFactory()
+}
+
 // GenerationSource lets every active operation reject handles created for an
 // obsolete network observation generation.
 type GenerationSource interface {
@@ -742,6 +753,13 @@ func (socket *ProbeSocket) PromoteToLease(target netip.AddrPort, pathID string, 
 // ordering but binds the handoff to the separately reviewed B2 test consumer.
 func (socket *ProbeSocket) PromoteToHardNATLease(target netip.AddrPort, pathID string, destination *TransportLease) error {
 	return socket.promoteToLease(target, pathID, GateB2TestConsumer, destination)
+}
+
+// PromoteToHardNATCampaignLease is the exact Gate B3 handoff. Keeping a
+// distinct consumer kind prevents a hard-campaign transport from being
+// attached through the lower-cost Gate B2 authority.
+func (socket *ProbeSocket) PromoteToHardNATCampaignLease(target netip.AddrPort, pathID string, destination *TransportLease) error {
+	return socket.promoteToLease(target, pathID, GateB3TestConsumer, destination)
 }
 
 func (socket *ProbeSocket) promoteToLease(target netip.AddrPort, pathID, consumerKind string, destination *TransportLease) error {

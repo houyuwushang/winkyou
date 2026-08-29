@@ -16,17 +16,22 @@ import (
 )
 
 const (
-	FrameMagic       = "WYHB"
-	FrameVersion     = 1
-	FrameHeaderBytes = 24
-	MaxFrameBytes    = 1024
-	MaxSequence      = uint64(530)
-	Generation       = uint64(1)
+	FrameMagic              = "WYHB"
+	FrameVersion            = 1
+	FrameHeaderBytes        = 24
+	MaxFrameBytes           = 1024
+	MaxSequence             = uint64(530)
+	HardCampaignMaxSequence = uint64(16_402)
+	absoluteMaxSequence     = HardCampaignMaxSequence
+	Generation              = uint64(1)
 
-	CandidateSequenceBase = uint64(16)
-	WinnerSequence        = uint64(528)
-	VerifySequence        = uint64(529)
-	CancelSequence        = uint64(530)
+	CandidateSequenceBase      = uint64(16)
+	WinnerSequence             = uint64(528)
+	VerifySequence             = uint64(529)
+	CancelSequence             = uint64(530)
+	HardCampaignWinnerSequence = uint64(16_400)
+	HardCampaignVerifySequence = uint64(16_401)
+	HardCampaignCancelSequence = uint64(16_402)
 )
 
 var (
@@ -96,10 +101,22 @@ func (binding Binding) Validate() error {
 		return ErrInvalidBinding
 	}
 	if (binding.Profile != hardnatplan.ProfilePredictiveEdm || binding.ResourceClass != hardnatplan.ResourcePredictive) &&
-		(binding.Profile != hardnatplan.ProfileAsymmetricBirthday || binding.ResourceClass != hardnatplan.ResourceAsymmetric) {
+		(binding.Profile != hardnatplan.ProfileAsymmetricBirthday || binding.ResourceClass != hardnatplan.ResourceAsymmetric) &&
+		(binding.Profile != hardnatplan.ProfileHardBirthday || binding.ResourceClass != hardnatplan.ResourceHard16KLab) {
 		return ErrInvalidBinding
 	}
 	return nil
+}
+
+func MaxSequenceFor(profile hardnatplan.Profile, resource hardnatplan.ResourceClass) (uint64, error) {
+	if (profile == hardnatplan.ProfilePredictiveEdm && resource == hardnatplan.ResourcePredictive) ||
+		(profile == hardnatplan.ProfileAsymmetricBirthday && resource == hardnatplan.ResourceAsymmetric) {
+		return MaxSequence, nil
+	}
+	if profile == hardnatplan.ProfileHardBirthday && resource == hardnatplan.ResourceHard16KLab {
+		return HardCampaignMaxSequence, nil
+	}
+	return 0, ErrInvalidBinding
 }
 
 type FrameMetadata struct {
@@ -210,7 +227,8 @@ func (source NoisePlannerKeySource) DerivePlannerKey(context hardnatplan.Planner
 func EncodePlannerKeyContext(context hardnatplan.PlannerKeyContext) ([]byte, error) {
 	if context.Generation == 0 || allZero(context.AttemptDigest[:]) || allZero(context.FirstEvidenceDigest[:]) ||
 		allZero(context.SecondEvidenceDigest[:]) ||
-		(context.Profile != hardnatplan.ProfilePredictiveEdm && context.Profile != hardnatplan.ProfileAsymmetricBirthday) {
+		(context.Profile != hardnatplan.ProfilePredictiveEdm && context.Profile != hardnatplan.ProfileAsymmetricBirthday &&
+			context.Profile != hardnatplan.ProfileHardBirthday) {
 		return nil, ErrInvalidBinding
 	}
 	var encoded bytes.Buffer
@@ -262,7 +280,7 @@ func NewProtocol(role Role, plannerRole hardnatplan.Role, binding Binding, packe
 }
 
 func plannerRoleMatches(profile hardnatplan.Profile, carrier Role, planner hardnatplan.Role) bool {
-	if profile == hardnatplan.ProfilePredictiveEdm {
+	if profile == hardnatplan.ProfilePredictiveEdm || profile == hardnatplan.ProfileHardBirthday {
 		return carrier == RoleInitiator && planner == hardnatplan.RoleInitiator || carrier == RoleResponder && planner == hardnatplan.RoleResponder
 	}
 	return profile == hardnatplan.ProfileAsymmetricBirthday && (planner == hardnatplan.RoleMappingSet || planner == hardnatplan.RoleTargetSet)
@@ -270,6 +288,7 @@ func plannerRoleMatches(profile hardnatplan.Profile, carrier Role, planner hardn
 
 func (protocol *Protocol) chooser() bool {
 	return protocol.binding.Profile == hardnatplan.ProfilePredictiveEdm && protocol.role == RoleInitiator ||
+		protocol.binding.Profile == hardnatplan.ProfileHardBirthday && protocol.role == RoleInitiator ||
 		protocol.binding.Profile == hardnatplan.ProfileAsymmetricBirthday && protocol.plannerRole == hardnatplan.RoleTargetSet
 }
 
@@ -321,7 +340,7 @@ func (protocol *Protocol) sealControl(frameType FrameType, payload []byte) ([]by
 	if err := protocol.validateSendLocked(frameType, 0); err != nil {
 		return nil, protocol.failLocked(err)
 	}
-	sequence, ok := fixedSequence(frameType)
+	sequence, ok := protocol.fixedSequence(frameType)
 	if !ok {
 		return nil, protocol.failLocked(ErrInvalidSequence)
 	}
@@ -363,7 +382,7 @@ func (protocol *Protocol) ChooseWinner(candidate OpenedFrame, receiverSocketSlot
 	}
 	protocol.mu.Lock()
 	defer protocol.mu.Unlock()
-	if protocol.state.terminal || !protocol.chooser() || protocol.state.hasWinner {
+	if protocol.state.terminal || !protocol.mayChooseWinnerLocked() || protocol.state.hasWinner {
 		return Winner{}, protocol.failLocked(ErrInvalidTransition)
 	}
 	if _, ok := protocol.state.receivedCandidates[candidate.Metadata.Ordinal]; !ok {
@@ -381,7 +400,7 @@ func (protocol *Protocol) SealWinner(winner Winner) ([]byte, error) {
 	}
 	protocol.mu.Lock()
 	defer protocol.mu.Unlock()
-	if protocol.state.terminal || !protocol.chooser() || !protocol.state.hasWinner || protocol.state.winner != winner ||
+	if protocol.state.terminal || !protocol.mayChooseWinnerLocked() || !protocol.state.hasWinner || protocol.state.winner != winner ||
 		winner.Digest != digestWinner(protocol.executionDigest, winner) {
 		return nil, protocol.failLocked(ErrInvalidTransition)
 	}
@@ -390,7 +409,7 @@ func (protocol *Protocol) SealWinner(winner Winner) ([]byte, error) {
 	}
 	payload := marshalWinner(winner)
 	defer clear(payload)
-	frame, err := protocol.sealLocked(FrameWinner, WinnerSequence, winner.ReceiverSocketSlot, winner.CandidateOrdinal, payload)
+	frame, err := protocol.sealLocked(FrameWinner, protocol.winnerSequence(), winner.ReceiverSocketSlot, winner.CandidateOrdinal, payload)
 	if err != nil {
 		return nil, protocol.failLocked(err)
 	}
@@ -487,7 +506,7 @@ func (protocol *Protocol) Open(frame []byte) (OpenedFrame, error) {
 		}
 	case FrameWinner:
 		winner, parseErr := parseWinner(plaintext)
-		if parseErr != nil || protocol.chooser() || winner.CandidateSender != protocol.role ||
+		if parseErr != nil || protocol.state.sentWinner || winner.CandidateSender != protocol.role ||
 			int(winner.CandidateOrdinal) >= len(protocol.localPlan.Candidates) ||
 			winner.Digest != digestWinner(protocol.executionDigest, winner) || metadata.Ordinal != winner.CandidateOrdinal ||
 			metadata.SocketSlot != winner.ReceiverSocketSlot {
@@ -589,11 +608,11 @@ func (protocol *Protocol) validateSendLocked(frameType FrameType, ordinal uint32
 			return ErrInvalidTransition
 		}
 	case FrameWinner:
-		if !protocol.chooser() || !s.hasWinner || s.sentWinner {
+		if !protocol.mayChooseWinnerLocked() || !s.hasWinner || s.sentWinner {
 			return ErrInvalidTransition
 		}
 	case FrameVerify:
-		if !s.hasWinner || (protocol.chooser() && !s.sentWinner) || (!protocol.chooser() && !s.receivedWinner) || s.sentVerify {
+		if !s.hasWinner || (!s.sentWinner && !s.receivedWinner) || s.sentVerify {
 			return ErrInvalidTransition
 		}
 	case FrameCancel:
@@ -633,15 +652,15 @@ func (protocol *Protocol) validateReceiveLocked(metadata FrameMetadata) error {
 			return ErrInvalidTransition
 		}
 	case FrameWinner:
-		if protocol.chooser() || s.receivedWinner || metadata.Sequence != WinnerSequence {
+		if s.sentWinner || s.receivedWinner || metadata.Sequence != protocol.winnerSequence() {
 			return ErrInvalidTransition
 		}
 	case FrameVerify:
-		if !s.hasWinner || s.receivedVerify || metadata.Sequence != VerifySequence {
+		if !s.hasWinner || s.receivedVerify || metadata.Sequence != protocol.verifySequence() {
 			return ErrInvalidTransition
 		}
 	case FrameCancel:
-		if s.receivedCancel || metadata.Sequence != CancelSequence {
+		if s.receivedCancel || metadata.Sequence != protocol.cancelSequence() {
 			return ErrInvalidTransition
 		}
 	default:
@@ -652,6 +671,19 @@ func (protocol *Protocol) validateReceiveLocked(metadata FrameMetadata) error {
 
 func (protocol *Protocol) fireSeenLocked() bool {
 	return protocol.state.sentFire && protocol.state.receivedFire
+}
+
+// Gate B3 gives the initiator immediate winner priority. The responder may
+// choose only after its complete one-shot schedule has been sealed, allowing
+// a path observed in the opposite direction to succeed without a retry or a
+// second attempt.
+func (protocol *Protocol) mayChooseWinnerLocked() bool {
+	if protocol.chooser() {
+		return true
+	}
+	return protocol.binding.Profile == hardnatplan.ProfileHardBirthday && protocol.role == RoleResponder &&
+		len(protocol.localPlan.Candidates) == hardnatplan.DynamicPortCount &&
+		len(protocol.state.sentCandidates) == len(protocol.localPlan.Candidates)
 }
 
 func (protocol *Protocol) applySendLocked(frameType FrameType, ordinal uint32) {
@@ -751,7 +783,7 @@ func InspectFrame(frame []byte) (FrameMetadata, error) {
 
 func buildHeader(sender Role, frameType FrameType, sequence uint64, socketSlot uint16, ordinal uint32, ciphertextLength int) ([]byte, FrameMetadata, error) {
 	domain, ok := frameType.domain()
-	if !sender.Valid() || !ok || ciphertextLength < noisecore.TagSize || FrameHeaderBytes+ciphertextLength > MaxFrameBytes || sequence > MaxSequence {
+	if !sender.Valid() || !ok || ciphertextLength < noisecore.TagSize || FrameHeaderBytes+ciphertextLength > MaxFrameBytes || sequence > absoluteMaxSequence {
 		return nil, FrameMetadata{}, ErrInvalidFrame
 	}
 	header := make([]byte, FrameHeaderBytes)
@@ -775,7 +807,7 @@ func parseFrame(frame []byte) (FrameMetadata, []byte, []byte, error) {
 		Sequence: binary.BigEndian.Uint64(header[8:16]), SocketSlot: binary.BigEndian.Uint16(header[16:18]),
 		Ordinal: binary.BigEndian.Uint32(header[18:22]), CiphertextBytes: int(binary.BigEndian.Uint16(header[22:24]))}
 	domain, ok := metadata.Type.domain()
-	if !ok || domain != metadata.Domain || !metadata.Sender.Valid() || metadata.Sequence > MaxSequence ||
+	if !ok || domain != metadata.Domain || !metadata.Sender.Valid() || metadata.Sequence > absoluteMaxSequence ||
 		metadata.CiphertextBytes < noisecore.TagSize || len(frame) != FrameHeaderBytes+metadata.CiphertextBytes {
 		return FrameMetadata{}, nil, nil, ErrInvalidFrame
 	}
@@ -785,7 +817,7 @@ func parseFrame(frame []byte) (FrameMetadata, []byte, []byte, error) {
 	return metadata, header, frame[FrameHeaderBytes:], nil
 }
 
-func fixedSequence(frameType FrameType) (uint64, bool) {
+func (protocol *Protocol) fixedSequence(frameType FrameType) (uint64, bool) {
 	switch frameType {
 	case FramePrepare:
 		return 0, true
@@ -796,12 +828,33 @@ func fixedSequence(frameType FrameType) (uint64, bool) {
 	case FrameFire:
 		return 3, true
 	case FrameVerify:
-		return VerifySequence, true
+		return protocol.verifySequence(), true
 	case FrameCancel:
-		return CancelSequence, true
+		return protocol.cancelSequence(), true
 	default:
 		return 0, false
 	}
+}
+
+func (protocol *Protocol) winnerSequence() uint64 {
+	if protocol != nil && protocol.binding.Profile == hardnatplan.ProfileHardBirthday {
+		return HardCampaignWinnerSequence
+	}
+	return WinnerSequence
+}
+
+func (protocol *Protocol) verifySequence() uint64 {
+	if protocol != nil && protocol.binding.Profile == hardnatplan.ProfileHardBirthday {
+		return HardCampaignVerifySequence
+	}
+	return VerifySequence
+}
+
+func (protocol *Protocol) cancelSequence() uint64 {
+	if protocol != nil && protocol.binding.Profile == hardnatplan.ProfileHardBirthday {
+		return HardCampaignCancelSequence
+	}
+	return CancelSequence
 }
 
 func marshalSource(payload SourcePayload) ([]byte, error) {
@@ -957,6 +1010,16 @@ func ValidateCandidateArrival(localPlan, peerPlan hardnatplan.Plan, opened Opene
 				if local.SocketSlot == receiverSocketSlot {
 					return nil
 				}
+			}
+		}
+	case hardnatplan.ProfileHardBirthday:
+		if sourcePort < hardnatplan.DynamicPortMin || sourcePort > hardnatplan.DynamicPortMax ||
+			peer.TargetPort < hardnatplan.DynamicPortMin || peer.TargetPort > hardnatplan.DynamicPortMax {
+			return ErrPlanMismatch
+		}
+		for _, local := range localPlan.Candidates {
+			if local.SocketSlot == receiverSocketSlot && local.TargetPort == sourcePort {
+				return nil
 			}
 		}
 	}

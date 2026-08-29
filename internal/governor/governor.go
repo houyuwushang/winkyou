@@ -270,10 +270,10 @@ func (p *PeerLease) AcquireAttempt(ctx context.Context, request AttemptRequest) 
 	}
 	if err := g.validateAttemptLocked(p, request); err != nil {
 		var limit *LimitError
-		if g.profile == ProfilePhase1ManualTraversal && errors.As(err, &limit) {
+		if (g.profile == ProfilePhase1ManualTraversal || g.profile == ProfilePhase1HardNATCampaign) && errors.As(err, &limit) {
 			event := SafetyTripEvent{
 				Reason:       SafetyTripHardLimit,
-				Detail:       fmt.Sprintf("manual traversal hard limit %s exceeded", limit.Field),
+				Detail:       fmt.Sprintf("%s hard limit %s exceeded", g.profile, limit.Field),
 				PeerID:       p.peerID,
 				AttemptID:    request.ID,
 				BuildVersion: g.owner.Info().BuildVersion,

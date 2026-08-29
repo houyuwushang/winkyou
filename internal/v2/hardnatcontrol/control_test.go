@@ -3,6 +3,7 @@ package hardnatcontrol
 import (
 	"bytes"
 	"crypto/sha256"
+	"encoding/binary"
 	"encoding/hex"
 	"errors"
 	"testing"
@@ -201,6 +202,116 @@ func TestUnilateralFireCannotAuthorizeDirectPacket(t *testing.T) {
 	}
 }
 
+func TestB2ProtocolRejectsHardCampaignSequenceWithoutWidening(t *testing.T) {
+	left, right, leftPlan, _, _, _ := preparedProtocols(t, true)
+	defer left.Close()
+	defer right.Close()
+	frame, err := left.SealCandidate(leftPlan.Candidates[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	binary.BigEndian.PutUint64(frame[8:16], HardCampaignWinnerSequence)
+	if _, err := right.Open(frame); err == nil {
+		t.Fatal("B2 protocol accepted a hard-campaign sequence")
+	}
+}
+
+func TestHardCampaignLastOrdinalWinnerUsesFrozenSequence(t *testing.T) {
+	left, right, leftPlan, rightPlan := preparedHardProtocols(t)
+	defer left.Close()
+	defer right.Close()
+	last := rightPlan.Candidates[len(rightPlan.Candidates)-1]
+	frame, err := right.SealCandidate(last)
+	if err != nil {
+		t.Fatal(err)
+	}
+	opened, err := left.Open(frame)
+	if err != nil || opened.Metadata.Sequence != CandidateSequenceBase+uint64(len(rightPlan.Candidates)-1) ||
+		opened.Metadata.Ordinal != uint32(len(rightPlan.Candidates)-1) {
+		t.Fatalf("last hard candidate = %+v/%v", opened.Metadata, err)
+	}
+	winner, err := left.ChooseWinner(opened, leftPlan.Candidates[0].SocketSlot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	frame, err = left.SealWinner(winner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	metadata, err := InspectFrame(frame)
+	if err != nil || metadata.Sequence != HardCampaignWinnerSequence {
+		t.Fatalf("hard winner sequence = %+v/%v", metadata, err)
+	}
+	if _, err := right.Open(frame); err != nil {
+		t.Fatal(err)
+	}
+	frame, err = left.SealVerify()
+	if err != nil {
+		t.Fatal(err)
+	}
+	metadata, _ = InspectFrame(frame)
+	if metadata.Sequence != HardCampaignVerifySequence {
+		t.Fatalf("hard verify sequence = %d", metadata.Sequence)
+	}
+	if _, err := right.Open(frame); err != nil {
+		t.Fatal(err)
+	}
+	frame, err = right.SealVerify()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := left.Open(frame); err != nil {
+		t.Fatal(err)
+	}
+	if !left.Success() || !right.Success() {
+		t.Fatal("hard campaign did not reach bidirectional VERIFY")
+	}
+}
+
+func TestHardCampaignCandidateReorderIsBoundedAndReplayIsTerminal(t *testing.T) {
+	left, right, _, rightPlan := preparedHardProtocols(t)
+	defer left.Close()
+	defer right.Close()
+	lastFrame, err := right.SealCandidate(rightPlan.Candidates[len(rightPlan.Candidates)-1])
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstFrame, err := right.SealCandidate(rightPlan.Candidates[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if opened, err := left.Open(lastFrame); err != nil || opened.Metadata.Ordinal != uint32(len(rightPlan.Candidates)-1) {
+		t.Fatalf("reordered last candidate = %+v/%v", opened.Metadata, err)
+	}
+	if opened, err := left.Open(firstFrame); err != nil || opened.Metadata.Ordinal != 0 {
+		t.Fatalf("reordered first candidate = %+v/%v", opened.Metadata, err)
+	}
+	if _, err := left.Open(lastFrame); err == nil {
+		t.Fatal("hard campaign candidate replay was accepted")
+	}
+	if _, err := left.SealCancel(); err == nil {
+		t.Fatal("hard campaign protocol remained usable after replay")
+	}
+}
+
+func TestHardCampaignCandidateArrivalRequiresReciprocalSocketTuple(t *testing.T) {
+	left, right, leftPlan, rightPlan := preparedHardProtocols(t)
+	defer left.Close()
+	defer right.Close()
+	peer := rightPlan.Candidates[0]
+	opened := OpenedFrame{Metadata: FrameMetadata{
+		Type: FrameCandidate, Sender: RoleResponder, Ordinal: peer.Ordinal, SocketSlot: peer.SocketSlot,
+	}}
+	receiverSlot := leftPlan.Candidates[0].SocketSlot
+	if err := ValidateCandidateArrival(leftPlan, rightPlan, opened, receiverSlot, leftPlan.Candidates[0].TargetPort); err != nil {
+		t.Fatalf("reciprocal hard tuple rejected: %v", err)
+	}
+	foreignPort := leftPlan.Candidates[1024].TargetPort
+	if err := ValidateCandidateArrival(leftPlan, rightPlan, opened, receiverSlot, foreignPort); !errors.Is(err, ErrPlanMismatch) {
+		t.Fatalf("same-universe foreign socket tuple = %v, want plan mismatch", err)
+	}
+}
+
 func compactPredictive(t *testing.T, role hardnatplan.Role, attempt [32]byte, first uint16, label string) hardnatplan.LocalSourceCommitment {
 	t.Helper()
 	ports := make([]uint16, 32)
@@ -303,4 +414,98 @@ func preparedProtocols(t *testing.T, mutualFire bool) (*Protocol, *Protocol, har
 		_, _ = left.Open(frame)
 	}
 	return left, right, leftPlan, rightPlan, joint, execution
+}
+
+func preparedHardProtocols(t *testing.T) (*Protocol, *Protocol, hardnatplan.Plan, hardnatplan.Plan) {
+	t.Helper()
+	attempt := sha256.Sum256([]byte("prepared-hard-attempt"))
+	compact := func(role hardnatplan.Role, label string) hardnatplan.LocalSourceCommitment {
+		commitment, err := hardnatplan.ReconstructLocalCommitment(hardnatplan.CompactSourceInput{
+			Profile: hardnatplan.ProfileHardBirthday, ResourceClass: hardnatplan.ResourceHard16KLab, Role: role,
+			AttemptDigest: attempt, Generation: 1, EvidenceDigest: sha256.Sum256([]byte(label + "-evidence")),
+			ValidationDigest: sha256.Sum256([]byte(label + "-validation")),
+			ModelCoverage:    "samples=8;observers=2;alternate_port=true;universe=49152-65535",
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return commitment
+	}
+	leftSource := compact(hardnatplan.RoleInitiator, "hard-left")
+	rightSource := compact(hardnatplan.RoleResponder, "hard-right")
+	leftSession, rightSession := completeNoise(t)
+	leftPackets, leftPlanner, err := leftSession.TakePacketCipherAndPlannerKeySource(HardCampaignMaxSequence)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rightPackets, rightPlanner, err := rightSession.TakePacketCipherAndPlannerKeySource(HardCampaignMaxSequence)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(leftPlanner.Close)
+	t.Cleanup(rightPlanner.Close)
+	bilateral, err := hardnatplan.BuildBilateralPlan(hardnatplan.BilateralPlannerInput{First: leftSource, Second: rightSource, KeySource: NoisePlannerKeySource{leftPlanner}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	peerBilateral, err := hardnatplan.BuildBilateralPlan(hardnatplan.BilateralPlannerInput{First: rightSource, Second: leftSource, KeySource: NoisePlannerKeySource{rightPlanner}})
+	if err != nil || peerBilateral.JointDigest != bilateral.JointDigest {
+		t.Fatal("hard bilateral mismatch")
+	}
+	leftPlan, _ := bilateral.PlanForRole(hardnatplan.RoleInitiator)
+	rightPlan, _ := bilateral.PlanForRole(hardnatplan.RoleResponder)
+	envelope, _ := hardnatbudget.For(hardnatplan.ProfileHardBirthday, hardnatplan.ResourceHard16KLab)
+	envelopeDigest, _ := hardnatbudget.Digest(envelope)
+	binding := Binding{AttemptID: "AAECAwQFBgcICQoLDA0ODw", ContextDigest: sha256.Sum256([]byte("hard-context")),
+		HandshakeHash: sha256.Sum256([]byte("hard-handshake")), Generation: 1,
+		Profile: hardnatplan.ProfileHardBirthday, ResourceClass: hardnatplan.ResourceHard16KLab, EnvelopeDigest: envelopeDigest}
+	left, err := NewProtocol(RoleInitiator, hardnatplan.RoleInitiator, binding, leftPackets)
+	if err != nil {
+		t.Fatal(err)
+	}
+	right, err := NewProtocol(RoleResponder, hardnatplan.RoleResponder, binding, rightPackets)
+	if err != nil {
+		left.Close()
+		t.Fatal(err)
+	}
+	exchange := func(sender, receiver *Protocol, frame []byte) OpenedFrame {
+		t.Helper()
+		opened, err := receiver.Open(frame)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return opened
+	}
+	frame, _ := left.SealPrepare()
+	exchange(left, right, frame)
+	frame, _ = right.SealPrepare()
+	exchange(right, left, frame)
+	leftPayload, _ := NewSourcePayload(leftSource, hardnatplan.Address4([4]byte{192, 0, 2, 41}))
+	rightPayload, _ := NewSourcePayload(rightSource, hardnatplan.Address4([4]byte{192, 0, 2, 42}))
+	frame, _ = left.SealSource(leftPayload)
+	exchange(left, right, frame)
+	frame, _ = right.SealSource(rightPayload)
+	exchange(right, left, frame)
+	joint := bilateral.Commitment()
+	execution, err := BuildExecutionDigest(joint, envelopeDigest,
+		ExecutionSource{CarrierRole: RoleInitiator, PlannerRole: leftPlan.Role, SourceDigest: leftSource.SourceDigest, PublicAddress: leftPayload.PublicAddress},
+		ExecutionSource{CarrierRole: RoleResponder, PlannerRole: rightPlan.Role, SourceDigest: rightSource.SourceDigest, PublicAddress: rightPayload.PublicAddress})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := left.BindExecution(leftPlan, rightPlan, joint, execution); err != nil {
+		t.Fatal(err)
+	}
+	if err := right.BindExecution(rightPlan, leftPlan, joint, execution); err != nil {
+		t.Fatal(err)
+	}
+	frame, _ = left.SealReady()
+	exchange(left, right, frame)
+	frame, _ = right.SealReady()
+	exchange(right, left, frame)
+	frame, _ = left.SealFire()
+	exchange(left, right, frame)
+	frame, _ = right.SealFire()
+	exchange(right, left, frame)
+	return left, right, leftPlan, rightPlan
 }

@@ -47,7 +47,17 @@ func (gate *PairingAdmissionGate) Commit(ctx context.Context, attempt *AttemptLe
 	if err := validatePairingAdmissionRequest(request); err != nil {
 		return nil, errors.Join(ErrPairingAdmissionRejected, err)
 	}
-	ownerID, err := precheckPairingAdmission(ctx, attempt, request)
+	if attempt == nil || attempt.governor == nil || attempt.governor.owner == nil {
+		return nil, errors.Join(ErrPairingAdmissionRejected, ErrLeaseClosed)
+	}
+	ledger, err := attempt.governor.owner.PairingLedger()
+	if err != nil {
+		return nil, errors.Join(ErrPairingAdmissionRejected, err)
+	}
+	// One owner-bound clock now governs both credential expiry and the durable
+	// admission timestamp. Production uses time.Now; tests can freeze only this
+	// existing journal clock without introducing a second authority.
+	ownerID, err := precheckPairingAdmission(ctx, attempt, request, ledger.now)
 	if err != nil {
 		return nil, errors.Join(ErrPairingAdmissionRejected, err)
 	}
@@ -66,10 +76,6 @@ func (gate *PairingAdmissionGate) Commit(ctx context.Context, attempt *AttemptLe
 		}
 	}()
 
-	ledger, err := attempt.governor.owner.PairingLedger()
-	if err != nil {
-		return nil, errors.Join(ErrPairingAdmissionRejected, err)
-	}
 	receipt, err := ledger.Admit(request)
 	if err != nil {
 		return nil, errors.Join(ErrPairingAdmissionRejected, err)
@@ -86,7 +92,7 @@ func (gate *PairingAdmissionGate) Commit(ctx context.Context, attempt *AttemptLe
 	if err := runPairingGateHook(gate.hooks.beforePostcheck); err != nil {
 		return failAfterCommit(err)
 	}
-	if err := postcheckPairingAdmission(ctx, attempt, request, ownerID); err != nil {
+	if err := postcheckPairingAdmission(ctx, attempt, request, ownerID, ledger.now); err != nil {
 		return failAfterCommit(err)
 	}
 	if err := runPairingGateHook(gate.hooks.afterPostcheck); err != nil {
@@ -95,7 +101,7 @@ func (gate *PairingAdmissionGate) Commit(ctx context.Context, attempt *AttemptLe
 	if err := runPairingGateHook(gate.hooks.beforeReturn); err != nil {
 		return failAfterCommit(err)
 	}
-	if err := postcheckPairingAdmission(ctx, attempt, request, ownerID); err != nil {
+	if err := postcheckPairingAdmission(ctx, attempt, request, ownerID, ledger.now); err != nil {
 		return failAfterCommit(err)
 	}
 
@@ -122,7 +128,7 @@ func runPairingGateHook(hook func() error) error {
 	return hook()
 }
 
-func precheckPairingAdmission(ctx context.Context, attempt *AttemptLease, request PairingAdmissionRequest) (string, error) {
+func precheckPairingAdmission(ctx context.Context, attempt *AttemptLease, request PairingAdmissionRequest, now func() time.Time) (string, error) {
 	if attempt == nil || attempt.governor == nil {
 		return "", ErrLeaseClosed
 	}
@@ -135,11 +141,11 @@ func precheckPairingAdmission(ctx context.Context, attempt *AttemptLease, reques
 	if !pairingOperationAllowed(attempt.governor.profile, attempt.request.Operation) {
 		return "", fmt.Errorf("%w: pairing admission profile/operation mismatch", ErrNotAllowed)
 	}
-	return inspectPairingAttempt(ctx, attempt, "", request.ExpiresAt, time.Now)
+	return inspectPairingAttempt(ctx, attempt, "", request.ExpiresAt, now)
 }
 
-func postcheckPairingAdmission(ctx context.Context, attempt *AttemptLease, request PairingAdmissionRequest, ownerID string) error {
-	_, err := inspectPairingAttempt(ctx, attempt, ownerID, request.ExpiresAt, time.Now)
+func postcheckPairingAdmission(ctx context.Context, attempt *AttemptLease, request PairingAdmissionRequest, ownerID string, now func() time.Time) error {
+	_, err := inspectPairingAttempt(ctx, attempt, ownerID, request.ExpiresAt, now)
 	return err
 }
 
@@ -191,7 +197,8 @@ func inspectPairingAttempt(ctx context.Context, attempt *AttemptLease, expectedO
 
 func pairingOperationAllowed(profile Profile, operation Operation) bool {
 	return profile == ProfilePhase1Machine && operation == OperationConnectTest ||
-		profile == ProfilePhase1ManualTraversal && (operation == OperationPrediction || operation == OperationBirthday)
+		profile == ProfilePhase1ManualTraversal && (operation == OperationPrediction || operation == OperationBirthday) ||
+		profile == ProfilePhase1HardNATCampaign && operation == OperationBirthday
 }
 
 func pairingTerminalReasonForGateError(err error) PairingTerminalReason {

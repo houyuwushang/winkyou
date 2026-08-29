@@ -126,6 +126,11 @@ type Config struct {
 	// the repository's fixed TEST-NET topology before any socket opens.
 	NATLabFactory probeio.IsolatedNATLabFactory
 
+	// HardNATLabFactory is the separately sealed Gate B3 capability. Its
+	// linux+natlab implementation admits only the fixed TEST-NET peer and the
+	// compiled 49152-65535 target universe.
+	HardNATLabFactory probeio.HardNATCampaignNATLabFactory
+
 	Harness *HarnessHooks
 }
 
@@ -161,6 +166,7 @@ type Result struct {
 	Emissions        Emissions                         `json:"emissions"`
 	ReservedEnvelope governor.PairingAdmissionEnvelope `json:"reserved_envelope"`
 	PairingLedger    governor.PairingLedgerStatus      `json:"pairing_ledger"`
+	CampaignLedger   *governor.HardNATCampaignStatus   `json:"campaign_ledger,omitempty"`
 	SafetyTrip       governor.SafetyTripStatus         `json:"safety_trip"`
 	CarrierWitness   oobcarrier.Witness                `json:"carrier_witness"`
 	TransportWitness probeio.TransportLeaseWitness     `json:"transport_witness"`

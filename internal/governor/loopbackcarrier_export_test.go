@@ -39,6 +39,12 @@ func AcquireManualTraversalTestGovernor(namespace, buildVersion string) (*Govern
 	return acquireCarrierTestGovernor(namespace, buildVersion, ProfilePhase1ManualTraversal)
 }
 
+// AcquireHardNATCampaignTestGovernor is available only to the in-memory and
+// natsim Gate B3 proof. It does not create a production constructor.
+func AcquireHardNATCampaignTestGovernor(namespace, buildVersion string) (*Governor, error) {
+	return acquireCarrierTestGovernor(namespace, buildVersion, ProfilePhase1HardNATCampaign)
+}
+
 func acquireCarrierTestGovernor(namespace, buildVersion string, profile Profile) (*Governor, error) {
 	owner, err := AcquirePreparedNamespace(namespace, ScopeMachine, buildVersion)
 	if err != nil {
@@ -63,6 +69,11 @@ func acquireCarrierTestGovernor(namespace, buildVersion string, profile Profile)
 func InspectLoopbackCarrierTestLedger(namespace string, at time.Time) (PairingLedgerStatus, error) {
 	snapshot, err := readPairingLedgerSnapshot(filepath.Join(namespace, pairingLedgerFilename), at.UTC(), "", validateTestPairingLedgerFile)
 	return snapshot.status, err
+}
+
+func InspectHardNATCampaignTestLedger(namespace string, at time.Time) (HardNATCampaignStatus, error) {
+	snapshot, err := readPairingLedgerSnapshot(filepath.Join(namespace, pairingLedgerFilename), at.UTC(), "", validateTestPairingLedgerFile)
+	return snapshot.hardNATCampaignStatusAt(at.UTC()), err
 }
 
 // InspectLoopbackCarrierTestOccupancy exposes unfinished durable charge only

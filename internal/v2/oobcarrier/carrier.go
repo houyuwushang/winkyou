@@ -48,8 +48,8 @@ type Config struct {
 	testLease attemptLease
 }
 
-// HardNATConfig is the separate Gate B2 adoption surface. Its profile and
-// resource class are checked against the exact manual-traversal reservation
+// HardNATConfig is the separate Gate B2/B3 adoption surface. Its profile and
+// resource class are checked against their exact reviewed reservation
 // before ownership of the stream is taken.
 type HardNATConfig struct {
 	Lease          *governor.AttemptLease
@@ -58,7 +58,7 @@ type HardNATConfig struct {
 	Role           directattempt.Role
 	PlannerProfile hardnatplan.Profile
 	ResourceClass  hardnatplan.ResourceClass
-	// ActiveDeadline may only lower the frozen Gate B2 active envelope. Gate B2
+	// ActiveDeadline may only lower the exact profile's active envelope.
 	// passes the same absolute deadline to its executor context so the carrier,
 	// UDP schedule, handoff, and challenge share one lifetime.
 	ActiveDeadline time.Time
@@ -184,7 +184,7 @@ func Adopt(config Config) (*Carrier, error) {
 	return carrier, nil
 }
 
-// AdoptHardNAT takes the same single bounded stream under Gate B2's distinct
+// AdoptHardNAT takes the same single bounded stream under Gate B2/B3's distinct
 // exact operation/profile authority. It neither opens nor discovers a stream.
 func AdoptHardNAT(config HardNATConfig) (*Carrier, error) {
 	var lease attemptLease
@@ -197,18 +197,26 @@ func AdoptHardNAT(config HardNATConfig) (*Carrier, error) {
 		!hardnatbudget.Exact(config.PlannerProfile, config.ResourceClass, lease.Request().Operation, lease.Request().Cost) {
 		return nil, ErrInvalidConfig
 	}
-	expiresAt := time.Now().Add(hardnatbudget.ActiveEnvelope)
+	activeMaximum, err := hardnatbudget.ActiveDuration(config.PlannerProfile, config.ResourceClass)
+	if err != nil {
+		return nil, ErrInvalidConfig
+	}
+	expiresAt := time.Now().Add(activeMaximum)
 	if !config.ActiveDeadline.IsZero() {
 		remaining := time.Until(config.ActiveDeadline)
-		if remaining <= 0 || remaining > hardnatbudget.ActiveEnvelope {
+		if remaining <= 0 || remaining > activeMaximum {
 			return nil, ErrInvalidConfig
 		}
 		expiresAt = config.ActiveDeadline
 	}
-	if err := lease.ClaimExclusive("gate-b2-oob-carrier"); err != nil {
+	claimName := "gate-b2-oob-carrier"
+	if hardnatbudget.IsHardCampaign(config.PlannerProfile, config.ResourceClass) {
+		claimName = "gate-b3-oob-carrier"
+	}
+	if err := lease.ClaimExclusive(claimName); err != nil {
 		return nil, errors.Join(ErrInvalidConfig, err)
 	}
-	drain, err := lease.RegisterDrain("gate-b2-oob-carrier")
+	drain, err := lease.RegisterDrain(claimName)
 	if err != nil {
 		return nil, errors.Join(ErrInvalidConfig, err)
 	}

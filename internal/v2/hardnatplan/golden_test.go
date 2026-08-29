@@ -107,6 +107,7 @@ type hardNATGolden struct {
 	EvidenceDigestHex        string                    `json:"evidence_digest_hex"`
 	CostDigestHex            string                    `json:"cost_digest_hex"`
 	PlanDigestHex            string                    `json:"plan_digest_hex"`
+	Executable               bool                      `json:"executable"`
 	SourceDigestHex          string                    `json:"source_digest_hex"`
 	PeerSourceDigestHex      string                    `json:"peer_source_digest_hex"`
 	JointDigestHex           string                    `json:"joint_digest_hex"`
@@ -253,7 +254,7 @@ func buildHardNATGolden(t *testing.T) hardNATGolden {
 			Conditional: model.Conditional, Coverage: model.Coverage,
 		},
 		Universe: plan.Universe, Cost: plan.Cost, FirstCandidates: first, LastCandidates: last,
-		EvidenceDigestHex: hex.EncodeToString(plan.EvidenceDigest[:]), CostDigestHex: hex.EncodeToString(plan.CostDigest[:]), PlanDigestHex: hex.EncodeToString(plan.PlanDigest[:]),
+		EvidenceDigestHex: hex.EncodeToString(plan.EvidenceDigest[:]), CostDigestHex: hex.EncodeToString(plan.CostDigest[:]), PlanDigestHex: hex.EncodeToString(plan.PlanDigest[:]), Executable: plan.Executable,
 		SourceDigestHex: hex.EncodeToString(initiator.SourceDigest[:]), PeerSourceDigestHex: hex.EncodeToString(responder.SourceDigest[:]), JointDigestHex: hex.EncodeToString(pair.JointDigest[:]),
 		Probability: plan.Probability, ProbabilityRows: probabilityRows,
 		ProbabilityErrors:   []goldenProbabilityError{{Name: "zero_universe", Universe: 0, Left: 0, Right: 0, ErrorClass: ErrInvalidProbabilityInput.Error()}},
