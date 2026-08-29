@@ -85,9 +85,10 @@ retry、fallback、seed rotation、扩窗或第二 attempt。
 ```text
 preflight -> oob_adopt -> present -> burned -> activated -> handshake -> prepare
   -> sockets -> fresh_evidence -> plan_committed -> ready_fire bilateral barrier
-  -> 16K one-shot candidates -> bilateral winner selection -> optional winner
-  -> verify -> transport_lease
-  -> handoff -> 3-packet data_plane_challenge -> durable finish -> drain
+  -> 16K one-shot candidates -> bilateral winner selection
+  -> [winner -> verify -> transport_lease -> handoff -> 3-packet data_plane_challenge
+      | no winner -> authenticated exhausted acknowledgement]
+  -> durable finish -> drain
 ```
 
 Gate B3 的 `READY_FIRE` 在一个认证 frame 中同时携带原 READY commitment 与 bilateral FIRE
@@ -96,7 +97,8 @@ barrier；Gate B2 wire 不变。双方完成完整 16K schedule 后，responder 
 规则封存唯一选择。selection 只含 role/ordinal/socket-slot/digest，并绑定 Noise AD、joint plan 与
 execution envelope；只有被选中的 receiver 可以复用该 tuple 发 1 个 winner。含双向 VERIFY 在内
 每方向仍恰好不超过 8 carrier frame。该语义不是 fallback：它不生成新 candidate、不更换 tuple、
-不补位、不发起第二轮，全局 winner 总数至多为 1。candidate exhaustion、50%
+不补位、不发起第二轮，全局 winner 总数至多为 1。no-winner 时 responder 使用空出的第 8 个 frame
+发送认证 `EXHAUSTED`，initiator 收到后才关闭 carrier；缺失确认仍 fail-closed。candidate exhaustion、50%
 loss、evidence drift、OOB EOF/cancel 与 deadline 都是有界 terminal；post-burn failure 打开 campaign
 circuit，但普通 exhaustion/cancel/timeout 不触发 machine safety trip。
 
@@ -165,9 +167,10 @@ conntrack/governor lock/netns/veth 全部为零。共同 ceiling 不是 per-netn
 namespace count 的聚合值。内核先递增 `nf_conntrack_count` 再比较 ceiling；单 writer 的
 conntrack-full 故障允许采样到被拒分配造成的瞬时 `max+1`，但 terminal 必须 `<= max`，瞬时
 `max+2` 仍失败。该计数语义不是额外 mapping/packet 授权；产品代码不获得 sysctl 或 test-router
-capability。高负载 topology 删除并通过 namespace/veth 零残留断言后，harness 另留固定 750ms
-供内核回收已删除 namespace 的 conntrack/RCU 对象；它不重建、不重试 campaign，也不进入 attempt
-时长或发包预算。后续 topology 若仍失败，只输出稳定 setup stage，不输出 namespace、设备名或底层
+capability。高负载 topology 删除并通过 namespace/veth 零残留断言、且全部 LIFO cleanup callback
+结束后，harness 另留固定 1s 供内核回收已删除 namespace 的 conntrack/RCU 对象；它不重建、
+不重试 campaign，也不进入 attempt 时长或发包预算。后续 topology 若仍失败，只输出稳定 setup stage，
+不输出 namespace、设备名或底层
 命令文本。
 
 ENOBUFS seam 只存在于 `linux && natlab`，在冻结的 13-packet evidence slice 后对首个 candidate

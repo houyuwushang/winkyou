@@ -42,6 +42,7 @@ func TestHardCampaignBarrierAndSelectionHeaderByteGolden(t *testing.T) {
 	}{
 		{RoleInitiator, FrameReadyFire, 2, "575948420101090100000000000000020000000000000010"},
 		{RoleResponder, FrameWinnerSelection, HardCampaignSelectionSequence, "575948420101080200000000000040110000000000000010"},
+		{RoleResponder, FrameExhausted, HardCampaignVerifySequence, "5759484201010a0200000000000040120000000000000010"},
 	}
 	for _, test := range tests {
 		header, metadata, err := buildHeader(test.role, test.frameType, test.sequence, 0, 0, noisecore.TagSize)
@@ -479,6 +480,53 @@ func TestHardCampaignResponderOnlyHitRemainsSelectable(t *testing.T) {
 	opened, err := left.Open(winnerFrame)
 	if err != nil || opened.Winner == nil || *opened.Winner != selected {
 		t.Fatalf("responder-only winner = %+v/%v", opened.Winner, err)
+	}
+}
+
+func TestHardCampaignExhaustionAckIsResponderOrdered(t *testing.T) {
+	left, right, leftPlan, rightPlan := preparedHardProtocols(t)
+	defer left.Close()
+	defer right.Close()
+	for index := range leftPlan.Candidates {
+		leftFrame, err := left.SealCandidate(leftPlan.Candidates[index])
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := right.Open(leftFrame); err != nil {
+			t.Fatal(err)
+		}
+		rightFrame, err := right.SealCandidate(rightPlan.Candidates[index])
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := left.Open(rightFrame); err != nil {
+			t.Fatal(err)
+		}
+	}
+	statusFrame, status, err := right.SealWinnerSelection()
+	if err != nil || status.HasWinner {
+		t.Fatalf("hard exhaustion status = %+v/%v", status, err)
+	}
+	if _, err := left.Open(statusFrame); err != nil {
+		t.Fatal(err)
+	}
+	decisionFrame, decision, err := left.SealWinnerSelection()
+	if err != nil || decision.HasWinner {
+		t.Fatalf("hard exhaustion decision = %+v/%v", decision, err)
+	}
+	if _, err := right.Open(decisionFrame); err != nil {
+		t.Fatal(err)
+	}
+	ack, err := right.SealExhausted()
+	if err != nil {
+		t.Fatal(err)
+	}
+	opened, err := left.Open(ack)
+	if err != nil || opened.Metadata.Type != FrameExhausted || opened.Metadata.Sequence != HardCampaignVerifySequence {
+		t.Fatalf("hard exhaustion ack = %+v/%v", opened.Metadata, err)
+	}
+	if _, err := right.SealExhausted(); !errors.Is(err, ErrTerminal) {
+		t.Fatalf("duplicate hard exhaustion ack = %v", err)
 	}
 }
 

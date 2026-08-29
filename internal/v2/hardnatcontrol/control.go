@@ -79,11 +79,15 @@ const (
 	// existing READY commitment and atomically supplies FIRE semantics, freeing
 	// exactly one bounded carrier frame for deterministic winner selection.
 	FrameReadyFire
+	// FrameExhausted is a Gate B3-only terminal acknowledgement. The responder
+	// emits it only after receiving the initiator's final no-winner selection;
+	// this proves both peers reached exhaustion before either closes the carrier.
+	FrameExhausted
 )
 
 func (frameType FrameType) domain() (Domain, bool) {
 	switch frameType {
-	case FramePrepare, FrameSource, FrameReady, FrameFire, FrameVerify, FrameCancel, FrameWinnerSelection, FrameReadyFire:
+	case FramePrepare, FrameSource, FrameReady, FrameFire, FrameVerify, FrameCancel, FrameWinnerSelection, FrameReadyFire, FrameExhausted:
 		return DomainRendezvousControl, true
 	case FrameCandidate, FrameWinner:
 		return DomainDirectPunch, true
@@ -270,6 +274,7 @@ type protocolState struct {
 	sentFire, receivedFire           bool
 	sentWinner, receivedWinner       bool
 	sentSelection, receivedSelection bool
+	sentExhausted, receivedExhausted bool
 	sentVerify, receivedVerify       bool
 	sentCancel, receivedCancel       bool
 	sentCandidates                   map[uint32]struct{}
@@ -358,6 +363,9 @@ func (protocol *Protocol) SealVerify() ([]byte, error) {
 	return protocol.sealControl(FrameVerify, payload)
 }
 func (protocol *Protocol) SealCancel() ([]byte, error) { return protocol.sealControl(FrameCancel, nil) }
+func (protocol *Protocol) SealExhausted() ([]byte, error) {
+	return protocol.sealControl(FrameExhausted, nil)
+}
 
 func (protocol *Protocol) sealControl(frameType FrameType, payload []byte) ([]byte, error) {
 	if protocol == nil {
@@ -604,7 +612,7 @@ func (protocol *Protocol) Open(frame []byte) (OpenedFrame, error) {
 	defer clear(plaintext)
 	opened := OpenedFrame{Metadata: metadata}
 	switch metadata.Type {
-	case FramePrepare, FrameFire, FrameCancel:
+	case FramePrepare, FrameFire, FrameCancel, FrameExhausted:
 		if len(plaintext) != 0 {
 			return OpenedFrame{}, protocol.failLocked(ErrInvalidPayload)
 		}
@@ -729,7 +737,7 @@ func (protocol *Protocol) additionalDataLocked(metadata FrameMetadata, header []
 	appendString(&encoded, string(protocol.binding.ResourceClass))
 	encoded.Write(protocol.binding.EnvelopeDigest[:])
 	if metadata.Type == FrameReady || metadata.Type == FrameReadyFire || metadata.Type == FrameFire || metadata.Type == FrameCandidate ||
-		metadata.Type == FrameWinner || metadata.Type == FrameWinnerSelection || metadata.Type == FrameVerify {
+		metadata.Type == FrameWinner || metadata.Type == FrameWinnerSelection || metadata.Type == FrameVerify || metadata.Type == FrameExhausted {
 		if !protocol.state.bound || allZero(protocol.executionDigest[:]) {
 			return nil, ErrInvalidTransition
 		}
@@ -790,6 +798,11 @@ func (protocol *Protocol) validateSendLocked(frameType FrameType, ordinal uint32
 			(protocol.role == RoleInitiator && !s.receivedSelection) {
 			return ErrInvalidTransition
 		}
+	case FrameExhausted:
+		if protocol.binding.Profile != hardnatplan.ProfileHardBirthday || protocol.role != RoleResponder ||
+			!s.sentSelection || !s.receivedSelection || s.hasWinner || s.sentExhausted {
+			return ErrInvalidTransition
+		}
 	case FrameVerify:
 		if !s.hasWinner || (!s.sentWinner && !s.receivedWinner) || s.sentVerify {
 			return ErrInvalidTransition
@@ -847,6 +860,12 @@ func (protocol *Protocol) validateReceiveLocked(metadata FrameMetadata) error {
 		}
 		if (protocol.role == RoleInitiator && s.sentSelection) ||
 			(protocol.role == RoleResponder && !s.sentSelection) {
+			return ErrInvalidTransition
+		}
+	case FrameExhausted:
+		if protocol.binding.Profile != hardnatplan.ProfileHardBirthday || protocol.role != RoleInitiator ||
+			!s.sentSelection || !s.receivedSelection || s.hasWinner || s.receivedExhausted ||
+			metadata.Sequence != HardCampaignVerifySequence {
 			return ErrInvalidTransition
 		}
 	case FrameVerify:
@@ -919,6 +938,9 @@ func (protocol *Protocol) applySendLocked(frameType FrameType, ordinal uint32) {
 		s.sentWinner = true
 	case FrameWinnerSelection:
 		s.sentSelection = true
+	case FrameExhausted:
+		s.sentExhausted, s.terminal = true, true
+		_ = protocol.packets.Close()
 	case FrameVerify:
 		s.sentVerify = true
 		protocol.completeLocked()
@@ -947,6 +969,9 @@ func (protocol *Protocol) applyReceiveLocked(metadata FrameMetadata) {
 		s.receivedWinner = true
 	case FrameWinnerSelection:
 		s.receivedSelection = true
+	case FrameExhausted:
+		s.receivedExhausted, s.terminal = true, true
+		_ = protocol.packets.Close()
 	case FrameVerify:
 		s.receivedVerify = true
 		protocol.completeLocked()
@@ -1057,6 +1082,11 @@ func (protocol *Protocol) fixedSequence(frameType FrameType) (uint64, bool) {
 	case FrameWinnerSelection:
 		if protocol.binding.Profile == hardnatplan.ProfileHardBirthday {
 			return HardCampaignSelectionSequence, true
+		}
+		return 0, false
+	case FrameExhausted:
+		if protocol.binding.Profile == hardnatplan.ProfileHardBirthday {
+			return HardCampaignVerifySequence, true
 		}
 		return 0, false
 	case FrameVerify:

@@ -978,9 +978,10 @@ Gate B3 开工核验发现，§18.7 第 4 条把“每个 NAT namespace 的可�
    保留 50% headroom，并在子测试终局立即恢复 40,000；
 5. 每个终局仍须证明 router mapping、per-netns conntrack、packet、socket、process、governor
    lock、namespace 与 veth 零残留。产品、stdio/CLI/runtime、daemon、scheduler、Gate C 与现场
-   路径不得导入 guardian、写 sysctl 或构造 test router。16K topology 删除且零残留断言通过后，
-   test-only harness 可留固定 750ms 给内核回收已删除 namespace 的 conntrack/RCU 对象；这不是
-   attempt retry，不得重建 campaign、补发 packet 或改变任何预算。setup 失败日志只能暴露稳定阶段类。
+   路径不得导入 guardian、写 sysctl 或构造 test router。16K topology 删除、零残留断言及全部
+   LIFO cleanup callback 完成后，test-only harness 可留固定 1s 给内核回收已删除 namespace 的
+   conntrack/RCU 对象；这不是 attempt retry，不得重建 campaign、补发 packet 或改变任何预算。
+   setup 失败日志只能暴露稳定阶段类。
 
 因此 §18.7 的“runner 不支持可验证的 per-netns cap 则 fail-closed”按本节解释为：必须同时证明
 test-router 独立 mapping cap、init-owned 共同内核 ceiling、两侧各自的真实 count 与精确恢复；不再
@@ -1012,6 +1013,10 @@ candidate、0/1 winner、8 frame 或 8,256-byte ceiling：
   schedule、selection 后新增 candidate 或第二 winner 均终局。只有 selection 指定的 receiver
   可以复用已认证 tuple 发一个 winner；双方随后仍执行原有双向 VERIFY。含 VERIFY 在内每方向
   恰好 8 个 carrier frame；
+- bilateral selection 确认为 no-winner 时，responder 必须在关闭 carrier 前发送认证
+  `EXHAUSTED` terminal acknowledgement，initiator 收到后才返回 `candidate_exhausted`。该确认复用
+  no-winner 路径不会使用的 VERIFY sequence 和第 8 个 responder frame，不增加 UDP、target、tuple、
+  attempt 或 byte ceiling；缺少确认仍按 `oob_stream_closed` fail-closed；
 - candidate batch 固定为 512，winner 必须等待最后 candidate 后一个完整 rolling-PPS interval，
   因而第 513 个同秒 packet 仍由 probeio 在 I/O 前拒绝。candidate 子窗口从 34 秒校正为 38 秒，
   只是在既有 45 秒 absolute context 内给 OS scheduling、PPS-clear 与 selection 留界；不提高

@@ -86,6 +86,8 @@ func TestGateB3Hard16FullExhaustionIsOneShotAndOpensOnlyCampaignCircuit(t *testi
 	outcomes := runGateB3Pair(t, left, right, 12*time.Second, 2*time.Second)
 	for index, outcome := range outcomes {
 		var failure *gateb.Failure
+		carrierShape := outcome.role == "initiator" && outcome.result.Emissions.CarrierFramesRead == 8 && outcome.result.Emissions.CarrierFramesWrite == 7 ||
+			outcome.role == "responder" && outcome.result.Emissions.CarrierFramesRead == 7 && outcome.result.Emissions.CarrierFramesWrite == 8
 		if !errors.As(outcome.err, &failure) || failure.Class != gateb.ClassCandidateExhausted ||
 			!outcome.result.CredentialBurned || !outcome.result.FinishRecorded || outcome.result.SafetyTrip.BlocksActiveWork {
 			t.Fatalf("side %d exhaustion=%+v err=%v", index, outcome.result, outcome.err)
@@ -93,7 +95,7 @@ func TestGateB3Hard16FullExhaustionIsOneShotAndOpensOnlyCampaignCircuit(t *testi
 		if outcome.result.Emissions.CandidatePackets != hardnatbudget.Hard16CandidatePackets ||
 			outcome.result.Emissions.WinnerPackets != 0 || outcome.result.Emissions.UDPPacketsTotal != 16_397 ||
 			outcome.result.Emissions.SocketsOpened != 16 || outcome.result.Emissions.TargetsRegistered != 16_388 ||
-			outcome.result.Emissions.FiveTuples != 16_395 {
+			outcome.result.Emissions.FiveTuples != 16_395 || !carrierShape {
 			t.Fatalf("side %d exhaustion emissions=%+v", index, outcome.result.Emissions)
 		}
 		if outcome.result.CampaignLedger == nil || outcome.result.CampaignLedger.State != governor.PairingLedgerCircuitOpen ||
@@ -121,8 +123,7 @@ func TestGateB3Hard16FiftyPercentCandidateLossStaysOneShot(t *testing.T) {
 	winners := 0
 	for index, outcome := range outcomes {
 		var failure *gateb.Failure
-		boundedFailure := errors.As(outcome.err, &failure) &&
-			(failure.Class == gateb.ClassCandidateExhausted || failure.Class == gateb.ClassOOBStreamClosed)
+		boundedFailure := errors.As(outcome.err, &failure) && failure.Class == gateb.ClassCandidateExhausted
 		if outcome.err != nil && !boundedFailure {
 			t.Fatalf("side %d 50%% loss = %v", index, outcome.err)
 		}

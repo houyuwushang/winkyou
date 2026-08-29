@@ -1292,6 +1292,16 @@ func (runtime *runtime) punchHardCampaign(ctx context.Context) (*probeio.ProbeSo
 		return nil, netip.AddrPort{}, hardnatcontrol.ErrPlanMismatch
 	}
 	if !hasWinner {
+		var err error
+		if runtime.artifact.LocalRole == directattempt.RoleResponder {
+			err = runtime.sendHardExhausted(punchCtx)
+		} else {
+			err = runtime.receiveHardExhausted(punchCtx)
+		}
+		if err != nil {
+			finishReaders()
+			return nil, netip.AddrPort{}, err
+		}
 		finishReaders()
 		return nil, netip.AddrPort{}, ErrCandidateExhausted
 	}
@@ -1395,6 +1405,30 @@ func (runtime *runtime) receiveHardWinnerSelection(ctx context.Context) (hardnat
 		return hardnatcontrol.WinnerSelection{}, hardnatcontrol.ErrInvalidTransition
 	}
 	return *opened.Selection, nil
+}
+
+func (runtime *runtime) sendHardExhausted(ctx context.Context) error {
+	frame, err := runtime.protocol.SealExhausted()
+	if err != nil {
+		return err
+	}
+	defer clear(frame)
+	if err := runtime.carrier.SendHardNATControl(ctx, frame); err != nil {
+		return err
+	}
+	runtime.emissions.ControlFrames++
+	return nil
+}
+
+func (runtime *runtime) receiveHardExhausted(ctx context.Context) error {
+	opened, err := runtime.carrier.ReceiveHardNATControl(ctx, runtime.protocol)
+	if err != nil {
+		return err
+	}
+	if opened.Metadata.Type != hardnatcontrol.FrameExhausted {
+		return hardnatcontrol.ErrInvalidTransition
+	}
+	return nil
 }
 
 // waitForAsymmetricWinnerSlot keeps the target-set's single winner ACK out of

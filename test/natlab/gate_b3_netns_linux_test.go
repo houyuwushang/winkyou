@@ -44,7 +44,7 @@ const (
 	// Deleting a namespace removes its named handle synchronously, while RCU
 	// reclamation of a 16K conntrack table may continue briefly. This test-only
 	// margin separates independent campaigns; it never retries an attempt.
-	gateB3KernelReleaseMargin = 750 * time.Millisecond
+	gateB3KernelReleaseMargin = time.Second
 	// Socket zero registers all four authenticated RFC 5780 reply sources but
 	// emits to only three of them. The protocol therefore owns 16,395 registered
 	// five-tuples while each APDM test router opens exactly 16,394 mappings.
@@ -102,6 +102,7 @@ func TestLinuxGateB3Hard16Proof(t *testing.T) {
 }
 
 func testGateB3FullShape(t *testing.T, dropEvery uint64, conntrackCap int) {
+	armGateB3KernelReleaseMargin(t)
 	started := time.Now()
 	setGateB3HostConntrackCapForSubtest(t, conntrackCap)
 	topology := newN2DTopology(t, n2dMappingEDM, n2dMappingEDM)
@@ -372,6 +373,7 @@ func gateB3RouterConfig(topology *n2dTopology, left bool, seed, dropEvery uint64
 }
 
 func testGateB3ENOBUFS(t *testing.T) {
+	armGateB3KernelReleaseMargin(t)
 	setGateB3HostConntrackCapForSubtest(t, gateB3ConntrackCap)
 	topology := newN2DTopology(t, n2dMappingEDM, n2dMappingEDM)
 	if err := verifyGateB3NamespacedConntrackCap(topology.natA, topology.natB, gateB3ConntrackCap); err != nil {
@@ -414,6 +416,7 @@ func testGateB3ENOBUFS(t *testing.T) {
 }
 
 func testGateB3ChildKill(t *testing.T) {
+	armGateB3KernelReleaseMargin(t)
 	setGateB3HostConntrackCapForSubtest(t, gateB3ConntrackCap)
 	topology := newN2DTopology(t, n2dMappingEDM, n2dMappingEDM)
 	if err := verifyGateB3NamespacedConntrackCap(topology.natA, topology.natB, gateB3ConntrackCap); err != nil {
@@ -467,6 +470,7 @@ func testGateB3ChildKill(t *testing.T) {
 }
 
 func testGateB3ParentKill(t *testing.T) {
+	armGateB3KernelReleaseMargin(t)
 	topology := newN2DTopology(t, n2dMappingEDM, n2dMappingEDM)
 	artifacts := buildGateB3Artifacts(t, "parent-kill")
 	defer clearGateB2Artifacts(&artifacts)
@@ -697,7 +701,6 @@ func assertGateB3NoResidue(t testing.TB, topology *n2dTopology, observer *gateB2
 	if err := topology.assertNoLeaks(); err != nil {
 		t.Fatal("Gate B3 namespace or veth leak witness failed")
 	}
-	time.Sleep(gateB3KernelReleaseMargin)
 }
 
 func assertGateB3TripNoResidue(t testing.TB, topology *n2dTopology, observer *gateB2ObserverSet,
@@ -741,7 +744,14 @@ func assertGateB3TripNoResidue(t testing.TB, topology *n2dTopology, observer *ga
 	if err := topology.assertNoLeaks(); err != nil {
 		t.Fatal("Gate B3 fault namespace or veth residue")
 	}
-	time.Sleep(gateB3KernelReleaseMargin)
+}
+
+func armGateB3KernelReleaseMargin(t *testing.T) {
+	t.Helper()
+	// Registered before topology/process cleanups, therefore executed last in
+	// the subtest's LIFO cleanup stack. Waiting inside the residue assertion is
+	// too early because later cleanup callbacks can release final kernel refs.
+	t.Cleanup(func() { time.Sleep(gateB3KernelReleaseMargin) })
 }
 
 func inspectGateB3Ledger(t testing.TB, namespace string) (governor.PairingLedgerStatus, governor.HardNATCampaignStatus) {
@@ -911,6 +921,7 @@ func testGateB3RouterMappingCapPreIO(t *testing.T) {
 }
 
 func testGateB3PreFIRETeardown100(t *testing.T) {
+	armGateB3KernelReleaseMargin(t)
 	started := time.Now()
 	for iteration := 0; iteration < 100; iteration++ {
 		topology := newN2DTopology(t, n2dMappingEDM, n2dMappingEDM)
