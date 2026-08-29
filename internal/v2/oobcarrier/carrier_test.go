@@ -517,6 +517,36 @@ func TestPostHandshakeEOFSignalsTerminalWithoutReceiveCall(t *testing.T) {
 	}
 }
 
+func TestAsyncReadDrainsDecodedFrameBeforeEOF(t *testing.T) {
+	closed := make(chan struct{})
+	readerDone := make(chan struct{})
+	close(closed)
+	close(readerDone)
+	carrier := &Carrier{
+		state: stateClosed, closeErr: ErrCarrierTransport, readerStarted: true,
+		closed: closed, readerDone: readerDone, incoming: make(chan carrierReadResult, 1),
+	}
+	want := rendezvouswire.Frame{Kind: rendezvouswire.KindControl, Payload: []byte("decoded-before-eof")}
+	carrier.incoming <- carrierReadResult{frame: want}
+	got, err := carrier.read(context.Background())
+	if err != nil || got.Kind != want.Kind || !bytes.Equal(got.Payload, want.Payload) {
+		t.Fatalf("queued frame before EOF = %+v/%v", got, err)
+	}
+	if _, err := carrier.read(context.Background()); !errors.Is(err, ErrCarrierTransport) {
+		t.Fatalf("terminal after queued frame = %v", err)
+	}
+
+	canceled, cancel := context.WithCancel(context.Background())
+	cancel()
+	carrier.incoming <- carrierReadResult{frame: want}
+	if _, err := carrier.read(canceled); !errors.Is(err, context.Canceled) {
+		t.Fatalf("preexisting cancellation = %v", err)
+	}
+	if len(carrier.incoming) != 1 {
+		t.Fatal("preexisting cancellation consumed a queued frame")
+	}
+}
+
 func TestCarrierWriterFailureAndBudgetAreTerminal(t *testing.T) {
 	t.Run("writer error", func(t *testing.T) {
 		stream := &memoryStream{writeErr: errors.New("synthetic writer failure")}

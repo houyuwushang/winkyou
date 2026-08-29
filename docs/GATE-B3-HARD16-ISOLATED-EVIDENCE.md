@@ -178,13 +178,18 @@ ENOBUFS seam 只存在于 `linux && natlab`，在冻结的 13-packet evidence sl
 `resource_exhausted` safety trip。parent helper 的 endpoint child 固定设置 `Pdeathsig=SIGKILL`；
 父进程死亡后必须在 2 秒排水窗口内留下零 namespace process/socket。
 
+应用与 OS 的精确 packet 见证以 UDP 系统调用完成为 commit point：完整成功的 write 即使紧接着
+发生 context cancel 仍记为已发；调用前取消或实际 write error 仍为零发射。OOB reader 同样先交付
+EOF 前已完整解码的认证 frame，再报告 terminal。两条顺序性都由确定性回归测试守住，不改变
+任何 Gate B3 预算、重试或排水窗口。
+
 ## 8. 验证状态
 
-本地 Windows 已通过：`go vet ./...`；全仓 `go test ./... -count=1 -timeout=10m`（271.6s）；
-受影响包聚焦测试（236.5s，其中含 100 次 fresh full-shape natsim）；governor/ledger/状态机
-race×20（305.0s）；probeio、协议与 architecture/mutation race×20（312.9s）；planner/golden
-race×20（153.2s）；Linux+natlab tagged vet 与测试二进制交叉编译；`git diff --check`。本机没有
-运行真实 socket、namespace、route、firewall、observer、daemon、LAN 或公网 I/O。
+当前 head 的本地 Windows 验证已通过：`go vet ./...`；全仓
+`go test ./... -count=1 -timeout=10m`（263.8s）；500 次 fresh full-shape natsim（190.7s）；
+probeio、OOB carrier、Gate A/B 受影响包 race×20（24.7s）；architecture/mutation race×20
+（298.0s）；Linux+natlab tagged vet 与测试二进制交叉编译；`git diff --check`。本机没有运行
+真实 socket、namespace、route、firewall、observer、daemon、LAN 或公网 I/O。
 
 required Linux 的 race-enabled full-load 实测数字与 CI run/job 链接将在 Draft PR 的远端 required
 job 完成后写入本节；在该证据写回、全仓测试与 vet 全绿前，本文件不声称 Gate B3 验收闭合。

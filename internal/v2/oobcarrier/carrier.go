@@ -639,17 +639,43 @@ func (carrier *Carrier) read(ctx context.Context) (rendezvouswire.Frame, error) 
 	async := carrier.readerStarted
 	carrier.mu.Unlock()
 	if async {
+		// Cancellation that predates this receive remains authoritative. Once a
+		// receive is active, however, a completely decoded frame precedes a later
+		// EOF in byte-stream order and must not be discarded by a select race.
+		if err := ctx.Err(); err != nil {
+			return rendezvouswire.Frame{}, err
+		}
 		select {
-		case <-carrier.closed:
-			return rendezvouswire.Frame{}, carrier.TerminalCause()
+		case result := <-carrier.incoming:
+			return result.frame, result.err
 		default:
 		}
 		select {
 		case result := <-carrier.incoming:
 			return result.frame, result.err
 		case <-carrier.closed:
+			if carrier.readerDone != nil {
+				<-carrier.readerDone
+			}
+			select {
+			case result := <-carrier.incoming:
+				return result.frame, result.err
+			default:
+			}
 			return rendezvouswire.Frame{}, carrier.TerminalCause()
 		case <-ctx.Done():
+			select {
+			case <-carrier.closed:
+				if carrier.readerDone != nil {
+					<-carrier.readerDone
+				}
+			default:
+			}
+			select {
+			case result := <-carrier.incoming:
+				return result.frame, result.err
+			default:
+			}
 			return rendezvouswire.Frame{}, ctx.Err()
 		}
 	}
