@@ -1861,6 +1861,13 @@ func terminalReason(err error) governor.PairingTerminalReason {
 				return governor.PairingTerminalCancelled
 			}
 			return governor.PairingTerminalExpired
+		case ClassResourceBudgetExceeded:
+			// A durable safety trip synchronously closes AttemptLease.Stopping.
+			// PairingAdmissionGate's registered drain therefore chooses cancelled
+			// as the terminal reason. Use the same reason here so cleanup remains
+			// idempotent and FINISH still precedes attempt release regardless of
+			// which goroutine observes the trip first.
+			return governor.PairingTerminalCancelled
 		case ClassCandidateExhausted, ClassEvidenceInsufficient:
 			return governor.PairingTerminalExpired
 		}

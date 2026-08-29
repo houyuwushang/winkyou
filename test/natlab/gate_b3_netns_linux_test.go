@@ -150,7 +150,7 @@ func testGateB3FullShape(t *testing.T, dropEvery uint64, conntrackCap int) {
 			initiatorResult.WinnerPackets+responderResult.WinnerPackets != 1 {
 			t.Fatalf("Gate B3 full-shape success rejected: initiator=%+v responder=%+v", initiatorResult, responderResult)
 		}
-		assertGateB3NoResidue(t, topology, observer, leftRouter, rightRouter, false, initiator.governorDir, responder.governorDir)
+		assertGateB3NoResidue(t, topology, observer, leftRouter, rightRouter, false, false, initiator.governorDir, responder.governorDir)
 	} else {
 		if (dropEvery == 1 || conntrackCap < gateB3ConntrackCap) && success {
 			t.Fatal("Gate B3 full candidate loss unexpectedly succeeded")
@@ -158,7 +158,14 @@ func testGateB3FullShape(t *testing.T, dropEvery uint64, conntrackCap int) {
 		if !success && (initiatorResult.ErrorClass != gateb.ClassCandidateExhausted || responderResult.ErrorClass != gateb.ClassCandidateExhausted) {
 			t.Fatalf("Gate B3 lossy terminal classes = %s/%s", initiatorResult.ErrorClass, responderResult.ErrorClass)
 		}
-		assertGateB3NoResidue(t, topology, observer, leftRouter, rightRouter, !success, initiator.governorDir, responder.governorDir)
+		if !success && conntrackCap == gateB3ConntrackCap &&
+			(initiatorResult.CandidatePackets != hardnatbudget.Hard16CandidatePackets ||
+				responderResult.CandidatePackets != hardnatbudget.Hard16CandidatePackets) {
+			t.Fatalf("Gate B3 lossy exhaustion did not consume the fixed schedule: %d/%d",
+				initiatorResult.CandidatePackets, responderResult.CandidatePackets)
+		}
+		assertGateB3NoResidue(t, topology, observer, leftRouter, rightRouter, !success,
+			conntrackCap < gateB3ConntrackCap, initiator.governorDir, responder.governorDir)
 	}
 	peakPPS := maxInt(initiatorResult.EnvelopePPS, responderResult.EnvelopePPS)
 	t.Logf("Gate B3 isolated witness: success=%t loss_divisor=%d conntrack_cap=%d wall_ms=%d pps_max=%d packets=%d/%d targets=%d/%d tuples=%d/%d sockets=%d/%d conntrack_peak=%d/%d drain_ms<=2000",
@@ -437,7 +444,7 @@ func assertGateB3FrozenShape(t testing.TB, result gateB3EndpointResult) {
 	if !result.OK || result.Profile != string(hardnatplan.ProfileHardBirthday) ||
 		result.ResourceClass != string(hardnatplan.ResourceHard16KLab) || !result.CredentialBurned ||
 		!result.FinishRecorded || result.Conditional != true || result.EvidencePackets != 13 ||
-		result.CandidatePackets != hardnatbudget.Hard16CandidatePackets || result.WinnerPackets > 1 ||
+		result.CandidatePackets > hardnatbudget.Hard16CandidatePackets || result.WinnerPackets > 1 ||
 		result.UDPPackets > hardnatbudget.Hard16ActualPacketsMaximum || result.SocketsOpened != 16 ||
 		result.TargetsRegistered != hardnatbudget.Hard16ActualTargetsMaximum ||
 		result.FiveTuples != hardnatbudget.Hard16ActualFiveTupleMaximum ||
@@ -467,7 +474,7 @@ func assertGateB3FrozenShape(t testing.TB, result gateB3EndpointResult) {
 }
 
 func assertGateB3NoResidue(t testing.TB, topology *n2dTopology, observer *gateB2ObserverSet,
-	leftRouter, rightRouter *gateB2NATRouter, failed bool, governorDirs ...string,
+	leftRouter, rightRouter *gateB2NATRouter, failed, allowNATOutboundFailure bool, governorDirs ...string,
 ) {
 	t.Helper()
 	before := requireGateB2PacketCounts(t, topology)
@@ -479,7 +486,14 @@ func assertGateB3NoResidue(t testing.TB, topology *n2dTopology, observer *gateB2
 	if err := observer.Close(); err != nil {
 		t.Fatal("Gate B3 observer drain failed")
 	}
-	if leftErr, rightErr := leftRouter.Close(), rightRouter.Close(); leftErr != nil || rightErr != nil {
+	leftErr, rightErr := leftRouter.Close(), rightRouter.Close()
+	if allowNATOutboundFailure {
+		if leftErr != nil && !errors.Is(leftErr, errGateB2NATOutbound) ||
+			rightErr != nil && !errors.Is(rightErr, errGateB2NATOutbound) {
+			t.Fatalf("Gate B3 conntrack-fault NAT drain escaped the expected class: left=%s right=%s",
+				gateB2NATDrainClass(leftErr), gateB2NATDrainClass(rightErr))
+		}
+	} else if leftErr != nil || rightErr != nil {
 		t.Fatalf("Gate B3 NAT drain failed: left=%s right=%s", gateB2NATDrainClass(leftErr), gateB2NATDrainClass(rightErr))
 	}
 	sockets, processes, err := waitGateB2NoOSResidue(topology, gateB2TerminalMargin)

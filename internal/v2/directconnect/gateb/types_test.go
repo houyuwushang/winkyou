@@ -96,3 +96,11 @@ func TestPersistentAdmissionFailuresKeepDistinctStableClasses(t *testing.T) {
 		})
 	}
 }
+
+func TestResourceTripTerminalMatchesAdmissionDrainCancellation(t *testing.T) {
+	runtime := &runtime{burned: true}
+	failure := runtime.failure(ClassResourceBudgetExceeded, StageCandidates, probeio.ErrResourceExhausted)
+	if got := terminalReason(failure); got != governor.PairingTerminalCancelled {
+		t.Fatalf("resource-trip terminal = %q, want %q", got, governor.PairingTerminalCancelled)
+	}
+}

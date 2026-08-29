@@ -116,8 +116,9 @@ test 含 product import、wrong constructor、build tag、call shape 与 selecto
 
 - deterministic full-shape 双侧各生成并发送 16,384 个 candidate，只提交一个 winner，随后完成
   Gate A handoff 与 3/3 challenge，所有 mapping、队列、transport、governor reservation 为零；
-- full exhaustion 与 50% candidate loss 均完成完整 one-shot schedule，写 FINISH、打开 campaign
-  circuit，不产生第二 attempt 或 machine trip；
+- full exhaustion 完成完整 one-shot schedule，写 FINISH、打开 campaign circuit，且不触发 machine
+  trip；50% candidate loss 若命中则按 §18.5 停止尚未发出的 tuple 并完成 handoff，若未命中则完整
+  耗尽，任一终局都不补位、不重试、不产生第二 attempt；
 - duplicate/reorder/replay、wrong role/generation/context、跨 AD 域重放与第二 winner 均稳定拒绝；
 - FIRE 前 evidence drift、candidate 阶段 OOB EOF 与 caller cancel 均令后续 candidate/winner/data
   emission 为零；
