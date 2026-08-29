@@ -331,8 +331,10 @@ func (runtime *runtime) execute(ctx context.Context) error {
 	if err := runtime.registerCandidateTargets(); err != nil {
 		return runtime.classify(StageReady, err)
 	}
-	if err := runtime.exchangeControl(ctx, hardnatcontrol.FrameReady); err != nil {
-		return runtime.classify(StageReady, err)
+	if !runtime.isHardCampaign() {
+		if err := runtime.exchangeControl(ctx, hardnatcontrol.FrameReady); err != nil {
+			return runtime.classify(StageReady, err)
+		}
 	}
 	if err := runtime.emit(StageReady); err != nil {
 		return runtime.failure(ClassOOBProtocolViolation, StageReady, err)
@@ -800,6 +802,8 @@ func (runtime *runtime) sendControl(ctx context.Context, frameType hardnatcontro
 		frame, err = runtime.protocol.SealPrepare()
 	case hardnatcontrol.FrameReady:
 		frame, err = runtime.protocol.SealReady()
+	case hardnatcontrol.FrameReadyFire:
+		frame, err = runtime.protocol.SealReadyFire()
 	case hardnatcontrol.FrameFire:
 		frame, err = runtime.protocol.SealFire()
 	case hardnatcontrol.FrameVerify:
@@ -880,21 +884,28 @@ func (runtime *runtime) fire(ctx context.Context) error {
 	if err := runtime.revalidateFreshEvidence(); err != nil {
 		return err
 	}
+	frameType := hardnatcontrol.FrameFire
+	if runtime.isHardCampaign() {
+		// Gate B3 combines the existing READY commitment and bilateral FIRE
+		// barrier in one authenticated frame. This preserves the revalidation
+		// order while keeping the eight-frame OOB ceiling after winner selection.
+		frameType = hardnatcontrol.FrameReadyFire
+	}
 	if runtime.artifact.LocalRole == directattempt.RoleInitiator {
-		if err := runtime.sendControl(ctx, hardnatcontrol.FrameFire); err != nil {
+		if err := runtime.sendControl(ctx, frameType); err != nil {
 			return err
 		}
-		if err := runtime.receiveControl(ctx, hardnatcontrol.FrameFire); err != nil {
+		if err := runtime.receiveControl(ctx, frameType); err != nil {
 			return err
 		}
 	} else {
-		if err := runtime.receiveControl(ctx, hardnatcontrol.FrameFire); err != nil {
+		if err := runtime.receiveControl(ctx, frameType); err != nil {
 			return err
 		}
 		if err := runtime.revalidateFreshEvidence(); err != nil {
 			return err
 		}
-		if err := runtime.sendControl(ctx, hardnatcontrol.FrameFire); err != nil {
+		if err := runtime.sendControl(ctx, frameType); err != nil {
 			return err
 		}
 	}
@@ -971,6 +982,9 @@ type punchEvent struct {
 }
 
 func (runtime *runtime) punch(ctx context.Context) (*probeio.ProbeSocket, netip.AddrPort, error) {
+	if runtime.isHardCampaign() {
+		return runtime.punchHardCampaign(ctx)
+	}
 	punchCtx, cancel := context.WithTimeout(ctx, runtime.candidateWindow())
 	defer cancel()
 	runtime.candidateStart = time.Now()
@@ -993,14 +1007,6 @@ func (runtime *runtime) punch(ctx context.Context) (*probeio.ProbeSocket, netip.
 	chooser := runtime.chooser()
 	senderFinished := false
 	var senderErr error
-	var deferredResponderCandidate *punchEvent
-	var deferredWinnerTimer *time.Timer
-	var deferredWinnerReady <-chan time.Time
-	defer func() {
-		if deferredWinnerTimer != nil {
-			deferredWinnerTimer.Stop()
-		}
-	}()
 	sendWinner := func(event punchEvent) (*probeio.ProbeSocket, netip.AddrPort, error) {
 		winner, err := runtime.protocol.ChooseWinner(event.opened, event.socketSlot)
 		if err != nil {
@@ -1026,13 +1032,6 @@ func (runtime *runtime) punch(ctx context.Context) (*probeio.ProbeSocket, netip.
 		runtime.emissionsMu.Unlock()
 		return event.socket, event.from, nil
 	}
-	armDeferredResponderWinner := func() {
-		if deferredResponderCandidate == nil || deferredWinnerTimer != nil {
-			return
-		}
-		deferredWinnerTimer = time.NewTimer(runtime.hardResponderWinnerDelay())
-		deferredWinnerReady = deferredWinnerTimer.C
-	}
 	for {
 		select {
 		case err := <-senderDone:
@@ -1043,9 +1042,6 @@ func (runtime *runtime) punch(ctx context.Context) (*probeio.ProbeSocket, netip.
 				cancel()
 				readers.Wait()
 				return nil, netip.AddrPort{}, err
-			}
-			if runtime.isHardCampaign() && !chooser {
-				armDeferredResponderWinner()
 			}
 		case event := <-events:
 			if event.err != nil {
@@ -1059,15 +1055,6 @@ func (runtime *runtime) punch(ctx context.Context) (*probeio.ProbeSocket, netip.
 			switch event.opened.Metadata.Type {
 			case hardnatcontrol.FrameCandidate:
 				if !chooser {
-					if runtime.isHardCampaign() && runtime.artifact.LocalRole == directattempt.RoleResponder {
-						if deferredResponderCandidate == nil {
-							copyEvent := event
-							deferredResponderCandidate = &copyEvent
-						}
-						if senderFinished {
-							armDeferredResponderWinner()
-						}
-					}
 					continue
 				}
 				// The asymmetric target-set must finish its one-shot 512-packet
@@ -1099,7 +1086,7 @@ func (runtime *runtime) punch(ctx context.Context) (*probeio.ProbeSocket, netip.
 				}
 				return winnerSocket, winnerTarget, nil
 			case hardnatcontrol.FrameWinner:
-				if (chooser && !runtime.isHardCampaign()) || event.opened.Winner == nil || int(event.opened.Winner.CandidateOrdinal) >= len(runtime.localPlan.Candidates) {
+				if chooser || event.opened.Winner == nil || int(event.opened.Winner.CandidateOrdinal) >= len(runtime.localPlan.Candidates) {
 					cancel()
 					readers.Wait()
 					return nil, netip.AddrPort{}, hardnatcontrol.ErrPlanMismatch
@@ -1121,24 +1108,6 @@ func (runtime *runtime) punch(ctx context.Context) (*probeio.ProbeSocket, netip.
 				readers.Wait()
 				return nil, netip.AddrPort{}, hardnatcontrol.ErrInvalidTransition
 			}
-		case <-deferredWinnerReady:
-			deferredWinnerReady = nil
-			if runtime.config.Harness != nil {
-				if err := runtime.wait(punchCtx, candidateBatchPeriod+time.Millisecond); err != nil {
-					cancel()
-					readers.Wait()
-					return nil, netip.AddrPort{}, err
-				}
-			}
-			winnerSocket, winnerTarget, err := sendWinner(*deferredResponderCandidate)
-			if err != nil {
-				cancel()
-				readers.Wait()
-				return nil, netip.AddrPort{}, err
-			}
-			cancel()
-			readers.Wait()
-			return winnerSocket, winnerTarget, nil
 		case <-punchCtx.Done():
 			cancel()
 			readers.Wait()
@@ -1151,19 +1120,7 @@ func (runtime *runtime) punch(ctx context.Context) (*probeio.ProbeSocket, netip.
 				return nil, netip.AddrPort{}, senderErr
 			}
 			if runtime.activeContext != nil && runtime.activeContext.Err() != nil {
-				activeCause := context.Cause(runtime.activeContext)
-				// Both hard-campaign peers can finish the exact one-shot schedule
-				// within the same deadline tick. The first side to record FINISH then
-				// closes its child OOB stream, which must still cancel the other side's
-				// active context immediately. Once this side has independently proved
-				// all 16,384 candidate emissions and no winner, however, that close can
-				// no longer replace the already-established local exhaustion terminal.
-				// An earlier OOB close remains oob_stream_closed and stops emission.
-				if runtime.hardCandidateScheduleComplete(senderFinished, senderErr) &&
-					(errors.Is(activeCause, oobcarrier.ErrCarrierTransport) || errors.Is(activeCause, io.EOF)) {
-					return nil, netip.AddrPort{}, ErrCandidateExhausted
-				}
-				return nil, netip.AddrPort{}, activeCause
+				return nil, netip.AddrPort{}, context.Cause(runtime.activeContext)
 			}
 			if cause := context.Cause(punchCtx); cause != nil &&
 				!errors.Is(cause, context.DeadlineExceeded) && !errors.Is(cause, context.Canceled) {
@@ -1177,14 +1134,267 @@ func (runtime *runtime) punch(ctx context.Context) (*probeio.ProbeSocket, netip.
 	}
 }
 
-func (runtime *runtime) hardCandidateScheduleComplete(senderFinished bool, senderErr error) bool {
-	if runtime == nil || !runtime.isHardCampaign() || !senderFinished || senderErr != nil {
-		return false
+// punchHardCampaign completes both frozen 16K schedules before a role-ordered
+// OOB selection exchange chooses one winner. This removes the former timer
+// race in which both endpoints could emit a winner after a symmetric hit.
+// Selection consumes the already-reserved eighth carrier frame per direction;
+// it adds no UDP packet, target, tuple, retry, or attempt.
+func (runtime *runtime) punchHardCampaign(ctx context.Context) (*probeio.ProbeSocket, netip.AddrPort, error) {
+	punchCtx, cancel := context.WithTimeout(ctx, runtime.candidateWindow())
+	defer cancel()
+	runtime.candidateStart = time.Now()
+	events := make(chan punchEvent, 1024)
+	receiveSlots := make(map[uint16]struct{})
+	for _, candidate := range runtime.localPlan.Candidates {
+		receiveSlots[candidate.SocketSlot] = struct{}{}
 	}
+	var readers sync.WaitGroup
+	for slot := range receiveSlots {
+		if int(slot) >= len(runtime.sockets) {
+			return nil, netip.AddrPort{}, hardnatplan.ErrPlanMismatch
+		}
+		readers.Add(1)
+		go runtime.readPunchSocket(punchCtx, &readers, runtime.sockets[slot], slot, events)
+	}
+	senderDone := make(chan error, 1)
+	go func() { senderDone <- runtime.sendCandidates(punchCtx) }()
+
+	var proposalEvent *punchEvent
+	proposalRecorded := false
+	recordEvent := func(event punchEvent) error {
+		if event.err != nil {
+			if errors.Is(event.err, context.Canceled) || errors.Is(event.err, context.DeadlineExceeded) {
+				return nil
+			}
+			return event.err
+		}
+		if event.opened.Metadata.Type != hardnatcontrol.FrameCandidate {
+			return hardnatcontrol.ErrInvalidTransition
+		}
+		if proposalEvent == nil {
+			copyEvent := event
+			proposalEvent = &copyEvent
+		}
+		return nil
+	}
+	finishReaders := func() {
+		cancel()
+		readers.Wait()
+	}
+	contextFailure := func() error {
+		if runtime.activeContext != nil && runtime.activeContext.Err() != nil {
+			return context.Cause(runtime.activeContext)
+		}
+		if cause := context.Cause(punchCtx); cause != nil &&
+			!errors.Is(cause, context.Canceled) && !errors.Is(cause, context.DeadlineExceeded) {
+			return cause
+		}
+		return ErrCandidateExhausted
+	}
+
+	var senderErr error
+	senderFinished := false
+	for !senderFinished {
+		select {
+		case senderErr = <-senderDone:
+			senderFinished = true
+			if senderErr != nil && !errors.Is(senderErr, context.Canceled) && !errors.Is(senderErr, context.DeadlineExceeded) {
+				finishReaders()
+				return nil, netip.AddrPort{}, senderErr
+			}
+		case event := <-events:
+			if err := recordEvent(event); err != nil {
+				finishReaders()
+				return nil, netip.AddrPort{}, err
+			}
+		case <-punchCtx.Done():
+			finishReaders()
+			if !senderFinished {
+				senderErr = <-senderDone
+			}
+			if senderErr != nil && !errors.Is(senderErr, context.Canceled) && !errors.Is(senderErr, context.DeadlineExceeded) {
+				return nil, netip.AddrPort{}, senderErr
+			}
+			return nil, netip.AddrPort{}, contextFailure()
+		}
+	}
+	if senderErr != nil || runtime.candidatePackets() != hardnatbudget.Hard16CandidatePackets {
+		finishReaders()
+		return nil, netip.AddrPort{}, contextFailure()
+	}
+
+	// The same interval both drains already-emitted candidates into the reader
+	// queue and clears the rolling 512-PPS window before the optional winner.
+	if err := runtime.waitForHardWinnerSlot(punchCtx); err != nil {
+		finishReaders()
+		return nil, netip.AddrPort{}, contextFailure()
+	}
+	drainQueued := func() error {
+		for {
+			select {
+			case event := <-events:
+				if err := recordEvent(event); err != nil {
+					return err
+				}
+			default:
+				return nil
+			}
+		}
+	}
+	if err := drainQueued(); err != nil {
+		finishReaders()
+		return nil, netip.AddrPort{}, err
+	}
+	if proposalEvent != nil {
+		if _, err := runtime.protocol.RecordWinnerCandidate(proposalEvent.opened, proposalEvent.socketSlot); err != nil {
+			finishReaders()
+			return nil, netip.AddrPort{}, err
+		}
+		proposalRecorded = true
+	}
+
+	var selection hardnatcontrol.WinnerSelection
+	if runtime.artifact.LocalRole == directattempt.RoleResponder {
+		var err error
+		selection, err = runtime.sendHardWinnerSelection(punchCtx)
+		if err == nil {
+			selection, err = runtime.receiveHardWinnerSelection(punchCtx)
+		}
+		if err != nil {
+			finishReaders()
+			return nil, netip.AddrPort{}, err
+		}
+	} else {
+		var err error
+		selection, err = runtime.receiveHardWinnerSelection(punchCtx)
+		if err == nil {
+			// Include a candidate that reached the authenticated reader while
+			// the responder status crossed the OOB stream, but never alter a
+			// decision after the initiator seals it.
+			err = drainQueued()
+		}
+		if err == nil && proposalEvent != nil && !proposalRecorded {
+			_, err = runtime.protocol.RecordWinnerCandidate(proposalEvent.opened, proposalEvent.socketSlot)
+			proposalRecorded = err == nil
+		}
+		if err == nil {
+			selection, err = runtime.sendHardWinnerSelection(punchCtx)
+		}
+		if err != nil {
+			finishReaders()
+			return nil, netip.AddrPort{}, err
+		}
+	}
+
+	selected, hasWinner, localSends := runtime.protocol.SelectedWinner()
+	if selection.HasWinner != hasWinner || hasWinner && selection.Winner != selected {
+		finishReaders()
+		return nil, netip.AddrPort{}, hardnatcontrol.ErrPlanMismatch
+	}
+	if !hasWinner {
+		finishReaders()
+		return nil, netip.AddrPort{}, ErrCandidateExhausted
+	}
+	if localSends {
+		if proposalEvent == nil || selected.CandidateOrdinal != proposalEvent.opened.Metadata.Ordinal ||
+			selected.ReceiverSocketSlot != proposalEvent.socketSlot {
+			finishReaders()
+			return nil, netip.AddrPort{}, hardnatcontrol.ErrPlanMismatch
+		}
+		frame, err := runtime.protocol.SealWinner(selected)
+		if err == nil {
+			err = runtime.validateHardWinnerEmission()
+		}
+		if err == nil {
+			err = proposalEvent.socket.SendProbe(punchCtx, proposalEvent.from, frame)
+		}
+		clear(frame)
+		if err != nil {
+			finishReaders()
+			return nil, netip.AddrPort{}, err
+		}
+		runtime.emissionsMu.Lock()
+		runtime.emissions.WinnerPackets++
+		runtime.emissions.UDPPacketsTotal++
+		runtime.emissionsMu.Unlock()
+		finishReaders()
+		return proposalEvent.socket, proposalEvent.from, nil
+	}
+
+	for {
+		select {
+		case event := <-events:
+			if event.err != nil {
+				if errors.Is(event.err, context.Canceled) || errors.Is(event.err, context.DeadlineExceeded) {
+					continue
+				}
+				finishReaders()
+				return nil, netip.AddrPort{}, event.err
+			}
+			if event.opened.Metadata.Type == hardnatcontrol.FrameCandidate {
+				continue
+			}
+			if event.opened.Metadata.Type != hardnatcontrol.FrameWinner || event.opened.Winner == nil || *event.opened.Winner != selected {
+				finishReaders()
+				return nil, netip.AddrPort{}, hardnatcontrol.ErrPlanMismatch
+			}
+			finishReaders()
+			return event.socket, event.from, nil
+		case <-punchCtx.Done():
+			finishReaders()
+			return nil, netip.AddrPort{}, contextFailure()
+		}
+	}
+}
+
+func (runtime *runtime) candidatePackets() int {
 	runtime.emissionsMu.Lock()
 	defer runtime.emissionsMu.Unlock()
-	return runtime.emissions.CandidatePackets == hardnatbudget.Hard16CandidatePackets &&
-		runtime.emissions.WinnerPackets == 0
+	return runtime.emissions.CandidatePackets
+}
+
+func (runtime *runtime) waitForHardWinnerSlot(ctx context.Context) error {
+	if runtime == nil || !runtime.isHardCampaign() {
+		return hardnatcontrol.ErrInvalidTransition
+	}
+	if runtime.config.Harness != nil {
+		return runtime.wait(ctx, candidateBatchPeriod+time.Millisecond)
+	}
+	runtime.emissionsMu.Lock()
+	last := runtime.candidateLast
+	runtime.emissionsMu.Unlock()
+	if last.IsZero() {
+		return hardnatcontrol.ErrInvalidTransition
+	}
+	remaining := time.Until(last.Add(candidateBatchPeriod + time.Millisecond))
+	if remaining <= 0 {
+		return nil
+	}
+	return runtime.wait(ctx, remaining)
+}
+
+func (runtime *runtime) sendHardWinnerSelection(ctx context.Context) (hardnatcontrol.WinnerSelection, error) {
+	frame, selection, err := runtime.protocol.SealWinnerSelection()
+	if err != nil {
+		return hardnatcontrol.WinnerSelection{}, err
+	}
+	defer clear(frame)
+	if err := runtime.carrier.SendHardNATControl(ctx, frame); err != nil {
+		return hardnatcontrol.WinnerSelection{}, err
+	}
+	runtime.emissions.ControlFrames++
+	return selection, nil
+}
+
+func (runtime *runtime) receiveHardWinnerSelection(ctx context.Context) (hardnatcontrol.WinnerSelection, error) {
+	opened, err := runtime.carrier.ReceiveHardNATControl(ctx, runtime.protocol)
+	if err != nil {
+		return hardnatcontrol.WinnerSelection{}, err
+	}
+	if opened.Metadata.Type != hardnatcontrol.FrameWinnerSelection || opened.Selection == nil {
+		return hardnatcontrol.WinnerSelection{}, hardnatcontrol.ErrInvalidTransition
+	}
+	return *opened.Selection, nil
 }
 
 // waitForAsymmetricWinnerSlot keeps the target-set's single winner ACK out of
@@ -1213,25 +1423,6 @@ func (runtime *runtime) waitForAsymmetricWinnerSlot(ctx context.Context) error {
 		return nil
 	}
 	return runtime.wait(ctx, remaining)
-}
-
-func (runtime *runtime) hardResponderWinnerDelay() time.Duration {
-	if runtime != nil && runtime.config.Harness != nil {
-		// Let an initiator-priority winner already in the in-memory queue win
-		// first; runtime.wait advances the injected PPS clock after this delay.
-		return 250 * time.Millisecond
-	}
-	runtime.emissionsMu.Lock()
-	last := runtime.candidateLast
-	runtime.emissionsMu.Unlock()
-	if last.IsZero() {
-		return candidateBatchPeriod + time.Millisecond
-	}
-	delay := time.Until(last.Add(candidateBatchPeriod + time.Millisecond))
-	if delay < 0 {
-		return 0
-	}
-	return delay
 }
 
 func (runtime *runtime) readPunchSocket(ctx context.Context, readers *sync.WaitGroup, socket *probeio.ProbeSocket, slot uint16, events chan<- punchEvent) {
@@ -1437,6 +1628,12 @@ func (runtime *runtime) chooser() bool {
 
 func (runtime *runtime) candidateBatchSize() int {
 	limit := hardnatbudgetForPPS(runtime.artifact.PlannerProfile)
+	if runtime.isHardCampaign() {
+		// Gate B3 selects its sole winner only after both complete schedules,
+		// so all 512 slots belong to candidates. The winner waits for a fresh
+		// rolling PPS interval and never borrows a 513th slot.
+		return limit
+	}
 	if (runtime.artifact.PlannerProfile == hardnatplan.ProfilePredictiveEdm || runtime.artifact.PlannerProfile == hardnatplan.ProfileHardBirthday) && runtime.chooser() {
 		return limit - 1
 	}

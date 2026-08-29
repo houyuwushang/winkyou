@@ -29,9 +29,10 @@ const (
 	Hard16DrainTimeout    = 2 * time.Second
 	Hard16AttemptDuration = Hard16ActiveEnvelope + Hard16DrainTimeout
 	// A 16,384-packet schedule at 512 PPS occupies 32 one-second batches.
-	// Thirty-four seconds leaves only bounded scheduling/winner-drain margin;
-	// the absolute 45-second context remains authoritative.
-	Hard16CandidateWindow = 34 * time.Second
+	// Thirty-eight seconds includes bounded OS scheduling, one complete rolling
+	// PPS-clear interval, and the single OOB winner selection exchange. The
+	// absolute 45-second context remains authoritative and is not raised.
+	Hard16CandidateWindow = 38 * time.Second
 
 	Hard16CandidatePackets       = 16_384
 	Hard16ActualPacketsMaximum   = 16_398

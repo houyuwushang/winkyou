@@ -33,6 +33,32 @@ func TestCandidateHeaderByteGolden(t *testing.T) {
 	}
 }
 
+func TestHardCampaignBarrierAndSelectionHeaderByteGolden(t *testing.T) {
+	tests := []struct {
+		role      Role
+		frameType FrameType
+		sequence  uint64
+		want      string
+	}{
+		{RoleInitiator, FrameReadyFire, 2, "575948420101090100000000000000020000000000000010"},
+		{RoleResponder, FrameWinnerSelection, HardCampaignSelectionSequence, "575948420101080200000000000040110000000000000010"},
+	}
+	for _, test := range tests {
+		header, metadata, err := buildHeader(test.role, test.frameType, test.sequence, 0, 0, noisecore.TagSize)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := hex.EncodeToString(header); got != test.want {
+			t.Fatalf("hard header type=%d = %s, want %s", test.frameType, got, test.want)
+		}
+		frame := append(append([]byte(nil), header...), make([]byte, noisecore.TagSize)...)
+		parsed, _, _, err := parseFrame(frame)
+		if err != nil || parsed != metadata {
+			t.Fatalf("hard header parse type=%d = %+v/%v", test.frameType, parsed, err)
+		}
+	}
+}
+
 func TestProtocolBindsBilateralPlanAndWinner(t *testing.T) {
 	attempt := sha256.Sum256([]byte("attempt"))
 	leftSource := compactPredictive(t, hardnatplan.RoleInitiator, attempt, 50000, "left")
@@ -220,25 +246,57 @@ func TestHardCampaignLastOrdinalWinnerUsesFrozenSequence(t *testing.T) {
 	left, right, leftPlan, rightPlan := preparedHardProtocols(t)
 	defer left.Close()
 	defer right.Close()
-	last := rightPlan.Candidates[len(rightPlan.Candidates)-1]
-	frame, err := right.SealCandidate(last)
+	for _, candidate := range leftPlan.Candidates {
+		frame, err := left.SealCandidate(candidate)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := right.Open(frame); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var opened OpenedFrame
+	for _, candidate := range rightPlan.Candidates {
+		frame, err := right.SealCandidate(candidate)
+		if err != nil {
+			t.Fatal(err)
+		}
+		opened, err = left.Open(frame)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	if opened.Metadata.Sequence != CandidateSequenceBase+uint64(len(rightPlan.Candidates)-1) ||
+		opened.Metadata.Ordinal != uint32(len(rightPlan.Candidates)-1) {
+		t.Fatalf("last hard candidate = %+v", opened.Metadata)
+	}
+	winner, err := left.RecordWinnerCandidate(opened, leftPlan.Candidates[0].SocketSlot)
 	if err != nil {
 		t.Fatal(err)
 	}
-	opened, err := left.Open(frame)
-	if err != nil || opened.Metadata.Sequence != CandidateSequenceBase+uint64(len(rightPlan.Candidates)-1) ||
-		opened.Metadata.Ordinal != uint32(len(rightPlan.Candidates)-1) {
-		t.Fatalf("last hard candidate = %+v/%v", opened.Metadata, err)
+	frame, status, err := right.SealWinnerSelection()
+	if err != nil || status.HasWinner {
+		t.Fatalf("hard responder status = %+v/%v", status, err)
 	}
-	winner, err := left.ChooseWinner(opened, leftPlan.Candidates[0].SocketSlot)
-	if err != nil {
+	metadata, err := InspectFrame(frame)
+	if err != nil || metadata.Sequence != HardCampaignSelectionSequence {
+		t.Fatalf("hard selection sequence = %+v/%v", metadata, err)
+	}
+	if _, err := left.Open(frame); err != nil {
+		t.Fatal(err)
+	}
+	frame, decision, err := left.SealWinnerSelection()
+	if err != nil || !decision.HasWinner || decision.Winner != winner {
+		t.Fatalf("hard initiator decision = %+v/%v", decision, err)
+	}
+	if _, err := right.Open(frame); err != nil {
 		t.Fatal(err)
 	}
 	frame, err = left.SealWinner(winner)
 	if err != nil {
 		t.Fatal(err)
 	}
-	metadata, err := InspectFrame(frame)
+	metadata, err = InspectFrame(frame)
 	if err != nil || metadata.Sequence != HardCampaignWinnerSequence {
 		t.Fatalf("hard winner sequence = %+v/%v", metadata, err)
 	}
@@ -309,6 +367,118 @@ func TestHardCampaignCandidateArrivalRequiresReciprocalSocketTuple(t *testing.T)
 	foreignPort := leftPlan.Candidates[1024].TargetPort
 	if err := ValidateCandidateArrival(leftPlan, rightPlan, opened, receiverSlot, foreignPort); !errors.Is(err, ErrPlanMismatch) {
 		t.Fatalf("same-universe foreign socket tuple = %v, want plan mismatch", err)
+	}
+}
+
+func TestHardCampaignMutualHitSelectsOnlyInitiator(t *testing.T) {
+	left, right, leftPlan, rightPlan := preparedHardProtocols(t)
+	defer left.Close()
+	defer right.Close()
+	var leftOpened, rightOpened OpenedFrame
+	for index := range leftPlan.Candidates {
+		leftFrame, err := left.SealCandidate(leftPlan.Candidates[index])
+		if err != nil {
+			t.Fatal(err)
+		}
+		rightOpened, err = right.Open(leftFrame)
+		if err != nil {
+			t.Fatal(err)
+		}
+		rightFrame, err := right.SealCandidate(rightPlan.Candidates[index])
+		if err != nil {
+			t.Fatal(err)
+		}
+		leftOpened, err = left.Open(rightFrame)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	leftProposal, err := left.RecordWinnerCandidate(leftOpened, leftPlan.Candidates[0].SocketSlot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := right.RecordWinnerCandidate(rightOpened, rightPlan.Candidates[0].SocketSlot); err != nil {
+		t.Fatal(err)
+	}
+	statusFrame, _, err := right.SealWinnerSelection()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := left.Open(statusFrame); err != nil {
+		t.Fatal(err)
+	}
+	decisionFrame, decision, err := left.SealWinnerSelection()
+	if err != nil || !decision.HasWinner || decision.Winner != leftProposal {
+		t.Fatalf("mutual-hit decision = %+v/%v", decision, err)
+	}
+	if _, err := right.Open(decisionFrame); err != nil {
+		t.Fatal(err)
+	}
+	leftWinner, leftHas, leftSends := left.SelectedWinner()
+	rightWinner, rightHas, rightSends := right.SelectedWinner()
+	if !leftHas || !rightHas || !leftSends || rightSends || leftWinner != rightWinner || leftWinner != leftProposal {
+		t.Fatalf("mutual-hit selected winner = %+v/%t/%t %+v/%t/%t",
+			leftWinner, leftHas, leftSends, rightWinner, rightHas, rightSends)
+	}
+	if _, err := right.SealWinner(rightWinner); !errors.Is(err, ErrInvalidTransition) {
+		t.Fatalf("non-selected responder winner = %v", err)
+	}
+}
+
+func TestHardCampaignResponderOnlyHitRemainsSelectable(t *testing.T) {
+	left, right, leftPlan, rightPlan := preparedHardProtocols(t)
+	defer left.Close()
+	defer right.Close()
+	var rightOpened OpenedFrame
+	for index := range leftPlan.Candidates {
+		leftFrame, err := left.SealCandidate(leftPlan.Candidates[index])
+		if err != nil {
+			t.Fatal(err)
+		}
+		rightOpened, err = right.Open(leftFrame)
+		if err != nil {
+			t.Fatal(err)
+		}
+		rightFrame, err := right.SealCandidate(rightPlan.Candidates[index])
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := left.Open(rightFrame); err != nil {
+			t.Fatal(err)
+		}
+	}
+	proposal, err := right.RecordWinnerCandidate(rightOpened, rightPlan.Candidates[0].SocketSlot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	statusFrame, status, err := right.SealWinnerSelection()
+	if err != nil || !status.HasWinner || status.Winner != proposal {
+		t.Fatalf("responder status = %+v/%v", status, err)
+	}
+	if _, err := left.Open(statusFrame); err != nil {
+		t.Fatal(err)
+	}
+	decisionFrame, decision, err := left.SealWinnerSelection()
+	if err != nil || decision != status {
+		t.Fatalf("responder-only decision = %+v/%v", decision, err)
+	}
+	if _, err := right.Open(decisionFrame); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, leftSends := left.SelectedWinner(); leftSends {
+		t.Fatal("initiator was allowed to send the responder-only winner")
+	}
+	selected, has, rightSends := right.SelectedWinner()
+	if !has || !rightSends || selected != proposal {
+		t.Fatalf("responder-only selected winner = %+v/%t/%t", selected, has, rightSends)
+	}
+	winnerFrame, err := right.SealWinner(selected)
+	if err != nil {
+		t.Fatal(err)
+	}
+	opened, err := left.Open(winnerFrame)
+	if err != nil || opened.Winner == nil || *opened.Winner != selected {
+		t.Fatalf("responder-only winner = %+v/%v", opened.Winner, err)
 	}
 }
 
@@ -499,13 +669,9 @@ func preparedHardProtocols(t *testing.T) (*Protocol, *Protocol, hardnatplan.Plan
 	if err := right.BindExecution(rightPlan, leftPlan, joint, execution); err != nil {
 		t.Fatal(err)
 	}
-	frame, _ = left.SealReady()
+	frame, _ = left.SealReadyFire()
 	exchange(left, right, frame)
-	frame, _ = right.SealReady()
-	exchange(right, left, frame)
-	frame, _ = left.SealFire()
-	exchange(left, right, frame)
-	frame, _ = right.SealFire()
+	frame, _ = right.SealReadyFire()
 	exchange(right, left, frame)
 	return left, right, leftPlan, rightPlan
 }

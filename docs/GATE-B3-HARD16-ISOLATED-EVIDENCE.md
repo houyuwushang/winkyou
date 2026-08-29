@@ -84,15 +84,19 @@ retry、fallback、seed rotation、扩窗或第二 attempt。
 
 ```text
 preflight -> oob_adopt -> present -> burned -> activated -> handshake -> prepare
-  -> sockets -> fresh_evidence -> plan_committed -> ready -> bilateral fire
-  -> 16K one-shot candidates -> optional winner -> verify -> transport_lease
+  -> sockets -> fresh_evidence -> plan_committed -> ready_fire bilateral barrier
+  -> 16K one-shot candidates -> bilateral winner selection -> optional winner
+  -> verify -> transport_lease
   -> handoff -> 3-packet data_plane_challenge -> durable finish -> drain
 ```
 
-initiator 对首个认证 candidate 立即提交唯一 winner；responder 只有在密封的 16K schedule 完整
-结束后才可提交同一 attempt 的 deferred winner。该语义不是 fallback：它不生成新 candidate、
-不更换 tuple、不补位、不发起第二轮，且每端 winner 总数至多为 1；正常成功见证中全局只有 1 个
-winner。candidate exhaustion、50%
+Gate B3 的 `READY_FIRE` 在一个认证 frame 中同时携带原 READY commitment 与 bilateral FIRE
+barrier；Gate B2 wire 不变。双方完成完整 16K schedule 后，responder 报告首个认证 candidate
+或 absence，initiator 以“本地 observation 优先、否则 responder observation、否则 none”的固定
+规则封存唯一选择。selection 只含 role/ordinal/socket-slot/digest，并绑定 Noise AD、joint plan 与
+execution envelope；只有被选中的 receiver 可以复用该 tuple 发 1 个 winner。含双向 VERIFY 在内
+每方向仍恰好不超过 8 carrier frame。该语义不是 fallback：它不生成新 candidate、不更换 tuple、
+不补位、不发起第二轮，全局 winner 总数至多为 1。candidate exhaustion、50%
 loss、evidence drift、OOB EOF/cancel 与 deadline 都是有界 terminal；post-burn failure 打开 campaign
 circuit，但普通 exhaustion/cancel/timeout 不触发 machine safety trip。
 
@@ -158,7 +162,10 @@ guardian 取得独占锁、保存原值、
 每个终局都核对 application/iptables 计数、PPS、socket/target/five-tuple、per-router mapping、两侧
 conntrack count、drain latency，并在 owned cleanup 后证明 packet counter 静止、socket/process/
 conntrack/governor lock/netns/veth 全部为零。共同 ceiling 不是 per-netns 独立配置，也不是多个
-namespace count 的聚合值；产品代码不获得 sysctl 或 test-router capability。
+namespace count 的聚合值。内核先递增 `nf_conntrack_count` 再比较 ceiling；单 writer 的
+conntrack-full 故障允许采样到被拒分配造成的瞬时 `max+1`，但 terminal 必须 `<= max`，瞬时
+`max+2` 仍失败。该计数语义不是额外 mapping/packet 授权；产品代码不获得 sysctl 或 test-router
+capability。
 
 ENOBUFS seam 只存在于 `linux && natlab`，在冻结的 13-packet evidence slice 后对首个 candidate
 返回 OS `ENOBUFS`；它不改变 endpoint allowlist，并必须触发持久

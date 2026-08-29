@@ -51,6 +51,7 @@ func TestGateB3Hard16NATSimFullShapeHandoff(t *testing.T) {
 			result.Emissions.UDPPacketsTotal > hardnatbudget.Hard16ActualPacketsMaximum ||
 			result.Emissions.TargetsRegistered != hardnatbudget.Hard16ActualTargetsMaximum ||
 			result.Emissions.FiveTuples != hardnatbudget.Hard16ActualFiveTupleMaximum ||
+			result.Emissions.CarrierFramesRead != 8 || result.Emissions.CarrierFramesWrite != 8 ||
 			result.Emissions.DataPacketsRead != 3 || result.Emissions.DataPacketsWritten != 3 {
 			t.Fatalf("side %d emissions=%+v reservation=%+v", index, result.Emissions, result.ReservedEnvelope)
 		}

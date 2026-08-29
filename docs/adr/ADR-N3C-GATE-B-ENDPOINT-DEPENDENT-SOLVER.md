@@ -4,6 +4,7 @@
   隔离实现裁决与 §19 conntrack ceiling 可实现性纠错）；Gate B1、Gate A、Gate B2 与 Gate B3a docs-only 裁决已合并。2026-08-30
   维护者明确授权一个 §18 Gate B3 Draft 实现 PR，仅限 memory/natsim/required Linux netns；
   产品入口、Gate C、disposable router 与任何现场 I/O 仍未授权**
+- 实现复审：§20 为本 Draft PR 暴露问题后的协议闭合提案，尚未独立接受，不改变上述授权边界。
 - 日期：2026-08-25
 - 基线：`main` = `dc59d73bdc643e1a230d32acb82d97bfd3cb6d65`
 - 跟踪议题：[#87](https://github.com/houyuwushang/winkyou/issues/87)
@@ -968,9 +969,13 @@ Gate B3 开工核验发现，§18.7 第 4 条把“每个 NAT namespace 的可�
 3. guardian 在 signal、测试失败和普通进程崩溃路径恢复原值。测试进程遭 `SIGKILL` 时由仍存活的
    guardian 恢复；整个 runner 丢失时由一次性 VM 销毁提供最终边界。无法取得独占锁、无法证明
    位于 init namespace、无法安装或无法精确恢复时 required job 失败；
-4. 两个 NAT namespace 分别读取真实 `nf_conntrack_count`，并证明各自不超过当前共同 ceiling；
-   正常 load 的共同 ceiling 为 40,000。conntrack-full fault 在 guardian 内短暂降为 1,024，要求
-   init namespace 事前至少保留 50% headroom，并在子测试终局立即恢复 40,000；
+4. 两个 NAT namespace 分别读取真实 `nf_conntrack_count`。上游分配路径先执行
+   `atomic_inc_return(&cnet->count)`，再比较 `ct_count > nf_conntrack_max` 并回退失败分配；因此
+   conntrack-full 的并发采样可以诚实看到被拒绝分配造成的瞬时 `max+1`，不能把它伪装成始终
+   `<= max`。本 harness 每个 router 只有一个 mapping-open writer，故只允许该一个瞬时计数；
+   terminal 必须回落到 `<= max`，`max+2` 或 terminal `max+1` 均失败。正常 load 的共同 ceiling
+   为 40,000；conntrack-full fault 在 guardian 内短暂降为 1,024，要求 init namespace 事前至少
+   保留 50% headroom，并在子测试终局立即恢复 40,000；
 5. 每个终局仍须证明 router mapping、per-netns conntrack、packet、socket、process、governor
    lock、namespace 与 veth 零残留。产品、stdio/CLI/runtime、daemon、scheduler、Gate C 与现场
    路径不得导入 guardian、写 sysctl 或构造 test router。
@@ -978,3 +983,38 @@ Gate B3 开工核验发现，§18.7 第 4 条把“每个 NAT namespace 的可�
 因此 §18.7 的“runner 不支持可验证的 per-netns cap 则 fail-closed”按本节解释为：必须同时证明
 test-router 独立 mapping cap、init-owned 共同内核 ceiling、两侧各自的真实 count 与精确恢复；不再
 尝试 non-init sysctl 写入，也不得把共同 ceiling 谎称为 per-netns 独立配置或全机聚合计数。
+
+## 20. Gate B3 实现期协议闭合（Draft implementation correction，2026-08-30）
+
+required Linux 双跑第一次把 16K 真正压到尾部后暴露了两项不能靠放宽测试处理的实现问题：
+
+1. 原实现用“initiator 立即 winner、responder 完整 schedule 后定时 deferred winner”处理双向
+   命中；对称尾部命中时，定时器与 initiator winner 的内核交付存在竞态，双方可能各发一个
+   winner，随后按 fail-closed 规则终局。延长定时器只能降低概率，不能证明单 winner；
+2. initiator 为 winner 预留一个 PPS 槽而按 511-packet batch 发射，完整 16,384 candidate 实际
+   需要 33 个 batch；OS 发包开销会在 34 秒子窗口边缘留下 32 个未发 candidate。该行为没有
+   超预算，但不满足“完整 exhaustion 精确发完固定集合”的证据门。
+
+Draft 实现采用以下窄化闭合，等待独立实现复审；它不改变 §18 的 45s、512 PPS、16,384
+candidate、0/1 winner、8 frame 或 8,256-byte ceiling：
+
+- Gate B3 独有 `READY_FIRE` 把原 READY 的 joint/execution commitment 与 bilateral FIRE barrier
+  合成一个认证 rendezvous-control frame。双方仍在 barrier 前、中、后复核 fresh evidence；只有
+  双向 `READY_FIRE` 都认证后才可封装 candidate。Gate B2 wire、状态机与 golden 逐字节不变；
+- 双方都完成 16 × 1,024 one-shot schedule 后，responder 用每方向第 7 个 post-activation frame
+  提交“首个已认证 candidate 或 absence”，initiator 按固定优先级选择自己的 observation、否则
+  responder observation、否则 none，并用对应方向同一序号的 selection frame确认。该 payload
+  只含 role/ordinal/socket-slot/digest，不含 endpoint、candidate list、span、seed、packet count
+  或 secret；
+- selection 纳入 Noise AD、joint plan 与 execution envelope；重复、错 role、错 digest、非完整
+  schedule、selection 后新增 candidate 或第二 winner 均终局。只有 selection 指定的 receiver
+  可以复用已认证 tuple 发一个 winner；双方随后仍执行原有双向 VERIFY。含 VERIFY 在内每方向
+  恰好 8 个 carrier frame；
+- candidate batch 固定为 512，winner 必须等待最后 candidate 后一个完整 rolling-PPS interval，
+  因而第 513 个同秒 packet 仍由 probeio 在 I/O 前拒绝。candidate 子窗口从 34 秒校正为 38 秒，
+  只是在既有 45 秒 absolute context 内给 OS scheduling、PPS-clear 与 selection 留界；不提高
+  governor duration、packet/target/tuple、ledger reservation 或 drain；
+- absence、OOB terminal 或 38 秒子窗口到期继续有界失败；没有 retry、补位、第二轮、扩窗、
+  fallback 或第二 attempt。`hard_32k_candidate/1` 仍无 executor。
+
+本节是 PR 内实现纠错与评审输入，不自行授权合并、Gate C、产品入口或现场 I/O。

@@ -21,17 +21,18 @@ const (
 	FrameHeaderBytes        = 24
 	MaxFrameBytes           = 1024
 	MaxSequence             = uint64(530)
-	HardCampaignMaxSequence = uint64(16_402)
+	HardCampaignMaxSequence = uint64(16_403)
 	absoluteMaxSequence     = HardCampaignMaxSequence
 	Generation              = uint64(1)
 
-	CandidateSequenceBase      = uint64(16)
-	WinnerSequence             = uint64(528)
-	VerifySequence             = uint64(529)
-	CancelSequence             = uint64(530)
-	HardCampaignWinnerSequence = uint64(16_400)
-	HardCampaignVerifySequence = uint64(16_401)
-	HardCampaignCancelSequence = uint64(16_402)
+	CandidateSequenceBase         = uint64(16)
+	WinnerSequence                = uint64(528)
+	VerifySequence                = uint64(529)
+	CancelSequence                = uint64(530)
+	HardCampaignWinnerSequence    = uint64(16_400)
+	HardCampaignSelectionSequence = uint64(16_401)
+	HardCampaignVerifySequence    = uint64(16_402)
+	HardCampaignCancelSequence    = uint64(16_403)
 )
 
 var (
@@ -69,11 +70,20 @@ const (
 	FrameWinner
 	FrameVerify
 	FrameCancel
+	// FrameWinnerSelection is a Gate B3-only rendezvous-control frame. The
+	// responder reports its first authenticated candidate (or absence), then
+	// the initiator deterministically selects exactly one winner. Appending the
+	// type preserves every existing Gate B2 wire value.
+	FrameWinnerSelection
+	// FrameReadyFire is the Gate B3-only bilateral barrier. It carries the
+	// existing READY commitment and atomically supplies FIRE semantics, freeing
+	// exactly one bounded carrier frame for deterministic winner selection.
+	FrameReadyFire
 )
 
 func (frameType FrameType) domain() (Domain, bool) {
 	switch frameType {
-	case FramePrepare, FrameSource, FrameReady, FrameFire, FrameVerify, FrameCancel:
+	case FramePrepare, FrameSource, FrameReady, FrameFire, FrameVerify, FrameCancel, FrameWinnerSelection, FrameReadyFire:
 		return DomainRendezvousControl, true
 	case FrameCandidate, FrameWinner:
 		return DomainDirectPunch, true
@@ -168,11 +178,21 @@ type Winner struct {
 	Digest             [32]byte
 }
 
+// WinnerSelection carries either no candidate or one authenticated winner
+// commitment. Sender role gives it an unambiguous meaning: responder ->
+// status, initiator -> final decision. It never carries an address, port list,
+// packet count, seed, or secret.
+type WinnerSelection struct {
+	HasWinner bool
+	Winner    Winner
+}
+
 type OpenedFrame struct {
-	Metadata FrameMetadata
-	Source   *SourcePayload
-	Ready    *ReadyPayload
-	Winner   *Winner
+	Metadata  FrameMetadata
+	Source    *SourcePayload
+	Ready     *ReadyPayload
+	Winner    *Winner
+	Selection *WinnerSelection
 }
 
 type ExecutionSource struct {
@@ -243,19 +263,24 @@ func EncodePlannerKeyContext(context hardnatplan.PlannerKeyContext) ([]byte, err
 }
 
 type protocolState struct {
-	sentPrepare, receivedPrepare bool
-	sentSource, receivedSource   bool
-	bound                        bool
-	sentReady, receivedReady     bool
-	sentFire, receivedFire       bool
-	sentWinner, receivedWinner   bool
-	sentVerify, receivedVerify   bool
-	sentCancel, receivedCancel   bool
-	sentCandidates               map[uint32]struct{}
-	receivedCandidates           map[uint32]struct{}
-	winner                       Winner
-	hasWinner                    bool
-	terminal, success            bool
+	sentPrepare, receivedPrepare     bool
+	sentSource, receivedSource       bool
+	bound                            bool
+	sentReady, receivedReady         bool
+	sentFire, receivedFire           bool
+	sentWinner, receivedWinner       bool
+	sentSelection, receivedSelection bool
+	sentVerify, receivedVerify       bool
+	sentCancel, receivedCancel       bool
+	sentCandidates                   map[uint32]struct{}
+	receivedCandidates               map[uint32]struct{}
+	winner                           Winner
+	hasWinner                        bool
+	localProposal                    Winner
+	hasLocalProposal                 bool
+	peerProposal                     Winner
+	hasPeerProposal                  bool
+	terminal, success                bool
 }
 
 type Protocol struct {
@@ -304,6 +329,12 @@ func (protocol *Protocol) SealSource(payload SourcePayload) ([]byte, error) {
 	return protocol.sealControl(FrameSource, encoded)
 }
 func (protocol *Protocol) SealReady() ([]byte, error) {
+	return protocol.sealReady(FrameReady)
+}
+func (protocol *Protocol) SealReadyFire() ([]byte, error) {
+	return protocol.sealReady(FrameReadyFire)
+}
+func (protocol *Protocol) sealReady(frameType FrameType) ([]byte, error) {
 	protocol.mu.Lock()
 	ready := ReadyPayload{JointDigest: protocol.joint.JointDigest, ExecutionDigest: protocol.executionDigest}
 	protocol.mu.Unlock()
@@ -311,7 +342,7 @@ func (protocol *Protocol) SealReady() ([]byte, error) {
 	copy(payload[:32], ready.JointDigest[:])
 	copy(payload[32:], ready.ExecutionDigest[:])
 	defer clear(payload)
-	return protocol.sealControl(FrameReady, payload)
+	return protocol.sealControl(frameType, payload)
 }
 func (protocol *Protocol) SealFire() ([]byte, error) { return protocol.sealControl(FrameFire, nil) }
 func (protocol *Protocol) SealVerify() ([]byte, error) {
@@ -382,7 +413,8 @@ func (protocol *Protocol) ChooseWinner(candidate OpenedFrame, receiverSocketSlot
 	}
 	protocol.mu.Lock()
 	defer protocol.mu.Unlock()
-	if protocol.state.terminal || !protocol.mayChooseWinnerLocked() || protocol.state.hasWinner {
+	if protocol.state.terminal || protocol.binding.Profile == hardnatplan.ProfileHardBirthday ||
+		!protocol.mayChooseWinnerLocked() || protocol.state.hasWinner {
 		return Winner{}, protocol.failLocked(ErrInvalidTransition)
 	}
 	if _, ok := protocol.state.receivedCandidates[candidate.Metadata.Ordinal]; !ok {
@@ -394,13 +426,110 @@ func (protocol *Protocol) ChooseWinner(candidate OpenedFrame, receiverSocketSlot
 	return winner, nil
 }
 
+// RecordWinnerCandidate binds the first Gate B3 candidate observed by this
+// endpoint without choosing a winner. Selection remains impossible until the
+// complete local one-shot schedule has been sealed and both peers exchange the
+// single role-ordered selection frame.
+func (protocol *Protocol) RecordWinnerCandidate(candidate OpenedFrame, receiverSocketSlot uint16) (Winner, error) {
+	if protocol == nil || candidate.Metadata.Type != FrameCandidate {
+		return Winner{}, ErrInvalidTransition
+	}
+	protocol.mu.Lock()
+	defer protocol.mu.Unlock()
+	if protocol.state.terminal || protocol.binding.Profile != hardnatplan.ProfileHardBirthday ||
+		protocol.state.sentSelection || protocol.state.hasLocalProposal {
+		return Winner{}, protocol.failLocked(ErrInvalidTransition)
+	}
+	if _, ok := protocol.state.receivedCandidates[candidate.Metadata.Ordinal]; !ok {
+		return Winner{}, protocol.failLocked(ErrInvalidTransition)
+	}
+	winner := Winner{CandidateSender: candidate.Metadata.Sender, CandidateOrdinal: candidate.Metadata.Ordinal, ReceiverSocketSlot: receiverSocketSlot}
+	winner.Digest = digestWinner(protocol.executionDigest, winner)
+	if !protocol.validWinnerShapeLocked(winner) {
+		return Winner{}, protocol.failLocked(ErrPlanMismatch)
+	}
+	protocol.state.localProposal, protocol.state.hasLocalProposal = winner, true
+	return winner, nil
+}
+
+// SealWinnerSelection emits the only Gate B3 arbitration frame for this
+// direction. The responder reports its proposal first. The initiator then
+// chooses its own proposal when present, otherwise the responder proposal,
+// otherwise no winner. This fixed precedence guarantees at most one direct
+// winner packet without a timer race.
+func (protocol *Protocol) SealWinnerSelection() ([]byte, WinnerSelection, error) {
+	if protocol == nil {
+		return nil, WinnerSelection{}, ErrTerminal
+	}
+	protocol.mu.Lock()
+	defer protocol.mu.Unlock()
+	if protocol.state.terminal || protocol.binding.Profile != hardnatplan.ProfileHardBirthday ||
+		len(protocol.state.sentCandidates) != len(protocol.localPlan.Candidates) {
+		return nil, WinnerSelection{}, protocol.failLocked(ErrInvalidTransition)
+	}
+	selection := WinnerSelection{}
+	switch protocol.role {
+	case RoleResponder:
+		if protocol.state.sentSelection || protocol.state.receivedSelection {
+			return nil, WinnerSelection{}, protocol.failLocked(ErrInvalidTransition)
+		}
+		selection.HasWinner, selection.Winner = protocol.state.hasLocalProposal, protocol.state.localProposal
+	case RoleInitiator:
+		if protocol.state.sentSelection || !protocol.state.receivedSelection {
+			return nil, WinnerSelection{}, protocol.failLocked(ErrInvalidTransition)
+		}
+		switch {
+		case protocol.state.hasLocalProposal:
+			selection.HasWinner, selection.Winner = true, protocol.state.localProposal
+		case protocol.state.hasPeerProposal:
+			selection.HasWinner, selection.Winner = true, protocol.state.peerProposal
+		}
+		if selection.HasWinner {
+			protocol.state.winner, protocol.state.hasWinner = selection.Winner, true
+		}
+	default:
+		return nil, WinnerSelection{}, protocol.failLocked(ErrInvalidTransition)
+	}
+	payload, err := marshalWinnerSelection(selection)
+	if err != nil {
+		return nil, WinnerSelection{}, protocol.failLocked(err)
+	}
+	defer clear(payload)
+	if err := protocol.validateSendLocked(FrameWinnerSelection, 0); err != nil {
+		return nil, WinnerSelection{}, protocol.failLocked(err)
+	}
+	frame, err := protocol.sealLocked(FrameWinnerSelection, HardCampaignSelectionSequence, 0, 0, payload)
+	if err != nil {
+		return nil, WinnerSelection{}, protocol.failLocked(err)
+	}
+	protocol.applySendLocked(FrameWinnerSelection, 0)
+	return frame, selection, nil
+}
+
+// SelectedWinner returns the bilateral Gate B3 decision. localSends is true
+// only for the endpoint that received the selected candidate and therefore
+// owns the one permitted winner packet.
+func (protocol *Protocol) SelectedWinner() (winner Winner, hasWinner, localSends bool) {
+	if protocol == nil {
+		return Winner{}, false, false
+	}
+	protocol.mu.Lock()
+	defer protocol.mu.Unlock()
+	if protocol.binding.Profile != hardnatplan.ProfileHardBirthday ||
+		!protocol.state.sentSelection || !protocol.state.receivedSelection || !protocol.state.hasWinner {
+		return Winner{}, false, false
+	}
+	winner = protocol.state.winner
+	return winner, true, winner.CandidateSender == protocol.role.Peer()
+}
+
 func (protocol *Protocol) SealWinner(winner Winner) ([]byte, error) {
 	if protocol == nil {
 		return nil, ErrTerminal
 	}
 	protocol.mu.Lock()
 	defer protocol.mu.Unlock()
-	if protocol.state.terminal || !protocol.mayChooseWinnerLocked() || !protocol.state.hasWinner || protocol.state.winner != winner ||
+	if protocol.state.terminal || !protocol.maySendWinnerLocked(winner) || !protocol.state.hasWinner || protocol.state.winner != winner ||
 		winner.Digest != digestWinner(protocol.executionDigest, winner) {
 		return nil, protocol.failLocked(ErrInvalidTransition)
 	}
@@ -488,7 +617,7 @@ func (protocol *Protocol) Open(frame []byte) (OpenedFrame, error) {
 			return OpenedFrame{}, protocol.failLocked(ErrPlanMismatch)
 		}
 		opened.Source = &source
-	case FrameReady:
+	case FrameReady, FrameReadyFire:
 		if len(plaintext) != 64 {
 			return OpenedFrame{}, protocol.failLocked(ErrInvalidPayload)
 		}
@@ -507,13 +636,50 @@ func (protocol *Protocol) Open(frame []byte) (OpenedFrame, error) {
 	case FrameWinner:
 		winner, parseErr := parseWinner(plaintext)
 		if parseErr != nil || protocol.state.sentWinner || winner.CandidateSender != protocol.role ||
-			int(winner.CandidateOrdinal) >= len(protocol.localPlan.Candidates) ||
-			winner.Digest != digestWinner(protocol.executionDigest, winner) || metadata.Ordinal != winner.CandidateOrdinal ||
-			metadata.SocketSlot != winner.ReceiverSocketSlot {
+			!protocol.validWinnerShapeLocked(winner) || metadata.Ordinal != winner.CandidateOrdinal ||
+			metadata.SocketSlot != winner.ReceiverSocketSlot ||
+			(protocol.binding.Profile == hardnatplan.ProfileHardBirthday &&
+				(!protocol.state.sentSelection || !protocol.state.receivedSelection || !protocol.state.hasWinner || protocol.state.winner != winner)) {
 			return OpenedFrame{}, protocol.failLocked(ErrPlanMismatch)
 		}
 		protocol.state.winner, protocol.state.hasWinner = winner, true
 		opened.Winner = &winner
+	case FrameWinnerSelection:
+		selection, parseErr := parseWinnerSelection(plaintext)
+		if parseErr != nil || protocol.binding.Profile != hardnatplan.ProfileHardBirthday {
+			return OpenedFrame{}, protocol.failLocked(ErrInvalidPayload)
+		}
+		switch protocol.role {
+		case RoleInitiator:
+			// The responder status can only report a candidate sent by the
+			// initiator and observed on the responder side.
+			if selection.HasWinner && (selection.Winner.CandidateSender != RoleInitiator ||
+				!protocol.validWinnerShapeLocked(selection.Winner)) {
+				return OpenedFrame{}, protocol.failLocked(ErrPlanMismatch)
+			}
+			protocol.state.peerProposal, protocol.state.hasPeerProposal = selection.Winner, selection.HasWinner
+		case RoleResponder:
+			if selection.HasWinner {
+				if !protocol.validWinnerShapeLocked(selection.Winner) {
+					return OpenedFrame{}, protocol.failLocked(ErrPlanMismatch)
+				}
+				if selection.Winner.CandidateSender == RoleInitiator {
+					if !protocol.state.hasLocalProposal || selection.Winner != protocol.state.localProposal {
+						return OpenedFrame{}, protocol.failLocked(ErrPlanMismatch)
+					}
+				} else if selection.Winner.CandidateSender != RoleResponder {
+					return OpenedFrame{}, protocol.failLocked(ErrPlanMismatch)
+				}
+			} else if protocol.state.hasLocalProposal {
+				// The initiator must select the responder proposal when it has
+				// no higher-priority local proposal; selecting none is invalid.
+				return OpenedFrame{}, protocol.failLocked(ErrPlanMismatch)
+			}
+			protocol.state.winner, protocol.state.hasWinner = selection.Winner, selection.HasWinner
+		default:
+			return OpenedFrame{}, protocol.failLocked(ErrInvalidTransition)
+		}
+		opened.Selection = &selection
 	case FrameVerify:
 		if len(plaintext) != 32 || !protocol.state.hasWinner || !bytes.Equal(plaintext, protocol.state.winner.Digest[:]) {
 			return OpenedFrame{}, protocol.failLocked(ErrPlanMismatch)
@@ -562,8 +728,8 @@ func (protocol *Protocol) additionalDataLocked(metadata FrameMetadata, header []
 	appendString(&encoded, string(protocol.binding.Profile))
 	appendString(&encoded, string(protocol.binding.ResourceClass))
 	encoded.Write(protocol.binding.EnvelopeDigest[:])
-	if metadata.Type == FrameReady || metadata.Type == FrameFire || metadata.Type == FrameCandidate ||
-		metadata.Type == FrameWinner || metadata.Type == FrameVerify {
+	if metadata.Type == FrameReady || metadata.Type == FrameReadyFire || metadata.Type == FrameFire || metadata.Type == FrameCandidate ||
+		metadata.Type == FrameWinner || metadata.Type == FrameWinnerSelection || metadata.Type == FrameVerify {
 		if !protocol.state.bound || allZero(protocol.executionDigest[:]) {
 			return nil, ErrInvalidTransition
 		}
@@ -593,22 +759,35 @@ func (protocol *Protocol) validateSendLocked(frameType FrameType, ordinal uint32
 			return ErrInvalidTransition
 		}
 	case FrameReady:
-		if !s.bound || s.sentReady {
+		if !s.bound || s.sentReady || protocol.binding.Profile == hardnatplan.ProfileHardBirthday {
 			return ErrInvalidTransition
 		}
 	case FrameFire:
-		if !s.sentReady || !s.receivedReady || s.sentFire {
+		if !s.sentReady || !s.receivedReady || s.sentFire || protocol.binding.Profile == hardnatplan.ProfileHardBirthday {
+			return ErrInvalidTransition
+		}
+	case FrameReadyFire:
+		if protocol.binding.Profile != hardnatplan.ProfileHardBirthday || !s.bound || s.sentReady || s.sentFire {
 			return ErrInvalidTransition
 		}
 	case FrameCandidate:
-		if !protocol.fireSeenLocked() {
+		if !protocol.fireSeenLocked() || s.sentSelection || s.receivedSelection {
 			return ErrInvalidTransition
 		}
 		if _, exists := s.sentCandidates[ordinal]; exists {
 			return ErrInvalidTransition
 		}
 	case FrameWinner:
-		if !protocol.mayChooseWinnerLocked() || !s.hasWinner || s.sentWinner {
+		if !protocol.maySendWinnerLocked(s.winner) || !s.hasWinner || s.sentWinner {
+			return ErrInvalidTransition
+		}
+	case FrameWinnerSelection:
+		if protocol.binding.Profile != hardnatplan.ProfileHardBirthday || s.sentSelection ||
+			len(s.sentCandidates) != len(protocol.localPlan.Candidates) {
+			return ErrInvalidTransition
+		}
+		if (protocol.role == RoleResponder && s.receivedSelection) ||
+			(protocol.role == RoleInitiator && !s.receivedSelection) {
 			return ErrInvalidTransition
 		}
 	case FrameVerify:
@@ -637,11 +816,16 @@ func (protocol *Protocol) validateReceiveLocked(metadata FrameMetadata) error {
 			return ErrInvalidTransition
 		}
 	case FrameReady:
-		if !s.bound || s.receivedReady || metadata.Sequence != 2 {
+		if !s.bound || s.receivedReady || metadata.Sequence != 2 || protocol.binding.Profile == hardnatplan.ProfileHardBirthday {
 			return ErrInvalidTransition
 		}
 	case FrameFire:
-		if !s.sentReady || !s.receivedReady || s.receivedFire || metadata.Sequence != 3 {
+		if !s.sentReady || !s.receivedReady || s.receivedFire || metadata.Sequence != 3 ||
+			protocol.binding.Profile == hardnatplan.ProfileHardBirthday {
+			return ErrInvalidTransition
+		}
+	case FrameReadyFire:
+		if protocol.binding.Profile != hardnatplan.ProfileHardBirthday || !s.bound || s.receivedReady || s.receivedFire || metadata.Sequence != 2 {
 			return ErrInvalidTransition
 		}
 	case FrameCandidate:
@@ -652,7 +836,17 @@ func (protocol *Protocol) validateReceiveLocked(metadata FrameMetadata) error {
 			return ErrInvalidTransition
 		}
 	case FrameWinner:
-		if s.sentWinner || s.receivedWinner || metadata.Sequence != protocol.winnerSequence() {
+		if s.sentWinner || s.receivedWinner || metadata.Sequence != protocol.winnerSequence() ||
+			(protocol.binding.Profile == hardnatplan.ProfileHardBirthday && (!s.sentSelection || !s.receivedSelection || !s.hasWinner)) {
+			return ErrInvalidTransition
+		}
+	case FrameWinnerSelection:
+		if protocol.binding.Profile != hardnatplan.ProfileHardBirthday || s.receivedSelection ||
+			len(s.sentCandidates) != len(protocol.localPlan.Candidates) || metadata.Sequence != HardCampaignSelectionSequence {
+			return ErrInvalidTransition
+		}
+		if (protocol.role == RoleInitiator && s.sentSelection) ||
+			(protocol.role == RoleResponder && !s.sentSelection) {
 			return ErrInvalidTransition
 		}
 	case FrameVerify:
@@ -673,17 +867,37 @@ func (protocol *Protocol) fireSeenLocked() bool {
 	return protocol.state.sentFire && protocol.state.receivedFire
 }
 
-// Gate B3 gives the initiator immediate winner priority. The responder may
-// choose only after its complete one-shot schedule has been sealed, allowing
-// a path observed in the opposite direction to succeed without a retry or a
-// second attempt.
+// Gate B2 keeps its existing role-selected chooser. Gate B3 never enters this
+// path: it records proposals and completes bilateral selection first.
 func (protocol *Protocol) mayChooseWinnerLocked() bool {
-	if protocol.chooser() {
-		return true
+	return protocol.binding.Profile != hardnatplan.ProfileHardBirthday && protocol.chooser()
+}
+
+func (protocol *Protocol) maySendWinnerLocked(winner Winner) bool {
+	if protocol.binding.Profile != hardnatplan.ProfileHardBirthday {
+		return protocol.mayChooseWinnerLocked()
 	}
-	return protocol.binding.Profile == hardnatplan.ProfileHardBirthday && protocol.role == RoleResponder &&
-		len(protocol.localPlan.Candidates) == hardnatplan.DynamicPortCount &&
-		len(protocol.state.sentCandidates) == len(protocol.localPlan.Candidates)
+	return protocol.state.sentSelection && protocol.state.receivedSelection && protocol.state.hasWinner &&
+		protocol.state.winner == winner && winner.CandidateSender == protocol.role.Peer()
+}
+
+func (protocol *Protocol) validWinnerShapeLocked(winner Winner) bool {
+	if !winner.CandidateSender.Valid() || winner.Digest != digestWinner(protocol.executionDigest, winner) {
+		return false
+	}
+	senderPlan, receiverPlan := protocol.peerPlan, protocol.localPlan
+	if winner.CandidateSender == protocol.role {
+		senderPlan, receiverPlan = protocol.localPlan, protocol.peerPlan
+	}
+	if int(winner.CandidateOrdinal) >= len(senderPlan.Candidates) {
+		return false
+	}
+	for _, candidate := range receiverPlan.Candidates {
+		if candidate.SocketSlot == winner.ReceiverSocketSlot {
+			return true
+		}
+	}
+	return false
 }
 
 func (protocol *Protocol) applySendLocked(frameType FrameType, ordinal uint32) {
@@ -695,12 +909,16 @@ func (protocol *Protocol) applySendLocked(frameType FrameType, ordinal uint32) {
 		s.sentSource = true
 	case FrameReady:
 		s.sentReady = true
+	case FrameReadyFire:
+		s.sentReady, s.sentFire = true, true
 	case FrameFire:
 		s.sentFire = true
 	case FrameCandidate:
 		s.sentCandidates[ordinal] = struct{}{}
 	case FrameWinner:
 		s.sentWinner = true
+	case FrameWinnerSelection:
+		s.sentSelection = true
 	case FrameVerify:
 		s.sentVerify = true
 		protocol.completeLocked()
@@ -719,12 +937,16 @@ func (protocol *Protocol) applyReceiveLocked(metadata FrameMetadata) {
 		s.receivedSource = true
 	case FrameReady:
 		s.receivedReady = true
+	case FrameReadyFire:
+		s.receivedReady, s.receivedFire = true, true
 	case FrameFire:
 		s.receivedFire = true
 	case FrameCandidate:
 		s.receivedCandidates[metadata.Ordinal] = struct{}{}
 	case FrameWinner:
 		s.receivedWinner = true
+	case FrameWinnerSelection:
+		s.receivedSelection = true
 	case FrameVerify:
 		s.receivedVerify = true
 		protocol.completeLocked()
@@ -825,8 +1047,18 @@ func (protocol *Protocol) fixedSequence(frameType FrameType) (uint64, bool) {
 		return 1, true
 	case FrameReady:
 		return 2, true
+	case FrameReadyFire:
+		if protocol.binding.Profile == hardnatplan.ProfileHardBirthday {
+			return 2, true
+		}
+		return 0, false
 	case FrameFire:
 		return 3, true
+	case FrameWinnerSelection:
+		if protocol.binding.Profile == hardnatplan.ProfileHardBirthday {
+			return HardCampaignSelectionSequence, true
+		}
+		return 0, false
 	case FrameVerify:
 		return protocol.verifySequence(), true
 	case FrameCancel:
@@ -966,6 +1198,39 @@ func parseWinner(payload []byte) (Winner, error) {
 	}
 	return winner, nil
 }
+
+func marshalWinnerSelection(selection WinnerSelection) ([]byte, error) {
+	if !selection.HasWinner {
+		if selection.Winner != (Winner{}) {
+			return nil, ErrInvalidPayload
+		}
+		return []byte{0}, nil
+	}
+	if !selection.Winner.CandidateSender.Valid() || allZero(selection.Winner.Digest[:]) {
+		return nil, ErrInvalidPayload
+	}
+	winner := marshalWinner(selection.Winner)
+	defer clear(winner)
+	payload := make([]byte, 1+len(winner))
+	payload[0] = 1
+	copy(payload[1:], winner)
+	return payload, nil
+}
+
+func parseWinnerSelection(payload []byte) (WinnerSelection, error) {
+	if len(payload) == 1 && payload[0] == 0 {
+		return WinnerSelection{}, nil
+	}
+	if len(payload) != 40 || payload[0] != 1 {
+		return WinnerSelection{}, ErrInvalidPayload
+	}
+	winner, err := parseWinner(payload[1:])
+	if err != nil {
+		return WinnerSelection{}, err
+	}
+	return WinnerSelection{HasWinner: true, Winner: winner}, nil
+}
+
 func digestWinner(execution [32]byte, winner Winner) [32]byte {
 	var encoded bytes.Buffer
 	encoded.WriteString("winkyou-hardnat-winner-v1\x00")

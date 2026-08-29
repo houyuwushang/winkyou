@@ -3,6 +3,7 @@ package hardnatbudget
 import (
 	"fmt"
 	"testing"
+	"time"
 
 	"winkyou/internal/governor"
 	"winkyou/internal/v2/hardnatplan"
@@ -38,6 +39,16 @@ func TestFrozenExecutionEnvelopes(t *testing.T) {
 		if digest, err := Digest(envelope); err != nil || digest == ([32]byte{}) || fmt.Sprintf("%x", digest) != test.wantHash {
 			t.Fatalf("Digest(%s) = %x, %v; want %s", test.profile, digest, err, test.wantHash)
 		}
+	}
+}
+
+func TestHard16CandidateSubwindowStaysInsideAbsoluteEnvelope(t *testing.T) {
+	candidate, err := CandidateDuration(hardnatplan.ProfileHardBirthday, hardnatplan.ResourceHard16KLab)
+	if err != nil || candidate != 38*time.Second || candidate >= Hard16ActiveEnvelope {
+		t.Fatalf("hard16 candidate subwindow = %s/%v", candidate, err)
+	}
+	if Hard16ActiveEnvelope != 45*time.Second || Hard16AttemptDuration != 47*time.Second {
+		t.Fatalf("hard16 absolute envelope changed = %s/%s", Hard16ActiveEnvelope, Hard16AttemptDuration)
 	}
 }
 

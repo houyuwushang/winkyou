@@ -29,13 +29,18 @@ import (
 )
 
 const (
-	gateB3ConntrackCap        = 40_000
-	gateB3ConntrackFaultCap   = 1_024
-	gateB3HostConntrackCapEnv = "WINKYOU_GATE_B3_HOST_CONNTRACK_CAP"
-	gateB3DisposableRunnerEnv = "WINKYOU_GATE_B3_DISPOSABLE_RUNNER"
-	gateB3PortMin             = uint16(hardnatplan.DynamicPortMin)
-	gateB3PortMax             = uint16(hardnatplan.DynamicPortMax)
-	gateB3ProcessLimit        = 52 * time.Second
+	gateB3ConntrackCap      = 40_000
+	gateB3ConntrackFaultCap = 1_024
+	// nf_conntrack_count is incremented before the kernel compares it with
+	// nf_conntrack_max. This single-forwarder test router can therefore expose
+	// the rejected allocation as a transient max+1 sample; terminal count must
+	// still settle at or below the configured ceiling.
+	gateB3ConntrackTransientAllowance = 1
+	gateB3HostConntrackCapEnv         = "WINKYOU_GATE_B3_HOST_CONNTRACK_CAP"
+	gateB3DisposableRunnerEnv         = "WINKYOU_GATE_B3_DISPOSABLE_RUNNER"
+	gateB3PortMin                     = uint16(hardnatplan.DynamicPortMin)
+	gateB3PortMax                     = uint16(hardnatplan.DynamicPortMax)
+	gateB3ProcessLimit                = 52 * time.Second
 	// Socket zero registers all four authenticated RFC 5780 reply sources but
 	// emits to only three of them. The protocol therefore owns 16,395 registered
 	// five-tuples while each APDM test router opens exactly 16,394 mappings.
@@ -79,6 +84,7 @@ func TestGateB3EndpointParentProcess(t *testing.T) {
 func TestLinuxGateB3Hard16Proof(t *testing.T) {
 	requireGateB3Environment(t)
 	requireGateB3HostConntrackGuard(t)
+	t.Run("conntrack_counter_boundary", testGateB3ConntrackCounterBoundary)
 	t.Run("router_mapping_cap_pre_io", testGateB3RouterMappingCapPreIO)
 	t.Run("full_shape_tail_hit", func(t *testing.T) { testGateB3FullShape(t, 0, gateB3ConntrackCap) })
 	t.Run("full_exhaustion", func(t *testing.T) { testGateB3FullShape(t, 1, gateB3ConntrackCap) })
@@ -148,9 +154,10 @@ func testGateB3FullShape(t *testing.T, dropEvery uint64, conntrackCap int) {
 	if err != nil {
 		t.Fatal("Gate B3 right conntrack witness failed")
 	}
-	if leftConntrack < 0 || rightConntrack < 0 || leftConntrack > conntrackCap || rightConntrack > conntrackCap ||
-		leftConntrackPeak <= 0 || rightConntrackPeak <= 0 || leftConntrackPeak > conntrackCap || rightConntrackPeak > conntrackCap {
-		t.Fatalf("Gate B3 conntrack cap witness = %d/%d", leftConntrack, rightConntrack)
+	if !validGateB3ConntrackWitness(leftConntrack, leftConntrackPeak, conntrackCap) ||
+		!validGateB3ConntrackWitness(rightConntrack, rightConntrackPeak, conntrackCap) {
+		t.Fatalf("Gate B3 conntrack cap witness terminal=%d/%d peak=%d/%d cap=%d",
+			leftConntrack, rightConntrack, leftConntrackPeak, rightConntrackPeak, conntrackCap)
 	}
 	if conntrackCap == gateB3ConntrackFaultCap &&
 		(leftConntrackPeak < gateB3ConntrackFaultCap*9/10 || rightConntrackPeak < gateB3ConntrackFaultCap*9/10) {
@@ -187,6 +194,29 @@ func testGateB3FullShape(t *testing.T, dropEvery uint64, conntrackCap int) {
 		responderResult.UDPPackets, initiatorResult.TargetsRegistered, responderResult.TargetsRegistered,
 		initiatorResult.FiveTuples, responderResult.FiveTuples, initiatorResult.SocketsOpened,
 		responderResult.SocketsOpened, leftConntrackPeak, rightConntrackPeak, leftConntrack, rightConntrack)
+}
+
+func validGateB3ConntrackWitness(terminal, peak, cap int) bool {
+	return cap > 0 && terminal >= 0 && terminal <= cap && peak > 0 &&
+		peak <= cap+gateB3ConntrackTransientAllowance
+}
+
+func testGateB3ConntrackCounterBoundary(t *testing.T) {
+	for _, test := range []struct {
+		terminal int
+		peak     int
+		valid    bool
+	}{
+		{terminal: gateB3ConntrackFaultCap, peak: gateB3ConntrackFaultCap, valid: true},
+		{terminal: gateB3ConntrackFaultCap, peak: gateB3ConntrackFaultCap + 1, valid: true},
+		{terminal: gateB3ConntrackFaultCap + 1, peak: gateB3ConntrackFaultCap + 1, valid: false},
+		{terminal: gateB3ConntrackFaultCap, peak: gateB3ConntrackFaultCap + 2, valid: false},
+	} {
+		if got := validGateB3ConntrackWitness(test.terminal, test.peak, gateB3ConntrackFaultCap); got != test.valid {
+			t.Fatalf("Gate B3 conntrack witness terminal=%d peak=%d valid=%t, want %t",
+				test.terminal, test.peak, got, test.valid)
+		}
+	}
 }
 
 type gateB3LateHitMappingPlan struct {
@@ -597,6 +627,7 @@ func assertGateB3FrozenShape(t testing.TB, result gateB3EndpointResult) {
 	}
 	if result.Terminal == "success" {
 		if result.CampaignState != string(governor.PairingLedgerRateLimited) || result.CampaignCircuit ||
+			result.CarrierFramesRead != 8 || result.CarrierFramesWrite != 8 ||
 			result.DataPacketsRead != 3 || result.DataPacketsWritten != 3 || !result.TransportAttached ||
 			!result.TransportAdopted || !result.TransportStandby || !result.ChallengePassed ||
 			!result.TransportDetached || !result.TransportDrained {
