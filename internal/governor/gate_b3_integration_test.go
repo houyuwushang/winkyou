@@ -140,6 +140,45 @@ func TestGateB3Hard16FiftyPercentCandidateLossStaysOneShot(t *testing.T) {
 	}
 }
 
+func TestGateB3ResourceTripRecordsFinishBeforeAttemptRelease(t *testing.T) {
+	left, right, closeFixture := newGateB3NATSimFixtureFor(t, "resource-trip", 11, 29)
+	defer closeFixture()
+	left.factory = &gateB3CandidateFaultFactory{
+		base: left.factory, dropEvery: 1, writeErr: probeio.ErrResourceExhausted,
+	}
+
+	outcomes := runGateB3Pair(t, left, right, 12*time.Second, 2*time.Second)
+	tripped := 0
+	for index, outcome := range outcomes {
+		var failure *gateb.Failure
+		if !errors.As(outcome.err, &failure) || !outcome.result.CredentialBurned ||
+			!outcome.result.FinishRecorded || outcome.result.CampaignLedger == nil ||
+			!outcome.result.CampaignLedger.ExplicitResetRequired {
+			t.Fatalf("side %d resource terminal = %+v/%v", index, outcome.result, outcome.err)
+		}
+		if outcome.result.SafetyTrip.BlocksActiveWork {
+			tripped++
+			if failure.Class != gateb.ClassResourceBudgetExceeded ||
+				outcome.result.SafetyTrip.Record.Reason != governor.SafetyTripResourceExhausted ||
+				outcome.result.Emissions.CandidatePackets != 0 {
+				t.Fatalf("side %d resource witness = %+v/%+v", index, failure, outcome.result)
+			}
+		} else if failure.Class != gateb.ClassOOBStreamClosed && failure.Class != gateb.ClassAttemptExpired &&
+			failure.Class != gateb.ClassCandidateExhausted {
+			t.Fatalf("side %d peer terminal = %+v", index, failure)
+		}
+	}
+	if tripped != 1 {
+		t.Fatalf("resource safety trips = %d, want 1", tripped)
+	}
+	for label, side := range map[string]*gateB3Side{"left": left, "right": right} {
+		snapshot := side.machine.Snapshot()
+		if snapshot.ActiveAttempts != 0 || snapshot.HeavyweightAttempts != 0 || snapshot.Reserved != (governor.Resources{}) {
+			t.Fatalf("%s resource-trip residue = %+v", label, snapshot)
+		}
+	}
+}
+
 func TestGateB3Hard16FIREAndCarrierTerminalStopAllCandidates(t *testing.T) {
 	for _, mode := range []string{"stale_at_fire", "carrier_closed_at_candidates", "cancel_at_candidates"} {
 		t.Run(mode, func(t *testing.T) {
@@ -458,6 +497,7 @@ func gateB3AttemptCost() governor.AttemptCost {
 type gateB3CandidateFaultFactory struct {
 	base      probeio.Factory
 	dropEvery uint64
+	writeErr  error
 	writes    atomic.Uint64
 }
 
@@ -479,6 +519,9 @@ func (datagram *gateB3CandidateFaultDatagram) WriteTo(ctx context.Context, packe
 	if inspectErr == nil && metadata.Type == hardnatcontrol.FrameCandidate && datagram.owner.dropEvery > 0 {
 		writes := datagram.owner.writes.Add(1)
 		if writes%datagram.owner.dropEvery == 0 {
+			if datagram.owner.writeErr != nil {
+				return 0, datagram.owner.writeErr
+			}
 			return len(packet), nil
 		}
 	}
