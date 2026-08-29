@@ -102,7 +102,10 @@ func newN2DTopology(t interface {
 		t.Fatal("N2d NAT mode rejected")
 	}
 	sequence := n2dTopologySequence.Add(1)
-	suffix := fmt.Sprintf("%06x", (uint32(time.Now().UnixNano())+sequence)&0xffffff)
+	// A process-local atomic suffix is collision-free across parallel and rapid
+	// teardown/recreate tests. The previous low 24 wall-clock bits wrapped every
+	// 16.8ms and occasionally reused a still-draining namespace name.
+	suffix := fmt.Sprintf("%08x", sequence)
 	prefix := "wy2" + suffix
 	topology := &n2dTopology{
 		clientA: prefix + "ca", natA: prefix + "na", public: prefix + "pub",

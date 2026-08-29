@@ -116,6 +116,10 @@ type gateB2NATConfig struct {
 	dropAllCandidateInbound   bool
 	dropEveryCandidateInbound uint64
 	mappingHardCap            int
+	gateB3MappingPlan         interface {
+		preferred(context.Context, bool, uint16) (uint16, error)
+	}
+	gateB3MappingPlanLeft bool
 }
 
 type gateB2UsedPort struct {
@@ -201,7 +205,8 @@ func startGateB2NATRouter(t testing.TB, config gateB2NATConfig) *gateB2NATRouter
 	if config.namespace == "" || config.tunName == "" || !config.private.Is4() || !config.public.Is4() ||
 		!config.peerPublic.Is4() || (config.mode != gateB2NATAPDM && config.mode != gateB2NATEIM) ||
 		config.mappingPortMin > config.mappingPortMax || config.mappingHardCap < 0 ||
-		(config.reusePortsByTarget && config.mode != gateB2NATAPDM) {
+		(config.reusePortsByTarget && config.mode != gateB2NATAPDM) ||
+		(config.gateB3MappingPlan != nil && (!config.reusePortsByTarget || config.mode != gateB2NATAPDM)) {
 		t.Fatal("Gate B2 isolated NAT configuration rejected")
 	}
 	ctx, cancel := context.WithCancel(context.Background())
@@ -476,10 +481,24 @@ func (router *gateB2NATRouter) openMappedSocket(preferred uint16, target netip.A
 		connection, err := net.ListenUDP("udp4", net.UDPAddrFromAddrPort(endpoint))
 		return connection, endpoint, err
 	}
+	planned := false
+	if router.config.gateB3MappingPlan != nil && target.Addr() == router.config.peerPublic {
+		var err error
+		preferred, err = router.config.gateB3MappingPlan.preferred(
+			router.ctx, router.config.gateB3MappingPlanLeft, target.Port(),
+		)
+		if err != nil || preferred < router.config.mappingPortMin || preferred > router.config.mappingPortMax {
+			return nil, netip.AddrPort{}, errors.Join(errors.New("Gate B3 isolated NAT mapping plan failed"), err)
+		}
+		planned = true
+	}
 	if preferred != 0 {
 		connection, endpoint, err := try(preferred)
 		if err == nil {
 			return connection, endpoint, nil
+		}
+		if planned {
+			return nil, netip.AddrPort{}, err
 		}
 		// A favorable set has ample disjoint ports. Skip a local collision but
 		// never synthesize a port outside the peer's committed target set.

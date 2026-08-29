@@ -3,6 +3,7 @@
 package natlab
 
 import (
+	"context"
 	"crypto/sha256"
 	"errors"
 	"fmt"
@@ -13,6 +14,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -37,7 +39,7 @@ const (
 	// Socket zero registers all four authenticated RFC 5780 reply sources but
 	// emits to only three of them. The protocol therefore owns 16,395 registered
 	// five-tuples while each APDM test router opens exactly 16,394 mappings.
-	gateB3ExpectedNATMappings = hardnatbudget.Hard16ActualFiveTupleMaximum - 1
+	gateB3EvidenceNATMappings = hardnatbudget.Hard16ActualFiveTupleMaximum - hardnatbudget.Hard16CandidatePackets - 1
 	gateB3ParentEnv           = "WINKYOU_GATE_B3_PARENT_HELPER"
 	gateB3ParentConfig        = "WINKYOU_GATE_B3_PARENT_CONFIG"
 )
@@ -96,8 +98,15 @@ func testGateB3FullShape(t *testing.T, dropEvery uint64, conntrackCap int) {
 		t.Fatal("Gate B3 shared namespace conntrack cap could not be verified")
 	}
 	observer := startGateB2ObserverSet(t, topology.public)
-	leftRouter := startGateB2NATRouter(t, gateB3RouterConfig(topology, true, 11, dropEvery))
-	rightRouter := startGateB2NATRouter(t, gateB3RouterConfig(topology, false, 29, dropEvery))
+	leftConfig, rightConfig := gateB3RouterConfig(topology, true, 11, dropEvery), gateB3RouterConfig(topology, false, 29, dropEvery)
+	if dropEvery == 0 && conntrackCap == gateB3ConntrackCap {
+		lateHit := newGateB3LateHitMappingPlan()
+		leftConfig.gateB3MappingPlan, leftConfig.gateB3MappingPlanLeft = lateHit, true
+		rightConfig.gateB3MappingPlan = lateHit
+	}
+	leftRouter := startGateB2NATRouter(t, leftConfig)
+	rightRouter := startGateB2NATRouter(t, rightConfig)
+	conntrackMonitor := startGateB3ConntrackMonitor(t, topology.natA, topology.natB)
 	if err := topology.installGateB2PacketCounters(observer.topology); err != nil {
 		t.Fatal("Gate B3 packet counter setup failed")
 	}
@@ -105,6 +114,10 @@ func testGateB3FullShape(t *testing.T, dropEvery uint64, conntrackCap int) {
 	defer clearGateB2Artifacts(&artifacts)
 	initiator, responder := startGateB3Pair(t, topology, observer.topology, artifacts)
 	initiatorResult, responderResult := waitGateB3Result(t, initiator), waitGateB3Result(t, responder)
+	leftConntrackPeak, rightConntrackPeak, monitorErr := conntrackMonitor.Stop()
+	if monitorErr != nil {
+		t.Fatal("Gate B3 conntrack peak witness failed")
+	}
 
 	for _, result := range []gateB3EndpointResult{initiatorResult, responderResult} {
 		assertGateB3FrozenShape(t, result)
@@ -118,8 +131,8 @@ func testGateB3FullShape(t *testing.T, dropEvery uint64, conntrackCap int) {
 		t.Fatalf("Gate B3 per-router mapping cap witness = %+v/%+v", leftWitness, rightWitness)
 	}
 	if conntrackCap == gateB3ConntrackCap {
-		if leftWitness.PeakMappings != gateB3ExpectedNATMappings ||
-			rightWitness.PeakMappings != gateB3ExpectedNATMappings {
+		if leftWitness.PeakMappings != gateB3EvidenceNATMappings+initiatorResult.CandidatePackets ||
+			rightWitness.PeakMappings != gateB3EvidenceNATMappings+responderResult.CandidatePackets {
 			t.Fatalf("Gate B3 NAT mapping shape = %+v/%+v", leftWitness, rightWitness)
 		}
 	} else if leftWitness.PeakMappings <= 0 || rightWitness.PeakMappings <= 0 ||
@@ -135,12 +148,13 @@ func testGateB3FullShape(t *testing.T, dropEvery uint64, conntrackCap int) {
 	if err != nil {
 		t.Fatal("Gate B3 right conntrack witness failed")
 	}
-	if leftConntrack <= 0 || rightConntrack <= 0 || leftConntrack > conntrackCap || rightConntrack > conntrackCap {
+	if leftConntrack < 0 || rightConntrack < 0 || leftConntrack > conntrackCap || rightConntrack > conntrackCap ||
+		leftConntrackPeak <= 0 || rightConntrackPeak <= 0 || leftConntrackPeak > conntrackCap || rightConntrackPeak > conntrackCap {
 		t.Fatalf("Gate B3 conntrack cap witness = %d/%d", leftConntrack, rightConntrack)
 	}
 	if conntrackCap == gateB3ConntrackFaultCap &&
-		(leftConntrack < gateB3ConntrackFaultCap*9/10 || rightConntrack < gateB3ConntrackFaultCap*9/10) {
-		t.Fatalf("Gate B3 conntrack-full witness did not reach the bounded pressure window: %d/%d", leftConntrack, rightConntrack)
+		(leftConntrackPeak < gateB3ConntrackFaultCap*9/10 || rightConntrackPeak < gateB3ConntrackFaultCap*9/10) {
+		t.Fatalf("Gate B3 conntrack-full witness did not reach the bounded pressure window: %d/%d", leftConntrackPeak, rightConntrackPeak)
 	}
 
 	success := initiatorResult.Terminal == "success" && responderResult.Terminal == "success"
@@ -168,11 +182,132 @@ func testGateB3FullShape(t *testing.T, dropEvery uint64, conntrackCap int) {
 			conntrackCap < gateB3ConntrackCap, initiator.governorDir, responder.governorDir)
 	}
 	peakPPS := maxInt(initiatorResult.EnvelopePPS, responderResult.EnvelopePPS)
-	t.Logf("Gate B3 isolated witness: success=%t loss_divisor=%d conntrack_cap=%d wall_ms=%d pps_max=%d packets=%d/%d targets=%d/%d tuples=%d/%d sockets=%d/%d conntrack_peak=%d/%d drain_ms<=2000",
+	t.Logf("Gate B3 isolated witness: success=%t loss_divisor=%d conntrack_cap=%d wall_ms=%d pps_max=%d packets=%d/%d targets=%d/%d tuples=%d/%d sockets=%d/%d conntrack_peak=%d/%d conntrack_terminal=%d/%d drain_ms<=2000",
 		success, dropEvery, conntrackCap, time.Since(started).Milliseconds(), peakPPS, initiatorResult.UDPPackets,
 		responderResult.UDPPackets, initiatorResult.TargetsRegistered, responderResult.TargetsRegistered,
 		initiatorResult.FiveTuples, responderResult.FiveTuples, initiatorResult.SocketsOpened,
-		responderResult.SocketsOpened, leftConntrack, rightConntrack)
+		responderResult.SocketsOpened, leftConntrackPeak, rightConntrackPeak, leftConntrack, rightConntrack)
+}
+
+type gateB3LateHitMappingPlan struct {
+	mu      sync.Mutex
+	counts  [2]int
+	final   [2]uint16
+	ready   chan struct{}
+	readyOK bool
+}
+
+func newGateB3LateHitMappingPlan() *gateB3LateHitMappingPlan {
+	return &gateB3LateHitMappingPlan{ready: make(chan struct{})}
+}
+
+func (plan *gateB3LateHitMappingPlan) preferred(ctx context.Context, left bool, target uint16) (uint16, error) {
+	if plan == nil || ctx == nil || target < gateB3PortMin || target > gateB3PortMax {
+		return 0, errors.New("Gate B3 late-hit mapping input rejected")
+	}
+	side := 1
+	if left {
+		side = 0
+	}
+	plan.mu.Lock()
+	ordinal := plan.counts[side]
+	plan.counts[side]++
+	if ordinal < hardnatbudget.Hard16CandidatePackets-1 {
+		plan.mu.Unlock()
+		if left {
+			return target, nil
+		}
+		if target == gateB3PortMax {
+			return gateB3PortMin, nil
+		}
+		return target + 1, nil
+	}
+	if ordinal != hardnatbudget.Hard16CandidatePackets-1 {
+		plan.mu.Unlock()
+		return 0, errors.New("Gate B3 late-hit mapping schedule exceeded")
+	}
+	plan.final[side] = target
+	if plan.final[0] != 0 && plan.final[1] != 0 && !plan.readyOK {
+		close(plan.ready)
+		plan.readyOK = true
+	}
+	ready := plan.ready
+	plan.mu.Unlock()
+
+	timer := time.NewTimer(2 * time.Second)
+	defer timer.Stop()
+	select {
+	case <-ready:
+	case <-ctx.Done():
+		return 0, ctx.Err()
+	case <-timer.C:
+		return 0, errors.New("Gate B3 late-hit peer mapping deadline exceeded")
+	}
+	plan.mu.Lock()
+	peerTarget := plan.final[1-side]
+	plan.mu.Unlock()
+	if peerTarget == 0 {
+		return 0, errors.New("Gate B3 late-hit peer mapping absent")
+	}
+	return peerTarget, nil
+}
+
+type gateB3ConntrackMonitor struct {
+	leftNamespace  string
+	rightNamespace string
+	stop           chan struct{}
+	done           chan struct{}
+	once           sync.Once
+	mu             sync.Mutex
+	leftPeak       int
+	rightPeak      int
+	err            error
+}
+
+func startGateB3ConntrackMonitor(t *testing.T, leftNamespace, rightNamespace string) *gateB3ConntrackMonitor {
+	t.Helper()
+	monitor := &gateB3ConntrackMonitor{
+		leftNamespace: leftNamespace, rightNamespace: rightNamespace,
+		stop: make(chan struct{}), done: make(chan struct{}),
+	}
+	t.Cleanup(func() { _, _, _ = monitor.Stop() })
+	go monitor.run()
+	return monitor
+}
+
+func (monitor *gateB3ConntrackMonitor) run() {
+	defer close(monitor.done)
+	ticker := time.NewTicker(200 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		left, leftErr := readGateB3ConntrackCount(monitor.leftNamespace)
+		right, rightErr := readGateB3ConntrackCount(monitor.rightNamespace)
+		monitor.mu.Lock()
+		if leftErr != nil || rightErr != nil {
+			monitor.err = errors.Join(leftErr, rightErr)
+			monitor.mu.Unlock()
+			return
+		}
+		monitor.leftPeak = maxInt(monitor.leftPeak, left)
+		monitor.rightPeak = maxInt(monitor.rightPeak, right)
+		monitor.mu.Unlock()
+		select {
+		case <-monitor.stop:
+			return
+		case <-ticker.C:
+		}
+	}
+}
+
+func (monitor *gateB3ConntrackMonitor) Stop() (int, int, error) {
+	if monitor == nil {
+		return 0, 0, errors.New("Gate B3 conntrack monitor unavailable")
+	}
+	monitor.once.Do(func() { close(monitor.stop) })
+	<-monitor.done
+	monitor.mu.Lock()
+	defer monitor.mu.Unlock()
+	return monitor.leftPeak, monitor.rightPeak, monitor.err
 }
 
 func gateB3RouterConfig(topology *n2dTopology, left bool, seed, dropEvery uint64) gateB2NATConfig {

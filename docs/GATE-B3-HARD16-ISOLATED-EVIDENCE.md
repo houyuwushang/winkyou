@@ -133,6 +133,12 @@ required harness 使用五个 fresh namespace、veth、两个 endpoint 子进程
 router 与四 socket RFC 5780 responder。地址全部来自 RFC 5737 TEST-NET。endpoint 只能经密封
 factory 打开 wildcard-ephemeral UDP socket；OOB 由 caller 预先提供的 Unix socketpair 模拟。
 
+尾部命中用例只在 test router 的 OS mapping open 前注入一个固定 allocation realization：前 16,383
+个 ordinal 的两侧 source-port 函数不存在互惠二环，最后一个 ordinal 才把双方 target 交叉用作
+source port。它不改变 planner、candidate 顺序、packet 数、endpoint allowlist 或真实 UDP 路径，且
+任一指定端口无法绑定即 fail-closed；由此 required job 能证明“最后 ordinal 命中”，而不是把约
+63.21% 的概率事件错误写成每轮必然成功。
+
 矩阵包括：完整尾部命中、完整 exhaustion、50% candidate loss、共同 kernel ceiling
 降至 1,024 的 conntrack-full、evidence 后注入 ENOBUFS、post-burn child kill/OOB EOF、parent
 kill/Pdeathsig，以及 100 次真实 endpoint pre-FIRE cancel + fresh namespace teardown。
@@ -140,12 +146,14 @@ kill/Pdeathsig，以及 100 次真实 endpoint pre-FIRE cancel + fresh namespace
 Linux 不允许 non-init namespace 独立写入 `nf_conntrack_max`。本 harness 按 ADR §19 使用三重
 证据：每个 test NAT router 在开 OS mapping socket 前各自执行 40,000 mapping hard cap；外层
 guardian 只在 GitHub-hosted disposable runner 的 init namespace 中把共同 kernel ceiling 暂时降为
-40,000；两个 NAT namespace 分别回读自己的 `nf_conntrack_count`。guardian 取得独占锁、保存原值、
+40,000；两个 NAT namespace 在 attempt 期间持续采样自己的真实 `nf_conntrack_count`，终局另取快照。
+guardian 取得独占锁、保存原值、
 逐值验证安装并在 signal/失败/child crash 后精确恢复；不能证明 init namespace、不能安全降低、不能
 恢复或原值低于 40,000 时 required job 在 topology/campaign 前失败。该值覆盖每侧最多 16,395 个
-已登记 establishment five-tuple 及 kernel witness 余量，但不是可发射 packet budget。真实 APDM
-router 每侧精确打开 16,394 个 mapping：socket 0 为认证入站 STUN reply 登记的第四个 observer
-source 不承载出站请求，因此占一个受控 five-tuple 登记、但不创建 NAT mapping。
+已登记 establishment five-tuple 及 kernel witness 余量，但不是可发射 packet budget。完整 schedule
+的真实 APDM router 每侧精确打开 16,394 个 mapping；提前命中时则精确为 10 个 evidence mapping
+加实际 candidate 数。socket 0 为认证入站 STUN reply 登记的第四个 observer source 不承载出站请求，
+因此占一个受控 five-tuple 登记、但不创建 NAT mapping。
 
 每个终局都核对 application/iptables 计数、PPS、socket/target/five-tuple、per-router mapping、两侧
 conntrack count、drain latency，并在 owned cleanup 后证明 packet counter 静止、socket/process/
