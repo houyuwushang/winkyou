@@ -1,7 +1,8 @@
 # Gate B2：困难 NAT executor 与隔离证据
 
-状态：**Draft implementation evidence；只覆盖 memory、loopback、natsim 与 required Linux
-network namespace，不授权 Gate B3、stdio/CLI/runtime、SSH/WireGuard、LAN/公网或现场 I/O。**
+状态：**Accepted implementation evidence；PR #93 已于 2026-08-28 通过独立复审并合并。
+证据只覆盖 memory、loopback、natsim 与 required Linux network namespace，不授权 Gate B3、
+stdio/CLI/runtime、SSH/WireGuard、LAN/公网或现场 I/O。**
 
 权限来源：[`ADR-N3C-GATE-B-ENDPOINT-DEPENDENT-SOLVER.md`](./adr/ADR-N3C-GATE-B-ENDPOINT-DEPENDENT-SOLVER.md)
 §12 第 4 步与 §16 的完整执行 envelope 裁决。Gate B1 的 bilateral plan、128×512 shape 与
@@ -222,5 +223,7 @@ race-enabled Linux netns 三场矩阵，耗时分别为 29.72 秒与 30.33 秒�
 evidence=13/13、candidate=31/32、winner=1、socket=8/8、NAT peak=41/42、conntrack 166→0；
 两种 asymmetric carrier/planner role orientation 均为 target=512、mapping=64、winner=1、
 NAT peak=74/8 与 8/74、conntrack 1192→0。六个场景的 terminal witness 均为 socket=0、
-process=0、packet counter 静止、conntrack=0。该实现 head 的两组完整 CI 共 21/21 通过；PR
-仍为 Draft，本节只构成重新送交独立复审的证据，不构成合并、Gate B3 或现场授权。
+process=0、packet counter 静止、conntrack=0。最终 head
+`a2f6e9a6bf1f3c4848dc59c66c493cdc6a24797a` 的两组完整 CI 共 21/21 通过，独立复审接受后以
+merge commit `1c489347886ad7ccff5253ade164339426500916` 合入；该合并只闭合 Gate B2，不构成
+Gate B3、产品入口或现场授权。

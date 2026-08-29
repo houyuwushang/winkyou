@@ -1,8 +1,8 @@
 # ADR：N3c Gate B 困难 NAT 有界求解器
 
-- 状态：**Accepted（含 §15 纠错增补、§16 Gate B2 资源裁决与 §17 安全阻断处置）；Gate B1 planner 与 Gate A 已合并，
-  2026-08-28 维护者仅授权 Gate B2 在 memory/loopback/natsim/netns 中实现并提交 Draft PR。
-  Gate B3、产品入口与任何现场 I/O 仍未授权**
+- 状态：**Accepted（含 §15 纠错增补、§16 Gate B2 资源裁决与 §17 安全阻断处置）；Gate B1、
+  Gate A 与 Gate B2 已合并。2026-08-29 维护者仅授权 §18 的 Gate B3a docs-only 裁决进入
+  Draft PR 独立复审；Gate B3 实现、产品入口与任何现场 I/O 仍未授权**
 - 日期：2026-08-25
 - 基线：`main` = `dc59d73bdc643e1a230d32acb82d97bfd3cb6d65`
 - 跟踪议题：[#87](https://github.com/houyuwushang/winkyou/issues/87)
@@ -370,8 +370,9 @@ append-only journal，但使用独立更严格窗口：
 - journal indeterminate 与 safety trip 继续零发射；
 - ordinary pairing 的 2,048-packet window 不被提高，也不能支付 campaign。
 
-以上数值是 review candidate，不是已接受配置。首个实现只能在 zero-network/natsim/netns
-中证明它们；任何 live 提升需要新的 exact-SHA 授权。
+以上数值仍是 review candidate；§18 给出把它们冻结为 isolated implementation ceiling 时必须
+同时接受的非可互换计费、ledger 与 capability 条件。在 §18 独立复审闭合前不得实现；任何
+live 提升仍需要新的 exact-SHA 授权。
 
 ## 8. 稳定失败类
 
@@ -773,3 +774,169 @@ topology 与 target allowlist 变异失败；StageCandidates 关闭 OOB 后 cand
 0；压缩 active envelope 到期后 direct=0；READY 后推进证据时钟超过五秒时 FIRE 前
 `hard_nat_evidence_drifted` 且 direct=0；单向 FIRE 后封装 candidate 必须终局。以上修正仍只在
 memory、loopback、natsim 与 required netns 范围内，不新增 Gate B3、产品入口或现场授权。
+
+## 18. Gate B3 `hard_16k_lab/1` 隔离实现裁决提案（Draft，2026-08-29）
+
+维护者在 Gate B2 独立复审闭合且 PR #93 合并后，授权本节作为 **docs-only Gate B3a** 进入
+独立复审。本节尚未授权 executor、socket、namespace、disposable router 或现场 I/O；只有本节
+经独立复审接受并合入 `main`，维护者另行明确授权后，才可创建一个 Gate B3 实现 Draft PR。
+本裁决提案的核对基线为 `main` = `964ebdfc8fa3956f06e48ec9d85e203203450fde`。
+
+### 18.1 用户任务与可观察成功
+
+目标用户仍是两台已完成身份核对、位于不可配置 endpoint-dependent NAT 后、已有低带宽 OOB
+控制信道的设备所有者。Gate B3 要回答的不是“能否提供另一个反向代理”，而是：在双方 fresh
+evidence 均支持 `apparently_random` 模型时，一个固定、一次性的 16K search 是否能在不扩大
+资源、不经 OOB relay 承载数据的前提下得到 verified `PacketTransport`。
+
+本 gate 的可观察成功仅限隔离证据：late-hit 与 exhaustion 都精确落在冻结前缀内；命中后沿用
+Gate A `TransportLease` 完成三报文 data-plane challenge；未命中、取消、崩溃和 fault injection
+均写入 durable terminal 并排水为零。它不构成现场成功、产品可用或“通用对称 NAT 穿透”声明。
+
+### 18.2 exact identifiers 与 plan gate transition
+
+Gate B3 只接受以下固定组合：
+
+```text
+artifact_profile: winkyou-test-hard-nat-attempt/1
+direct_attempt_profile: winkyou-test-hard-nat-control/1
+planner_profile: hard_birthday_campaign/1
+resource_class: hard_16k_lab/1
+governor_profile: phase1_hard_nat_campaign
+ledger_record_class: hard_nat_campaign/1
+roles: initiator | responder
+runtime_fallback: disabled
+```
+
+- 现有 artifact 增加这一组 exact arm，不改 Gate B2 两组 arm，也不新建兼容 parser；未知值、
+  交叉 profile/resource、错误 role 与 `hard_32k_candidate/1` 均在 stream/socket I/O 前拒绝；
+- `hard_16k_lab/1` 的 B1 `Executable` 可在 Gate B3 实现中从 `false` 翻为 `true`，并显式更新
+  PlanDigest 与跨语言 golden。这是一次有审查记录的 gate transition；旧/新 build 互联必须因
+  joint commitment 不同而在 direct emission 前失败，不得协商或回退；
+- `hard_32k_candidate/1` 永久保持 plan/probability-only；本 gate 不为它增加 artifact、budget、
+  executor 或网络能力；
+- 双方仍分别重算 local source commitment、directional plan、conditional/full-range probability、
+  cost 与 evidence，再互认 joint commitment 和 `ExecutionEnvelopeDigest`。peer 不能提交地址、
+  port list、candidate、socket/PPS/packet count 或把 `Executable` 改为 true。
+
+### 18.3 reservation ceiling 与不可互换的实际发射
+
+`phase1_hard_nat_campaign` 是新的 machine-only exact profile，只允许 `OperationBirthday`。它不
+提高或继承 `phase1_machine`、`phase1_manual_traversal` 或 user-acknowledged 的任何额度：
+
+| 资源 | exact reservation ceiling |
+| --- | ---: |
+| active peers / attempts / heavyweight | 1 / 1 / 1 |
+| OOB stream / child process | 1 / 0 |
+| UDP sockets | 16 |
+| targets / five-tuples | 16,400 / 16,400 |
+| establishment outbound UDP | 16,432 |
+| packets per second | 512 |
+| absolute active / drain-only | 45s / 2s |
+| governor max attempt duration | 47s |
+| OOB frames / application bytes（每方向） | 8 / 8,256 |
+
+16,432 是必须完整预留的 hard ceiling，不是可由 executor 自由花费的 token balance。Gate B3
+实际协议只允许下列分解：
+
+| slice | packets | targets | five-tuples | 说明 |
+| --- | ---: | ---: | ---: | --- |
+| fresh evidence | 13 | 4 | 11 | 复用已审查的五步 RFC 5780 + 八个 allocation sample；0 retry |
+| fixed candidates | 16,384 | 16,384 | 16,384 | 16 sockets × 1,024；每个 tuple 至多一次 |
+| winner ACK | 0 或 1 | 0 | 0 | 只复用已认证 winner tuple |
+| establishment 实际最大值 | 16,398 | 16,388 | 16,395 | 不含 handoff 后 challenge |
+
+因此预留中的 34 packets、12 targets 与 5 five-tuples 是**不可消费 headroom**：不得转换成 STUN
+重传、额外 observer、替代 candidate、winner retry、第二轮、fallback 或数据面流量。成功
+handoff 后的 test consumer 仍只允许每方向三个 fixed-target challenge packets；它们属于
+`TransportLease` 数据面见证，不计入 512 PPS probe ceiling，但必须在进程外 OS packet witness
+中单列。任一实现把 headroom 当成可发送额度，architecture/mutation test 必须失败。
+
+所有 16 个 socket 在 candidate 前一次性打开；fresh evidence 只消费其中前八个已声明 slot，
+不得为 observation 新开 socket。全部 public mapping sample 必须位于编译期 universe
+49152–65535，且 StateModel 必须重新得到 endpoint-dependent + `apparently_random`；样本落在
+universe 外、evidence 不足或漂移分别在 plan/FIRE 前零 candidate 终止，不能扩展到端口 1–49151。
+
+### 18.4 campaign ledger 与 circuit
+
+- 继续使用同一个 machine OS owner lock 与同一个 append-only pairing journal；不得创建第二
+  ledger 文件、sidecar 计数器或多写者 IPC。journal schema 新增 exact record class，现有
+  4 MiB / 8,192-record 容量、`O_EXCL`、校验和、时钟回退与 indeterminate 语义不提高；
+- `BURN_AND_ADMIT` 原子预留完整 16,432 packets。每 24 小时最多一次 campaign admission，
+  campaign 的 24 小时 packet window 也固定为 16,432；未发送 headroom、提前命中、显式 reset
+  和进程崩溃均不退款；
+- “成功 terminal”只指双向 VERIFY、`PromoteToLease`、consumer adopt、三报文 challenge、
+  durable FINISH 全部完成。BURN 后任何其他终局——evidence drift、candidate exhaustion、cancel、
+  timeout、OOB EOF、writer error 或重启发现 pending——都先 durable FINISH，再打开 campaign
+  circuit，最后释放 attempt；
+- preflight/presence 在 BURN 前失败不产生 admission 或 campaign circuit。普通 exhausted/cancel/
+  timeout 不触发 machine safety trip，但仍因已 burn 的失败打开 campaign circuit；未登记 tuple、
+  超 hard ceiling、第二 attempt、ownership/generation 违规或 OS 连续写失败同时触发持久 safety
+  trip；
+- passage of time 不清 circuit。显式人工 reset 必须核对 expected sequence 并留 note，只清
+  campaign circuit，不退款、不清 24 小时窗口；Gate B3 PR 不增加 CLI/RPC/reset 产品入口；
+- ordinary pairing 的计数与 campaign 计数双向独立、不可代偿。ordinary circuit 或全局 safety
+  trip/ledger indeterminate 会阻断 campaign；campaign circuit 不提高、重置或消耗 ordinary
+  2,048-packet window，只阻断后续 `phase1_hard_nat_campaign`。这允许仍在自身低额度和 circuit
+  下的 ordinary attempt 工作，但禁止用高成本 campaign 绕过已经打开的 ordinary circuit。
+
+### 18.5 单一 lifetime、FIRE 与终局顺序
+
+Gate B3 逐字沿用 §17 的安全修正：从 attempt 取得后、adopt OOB 前创建一个最长 45 秒的绝对
+context，覆盖 presence、burn、handshake、evidence、plan、双向 FIRE、candidate、VERIFY、
+handoff 与 challenge。carrier EOF/deadline/terminal 立即取消同一 context；额外 2 秒只用于
+FINISH 后 drain，绝不继续 emission。
+
+FIRE 必须是双方认证 barrier。两端在进入、交换中和交换后复核五秒 freshness、universe、
+source commitment、joint plan 与 execution envelope；任何一项变化都返回
+`hard_nat_evidence_drifted` 或 `hard_nat_plan_mismatch`，candidate=0。FIRE 后只按冻结 batch/
+ordinal 发射，每个 tuple 至多一次；命中可停止未发 tuple，但不退款、不补位。FINISH 仍先于
+attempt release；Promote/lease/adopt/challenge 任一步失败都关闭 UDP transport 与 OOB 子流，
+不关闭调用方拥有的父管理信道。
+
+### 18.6 唯一允许的 capability 边界
+
+- production、stdio v1/v2、CLI、runtime、scheduler、legacy、`wink-signal`、WireGuard 与 daemon
+  都不能导入或构造 Gate B3 executor/profile；普通 build 不获得 hard-campaign non-loopback
+  factory；
+- memory/natsim consumer 只能注入无 OS capability 的 fake。真实 UDP 只允许
+  `linux && natlab` 密封 helper，必须验证当前 netns，并把 local/observer/peer 固定为仓库
+  TEST-NET topology；peer 地址由 harness 预置，不能来自 artifact/OOB 字段；
+- natlab target allowlist 只允许该 exact peer TEST-NET 地址的编译期 49152–65535 universe 和
+  exact observer endpoints；loopback、私网、其他 TEST-NET 地址与公网地址不能借通配布尔值、
+  raw `UDPFactory` 或 remote source payload 进入；
+- 不授权 disposable router、LAN、公网、真实 STUN/peer reflector、SSH assembly、WireGuard、
+  产品生成工具、服务部署、route/firewall 修改、计划任务或 live authorization。
+
+### 18.7 Gate B3 实现 PR 的必过证据
+
+一个后续独立 Draft PR 必须同时交付 profile、ledger、executor 与 required netns load；不得把
+高成本 profile 拆成“先合 capability、以后补门禁”的 stacked PR：
+
+1. artifact/parser/golden：三套既有 artifact 继续互拒；只接受 hard-16K exact arm；
+   `hard_32k_candidate/1`、unknown/duplicate field、wrong role/profile/resource 全部零 I/O；
+2. memory/natsim：late-hit、最后 ordinal hit、full exhaustion、50% loss、duplicate/reorder/replay、
+   evidence drift、OOB EOF/cancel 与 winner ACK 边界；固定 plan 不产生第二 attempt 或替代 tuple；
+3. ledger：32–100 process 同 credential 只有一个 admission，1,000 restart 零续跑；campaign 与
+   ordinary window 独立；pending crash、失败 circuit、expected-sequence reset、indeterminate 与
+   capacity/clock rollback 全部 fail-closed；
+4. required Linux netns：至少一个接近尾部命中的完整 16K load、一个完整 exhaustion，以及
+   ENOBUFS、conntrack full、50% loss、OOB EOF、parent/child kill。正常 topology 的 conntrack
+   hard cap 每个 endpoint NAT namespace 不得超过 40,000；实现可根据实测降低，不能在代码 PR
+   中提高；若 runner kernel 不支持可验证的 per-netns cap，该 required job 必须 fail-closed，不能
+   退化为 advisory 或沿用 host 未知上限；packet/socket/process/conntrack/governor lock 在 drain
+   后全部为零；
+5. 重复门：100 次 full-shape natsim 使用 fresh key/topology；required netns 的完整 16K load 不得
+   偷偷缩小，另做 100 次 pre-FIRE fresh-namespace create/cancel/teardown 证明生命周期零 residue。
+   这澄清 §9.4 的“100 次 fresh topology”：它不是要求 CI 连续制造 100 × 16K kernel flows；
+6. required job 使用 race-enabled endpoint binary、`WINKYOU_GATE_B3_REQUIRED=1` 防静默 skip、
+   总 timeout 不超过 10 分钟；记录实际 wall time、每秒最大 PPS、packet/target/five-tuple/socket、
+   conntrack peak 与 drain latency，artifact/log 不含地址、hostname、用户名或本机路径；
+7. architecture + mutation：product import、非 natlab unicast、raw factory、任意地址/端口、
+   第 16,385 个 candidate、协议实际第 16,399 个 establishment packet、governor hard ceiling
+   后的第 16,433 个 packet、16,401st target/five-tuple、17th socket、513 PPS、retry/fallback、
+   第二 attempt 与 journal bypass 均在 OS I/O 前失败；hard violation 还必须落持久 trip。
+
+本节复审通过只会授权 memory/natsim/required netns 的一个 Gate B3 Draft 实现。Gate C、
+disposable router 和具名现场 campaign 仍分别需要 implementation review、exact-SHA、具名环境、
+kill switch、teardown 见证、第二人复核与维护者新授权，不能从本节继承。
