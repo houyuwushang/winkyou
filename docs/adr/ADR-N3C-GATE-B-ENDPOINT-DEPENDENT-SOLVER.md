@@ -1,8 +1,9 @@
 # ADR：N3c Gate B 困难 NAT 有界求解器
 
-- 状态：**Accepted（含 §15 纠错增补、§16 Gate B2 资源裁决与 §17 安全阻断处置）；Gate B1、
-  Gate A 与 Gate B2 已合并。2026-08-29 维护者仅授权 §18 的 Gate B3a docs-only 裁决进入
-  Draft PR 独立复审；Gate B3 实现、产品入口与任何现场 I/O 仍未授权**
+- 状态：**Accepted（含 §15 纠错增补、§16 Gate B2 资源裁决、§17 安全阻断处置、§18 Gate B3
+  隔离实现裁决与 §19 conntrack ceiling 可实现性纠错）；Gate B1、Gate A、Gate B2 与 Gate B3a docs-only 裁决已合并。2026-08-30
+  维护者明确授权一个 §18 Gate B3 Draft 实现 PR，仅限 memory/natsim/required Linux netns；
+  产品入口、Gate C、disposable router 与任何现场 I/O 仍未授权**
 - 日期：2026-08-25
 - 基线：`main` = `dc59d73bdc643e1a230d32acb82d97bfd3cb6d65`
 - 跟踪议题：[#87](https://github.com/houyuwushang/winkyou/issues/87)
@@ -775,12 +776,12 @@ topology 与 target allowlist 变异失败；StageCandidates 关闭 OOB 后 cand
 `hard_nat_evidence_drifted` 且 direct=0；单向 FIRE 后封装 candidate 必须终局。以上修正仍只在
 memory、loopback、natsim 与 required netns 范围内，不新增 Gate B3、产品入口或现场授权。
 
-## 18. Gate B3 `hard_16k_lab/1` 隔离实现裁决提案（Draft，2026-08-29）
+## 18. Gate B3 `hard_16k_lab/1` 隔离实现裁决（Accepted，2026-08-30）
 
-维护者在 Gate B2 独立复审闭合且 PR #93 合并后，授权本节作为 **docs-only Gate B3a** 进入
-独立复审。本节尚未授权 executor、socket、namespace、disposable router 或现场 I/O；只有本节
-经独立复审接受并合入 `main`，维护者另行明确授权后，才可创建一个 Gate B3 实现 Draft PR。
-本裁决提案的核对基线为 `main` = `964ebdfc8fa3956f06e48ec9d85e203203450fde`。
+本节以 docs-only Gate B3a 经独立复审后由 PR #95 合入 `main`。维护者于 2026-08-30 另行明确
+授权一个 Gate B3 实现 Draft PR，实施基线为
+`main` = `3b40c4cf82f24604a52d4e8f2f861d2f46154602`。授权只覆盖本节冻结的 memory、natsim 与
+required Linux netns 证据；不授权 disposable router、产品入口、Gate C 或现场 I/O。
 
 ### 18.1 用户任务与可观察成功
 
@@ -940,3 +941,40 @@ attempt release；Promote/lease/adopt/challenge 任一步失败都关闭 UDP tra
 本节复审通过只会授权 memory/natsim/required netns 的一个 Gate B3 Draft 实现。Gate C、
 disposable router 和具名现场 campaign 仍分别需要 implementation review、exact-SHA、具名环境、
 kill switch、teardown 见证、第二人复核与维护者新授权，不能从本节继承。
+
+## 19. Gate B3 conntrack ceiling 可实现性纠错（Accepted，2026-08-30）
+
+Gate B3 开工核验发现，§18.7 第 4 条把“每个 NAT namespace 的可验证 hard cap”误写成了可以
+分别在两个 non-init network namespace 中写入 `nf_conntrack_max`。当前上游 Linux 的实际语义是：
+
+- `nf_conntrack_max` 指向一个全局值，non-init network namespace 的该 sysctl 条目被内核显式
+  改为只读；只有 init network namespace 可以修改；
+- `nf_conntrack_count` 属于各 network namespace；conntrack 分配把该 namespace 自己的 count
+  与共同的 `nf_conntrack_max` 值比较；
+- 因此该值既不是“两侧可独立写入的 sysctl”，也不是“把所有 namespace count 相加后的聚合
+  计数上限”。它是从 init namespace 一次设置、对各 namespace 统一生效的 ceiling 值。
+
+证据来自上游 Linux 的
+[`nf_conntrack_standalone.c`](https://github.com/torvalds/linux/blob/master/net/netfilter/nf_conntrack_standalone.c#L993-L998)、
+[`nf_conntrack_core.c`](https://github.com/torvalds/linux/blob/master/net/netfilter/nf_conntrack_core.c#L1660-L1682)
+与[内核 conntrack sysctl 文档](https://docs.kernel.org/networking/nf_conntrack-sysctl.html)。这一纠错不
+提高任何资源额度，也不把 host sysctl 权限带进产品；§18 的 40,000 上限按以下组合证据实现：
+
+1. 每个 test-only NAT router 在创建 OS mapping socket **之前**独立执行 40,000 mapping hard cap；
+   该 guard 不能被 candidate 数、端口复用或另一个 router 的余量绕过；
+2. required job 只能在明确标记的 GitHub-hosted disposable runner、init network namespace 和
+   独占 host guard 下运行。外层 guardian 保存原始 `nf_conntrack_max`，只允许把不低于 40,000
+   的原值暂时降低为 40,000，绝不提高原值；安装与恢复都逐值回读；
+3. guardian 在 signal、测试失败和普通进程崩溃路径恢复原值。测试进程遭 `SIGKILL` 时由仍存活的
+   guardian 恢复；整个 runner 丢失时由一次性 VM 销毁提供最终边界。无法取得独占锁、无法证明
+   位于 init namespace、无法安装或无法精确恢复时 required job 失败；
+4. 两个 NAT namespace 分别读取真实 `nf_conntrack_count`，并证明各自不超过当前共同 ceiling；
+   正常 load 的共同 ceiling 为 40,000。conntrack-full fault 在 guardian 内短暂降为 1,024，要求
+   init namespace 事前至少保留 50% headroom，并在子测试终局立即恢复 40,000；
+5. 每个终局仍须证明 router mapping、per-netns conntrack、packet、socket、process、governor
+   lock、namespace 与 veth 零残留。产品、stdio/CLI/runtime、daemon、scheduler、Gate C 与现场
+   路径不得导入 guardian、写 sysctl 或构造 test router。
+
+因此 §18.7 的“runner 不支持可验证的 per-netns cap 则 fail-closed”按本节解释为：必须同时证明
+test-router 独立 mapping cap、init-owned 共同内核 ceiling、两侧各自的真实 count 与精确恢复；不再
+尝试 non-init sysctl 写入，也不得把共同 ceiling 谎称为 per-netns 独立配置或全机聚合计数。
