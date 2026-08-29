@@ -38,6 +38,8 @@ type gateB2EndpointConfig struct {
 	ResultPath      string `json:"result_path"`
 	ObserverPrimary string `json:"observer_primary"`
 	ObserverOther   string `json:"observer_other"`
+	Fault           string `json:"fault,omitempty"`
+	ReadyPath       string `json:"ready_path,omitempty"`
 }
 
 type gateB2EndpointResult struct {
@@ -105,7 +107,7 @@ func TestGateB2EndpointProcess(t *testing.T) {
 		return
 	}
 	var config gateB2EndpointConfig
-	if !readN1JSON(os.Getenv(gateB2HelperConfigEnv), &config) || !validGateB2EndpointConfig(config) {
+	if !readN1JSON(os.Getenv(gateB2HelperConfigEnv), &config) || !validGateB2EndpointConfig(config) || config.Fault != "" {
 		t.Fatal("Gate B2 endpoint helper configuration rejected")
 	}
 	started := time.Now()

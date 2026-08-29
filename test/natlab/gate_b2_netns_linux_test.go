@@ -37,6 +37,8 @@ type gateB2EndpointProcess struct {
 	waitErr      error
 	streamFile   *os.File
 	resultPath   string
+	readyPath    string
+	configPath   string
 	governorDir  string
 	artifactPath string
 	started      bool
@@ -257,7 +259,7 @@ func newGateB2EndpointProcess(t testing.TB, namespace string, role directattempt
 	command.SysProcAttr = &syscall.SysProcAttr{Pdeathsig: syscall.SIGKILL}
 	process := &gateB2EndpointProcess{
 		command: command, done: make(chan struct{}), streamFile: streamFile,
-		resultPath: resultPath, governorDir: governorDir, artifactPath: artifactPath,
+		resultPath: resultPath, configPath: configPath, governorDir: governorDir, artifactPath: artifactPath,
 	}
 	t.Cleanup(process.stop)
 	return process
