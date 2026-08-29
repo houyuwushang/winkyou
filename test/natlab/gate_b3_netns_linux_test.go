@@ -19,6 +19,7 @@ import (
 
 	"winkyou/internal/governor"
 	"winkyou/internal/v2/directattempt"
+	"winkyou/internal/v2/directconnect/gateb"
 	"winkyou/internal/v2/hardnatattempt"
 	"winkyou/internal/v2/hardnatbudget"
 	"winkyou/internal/v2/hardnatobserve"
@@ -33,6 +34,10 @@ const (
 	gateB3PortMin             = uint16(hardnatplan.DynamicPortMin)
 	gateB3PortMax             = uint16(hardnatplan.DynamicPortMax)
 	gateB3ProcessLimit        = 52 * time.Second
+	// Socket zero registers all four authenticated RFC 5780 reply sources but
+	// emits to only three of them. The protocol therefore owns 16,395 registered
+	// five-tuples while each APDM test router opens exactly 16,394 mappings.
+	gateB3ExpectedNATMappings = hardnatbudget.Hard16ActualFiveTupleMaximum - 1
 	gateB3ParentEnv           = "WINKYOU_GATE_B3_PARENT_HELPER"
 	gateB3ParentConfig        = "WINKYOU_GATE_B3_PARENT_CONFIG"
 )
@@ -113,8 +118,8 @@ func testGateB3FullShape(t *testing.T, dropEvery uint64, conntrackCap int) {
 		t.Fatalf("Gate B3 per-router mapping cap witness = %+v/%+v", leftWitness, rightWitness)
 	}
 	if conntrackCap == gateB3ConntrackCap {
-		if leftWitness.PeakMappings != hardnatbudget.Hard16ActualFiveTupleMaximum ||
-			rightWitness.PeakMappings != hardnatbudget.Hard16ActualFiveTupleMaximum {
+		if leftWitness.PeakMappings != gateB3ExpectedNATMappings ||
+			rightWitness.PeakMappings != gateB3ExpectedNATMappings {
 			t.Fatalf("Gate B3 NAT mapping shape = %+v/%+v", leftWitness, rightWitness)
 		}
 	} else if leftWitness.PeakMappings <= 0 || rightWitness.PeakMappings <= 0 ||
@@ -150,7 +155,7 @@ func testGateB3FullShape(t *testing.T, dropEvery uint64, conntrackCap int) {
 		if (dropEvery == 1 || conntrackCap < gateB3ConntrackCap) && success {
 			t.Fatal("Gate B3 full candidate loss unexpectedly succeeded")
 		}
-		if !success && (initiatorResult.ErrorClass != "candidate_exhausted" || responderResult.ErrorClass != "candidate_exhausted") {
+		if !success && (initiatorResult.ErrorClass != gateb.ClassCandidateExhausted || responderResult.ErrorClass != gateb.ClassCandidateExhausted) {
 			t.Fatalf("Gate B3 lossy terminal classes = %s/%s", initiatorResult.ErrorClass, responderResult.ErrorClass)
 		}
 		assertGateB3NoResidue(t, topology, observer, leftRouter, rightRouter, !success, initiator.governorDir, responder.governorDir)
@@ -203,7 +208,7 @@ func testGateB3ENOBUFS(t *testing.T) {
 	initiator.start(t)
 	responder.start(t)
 	initiatorResult, responderResult := waitGateB3Result(t, initiator), waitGateB3Result(t, responder)
-	if initiatorResult.ErrorClass != "resource_budget_exceeded" ||
+	if initiatorResult.ErrorClass != gateb.ClassResourceBudgetExceeded ||
 		initiatorResult.SafetyReason != string(governor.SafetyTripResourceExhausted) || !initiatorResult.SafetyBlocksWork ||
 		initiatorResult.CandidatePackets != 0 || initiatorResult.UDPPackets != hardnatbudget.FreshEvidencePackets ||
 		!initiatorResult.CredentialBurned || !initiatorResult.FinishRecorded || !initiatorResult.CampaignCircuit {
@@ -252,7 +257,7 @@ func testGateB3ChildKill(t *testing.T) {
 	}
 	initiator.stop()
 	responderResult := waitGateB3Result(t, responder)
-	if responderResult.Terminal == "success" || responderResult.ErrorClass != "oob_stream_closed" ||
+	if responderResult.Terminal == "success" || responderResult.ErrorClass != gateb.ClassOOBStreamClosed ||
 		!responderResult.CredentialBurned || !responderResult.FinishRecorded || !responderResult.CampaignCircuit ||
 		responderResult.SafetyBlocksWork {
 		t.Fatalf("Gate B3 child-kill peer terminal rejected: %+v", responderResult)
@@ -303,7 +308,7 @@ func testGateB3ParentKill(t *testing.T) {
 		t.Fatalf("Gate B3 parent death left OS residue: sockets=%d processes=%d", sockets, processes)
 	}
 	ordinary, campaign := inspectGateB3Ledger(t, process.governorDir)
-	if ordinary.Records != 0 || campaign.TwentyFourHourAdmissions != 0 || campaign.ExplicitResetRequired {
+	if !gateB3LedgerHasOnlyInitialization(ordinary, campaign) {
 		t.Fatalf("Gate B3 pre-burn parent death changed ledger: ordinary=%+v campaign=%+v", ordinary, campaign)
 	}
 	if err := topology.cleanup(); err != nil {
@@ -567,6 +572,16 @@ func inspectGateB3Ledger(t testing.TB, namespace string) (governor.PairingLedger
 	return ordinary, campaign
 }
 
+func gateB3LedgerHasOnlyInitialization(ordinary governor.PairingLedgerStatus, campaign governor.HardNATCampaignStatus) bool {
+	return ordinary.State == governor.PairingLedgerReady && !ordinary.BlocksActiveWork &&
+		ordinary.Sequence == 1 && ordinary.Records == 1 && ordinary.OneHourAdmissions == 0 &&
+		ordinary.TwentyFourHourAdmissions == 0 && ordinary.TwentyFourHourPackets == 0 &&
+		ordinary.ConsecutiveFailures == 0 && !ordinary.ExplicitResetRequired &&
+		campaign.State == governor.PairingLedgerReady && !campaign.BlocksCampaign &&
+		campaign.Sequence == 1 && campaign.Records == 1 && campaign.TwentyFourHourAdmissions == 0 &&
+		campaign.TwentyFourHourPackets == 0 && !campaign.ExplicitResetRequired
+}
+
 func requireGateB3HostConntrackGuard(t *testing.T) {
 	t.Helper()
 	if os.Getenv(gateB3DisposableRunnerEnv) != "github-hosted" ||
@@ -701,7 +716,7 @@ func testGateB3PreFIRETeardown100(t *testing.T) {
 			t.Fatalf("Gate B3 pre-FIRE cancellation %d escaped zero-emission boundary: %+v", iteration, result)
 		}
 		ordinary, campaign := inspectGateB3Ledger(t, process.governorDir)
-		if ordinary.Records != 0 || campaign.TwentyFourHourAdmissions != 0 || campaign.ExplicitResetRequired {
+		if !gateB3LedgerHasOnlyInitialization(ordinary, campaign) {
 			t.Fatalf("Gate B3 pre-FIRE cancellation %d changed ledger: ordinary=%+v campaign=%+v", iteration, ordinary, campaign)
 		}
 		if sockets, processes, err := waitGateB2NoOSResidue(topology, gateB2TerminalMargin); err != nil || sockets != 0 || processes != 0 {

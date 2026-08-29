@@ -992,6 +992,7 @@ func (runtime *runtime) punch(ctx context.Context) (*probeio.ProbeSocket, netip.
 
 	chooser := runtime.chooser()
 	senderFinished := false
+	var senderErr error
 	var deferredResponderCandidate *punchEvent
 	var deferredWinnerTimer *time.Timer
 	var deferredWinnerReady <-chan time.Time
@@ -1036,6 +1037,7 @@ func (runtime *runtime) punch(ctx context.Context) (*probeio.ProbeSocket, netip.
 		select {
 		case err := <-senderDone:
 			senderFinished = true
+			senderErr = err
 			senderDone = nil
 			if err != nil && !errors.Is(err, context.Canceled) {
 				cancel()
@@ -1141,10 +1143,27 @@ func (runtime *runtime) punch(ctx context.Context) (*probeio.ProbeSocket, netip.
 			cancel()
 			readers.Wait()
 			if senderDone != nil {
-				<-senderDone
+				senderErr = <-senderDone
+				senderFinished = true
+				senderDone = nil
+			}
+			if senderErr != nil && !errors.Is(senderErr, context.Canceled) && !errors.Is(senderErr, context.DeadlineExceeded) {
+				return nil, netip.AddrPort{}, senderErr
 			}
 			if runtime.activeContext != nil && runtime.activeContext.Err() != nil {
-				return nil, netip.AddrPort{}, context.Cause(runtime.activeContext)
+				activeCause := context.Cause(runtime.activeContext)
+				// Both hard-campaign peers can finish the exact one-shot schedule
+				// within the same deadline tick. The first side to record FINISH then
+				// closes its child OOB stream, which must still cancel the other side's
+				// active context immediately. Once this side has independently proved
+				// all 16,384 candidate emissions and no winner, however, that close can
+				// no longer replace the already-established local exhaustion terminal.
+				// An earlier OOB close remains oob_stream_closed and stops emission.
+				if runtime.hardCandidateScheduleComplete(senderFinished, senderErr) &&
+					(errors.Is(activeCause, oobcarrier.ErrCarrierTransport) || errors.Is(activeCause, io.EOF)) {
+					return nil, netip.AddrPort{}, ErrCandidateExhausted
+				}
+				return nil, netip.AddrPort{}, activeCause
 			}
 			if cause := context.Cause(punchCtx); cause != nil &&
 				!errors.Is(cause, context.DeadlineExceeded) && !errors.Is(cause, context.Canceled) {
@@ -1156,6 +1175,16 @@ func (runtime *runtime) punch(ctx context.Context) (*probeio.ProbeSocket, netip.
 			return nil, netip.AddrPort{}, punchCtx.Err()
 		}
 	}
+}
+
+func (runtime *runtime) hardCandidateScheduleComplete(senderFinished bool, senderErr error) bool {
+	if runtime == nil || !runtime.isHardCampaign() || !senderFinished || senderErr != nil {
+		return false
+	}
+	runtime.emissionsMu.Lock()
+	defer runtime.emissionsMu.Unlock()
+	return runtime.emissions.CandidatePackets == hardnatbudget.Hard16CandidatePackets &&
+		runtime.emissions.WinnerPackets == 0
 }
 
 // waitForAsymmetricWinnerSlot keeps the target-set's single winner ACK out of
@@ -1757,6 +1786,11 @@ func (runtime *runtime) classify(stage string, err error) error {
 		return runtime.failure(ClassInsufficientBudget, stage, err)
 	case errors.Is(err, hardnatplan.ErrPlanMismatch), errors.Is(err, hardnatcontrol.ErrPlanMismatch):
 		return runtime.failure(ClassPlanMismatch, stage, err)
+	case runtime.resourceSafetyTripActive():
+		// A governor trip can close sibling readers before the writer's original
+		// ENOBUFS/hard-limit error wins the punch select. The durable machine
+		// witness is authoritative and must not be downgraded to packet_rejected.
+		return runtime.failure(ClassResourceBudgetExceeded, stage, err)
 	case errors.Is(err, ErrCandidateExhausted):
 		return runtime.failure(ClassCandidateExhausted, StageCandidates, err)
 	case errors.Is(err, oobcarrier.ErrPresenceTimeout):
@@ -1794,6 +1828,22 @@ func (runtime *runtime) classify(stage string, err error) error {
 		return runtime.failure(ClassPacketRejected, stage, err)
 	default:
 		return runtime.failure(ClassOOBProtocolViolation, stage, err)
+	}
+}
+
+func (runtime *runtime) resourceSafetyTripActive() bool {
+	if runtime == nil || runtime.config.Machine == nil {
+		return false
+	}
+	trip := runtime.config.Machine.Snapshot().SafetyTrip
+	if !trip.BlocksActiveWork {
+		return false
+	}
+	switch trip.Record.Reason {
+	case governor.SafetyTripResourceExhausted, governor.SafetyTripWriteFailures, governor.SafetyTripHardLimit:
+		return true
+	default:
+		return false
 	}
 }
 

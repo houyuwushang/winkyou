@@ -142,7 +142,9 @@ guardian 只在 GitHub-hosted disposable runner 的 init namespace 中把共同 
 40,000；两个 NAT namespace 分别回读自己的 `nf_conntrack_count`。guardian 取得独占锁、保存原值、
 逐值验证安装并在 signal/失败/child crash 后精确恢复；不能证明 init namespace、不能安全降低、不能
 恢复或原值低于 40,000 时 required job 在 topology/campaign 前失败。该值覆盖每侧最多 16,395 个
-establishment five-tuple 及 kernel witness 余量，但不是可发射 packet budget。
+已登记 establishment five-tuple 及 kernel witness 余量，但不是可发射 packet budget。真实 APDM
+router 每侧精确打开 16,394 个 mapping：socket 0 为认证入站 STUN reply 登记的第四个 observer
+source 不承载出站请求，因此占一个受控 five-tuple 登记、但不创建 NAT mapping。
 
 每个终局都核对 application/iptables 计数、PPS、socket/target/five-tuple、per-router mapping、两侧
 conntrack count、drain latency，并在 owned cleanup 后证明 packet counter 静止、socket/process/
