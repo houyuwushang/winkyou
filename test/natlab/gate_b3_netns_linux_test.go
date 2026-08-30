@@ -42,8 +42,9 @@ const (
 	gateB3PortMax                     = uint16(hardnatplan.DynamicPortMax)
 	gateB3ProcessLimit                = 52 * time.Second
 	// Deleting a namespace removes its named handle synchronously, while RCU
-	// reclamation of a 16K conntrack table may continue briefly. This test-only
-	// margin separates independent campaigns; it never retries an attempt.
+	// reclamation of its netdevices or a 16K conntrack table may continue
+	// briefly. This test-only margin separates independent campaigns and fresh
+	// topology generations; it never retries an attempt or a setup operation.
 	gateB3KernelReleaseMargin = time.Second
 	// Socket zero registers all four authenticated RFC 5780 reply sources but
 	// emits to only three of them. The protocol therefore owns 16,395 registered
@@ -953,6 +954,13 @@ func testGateB3PreFIRETeardown100(t *testing.T) {
 		}
 		if err := topology.assertNoLeaks(); err != nil {
 			t.Fatalf("Gate B3 pre-FIRE residue at iteration %d", iteration)
+		}
+		if iteration+1 < 100 {
+			// Namespace and veth names are already unique and their named handles
+			// are proven absent above. The kernel can still be completing the
+			// previous netdevice/RCU teardown; keep that invisible lifetime out of
+			// the next fresh topology instead of retrying a failed link creation.
+			time.Sleep(gateB3KernelReleaseMargin)
 		}
 	}
 	t.Logf("Gate B3 pre-FIRE lifecycle witness: fresh_namespaces=100 residue=0 wall_ms=%d", time.Since(started).Milliseconds())

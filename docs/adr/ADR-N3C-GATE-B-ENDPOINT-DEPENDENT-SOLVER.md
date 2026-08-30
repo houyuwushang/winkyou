@@ -1032,5 +1032,8 @@ candidate、0/1 winner、8 frame 或 8,256-byte ceiling：
   的 context cancel 不得把结果重写为失败并造成 application/OS packet witness 相差一包。调用前
   已取消或系统调用实际返回 timeout/cancel/error 时仍按原规则失败，ENOBUFS 仍为零发射并触发
   持久 safety trip；该修正不增加任何 packet、PPS、target、tuple 或时长预算。
+- 100 次 fresh namespace teardown 的每轮都先显式删除并证明 namespace/veth 名称零残留，再等待
+  §19 已冻结的 1s kernel-release margin 后创建下一组唯一名称 topology。该等待只隔离内核不可见的
+  netdevice/RCU 尾部生命周期；不重试失败的 setup、attempt 或 packet，也不进入 attempt envelope。
 
 本节是 PR 内实现纠错与评审输入，不自行授权合并、Gate C、产品入口或现场 I/O。

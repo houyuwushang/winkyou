@@ -173,6 +173,10 @@ capability。高负载 topology 删除并通过 namespace/veth 零残留断言�
 不输出 namespace、设备名或底层
 命令文本。
 
+100 次 pre-FIRE fresh teardown 在每轮显式删除并证明 namespace/veth 名称零残留后、下一轮创建前
+也使用同一固定 1s kernel-release margin，隔离 userspace 已不可见但内核仍在完成的 netdevice/RCU
+生命周期。该 margin 不重试失败的 link create、不复用 topology、不发包，也不计入任何 attempt。
+
 ENOBUFS seam 只存在于 `linux && natlab`，在冻结的 13-packet evidence slice 后对首个 candidate
 返回 OS `ENOBUFS`；它不改变 endpoint allowlist，并必须触发持久
 `resource_exhausted` safety trip。parent helper 的 endpoint child 固定设置 `Pdeathsig=SIGKILL`；
