@@ -334,6 +334,7 @@ func TestGateB2FIREFreshnessAndCarrierTerminalStopDirectEmissions(t *testing.T) 
 		t.Run(mode, func(t *testing.T) {
 			outcomes := runGateB2SafetyRegression(t, mode)
 			drifted := 0
+			expired := 0
 			for index, outcome := range outcomes {
 				var failure *gateb.Failure
 				if !errors.As(outcome.err, &failure) {
@@ -354,8 +355,17 @@ func TestGateB2FIREFreshnessAndCarrierTerminalStopDirectEmissions(t *testing.T) 
 					}
 				} else if mode == "carrier_closed_at_candidates" && failure.Class != gateb.ClassOOBStreamClosed {
 					t.Fatalf("side %d failure=%+v, want OOB stream closed", index, failure)
-				} else if mode == "active_envelope_at_candidates" && failure.Class != gateb.ClassAttemptExpired {
-					t.Fatalf("side %d failure=%+v, want active-envelope expiry", index, failure)
+				} else if mode == "active_envelope_at_candidates" {
+					switch failure.Class {
+					case gateb.ClassAttemptExpired:
+						expired++
+					case gateb.ClassOOBStreamClosed:
+						// The endpoint whose absolute envelope expires first closes
+						// the shared stream. Its peer may observe that transport
+						// terminal before its own nominally equal timer fires.
+					default:
+						t.Fatalf("side %d failure=%+v, want active-envelope expiry or peer terminal", index, failure)
+					}
 				}
 				if outcome.result.Emissions.CandidatePackets != 0 || outcome.result.Emissions.WinnerPackets != 0 ||
 					outcome.result.Emissions.DataPacketsRead != 0 || outcome.result.Emissions.DataPacketsWritten != 0 ||
@@ -365,6 +375,9 @@ func TestGateB2FIREFreshnessAndCarrierTerminalStopDirectEmissions(t *testing.T) 
 			}
 			if mode == "stale_at_fire" && drifted == 0 {
 				t.Fatal("stale FIRE barrier lacked a local evidence-drift witness")
+			}
+			if mode == "active_envelope_at_candidates" && expired == 0 {
+				t.Fatal("active-envelope regression lacked a local deadline witness")
 			}
 		})
 	}

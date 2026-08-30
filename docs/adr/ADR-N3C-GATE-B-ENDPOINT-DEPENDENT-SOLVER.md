@@ -1047,6 +1047,8 @@ candidate、0/1 winner、8 frame 或 8,256-byte ceiling：
   active-envelope deadline 约束，不能用于任何 socket/packet 操作；由此不再让“EOF 停止发包”和
   “交付 EOF 前最后一帧”争用同一个 cancellation edge。若下层只返回通用 `context.Canceled`，
   分类器只在 active context 带非通用 carrier cause 时恢复该 cause，保证 child death/OOB EOF 稳定
-  为 `oob_stream_closed`；caller cancel/deadline 仍为 `attempt_expired`。
+  为 `oob_stream_closed`；本地 caller cancel/deadline 仍为 `attempt_expired`。双端同一绝对 deadline
+  中先到期的一端关闭子流时，peer 可先观察到 `oob_stream_closed`，但回归门必须同时证明至少一端
+  保留本地 deadline witness，且两端 terminal barrier 后 UDP emission 均为零。
 
 本节是 PR 内实现纠错与评审输入，不自行授权合并、Gate C、产品入口或现场 I/O。

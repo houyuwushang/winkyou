@@ -204,8 +204,10 @@ active envelope 对两者仍共同生效。
 
 如果下层因上述 carrier cancellation 只返回通用 `context.Canceled`，分类器会恢复
 `context.Cause(activeContext)` 中的稳定 transport cause，因此 child death/OOB EOF 始终报告
-`oob_stream_closed`。只有非通用、确属 carrier 的 cause 可以覆盖通用 context 错误；caller cancel
-与 deadline 继续报告 `attempt_expired`，协议错误也不能使用 terminal queue drain。
+`oob_stream_closed`。只有非通用、确属 carrier 的 cause 可以覆盖通用 context 错误；本地 caller
+cancel 与本地 deadline 继续报告 `attempt_expired`。双端共用同一绝对 deadline 时，先到期的一端
+会关闭子流，因此 peer 可以先观察到 `oob_stream_closed`；回归门要求至少一端保留本地 deadline
+见证，且两端后续 UDP emission 都必须为零。协议错误也不能使用 terminal queue drain。
 
 ## 8. 验证状态
 
