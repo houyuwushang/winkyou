@@ -187,12 +187,17 @@ ENOBUFS seam 只存在于 `linux && natlab`，在冻结的 13-packet evidence sl
 EOF 前已完整解码的认证 frame，再报告由同一 EOF 传播的 terminal；无关的 caller 预取消仍优先且
 不消费队列。两条顺序性都由确定性回归测试守住，不改变任何 Gate B3 预算、重试或排水窗口。
 
+Gate B3 no-winner 终局进一步把 active emission 与 terminal drain 拆成同一 caller/absolute deadline
+下的 sibling context：carrier EOF 仍立即取消前者并令后续 UDP 为零，后者只允许接收 EOF 前已经
+认证的 `EXHAUSTED`，且不能进入任何 socket/packet API。caller cancel、candidate deadline 与整个
+active envelope 对两者仍共同生效。
+
 ## 8. 验证状态
 
 当前 head 的本地 Windows 验证已通过：`go vet ./...`；全仓
-`go test ./... -count=1 -timeout=10m`（251.6s）；500 次 fresh full-shape natsim（189.1s）；
-probeio、OOB carrier、Gate A/B 受影响包 race×20（24.7s），其中 terminal-cause 收窄路径另跑
-OOB carrier/Gate B race×20（12.5s）；architecture/mutation race×20（298.0s）；Linux+natlab
+`go test ./... -count=1 -timeout=10m`（260.1s）；1,000 次 fresh full-shape natsim（381.4s）；
+probeio、OOB carrier、Gate A/B 受影响包 race×20（24.7s），其中最终 terminal-context 拆分后的
+OOB carrier/Gate B race×20 另跑（4.7s）；architecture/mutation race×20（298.0s）；Linux+natlab
 tagged vet 与测试二进制交叉编译；`git diff --check`。本机没有运行真实 socket、namespace、
 route、firewall、observer、daemon、LAN 或公网 I/O。
 

@@ -75,7 +75,12 @@ func n2dTopologySetupStage(err error) string {
 
 func n2dTopologySetupWitness(err error) string {
 	class := "other"
-	message := strings.ToLower(err.Error())
+	cause := err
+	var setupErr *n2dTopologySetupError
+	if errors.As(err, &setupErr) && setupErr.cause != nil {
+		cause = setupErr.cause
+	}
+	message := strings.ToLower(cause.Error())
 	switch {
 	case errors.Is(err, context.DeadlineExceeded) || strings.Contains(message, "timed out"):
 		class = "timeout"

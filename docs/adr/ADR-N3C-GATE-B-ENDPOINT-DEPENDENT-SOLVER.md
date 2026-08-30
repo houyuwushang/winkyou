@@ -1035,5 +1035,10 @@ candidate、0/1 winner、8 frame 或 8,256-byte ceiling：
 - 100 次 fresh namespace teardown 的每轮都先显式删除并证明 namespace/veth 名称零残留，再等待
   §19 已冻结的 1s kernel-release margin 后创建下一组唯一名称 topology。该等待只隔离内核不可见的
   netdevice/RCU 尾部生命周期；不重试失败的 setup、attempt 或 packet，也不进入 attempt envelope。
+- active attempt 使用共享 caller/absolute deadline 下的两个单向职责 context：carrier terminal 立即
+  取消 active emission context，保证后续 UDP 发射为零；no-winner initiator 只用 sibling terminal-drain
+  context 接收已经认证且在 EOF 前发送的 `EXHAUSTED`。后者仍受同一 caller、candidate deadline 与
+  active-envelope deadline 约束，不能用于任何 socket/packet 操作；由此不再让“EOF 停止发包”和
+  “交付 EOF 前最后一帧”争用同一个 cancellation edge。
 
 本节是 PR 内实现纠错与评审输入，不自行授权合并、Gate C、产品入口或现场 I/O。

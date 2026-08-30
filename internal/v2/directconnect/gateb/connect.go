@@ -48,6 +48,7 @@ func (source staticPSK) LoadPSK() ([noisecore.PSKSize]byte, error) { return sour
 
 type runtime struct {
 	config            Config
+	envelopeContext   context.Context
 	activeContext     context.Context
 	activeCancel      context.CancelCauseFunc
 	deadlineCancel    context.CancelFunc
@@ -221,9 +222,10 @@ func (runtime *runtime) execute(ctx context.Context) error {
 		return runtime.classify(StagePreflight, err)
 	}
 	activeDeadline := time.Now().Add(runtime.activeEnvelope())
-	activeBase, activeCancel := context.WithCancelCause(ctx)
-	activeContext, deadlineCancel := context.WithDeadline(activeBase, activeDeadline)
-	runtime.activeContext, runtime.activeCancel, runtime.deadlineCancel = activeContext, activeCancel, deadlineCancel
+	envelopeContext, deadlineCancel := context.WithDeadline(ctx, activeDeadline)
+	activeContext, activeCancel := context.WithCancelCause(envelopeContext)
+	runtime.envelopeContext, runtime.activeContext = envelopeContext, activeContext
+	runtime.activeCancel, runtime.deadlineCancel = activeCancel, deadlineCancel
 	ctx = activeContext
 	runtime.carrier, err = oobcarrier.AdoptHardNAT(oobcarrier.HardNATConfig{
 		Lease: runtime.attempt, Stream: runtime.config.Stream, OOBChannelID: runtime.artifact.OOBChannelID,
@@ -1140,8 +1142,11 @@ func (runtime *runtime) punch(ctx context.Context) (*probeio.ProbeSocket, netip.
 // Selection consumes the already-reserved eighth carrier frame per direction;
 // it adds no UDP packet, target, tuple, retry, or attempt.
 func (runtime *runtime) punchHardCampaign(ctx context.Context) (*probeio.ProbeSocket, netip.AddrPort, error) {
-	punchCtx, cancel := context.WithTimeout(ctx, runtime.candidateWindow())
+	punchDeadline := time.Now().Add(runtime.candidateWindow())
+	punchCtx, cancel := context.WithDeadline(ctx, punchDeadline)
 	defer cancel()
+	terminalCtx, terminalCancel := runtime.hardTerminalControlContext(ctx, punchDeadline)
+	defer terminalCancel()
 	runtime.candidateStart = time.Now()
 	events := make(chan punchEvent, 1024)
 	receiveSlots := make(map[uint16]struct{})
@@ -1296,7 +1301,12 @@ func (runtime *runtime) punchHardCampaign(ctx context.Context) (*probeio.ProbeSo
 		if runtime.artifact.LocalRole == directattempt.RoleResponder {
 			err = runtime.sendHardExhausted(punchCtx)
 		} else {
-			err = runtime.receiveHardExhausted(punchCtx)
+			// Carrier EOF cancels punchCtx immediately so no further network
+			// emission is possible. The authenticated terminal acknowledgement
+			// precedes that EOF, so drain it through the sibling context that
+			// retains the same caller and absolute deadlines without inheriting
+			// the carrier-only cancellation cause.
+			err = runtime.receiveHardExhausted(terminalCtx)
 		}
 		if err != nil {
 			finishReaders()
@@ -1355,6 +1365,14 @@ func (runtime *runtime) punchHardCampaign(ctx context.Context) (*probeio.ProbeSo
 			return nil, netip.AddrPort{}, contextFailure()
 		}
 	}
+}
+
+func (runtime *runtime) hardTerminalControlContext(fallback context.Context, deadline time.Time) (context.Context, context.CancelFunc) {
+	base := fallback
+	if runtime != nil && runtime.envelopeContext != nil {
+		base = runtime.envelopeContext
+	}
+	return context.WithDeadline(base, deadline)
 }
 
 func (runtime *runtime) candidatePackets() int {

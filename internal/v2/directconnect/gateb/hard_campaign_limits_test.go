@@ -68,6 +68,38 @@ func TestGateB3ProtocolFirstOveragesPersistSafetyTrip(t *testing.T) {
 	}
 }
 
+func TestGateB3TerminalControlContextExcludesOnlyCarrierCancellation(t *testing.T) {
+	parent, cancelParent := context.WithCancel(context.Background())
+	envelope, cancelEnvelope := context.WithDeadline(parent, time.Now().Add(time.Minute))
+	active, cancelActive := context.WithCancelCause(envelope)
+	runtime := &runtime{envelopeContext: envelope, activeContext: active, activeCancel: cancelActive}
+	terminal, cancelTerminal := runtime.hardTerminalControlContext(active, time.Now().Add(time.Minute))
+	t.Cleanup(func() {
+		cancelTerminal()
+		cancelActive(context.Canceled)
+		cancelEnvelope()
+		cancelParent()
+	})
+
+	cancelActive(errors.New("synthetic carrier terminal"))
+	if active.Err() == nil {
+		t.Fatal("carrier terminal did not cancel active emission context")
+	}
+	if terminal.Err() != nil {
+		t.Fatalf("carrier terminal canceled terminal-drain context: %v", terminal.Err())
+	}
+
+	cancelParent()
+	select {
+	case <-terminal.Done():
+		if !errors.Is(terminal.Err(), context.Canceled) {
+			t.Fatalf("parent cancellation = %v", terminal.Err())
+		}
+	case <-time.After(time.Second):
+		t.Fatal("parent cancellation did not reach terminal-drain context")
+	}
+}
+
 type gateB3ProtocolTripLease struct {
 	request  governor.AttemptRequest
 	stopping chan struct{}
