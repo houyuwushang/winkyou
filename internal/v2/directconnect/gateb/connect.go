@@ -1583,12 +1583,15 @@ func (runtime *runtime) sendCandidates(ctx context.Context) error {
 		}
 	}
 	pps := runtime.candidateBatchSize()
+	batchStarted := runtime.now()
 	for index, candidate := range runtime.localPlan.Candidates {
 		if runtime.isHardCampaign() && index >= hardnatbudget.Hard16CandidatePackets {
 			return runtime.poisonHardProtocol("candidate schedule exceeded the frozen 16384-packet slice")
 		}
 		if index > 0 && index%pps == 0 {
-			if err := runtime.wait(ctx, candidateBatchPeriod); err != nil {
+			var err error
+			batchStarted, err = runtime.waitForNextCandidateBatch(ctx, batchStarted)
+			if err != nil {
 				return err
 			}
 		}
@@ -1612,6 +1615,22 @@ func (runtime *runtime) sendCandidates(ctx context.Context) error {
 		runtime.emissionsMu.Unlock()
 	}
 	return nil
+}
+
+// waitForNextCandidateBatch separates batch starts by one rolling-PPS
+// interval. Waiting a fresh second after each batch finishes accumulates OS
+// scheduling and syscall time over all 32 hard-16K batches and can truncate
+// the fixed schedule at the already-frozen 38-second deadline. Anchoring to
+// the previous start preserves the 512-PPS ceiling without extending the
+// candidate window, attempt envelope, or packet budget.
+func (runtime *runtime) waitForNextCandidateBatch(ctx context.Context, previousStart time.Time) (time.Time, error) {
+	readyAt := previousStart.Add(candidateBatchPeriod)
+	if remaining := readyAt.Sub(runtime.now()); remaining > 0 {
+		if err := runtime.wait(ctx, remaining); err != nil {
+			return time.Time{}, err
+		}
+	}
+	return runtime.now(), nil
 }
 
 func (runtime *runtime) validateHardProtocolShape(stage string) error {

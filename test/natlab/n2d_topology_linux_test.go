@@ -197,15 +197,12 @@ func (topology *n2dTopology) create() (err error) {
 	stage = "link_pair_create"
 	for _, link := range topology.links {
 		stage = "link_pair_create"
-		if _, err := runCommand("ip", "link", "add", link.hostLeft, "type", "veth", "peer", "name", link.hostRight); err != nil {
-			return err
-		}
-		stage = "link_left_move"
-		if _, err := runCommand("ip", "link", "set", link.hostLeft, "netns", link.leftNamespace); err != nil {
-			return err
-		}
-		stage = "link_right_move"
-		if _, err := runCommand("ip", "link", "set", link.hostRight, "netns", link.rightNamespace); err != nil {
+		// Create both veth ends directly in their owning namespaces. Exposing a
+		// short-lived pair in the initial namespace and then moving each end
+		// races host network management and kernel teardown under the 100-fresh
+		// topology proof. This is one atomic setup operation, not a setup retry.
+		if _, err := runCommand("ip", "-n", link.leftNamespace, "link", "add", link.hostLeft,
+			"type", "veth", "peer", "name", link.hostRight, "netns", link.rightNamespace); err != nil {
 			return err
 		}
 		stage = "link_left_configure"

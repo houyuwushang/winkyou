@@ -100,6 +100,40 @@ func TestGateB3TerminalControlContextExcludesOnlyCarrierCancellation(t *testing.
 	}
 }
 
+func TestGateB3CandidateBatchesDoNotAccumulateEmissionOverhead(t *testing.T) {
+	current := time.Unix(1_700_000_000, 0)
+	totalWait := time.Duration(0)
+	runtime := &runtime{config: Config{Harness: &HarnessHooks{
+		Now: func() time.Time { return current },
+		Wait: func(ctx context.Context, duration time.Duration) error {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			totalWait += duration
+			current = current.Add(duration)
+			return nil
+		},
+	}}}
+
+	campaignStart := current
+	batchStart := campaignStart
+	for batch := 1; batch < 32; batch++ {
+		// Model non-zero syscall/scheduler work in every preceding batch.
+		current = current.Add(100 * time.Millisecond)
+		var err error
+		batchStart, err = runtime.waitForNextCandidateBatch(context.Background(), batchStart)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	if elapsed := current.Sub(campaignStart); elapsed != 31*candidateBatchPeriod {
+		t.Fatalf("32nd batch start = %s, want 31s absolute schedule", elapsed)
+	}
+	if totalWait != 31*900*time.Millisecond {
+		t.Fatalf("batch wait = %s, want emission overhead excluded", totalWait)
+	}
+}
+
 type gateB3ProtocolTripLease struct {
 	request  governor.AttemptRequest
 	stopping chan struct{}

@@ -92,10 +92,13 @@ func TestLinuxGateB3Hard16Proof(t *testing.T) {
 	t.Run("conntrack_counter_boundary", testGateB3ConntrackCounterBoundary)
 	t.Run("topology_setup_error_redaction", testGateB3TopologySetupErrorRedaction)
 	t.Run("router_mapping_cap_pre_io", testGateB3RouterMappingCapPreIO)
+	// Exercise the low-ceiling fault before any 16K topology can leave
+	// invisible conntrack/RCU reclamation behind. The fault remains one-shot
+	// and restores the reviewed 40K ceiling before the next subtest.
+	t.Run("conntrack_full", func(t *testing.T) { testGateB3FullShape(t, 0, gateB3ConntrackFaultCap) })
 	t.Run("full_shape_tail_hit", func(t *testing.T) { testGateB3FullShape(t, 0, gateB3ConntrackCap) })
 	t.Run("full_exhaustion", func(t *testing.T) { testGateB3FullShape(t, 1, gateB3ConntrackCap) })
 	t.Run("fifty_percent_candidate_loss", func(t *testing.T) { testGateB3FullShape(t, 2, gateB3ConntrackCap) })
-	t.Run("conntrack_full", func(t *testing.T) { testGateB3FullShape(t, 0, gateB3ConntrackFaultCap) })
 	t.Run("enobufs", testGateB3ENOBUFS)
 	t.Run("oob_eof_after_child_kill", testGateB3ChildKill)
 	t.Run("parent_kill", testGateB3ParentKill)
