@@ -170,8 +170,8 @@ conntrack-full 故障允许采样到被拒分配造成的瞬时 `max+1`，但 te
 capability。高负载 topology 删除并通过 namespace/veth 零残留断言、且全部 LIFO cleanup callback
 结束后，harness 另留固定 1s 供内核回收已删除 namespace 的 conntrack/RCU 对象；它不重建、
 不重试 campaign，也不进入 attempt 时长或发包预算。后续 topology 若仍失败，只输出稳定 setup stage，
-不输出 namespace、设备名或底层
-命令文本。
+以及 `timeout/conflict/resource/busy/permission/other` 之一的稳定错误类；不输出 namespace、设备名、
+底层命令文本或原始错误。
 
 100 次 pre-FIRE fresh teardown 在每轮显式删除并证明 namespace/veth 名称零残留后、下一轮创建前
 也使用同一固定 1s kernel-release margin，隔离 userspace 已不可见但内核仍在完成的 netdevice/RCU

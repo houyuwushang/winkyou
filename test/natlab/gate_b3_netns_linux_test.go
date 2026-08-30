@@ -227,10 +227,23 @@ func testGateB3ConntrackCounterBoundary(t *testing.T) {
 }
 
 func testGateB3TopologySetupErrorRedaction(t *testing.T) {
-	setupErr := &n2dTopologySetupError{stage: "link_create", cause: errors.New("sensitive setup detail")}
-	if setupErr.Error() != "link_create" || n2dTopologySetupStage(setupErr) != "link_create" ||
-		strings.Contains(setupErr.Error(), "sensitive") {
-		t.Fatal("Gate B3 topology setup error was not reduced to a stable stage")
+	for _, test := range []struct {
+		cause error
+		want  string
+	}{
+		{cause: context.DeadlineExceeded, want: "link_pair_create_timeout"},
+		{cause: errors.New("RTNETLINK answers: File exists"), want: "link_pair_create_conflict"},
+		{cause: errors.New("RTNETLINK answers: Cannot allocate memory"), want: "link_pair_create_resource"},
+		{cause: errors.New("RTNETLINK answers: Device or resource busy"), want: "link_pair_create_busy"},
+		{cause: errors.New("RTNETLINK answers: Operation not permitted"), want: "link_pair_create_permission"},
+		{cause: errors.New("sensitive setup detail"), want: "link_pair_create_other"},
+	} {
+		setupErr := &n2dTopologySetupError{stage: "link_pair_create", cause: test.cause}
+		witness := n2dTopologySetupWitness(setupErr)
+		if setupErr.Error() != "link_pair_create" || n2dTopologySetupStage(setupErr) != "link_pair_create" ||
+			witness != test.want || strings.Contains(witness, "sensitive") {
+			t.Fatalf("Gate B3 topology setup witness = %q, want %q", witness, test.want)
+		}
 	}
 }
 

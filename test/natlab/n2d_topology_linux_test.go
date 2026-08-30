@@ -73,6 +73,25 @@ func n2dTopologySetupStage(err error) string {
 	return "unknown"
 }
 
+func n2dTopologySetupWitness(err error) string {
+	class := "other"
+	message := strings.ToLower(err.Error())
+	switch {
+	case errors.Is(err, context.DeadlineExceeded) || strings.Contains(message, "timed out"):
+		class = "timeout"
+	case strings.Contains(message, "file exists"):
+		class = "conflict"
+	case strings.Contains(message, "no space left"), strings.Contains(message, "cannot allocate memory"),
+		strings.Contains(message, "resource temporarily unavailable"), strings.Contains(message, "no buffer space"):
+		class = "resource"
+	case strings.Contains(message, "device or resource busy"):
+		class = "busy"
+	case strings.Contains(message, "operation not permitted"), strings.Contains(message, "permission denied"):
+		class = "permission"
+	}
+	return n2dTopologySetupStage(err) + "_" + class
+}
+
 type n2dLink struct {
 	hostLeft, hostRight string
 	leftNamespace       string
@@ -142,7 +161,7 @@ func newN2DTopology(t interface {
 	t.Cleanup(func() { _ = topology.cleanup() })
 	if err := topology.create(); err != nil {
 		_ = topology.cleanup()
-		t.Fatal("N2d isolated topology setup failed: " + n2dTopologySetupStage(err))
+		t.Fatal("N2d isolated topology setup failed: " + n2dTopologySetupWitness(err))
 	}
 	return topology
 }
@@ -170,20 +189,25 @@ func (topology *n2dTopology) create() (err error) {
 			return err
 		}
 	}
-	stage = "link_create"
+	stage = "link_pair_create"
 	for _, link := range topology.links {
+		stage = "link_pair_create"
 		if _, err := runCommand("ip", "link", "add", link.hostLeft, "type", "veth", "peer", "name", link.hostRight); err != nil {
 			return err
 		}
+		stage = "link_left_move"
 		if _, err := runCommand("ip", "link", "set", link.hostLeft, "netns", link.leftNamespace); err != nil {
 			return err
 		}
+		stage = "link_right_move"
 		if _, err := runCommand("ip", "link", "set", link.hostRight, "netns", link.rightNamespace); err != nil {
 			return err
 		}
+		stage = "link_left_configure"
 		if err := n2dConfigureEnd(link.leftNamespace, link.hostLeft, link.leftName, link.leftCIDR); err != nil {
 			return err
 		}
+		stage = "link_right_configure"
 		if err := n2dConfigureEnd(link.rightNamespace, link.hostRight, link.rightName, link.rightCIDR); err != nil {
 			return err
 		}
