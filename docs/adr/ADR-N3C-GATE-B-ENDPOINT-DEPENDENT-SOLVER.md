@@ -1017,17 +1017,21 @@ candidate、0/1 winner、8 frame 或 8,256-byte ceiling：
   `EXHAUSTED` terminal acknowledgement，initiator 收到后才返回 `candidate_exhausted`。该确认复用
   no-winner 路径不会使用的 VERIFY sequence 和第 8 个 responder frame，不增加 UDP、target、tuple、
   attempt 或 byte ceiling；缺少确认仍按 `oob_stream_closed` fail-closed；
-- candidate batch 固定为 512，winner 必须等待最后 candidate 后一个完整 rolling-PPS interval，
-  因而第 513 个同秒 packet 仍由 probeio 在 I/O 前拒绝。candidate 子窗口从 34 秒校正为 38 秒，
-  只是在既有 45 秒 absolute context 内给 OS scheduling、PPS-clear 与 selection 留界；不提高
-  governor duration、packet/target/tuple、ledger reservation 或 drain；
+- 512 个 rolling-PPS lane 分别以真实 UDP commit point 锚定：packet `N+512` 必须等待 packet `N`
+  满一个 interval 并留出 1ms clearance。不能在每个完整 batch 结束后再等一秒并把系统调用/
+  调度耗时累计 31 次，也不能只按 batch start 锚定而忽略 512 个 packet 自身的非零发送跨度。
+  winner 仍必须等待最后 candidate 后一个完整 rolling-PPS interval，第 513 个同秒 packet 仍由
+  probeio 在 I/O 前拒绝。candidate 子窗口从 34 秒校正为 38 秒，只是在既有 45 秒 absolute
+  context 内给 OS scheduling、PPS-clear 与 selection 留界；不提高 governor duration、packet/
+  target/tuple、ledger reservation 或 drain；
 - absence、OOB terminal 或 38 秒子窗口到期继续有界失败；没有 retry、补位、第二轮、扩窗、
   fallback 或第二 attempt。`hard_32k_candidate/1` 仍无 executor。
 - OOB async reader 必须按字节流顺序交付已经完整解码并入队的 frame，随后才报告 EOF/terminal。
   调用 `ReceiveControl` 前由 caller 取消的 context 仍优先且不得消费队列；仅当 cancel cause 正是
   同一 carrier 随后的 transport terminal 时，才先排空该 terminal 之前已解码的 frame。由此
   no-winner 的认证 `EXHAUSTED` 不会因为紧随其后的 peer close 在 `select` 中胜出而被丢弃；这不
-  延长 carrier envelope 或 drain。
+  延长 carrier envelope 或 drain。public Gate B receive gate 在 state 已 Closed 时也只对该 async
+  transport-terminal queue drain 开放；协议错误、同步 reader 与所有 write 仍 fail-closed。
 - probeio 的 UDP 系统调用成功返回是该 datagram 的 emission commit point；系统调用成功后才发生
   的 context cancel 不得把结果重写为失败并造成 application/OS packet witness 相差一包。调用前
   已取消或系统调用实际返回 timeout/cancel/error 时仍按原规则失败，ENOBUFS 仍为零发射并触发
@@ -1035,10 +1039,14 @@ candidate、0/1 winner、8 frame 或 8,256-byte ceiling：
 - 100 次 fresh namespace teardown 的每轮都先显式删除并证明 namespace/veth 名称零残留，再等待
   §19 已冻结的 1s kernel-release margin 后创建下一组唯一名称 topology。该等待只隔离内核不可见的
   netdevice/RCU 尾部生命周期；不重试失败的 setup、attempt 或 packet，也不进入 attempt envelope。
+  veth 两端由一个 setup 操作直接创建进各自 owner namespace，不在 init namespace 暴露临时 pair
+  后再做两次 move；
 - active attempt 使用共享 caller/absolute deadline 下的两个单向职责 context：carrier terminal 立即
   取消 active emission context，保证后续 UDP 发射为零；no-winner initiator 只用 sibling terminal-drain
   context 接收已经认证且在 EOF 前发送的 `EXHAUSTED`。后者仍受同一 caller、candidate deadline 与
   active-envelope deadline 约束，不能用于任何 socket/packet 操作；由此不再让“EOF 停止发包”和
-  “交付 EOF 前最后一帧”争用同一个 cancellation edge。
+  “交付 EOF 前最后一帧”争用同一个 cancellation edge。若下层只返回通用 `context.Canceled`，
+  分类器只在 active context 带非通用 carrier cause 时恢复该 cause，保证 child death/OOB EOF 稳定
+  为 `oob_stream_closed`；caller cancel/deadline 仍为 `attempt_expired`。
 
 本节是 PR 内实现纠错与评审输入，不自行授权合并、Gate C、产品入口或现场 I/O。

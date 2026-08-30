@@ -82,6 +82,12 @@ fresh-evidence revalidation、lease-bound promotion 与 FINISH-before-release �
 一个固定的 16 × 1,024 role-separated permutation schedule：每个 tuple 至多发送一次，没有
 retry、fallback、seed rotation、扩窗或第二 attempt。
 
+512 PPS 使用逐 packet-lane 的绝对时间约束：packet `N+512` 只能在 packet `N` 的真实 UDP
+commit point 满 1 秒并留出 1ms clearance 后发送。它不会把每个 512-packet batch 的系统调用/
+调度耗时累计 31 次，也不会把整批非零发送跨度误当成同一时刻；底层 rolling-window governor
+仍是最终权威。该调度不改变 38s candidate 子窗口、45s active envelope、packet/tuple/target 预算
+或第 513 包的 fail-closed 规则。
+
 ```text
 preflight -> oob_adopt -> present -> burned -> activated -> handshake -> prepare
   -> sockets -> fresh_evidence -> plan_committed -> ready_fire bilateral barrier
@@ -123,8 +129,9 @@ test 含 product import、wrong constructor、build tag、call shape 与 selecto
 - deterministic full-shape 双侧各生成并发送 16,384 个 candidate，只提交一个 winner，随后完成
   Gate A handoff 与 3/3 challenge，所有 mapping、队列、transport、governor reservation 为零；
 - full exhaustion 完成完整 one-shot schedule，写 FINISH、打开 campaign circuit，且不触发 machine
-  trip；50% candidate loss 若命中则按 §18.5 停止尚未发出的 tuple 并完成 handoff，若未命中则完整
-  耗尽，任一终局都不补位、不重试、不产生第二 attempt；
+  trip；50% candidate loss 也先完成双方固定的 16,384-packet schedule，再按已认证 observation 做
+  唯一 selection：命中则 handoff，未命中则 exhaustion；任一终局都不补位、不重试、不产生第二
+  attempt；
 - duplicate/reorder/replay、wrong role/generation/context、跨 AD 域重放与第二 winner 均稳定拒绝；
 - FIRE 前 evidence drift、candidate 阶段 OOB EOF 与 caller cancel 均令后续 candidate/winner/data
   emission 为零；
@@ -176,6 +183,9 @@ capability。高负载 topology 删除并通过 namespace/veth 零残留断言�
 100 次 pre-FIRE fresh teardown 在每轮显式删除并证明 namespace/veth 名称零残留后、下一轮创建前
 也使用同一固定 1s kernel-release margin，隔离 userspace 已不可见但内核仍在完成的 netdevice/RCU
 生命周期。该 margin 不重试失败的 link create、不复用 topology、不发包，也不计入任何 attempt。
+每对 veth 的两端由一条 `ip -n <left> link add ... peer ... netns <right>` 操作直接创建到各自 owner
+namespace；不会先把临时接口暴露在 init namespace 再执行两次 move，因此 host network manager
+与上一轮 RCU teardown 没有可竞争的中间 host-link 状态。这仍是一次 setup，失败时不重试。
 
 ENOBUFS seam 只存在于 `linux && natlab`，在冻结的 13-packet evidence slice 后对首个 candidate
 返回 OS `ENOBUFS`；它不改变 endpoint allowlist，并必须触发持久
@@ -192,14 +202,52 @@ Gate B3 no-winner 终局进一步把 active emission 与 terminal drain 拆成�
 认证的 `EXHAUSTED`，且不能进入任何 socket/packet API。caller cancel、candidate deadline 与整个
 active envelope 对两者仍共同生效。
 
+如果下层因上述 carrier cancellation 只返回通用 `context.Canceled`，分类器会恢复
+`context.Cause(activeContext)` 中的稳定 transport cause，因此 child death/OOB EOF 始终报告
+`oob_stream_closed`。只有非通用、确属 carrier 的 cause 可以覆盖通用 context 错误；caller cancel
+与 deadline 继续报告 `attempt_expired`，协议错误也不能使用 terminal queue drain。
+
 ## 8. 验证状态
 
-当前 head 的本地 Windows 验证已通过：`go vet ./...`；全仓
-`go test ./... -count=1 -timeout=10m`（260.1s）；1,000 次 fresh full-shape natsim（381.4s）；
-probeio、OOB carrier、Gate A/B 受影响包 race×20（24.7s），其中最终 terminal-context 拆分后的
-OOB carrier/Gate B race×20 另跑（4.7s）；architecture/mutation race×20（298.0s）；Linux+natlab
-tagged vet 与测试二进制交叉编译；`git diff --check`。本机没有运行真实 socket、namespace、
-route、firewall、observer、daemon、LAN 或公网 I/O。
+实现证据 head `2d60c514273c6ed35a831afb7eed242f8cb0217c` 的本地 Windows 验证：
 
-required Linux 的 race-enabled full-load 实测数字与 CI run/job 链接将在 Draft PR 的远端 required
-job 完成后写入本节；在该证据写回、全仓测试与 vet 全绿前，本文件不声称 Gate B3 验收闭合。
+- `go vet ./...` 通过；
+- `go test ./... -count=1 -timeout=10m` 通过（261.1s）；此前同一实现链的一次全仓运行仅在
+  `TestTwoNodesDiscoverEachOther` 命中过一次状态文件/CLI 读取时序失败，随后该用例 focused
+  `-count=20` 为 20/20（107.571s），再一次完整全仓运行通过；该首次失败未从证据中删除；
+- Gate B/OOB carrier `-race -count=20` 通过；Gate B2/B3 聚焦重复通过；
+- required Fresh100 在本地累计 1,000 个 fresh full-shape campaign 通过（386.527s），末次
+  EOF 收窄后另跑 200 个通过（76.267s）；
+- Linux+natlab tagged vet 与 race-enabled 测试二进制交叉编译、`git diff --check` 通过。
+
+本机没有运行真实 namespace、非回环 socket、route、firewall、observer、daemon、LAN 或公网 I/O。
+
+同一 evidence head 的两份完整 required CI 均成功：
+[run 33311821725](https://github.com/houyuwushang/winkyou/actions/runs/33311821725) 与
+[run 33311819859](https://github.com/houyuwushang/winkyou/actions/runs/33311819859)。两份
+Fresh100 分别为 100/100 exhaustion、每侧 16,384 candidate、零 residue（23,224ms 与
+23,663ms）：[job 99258146047](https://github.com/houyuwushang/winkyou/actions/runs/33311821725/job/99258146047)、
+[job 99258140362](https://github.com/houyuwushang/winkyou/actions/runs/33311819859/job/99258140362)。
+
+两份 race-enabled Gate B3 kernel job 的实测见证如下：
+
+- conntrack-full：共同 cap 1,024；双方 packet `16,397/16,397`、PPS 512；peak
+  `1,024/1,024`；terminal 分别为 `1,024/1,024` 与 `1,023/1,024`；36,244ms / 36,261ms；
+- 尾部命中：成功，packet `16,398/16,397`，双方各 16 socket、16,388 target、16,395
+  five-tuple；conntrack peak `32,660/32,629` 与 `32,670/32,660`；37,219ms / 37,201ms；
+- full exhaustion：失败终局，packet `16,397/16,397`，PPS 512；36,921ms / 36,940ms；
+- 50% loss：本次两份均为 exhaustion，packet `16,397/16,397`，PPS 512；37,104ms /
+  36,912ms；
+- ENOBUFS：注入侧 candidate 0，对端在 terminal cancel 前分别发 19/14 个 candidate；持久
+  resource trip 为 true，residue 0；
+- child kill：`post_burn=true`、peer class `oob_stream_closed`、terminal 后 packet counter
+  稳定、residue 0；parent kill：`Pdeathsig=true`、pre-burn、socket/process/residue 0；
+- pre-FIRE fresh namespace：两份均为 100/100、residue 0（235,272ms / 235,485ms）。
+
+完整日志：
+[job 99258146064](https://github.com/houyuwushang/winkyou/actions/runs/33311821725/job/99258146064) 与
+[job 99258140551](https://github.com/houyuwushang/winkyou/actions/runs/33311819859/job/99258140551)。
+日志中的 `conntrack_terminal` 是 owned flush 前快照；job 随后仍逐 namespace flush 并断言
+conntrack/socket/process/governor lock/netns/veth 全部零残留。Docker smoke 与两份 advisory
+NAT lab 也在该 head 成功。以上只闭合 Draft PR 的隔离实现证据，不授权合并、Gate C、产品接线
+或任何现场 I/O。
