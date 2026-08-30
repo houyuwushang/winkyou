@@ -558,6 +558,26 @@ func TestAsyncReadDrainsDecodedFrameBeforeEOF(t *testing.T) {
 	}
 }
 
+func TestHardNATReceiveGateAllowsOnlyAsyncTerminalDrain(t *testing.T) {
+	carrier := &Carrier{state: stateClosed, closeErr: ErrCarrierTransport, readerStarted: true}
+	if state, ready := carrier.hardNATReceiveReady(); state != stateClosed || !ready {
+		t.Fatalf("closed async receive gate = %d/%t", state, ready)
+	}
+	carrier.closeErr = ErrInvalidFrame
+	if state, ready := carrier.hardNATReceiveReady(); state != stateClosed || ready {
+		t.Fatalf("protocol-terminal receive gate = %d/%t", state, ready)
+	}
+	carrier.closeErr = ErrCarrierTransport
+	carrier.readerStarted = false
+	if state, ready := carrier.hardNATReceiveReady(); state != stateClosed || ready {
+		t.Fatalf("closed synchronous receive gate = %d/%t", state, ready)
+	}
+	carrier.state = stateHandshakeComplete
+	if state, ready := carrier.hardNATReceiveReady(); state != stateHandshakeComplete || !ready {
+		t.Fatalf("active receive gate = %d/%t", state, ready)
+	}
+}
+
 func TestCarrierWriterFailureAndBudgetAreTerminal(t *testing.T) {
 	t.Run("writer error", func(t *testing.T) {
 		stream := &memoryStream{writeErr: errors.New("synthetic writer failure")}

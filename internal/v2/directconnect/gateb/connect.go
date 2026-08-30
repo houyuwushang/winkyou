@@ -1583,15 +1583,22 @@ func (runtime *runtime) sendCandidates(ctx context.Context) error {
 		}
 	}
 	pps := runtime.candidateBatchSize()
-	batchStarted := runtime.now()
+	var hardLaneLast []time.Time
+	if runtime.isHardCampaign() {
+		hardLaneLast = make([]time.Time, pps)
+	}
 	for index, candidate := range runtime.localPlan.Candidates {
 		if runtime.isHardCampaign() && index >= hardnatbudget.Hard16CandidatePackets {
 			return runtime.poisonHardProtocol("candidate schedule exceeded the frozen 16384-packet slice")
 		}
-		if index > 0 && index%pps == 0 {
-			var err error
-			batchStarted, err = runtime.waitForNextCandidateBatch(ctx, batchStarted)
-			if err != nil {
+		if runtime.isHardCampaign() && index >= pps {
+			if err := runtime.waitForHardCandidateLane(ctx, hardLaneLast[index%pps]); err != nil {
+				return err
+			}
+		} else if !runtime.isHardCampaign() && index > 0 && index%pps == 0 {
+			if err := runtime.wait(ctx, candidateBatchPeriod); err != nil {
+				// Gate B2 profiles retain their previously reviewed pacing. Only
+				// the fixed Gate B3 schedule uses per-lane absolute anchoring.
 				return err
 			}
 		}
@@ -1613,24 +1620,30 @@ func (runtime *runtime) sendCandidates(ctx context.Context) error {
 		runtime.emissions.UDPPacketsTotal++
 		runtime.candidateLast = time.Now()
 		runtime.emissionsMu.Unlock()
+		if runtime.isHardCampaign() {
+			hardLaneLast[index%pps] = runtime.now()
+		}
 	}
 	return nil
 }
 
-// waitForNextCandidateBatch separates batch starts by one rolling-PPS
-// interval. Waiting a fresh second after each batch finishes accumulates OS
-// scheduling and syscall time over all 32 hard-16K batches and can truncate
-// the fixed schedule at the already-frozen 38-second deadline. Anchoring to
-// the previous start preserves the 512-PPS ceiling without extending the
-// candidate window, attempt envelope, or packet budget.
-func (runtime *runtime) waitForNextCandidateBatch(ctx context.Context, previousStart time.Time) (time.Time, error) {
-	readyAt := previousStart.Add(candidateBatchPeriod)
+// waitForHardCandidateLane makes packet N+512 wait for packet N's actual
+// commit time. A whole-batch delay is safe but accumulates syscall/scheduler
+// time 31 times; a whole-batch start anchor is too weak because the preceding
+// 512 packets span a non-zero interval. Per-lane anchoring both satisfies the
+// rolling-PPS window and keeps the fixed schedule inside the frozen 38-second
+// deadline without changing any resource budget.
+func (runtime *runtime) waitForHardCandidateLane(ctx context.Context, previous time.Time) error {
+	if previous.IsZero() {
+		return hardnatcontrol.ErrInvalidTransition
+	}
+	readyAt := previous.Add(candidateBatchPeriod + time.Millisecond)
 	if remaining := readyAt.Sub(runtime.now()); remaining > 0 {
 		if err := runtime.wait(ctx, remaining); err != nil {
-			return time.Time{}, err
+			return err
 		}
 	}
-	return runtime.now(), nil
+	return nil
 }
 
 func (runtime *runtime) validateHardProtocolShape(stage string) error {

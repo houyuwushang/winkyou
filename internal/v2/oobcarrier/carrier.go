@@ -541,10 +541,7 @@ func (carrier *Carrier) ReceiveHardNATControl(ctx context.Context, protocol *har
 	if carrier == nil || ctx == nil || protocol == nil || carrier.mode != carrierModeGateB2 {
 		return hardnatcontrol.OpenedFrame{}, ErrCarrierTerminal
 	}
-	carrier.mu.Lock()
-	state := carrier.state
-	ready := state == stateHandshakeComplete
-	carrier.mu.Unlock()
+	state, ready := carrier.hardNATReceiveReady()
 	if !ready {
 		if state == stateClosed {
 			return hardnatcontrol.OpenedFrame{}, carrier.TerminalCause()
@@ -577,6 +574,19 @@ func (carrier *Carrier) ReceiveHardNATControl(ctx context.Context, protocol *har
 		return hardnatcontrol.OpenedFrame{}, carrier.terminate(err)
 	}
 	return opened, nil
+}
+
+// hardNATReceiveReady permits one narrow class of post-terminal operation: an
+// async reader may already have authenticated and queued a control frame
+// before observing the following transport EOF. Carrier.read still gives a
+// caller cancellation authority and returns the stable terminal after that
+// queue is empty. Protocol failures, writes, and non-async closed carriers
+// remain blocked.
+func (carrier *Carrier) hardNATReceiveReady() (carrierState, bool) {
+	carrier.mu.Lock()
+	defer carrier.mu.Unlock()
+	return carrier.state, carrier.state == stateHandshakeComplete ||
+		carrier.state == stateClosed && carrier.readerStarted && errors.Is(carrier.closeErr, ErrCarrierTransport)
 }
 
 func (carrier *Carrier) write(ctx context.Context, kind rendezvouswire.Kind, payload []byte, postburn, first bool) error {
