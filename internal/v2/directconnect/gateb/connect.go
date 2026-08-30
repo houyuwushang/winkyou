@@ -2058,6 +2058,18 @@ func (runtime *runtime) failure(class, stage string, cause error) error {
 }
 
 func (runtime *runtime) classify(stage string, err error) error {
+	// Many lower layers correctly stop on ctx.Err(), which exposes only the
+	// generic Canceled/DeadlineExceeded sentinel. When the active attempt was
+	// canceled with a stable carrier cause, restore that cause before choosing
+	// the public terminal class. Caller cancellation and deadline expiry remain
+	// attempt_expired.
+	if (errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)) &&
+		runtime != nil && runtime.activeContext != nil && runtime.activeContext.Err() != nil {
+		if cause := context.Cause(runtime.activeContext); cause != nil &&
+			!errors.Is(cause, context.Canceled) && !errors.Is(cause, context.DeadlineExceeded) {
+			err = cause
+		}
+	}
 	switch {
 	case errors.Is(err, hardnatplan.ErrUnsupportedProfile), errors.Is(err, hardnatattempt.ErrUnsupportedProfile), errors.Is(err, hardnatbudget.ErrUnsupportedEnvelope):
 		return runtime.failure(ClassProfileUnsupported, stage, err)

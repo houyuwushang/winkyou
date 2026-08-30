@@ -1,6 +1,7 @@
 package gateb
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/netip"
@@ -11,6 +12,7 @@ import (
 	"winkyou/internal/probeio"
 	"winkyou/internal/v2/hardnatobserve"
 	"winkyou/internal/v2/hardnatplan"
+	"winkyou/internal/v2/oobcarrier"
 )
 
 func TestFrozenProgressAndStableFailureClasses(t *testing.T) {
@@ -102,5 +104,29 @@ func TestResourceTripTerminalMatchesAdmissionDrainCancellation(t *testing.T) {
 	failure := runtime.failure(ClassResourceBudgetExceeded, StageCandidates, probeio.ErrResourceExhausted)
 	if got := terminalReason(failure); got != governor.PairingTerminalCancelled {
 		t.Fatalf("resource-trip terminal = %q, want %q", got, governor.PairingTerminalCancelled)
+	}
+}
+
+func TestCarrierCancellationCauseWinsGenericContextError(t *testing.T) {
+	active, cancel := context.WithCancelCause(context.Background())
+	runtime := &runtime{activeContext: active, burned: true}
+	cancel(oobcarrier.ErrCarrierTransport)
+	failure := runtime.classify(StagePlan, context.Canceled)
+	var stable *Failure
+	if !errors.As(failure, &stable) || stable.Class != ClassOOBStreamClosed || stable.Stage != StagePlan ||
+		!stable.CredentialBurned || !errors.Is(stable.Cause, oobcarrier.ErrCarrierTransport) {
+		t.Fatalf("carrier cancellation classification = %+v", stable)
+	}
+}
+
+func TestCallerCancellationRemainsAttemptExpired(t *testing.T) {
+	active, cancel := context.WithCancelCause(context.Background())
+	runtime := &runtime{activeContext: active, burned: true}
+	cancel(context.Canceled)
+	failure := runtime.classify(StagePlan, context.Canceled)
+	var stable *Failure
+	if !errors.As(failure, &stable) || stable.Class != ClassAttemptExpired || stable.Stage != StagePlan ||
+		!errors.Is(stable.Cause, context.Canceled) {
+		t.Fatalf("caller cancellation classification = %+v", stable)
 	}
 }
