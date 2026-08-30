@@ -180,16 +180,17 @@ ENOBUFS seam 只存在于 `linux && natlab`，在冻结的 13-packet evidence sl
 
 应用与 OS 的精确 packet 见证以 UDP 系统调用完成为 commit point：完整成功的 write 即使紧接着
 发生 context cancel 仍记为已发；调用前取消或实际 write error 仍为零发射。OOB reader 同样先交付
-EOF 前已完整解码的认证 frame，再报告 terminal。两条顺序性都由确定性回归测试守住，不改变
-任何 Gate B3 预算、重试或排水窗口。
+EOF 前已完整解码的认证 frame，再报告由同一 EOF 传播的 terminal；无关的 caller 预取消仍优先且
+不消费队列。两条顺序性都由确定性回归测试守住，不改变任何 Gate B3 预算、重试或排水窗口。
 
 ## 8. 验证状态
 
 当前 head 的本地 Windows 验证已通过：`go vet ./...`；全仓
-`go test ./... -count=1 -timeout=10m`（263.8s）；500 次 fresh full-shape natsim（190.7s）；
-probeio、OOB carrier、Gate A/B 受影响包 race×20（24.7s）；architecture/mutation race×20
-（298.0s）；Linux+natlab tagged vet 与测试二进制交叉编译；`git diff --check`。本机没有运行
-真实 socket、namespace、route、firewall、observer、daemon、LAN 或公网 I/O。
+`go test ./... -count=1 -timeout=10m`（251.6s）；500 次 fresh full-shape natsim（189.1s）；
+probeio、OOB carrier、Gate A/B 受影响包 race×20（24.7s），其中 terminal-cause 收窄路径另跑
+OOB carrier/Gate B race×20（12.5s）；architecture/mutation race×20（298.0s）；Linux+natlab
+tagged vet 与测试二进制交叉编译；`git diff --check`。本机没有运行真实 socket、namespace、
+route、firewall、observer、daemon、LAN 或公网 I/O。
 
 required Linux 的 race-enabled full-load 实测数字与 CI run/job 链接将在 Draft PR 的远端 required
 job 完成后写入本节；在该证据写回、全仓测试与 vet 全绿前，本文件不声称 Gate B3 验收闭合。

@@ -536,6 +536,17 @@ func TestAsyncReadDrainsDecodedFrameBeforeEOF(t *testing.T) {
 		t.Fatalf("terminal after queued frame = %v", err)
 	}
 
+	terminalContext, terminalCancel := context.WithCancelCause(context.Background())
+	terminalCancel(ErrCarrierTransport)
+	carrier.incoming <- carrierReadResult{frame: want}
+	got, err = carrier.read(terminalContext)
+	if err != nil || got.Kind != want.Kind || !bytes.Equal(got.Payload, want.Payload) {
+		t.Fatalf("queued frame before propagated terminal = %+v/%v", got, err)
+	}
+	if _, err := carrier.read(terminalContext); !errors.Is(err, ErrCarrierTransport) {
+		t.Fatalf("propagated terminal after queued frame = %v", err)
+	}
+
 	canceled, cancel := context.WithCancel(context.Background())
 	cancel()
 	carrier.incoming <- carrierReadResult{frame: want}

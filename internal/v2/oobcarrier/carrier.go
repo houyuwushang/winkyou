@@ -639,10 +639,27 @@ func (carrier *Carrier) read(ctx context.Context) (rendezvouswire.Frame, error) 
 	async := carrier.readerStarted
 	carrier.mu.Unlock()
 	if async {
-		// Cancellation that predates this receive remains authoritative. Once a
-		// receive is active, however, a completely decoded frame precedes a later
-		// EOF in byte-stream order and must not be discarded by a select race.
+		// Cancellation that predates this receive remains authoritative unless
+		// that exact cancellation was propagated from this carrier's later
+		// transport terminal. In that narrow case a completely decoded frame
+		// still precedes the EOF in byte-stream order and must be delivered first.
 		if err := ctx.Err(); err != nil {
+			select {
+			case <-carrier.closed:
+				terminal := carrier.TerminalCause()
+				if errors.Is(terminal, ErrCarrierTransport) && errors.Is(context.Cause(ctx), terminal) {
+					if carrier.readerDone != nil {
+						<-carrier.readerDone
+					}
+					select {
+					case result := <-carrier.incoming:
+						return result.frame, result.err
+					default:
+						return rendezvouswire.Frame{}, terminal
+					}
+				}
+			default:
+			}
 			return rendezvouswire.Frame{}, err
 		}
 		select {

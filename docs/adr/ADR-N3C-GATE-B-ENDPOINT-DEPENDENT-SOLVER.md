@@ -1023,10 +1023,11 @@ candidate、0/1 winner、8 frame 或 8,256-byte ceiling：
   governor duration、packet/target/tuple、ledger reservation 或 drain；
 - absence、OOB terminal 或 38 秒子窗口到期继续有界失败；没有 retry、补位、第二轮、扩窗、
   fallback 或第二 attempt。`hard_32k_candidate/1` 仍无 executor。
-- OOB async reader 必须按字节流顺序交付已经完整解码并入队的 frame，随后才报告 EOF/terminal；
-  调用 `ReceiveControl` 前已经取消的 context 仍优先且不得消费队列。由此 no-winner 的认证
-  `EXHAUSTED` 不会因为紧随其后的 peer close 在 `select` 中胜出而被丢弃；这不延长 carrier
-  envelope 或 drain。
+- OOB async reader 必须按字节流顺序交付已经完整解码并入队的 frame，随后才报告 EOF/terminal。
+  调用 `ReceiveControl` 前由 caller 取消的 context 仍优先且不得消费队列；仅当 cancel cause 正是
+  同一 carrier 随后的 transport terminal 时，才先排空该 terminal 之前已解码的 frame。由此
+  no-winner 的认证 `EXHAUSTED` 不会因为紧随其后的 peer close 在 `select` 中胜出而被丢弃；这不
+  延长 carrier envelope 或 drain。
 - probeio 的 UDP 系统调用成功返回是该 datagram 的 emission commit point；系统调用成功后才发生
   的 context cancel 不得把结果重写为失败并造成 application/OS packet witness 相差一包。调用前
   已取消或系统调用实际返回 timeout/cancel/error 时仍按原规则失败，ENOBUFS 仍为零发射并触发
