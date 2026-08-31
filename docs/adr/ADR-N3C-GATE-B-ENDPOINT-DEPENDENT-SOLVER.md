@@ -1,14 +1,16 @@
 # ADR：N3c Gate B 困难 NAT 有界求解器
 
 - 状态：**Accepted（含 §15 纠错增补、§16 Gate B2 资源裁决、§17 安全阻断处置、§18 Gate B3
-  隔离实现裁决、§19 conntrack ceiling 可实现性纠错与 §20 实现期协议闭合）；Gate B1、
+  隔离实现裁决、§19 conntrack ceiling 可实现性纠错与 §20 实现期协议闭合）；§22 为等待独立
+  复审的 Issue #100 窄化裁决草案；Gate B1、
   Gate A、Gate B2 与 Gate B3 隔离实现均已独立复审并合入。产品入口、Gate C、disposable
   router 与任何现场 I/O 仍未授权**
 - 实现复审：PR #96 最终 head `553b4c8152979a9ecf66eaf6a2b40c9e8d1964b3` 已明确接受
   §18–§20，并以 merge commit `39ff9780ec295ca8af7339bca8f5e023adf17931` 合入；见 §21。
 - 日期：2026-08-25
 - 基线：`main` = `dc59d73bdc643e1a230d32acb82d97bfd3cb6d65`
-- 跟踪议题：[#87](https://github.com/houyuwushang/winkyou/issues/87)
+- 跟踪议题：[#87](https://github.com/houyuwushang/winkyou/issues/87)、
+  [#100](https://github.com/houyuwushang/winkyou/issues/100)
 - 上位决策：[`ADR-N3C-OOB-DIRECT-HANDOFF.md`](./ADR-N3C-OOB-DIRECT-HANDOFF.md)、
   [`PAIRING-RESTART-SAFETY-CONTRACT.md`](../PAIRING-RESTART-SAFETY-CONTRACT.md)、
   [`STUN-OBSERVATION-CLIENT.md`](../STUN-OBSERVATION-CLIENT.md)
@@ -1071,3 +1073,40 @@ candidate、0/1 winner、8 frame 或 8,256-byte ceiling：
   product build、SSH/WireGuard assembly、disposable router 与任何具名现场 invocation 仍须
   分别取得新的设计评审、exact-SHA implementation review、kill switch、teardown witness、
   第二人复核与维护者授权。
+
+## 22. Gate B3 50% candidate loss 双端终局集合（Draft correction，2026-08-31）
+
+Issue #100 的原始 required-netns 失败不是资源越界：双方均 fail-closed，且后续排水、ledger、
+socket、process、conntrack、namespace 与 veth 均为零。失败发生在 45 秒 absolute envelope 的
+尾部（44,670ms），有方向的结果是 initiator=`oob_stream_closed`、
+responder=`hard_nat_candidate_exhausted`。同 SHA 的并行 job 与独立 rerun 通过；这只能证明竞态
+存在，不能靠 rerun 删除。
+
+§20 的 no-winner wire 只有 responder 发给 initiator 的第八帧 `EXHAUSTED`。initiator 只有在
+认证收到该帧后才能报告 `hard_nat_candidate_exhausted`；wire 没有第九帧用于确认“已收到
+EXHAUSTED”。因此本节拒绝三种表面修复：把未认证收到的 EOF 重标为 exhaustion、增加第九帧或
+延长 45 秒 envelope。三者分别会伪造证明，或改变已冻结的 frame/lifetime 成本。
+
+在 **双方均完成完整 16,384 one-shot schedule、bilateral selection 为 no-winner** 的前提下，
+required gate 只接受以下两个按 carrier role 排序的终局元组：
+
+1. initiator=`hard_nat_candidate_exhausted`、responder=`hard_nat_candidate_exhausted`；carrier
+   frame read/write 必须分别为 `8/7` 与 `7/8`；
+2. initiator=`oob_stream_closed`、responder=`hard_nat_candidate_exhausted`；carrier frame
+   read/write 必须分别为 `7/7` 与 `7/8`。该结果诚实表示 responder 已发送本地认证 exhaustion
+   witness，但 initiator 未能在 carrier terminal 前认证接收，不能在单端被提升为 exhaustion。
+
+两个元组还必须同时满足：每侧 evidence=13、candidate=16,384、winner=0、UDP=16,397；
+credential 已 burn、durable FINISH 已记录、campaign circuit 已打开；无 data-plane packet、无
+machine safety trip、carrier 已排水，且 terminal 后 packet counter 静止并完成既有全量零残留
+检查。responder=`oob_stream_closed`、双侧 EOF、`attempt_expired`、不完整 schedule、任意 winner、
+缺 FINISH/排水或任意其他组合都继续令 required job 失败。
+
+这一裁决不修改 runtime 分类器、wire、Noise AD、candidate、packet、PPS、target、five-tuple、
+socket、ledger、45 秒 active lifetime、2 秒 drain、retry/fallback 或 attempt 数；它只让 required
+netns 断言与单向 terminal acknowledgement 的可证明范围一致。等价 natsim 使用同步 `net.Pipe`
+写语义，当前基线连续 100 次均得到双侧 exhaustion；这排除了确定性状态机错误，但不能模拟 OS
+缓冲写完成后 peer close 与异步 reader 的最后帧交付排序。
+
+本节及对应断言须经独立复审并合入后才关闭 Issue #100。合入只解除 C1b 的该项冻结前置，不
+自行授权 C1b 实现、真实 SSH、非回环产品 I/O、disposable router 或现场测试。

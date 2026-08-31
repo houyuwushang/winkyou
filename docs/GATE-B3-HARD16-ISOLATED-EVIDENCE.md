@@ -255,3 +255,21 @@ conntrack/socket/process/governor lock/netns/veth 全部零残留。Docker smoke
 NAT lab 也在该 head 成功。独立复审同时接受 ADR §20 的六项实现期协议闭合；PR #96 随后以
 merge commit `39ff9780ec295ca8af7339bca8f5e023adf17931` 合入。以上只闭合隔离实现证据，不授权
 Gate C、产品接线、disposable router 或任何现场 I/O。
+
+## 9. Issue #100 终局分类复核（Draft，2026-08-31）
+
+PR #99 首个 push-event required Gate B3 job 的 50% candidate-loss 子场景在 44,670ms 得到
+initiator=`oob_stream_closed`、responder=`hard_nat_candidate_exhausted`；双方仍 fail-closed，
+没有资源或残留风险。原始证据保留于
+[job 99363628221](https://github.com/houyuwushang/winkyou/actions/runs/33350795006/job/99363628221)。
+同 SHA 并行 job 与 rerun 通过不能消除该结果。
+
+本轮在 `main` 基线 `16ab491a55207abb4e4f6f2a01dfe4a1e934fe5c` 上将等价 50% loss natsim
+完整用例重复 100 次，结果 100/100 通过（146.011s），每次均保持完整 16K schedule 与双侧
+exhaustion。该 natsim 使用同步 `net.Pipe`，所以只排除了确定性协议状态错误，不能排除真实 OS
+buffered stream 在最终控制帧与 EOF 之间的排序差异。
+
+ADR §22 因而冻结两个有方向的终局元组，并在 required netns 中逐字段守住完整 schedule、零
+winner、精确 frame shape、durable FINISH、campaign circuit、无 safety trip、排水与零残留。
+单端 `oob_stream_closed` 不会被重分类为 exhaustion；预算、wire、lifetime 与 retry 语义不变。
+本节等待独立复审，合入前 Issue #100 与 C1b 冻结仍保持打开。

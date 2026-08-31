@@ -92,6 +92,7 @@ func TestLinuxGateB3Hard16Proof(t *testing.T) {
 	t.Run("conntrack_counter_boundary", testGateB3ConntrackCounterBoundary)
 	t.Run("topology_setup_error_redaction", testGateB3TopologySetupErrorRedaction)
 	t.Run("router_mapping_cap_pre_io", testGateB3RouterMappingCapPreIO)
+	t.Run("loss_terminal_contract", testGateB3LossTerminalContract)
 	// Exercise the low-ceiling fault before any 16K topology can leave
 	// invisible conntrack/RCU reclamation behind. The fault remains one-shot
 	// and restores the reviewed 40K ceiling before the next subtest.
@@ -186,8 +187,15 @@ func testGateB3FullShape(t *testing.T, dropEvery uint64, conntrackCap int) {
 		if (dropEvery == 1 || conntrackCap < gateB3ConntrackCap) && success {
 			t.Fatal("Gate B3 full candidate loss unexpectedly succeeded")
 		}
-		if !success && (initiatorResult.ErrorClass != gateb.ClassCandidateExhausted || responderResult.ErrorClass != gateb.ClassCandidateExhausted) {
-			t.Fatalf("Gate B3 lossy terminal classes = %s/%s", initiatorResult.ErrorClass, responderResult.ErrorClass)
+		if !success {
+			validTerminal := initiatorResult.ErrorClass == gateb.ClassCandidateExhausted &&
+				responderResult.ErrorClass == gateb.ClassCandidateExhausted
+			if dropEvery == 2 {
+				validTerminal = validGateB3FiftyPercentLossTerminal(initiatorResult, responderResult)
+			}
+			if !validTerminal {
+				t.Fatalf("Gate B3 lossy terminal classes = %s/%s", initiatorResult.ErrorClass, responderResult.ErrorClass)
+			}
 		}
 		if !success && conntrackCap == gateB3ConntrackCap &&
 			(initiatorResult.CandidatePackets != hardnatbudget.Hard16CandidatePackets ||
@@ -204,6 +212,29 @@ func testGateB3FullShape(t *testing.T, dropEvery uint64, conntrackCap int) {
 		responderResult.UDPPackets, initiatorResult.TargetsRegistered, responderResult.TargetsRegistered,
 		initiatorResult.FiveTuples, responderResult.FiveTuples, initiatorResult.SocketsOpened,
 		responderResult.SocketsOpened, leftConntrackPeak, rightConntrackPeak, leftConntrack, rightConntrack)
+}
+
+// validGateB3FiftyPercentLossTerminal freezes the only two role-ordered
+// no-winner outcomes admitted by ADR section 22. The initiator may report a
+// transport close only when the responder has the authenticated local
+// exhaustion witness and both endpoints prove the complete one-shot schedule.
+// It must never turn an unreceived EXHAUSTED frame into candidate_exhausted.
+func validGateB3FiftyPercentLossTerminal(initiator, responder gateB3EndpointResult) bool {
+	return validGateB3LossTerminalPair(gateB3LossTerminalWitnessFrom(initiator), gateB3LossTerminalWitnessFrom(responder))
+}
+
+func gateB3LossTerminalWitnessFrom(result gateB3EndpointResult) gateB3LossTerminalWitness {
+	return gateB3LossTerminalWitness{
+		OK: result.OK, Role: result.Role, Terminal: result.Terminal, ErrorClass: result.ErrorClass,
+		ErrorStage: result.ErrorStage, CredentialBurned: result.CredentialBurned,
+		FinishRecorded: result.FinishRecorded, Bidirectional: result.Bidirectional,
+		EvidencePackets: result.EvidencePackets, CandidatePackets: result.CandidatePackets,
+		WinnerPackets: result.WinnerPackets, UDPPackets: result.UDPPackets,
+		DataPacketsRead: result.DataPacketsRead, DataPacketsWritten: result.DataPacketsWritten,
+		CarrierFramesRead: result.CarrierFramesRead, CarrierFramesWrite: result.CarrierFramesWrite,
+		CarrierDrained: result.CarrierDrained, CampaignCircuit: result.CampaignCircuit,
+		SafetyBlocksWork: result.SafetyBlocksWork,
+	}
 }
 
 func validGateB3ConntrackWitness(terminal, peak, cap int) bool {

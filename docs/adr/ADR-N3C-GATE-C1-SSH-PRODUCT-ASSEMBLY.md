@@ -737,9 +737,9 @@ threat model、pending slot 与 C1a/C1b/C1c/C2 分级方向接受；PR #96 状�
 
 评审问题 4 与 6 由上述修订回答；其余问题维持原文供复审确认。评审同时指出的 Gate B3
 `fifty_percent_candidate_loss` 双端 terminal 分类竞态属非阻断遗留，独立记录于
-[Issue #100](https://github.com/houyuwushang/winkyou/issues/100)，须在 C1b 组合 Gate B3
-前关闭或以新裁决明确允许的双端 terminal 集合。本节不改变授权边界：本 ADR 仍为
-docs-only Draft，实现与现场 I/O 须另行授权。
+[Issue #100](https://github.com/houyuwushang/winkyou/issues/100)。Gate B ADR §22 已提出不改变
+预算/wire/lifetime 的有方向终局集合草案；它仍须独立复审并合入，C1b 在此之前保持冻结。
+本节不改变授权边界：本 ADR 仍为 docs-only Draft，实现与现场 I/O 须另行授权。
 
 ## 15. 接受与 C1a 开工裁决（2026-08-31）
 
