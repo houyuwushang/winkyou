@@ -41,6 +41,10 @@ const (
 	gateB3PortMin                     = uint16(hardnatplan.DynamicPortMin)
 	gateB3PortMax                     = uint16(hardnatplan.DynamicPortMax)
 	gateB3ProcessLimit                = 52 * time.Second
+	// The test-only TUN router may trail the endpoint process on a loaded CI
+	// host. This bounds observation of packets already accepted by the endpoint
+	// sockets; it never extends an attempt or permits another emission.
+	gateB3RouterWitnessLimit = 10 * time.Second
 	// Deleting a namespace removes its named handle synchronously, while RCU
 	// reclamation of its netdevices or a 16K conntrack table may continue
 	// briefly. This test-only margin separates independent campaigns and fresh
@@ -131,13 +135,16 @@ func testGateB3FullShape(t *testing.T, dropEvery uint64, conntrackCap int) {
 	defer clearGateB2Artifacts(&artifacts)
 	initiator, responder := startGateB3Pair(t, topology, observer.topology, artifacts)
 	initiatorResult, responderResult := waitGateB3Result(t, initiator), waitGateB3Result(t, responder)
+	for _, result := range []gateB3EndpointResult{initiatorResult, responderResult} {
+		assertGateB3FrozenShape(t, result)
+	}
+	if conntrackCap == gateB3ConntrackCap {
+		waitGateB3RouterOutbound(t, leftRouter, initiatorResult.UDPPackets+initiatorResult.DataPacketsWritten)
+		waitGateB3RouterOutbound(t, rightRouter, responderResult.UDPPackets+responderResult.DataPacketsWritten)
+	}
 	leftConntrackPeak, rightConntrackPeak, monitorErr := conntrackMonitor.Stop()
 	if monitorErr != nil {
 		t.Fatal("Gate B3 conntrack peak witness failed")
-	}
-
-	for _, result := range []gateB3EndpointResult{initiatorResult, responderResult} {
-		assertGateB3FrozenShape(t, result)
 	}
 	counts := requireGateB2PacketCounts(t, topology)
 	assertGateB2PacketCounts(t, counts, initiatorResult.gateB2EndpointResult, responderResult.gateB2EndpointResult)
@@ -411,7 +418,7 @@ func gateB3RouterConfig(topology *n2dTopology, left bool, seed, dropEvery uint64
 		private: netip.MustParseAddr(n2dClientAAddress), public: netip.MustParseAddr(n2dNATAWAN),
 		peerPublic: netip.MustParseAddr(n2dNATBWAN), mappingPortMin: gateB3PortMin, mappingPortMax: gateB3PortMax,
 		randomSeed: seed, reusePortsByTarget: true, dropEveryCandidateInbound: dropEvery,
-		mappingHardCap: gateB3PerNATMappingCap,
+		mappingHardCap: gateB3PerNATMappingCap, packetQueueCapacity: hardnatbudget.Hard16ActualPacketsMaximum,
 	}
 	if !left {
 		config.namespace = topology.natB
@@ -482,6 +489,8 @@ func testGateB3ChildKill(t *testing.T) {
 	artifacts := buildGateB3Artifacts(t, "child-kill")
 	defer clearGateB2Artifacts(&artifacts)
 	initiator, responder := startGateB3Pair(t, topology, observer.topology, artifacts)
+	waitGateB3Ready(t, initiator, 5*time.Second)
+	waitGateB3Ready(t, responder, 5*time.Second)
 	deadline := time.Now().Add(15 * time.Second)
 	for {
 		counts := requireGateB2PacketCounts(t, topology)
@@ -670,6 +679,26 @@ func waitGateB3Result(t testing.TB, process *gateB2EndpointProcess) gateB3Endpoi
 	process.stop()
 	t.Fatal("Gate B3 endpoint result deadline exceeded")
 	return gateB3EndpointResult{}
+}
+
+func waitGateB3RouterOutbound(t testing.TB, router *gateB2NATRouter, want int) {
+	t.Helper()
+	if router == nil || want < 0 {
+		t.Fatal("Gate B3 NAT outbound witness input rejected")
+	}
+	deadline := time.Now().Add(gateB3RouterWitnessLimit)
+	for time.Now().Before(deadline) {
+		got := router.Witness().Outbound
+		if got == uint64(want) {
+			return
+		}
+		if got > uint64(want) {
+			t.Fatalf("Gate B3 NAT outbound witness exceeded endpoint emission: got=%d want=%d", got, want)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("Gate B3 NAT outbound witness did not drain accepted emissions: got=%d want=%d",
+		router.Witness().Outbound, want)
 }
 
 func assertGateB3FrozenShape(t testing.TB, result gateB3EndpointResult) {

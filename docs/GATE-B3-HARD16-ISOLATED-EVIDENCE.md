@@ -302,4 +302,20 @@ architecture gate 20 次、Linux+natlab tagged vet 与测试二进制交叉编�
 既有 Issue #97 的 legacy relay-wggo 启动停滞；该原样用例随后 5/5 通过（56.315s），完全不改源码
 的全仓复跑通过（291.8s）。首轮失败未从证据中删除，也未混入本 PR 修复。
 
+修复 head `6dd57acea133a760df19def75fb36b978b2c1a29` 的两个独立触发 required job 中，一份完整
+通过（398.49s，50% loss 子场景 38.50s）；另一份没有再命中 winner/VERIFY 分裂，却暴露了
+test-only 用户态 NAT witness 的背压缺口：endpoint 已报告完整 16,384 candidate，但 1,024 深度的
+TUN 队列在较慢 runner 上只处理了 `14,057/13,854` 个 outbound，mapping snapshot 因而提前失败；
+随后 child-kill 的 15 秒 post-burn 观察窗又被子进程慢启动消耗。原始失败保留于
+[job 99565379987](https://github.com/houyuwushang/winkyou/actions/runs/33415604752/job/99565379987)，
+成功对照保留于
+[job 99565390415](https://github.com/houyuwushang/winkyou/actions/runs/33415608089/job/99565390415)。
+
+该次失败不以 rerun 删除，也不通过降低 mapping、packet 或 terminal 断言处置。后续 head 仅修正
+Linux+natlab harness：Gate B3 NAT router 的有界队列从通用默认 1,024 提升为已冻结的单端最大
+16,432 packets；endpoint 终局后最多等待 10 秒，让用户态 router 完成已经由 endpoint socket 接受的
+packet，再取得原样的精确 mapping/conntrack witness；超过上限或多处理一个 packet 仍立即失败。
+child-kill 则先取得双端 ready witness，再开始原 15 秒 post-burn 阶段窗口。它们不延长 45 秒 attempt、
+不新增 emission/retry/fallback，也不改变 2 秒产品 drain；下一 head 的原始 CI 结果仍须独立通过。
+
 本节等待独立复审，合入前 Issue #100 与 C1b 冻结仍保持打开。

@@ -1141,5 +1141,12 @@ machine safety trip、carrier 已排水，且 terminal 后 packet counter 静止
 双方必须继续互认同一个 winner 并完成双向 VERIFY。逐字段 contract 另把本次真实
 winner/VERIFY 分裂见证固化为永久负向用例。
 
+实现验证不得把 test-only NAT router 的处理背压混同为 solver budget。若 endpoint/iptables 已证明
+完整固定 schedule，但用户态 TUN router 尚未处理其有界队列，required harness 只能在 attempt 终局
+之外用最多 10 秒等待这些已接受 packet 进入 mapping/conntrack witness；仍须逐包精确相等，超时、
+多包或 terminal 后新增 endpoint emission 均失败。Gate B3 router 队列上限固定为单端已授权最大
+16,432 packets，不能无界增长；child-kill 的 post-burn 窗口从双端 ready witness 后起算。以上仅校正
+隔离观测器，不改变 45 秒 active lifetime、2 秒产品 drain、packet/PPS 或任何 runtime 行为。
+
 本节及对应断言须经独立复审并合入后才关闭 Issue #100。合入只解除 C1b 的该项冻结前置，不
 自行授权 C1b 实现、真实 SSH、非回环产品 I/O、disposable router 或现场测试。
