@@ -2,7 +2,7 @@
 
 - 状态：**Accepted（含 §15 纠错增补、§16 Gate B2 资源裁决、§17 安全阻断处置、§18 Gate B3
   隔离实现裁决、§19 conntrack ceiling 可实现性纠错与 §20 实现期协议闭合）；§22 为等待独立
-  复审的 Issue #100 窄化裁决草案；Gate B1、
+  复审的 Issue #100 candidate/active context 边界修复草案；Gate B1、
   Gate A、Gate B2 与 Gate B3 隔离实现均已独立复审并合入。产品入口、Gate C、disposable
   router 与任何现场 I/O 仍未授权**
 - 实现复审：PR #96 最终 head `553b4c8152979a9ecf66eaf6a2b40c9e8d1964b3` 已明确接受
@@ -1074,7 +1074,7 @@ candidate、0/1 winner、8 frame 或 8,256-byte ceiling：
   分别取得新的设计评审、exact-SHA implementation review、kill switch、teardown witness、
   第二人复核与维护者授权。
 
-## 22. Gate B3 50% candidate loss 双端终局集合（Draft correction，2026-08-31）
+## 22. Gate B3 50% candidate loss selection 边界（Draft correction，2026-08-31）
 
 Issue #100 的原始 required-netns 失败不是资源越界：双方均 fail-closed，且后续排水、ledger、
 socket、process、conntrack、namespace 与 veth 均为零。失败发生在 45 秒 absolute envelope 的
@@ -1084,11 +1084,44 @@ responder=`hard_nat_candidate_exhausted`。同 SHA 的并行 job 与独立 rerun
 
 §20 的 no-winner wire 只有 responder 发给 initiator 的第八帧 `EXHAUSTED`。initiator 只有在
 认证收到该帧后才能报告 `hard_nat_candidate_exhausted`；wire 没有第九帧用于确认“已收到
-EXHAUSTED”。因此本节拒绝三种表面修复：把未认证收到的 EOF 重标为 exhaustion、增加第九帧或
+EXHAUSTED”。因此仍拒绝三种表面修复：把未认证收到的 EOF 重标为 exhaustion、增加第九帧或
 延长 45 秒 envelope。三者分别会伪造证明，或改变已冻结的 frame/lifetime 成本。
 
+初版草案只按日志中的两个公开 error class 把该结果解释为 no-winner acknowledgement/EOF 排序。
+该解释已被后续 required-netns 诊断证伪：同一隔离场景的脱敏双端见证为：
+
+- initiator：stage=`verify`、winner=1、UDP=16,398、carrier read/write=`7/8`、
+  terminal=`oob_stream_closed`；
+- responder：stage=`candidates`、winner=0、UDP=16,397、carrier read/write=`8/7`、
+  terminal=`hard_nat_candidate_exhausted`；
+- 双方 candidate 均为 16,384、evidence 均为 13、credential/FINISH/campaign circuit/drain 均完整，
+  无 safety trip、无 data-plane packet、terminal 后无发射且全量 residue 为零。
+
+这不是允许的 no-winner 元组，而是 bilateral winner decision 分裂：initiator 已发送唯一 winner 并
+进入 VERIFY，responder 的 async OOB reader 虽已读入 decision/VERIFY 帧，主状态机却先观察到
+candidate 子窗口到期并返回 exhaustion。required gate 对 `winner>0`、`stage=verify` 与该 frame
+形状的拒绝是正确行为；不得用终局集合裁决放行。
+
+根因是实现把 38 秒 candidate 子窗口 context 继续用于第 7 帧 role-ordered selection、可选的唯一
+winner 与 winner 接收。§20 把 candidate 子窗口从 34 秒校准为 38 秒，本意是只约束 16K candidate
+I/O 与 rolling-PPS clearance，并在既有 45 秒 active envelope 内为 OS scheduling、selection 与
+VERIFY 保留余量；实现却没有在 candidate 与 selection 之间切换 ownership。
+
+本修订冻结以下实现边界：
+
+1. 16K candidate sender、candidate readers 与 rolling-PPS clearance 只使用 candidate context；
+   任一侧没有完整发完固定 schedule，继续有界失败且不得进入 selection。
+2. 完整 schedule 后必须取消全部 candidate readers、等待退出并排空已认证 event，再冻结本地
+   proposal。此后不得再发 candidate；selection 后到达的 candidate 继续 fail-closed。
+3. role-ordered selection、最多一个 winner 与后续 VERIFY 使用同一个既有 active emission context，
+   仍受 caller、carrier terminal 与 45 秒 absolute deadline 约束。不得新建 deadline、延长 lifetime
+   或在 candidate window 后增加任何 candidate/retry/fallback。
+4. winner receiver 在 bilateral selection 后按冻结的 receive socket 槽位集合重新进入只读接收；carrier terminal
+   立即取消该 active context。no-winner initiator 的 sibling terminal-drain context 仍只能读取
+   `EXHAUSTED`，且上限改为同一 active absolute deadline，不能进入 socket/packet API。
+
 在 **双方均完成完整 16,384 one-shot schedule、bilateral selection 为 no-winner** 的前提下，
-required gate 只接受以下两个按 carrier role 排序的终局元组：
+required gate 仍只接受以下两个按 carrier role 排序的终局元组：
 
 1. initiator=`hard_nat_candidate_exhausted`、responder=`hard_nat_candidate_exhausted`；carrier
    frame read/write 必须分别为 `8/7` 与 `7/8`；
@@ -1102,11 +1135,11 @@ machine safety trip、carrier 已排水，且 terminal 后 packet counter 静止
 检查。responder=`oob_stream_closed`、双侧 EOF、`attempt_expired`、不完整 schedule、任意 winner、
 缺 FINISH/排水或任意其他组合都继续令 required job 失败。
 
-这一裁决不修改 runtime 分类器、wire、Noise AD、candidate、packet、PPS、target、five-tuple、
-socket、ledger、45 秒 active lifetime、2 秒 drain、retry/fallback 或 attempt 数；它只让 required
-netns 断言与单向 terminal acknowledgement 的可证明范围一致。等价 natsim 使用同步 `net.Pipe`
-写语义，当前基线连续 100 次均得到双侧 exhaustion；这排除了确定性状态机错误，但不能模拟 OS
-缓冲写完成后 peer close 与异步 reader 的最后帧交付排序。
+本修订不修改 wire、Noise AD、frame、candidate、packet、PPS、target、five-tuple、socket、ledger、
+45 秒 active lifetime、2 秒 drain、retry/fallback 或 attempt 数。确定性 natsim 回归把 responder
+第 7 个 selection 写延迟到 candidate context 到期后、但仍置于更短的测试 active envelope 内；
+双方必须继续互认同一个 winner 并完成双向 VERIFY。逐字段 contract 另把本次真实
+winner/VERIFY 分裂见证固化为永久负向用例。
 
 本节及对应断言须经独立复审并合入后才关闭 Issue #100。合入只解除 C1b 的该项冻结前置，不
 自行授权 C1b 实现、真实 SSH、非回环产品 I/O、disposable router 或现场测试。

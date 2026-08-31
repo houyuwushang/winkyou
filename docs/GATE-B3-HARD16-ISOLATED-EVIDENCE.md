@@ -269,7 +269,37 @@ initiator=`oob_stream_closed`、responder=`hard_nat_candidate_exhausted`；双�
 exhaustion。该 natsim 使用同步 `net.Pipe`，所以只排除了确定性协议状态错误，不能排除真实 OS
 buffered stream 在最终控制帧与 EOF 之间的排序差异。
 
-ADR §22 因而冻结两个有方向的终局元组，并在 required netns 中逐字段守住完整 schedule、零
-winner、精确 frame shape、durable FINISH、campaign circuit、无 safety trip、排水与零残留。
-单端 `oob_stream_closed` 不会被重分类为 exhaustion；预算、wire、lifetime 与 retry 语义不变。
+初版 ADR §22 因而先冻结两个有方向的 no-winner 终局元组，并在 required netns 中逐字段守住
+完整 schedule、零 winner、精确 frame shape、durable FINISH、campaign circuit、无 safety trip、
+排水与零残留。该门在 PR #103 首个 head 的一份 required job 中再次拒绝同样的公开 class 对；
+仅有 class 的旧日志不足以说明是哪项见证不同，因此下一 head 增加了不含 endpoint、PID、路径或
+机器信息的稳定 rejection class 与双端计数。
+
+聚焦重跑随后在
+[job 99543139669](https://github.com/houyuwushang/winkyou/actions/runs/33405265180/job/99543139669)
+再次命中（43.15s），并证明它不是 no-winner/EOF 元组：
+
+- initiator：`stage=verify`、winner=1、UDP=16,398、carrier read/write=`7/8`、
+  `oob_stream_closed`；
+- responder：`stage=candidates`、winner=0、UDP=16,397、carrier read/write=`8/7`、
+  `hard_nat_candidate_exhausted`；
+- 双方 evidence=13、candidate=16,384、credential burn、durable FINISH、campaign circuit、
+  drain 与零 residue 均完整；无 safety trip 与 data-plane packet。
+
+因此 required gate 的拒绝是正确的：允许集合仍要求 winner=0，且新增 mutation 把上述
+winner/VERIFY 分裂逐字段固化为负向用例。根因是 selection、唯一 winner 与 winner 接收错误继承
+了 38 秒 candidate context；高负载下 async reader 已读入后续控制帧，主状态机却先按 candidate
+deadline 返回 exhaustion。修复只在完整 16K schedule 与 rolling-PPS clearance 后切换 context
+ownership：停止并排空 candidate readers、冻结 proposal，再在原 45 秒 active envelope 的剩余
+时间内完成 role-ordered selection、最多一个 winner 与 VERIFY。wire、预算、packet/PPS、target、
+tuple、socket、ledger、active lifetime、drain、retry/fallback 与 attempt 数均不变。
+
+确定性 natsim 回归把 responder 第 7 帧延迟到 candidate window 之后但 active deadline 之前，要求
+双方仍互认唯一 winner 并完成 VERIFY；真实 required netns 继续负责 OS packet、conntrack 与零残留
+证明。本地修复验证包括：terminal contract 普通 100 次与 race 20 次；delayed-selection 与原 50%
+loss 组合 race 20/20；Gate B3 受影响矩阵重复通过；`gateb`/`hardnatcontrol` 各 20 次；全仓 vet、
+architecture gate 20 次、Linux+natlab tagged vet 与测试二进制交叉编译通过。首次全仓测试只命中
+既有 Issue #97 的 legacy relay-wggo 启动停滞；该原样用例随后 5/5 通过（56.315s），完全不改源码
+的全仓复跑通过（291.8s）。首轮失败未从证据中删除，也未混入本 PR 修复。
+
 本节等待独立复审，合入前 Issue #100 与 C1b 冻结仍保持打开。
