@@ -292,7 +292,7 @@ func gateB2ManualTraversalAuthorityViolations(root string) ([]string, error) {
 			"OperationPrediction": {}, "OperationBirthday": {},
 		},
 		"internal/v2/hardnatbudget/budget.go": {
-			"OperationPrediction": {}, "OperationBirthday": {},
+			"ProfilePhase1ManualTraversal": {}, "OperationPrediction": {}, "OperationBirthday": {},
 		},
 		"internal/v2/directconnect/gateb/connect.go": {
 			"ProfilePhase1ManualTraversal": {},

@@ -178,6 +178,7 @@ func (envelope PairingAdmissionEnvelope) resources() Resources {
 // from a complete bundle. AdmittedAt is selected by the ledger, never caller
 // input.
 type PairingAdmissionRequest struct {
+	RecordClass   PairingLedgerRecordClass
 	CredentialID  string
 	AttemptID     string
 	ContextDigest string
@@ -217,6 +218,7 @@ func (reason PairingTerminalReason) valid() bool {
 // commit can construct one. A future admission gate may consume it once.
 type PairingAdmissionReceipt struct {
 	sequence        uint64
+	recordClass     PairingLedgerRecordClass
 	credentialID    string
 	attemptID       string
 	contextDigest   string
@@ -333,7 +335,7 @@ func (ledger *PairingAdmissionLedger) Preflight(request PairingAdmissionRequest)
 	if _, exists := snapshot.attempts[request.AttemptID]; exists {
 		return fmt.Errorf("%w: attempt id already recorded", ErrPairingLedgerInvalidRequest)
 	}
-	if err := snapshot.admissionError(effectiveNow, request.Envelope); err != nil {
+	if err := snapshot.admissionError(effectiveNow, request.Envelope, request.RecordClass); err != nil {
 		return err
 	}
 	record := pairingJournalRecord{
@@ -341,6 +343,7 @@ func (ledger *PairingAdmissionLedger) Preflight(request PairingAdmissionRequest)
 		Sequence:        snapshot.sequence + 1,
 		Type:            pairingRecordBurnAndAdmit,
 		RecordedAt:      effectiveNow,
+		RecordClass:     request.RecordClass,
 		CredentialID:    request.CredentialID,
 		AttemptID:       request.AttemptID,
 		ContextDigest:   request.ContextDigest,
@@ -391,7 +394,7 @@ func (ledger *PairingAdmissionLedger) Admit(request PairingAdmissionRequest) (*P
 	if _, exists := snapshot.attempts[request.AttemptID]; exists {
 		return nil, fmt.Errorf("%w: attempt id already recorded", ErrPairingLedgerInvalidRequest)
 	}
-	if policyErr := snapshot.admissionError(effectiveNow, request.Envelope); policyErr != nil {
+	if policyErr := snapshot.admissionError(effectiveNow, request.Envelope, request.RecordClass); policyErr != nil {
 		return nil, policyErr
 	}
 
@@ -400,6 +403,7 @@ func (ledger *PairingAdmissionLedger) Admit(request PairingAdmissionRequest) (*P
 		Sequence:        snapshot.sequence + 1,
 		Type:            pairingRecordBurnAndAdmit,
 		RecordedAt:      effectiveNow,
+		RecordClass:     request.RecordClass,
 		CredentialID:    request.CredentialID,
 		AttemptID:       request.AttemptID,
 		ContextDigest:   request.ContextDigest,
@@ -429,6 +433,7 @@ func (ledger *PairingAdmissionLedger) Admit(request PairingAdmissionRequest) (*P
 	}
 	return &PairingAdmissionReceipt{
 		sequence:        record.Sequence,
+		recordClass:     request.RecordClass,
 		credentialID:    request.CredentialID,
 		attemptID:       request.AttemptID,
 		contextDigest:   request.ContextDigest,
@@ -467,7 +472,7 @@ func (ledger *PairingAdmissionLedger) Finish(receipt *PairingAdmissionReceipt, r
 		return clockErr
 	}
 	admission, exists := snapshot.admissions[receipt.credentialID]
-	if !exists || admission.record.Sequence != receipt.sequence || admission.record.AttemptID != receipt.attemptID || admission.record.ContextDigest != receipt.contextDigest {
+	if !exists || admission.record.Sequence != receipt.sequence || admission.record.RecordClass != receipt.recordClass || admission.record.AttemptID != receipt.attemptID || admission.record.ContextDigest != receipt.contextDigest {
 		return fmt.Errorf("%w: receipt does not match durable admission", ErrPairingLedgerInvalidRequest)
 	}
 	if admission.finish != nil {
@@ -481,6 +486,7 @@ func (ledger *PairingAdmissionLedger) Finish(receipt *PairingAdmissionReceipt, r
 		Sequence:      snapshot.sequence + 1,
 		Type:          pairingRecordFinish,
 		RecordedAt:    effectiveNow,
+		RecordClass:   receipt.recordClass,
 		CredentialID:  receipt.credentialID,
 		AttemptID:     receipt.attemptID,
 		Reason:        reason,
@@ -594,6 +600,9 @@ func (ledger *PairingAdmissionLedger) appendAndSync(record pairingJournalRecord,
 }
 
 func validatePairingAdmissionRequest(request PairingAdmissionRequest) error {
+	if !request.RecordClass.valid() {
+		return fmt.Errorf("%w: unknown record class %q", ErrPairingLedgerInvalidRequest, request.RecordClass)
+	}
 	if request.Scope != ScopeMachine {
 		return ErrPairingMachineScopeRequired
 	}
@@ -612,6 +621,12 @@ func validatePairingAdmissionRequest(request PairingAdmissionRequest) error {
 	}
 	if request.ExpiresAt.IsZero() || request.ExpiresAt.Location() != time.UTC {
 		return fmt.Errorf("%w: expiry must be UTC", ErrPairingLedgerInvalidRequest)
+	}
+	if request.RecordClass == PairingRecordClassHardNATCampaign {
+		if request.Envelope != hardNATCampaignEnvelope() {
+			return fmt.Errorf("%w: hard NAT campaign envelope is not exact", ErrPairingLedgerInvalidRequest)
+		}
+		return nil
 	}
 	return validatePairingEnvelope(request.Envelope)
 }

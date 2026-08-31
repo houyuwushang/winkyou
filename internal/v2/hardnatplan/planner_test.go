@@ -68,10 +68,10 @@ func TestBilateralPlannerFreezesThreeProfileShapes(t *testing.T) {
 		}
 	})
 
-	t.Run("hard profiles remain plan-only", func(t *testing.T) {
+	t.Run("hard16 is executable while hard32 remains plan-only", func(t *testing.T) {
 		graph := syntheticEvidence(MappingAPDM, FilteringAPDF, apparentlyRandomPorts())
 		hard16 := buildPlanForRole(t, ProfileHardBirthday, ResourceHard16KLab, RoleInitiator, graph)
-		if len(hard16.Candidates) != DynamicPortCount || hard16.Executable || hard16.Universe.Min != DynamicPortMin || hard16.Universe.Max != DynamicPortMax ||
+		if len(hard16.Candidates) != DynamicPortCount || !hard16.Executable || hard16.Universe.Min != DynamicPortMin || hard16.Universe.Max != DynamicPortMax ||
 			hard16.Cost.Sockets != 16 || hard16.Cost.Targets != 16_400 || hard16.Cost.Packets != 16_432 ||
 			hard16.Probability.FullRangeBaseline.FloorPartsPerTrillion < minimumHard16FullPPTrillion {
 			t.Fatalf("hard16 = candidates=%d executable=%t universe=%+v cost=%+v", len(hard16.Candidates), hard16.Executable, hard16.Universe, hard16.Cost)
@@ -180,8 +180,8 @@ func TestBilateralPlannerIsDeterministicRoleSeparatedAndOwned(t *testing.T) {
 			t.Fatalf("verify generated plan: %v", err)
 		}
 	}
-	if err := VerifyExecutablePlanAgainstCommitment(first.Plans[0], initiator, joint); !errors.Is(err, ErrUnsupportedProfile) {
-		t.Fatalf("plan-only hard resource execution error = %v", err)
+	if err := VerifyExecutablePlanAgainstCommitment(first.Plans[0], initiator, joint); err != nil {
+		t.Fatalf("executable hard16 verification error = %v", err)
 	}
 	clone := first.Plans[0].Clone()
 	clone.Candidates[0].TargetPort = 0
@@ -189,7 +189,7 @@ func TestBilateralPlannerIsDeterministicRoleSeparatedAndOwned(t *testing.T) {
 		t.Fatal("Plan.Clone shares candidate ownership")
 	}
 	executableMutation := first.Plans[0].Clone()
-	executableMutation.Executable = true
+	executableMutation.Executable = false
 	if err := VerifyPlanAgainstCommitment(executableMutation, initiator, joint); !errors.Is(err, ErrPlanMismatch) {
 		t.Fatalf("executable mutation error = %v", err)
 	}
@@ -320,6 +320,32 @@ func TestRemoteIntentRejectsCandidateAndBudgetControl(t *testing.T) {
 	duplicate := []byte(`{"profile":"hard_birthday_campaign/1","profile":"hard_birthday_campaign/1","resource_class":"hard_16k_lab/1","role":"initiator","generation":"1"}`)
 	if _, err := ParseRemoteIntent(duplicate); !errors.Is(err, ErrRemoteControlField) {
 		t.Fatalf("duplicate error = %v", err)
+	}
+}
+
+func TestHardProbabilityCacheKeepsEvidenceCoverageCallerLocal(t *testing.T) {
+	shape, err := shapeFor(ProfileHardBirthday, ResourceHard16KLab, RoleInitiator, StateModel{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := probabilityFor(ProfileHardBirthday, ResourceHard16KLab, StateModel{Coverage: "first trusted coverage"}, shape)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := probabilityFor(ProfileHardBirthday, ResourceHard16KLab, StateModel{Coverage: "second trusted coverage"}, shape)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.ModelCoverage != "first trusted coverage" || second.ModelCoverage != "second trusted coverage" {
+		t.Fatalf("cached coverage leaked: first=%q second=%q", first.ModelCoverage, second.ModelCoverage)
+	}
+	first.ModelCoverage = "mutated by caller"
+	third, err := probabilityFor(ProfileHardBirthday, ResourceHard16KLab, StateModel{Coverage: "third trusted coverage"}, shape)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if third.ModelCoverage != "third trusted coverage" || third.Primary != second.Primary || third.FullRangeBaseline != second.FullRangeBaseline {
+		t.Fatalf("cached immutable probability drifted: second=%+v third=%+v", second, third)
 	}
 }
 

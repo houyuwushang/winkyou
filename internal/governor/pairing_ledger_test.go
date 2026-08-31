@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 )
@@ -48,6 +49,12 @@ func TestPairingJournalFormatRoundTripAndRejectsDamage(t *testing.T) {
 		}
 		frames = append(frames, frame)
 		journal = append(journal, frame...)
+	}
+	if strings.Contains(string(frames[1]), "record_class") {
+		t.Fatal("ordinary schema-v1 journal frame gained a record_class field")
+	}
+	if digest := sha256.Sum256(frames[1]); hex.EncodeToString(digest[:]) != "9159ac055db994602ead13ae1a7fdf26626443c872e3809ebef579b5e463d682" {
+		t.Fatalf("ordinary admission frame digest = %x", digest)
 	}
 	decoded, err := decodePairingJournal(journal)
 	if err != nil {
@@ -317,7 +324,7 @@ func TestPairingAdmissionWindowsUseWorstCaseReservations(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			snapshot := testPairingSnapshot(t, now, ownerID, test.offsets, test.packets)
-			err := snapshot.admissionError(now, testPairingEnvelope(test.newPackets))
+			err := snapshot.admissionError(now, testPairingEnvelope(test.newPackets), PairingRecordClassOrdinary)
 			if test.wantBlocked && !errors.Is(err, ErrPairingAdmissionRateLimited) {
 				t.Fatalf("admission error = %v, want rate limited", err)
 			}

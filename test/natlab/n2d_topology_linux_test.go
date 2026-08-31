@@ -57,6 +57,46 @@ const (
 
 var n2dTopologySequence atomic.Uint32
 
+type n2dTopologySetupError struct {
+	stage string
+	cause error
+}
+
+func (setupErr *n2dTopologySetupError) Error() string { return setupErr.stage }
+func (setupErr *n2dTopologySetupError) Unwrap() error { return setupErr.cause }
+
+func n2dTopologySetupStage(err error) string {
+	var setupErr *n2dTopologySetupError
+	if errors.As(err, &setupErr) && setupErr.stage != "" {
+		return setupErr.stage
+	}
+	return "unknown"
+}
+
+func n2dTopologySetupWitness(err error) string {
+	class := "other"
+	cause := err
+	var setupErr *n2dTopologySetupError
+	if errors.As(err, &setupErr) && setupErr.cause != nil {
+		cause = setupErr.cause
+	}
+	message := strings.ToLower(cause.Error())
+	switch {
+	case errors.Is(err, context.DeadlineExceeded) || strings.Contains(message, "timed out"):
+		class = "timeout"
+	case strings.Contains(message, "file exists"):
+		class = "conflict"
+	case strings.Contains(message, "no space left"), strings.Contains(message, "cannot allocate memory"),
+		strings.Contains(message, "resource temporarily unavailable"), strings.Contains(message, "no buffer space"):
+		class = "resource"
+	case strings.Contains(message, "device or resource busy"):
+		class = "busy"
+	case strings.Contains(message, "operation not permitted"), strings.Contains(message, "permission denied"):
+		class = "permission"
+	}
+	return n2dTopologySetupStage(err) + "_" + class
+}
+
 type n2dLink struct {
 	hostLeft, hostRight string
 	leftNamespace       string
@@ -102,7 +142,10 @@ func newN2DTopology(t interface {
 		t.Fatal("N2d NAT mode rejected")
 	}
 	sequence := n2dTopologySequence.Add(1)
-	suffix := fmt.Sprintf("%06x", (uint32(time.Now().UnixNano())+sequence)&0xffffff)
+	// A process-local atomic suffix is collision-free across parallel and rapid
+	// teardown/recreate tests. The previous low 24 wall-clock bits wrapped every
+	// 16.8ms and occasionally reused a still-draining namespace name.
+	suffix := fmt.Sprintf("%08x", sequence)
 	prefix := "wy2" + suffix
 	topology := &n2dTopology{
 		clientA: prefix + "ca", natA: prefix + "na", public: prefix + "pub",
@@ -123,7 +166,7 @@ func newN2DTopology(t interface {
 	t.Cleanup(func() { _ = topology.cleanup() })
 	if err := topology.create(); err != nil {
 		_ = topology.cleanup()
-		t.Fatal("N2d isolated topology setup failed")
+		t.Fatal("N2d isolated topology setup failed: " + n2dTopologySetupWitness(err))
 	}
 	return topology
 }
@@ -136,7 +179,13 @@ func (topology *n2dTopology) namespaces() []string {
 	return []string{topology.clientA, topology.natA, topology.public, topology.natB, topology.clientB}
 }
 
-func (topology *n2dTopology) create() error {
+func (topology *n2dTopology) create() (err error) {
+	stage := "namespace_create"
+	defer func() {
+		if err != nil {
+			err = &n2dTopologySetupError{stage: stage, cause: err}
+		}
+	}()
 	for _, namespace := range topology.namespaces() {
 		if _, err := runCommand("ip", "netns", "add", namespace); err != nil {
 			return err
@@ -145,23 +194,27 @@ func (topology *n2dTopology) create() error {
 			return err
 		}
 	}
+	stage = "link_pair_create"
 	for _, link := range topology.links {
-		if _, err := runCommand("ip", "link", "add", link.hostLeft, "type", "veth", "peer", "name", link.hostRight); err != nil {
+		stage = "link_pair_create"
+		// Create both veth ends directly in their owning namespaces. Exposing a
+		// short-lived pair in the initial namespace and then moving each end
+		// races host network management and kernel teardown under the 100-fresh
+		// topology proof. This is one atomic setup operation, not a setup retry.
+		if _, err := runCommand("ip", "-n", link.leftNamespace, "link", "add", link.hostLeft,
+			"type", "veth", "peer", "name", link.hostRight, "netns", link.rightNamespace); err != nil {
 			return err
 		}
-		if _, err := runCommand("ip", "link", "set", link.hostLeft, "netns", link.leftNamespace); err != nil {
-			return err
-		}
-		if _, err := runCommand("ip", "link", "set", link.hostRight, "netns", link.rightNamespace); err != nil {
-			return err
-		}
+		stage = "link_left_configure"
 		if err := n2dConfigureEnd(link.leftNamespace, link.hostLeft, link.leftName, link.leftCIDR); err != nil {
 			return err
 		}
+		stage = "link_right_configure"
 		if err := n2dConfigureEnd(link.rightNamespace, link.hostRight, link.rightName, link.rightCIDR); err != nil {
 			return err
 		}
 	}
+	stage = "route_config"
 	for namespace, gateway := range map[string]string{
 		topology.clientA: n2dNATALAN,
 		topology.natA:    n2dPublicA,
@@ -172,6 +225,7 @@ func (topology *n2dTopology) create() error {
 			return err
 		}
 	}
+	stage = "forwarding_filter"
 	for _, namespace := range []string{topology.natA, topology.public, topology.natB} {
 		if _, err := runNamespaced(namespace, "sysctl", nil, "-qw", "net.ipv4.ip_forward=1"); err != nil {
 			return err
@@ -181,6 +235,7 @@ func (topology *n2dTopology) create() error {
 			return err
 		}
 	}
+	stage = "nat_config"
 	if err := topology.applyNAT(topology.natA, topology.leftMode, n2dNATAWAN, n2dClientAAddress); err != nil {
 		return err
 	}
@@ -194,6 +249,7 @@ func (topology *n2dTopology) create() error {
 	// table, and evicts port preservation for the very mapping under test.
 	// The DNAT-based EIM reference tier translates before INPUT and stays
 	// unaffected; the restricted and EDM tiers rely on this default-deny.
+	stage = "inbound_filter"
 	for _, gateway := range []struct{ namespace, address string }{
 		{topology.natA, n2dNATAWAN},
 		{topology.natB, n2dNATBWAN},
@@ -211,6 +267,7 @@ func (topology *n2dTopology) create() error {
 	// the filtered SYN_ACK has no retransmission by frozen design. 5ms per
 	// link restores the physical ordering deterministically without touching
 	// protocol semantics.
+	stage = "netem_config"
 	for _, hop := range []struct{ namespace, device string }{
 		{topology.natA, "wan0"},
 		{topology.natB, "wan0"},

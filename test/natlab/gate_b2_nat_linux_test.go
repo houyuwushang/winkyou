@@ -12,29 +12,33 @@ import (
 	"os"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 
 	"golang.org/x/sys/unix"
 
+	"winkyou/internal/v2/hardnatcontrol"
 	"winkyou/internal/v2/hardnatobserve"
 	"winkyou/internal/v2/hardnatplan"
 )
 
 const (
-	gateB2TUNTable        = "102"
-	gateB2TUNRulePriority = "102"
-	gateB2MappingPortMin  = uint16(40000)
-	gateB2MappingPortMax  = uint16(49000)
-	gateB2RouterDrain     = 2 * time.Second
+	gateB2TUNTable         = "102"
+	gateB2TUNRulePriority  = "102"
+	gateB2MappingPortMin   = uint16(40000)
+	gateB2MappingPortMax   = uint16(49000)
+	gateB2RouterDrain      = 2 * time.Second
+	gateB3PerNATMappingCap = 40_000
 )
 
 var (
-	errGateB2NATOutbound  = errors.New("Gate B2 isolated NAT outbound forwarding failed")
-	errGateB2NATInbound   = errors.New("Gate B2 isolated NAT inbound injection failed")
-	errGateB2NATTUNRead   = errors.New("Gate B2 isolated NAT TUN read failed")
-	errGateB2NATNamespace = errors.New("Gate B2 isolated NAT namespace runner failed")
-	errGateB2NATDrain     = errors.New("Gate B2 isolated NAT drain timed out")
+	errGateB2NATOutbound   = errors.New("Gate B2 isolated NAT outbound forwarding failed")
+	errGateB2NATInbound    = errors.New("Gate B2 isolated NAT inbound injection failed")
+	errGateB2NATTUNRead    = errors.New("Gate B2 isolated NAT TUN read failed")
+	errGateB2NATNamespace  = errors.New("Gate B2 isolated NAT namespace runner failed")
+	errGateB2NATDrain      = errors.New("Gate B2 isolated NAT drain timed out")
+	errGateB3NATMappingCap = errors.New("Gate B3 isolated NAT mapping hard cap reached")
 )
 
 type gateB2NATMode uint8
@@ -97,14 +101,30 @@ func (ports *gateB2FavorablePorts) count() int {
 }
 
 type gateB2NATConfig struct {
-	namespace     string
-	tunName       string
-	private       netip.Addr
-	public        netip.Addr
-	peerPublic    netip.Addr
-	mode          gateB2NATMode
-	recordTargets *gateB2FavorablePorts
-	useFavorable  *gateB2FavorablePorts
+	namespace                 string
+	tunName                   string
+	private                   netip.Addr
+	public                    netip.Addr
+	peerPublic                netip.Addr
+	mode                      gateB2NATMode
+	recordTargets             *gateB2FavorablePorts
+	useFavorable              *gateB2FavorablePorts
+	mappingPortMin            uint16
+	mappingPortMax            uint16
+	randomSeed                uint64
+	reusePortsByTarget        bool
+	dropAllCandidateInbound   bool
+	dropEveryCandidateInbound uint64
+	mappingHardCap            int
+	gateB3MappingPlan         interface {
+		preferred(context.Context, bool, uint16) (uint16, error)
+	}
+	gateB3MappingPlanLeft bool
+}
+
+type gateB2UsedPort struct {
+	port   uint16
+	target netip.AddrPort
 }
 
 type gateB2NATKey struct {
@@ -137,6 +157,8 @@ type gateB2NATWitness struct {
 	Inbound        uint64
 	DroppedInbound uint64
 	PeakMappings   int
+	MappingHardCap int
+	MappingCapHit  bool
 }
 
 type gateB2NATRouter struct {
@@ -150,30 +172,48 @@ type gateB2NATRouter struct {
 	tunMu sync.Mutex
 	tun   *os.File
 
-	mappingsMu sync.Mutex
-	mappings   map[gateB2NATKey]*gateB2NATMapping
-	all        []*gateB2NATMapping
-	nextPort   uint16
+	mappingsMu  sync.Mutex
+	mappings    map[gateB2NATKey]*gateB2NATMapping
+	all         []*gateB2NATMapping
+	pending     int
+	nextPort    uint16
+	randomState uint64
+	usedPorts   map[gateB2UsedPort]struct{}
 
 	readers sync.WaitGroup
 	close   sync.Once
 
-	outbound       atomic.Uint64
-	inbound        atomic.Uint64
-	droppedInbound atomic.Uint64
-	peakMappings   atomic.Int64
+	outbound         atomic.Uint64
+	inbound          atomic.Uint64
+	droppedInbound   atomic.Uint64
+	candidateInbound atomic.Uint64
+	peakMappings     atomic.Int64
+	mappingCapHit    atomic.Bool
 }
 
 func startGateB2NATRouter(t testing.TB, config gateB2NATConfig) *gateB2NATRouter {
 	t.Helper()
+	if config.mappingPortMin == 0 {
+		config.mappingPortMin = gateB2MappingPortMin
+	}
+	if config.mappingPortMax == 0 {
+		config.mappingPortMax = gateB2MappingPortMax
+	}
+	if config.randomSeed == 0 {
+		config.randomSeed = 1
+	}
 	if config.namespace == "" || config.tunName == "" || !config.private.Is4() || !config.public.Is4() ||
-		!config.peerPublic.Is4() || (config.mode != gateB2NATAPDM && config.mode != gateB2NATEIM) {
+		!config.peerPublic.Is4() || (config.mode != gateB2NATAPDM && config.mode != gateB2NATEIM) ||
+		config.mappingPortMin > config.mappingPortMax || config.mappingHardCap < 0 ||
+		(config.reusePortsByTarget && config.mode != gateB2NATAPDM) ||
+		(config.gateB3MappingPlan != nil && (!config.reusePortsByTarget || config.mode != gateB2NATAPDM)) {
 		t.Fatal("Gate B2 isolated NAT configuration rejected")
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	router := &gateB2NATRouter{
 		config: config, ctx: ctx, cancel: cancel, ready: make(chan error, 1), done: make(chan error, 1),
-		mappings: make(map[gateB2NATKey]*gateB2NATMapping), nextPort: gateB2MappingPortMin,
+		mappings: make(map[gateB2NATKey]*gateB2NATMapping), nextPort: config.mappingPortMin,
+		randomState: config.randomSeed, usedPorts: make(map[gateB2UsedPort]struct{}),
 	}
 	go func() {
 		router.done <- RunInNamespace(config.namespace, router.run)
@@ -344,7 +384,11 @@ func (router *gateB2NATRouter) forwardOutbound(packet gateB2TUNPacket, replies c
 	if router.config.recordTargets != nil && packet.destination.Addr() == router.config.peerPublic {
 		router.config.recordTargets.record(packet.destination.Port())
 	}
-	if _, err := mapping.connection.WriteToUDPAddrPort(packet.payload, packet.destination); err != nil {
+	var _, err = mapping.connection.WriteToUDPAddrPort(packet.payload, packet.destination)
+	if router.config.reusePortsByTarget {
+		_, err = mapping.connection.Write(packet.payload)
+	}
+	if err != nil {
 		return err
 	}
 	router.outbound.Add(1)
@@ -354,16 +398,42 @@ func (router *gateB2NATRouter) forwardOutbound(packet gateB2TUNPacket, replies c
 func (router *gateB2NATRouter) newMapping(key gateB2NATKey, internal, target netip.AddrPort,
 	replies chan<- gateB2MappedReply,
 ) (*gateB2NATMapping, error) {
+	router.mappingsMu.Lock()
+	if existing := router.mappings[key]; existing != nil {
+		router.mappingsMu.Unlock()
+		return existing, nil
+	}
+	reserved := router.config.mappingHardCap > 0
+	if reserved && len(router.all)+router.pending >= router.config.mappingHardCap {
+		router.mappingCapHit.Store(true)
+		router.mappingsMu.Unlock()
+		return nil, errGateB3NATMappingCap
+	}
+	if reserved {
+		router.pending++
+	}
+	router.mappingsMu.Unlock()
+	releaseReservation := func() {
+		if !reserved {
+			return
+		}
+		router.mappingsMu.Lock()
+		router.pending--
+		router.mappingsMu.Unlock()
+	}
+
 	var preferred uint16
 	if router.config.useFavorable != nil && target.Addr() == router.config.peerPublic {
 		var ok bool
 		preferred, ok = router.config.useFavorable.take()
 		if !ok {
+			releaseReservation()
 			return nil, errors.New("Gate B2 favorable allocation was not ready before mapping schedule")
 		}
 	}
-	connection, public, err := router.openMappedSocket(preferred)
+	connection, public, err := router.openMappedSocket(preferred, target)
 	if err != nil {
+		releaseReservation()
 		return nil, err
 	}
 	mapping := &gateB2NATMapping{
@@ -371,6 +441,9 @@ func (router *gateB2NATRouter) newMapping(key gateB2NATKey, internal, target net
 		allowed: make(map[netip.AddrPort]struct{}, 512),
 	}
 	router.mappingsMu.Lock()
+	if reserved {
+		router.pending--
+	}
 	if existing := router.mappings[key]; existing != nil {
 		router.mappingsMu.Unlock()
 		_ = connection.Close()
@@ -391,16 +464,41 @@ func (router *gateB2NATRouter) newMapping(key gateB2NATKey, internal, target net
 	return mapping, nil
 }
 
-func (router *gateB2NATRouter) openMappedSocket(preferred uint16) (*net.UDPConn, netip.AddrPort, error) {
+func (router *gateB2NATRouter) openMappedSocket(preferred uint16, target netip.AddrPort) (*net.UDPConn, netip.AddrPort, error) {
 	try := func(port uint16) (*net.UDPConn, netip.AddrPort, error) {
 		endpoint := netip.AddrPortFrom(router.config.public, port)
+		if router.config.reusePortsByTarget {
+			key := gateB2UsedPort{port: port, target: target}
+			if _, exists := router.usedPorts[key]; exists {
+				return nil, netip.AddrPort{}, errors.New("Gate B3 isolated NAT four-tuple already allocated")
+			}
+			connection, err := dialGateB3MappedSocket(router.ctx, endpoint, target)
+			if err == nil {
+				router.usedPorts[key] = struct{}{}
+			}
+			return connection, endpoint, err
+		}
 		connection, err := net.ListenUDP("udp4", net.UDPAddrFromAddrPort(endpoint))
 		return connection, endpoint, err
+	}
+	planned := false
+	if router.config.gateB3MappingPlan != nil && target.Addr() == router.config.peerPublic {
+		var err error
+		preferred, err = router.config.gateB3MappingPlan.preferred(
+			router.ctx, router.config.gateB3MappingPlanLeft, target.Port(),
+		)
+		if err != nil || preferred < router.config.mappingPortMin || preferred > router.config.mappingPortMax {
+			return nil, netip.AddrPort{}, errors.Join(errors.New("Gate B3 isolated NAT mapping plan failed"), err)
+		}
+		planned = true
 	}
 	if preferred != 0 {
 		connection, endpoint, err := try(preferred)
 		if err == nil {
 			return connection, endpoint, nil
+		}
+		if planned {
+			return nil, netip.AddrPort{}, err
 		}
 		// A favorable set has ample disjoint ports. Skip a local collision but
 		// never synthesize a port outside the peer's committed target set.
@@ -416,11 +514,21 @@ func (router *gateB2NATRouter) openMappedSocket(preferred uint16) (*net.UDPConn,
 			err = nextErr
 		}
 	}
-	for attempts := 0; attempts <= int(gateB2MappingPortMax-gateB2MappingPortMin); attempts++ {
+	span := uint64(router.config.mappingPortMax-router.config.mappingPortMin) + 1
+	randomStart := uint64(0)
+	if router.config.reusePortsByTarget {
+		router.randomState = router.randomState*6364136223846793005 + 1442695040888963407
+		randomStart = router.randomState % span
+	}
+	for attempts := uint64(0); attempts < span; attempts++ {
 		port := router.nextPort
-		router.nextPort++
-		if router.nextPort > gateB2MappingPortMax {
-			router.nextPort = gateB2MappingPortMin
+		if router.config.reusePortsByTarget {
+			port = router.config.mappingPortMin + uint16((randomStart+attempts)%span)
+		} else {
+			router.nextPort++
+			if router.nextPort > router.config.mappingPortMax {
+				router.nextPort = router.config.mappingPortMin
+			}
 		}
 		connection, endpoint, err := try(port)
 		if err == nil {
@@ -428,6 +536,35 @@ func (router *gateB2NATRouter) openMappedSocket(preferred uint16) (*net.UDPConn,
 		}
 	}
 	return nil, netip.AddrPort{}, errors.New("Gate B2 isolated NAT mapping range exhausted")
+}
+
+func dialGateB3MappedSocket(ctx context.Context, local, remote netip.AddrPort) (*net.UDPConn, error) {
+	dialer := net.Dialer{
+		LocalAddr: net.UDPAddrFromAddrPort(local),
+		Control: func(_, _ string, raw syscall.RawConn) error {
+			var controlErr error
+			if err := raw.Control(func(descriptor uintptr) {
+				if err := unix.SetsockoptInt(int(descriptor), unix.SOL_SOCKET, unix.SO_REUSEADDR, 1); err != nil {
+					controlErr = err
+					return
+				}
+				controlErr = unix.SetsockoptInt(int(descriptor), unix.SOL_SOCKET, unix.SO_REUSEPORT, 1)
+			}); err != nil {
+				return err
+			}
+			return controlErr
+		},
+	}
+	connection, err := dialer.DialContext(ctx, "udp4", remote.String())
+	if err != nil {
+		return nil, err
+	}
+	udp, ok := connection.(*net.UDPConn)
+	if !ok {
+		_ = connection.Close()
+		return nil, errors.New("Gate B3 isolated NAT dial did not return UDP")
+	}
+	return udp, nil
 }
 
 func (router *gateB2NATRouter) readMapped(mapping *gateB2NATMapping, replies chan<- gateB2MappedReply) {
@@ -457,6 +594,14 @@ func (router *gateB2NATRouter) forwardInbound(tun *os.File, reply gateB2MappedRe
 		router.droppedInbound.Add(1)
 		return nil
 	}
+	if metadata, err := hardnatcontrol.InspectFrame(reply.payload); err == nil && metadata.Type == hardnatcontrol.FrameCandidate {
+		ordinal := router.candidateInbound.Add(1)
+		if router.config.dropAllCandidateInbound ||
+			(router.config.dropEveryCandidateInbound > 0 && ordinal%router.config.dropEveryCandidateInbound == 0) {
+			router.droppedInbound.Add(1)
+			return nil
+		}
+	}
 	packet, err := buildGateB2IPv4UDP(reply.source, reply.mapping.internal, reply.payload)
 	if err != nil {
 		return err
@@ -483,6 +628,7 @@ func (router *gateB2NATRouter) Witness() gateB2NATWitness {
 	return gateB2NATWitness{
 		Mappings: mappings, Outbound: router.outbound.Load(), Inbound: router.inbound.Load(),
 		DroppedInbound: router.droppedInbound.Load(), PeakMappings: int(router.peakMappings.Load()),
+		MappingHardCap: router.config.mappingHardCap, MappingCapHit: router.mappingCapHit.Load(),
 	}
 }
 

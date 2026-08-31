@@ -1,8 +1,10 @@
 # ADR：N3c Gate B 困难 NAT 有界求解器
 
-- 状态：**Accepted（含 §15 纠错增补、§16 Gate B2 资源裁决与 §17 安全阻断处置）；Gate B1、
-  Gate A 与 Gate B2 已合并。2026-08-29 维护者仅授权 §18 的 Gate B3a docs-only 裁决进入
-  Draft PR 独立复审；Gate B3 实现、产品入口与任何现场 I/O 仍未授权**
+- 状态：**Accepted（含 §15 纠错增补、§16 Gate B2 资源裁决、§17 安全阻断处置、§18 Gate B3
+  隔离实现裁决与 §19 conntrack ceiling 可实现性纠错）；Gate B1、Gate A、Gate B2 与 Gate B3a docs-only 裁决已合并。2026-08-30
+  维护者明确授权一个 §18 Gate B3 Draft 实现 PR，仅限 memory/natsim/required Linux netns；
+  产品入口、Gate C、disposable router 与任何现场 I/O 仍未授权**
+- 实现复审：§20 为本 Draft PR 暴露问题后的协议闭合提案，尚未独立接受，不改变上述授权边界。
 - 日期：2026-08-25
 - 基线：`main` = `dc59d73bdc643e1a230d32acb82d97bfd3cb6d65`
 - 跟踪议题：[#87](https://github.com/houyuwushang/winkyou/issues/87)
@@ -775,12 +777,12 @@ topology 与 target allowlist 变异失败；StageCandidates 关闭 OOB 后 cand
 `hard_nat_evidence_drifted` 且 direct=0；单向 FIRE 后封装 candidate 必须终局。以上修正仍只在
 memory、loopback、natsim 与 required netns 范围内，不新增 Gate B3、产品入口或现场授权。
 
-## 18. Gate B3 `hard_16k_lab/1` 隔离实现裁决提案（Draft，2026-08-29）
+## 18. Gate B3 `hard_16k_lab/1` 隔离实现裁决（Accepted，2026-08-30）
 
-维护者在 Gate B2 独立复审闭合且 PR #93 合并后，授权本节作为 **docs-only Gate B3a** 进入
-独立复审。本节尚未授权 executor、socket、namespace、disposable router 或现场 I/O；只有本节
-经独立复审接受并合入 `main`，维护者另行明确授权后，才可创建一个 Gate B3 实现 Draft PR。
-本裁决提案的核对基线为 `main` = `964ebdfc8fa3956f06e48ec9d85e203203450fde`。
+本节以 docs-only Gate B3a 经独立复审后由 PR #95 合入 `main`。维护者于 2026-08-30 另行明确
+授权一个 Gate B3 实现 Draft PR，实施基线为
+`main` = `3b40c4cf82f24604a52d4e8f2f861d2f46154602`。授权只覆盖本节冻结的 memory、natsim 与
+required Linux netns 证据；不授权 disposable router、产品入口、Gate C 或现场 I/O。
 
 ### 18.1 用户任务与可观察成功
 
@@ -940,3 +942,113 @@ attempt release；Promote/lease/adopt/challenge 任一步失败都关闭 UDP tra
 本节复审通过只会授权 memory/natsim/required netns 的一个 Gate B3 Draft 实现。Gate C、
 disposable router 和具名现场 campaign 仍分别需要 implementation review、exact-SHA、具名环境、
 kill switch、teardown 见证、第二人复核与维护者新授权，不能从本节继承。
+
+## 19. Gate B3 conntrack ceiling 可实现性纠错（Accepted，2026-08-30）
+
+Gate B3 开工核验发现，§18.7 第 4 条把“每个 NAT namespace 的可验证 hard cap”误写成了可以
+分别在两个 non-init network namespace 中写入 `nf_conntrack_max`。当前上游 Linux 的实际语义是：
+
+- `nf_conntrack_max` 指向一个全局值，non-init network namespace 的该 sysctl 条目被内核显式
+  改为只读；只有 init network namespace 可以修改；
+- `nf_conntrack_count` 属于各 network namespace；conntrack 分配把该 namespace 自己的 count
+  与共同的 `nf_conntrack_max` 值比较；
+- 因此该值既不是“两侧可独立写入的 sysctl”，也不是“把所有 namespace count 相加后的聚合
+  计数上限”。它是从 init namespace 一次设置、对各 namespace 统一生效的 ceiling 值。
+
+证据来自上游 Linux 的
+[`nf_conntrack_standalone.c`](https://github.com/torvalds/linux/blob/master/net/netfilter/nf_conntrack_standalone.c#L993-L998)、
+[`nf_conntrack_core.c`](https://github.com/torvalds/linux/blob/master/net/netfilter/nf_conntrack_core.c#L1660-L1682)
+与[内核 conntrack sysctl 文档](https://docs.kernel.org/networking/nf_conntrack-sysctl.html)。这一纠错不
+提高任何资源额度，也不把 host sysctl 权限带进产品；§18 的 40,000 上限按以下组合证据实现：
+
+1. 每个 test-only NAT router 在创建 OS mapping socket **之前**独立执行 40,000 mapping hard cap；
+   该 guard 不能被 candidate 数、端口复用或另一个 router 的余量绕过；
+2. required job 只能在明确标记的 GitHub-hosted disposable runner、init network namespace 和
+   独占 host guard 下运行。外层 guardian 保存原始 `nf_conntrack_max`，只允许把不低于 40,000
+   的原值暂时降低为 40,000，绝不提高原值；安装与恢复都逐值回读；
+3. guardian 在 signal、测试失败和普通进程崩溃路径恢复原值。测试进程遭 `SIGKILL` 时由仍存活的
+   guardian 恢复；整个 runner 丢失时由一次性 VM 销毁提供最终边界。无法取得独占锁、无法证明
+   位于 init namespace、无法安装或无法精确恢复时 required job 失败；
+4. 两个 NAT namespace 分别读取真实 `nf_conntrack_count`。上游分配路径先执行
+   `atomic_inc_return(&cnet->count)`，再比较 `ct_count > nf_conntrack_max` 并回退失败分配；因此
+   conntrack-full 的并发采样可以诚实看到被拒绝分配造成的瞬时 `max+1`，不能把它伪装成始终
+   `<= max`。本 harness 每个 router 只有一个 mapping-open writer，故只允许该一个瞬时计数；
+   terminal 必须回落到 `<= max`，`max+2` 或 terminal `max+1` 均失败。正常 load 的共同 ceiling
+   为 40,000；conntrack-full fault 在 guardian 内短暂降为 1,024，要求 init namespace 事前至少
+   保留 50% headroom，并在子测试终局立即恢复 40,000；
+5. 每个终局仍须证明 router mapping、per-netns conntrack、packet、socket、process、governor
+   lock、namespace 与 veth 零残留。产品、stdio/CLI/runtime、daemon、scheduler、Gate C 与现场
+   路径不得导入 guardian、写 sysctl 或构造 test router。16K topology 删除、零残留断言及全部
+   LIFO cleanup callback 完成后，test-only harness 可留固定 1s 给内核回收已删除 namespace 的
+   conntrack/RCU 对象；这不是 attempt retry，不得重建 campaign、补发 packet 或改变任何预算。
+   setup 失败日志只能暴露稳定阶段类。
+
+因此 §18.7 的“runner 不支持可验证的 per-netns cap 则 fail-closed”按本节解释为：必须同时证明
+test-router 独立 mapping cap、init-owned 共同内核 ceiling、两侧各自的真实 count 与精确恢复；不再
+尝试 non-init sysctl 写入，也不得把共同 ceiling 谎称为 per-netns 独立配置或全机聚合计数。
+
+## 20. Gate B3 实现期协议闭合（Draft implementation correction，2026-08-30）
+
+required Linux 双跑第一次把 16K 真正压到尾部后暴露了两项不能靠放宽测试处理的实现问题：
+
+1. 原实现用“initiator 立即 winner、responder 完整 schedule 后定时 deferred winner”处理双向
+   命中；对称尾部命中时，定时器与 initiator winner 的内核交付存在竞态，双方可能各发一个
+   winner，随后按 fail-closed 规则终局。延长定时器只能降低概率，不能证明单 winner；
+2. initiator 为 winner 预留一个 PPS 槽而按 511-packet batch 发射，完整 16,384 candidate 实际
+   需要 33 个 batch；OS 发包开销会在 34 秒子窗口边缘留下 32 个未发 candidate。该行为没有
+   超预算，但不满足“完整 exhaustion 精确发完固定集合”的证据门。
+
+Draft 实现采用以下窄化闭合，等待独立实现复审；它不改变 §18 的 45s、512 PPS、16,384
+candidate、0/1 winner、8 frame 或 8,256-byte ceiling：
+
+- Gate B3 独有 `READY_FIRE` 把原 READY 的 joint/execution commitment 与 bilateral FIRE barrier
+  合成一个认证 rendezvous-control frame。双方仍在 barrier 前、中、后复核 fresh evidence；只有
+  双向 `READY_FIRE` 都认证后才可封装 candidate。Gate B2 wire、状态机与 golden 逐字节不变；
+- 双方都完成 16 × 1,024 one-shot schedule 后，responder 用每方向第 7 个 post-activation frame
+  提交“首个已认证 candidate 或 absence”，initiator 按固定优先级选择自己的 observation、否则
+  responder observation、否则 none，并用对应方向同一序号的 selection frame确认。该 payload
+  只含 role/ordinal/socket-slot/digest，不含 endpoint、candidate list、span、seed、packet count
+  或 secret；
+- selection 纳入 Noise AD、joint plan 与 execution envelope；重复、错 role、错 digest、非完整
+  schedule、selection 后新增 candidate 或第二 winner 均终局。只有 selection 指定的 receiver
+  可以复用已认证 tuple 发一个 winner；双方随后仍执行原有双向 VERIFY。含 VERIFY 在内每方向
+  恰好 8 个 carrier frame；
+- bilateral selection 确认为 no-winner 时，responder 必须在关闭 carrier 前发送认证
+  `EXHAUSTED` terminal acknowledgement，initiator 收到后才返回 `candidate_exhausted`。该确认复用
+  no-winner 路径不会使用的 VERIFY sequence 和第 8 个 responder frame，不增加 UDP、target、tuple、
+  attempt 或 byte ceiling；缺少确认仍按 `oob_stream_closed` fail-closed；
+- 512 个 rolling-PPS lane 分别以真实 UDP commit point 锚定：packet `N+512` 必须等待 packet `N`
+  满一个 interval 并留出 1ms clearance。不能在每个完整 batch 结束后再等一秒并把系统调用/
+  调度耗时累计 31 次，也不能只按 batch start 锚定而忽略 512 个 packet 自身的非零发送跨度。
+  winner 仍必须等待最后 candidate 后一个完整 rolling-PPS interval，第 513 个同秒 packet 仍由
+  probeio 在 I/O 前拒绝。candidate 子窗口从 34 秒校正为 38 秒，只是在既有 45 秒 absolute
+  context 内给 OS scheduling、PPS-clear 与 selection 留界；不提高 governor duration、packet/
+  target/tuple、ledger reservation 或 drain；
+- absence、OOB terminal 或 38 秒子窗口到期继续有界失败；没有 retry、补位、第二轮、扩窗、
+  fallback 或第二 attempt。`hard_32k_candidate/1` 仍无 executor。
+- OOB async reader 必须按字节流顺序交付已经完整解码并入队的 frame，随后才报告 EOF/terminal。
+  调用 `ReceiveControl` 前由 caller 取消的 context 仍优先且不得消费队列；仅当 cancel cause 正是
+  同一 carrier 随后的 transport terminal 时，才先排空该 terminal 之前已解码的 frame。由此
+  no-winner 的认证 `EXHAUSTED` 不会因为紧随其后的 peer close 在 `select` 中胜出而被丢弃；这不
+  延长 carrier envelope 或 drain。public Gate B receive gate 在 state 已 Closed 时也只对该 async
+  transport-terminal queue drain 开放；协议错误、同步 reader 与所有 write 仍 fail-closed。
+- probeio 的 UDP 系统调用成功返回是该 datagram 的 emission commit point；系统调用成功后才发生
+  的 context cancel 不得把结果重写为失败并造成 application/OS packet witness 相差一包。调用前
+  已取消或系统调用实际返回 timeout/cancel/error 时仍按原规则失败，ENOBUFS 仍为零发射并触发
+  持久 safety trip；该修正不增加任何 packet、PPS、target、tuple 或时长预算。
+- 100 次 fresh namespace teardown 的每轮都先显式删除并证明 namespace/veth 名称零残留，再等待
+  §19 已冻结的 1s kernel-release margin 后创建下一组唯一名称 topology。该等待只隔离内核不可见的
+  netdevice/RCU 尾部生命周期；不重试失败的 setup、attempt 或 packet，也不进入 attempt envelope。
+  veth 两端由一个 setup 操作直接创建进各自 owner namespace，不在 init namespace 暴露临时 pair
+  后再做两次 move；
+- active attempt 使用共享 caller/absolute deadline 下的两个单向职责 context：carrier terminal 立即
+  取消 active emission context，保证后续 UDP 发射为零；no-winner initiator 只用 sibling terminal-drain
+  context 接收已经认证且在 EOF 前发送的 `EXHAUSTED`。后者仍受同一 caller、candidate deadline 与
+  active-envelope deadline 约束，不能用于任何 socket/packet 操作；由此不再让“EOF 停止发包”和
+  “交付 EOF 前最后一帧”争用同一个 cancellation edge。若下层只返回通用 `context.Canceled`，
+  分类器只在 active context 带非通用 carrier cause 时恢复该 cause，保证 child death/OOB EOF 稳定
+  为 `oob_stream_closed`；本地 caller cancel/deadline 仍为 `attempt_expired`。双端同一绝对 deadline
+  中先到期的一端关闭子流时，peer 可先观察到 `oob_stream_closed`，但回归门必须同时证明至少一端
+  保留本地 deadline witness，且两端 terminal barrier 后 UDP emission 均为零。
+
+本节是 PR 内实现纠错与评审输入，不自行授权合并、Gate C、产品入口或现场 I/O。

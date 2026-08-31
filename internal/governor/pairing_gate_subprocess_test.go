@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"testing"
 	"time"
@@ -21,6 +22,8 @@ const (
 	pairingGateHelperBundleEnv    = "WINKYOU_PAIRING_GATE_BUNDLE"
 	pairingGateHelperClockEnv     = "WINKYOU_PAIRING_GATE_CLOCK"
 	pairingGateHelperWitnessEnv   = "WINKYOU_PAIRING_GATE_WITNESS"
+	pairingGateHelperClassEnv     = "WINKYOU_PAIRING_GATE_RECORD_CLASS"
+	gateB3LedgerRequiredEnv       = "WINKYOU_GATE_B3_LEDGER_REQUIRED"
 
 	pairingGateCrashExitCode = 86
 )
@@ -68,7 +71,11 @@ func TestPairingAdmissionGateSubprocessHelper(t *testing.T) {
 	owner.mu.Lock()
 	owner.pairingLedger = ledger
 	owner.mu.Unlock()
-	governor, err := New(owner, ProfilePhase1Machine, nil)
+	profile := ProfilePhase1Machine
+	if os.Getenv(pairingGateHelperClassEnv) == string(PairingRecordClassHardNATCampaign) {
+		profile = ProfilePhase1HardNATCampaign
+	}
+	governor, err := New(owner, profile, nil)
 	if err != nil {
 		return
 	}
@@ -78,14 +85,20 @@ func TestPairingAdmissionGateSubprocessHelper(t *testing.T) {
 		t.Fatalf("acquire helper peer: %v", err)
 	}
 	request := testPairingRequest("subprocess-"+bundle, logicalNow, 8)
+	operation := OperationConnectTest
+	if profile == ProfilePhase1HardNATCampaign {
+		request = testHardNATCampaignRequest("subprocess-"+bundle, logicalNow)
+		operation = OperationBirthday
+	}
 	attemptContext, cancelAttempt := context.WithCancel(context.Background())
 	defer cancelAttempt()
 	attempt, err := peer.AcquireAttempt(attemptContext, AttemptRequest{
 		ID:        request.AttemptID,
-		Operation: OperationConnectTest,
+		Operation: operation,
 		Cost: AttemptCost{
-			Resources: request.Envelope.resources(),
-			Duration:  time.Duration(request.Envelope.DurationMillis) * time.Millisecond,
+			Resources:   request.Envelope.resources(),
+			Duration:    time.Duration(request.Envelope.DurationMillis) * time.Millisecond,
+			Heavyweight: request.Envelope.Heavyweight,
 		},
 	})
 	if err != nil {
@@ -273,6 +286,66 @@ func TestPairingAdmissionGateSameCredential32ProcessCompetition(t *testing.T) {
 	}
 }
 
+func TestHardNATCampaignSameCredential32ProcessCompetition(t *testing.T) {
+	if pairingGateRaceEnabled {
+		t.Skip("32-process campaign competition runs once outside the race build")
+	}
+	namespace, logicalNow := preparePairingGateSubprocessNamespace(t)
+	const contenders = 32
+	commands := make([]*pairingGateRunningCommand, 0, contenders)
+	for index := 0; index < contenders; index++ {
+		command := newHardNATCampaignSubprocessCommand(namespace, "normal", "same-hard-credential", logicalNow)
+		if err := command.command.Start(); err != nil {
+			t.Fatalf("start hard campaign contender %d: %v", index, err)
+		}
+		commands = append(commands, command)
+	}
+	witnesses := 0
+	for index, command := range commands {
+		if err := command.command.Wait(); err != nil {
+			t.Fatalf("hard campaign contender %d: %v; stdout=%q stderr=%s", index, err, command.stdout.Bytes(), command.stderr.String())
+		}
+		witnesses += bytes.Count(command.stdout.Bytes(), pairingGateWitnessMarker)
+	}
+	if witnesses != 1 {
+		t.Fatalf("hard campaign parent-observed emissions = %d, want exactly 1", witnesses)
+	}
+	snapshot, err := readPairingLedgerSnapshot(filepath.Join(namespace, pairingLedgerFilename), logicalNow, "", validateTestPairingLedgerFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	status := snapshot.hardNATCampaignStatusAt(logicalNow)
+	if status.TwentyFourHourAdmissions != 1 || status.TwentyFourHourPackets != hardNATCampaignPackets {
+		t.Fatalf("hard campaign competition ledger = %+v", status)
+	}
+}
+
+func TestHardNATCampaignSameCredential1000ProcessRestarts(t *testing.T) {
+	if os.Getenv(gateB3LedgerRequiredEnv) != "1" {
+		t.Skip("1000 campaign restarts run only in the required Gate B3 ledger job")
+	}
+	if pairingGateRaceEnabled || runtime.GOOS == "windows" {
+		t.Skip("1000 campaign process restarts run once on the required non-race Linux path")
+	}
+	namespace, logicalNow := preparePairingGateSubprocessNamespace(t)
+	const restarts = 1000
+	witnesses := 0
+	for restart := 0; restart < restarts; restart++ {
+		running := newHardNATCampaignSubprocessCommand(namespace, "normal", "same-hard-bundle-1000", logicalNow)
+		err := running.command.Run()
+		if err != nil {
+			t.Fatalf("hard campaign restart %d: %v; stdout=%q stderr=%s", restart, err, running.stdout.Bytes(), running.stderr.String())
+		}
+		witnesses += bytes.Count(running.stdout.Bytes(), pairingGateWitnessMarker)
+		if witnesses > 1 {
+			t.Fatalf("hard campaign restart %d raised parent-observed emissions to %d", restart, witnesses)
+		}
+	}
+	if witnesses != 1 {
+		t.Fatalf("hard campaign parent-observed emissions across %d restarts = %d, want 1", restarts, witnesses)
+	}
+}
+
 func TestPairingAdmissionGateSameBundle1000ProcessRestarts(t *testing.T) {
 	if pairingGateRaceEnabled {
 		t.Skip("1000 process restarts run once outside the race build")
@@ -388,6 +461,12 @@ func newPairingGateSubprocessCommand(namespace, scenario, bundle string, logical
 	)
 	running.command.Stdout = &running.stdout
 	running.command.Stderr = &running.stderr
+	return running
+}
+
+func newHardNATCampaignSubprocessCommand(namespace, scenario, bundle string, logicalNow time.Time) *pairingGateRunningCommand {
+	running := newPairingGateSubprocessCommand(namespace, scenario, bundle, logicalNow)
+	running.command.Env = append(running.command.Env, pairingGateHelperClassEnv+"="+string(PairingRecordClassHardNATCampaign))
 	return running
 }
 

@@ -577,6 +577,73 @@ func TestManualTraversalProfileIsExactAndIsolated(t *testing.T) {
 	}
 }
 
+func TestHardNATCampaignProfileIsExactAndCannotBorrow(t *testing.T) {
+	limits, err := HardLimits(ProfilePhase1HardNATCampaign)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := Resources{Sockets: 16, Targets: 16_400, FiveTuples: 16_400, Packets: 16_432, PacketsPerSecond: 512}
+	if limits.Aggregate != want || limits.PerAttempt != want || limits.MaxActivePeers != 1 ||
+		limits.MaxActiveAttempts != 1 || limits.MaxAttemptsPerPeer != 1 || limits.MaxHeavyweightAttempts != 1 ||
+		limits.MaxAttemptDuration != 47*time.Second || limits.CancellationDrainTimeout != 2*time.Second {
+		t.Fatalf("hard NAT campaign limits = %+v", limits)
+	}
+	if scope, err := ProfilePhase1HardNATCampaign.Scope(); err != nil || scope != ScopeMachine {
+		t.Fatalf("hard campaign scope = %q/%v", scope, err)
+	}
+	if !ProfilePhase1HardNATCampaign.Allows(OperationBirthday) ||
+		ProfilePhase1HardNATCampaign.Allows(OperationPrediction) ||
+		ProfilePhase1HardNATCampaign.Allows(OperationConnectTest) {
+		t.Fatal("hard campaign operation authority drifted")
+	}
+	manual, err := HardLimits(ProfilePhase1ManualTraversal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	namespace := t.TempDir()
+	prepareTestSafetyTrip(t, namespace)
+	owner, err := AcquirePreparedNamespace(namespace, ScopeMachine, "hard-campaign-no-borrow")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = owner.Close() }()
+	if _, err := New(owner, ProfilePhase1HardNATCampaign, &manual); !errors.Is(err, ErrLimitExceeded) {
+		t.Fatalf("hard campaign borrowed manual limits: %v", err)
+	}
+}
+
+func TestHardNATCampaignSecondAttemptPersistsTrip(t *testing.T) {
+	machine := newTestGovernor(t, ProfilePhase1HardNATCampaign, nil)
+	peer, err := machine.AcquirePeer("hard-campaign-peer")
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := AttemptRequest{
+		ID: "hard-campaign-first", Operation: OperationBirthday,
+		Cost: AttemptCost{
+			Resources: Resources{Sockets: 16, Targets: 16_400, FiveTuples: 16_400, Packets: 16_432, PacketsPerSecond: 512},
+			Duration:  47 * time.Second, Heavyweight: true,
+		},
+	}
+	first, err := peer.AcquireAttempt(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.ID = "hard-campaign-second"
+	if second, err := peer.AcquireAttempt(context.Background(), request); second != nil || !errors.Is(err, ErrLimitExceeded) {
+		t.Fatalf("second campaign attempt=%v/%v", second, err)
+	}
+	status := machine.Snapshot().SafetyTrip
+	if !status.BlocksActiveWork || status.Record.Reason != SafetyTripHardLimit || status.Record.AttemptID != request.ID {
+		t.Fatalf("hard campaign second-attempt trip=%+v", status)
+	}
+	select {
+	case <-first.Stopping():
+	case <-time.After(time.Second):
+		t.Fatal("hard campaign hard-limit trip did not revoke the first attempt")
+	}
+}
+
 func TestManualTraversalSecondHeavyweightAttemptPersistsTrip(t *testing.T) {
 	machine := newTestGovernor(t, ProfilePhase1ManualTraversal, nil)
 	peer, err := machine.AcquirePeer("manual-peer")

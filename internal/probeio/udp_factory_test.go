@@ -48,6 +48,9 @@ func TestContextErrorForIOAttributesArmedTimeoutsDeterministically(t *testing.T)
 	if got := contextErrorForIO(cancelled, fakeTimeoutError{}); !errors.Is(got, context.Canceled) {
 		t.Fatalf("cancelled timeout = %v, want context.Canceled", got)
 	}
+	if got := contextErrorForIO(cancelled, nil); got != nil {
+		t.Fatalf("successful I/O followed by cancellation = %v, want committed success", got)
+	}
 
 	if got := contextErrorForIO(context.Background(), fakeTimeoutError{}); got != nil {
 		t.Fatalf("timeout without deadline = %v, want passthrough nil", got)

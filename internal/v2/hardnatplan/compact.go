@@ -57,6 +57,11 @@ func ReconstructLocalCommitment(input CompactSourceInput) (LocalSourceCommitment
 		} else if input.ReceiveEndpoint != (AddressPort{}) || input.ReceiveSocketSlot != 0 {
 			return commitment, ErrPlanMismatch
 		}
+	case ResourceHard16KLab:
+		if input.Profile != ProfileHardBirthday || len(input.PredictedPorts) != 0 ||
+			input.ReceiveEndpoint != (AddressPort{}) || input.ReceiveSocketSlot != 0 {
+			return commitment, ErrPlanMismatch
+		}
 	default:
 		return commitment, ErrUnsupportedProfile
 	}

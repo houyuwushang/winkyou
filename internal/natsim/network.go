@@ -97,6 +97,16 @@ type externalRoute struct {
 	nat        *NAT
 }
 
+type externalRouteKey struct {
+	external    netip.AddrPort
+	destination netip.AddrPort
+}
+
+type allocatedPortKey struct {
+	port        uint16
+	destination netip.AddrPort
+}
+
 // NAT is an opaque virtual translation layer owned by one Network.
 type NAT struct {
 	network         *Network
@@ -107,7 +117,7 @@ type NAT struct {
 	nextChange      int
 	outboundPackets uint64
 	mappings        map[mappingKey]*natMapping
-	usedPorts       map[uint16]struct{}
+	usedPorts       map[allocatedPortKey]struct{}
 	portCursor      int
 	randomState     uint64
 }
@@ -125,7 +135,7 @@ type Network struct {
 	connections  map[*PacketConn]struct{}
 	endpoints    map[endpointKey]*PacketConn
 	directRoutes map[netip.AddrPort]*PacketConn
-	routes       map[netip.AddrPort]externalRoute
+	routes       map[externalRouteKey]externalRoute
 	counters     Counters
 }
 
@@ -142,7 +152,7 @@ func NewNetwork(config Config) (*Network, error) {
 		connections:  make(map[*PacketConn]struct{}),
 		endpoints:    make(map[endpointKey]*PacketConn),
 		directRoutes: make(map[netip.AddrPort]*PacketConn),
-		routes:       make(map[netip.AddrPort]externalRoute),
+		routes:       make(map[externalRouteKey]externalRoute),
 	}, nil
 }
 
@@ -174,7 +184,7 @@ func (network *Network) NewNAT(config NATConfig) (*NAT, error) {
 		model:       validated.Model,
 		changes:     validated.Changes,
 		mappings:    make(map[mappingKey]*natMapping),
-		usedPorts:   make(map[uint16]struct{}),
+		usedPorts:   make(map[allocatedPortKey]struct{}),
 		portCursor:  validated.Model.PortMin,
 		randomState: validated.Model.RandomSeed,
 	}
@@ -346,7 +356,10 @@ func (network *Network) transmit(connection *PacketConn, packet []byte, destinat
 		network.deliverLocked(direct, packet, source)
 		return len(packet), nil
 	}
-	route, exists := network.routes[destination]
+	route, exists := network.routes[externalRouteKey{external: destination, destination: source}]
+	if !exists {
+		route, exists = network.routes[externalRouteKey{external: destination}]
+	}
 	if !exists || route.connection == nil || route.connection.closed.Load() {
 		network.counters.PacketsDropped++
 		return len(packet), nil
@@ -438,9 +451,10 @@ func (network *Network) removeConnectionMappingsLocked(nat *NAT, connection *Pac
 
 func (network *Network) removeMappingLocked(nat *NAT, key mappingKey, mapping *natMapping) {
 	delete(nat.mappings, key)
-	delete(nat.usedPorts, mapping.external.Port())
-	if route, exists := network.routes[mapping.external]; exists && route.nat == nat && route.connection == mapping.connection && route.chainIndex == mapping.chainIndex {
-		delete(network.routes, mapping.external)
+	delete(nat.usedPorts, nat.allocatedPortKey(mapping.external.Port(), mapping.key.destination))
+	routeKey := nat.externalRouteKey(mapping.external, mapping.key.destination)
+	if route, exists := network.routes[routeKey]; exists && route.nat == nat && route.connection == mapping.connection && route.chainIndex == mapping.chainIndex {
+		delete(network.routes, routeKey)
 	}
 	if network.counters.ActiveMappings > 0 {
 		network.counters.ActiveMappings--
@@ -452,7 +466,7 @@ func (network *Network) clearNATMappingsLocked(nat *NAT) {
 		network.removeMappingLocked(nat, key, mapping)
 	}
 	nat.mappings = make(map[mappingKey]*natMapping)
-	nat.usedPorts = make(map[uint16]struct{})
+	nat.usedPorts = make(map[allocatedPortKey]struct{})
 }
 
 func (nat *NAT) mappingKey(internal, destination netip.AddrPort) mappingKey {
@@ -477,7 +491,7 @@ func (nat *NAT) translateOutboundLocked(connection *PacketConn, chainIndex int, 
 		if nat.network.counters.ActiveMappings >= nat.network.config.MaxMappings {
 			return netip.AddrPort{}, ErrResourceLimit
 		}
-		port, err := nat.allocatePortLocked(internal.Port())
+		port, err := nat.allocatePortLocked(internal.Port(), destination)
 		if err != nil {
 			return netip.AddrPort{}, err
 		}
@@ -491,7 +505,7 @@ func (nat *NAT) translateOutboundLocked(connection *PacketConn, chainIndex int, 
 			allowedEndpoints: make(map[netip.AddrPort]struct{}),
 		}
 		nat.mappings[key] = mapping
-		nat.network.routes[mapping.external] = externalRoute{connection: connection, chainIndex: chainIndex, nat: nat}
+		nat.network.routes[nat.externalRouteKey(mapping.external, destination)] = externalRoute{connection: connection, chainIndex: chainIndex, nat: nat}
 		nat.network.counters.ActiveMappings++
 		if nat.network.counters.ActiveMappings > nat.network.counters.PeakMappings {
 			nat.network.counters.PeakMappings = nat.network.counters.ActiveMappings
@@ -505,7 +519,7 @@ func (nat *NAT) translateOutboundLocked(connection *PacketConn, chainIndex int, 
 func (nat *NAT) translateInboundLocked(external, source netip.AddrPort) (netip.AddrPort, bool) {
 	var mapping *natMapping
 	for _, candidate := range nat.mappings {
-		if candidate.external == external {
+		if candidate.external == external && (!nat.model.EndpointDependentPortReuse || candidate.key.destination == source) {
 			mapping = candidate
 			break
 		}
@@ -551,11 +565,12 @@ func (nat *NAT) applyChangesLocked() error {
 	return nil
 }
 
-func (nat *NAT) allocatePortLocked(internalPort uint16) (uint16, error) {
+func (nat *NAT) allocatePortLocked(internalPort uint16, destination netip.AddrPort) (uint16, error) {
 	if nat.model.Allocation == PortPreserving {
 		internal := int(internalPort)
-		if _, used := nat.usedPorts[internalPort]; internal >= nat.model.PortMin && internal <= nat.model.PortMax && !used {
-			nat.usedPorts[internalPort] = struct{}{}
+		key := nat.allocatedPortKey(internalPort, destination)
+		if _, used := nat.usedPorts[key]; internal >= nat.model.PortMin && internal <= nat.model.PortMax && !used {
+			nat.usedPorts[key] = struct{}{}
 			return internalPort, nil
 		}
 	}
@@ -578,11 +593,28 @@ func (nat *NAT) allocatePortLocked(internalPort uint16) (uint16, error) {
 			}
 		}
 		port := uint16(candidate)
-		if _, used := nat.usedPorts[port]; used {
+		key := nat.allocatedPortKey(port, destination)
+		if _, used := nat.usedPorts[key]; used {
 			continue
 		}
-		nat.usedPorts[port] = struct{}{}
+		nat.usedPorts[key] = struct{}{}
 		return port, nil
 	}
 	return 0, ErrResourceLimit
+}
+
+func (nat *NAT) allocatedPortKey(port uint16, destination netip.AddrPort) allocatedPortKey {
+	key := allocatedPortKey{port: port}
+	if nat.model.EndpointDependentPortReuse {
+		key.destination = destination
+	}
+	return key
+}
+
+func (nat *NAT) externalRouteKey(external, destination netip.AddrPort) externalRouteKey {
+	key := externalRouteKey{external: external}
+	if nat.model.EndpointDependentPortReuse {
+		key.destination = destination
+	}
+	return key
 }

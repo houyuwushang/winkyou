@@ -209,6 +209,61 @@ func TestMappingAndPortAllocationModels(t *testing.T) {
 			t.Fatalf("random sequence reused a live port: %v", first)
 		}
 	})
+
+	t.Run("EDM may reuse one port only for distinct destinations", func(t *testing.T) {
+		network := mustNetwork(t, Config{MaxPacketConns: 3, MaxMappings: 2, QueueCapacity: 4})
+		defer network.Close()
+		model := testModel(MappingEndpointDependent, PortIncrement, FilterAddressPortDependent)
+		model.PortMin, model.PortMax = 49152, 49152
+		model.EndpointDependentPortReuse = true
+		nat := mustNAT(t, network, NATConfig{Name: "edm-port-reuse", PublicAddr: netip.MustParseAddr("203.0.113.42"), Model: model})
+		behind := mustPacketConn(t, network, EndpointConfig{LocalAddr: netip.MustParseAddrPort("192.0.2.42:45102"), NATChain: []*NAT{nat}})
+		defer behind.Close()
+		first := mustPacketConn(t, network, EndpointConfig{LocalAddr: netip.MustParseAddrPort("198.51.100.42:40000")})
+		defer first.Close()
+		second := mustPacketConn(t, network, EndpointConfig{LocalAddr: netip.MustParseAddrPort("198.51.100.43:40001")})
+		defer second.Close()
+
+		mustWrite(t, behind, first.localAddr, "first")
+		mustWrite(t, behind, second.localAddr, "second")
+		mappedFirst := mustMappedAddr(t, network, behind, first.localAddr)
+		mappedSecond := mustMappedAddr(t, network, behind, second.localAddr)
+		if mappedFirst != mappedSecond || mappedFirst.Port() != 49152 {
+			t.Fatalf("reused mappings = %v/%v", mappedFirst, mappedSecond)
+		}
+		if _, _, err := readVirtualPacket(first); err != nil {
+			t.Fatal(err)
+		}
+		if _, _, err := readVirtualPacket(second); err != nil {
+			t.Fatal(err)
+		}
+		mustWrite(t, first, mappedFirst, "reply-first")
+		packet, source, err := readVirtualPacket(behind)
+		if err != nil || string(packet) != "reply-first" || source != first.localAddr {
+			t.Fatalf("first reused route = %q/%s/%v", packet, source, err)
+		}
+		mustWrite(t, second, mappedSecond, "reply-second")
+		packet, source, err = readVirtualPacket(behind)
+		if err != nil || string(packet) != "reply-second" || source != second.localAddr {
+			t.Fatalf("second reused route = %q/%s/%v", packet, source, err)
+		}
+		if snapshot := nat.Snapshot(); snapshot.ActiveMappings != 2 {
+			t.Fatalf("reused NAT snapshot = %+v", snapshot)
+		}
+	})
+}
+
+func TestEndpointDependentPortReuseRejectsEIM(t *testing.T) {
+	model := testModel(MappingEndpointIndependent, PortIncrement, FilterEndpointIndependent)
+	model.EndpointDependentPortReuse = true
+	if _, err := NewNetwork(Config{}); err != nil {
+		t.Fatal(err)
+	}
+	network := mustNetwork(t, Config{})
+	defer network.Close()
+	if _, err := network.NewNAT(NATConfig{Name: "invalid-reuse", PublicAddr: netip.MustParseAddr("203.0.113.43"), Model: model}); !errors.Is(err, ErrInvalidConfig) {
+		t.Fatalf("EIM port reuse error = %v", err)
+	}
 }
 
 func TestAddressPortFilteringRequiresReciprocalTraffic(t *testing.T) {

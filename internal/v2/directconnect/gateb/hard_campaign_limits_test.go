@@ -1,0 +1,252 @@
+package gateb
+
+import (
+	"context"
+	"errors"
+	"sync"
+	"testing"
+	"time"
+
+	"winkyou/internal/governor"
+	"winkyou/internal/probeio"
+	"winkyou/internal/v2/hardnatattempt"
+	"winkyou/internal/v2/hardnatbudget"
+	"winkyou/internal/v2/hardnatplan"
+)
+
+func TestGateB3ProtocolFirstOveragesPersistSafetyTrip(t *testing.T) {
+	tests := []struct {
+		name      string
+		emissions Emissions
+	}{
+		{
+			name: "16385th candidate",
+			emissions: Emissions{
+				EvidencePackets:  hardnatbudget.FreshEvidencePackets,
+				CandidatePackets: hardnatbudget.Hard16CandidatePackets + 1,
+				UDPPacketsTotal:  hardnatbudget.Hard16ActualPacketsMaximum,
+			},
+		},
+		{
+			name: "16399th establishment packet",
+			emissions: Emissions{
+				EvidencePackets:  hardnatbudget.FreshEvidencePackets,
+				CandidatePackets: hardnatbudget.Hard16CandidatePackets,
+				WinnerPackets:    1,
+				UDPPacketsTotal:  hardnatbudget.Hard16ActualPacketsMaximum + 1,
+			},
+		},
+		{
+			name: "second winner",
+			emissions: Emissions{
+				EvidencePackets:  hardnatbudget.FreshEvidencePackets,
+				CandidatePackets: hardnatbudget.Hard16CandidatePackets - 1,
+				WinnerPackets:    2,
+				UDPPacketsTotal:  hardnatbudget.Hard16ActualPacketsMaximum,
+			},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			controller, lease := newGateB3ProtocolTripController(t)
+			runtime := &runtime{
+				artifact: &hardnatattempt.Artifact{
+					PlannerProfile: hardnatplan.ProfileHardBirthday,
+					ResourceClass:  hardnatplan.ResourceHard16KLab,
+				},
+				controller: controller,
+				emissions:  test.emissions,
+			}
+			if err := runtime.validateHardProtocolShape("mutation"); !errors.Is(err, probeio.ErrHardLimit) {
+				t.Fatalf("first overage = %v, want probeio.ErrHardLimit", err)
+			}
+			events := lease.tripEvents()
+			if len(events) != 1 || events[0].Reason != governor.SafetyTripHardLimit {
+				t.Fatalf("persistent trip events = %+v", events)
+			}
+		})
+	}
+}
+
+func TestGateB3TerminalControlContextExcludesOnlyCarrierCancellation(t *testing.T) {
+	parent, cancelParent := context.WithCancel(context.Background())
+	envelope, cancelEnvelope := context.WithDeadline(parent, time.Now().Add(time.Minute))
+	active, cancelActive := context.WithCancelCause(envelope)
+	runtime := &runtime{envelopeContext: envelope, activeContext: active, activeCancel: cancelActive}
+	terminal, cancelTerminal := runtime.hardTerminalControlContext(active, time.Now().Add(time.Minute))
+	t.Cleanup(func() {
+		cancelTerminal()
+		cancelActive(context.Canceled)
+		cancelEnvelope()
+		cancelParent()
+	})
+
+	cancelActive(errors.New("synthetic carrier terminal"))
+	if active.Err() == nil {
+		t.Fatal("carrier terminal did not cancel active emission context")
+	}
+	if terminal.Err() != nil {
+		t.Fatalf("carrier terminal canceled terminal-drain context: %v", terminal.Err())
+	}
+
+	cancelParent()
+	select {
+	case <-terminal.Done():
+		if !errors.Is(terminal.Err(), context.Canceled) {
+			t.Fatalf("parent cancellation = %v", terminal.Err())
+		}
+	case <-time.After(time.Second):
+		t.Fatal("parent cancellation did not reach terminal-drain context")
+	}
+}
+
+func TestGateB3CandidateLanesBoundPPSWithoutBatchOverhead(t *testing.T) {
+	current := time.Unix(1_700_000_000, 0)
+	runtime := &runtime{config: Config{Harness: &HarnessHooks{
+		Now: func() time.Time { return current },
+		Wait: func(ctx context.Context, duration time.Duration) error {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			current = current.Add(duration)
+			return nil
+		},
+	}}}
+
+	campaignStart := current
+	const pps = 512
+	lanes := make([]time.Time, pps)
+	for index := 0; index < 32*pps; index++ {
+		lane := index % pps
+		if index >= pps {
+			if err := runtime.waitForHardCandidateLane(context.Background(), lanes[lane]); err != nil {
+				t.Fatal(err)
+			}
+		}
+		// Model a non-zero syscall/scheduler span within every batch.
+		current = current.Add(200 * time.Microsecond)
+		lanes[lane] = current
+	}
+	if elapsed := current.Sub(campaignStart); elapsed != 31*(candidateBatchPeriod+time.Millisecond+200*time.Microsecond)+pps*200*time.Microsecond {
+		t.Fatalf("hard candidate schedule = %s, want lane-anchored duration", elapsed)
+	} else if elapsed >= 32*time.Second {
+		t.Fatalf("hard candidate schedule accumulated batch overhead: %s", elapsed)
+	}
+}
+
+type gateB3ProtocolTripLease struct {
+	request  governor.AttemptRequest
+	stopping chan struct{}
+	done     chan struct{}
+
+	mu       sync.Mutex
+	trips    []governor.SafetyTripEvent
+	drains   int
+	stopped  bool
+	doneOnce sync.Once
+}
+
+func newGateB3ProtocolTripController(t *testing.T) (*probeio.Controller, *gateB3ProtocolTripLease) {
+	t.Helper()
+	lease := &gateB3ProtocolTripLease{
+		request: governor.AttemptRequest{
+			ID:        "gate-b3-protocol-mutation",
+			Operation: governor.OperationBirthday,
+			Cost: governor.AttemptCost{
+				Resources: governor.Resources{Sockets: 16, Targets: 16_400, FiveTuples: 16_400, Packets: 16_432, PacketsPerSecond: 512},
+				Duration:  47 * time.Second,
+			},
+		},
+		stopping: make(chan struct{}),
+		done:     make(chan struct{}),
+	}
+	controller, err := probeio.New(probeio.Config{
+		Lease: lease, Generation: probeio.NewGeneration(1), ExpectedGeneration: 1,
+		Factory: gateB3ProtocolNoIOFactory{}, BuildVersion: "gate-b3-protocol-mutation",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := controller.Close(); err != nil {
+			t.Errorf("close controller: %v", err)
+		}
+	})
+	return controller, lease
+}
+
+func (lease *gateB3ProtocolTripLease) Request() governor.AttemptRequest { return lease.request }
+func (lease *gateB3ProtocolTripLease) PeerID() string                   { return "gate-b3-peer" }
+func (lease *gateB3ProtocolTripLease) Stopping() <-chan struct{}        { return lease.stopping }
+func (lease *gateB3ProtocolTripLease) Done() <-chan struct{}            { return lease.done }
+
+func (lease *gateB3ProtocolTripLease) RegisterDrain(string) (governor.DrainHandle, error) {
+	lease.mu.Lock()
+	defer lease.mu.Unlock()
+	if lease.stopped {
+		return nil, governor.ErrLeaseClosed
+	}
+	lease.drains++
+	return &gateB3ProtocolTripDrain{lease: lease}, nil
+}
+
+func (lease *gateB3ProtocolTripLease) Close() error {
+	lease.mu.Lock()
+	lease.stopLocked()
+	lease.finishLocked()
+	done := lease.done
+	lease.mu.Unlock()
+	<-done
+	return nil
+}
+
+func (lease *gateB3ProtocolTripLease) Trip(event governor.SafetyTripEvent) (governor.SafetyTripStatus, error) {
+	lease.mu.Lock()
+	lease.trips = append(lease.trips, event)
+	lease.stopLocked()
+	lease.mu.Unlock()
+	return governor.SafetyTripStatus{State: governor.SafetyTripTripped, BlocksActiveWork: true}, nil
+}
+
+func (lease *gateB3ProtocolTripLease) tripEvents() []governor.SafetyTripEvent {
+	lease.mu.Lock()
+	defer lease.mu.Unlock()
+	return append([]governor.SafetyTripEvent(nil), lease.trips...)
+}
+
+func (lease *gateB3ProtocolTripLease) stopLocked() {
+	if !lease.stopped {
+		lease.stopped = true
+		close(lease.stopping)
+	}
+}
+
+func (lease *gateB3ProtocolTripLease) finishLocked() {
+	if lease.stopped && lease.drains == 0 {
+		lease.doneOnce.Do(func() { close(lease.done) })
+	}
+}
+
+type gateB3ProtocolTripDrain struct {
+	lease *gateB3ProtocolTripLease
+	once  sync.Once
+}
+
+func (drain *gateB3ProtocolTripDrain) Complete() error {
+	drain.once.Do(func() {
+		drain.lease.mu.Lock()
+		drain.lease.drains--
+		drain.lease.finishLocked()
+		drain.lease.mu.Unlock()
+	})
+	return nil
+}
+
+type gateB3ProtocolNoIOFactory struct{}
+
+func (gateB3ProtocolNoIOFactory) Open(context.Context) (probeio.Datagram, error) {
+	return nil, errors.New("Gate B3 protocol mutation unexpectedly attempted I/O")
+}
+
+var _ probeio.AttemptLease = (*gateB3ProtocolTripLease)(nil)
+var _ probeio.Factory = gateB3ProtocolNoIOFactory{}

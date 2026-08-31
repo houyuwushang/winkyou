@@ -20,11 +20,16 @@ const (
 	ProfilePhase1Machine          Profile = "phase1_machine"
 	ProfilePhase1ManualTraversal  Profile = "phase1_manual_traversal"
 	ProfilePhase1UserAcknowledged Profile = "phase1_user_acknowledged"
+	// ProfilePhase1HardNATCampaign is a test-only, machine-scoped exact
+	// reservation for the reviewed hard_16k_lab/1 campaign. It is not a
+	// superset of any ordinary profile and is guarded from product consumers by
+	// the Gate B3 architecture boundary.
+	ProfilePhase1HardNATCampaign Profile = "phase1_hard_nat_campaign"
 )
 
 func (p Profile) Scope() (Scope, error) {
 	switch p {
-	case ProfilePhase1Machine, ProfilePhase1ManualTraversal:
+	case ProfilePhase1Machine, ProfilePhase1ManualTraversal, ProfilePhase1HardNATCampaign:
 		return ScopeMachine, nil
 	case ProfilePhase1UserAcknowledged:
 		return ScopeUserAcknowledged, nil
@@ -53,6 +58,8 @@ func (p Profile) Allows(operation Operation) bool {
 		return operation == OperationDiagnose || operation == OperationConnectTest
 	case ProfilePhase1ManualTraversal:
 		return operation == OperationPrediction || operation == OperationBirthday
+	case ProfilePhase1HardNATCampaign:
+		return operation == OperationBirthday
 	default:
 		return false
 	}
@@ -166,6 +173,29 @@ func HardLimits(profile Profile) (Limits, error) {
 				PacketsPerSecond: 64,
 				Packets:          526,
 				FiveTuples:       523,
+			},
+		}, nil
+	case ProfilePhase1HardNATCampaign:
+		return Limits{
+			MaxActivePeers:           1,
+			MaxActiveAttempts:        1,
+			MaxAttemptsPerPeer:       1,
+			MaxHeavyweightAttempts:   1,
+			MaxAttemptDuration:       47 * time.Second,
+			CancellationDrainTimeout: 2 * time.Second,
+			Aggregate: Resources{
+				Sockets:          16,
+				Targets:          16_400,
+				PacketsPerSecond: 512,
+				Packets:          16_432,
+				FiveTuples:       16_400,
+			},
+			PerAttempt: Resources{
+				Sockets:          16,
+				Targets:          16_400,
+				PacketsPerSecond: 512,
+				Packets:          16_432,
+				FiveTuples:       16_400,
 			},
 		}, nil
 	case ProfilePhase1UserAcknowledged:

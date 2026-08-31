@@ -262,11 +262,16 @@ func canonicalTargetEndpoint(endpoint netip.AddrPort, scope AllowedTargetScope) 
 // timer often fires a moment before ctx.Err() is set; a timeout with a
 // deadline-carrying context therefore always belongs to the context.
 func contextErrorForIO(ctx context.Context, err error) error {
-	if ctxErr := ctx.Err(); ctxErr != nil {
-		return ctxErr
-	}
+	// A completed system call is the emission/receipt commit point. The
+	// context may be cancelled immediately after the kernel has accepted a
+	// datagram; rewriting that successful result as cancellation would make
+	// the caller under-count a packet that was actually emitted. Cancellation
+	// remains authoritative when the I/O itself reports an error.
 	if err == nil {
 		return nil
+	}
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return ctxErr
 	}
 	var networkErr net.Error
 	if !errors.As(err, &networkErr) || !networkErr.Timeout() {

@@ -262,6 +262,114 @@ jobs:
           -test.count=1
           -test.timeout=5m
 
+  gate-b3-netns-hard16-proof:
+    name: Gate B3 Hard16 Netns Load Proof (required)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Install isolated-network witness tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y iproute2 iptables conntrack
+          sudo modprobe tun || true
+          command -v ip
+          command -v iptables
+          command -v iptables-restore
+          command -v ss
+          command -v conntrack
+          command -v sysctl
+          command -v tc
+          command -v flock
+          command -v readlink
+          command -v setsid
+          test -c /dev/net/tun
+
+      - name: Vet Gate B3 natlab-tagged code
+        run: >-
+          go vet -tags=natlab
+          ./internal/governor
+          ./internal/natsim
+          ./internal/probeio
+          ./internal/architecture
+          ./internal/v2/hardnatattempt
+          ./internal/v2/hardnatbudget
+          ./internal/v2/hardnatcontrol
+          ./internal/v2/hardnatobserve
+          ./internal/v2/hardnatplan
+          ./internal/v2/directconnect/gateb
+          ./test/natlab
+
+      - name: Build race-enabled Gate B3 integration binary
+        run: go test -race -c -tags=natlab -o "${RUNNER_TEMP}/winkyou-gateb3.test" ./test/natlab
+
+      - name: Run mandatory isolated Gate B3 load and teardown matrix
+        run: |
+          sudo env \
+            WINKYOU_GATE_B3_REQUIRED=1 \
+            WINKYOU_GATE_B3_DISPOSABLE_RUNNER=github-hosted \
+            GITHUB_ACTIONS=true \
+            RUNNER_ENVIRONMENT=github-hosted \
+            bash test/natlab/run_gate_b3_required_linux.sh \
+            env GORACE=halt_on_error=1 \
+            "${RUNNER_TEMP}/winkyou-gateb3.test" \
+            -test.v \
+            -test.run '^TestLinuxGateB3Hard16Proof$' \
+            -test.count=1 \
+            -test.timeout=9m
+
+  gate-b3-natsim-repeat-proof:
+    name: Gate B3 Fresh NATSim Campaign Proof (required)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Run 100 fresh full-shape natsim campaigns
+        run: >-
+          WINKYOU_GATE_B3_REPEAT_REQUIRED=1
+          go test ./internal/governor
+          -run '^TestGateB3Hard16NATSimFreshTopology100$'
+          -v
+          -count=1
+          -parallel=4
+          -timeout=8m
+
+  gate-b3-ledger-restart-proof:
+    name: Gate B3 Campaign Ledger Restart Proof (required)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Run 1000 crash-style campaign ledger restarts
+        run: >-
+          WINKYOU_GATE_B3_LEDGER_REQUIRED=1
+          go test ./internal/governor
+          -run '^TestHardNATCampaignSameCredential1000ProcessRestarts$'
+          -v
+          -count=1
+          -timeout=8m
+
   relay-smoke-linux:
     name: Relay Smoke (Linux)
     needs: test-linux

@@ -31,6 +31,7 @@ type pairingJournalRecord struct {
 	Sequence        uint64                   `json:"sequence"`
 	Type            pairingJournalRecordType `json:"type"`
 	RecordedAt      time.Time                `json:"recorded_at"`
+	RecordClass     PairingLedgerRecordClass `json:"record_class,omitempty"`
 	CredentialID    string                   `json:"credential_id,omitempty"`
 	AttemptID       string                   `json:"attempt_id,omitempty"`
 	ContextDigest   string                   `json:"context_digest,omitempty"`
@@ -250,7 +251,7 @@ func buildPairingLedgerSnapshot(records []pairingJournalRecord, bytes int64, own
 			snapshot.admissionOrder = append(snapshot.admissionOrder, entry)
 		case pairingRecordFinish:
 			entry, exists := snapshot.admissions[record.CredentialID]
-			if !exists || entry.record.AttemptID != record.AttemptID {
+			if !exists || entry.record.AttemptID != record.AttemptID || entry.record.RecordClass != record.RecordClass {
 				return snapshot, errors.New("finish record has no matching admission")
 			}
 			if entry.finish != nil {
@@ -262,12 +263,19 @@ func buildPairingLedgerSnapshot(records []pairingJournalRecord, bytes int64, own
 			if index == 0 {
 				return snapshot, errors.New("circuit reset precedes initialization")
 			}
-			status := snapshot.statusAt(record.RecordedAt)
-			if !status.ExplicitResetRequired || status.CircuitOpenedAt.IsZero() {
-				return snapshot, errors.New("circuit reset has no matching open circuit")
-			}
-			if record.RecordedAt.Before(status.CircuitResetEligibleAt) {
-				return snapshot, errors.New("circuit reset precedes its minimum horizon")
+			if record.RecordClass == PairingRecordClassHardNATCampaign {
+				status := snapshot.hardNATCampaignStatusAt(record.RecordedAt)
+				if !status.ExplicitResetRequired || status.CircuitOpenedAt.IsZero() {
+					return snapshot, errors.New("hard NAT campaign reset has no matching open circuit")
+				}
+			} else {
+				status := snapshot.statusAt(record.RecordedAt)
+				if !status.ExplicitResetRequired || status.CircuitOpenedAt.IsZero() {
+					return snapshot, errors.New("circuit reset has no matching open circuit")
+				}
+				if record.RecordedAt.Before(status.CircuitResetEligibleAt) {
+					return snapshot, errors.New("circuit reset precedes its minimum horizon")
+				}
 			}
 		default:
 			return snapshot, fmt.Errorf("unknown pairing journal record type %q", record.Type)
@@ -299,11 +307,12 @@ func validatePairingJournalRecord(record pairingJournalRecord) error {
 	emptyEnvelope := PairingAdmissionEnvelope{}
 	switch record.Type {
 	case pairingRecordInitialize, pairingRecordRebuildBaseline:
-		if record.CredentialID != "" || record.AttemptID != "" || record.ContextDigest != "" || record.OwnerInstanceID != "" || record.Scope != "" || !record.ExpiresAt.IsZero() || record.Envelope != emptyEnvelope || record.Reason != "" || record.ResetNote != "" {
+		if record.RecordClass != PairingRecordClassOrdinary || record.CredentialID != "" || record.AttemptID != "" || record.ContextDigest != "" || record.OwnerInstanceID != "" || record.Scope != "" || !record.ExpiresAt.IsZero() || record.Envelope != emptyEnvelope || record.Reason != "" || record.ResetNote != "" {
 			return errors.New("pairing journal initialization record has unexpected fields")
 		}
 	case pairingRecordBurnAndAdmit:
 		request := PairingAdmissionRequest{
+			RecordClass:   record.RecordClass,
 			CredentialID:  record.CredentialID,
 			AttemptID:     record.AttemptID,
 			ContextDigest: record.ContextDigest,
@@ -324,6 +333,9 @@ func validatePairingJournalRecord(record pairingJournalRecord) error {
 			return errors.New("pairing admission record has terminal-only fields")
 		}
 	case pairingRecordFinish:
+		if !record.RecordClass.valid() {
+			return fmt.Errorf("invalid pairing ledger record class %q", record.RecordClass)
+		}
 		if err := validatePairingOpaqueID("credential id", record.CredentialID); err != nil {
 			return err
 		}
@@ -337,6 +349,9 @@ func validatePairingJournalRecord(record pairingJournalRecord) error {
 			return errors.New("pairing finish record has unexpected fields")
 		}
 	case pairingRecordCircuitReset:
+		if !record.RecordClass.valid() {
+			return fmt.Errorf("invalid pairing ledger record class %q", record.RecordClass)
+		}
 		if err := validatePairingResetNote(record.ResetNote); err != nil {
 			return err
 		}
@@ -406,6 +421,9 @@ func (snapshot pairingLedgerSnapshot) statusAt(now time.Time) PairingLedgerStatu
 	oneHourCutoff := effectiveNow.Add(-pairingAdmissionOneHourWindow)
 	dayCutoff := effectiveNow.Add(-pairingAdmissionDayWindow)
 	for _, admission := range snapshot.admissionOrder {
+		if admission.record.RecordClass != PairingRecordClassOrdinary {
+			continue
+		}
 		when := admission.record.RecordedAt
 		if when.After(status.LastAdmissionAt) {
 			status.LastAdmissionAt = when
@@ -422,7 +440,7 @@ func (snapshot pairingLedgerSnapshot) statusAt(now time.Time) PairingLedgerStatu
 		status.NextAdmissionAt = status.LastAdmissionAt.Add(pairingAdmissionMinimumInterval)
 	}
 
-	status.ConsecutiveFailures, status.CircuitOpenedAt = snapshot.failureState()
+	status.ConsecutiveFailures, status.CircuitOpenedAt = snapshot.failureState(PairingRecordClassOrdinary)
 	if !status.CircuitOpenedAt.IsZero() {
 		status.CircuitResetEligibleAt = status.CircuitOpenedAt.Add(pairingAdmissionCircuitHorizon)
 		status.ExplicitResetRequired = true
@@ -448,10 +466,10 @@ func (snapshot pairingLedgerSnapshot) statusAt(now time.Time) PairingLedgerStatu
 	return status
 }
 
-func (snapshot pairingLedgerSnapshot) failureState() (int, time.Time) {
+func (snapshot pairingLedgerSnapshot) failureState(recordClass PairingLedgerRecordClass) (int, time.Time) {
 	finishBySequence := make(map[uint64]*pairingJournalRecord)
 	for _, admission := range snapshot.admissionOrder {
-		if admission.finish != nil {
+		if admission.record.RecordClass == recordClass && admission.finish != nil {
 			finishBySequence[admission.finish.Sequence] = admission.finish
 		}
 	}
@@ -459,6 +477,9 @@ func (snapshot pairingLedgerSnapshot) failureState() (int, time.Time) {
 	streak := 0
 	var openedAt time.Time
 	for _, record := range snapshot.records {
+		if record.RecordClass != recordClass {
+			continue
+		}
 		switch record.Type {
 		case pairingRecordBurnAndAdmit:
 			entry := snapshot.admissions[record.CredentialID]
@@ -476,7 +497,11 @@ func (snapshot pairingLedgerSnapshot) failureState() (int, time.Time) {
 				if finish.Reason != PairingTerminalSuccess {
 					streak++
 				}
-				if streak >= pairingAdmissionFailureLimit && openedAt.IsZero() {
+				limit := pairingAdmissionFailureLimit
+				if recordClass == PairingRecordClassHardNATCampaign {
+					limit = 1
+				}
+				if streak >= limit && openedAt.IsZero() {
 					openedAt = finish.RecordedAt
 				}
 			}
@@ -491,14 +516,21 @@ func (snapshot pairingLedgerSnapshot) failureState() (int, time.Time) {
 			continue
 		}
 		streak++
-		if streak >= pairingAdmissionFailureLimit && openedAt.IsZero() {
+		limit := pairingAdmissionFailureLimit
+		if recordClass == PairingRecordClassHardNATCampaign {
+			limit = 1
+		}
+		if streak >= limit && openedAt.IsZero() {
 			openedAt = admission.record.RecordedAt
 		}
 	}
 	return streak, openedAt
 }
 
-func (snapshot pairingLedgerSnapshot) admissionError(now time.Time, envelope PairingAdmissionEnvelope) error {
+func (snapshot pairingLedgerSnapshot) admissionError(now time.Time, envelope PairingAdmissionEnvelope, recordClass PairingLedgerRecordClass) error {
+	if recordClass == PairingRecordClassHardNATCampaign {
+		return snapshot.hardNATCampaignAdmissionError(now, envelope)
+	}
 	status := snapshot.statusAt(now)
 	switch status.State {
 	case PairingLedgerCircuitOpen:
