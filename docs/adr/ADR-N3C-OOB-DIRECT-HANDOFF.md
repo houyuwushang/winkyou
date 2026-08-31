@@ -1,8 +1,8 @@
 # ADR：N3c 带外控制流到可复用直连数据面的交接
 
-- 状态：**Accepted（含 §16 handoff 顺序修订，2026-08-27）：§15 七条答复具约束力，仅授权
-  Gate A 实现（memory/loopback/required netns 证据）。SSH assembly、WireGuard/memory-TUN、
-  产品入口、Gate B2 与任何现场 I/O 均未授权**
+- 状态：**Accepted（含 §16 handoff 顺序修订，2026-08-27）：§15 七条答复具约束力；Gate A
+  已独立复审并合入。后续 Gate B1/B2/B3 状态由 Gate B ADR 记录且隔离实现均已合入；SSH
+  assembly、WireGuard/memory-TUN、产品入口、disposable router 与任何现场 I/O 仍未授权**
 - 日期：2026-08-25
 - 基线：`main` = `edca985e91333b17bbd0c88e7878b08ad94bc36b`
 - 跟踪议题：[#85](https://github.com/houyuwushang/winkyou/issues/85)
@@ -512,3 +512,13 @@ Gate A 已进入单独 Draft 实现阶段；协议面、成本、失败类、own
 - 裁决：接受 Gate A 实现，PR #92 可合并。本裁决不授权 Gate B2/B3、SSH assembly、
   WireGuard/memory-TUN、产品入口或任何现场 I/O；下一步按 §12（Gate B ADR §12 顺序）
   另行评审 Gate B2。
+
+## 19. Gate C1 设计状态（Draft，2026-08-31）
+
+Gate B1/B2/B3 的后续隔离实现已按
+[`ADR-N3C-GATE-B-ENDPOINT-DEPENDENT-SOLVER.md`](./ADR-N3C-GATE-B-ENDPOINT-DEPENDENT-SOLVER.md)
+完成独立复审并合入。下一权限层的 SSH/OOB assembly、local target authority、foreground
+product entry、WireGuard consumer 与 separately issued live windows 只在
+[`ADR-N3C-GATE-C1-SSH-PRODUCT-ASSEMBLY.md`](./ADR-N3C-GATE-C1-SSH-PRODUCT-ASSEMBLY.md)
+提出 Draft 设计。该 Draft、Issue、PR、CI 或合并均不授权实现或现场 I/O；仍须按 Gate C1a、
+C1b、C1c、C2 分别评审和签发。

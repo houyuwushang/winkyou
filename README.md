@@ -11,7 +11,7 @@ WinkYou = connectivity solver + secure WireGuard data plane
 ## 当前状态
 
 - v2 直连优先计划已经 **Accepted**；接受范围、证据与不授权事项见 [`docs/PHASE0-EXIT-RECORD.md`](./docs/PHASE0-EXIT-RECORD.md)，完整计划见 [`docs/proposals/WINKYOU-V2-DIRECT-FIRST-PLAN.md`](./docs/proposals/WINKYOU-V2-DIRECT-FIRST-PLAN.md)。
-- 项目处于 **Phase 1a 构建期**。当前树已包含 machine-wide governor、`probeio` 网络能力边界、保持不变的 stdio API v1、显式版本的 N3b stdio v2 候选、NAT 模拟矩阵与 test-only 一次性配对协议。v2 direct 目前只由 literal loopback 和 Linux 隔离 namespace 验证；真实 LAN/公网、正式身份、session 编排和数据面接线仍未授权。
+- 项目处于 **Phase 1a 构建期**。当前树已包含 machine-wide governor、`probeio` 网络能力边界、保持不变的 stdio API v1、显式版本的 N3b stdio v2 候选，以及 Gate A/B 的 OOB handoff 与困难 NAT 隔离证明。v2 direct 目前仍只由 literal loopback、memory/natsim 和 Linux 隔离 namespace 验证；Gate C 的 SSH/产品装配仅有 Draft 设计，真实 LAN/公网、正式身份、产品 session 与数据面接线仍未授权。
 - [`docs/CONNECTIVITY-SOLVER-BASELINE.md`](./docs/CONNECTIVITY-SOLVER-BASELINE.md) 仍是当前实现权威；Accepted v2 计划不会在正式 ADR 合入前取代它。
 - 当前版本仍是开发中的 alpha，不应被描述为 production-ready、零信任网络或已经完成真实公网验收的 v2 产品。
 
@@ -22,6 +22,7 @@ WinkYou = connectivity solver + secure WireGuard data plane
 - 事故根因、影响与恢复门禁见 [`docs/INCIDENT-2026-07-22-SELF-BOOTSTRAP-UDP-STORM.md`](./docs/INCIDENT-2026-07-22-SELF-BOOTSTRAP-UDP-STORM.md)；已去除个人部署细节的停机原则归档在 [`docs/RUNBOOK-EMERGENCY-STOP-HISTORICAL-WINDOWS.md`](./docs/RUNBOOK-EMERGENCY-STOP-HISTORICAL-WINDOWS.md)。
 - v2 计划 Accepted 只授权其明确列出的本地、模拟器与安全基础设施工作，不授权自动恢复、公共 coordinator/DHT/relay、遥测收集或生产发布。
 - N3b 提供代码入口不等于现场许可：`winkyou.stdio/v2` direct arm、`wink-rendezvous` 和离线配对命令在独立安全评审闭合并签发具名窗口前，均不得用于真实 LAN/公网。
+- Gate B3 隔离实现合入也不等于产品或现场许可；Gate C1 Draft、空白模板、确认 flag、CI 或构建均不能授权 SSH、非回环 UDP、WireGuard handoff 或真实设备 attempt。
 
 ## 快速开始
 
@@ -140,6 +141,7 @@ go build -o bin/wink-rendezvous ./cmd/wink-rendezvous
 - Phase 1a 回环 connect-test 与本地验证入口：[`docs/LOOPBACK-CONNECT-TEST.md`](./docs/LOOPBACK-CONNECT-TEST.md)
 - N3b 显式 stdio v2 协议与实现证据：[`docs/STDIO-API-V2.md`](./docs/STDIO-API-V2.md)、[`docs/N3B-PRODUCT-ENTRY-EVIDENCE.md`](./docs/N3B-PRODUCT-ENTRY-EVIDENCE.md)
 - Accepted N3a 设计与空白现场授权模板：[`docs/adr/ADR-N3A-PRODUCT-ENTRY-LIVE-WINDOW.md`](./docs/adr/ADR-N3A-PRODUCT-ENTRY-LIVE-WINDOW.md)、[`docs/N3-LIVE-AUTHORIZATION-TEMPLATE.md`](./docs/N3-LIVE-AUTHORIZATION-TEMPLATE.md)
+- Draft Gate C1 SSH/OOB 与产品 handoff 设计（docs-only、无现场权限）：[`docs/adr/ADR-N3C-GATE-C1-SSH-PRODUCT-ASSEMBLY.md`](./docs/adr/ADR-N3C-GATE-C1-SSH-PRODUCT-ASSEMBLY.md)、[`docs/N3C-GATE-C-LIVE-AUTHORIZATION-TEMPLATE.md`](./docs/N3C-GATE-C-LIVE-AUTHORIZATION-TEMPLATE.md)
 - 自托管 quickstart：[`docs/SELFHOST-QUICKSTART.md`](./docs/SELFHOST-QUICKSTART.md)
 - 分层排障：[`docs/TROUBLESHOOTING.md`](./docs/TROUBLESHOOTING.md)
 - 事故记录：[`docs/INCIDENT-2026-07-22-SELF-BOOTSTRAP-UDP-STORM.md`](./docs/INCIDENT-2026-07-22-SELF-BOOTSTRAP-UDP-STORM.md)
