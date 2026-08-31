@@ -1,10 +1,11 @@
 # ADR：N3c Gate B 困难 NAT 有界求解器
 
 - 状态：**Accepted（含 §15 纠错增补、§16 Gate B2 资源裁决、§17 安全阻断处置、§18 Gate B3
-  隔离实现裁决与 §19 conntrack ceiling 可实现性纠错）；Gate B1、Gate A、Gate B2 与 Gate B3a docs-only 裁决已合并。2026-08-30
-  维护者明确授权一个 §18 Gate B3 Draft 实现 PR，仅限 memory/natsim/required Linux netns；
-  产品入口、Gate C、disposable router 与任何现场 I/O 仍未授权**
-- 实现复审：§20 为本 Draft PR 暴露问题后的协议闭合提案，尚未独立接受，不改变上述授权边界。
+  隔离实现裁决、§19 conntrack ceiling 可实现性纠错与 §20 实现期协议闭合）；Gate B1、
+  Gate A、Gate B2 与 Gate B3 隔离实现均已独立复审并合入。产品入口、Gate C、disposable
+  router 与任何现场 I/O 仍未授权**
+- 实现复审：PR #96 最终 head `553b4c8152979a9ecf66eaf6a2b40c9e8d1964b3` 已明确接受
+  §18–§20，并以 merge commit `39ff9780ec295ca8af7339bca8f5e023adf17931` 合入；见 §21。
 - 日期：2026-08-25
 - 基线：`main` = `dc59d73bdc643e1a230d32acb82d97bfd3cb6d65`
 - 跟踪议题：[#87](https://github.com/houyuwushang/winkyou/issues/87)
@@ -987,7 +988,7 @@ Gate B3 开工核验发现，§18.7 第 4 条把“每个 NAT namespace 的可�
 test-router 独立 mapping cap、init-owned 共同内核 ceiling、两侧各自的真实 count 与精确恢复；不再
 尝试 non-init sysctl 写入，也不得把共同 ceiling 谎称为 per-netns 独立配置或全机聚合计数。
 
-## 20. Gate B3 实现期协议闭合（Draft implementation correction，2026-08-30）
+## 20. Gate B3 实现期协议闭合（Accepted implementation correction，2026-08-30）
 
 required Linux 双跑第一次把 16K 真正压到尾部后暴露了两项不能靠放宽测试处理的实现问题：
 
@@ -1051,4 +1052,22 @@ candidate、0/1 winner、8 frame 或 8,256-byte ceiling：
   中先到期的一端关闭子流时，peer 可先观察到 `oob_stream_closed`，但回归门必须同时证明至少一端
   保留本地 deadline witness，且两端 terminal barrier 后 UDP emission 均为零。
 
-本节是 PR 内实现纠错与评审输入，不自行授权合并、Gate C、产品入口或现场 I/O。
+本节由 §21 记录的独立实现复审接受。接受只闭合 Gate B3 隔离实现，不授权 Gate C、产品
+入口、disposable router 或现场 I/O。
+
+## 21. Gate B3 实现独立复审记录（Accepted，2026-08-30）
+
+- 复审对象：PR #96 最终 head `553b4c8152979a9ecf66eaf6a2b40c9e8d1964b3` 的完整差异；
+  复审方未参与实现提交，裁决经维护者明确授权。
+- 复审结论：§18 exact identifiers/预算/ledger/lifetime/capability/七类证据、§19 conntrack
+  guardian 纠错与 §20 六项协议闭合全部通过；最终 PR head 27/27 checks 全绿。
+- 合入记录：merge commit `39ff9780ec295ca8af7339bca8f5e023adf17931`。required Gate B3
+  kernel load、Fresh100、restart ledger、architecture/mutation 与零 residue 证据仍以
+  [`GATE-B3-HARD16-ISOLATED-EVIDENCE.md`](../GATE-B3-HARD16-ISOLATED-EVIDENCE.md) 为准。
+- 非阻断遗留：legacy relay-wggo 在全仓并行重负载下仍可能启动停滞，独立记录于
+  [Issue #97](https://github.com/houyuwushang/winkyou/issues/97)，不得混入 Gate B3 或 Gate C
+  capability 修改。
+- 权限边界：本裁决只接受已合入的 memory/natsim/required netns 隔离能力。Gate C、默认
+  product build、SSH/WireGuard assembly、disposable router 与任何具名现场 invocation 仍须
+  分别取得新的设计评审、exact-SHA implementation review、kill switch、teardown witness、
+  第二人复核与维护者授权。

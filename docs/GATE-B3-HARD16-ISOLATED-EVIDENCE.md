@@ -1,8 +1,9 @@
 # Gate B3：Hard-16K 隔离实现证据
 
-状态：**Draft implementation evidence。只覆盖 memory、natsim 与 required Linux network
-namespace；不授权 Gate C、产品入口、disposable router、LAN/公网、真实 observer 或现场
-campaign。独立复审通过并合并前，不得把本实现视为产品或现场能力。**
+状态：**Accepted isolated implementation evidence。PR #96 最终 head
+`553b4c8152979a9ecf66eaf6a2b40c9e8d1964b3` 已通过独立复审并合入。接受范围仍只覆盖
+memory、natsim 与 required Linux network namespace；不授权 Gate C、产品入口、disposable
+router、LAN/公网、真实 observer 或现场 campaign。**
 
 权限来源：[`ADR-N3C-GATE-B-ENDPOINT-DEPENDENT-SOLVER.md`](./adr/ADR-N3C-GATE-B-ENDPOINT-DEPENDENT-SOLVER.md)
 §18。实现基线为 `main` = `3b40c4cf82f24604a52d4e8f2f861d2f46154602`。
@@ -251,5 +252,6 @@ Fresh100 分别为 100/100 exhaustion、每侧 16,384 candidate、零 residue（
 [job 99258140551](https://github.com/houyuwushang/winkyou/actions/runs/33311819859/job/99258140551)。
 日志中的 `conntrack_terminal` 是 owned flush 前快照；job 随后仍逐 namespace flush 并断言
 conntrack/socket/process/governor lock/netns/veth 全部零残留。Docker smoke 与两份 advisory
-NAT lab 也在该 head 成功。以上只闭合 Draft PR 的隔离实现证据，不授权合并、Gate C、产品接线
-或任何现场 I/O。
+NAT lab 也在该 head 成功。独立复审同时接受 ADR §20 的六项实现期协议闭合；PR #96 随后以
+merge commit `39ff9780ec295ca8af7339bca8f5e023adf17931` 合入。以上只闭合隔离实现证据，不授权
+Gate C、产品接线、disposable router 或任何现场 I/O。
