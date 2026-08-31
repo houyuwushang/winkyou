@@ -194,7 +194,10 @@ func testGateB3FullShape(t *testing.T, dropEvery uint64, conntrackCap int) {
 				validTerminal = validGateB3FiftyPercentLossTerminal(initiatorResult, responderResult)
 			}
 			if !validTerminal {
-				t.Fatalf("Gate B3 lossy terminal classes = %s/%s", initiatorResult.ErrorClass, responderResult.ErrorClass)
+				leftWitness, rightWitness := gateB3LossTerminalWitnessFrom(initiatorResult), gateB3LossTerminalWitnessFrom(responderResult)
+				t.Fatalf("Gate B3 lossy terminal rejected: class=%s/%s reason=%s witness=%+v/%+v",
+					initiatorResult.ErrorClass, responderResult.ErrorClass,
+					gateB3LossTerminalRejection(leftWitness, rightWitness), leftWitness, rightWitness)
 			}
 		}
 		if !success && conntrackCap == gateB3ConntrackCap &&

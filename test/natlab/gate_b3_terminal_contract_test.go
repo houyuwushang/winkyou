@@ -19,6 +19,13 @@ type gateB3LossTerminalWitness struct {
 }
 
 func validGateB3LossTerminalPair(initiator, responder gateB3LossTerminalWitness) bool {
+	return gateB3LossTerminalRejection(initiator, responder) == ""
+}
+
+// gateB3LossTerminalRejection returns a stable, privacy-safe rejection class
+// for the required netns witness. It intentionally reports no endpoint,
+// process, path, or machine data.
+func gateB3LossTerminalRejection(initiator, responder gateB3LossTerminalWitness) string {
 	common := func(result gateB3LossTerminalWitness, role directattempt.Role) bool {
 		return result.OK && result.Role == string(role) && result.Terminal == "failed" &&
 			result.ErrorStage == gateb.StageCandidates && result.CredentialBurned && result.FinishRecorded &&
@@ -28,19 +35,31 @@ func validGateB3LossTerminalPair(initiator, responder gateB3LossTerminalWitness)
 			result.DataPacketsRead == 0 && result.DataPacketsWritten == 0 && result.CarrierDrained &&
 			result.CampaignCircuit && !result.SafetyBlocksWork
 	}
-	if !common(initiator, directattempt.RoleInitiator) || !common(responder, directattempt.RoleResponder) ||
-		responder.ErrorClass != gateb.ClassCandidateExhausted || responder.CarrierFramesRead != 7 ||
-		responder.CarrierFramesWrite != 8 {
-		return false
+	if !common(initiator, directattempt.RoleInitiator) {
+		return "initiator_common_witness"
+	}
+	if !common(responder, directattempt.RoleResponder) {
+		return "responder_common_witness"
+	}
+	if responder.ErrorClass != gateb.ClassCandidateExhausted {
+		return "responder_terminal_class"
+	}
+	if responder.CarrierFramesRead != 7 || responder.CarrierFramesWrite != 8 {
+		return "responder_frame_shape"
 	}
 	switch initiator.ErrorClass {
 	case gateb.ClassCandidateExhausted:
-		return initiator.CarrierFramesRead == 8 && initiator.CarrierFramesWrite == 7
+		if initiator.CarrierFramesRead != 8 || initiator.CarrierFramesWrite != 7 {
+			return "initiator_exhausted_frame_shape"
+		}
 	case gateb.ClassOOBStreamClosed:
-		return initiator.CarrierFramesRead == 7 && initiator.CarrierFramesWrite == 7
+		if initiator.CarrierFramesRead != 7 || initiator.CarrierFramesWrite != 7 {
+			return "initiator_eof_frame_shape"
+		}
 	default:
-		return false
+		return "initiator_terminal_class"
 	}
+	return ""
 }
 
 func TestGateB3LossTerminalContract(t *testing.T) {
