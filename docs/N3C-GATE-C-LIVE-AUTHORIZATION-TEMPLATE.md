@@ -127,6 +127,7 @@ N3b 的 [`N3-LIVE-AUTHORIZATION-TEMPLATE.md`](./N3-LIVE-AUTHORIZATION-TEMPLATE.m
 | pairing journal determinate | `<PASS_FAIL>` | `<PASS_FAIL>` |
 | ordinary/campaign circuit state | `<PRIVATE_RESULT>` | `<PRIVATE_RESULT>` |
 | no pending attempt/stage | `<PASS_FAIL>` | `<PASS_FAIL>` |
+| no conflicting `wink up`/private key/interface/route owner | `<PASS_FAIL>` | `<PASS_FAIL>` |
 | no WinkYou child/session residue | `<PASS_FAIL>` | `<PASS_FAIL>` |
 | `WinkYou-A` disabled/absent | `<PASS_FAIL>` | `<PASS_FAIL>` |
 | no unauthorized scheduled task/service | `<PASS_FAIL>` | `<PASS_FAIL>` |
@@ -143,20 +144,31 @@ N3b 的 [`N3-LIVE-AUTHORIZATION-TEMPLATE.md`](./N3-LIVE-AUTHORIZATION-TEMPLATE.m
 | 字段 | 私有填写值 |
 | --- | --- |
 | SSH literal endpoint | `<PRIVATE_LITERAL_ADDRPORT>` |
+| SSH endpoint authority instance | `<PRIVATE_REFERENCE>` |
 | pinned host-key reference | `<PRIVATE_REFERENCE>` |
 | one-entry known-hosts checksum | `<CHECKSUM>` |
 | private-key file checksum/reference | `<PRIVATE_REFERENCE>` |
 | remote OS/OpenSSH version | `<VERSION>` |
 | fixed remote command | `wink solver direct child --stdio` |
+| dedicated account login shell | `<SHELL_PATH>` |
+| forced-command absolute path | `<ABSOLUTE_PATH>` |
 | dedicated authorized_keys restriction checksum | `<CHECKSUM>` |
 | fixed child wrapper/binary checksum | `<CHECKSUM>` |
+| `sshd -T -C` effective-config proof | `<PRIVATE_REFERENCE>` |
+| client `ssh -G` golden reference | `<REVIEWED_REFERENCE>` |
 | responder staged request checksum | `<CHECKSUM>` |
 
-- [ ] endpoint 是单个 literal IP:port；0 DNS。
+- [ ] endpoint 是单个 literal IP:port；0 DNS；与已签发 `SSHEndpointAuthority` 实例精确一致。
 - [ ] host key 已通过第二条独立渠道核对；禁止 accept-new、ignore 或 bypass。
-- [ ] 只用一个明确 identity；无 password、keyboard-interactive、agent forwarding。
-- [ ] 该 identity 是 Gate C 专用 key；server entry 固定 command 并禁止 shell/forwarding/agent/
-  X11/pty，普通交互登录 key 未被复用。
+- [ ] 只用一个明确 identity；无 password、keyboard-interactive、agent forwarding；
+  `IdentityAgent=none` 生效。
+- [ ] client argv 含 `-F none`、`GlobalKnownHostsFile=none`、`-T`；`ssh -G` 输出与 reviewed
+  golden 一致。
+- [ ] 该 identity 是 Gate C 专用 key；server entry 使用 `restrict` 加固定绝对路径
+  `command=`，禁止 shell/forwarding/agent/X11/pty，普通交互登录 key 未被复用。
+- [ ] wrapper 与 parent 目录 owner/root-only、非 symlink；wrapper 清空 environment 并以
+  绝对路径 exec exact binary；`SSH_ORIGINAL_COMMAND` 被忽略或逐字验证。
+- [ ] `sshd -T -C` 证明含 `permituserenvironment no`；entry 无 `environment=` 选项。
 - [ ] 不读取 user/global ssh config；无 ProxyCommand/ProxyJump/ControlMaster/port forwarding/TTY。
 - [ ] initiator 只有一个 owned child、一个 outbound TCP connection、一次 connection attempt；
   responder 不再 spawn child，只接受一个 fixed SSH channel；无 reconnect。
@@ -197,10 +209,12 @@ kill switch（私有填写，事前实际演练一次）：
 | SSH child | `<PRIVATE_ACTION>` | process count zero | `<=2s drain` |
 | UDP/transport | `<PRIVATE_ACTION>` | socket/counter stable | `<=2s drain` |
 | WireGuard consumer | `<PRIVATE_ACTION>` | interface/peer/transport closed | `<BOUND>` |
+| interface/route rollback | `<PRIVATE_ACTION>` | interface/route/address restored | `<BOUND>` |
 | emergency containment | `<SEPARATELY_AUTHORIZED_ACTION_OR_NONE>` | `<PRIVATE_WITNESS>` | `<BOUND>` |
 
 注意：本模板不自动授权 firewall、route、service 或 scheduled-task 变更。若 emergency
-containment 需要这些动作，必须在此实例外另有明确授权与回滚步骤。
+containment 需要这些动作，必须在此实例外另有明确授权与回滚步骤。interface/route 的创建
+所需 privilege/capability、具体步骤与回滚顺序必须事前写入私有记录并演练。
 
 实时记录只收集：
 

@@ -282,7 +282,32 @@ socket、不取得 active governor、不 burn credential。规则：
 - 调用 shell、`cmd.exe`、PowerShell、`sh -c` 或拼接 operator command；
 - dial/listen/DNS/reconnect/poll/ControlMaster/ProxyCommand/ProxyJump；
 - 读取 artifact、PSK、WireGuard key 或把 stdout 当日志；
-- 暴露 raw `*os.Process`、pipe、fd 或 arbitrary `io.ReadWriter` 给 product caller。
+- 暴露 raw `*os.Process`、pipe、fd 或 arbitrary `io.ReadWriter` 给 product caller；
+- 接收裸 `netip.AddrPort`、字符串 endpoint 或 request 结构体作为发包权限。
+
+### 5.1a 密封 SSH endpoint authority 与 exclusive assembly sub-lease
+
+仅禁止 DNS/ProxyJump 不能限制 SSH/TCP 的目的地址。为了让 SSH child 服从与 UDP factory
+相同的四级 capability 递增，`sshassembly` 只接受一个不可伪造的
+`SSHEndpointAuthority`（最终名称由 C1a 实现 PR 固定）作为唯一 endpoint 来源：
+
+- **C1a/C1b ordinary build** 只能构造 literal-loopback authority；任何非回环地址在构造时
+  fail-closed。required Linux netns 证据使用 build-tagged sealed helper，仿照 Gate B2/B3 的
+  `IsolatedNATLabFactory` 模式：验证当前 network namespace 身份并把 endpoint 固定为仓库
+  TEST-NET topology 常量，不接受调用方地址；
+- **C1c exact field build** 才允许从一个私有 authorization instance 构造恰好一个非回环
+  endpoint authority；spawn 前 assembly 必须对 authority 再次核验 endpoint、地址族与端口，
+  第二 endpoint、attempt 中地址变化、raw config/argv 直达 `exec.Command` 全部 fail-closed；
+- authority 是 value-sealed capability（unexported marker method），product caller、request
+  parser 与 orchestrator 都不能自行合成；local request 的 `ssh.endpoint` 字段只被用来与
+  已签发 authority 精确比对，不再直接成为 spawn 参数。
+
+initiator 的 `SSHAssemblyCost`（1 owned child / 1 outbound TCP / 0 DNS / 0 retry / 0 queue）
+不是仅做结构体相等判断的注记，而是同一 attempt lease 上不可互换的 exclusive sub-lease：
+assembly 在 spawn 前必须 `ClaimExclusive` 一个 Gate C 专属 claim 名并 `RegisterDrain`；
+one-spawn 状态使同一 attempt 的第二次 spawn 在 `exec` 前失败。responder child 由 sshd 启动，
+必须在原子 claim pending slot 后、任何 socket/governor 消费前取得同一 machine governor
+owner；取不到 owner 时零 I/O 退出且不 re-arm slot。
 
 ### 5.2 固定 OpenSSH profile
 
@@ -295,26 +320,52 @@ GPU/lab 用户故事一致。Linux -> Linux 可以作为 CI/disposable-router �
 
 参数语义固定为：
 
+- `-F none`：按 OpenSSH 官方语义同时禁止读取 user 与 system-wide ssh config，是唯一
+  可证明的"零配置文件"方式；不得用"不传 `-F`"或只覆盖个别 keyword 代替；
 - `BatchMode=yes`、`NumberOfPasswordPrompts=0`；
 - `PasswordAuthentication=no`、`KbdInteractiveAuthentication=no`、
   `GSSAPIAuthentication=no`；
-- `PubkeyAuthentication=yes`、`IdentitiesOnly=yes`，恰好一个 private key file；
-- `StrictHostKeyChecking=yes`、`UpdateHostKeys=no`、`VerifyHostKeyDNS=no`，恰好一个
-  owner-only known-hosts file；
-- 不读取 user/global ssh config；`ControlMaster=no`、`ControlPersist=no`、
-  `ControlPath=none`；
+- `PubkeyAuthentication=yes`、`IdentitiesOnly=yes`、`IdentityAgent=none`，恰好一个
+  private key file，不咨询 agent；
+- `StrictHostKeyChecking=yes`、`UpdateHostKeys=no`、`VerifyHostKeyDNS=no`、
+  `CheckHostIP=no`，`UserKnownHostsFile` 指向恰好一个 owner-only 单条目文件，
+  `GlobalKnownHostsFile=none`；
+- `ControlMaster=no`、`ControlPersist=no`、`ControlPath=none`；
 - `ProxyCommand=none`、`ProxyJump=none`、`CanonicalizeHostname=no`；
-- `ClearAllForwardings=yes`、无 `-L/-R/-D/-W`、无 agent/X11 forwarding、无 TTY、无
-  local command、无 escape command；
-- `ConnectionAttempts=1`，connect/presence 最长 3 秒；无 application reconnect；
+- `ClearAllForwardings=yes`、`ForwardAgent=no`、`ForwardX11=no`、`Tunnel=no`、
+  `PermitLocalCommand=no`、`SessionType=exec`，无 `-L/-R/-D/-W`、`-T` 禁用 TTY、
+  `EscapeChar=none`；
+- `ConnectionAttempts=1`、`ConnectTimeout` 不超过 profile 的 3 秒子上限；无 application
+  reconnect；
 - remote command 是固定常量 `wink solver direct child --stdio`，没有 request-derived token、
-  path、environment 或追加 argv。
+  path、environment 或追加 argv；
+- child 进程以显式最小 environment 启动（`os/exec` 传入固定 env 列表，不继承 parent
+  environment 中与 SSH 行为相关的变量，特别是 `SSH_AUTH_SOCK`、`SSH_ASKPASS*`）。
 
-responder 端必须使用一把只服务本 Gate 的 SSH public key；对应 `authorized_keys` entry 使用
-server-supported 的 `restrict`/no-forwarding/no-agent/no-X11/no-pty 与固定 command 约束。固定
-command 只能 exec 已审核的 Gate C child wrapper；wrapper、binary 与 entry checksum 记入私有
-部署/授权记录，不能由 client argv 改写。普通可登录 shell 的既有 key 不满足首个现场门。
-安装或修改该 entry 属 C1c 的另行部署授权，本 docs-only PR 不执行。
+C1a 必须为每个受支持平台提交两类 golden：完整 argv golden 覆盖上述每个禁用项，以及
+`ssh -G` effective-config golden 证明这些 override 在该平台 exact OpenSSH 版本上逐项生效。
+任一 keyword 在目标平台不被支持或 `-G` 输出与期望不符，该平台 fail-closed。实现不得在
+本表之外自行挑选"语义等价"参数。
+
+responder 端必须使用一把只服务本 Gate 的 SSH public key，其执行域按以下规则闭合，而不是
+依赖 `restrict` 一个词：
+
+- OpenSSH 官方语义下 forced command 仍经用户 login shell `-c` 执行，且原始 client command
+  会暴露为 `SSH_ORIGINAL_COMMAND`；因此 `authorized_keys` entry 的 `command=` 必须是一个
+  **固定绝对路径**指向已审核的 Gate C child wrapper，不含任何相对路径或 PATH 查找；
+- wrapper 与其所在目录必须是 root/owner-only regular file，拒绝 symlink、hardlink 与
+  group/other 可写 parent；wrapper 只以绝对路径 `exec` exact reviewed binary 加固定 argv；
+- wrapper 启动时清空继承 environment 并只设置固定最小值与 umask；`SSH_ORIGINAL_COMMAND`
+  要么被忽略、要么与固定常量逐字验证，验证失败零 I/O 退出；
+- server 侧 `PermitUserEnvironment=no` 必须生效，entry 不携带 `environment=` 选项；
+- entry 使用 `restrict`（禁用 forwarding/agent/X11/pty/user-rc）加固定 `command=`；该
+  dedicated account/key 不允许普通交互 shell 用途；
+- 私有部署/授权记录必须包含：dedicated account 的 login shell、forced-command 绝对路径、
+  wrapper 与 binary checksum、`authorized_keys` entry checksum，以及一份
+  `sshd -T -C user=...,addr=...` effective-config 证明（含 `permituserenvironment no`）。
+
+普通可登录 shell 的既有 key 不满足首个现场门。安装或修改该 entry 属 C1c 的另行部署授权，
+本 docs-only PR 不执行。
 
 如果某平台 OpenSSH 不能逐项证明这些 override 生效，该平台在 C1a 中 fail-closed，不用
 第三方 SSH SDK 或放宽参数补齐。
@@ -410,9 +461,54 @@ consumer 必须：
 - session cancel/consumer crash 在 2 秒内关闭 transport、tunnel peer 与 interface ownership，
   不触发新 attempt。
 
-“3 outer datagram/方向、0 retransmission”是本 Draft 的安全提案，必须用当前 wireguard-go
-真实 packet trace 证明可实现；若实际最小 handshake+双向 echo 需要不同上限，评审必须先
-修订本 ADR，不能在实现 PR 中静默增加。
+#### 6.3a Lease-bound WireGuard gate 与冻结的 challenge 顺序
+
+"每方向最多 3 个 outer datagram"必须由一个 lease-bound gate 在 I/O 前强制执行，而不是事后
+计数。仓库现状不能直接承载本节保证：`pkg/tunnel` 的 transport bind 以
+`context.Background()` 写底层 `PacketTransport`，`TunnelBinder.Bind` 在 AddPeer 后即返回，
+`TransportLease` 也不区分 capped challenge 与 FINISH 后正常数据。C1b 实现因此必须：
+
+- 在 lease 层新增 production WireGuard gate（最终命名由实现 PR 固定），状态机至少为
+  `standby -> challenge_capped -> challenge_passed -> finish_detached -> active`。
+  `challenge_capped` 阶段第 4 个 outer write 必须在底层 I/O 前失败并关闭 transport；所有
+  write 受同一 absolute/caller context 约束，`context.Background()` 直写路径对 Gate C
+  consumer 不可达；durable FINISH 成功后才能原子解除 challenge cap，FINISH 失败则 cap
+  永不解锁；
+- 冻结 challenge 注入顺序以匹配当前 wireguard-go（`f333402bd9cb`）真实行为：initiator 在
+  启用 peer **之前**先 stage 一个 attempt/context/role-bound inner echo request，使
+  handshake response 到达后 `SendKeepalive` 发送的是 staged data 而非空 keepalive。成功
+  路径固定为 initiation → response → data(echo request) → data(echo reply)，双方各 ≤3。若
+  实现选择不预 stage，则 initiator 第 3 个额度必须显式记为 handshake 完成时的 keepalive，
+  且 echo 移入 post-FINISH 阶段——两种选择必须在实现 PR 里二选一并用 packet-type trace
+  golden 证明，不得混用；
+- cookie reply、`RekeyTimeout`(5s) handshake retransmit、或任何第 4 个 pre-FINISH outer
+  datagram 都判定本次 challenge 失败并终局，不得静默放宽或重试。
+
+#### 6.3b Post-OOB echo 的所有权与协议
+
+post-OOB echo 由 **Gate C orchestrator** 拥有；`pkg/tunnel` 只承载 WireGuard transport，
+不实现 echo 语义。冻结为：
+
+- inner request/response 是固定格式 datagram，绑定 attempt/context digest、role 与
+  exact src/dst virtual identity；有界 timeout；重复/重放/错角色拒绝；
+- 不复用默认 `pkg/client` ping responder（端口 33434 daemon），也不新建任何未计费的
+  长驻 listener；echo listener 与 session 同生命周期，Ctrl-C 即回收；
+- echo 计数单列进 witness，不混入 establishment 或 challenge ceiling。
+
+#### 6.3c Interface/route 生命周期
+
+- C1b 只允许 memory-TUN 与 required netns 中由 harness 创建的 TUN；不触碰宿主 OS
+  interface、address 或 route；
+- C1c exact field build 才取得 sealed OS TUN/Wintun capability 与 exact interface/route
+  authority；interface 名称、virtual address 与 route 只来自本地 trusted config，request、
+  artifact 与 peer 都不可覆盖；
+- preflight 发现已有 `wink up`、相同 WireGuard private key、目标 interface 或冲突 route
+  owner 时，在任何 SSH/UDP I/O 前拒绝并稳定返回 `gate_c_request_invalid`；
+- 私有授权模板必须记录所需 privilege/capability、interface/route 创建与回滚步骤，teardown
+  证明 interface/route/address 零 residue。
+
+"3 outer datagram/方向、0 retransmission"是本 Draft 的安全提案；上述顺序若与实现期真实
+packet trace 不符，评审必须先修订本 ADR，不能在实现 PR 中静默增加。
 
 ## 7. 网络能力与资源边界
 
@@ -507,16 +603,28 @@ artifact/fingerprint、public address、candidate port 或 WireGuard key。
 - architecture mutation 必须抓住：arbitrary executable/shell、password、host-key bypass、
   SSH config/ProxyCommand、第二 child/connection、raw stream、PSK 进入 adapter、remote target
   address、第二 address、unplanned port、raw factory、stdio/runtime import、无 lease Promote、
-  handoff 后旧句柄复用、WireGuard challenge 超包与 retry/fallback。
+  handoff 后旧句柄复用、WireGuard challenge 超包与 retry/fallback；
+- 另须抓住本修订新增的能力面：ordinary build 构造非回环 `SSHEndpointAuthority`、裸
+  endpoint/字符串绕过 authority 直达 `exec.Command`、同一 attempt 的第二次 assembly spawn
+  （exclusive claim 复用）、缺失 `-F none`/`IdentityAgent=none` 的 argv、pre-FINISH 第 4 个
+  outer datagram 到达底层 I/O、绕过 gate 的 `context.Background()` 直写、post-OOB echo 复用
+  ping daemon 或新建长驻 listener，以及 C1b build 触碰宿主 interface/route。
 
 ## 10. 必过证据
 
 ### 10.1 Gate C1a
 
-- OpenSSH argv golden 覆盖 Windows/Linux exact path、每个禁用项与固定 remote command；
+- OpenSSH argv golden 覆盖 Windows/Linux exact path、每个禁用项（含 `-F none`、
+  `IdentityAgent=none`、`GlobalKnownHostsFile=none`、`-T`）与固定 remote command；每平台
+  另附 `ssh -G` effective-config golden；
+- `SSHEndpointAuthority`：ordinary build 非回环构造 fail-closed、netns sealed helper 固定
+  TEST-NET、裸 endpoint 绕过 authority 在 `exec` 前拒绝、exclusive claim 使同一 attempt
+  第二次 spawn 失败；
 - fake child 覆盖半帧/粘帧/banner、stdout/stderr backpressure、4 KiB stderr、EOF、deadline、
   caller cancel、parent death、child nonzero、graceful exit 与 forced kill；
 - password/command/environment/ProxyJump/ControlMaster/host-key bypass 全部在 spawn 前拒绝；
+- wrapper 执行域：绝对路径 exec、environment 清空、`SSH_ORIGINAL_COMMAND` 忽略或逐字验证、
+  symlink/可写 parent 拒绝，均有正反测试；
 - pairing secret、artifact、path/user/address 不出现在 argv、stderr mapping、witness 或 test log；
 - responder pending slot 的 O_EXCL、0/2 slot、expiry、claim crash、symlink/reparse/ACL 与无自动
   re-arm；
@@ -531,8 +639,12 @@ artifact/fingerprint、public address、candidate port 或 WireGuard key。
   raw factory 全部零 UDP；
 - production TransportLease 在 Promote 前签发，binding mismatch/attach timeout/consumer crash
   零 handoff；旧 ProbeSocket/Controller/attempt 句柄不可用；
-- userspace WireGuard memory-TUN 使用 lease transport 完成 max 3/3 pre-FINISH challenge；
-  FINISH journal 顺序可见；OOB child 归零后 post-OOB echo 成功；
+- userspace WireGuard memory-TUN 使用 lease transport 完成 max 3/3 pre-FINISH challenge，
+  packet-type trace golden 证明冻结顺序（含 staged-echo 或显式 keepalive 二选一）；
+  第 4 个 pre-FINISH outer datagram 在底层 I/O 前失败；FINISH journal 顺序可见，FINISH
+  失败时 cap 不解锁；OOB child 归零后由 orchestrator 完成 post-OOB echo，重放/错角色拒绝；
+- interface 冲突 preflight：已有 `wink up`、相同 private key、interface/route owner 时在
+  SSH/UDP 前拒绝；
 - cancel、SSH EOF、evidence drift、exhaustion、writer error、WireGuard failure、parent/child kill
   全部有界，100 fresh runs 与 `-race -count=20` 无 goroutine/fd/process/socket/lock residue；
 - v1/v2、N3b/Gate A/B golden 和默认 `wink up` 行为逐字节不变。
@@ -601,3 +713,29 @@ artifact/fingerprint、public address、candidate port 或 WireGuard key。
 
 任何一项要求改变 artifact trust、target authority、SSH child 数、WireGuard challenge、profile
 cost、live capability 或实现拆分时，先修订并接受本文；不得在实现 PR 中自行选择更宽方案。
+
+## 14. 独立评审修订记录（2026-08-31）
+
+首轮独立复审（PR #99 评论）裁决：foreground 入口、artifact 隔离、local-only 单地址
+threat model、pending slot 与 C1a/C1b/C1c/C2 分级方向接受；PR #96 状态回写准确；同时提出
+三项设计级阻断。本修订按评审要求闭合：
+
+1. **SSH/TCP field-unicast authority**（§5.1/§5.1a）：新增 value-sealed
+   `SSHEndpointAuthority` 与 exclusive assembly sub-lease；C1a/C1b ordinary build 仅
+   loopback，netns 用 build-tagged sealed helper，C1c 才可从私有授权实例构造恰好一个
+   非回环 endpoint；§9/§10.1 增加对应 mutation 与证据门。
+2. **responder forced command 执行域**（§5.2）：client 侧冻结 `-F none`、
+   `IdentityAgent=none`、`GlobalKnownHostsFile=none`、`-T`、显式最小 environment，并要求
+   per-platform `ssh -G` golden；server 侧冻结绝对路径 wrapper、environment 清空、
+   `SSH_ORIGINAL_COMMAND` 处理、`PermitUserEnvironment=no` 与 `sshd -T -C` 证明。
+3. **WireGuard cap/顺序/所有权**（§6.3a–§6.3c）：新增 lease-bound gate 状态机（第 4 包
+   I/O 前失败、FINISH 前 cap 不解锁、消除 `context.Background()` 直写）；按当前
+   wireguard-go `f333402bd9cb` 冻结 staged-echo 或显式 keepalive 二选一的注入顺序；
+   post-OOB echo 归 orchestrator 拥有并冻结协议；C1b/C1c interface/route 生命周期与
+   冲突 preflight 显式化。
+
+评审问题 4 与 6 由上述修订回答；其余问题维持原文供复审确认。评审同时指出的 Gate B3
+`fifty_percent_candidate_loss` 双端 terminal 分类竞态属非阻断遗留，独立记录于
+[Issue #100](https://github.com/houyuwushang/winkyou/issues/100)，须在 C1b 组合 Gate B3
+前关闭或以新裁决明确允许的双端 terminal 集合。本节不改变授权边界：本 ADR 仍为
+docs-only Draft，实现与现场 I/O 须另行授权。
