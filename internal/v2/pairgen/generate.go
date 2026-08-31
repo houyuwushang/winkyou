@@ -1,4 +1,4 @@
-// Package pairgen creates one offline pair of burn-on-use N2 artifacts. It
+// Package pairgen creates offline pairs of burn-on-use direct artifacts. It
 // owns no network capability and never returns secret material to callers.
 package pairgen
 
@@ -60,10 +60,11 @@ type manifest struct {
 }
 
 type dependencies struct {
-	random    io.Reader
-	now       func() time.Time
-	clipboard func(context.Context, []byte) error
-	hook      func(string) error
+	random               io.Reader
+	now                  func() time.Time
+	clipboard            func(context.Context, []byte) error
+	hook                 func(string) error
+	afterOOBManifestLink func() error
 }
 
 func Generate(ctx context.Context, options Options) (Result, error) {

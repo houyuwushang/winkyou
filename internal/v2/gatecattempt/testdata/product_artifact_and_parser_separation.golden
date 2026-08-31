@@ -1,0 +1,19 @@
+initiator_sha256=76b0bab9bd46d9199119ab4078c46f5985bc36bfaa2d746623f002272dac8ec7
+responder_sha256=372c2dfdb492e397bea410257d9b52672168540bbef09962d85fbbce8b6a2493
+manifest_sha256=979c633002812e107e9fdde35351fbedecae36b4e6b561e0e41d4bb7facafec6
+parser=gate-a payload=gate-a accepted=true
+parser=gate-a payload=gate-b accepted=false
+parser=gate-a payload=gate-c accepted=false
+parser=gate-a payload=n3b accepted=false
+parser=gate-b payload=gate-a accepted=false
+parser=gate-b payload=gate-b accepted=true
+parser=gate-b payload=gate-c accepted=false
+parser=gate-b payload=n3b accepted=false
+parser=gate-c payload=gate-a accepted=false
+parser=gate-c payload=gate-b accepted=false
+parser=gate-c payload=gate-c accepted=true
+parser=gate-c payload=n3b accepted=false
+parser=n3b payload=gate-a accepted=false
+parser=n3b payload=gate-b accepted=false
+parser=n3b payload=gate-c accepted=false
+parser=n3b payload=n3b accepted=true

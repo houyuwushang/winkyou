@@ -1,7 +1,8 @@
 # ADR：N3c Gate C1 SSH/OOB assembly 与产品入口设计冻结
 
-- 状态：**Draft（2026-08-31）：仅供独立评审；本 PR 为 docs-only，不授权实现、构建现场
-  binary、SSH 连接、非回环 UDP、WireGuard 接线、disposable router 或任何现场 I/O**
+- 状态：**Accepted（2026-08-31）：独立评审已接受设计冻结；仅授权 Gate C1a 的纯内存、
+  fake child 与 literal-loopback SSH assembly 实现。仍不授权 C1b、构建现场 binary、非回环
+  SSH/UDP、WireGuard 接线、disposable router 或任何现场 I/O**
 - 日期：2026-08-31
 - 基线：`main` = `39ff9780ec295ca8af7339bca8f5e023adf17931`
 - 跟踪议题：[#98](https://github.com/houyuwushang/winkyou/issues/98)
@@ -333,7 +334,7 @@ GPU/lab 用户故事一致。Linux -> Linux 可以作为 CI/disposable-router �
 - `ControlMaster=no`、`ControlPersist=no`、`ControlPath=none`；
 - `ProxyCommand=none`、`ProxyJump=none`、`CanonicalizeHostname=no`；
 - `ClearAllForwardings=yes`、`ForwardAgent=no`、`ForwardX11=no`、`Tunnel=no`、
-  `PermitLocalCommand=no`、`SessionType=exec`，无 `-L/-R/-D/-W`、`-T` 禁用 TTY、
+  `PermitLocalCommand=no`、`SessionType=default`，无 `-L/-R/-D/-W`、`-N/-s`，`-T` 禁用 TTY、
   `EscapeChar=none`；
 - `ConnectionAttempts=1`、`ConnectTimeout` 不超过 profile 的 3 秒子上限；无 application
   reconnect；
@@ -739,3 +740,22 @@ threat model、pending slot 与 C1a/C1b/C1c/C2 分级方向接受；PR #96 状�
 [Issue #100](https://github.com/houyuwushang/winkyou/issues/100)，须在 C1b 组合 Gate B3
 前关闭或以新裁决明确允许的双端 terminal 集合。本节不改变授权边界：本 ADR 仍为
 docs-only Draft，实现与现场 I/O 须另行授权。
+
+## 15. 接受与 C1a 开工裁决（2026-08-31）
+
+独立复审在 PR #99 head `a22c52ffa55fa9dec5cc6fb0d614082c2753da05` 确认 §14 的三项
+设计级阻断全部闭合，并接受 Gate C1 设计冻结；该文档随后以 merge commit
+`ccacc96733323e24bac2716f3480f110fc1cf22a` 合入 `main`。维护者随后单独授权 Gate C1a
+实现。本接受只覆盖 §3 第 1 步与 §10.1，不继承 C1b/C1c/C2 或任何现场网络权限。
+
+C1a 开工前的本机零网络 `ssh -G` 验证发现：OpenSSH 的 `SessionType` 配置值只允许
+`none`、`subsystem` 或 `default`；原草案的 `SessionType=exec` 会被 Windows OpenSSH 9.5p2
+以 unsupported option 拒绝。维护者裁决采用 `SessionType=default`，并继续强制固定 remote
+command、`-T`、无 `-N/-s`。这只是把“执行固定 command session”的要求改为 OpenSSH 支持的
+配置表达，不放宽 shell、subsystem、forwarding、TTY、fallback 或任意命令边界。
+
+C1a 的 Windows 零连接 `ssh -G` 实现验证进一步发现：即使使用 `-F none`，系统 OpenSSH 仍需
+固定 `PROGRAMDATA=C:\ProgramData` 才能展开 effective config；仅提供 `SYSTEMROOT/WINDIR` 会在
+启动前失败。因此最小 child environment 固定为这三个系统值，不继承 `PATH`、`HOME`、
+`USERPROFILE`、`SSH_AUTH_SOCK` 或 `SSH_ASKPASS*`。该兼容性修正不引入 request-derived env，
+不读取 ssh config，也不增加连接或网络权限。

@@ -6,10 +6,13 @@ import (
 	"io"
 	"os"
 	"os/signal"
+	"time"
 
 	"github.com/spf13/cobra"
 
 	"winkyou/internal/solverstdio"
+	"winkyou/internal/v2/gatecattempt"
+	"winkyou/internal/v2/gatecstage"
 	"winkyou/internal/v2/pairgen"
 )
 
@@ -33,6 +36,40 @@ func (systemDirectPairGenerator) Generate(ctx context.Context, options pairgen.O
 	return pairgen.Generate(ctx, options)
 }
 
+type oobPairGenerator interface {
+	GenerateOOB(context.Context, pairgen.OOBOptions) (pairgen.OOBResult, error)
+}
+
+type systemOOBPairGenerator struct{}
+
+func (systemOOBPairGenerator) GenerateOOB(ctx context.Context, options pairgen.OOBOptions) (pairgen.OOBResult, error) {
+	return pairgen.GenerateOOB(ctx, options)
+}
+
+type responderStager interface {
+	Stage(string) error
+	Cleanup(string) error
+}
+
+type systemResponderStager struct{}
+
+func (systemResponderStager) Stage(requestFile string) error {
+	return gatecstage.Stage(requestFile, time.Now())
+}
+
+func (systemResponderStager) Cleanup(manifestFile string) error {
+	payload, err := pairgen.ReadPrivateFile(manifestFile, gatecattempt.MaxManifestBytes)
+	if err != nil {
+		return gatecstage.ErrStageInvalid
+	}
+	defer clear(payload)
+	manifest, err := gatecattempt.ParseManifest(payload)
+	if err != nil {
+		return gatecstage.ErrStageInvalid
+	}
+	return gatecstage.Cleanup(manifest.ArtifactFingerprint)
+}
+
 func newSolverCmd(opts *Options) *cobra.Command {
 	command := &cobra.Command{
 		Use:   "solver",
@@ -41,18 +78,98 @@ func newSolverCmd(opts *Options) *cobra.Command {
 	}
 	command.AddCommand(
 		newSolverServeCmd(opts, systemSolverStdioRunner{}),
-		newSolverPairCmd(systemDirectPairGenerator{}),
+		newSolverPairCmd(systemDirectPairGenerator{}, systemOOBPairGenerator{}),
+		newSolverDirectCmd(systemResponderStager{}),
 	)
 	return command
 }
 
-func newSolverPairCmd(generator directPairGenerator) *cobra.Command {
+func newSolverDirectCmd(stager responderStager) *cobra.Command {
+	command := &cobra.Command{
+		Use:   "direct",
+		Short: "Manage the local one-shot Gate C responder slot",
+		Args:  cobra.NoArgs,
+	}
+	command.AddCommand(newSolverDirectStageCmd(stager), newSolverDirectCleanupCmd(stager))
+	return command
+}
+
+func newSolverDirectStageCmd(stager responderStager) *cobra.Command {
+	var requestFile string
+	command := &cobra.Command{
+		Use:   "stage",
+		Short: "Stage one private responder request without active I/O",
+		Args:  cobra.NoArgs,
+		RunE: func(command *cobra.Command, _ []string) error {
+			if stager == nil || requestFile == "" {
+				return gatecstage.ErrStageInvalid
+			}
+			if err := stager.Stage(requestFile); err != nil {
+				return err
+			}
+			_, _ = io.WriteString(command.ErrOrStderr(), "oob_stage_created\n")
+			return nil
+		},
+	}
+	command.Flags().StringVar(&requestFile, "request-file", "", "private responder request file (required)")
+	return command
+}
+
+func newSolverDirectCleanupCmd(stager responderStager) *cobra.Command {
+	var manifestFile string
+	command := &cobra.Command{
+		Use:   "cleanup",
+		Short: "Explicitly clear a fingerprint-matched responder slot",
+		Args:  cobra.NoArgs,
+		RunE: func(command *cobra.Command, _ []string) error {
+			if stager == nil || manifestFile == "" {
+				return gatecstage.ErrStageInvalid
+			}
+			if err := stager.Cleanup(manifestFile); err != nil {
+				return err
+			}
+			_, _ = io.WriteString(command.ErrOrStderr(), "oob_stage_cleared\n")
+			return nil
+		},
+	}
+	command.Flags().StringVar(&manifestFile, "manifest-file", "", "private Gate C manifest file (required)")
+	return command
+}
+
+func newSolverPairCmd(generator directPairGenerator, oobGenerator oobPairGenerator) *cobra.Command {
 	command := &cobra.Command{
 		Use:   "pair",
 		Short: "Create offline, burn-on-use solver pairing material",
 		Args:  cobra.NoArgs,
 	}
-	command.AddCommand(newSolverPairDirectCmd(generator))
+	command.AddCommand(newSolverPairDirectCmd(generator), newSolverPairOOBCmd(oobGenerator))
+	return command
+}
+
+func newSolverPairOOBCmd(generator oobPairGenerator) *cobra.Command {
+	var outDir, profile, mappingSetRole string
+	command := &cobra.Command{
+		Use:   "oob",
+		Short: "Create one Gate C OOB credential pair",
+		Long: "Create exactly one initiator artifact, one responder artifact, and one secret-free manifest " +
+			"in a new private directory. This offline command has no clipboard or network path.",
+		Args: cobra.NoArgs,
+		RunE: func(command *cobra.Command, _ []string) error {
+			if generator == nil || outDir == "" || profile == "" {
+				return pairgen.ErrInvalidOptions
+			}
+			if _, err := generator.GenerateOOB(command.Context(), pairgen.OOBOptions{
+				OutDir: outDir, Profile: profile, MappingSetRole: mappingSetRole,
+			}); err != nil {
+				return err
+			}
+			_, _ = io.WriteString(command.ErrOrStderr(), "oob_pair_created\n")
+			return nil
+		},
+	}
+	command.Flags().StringVar(&profile, "profile", "", "fixed profile: predictive, asymmetric, or hard-16k (required)")
+	command.Flags().StringVar(&mappingSetRole, "mapping-set-role", "", "asymmetric mapping-set side: initiator or responder")
+	command.Flags().StringVar(&outDir, "out-dir", "", "new private output directory (required; must not exist)")
 	return command
 }
 

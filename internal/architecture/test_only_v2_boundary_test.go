@@ -560,6 +560,7 @@ func TestLoopbackCarrierApprovalIsExactAndBidirectional(t *testing.T) {
 	oobAttempt := modulePath + "/internal/v2/oobattempt"
 	oobCarrier := modulePath + "/internal/v2/oobcarrier"
 	pairgen := modulePath + "/internal/v2/pairgen"
+	gateCAttempt := modulePath + "/internal/v2/gatecattempt"
 
 	checks := []struct {
 		importer string
@@ -583,6 +584,7 @@ func TestLoopbackCarrierApprovalIsExactAndBidirectional(t *testing.T) {
 		{gateA, noiseCore, true},
 		{oobAttempt, pairingContext, true},
 		{pairgen, pairingContext, true},
+		{gateCAttempt, pairingContext, true},
 		{carrier + "/child", punchProto, false},
 		{carrier + "/child", pairingContext, false},
 		{modulePath + "/cmd/wink", punchProto, false},
@@ -597,7 +599,7 @@ func TestLoopbackCarrierApprovalIsExactAndBidirectional(t *testing.T) {
 	if !approvedDirectAttemptImporter(directSim, directAttempt) || !approvedDirectAttemptImporter(rendezvousCarrier, directAttempt) ||
 		!approvedDirectAttemptImporter(directConnect, directAttempt) || !approvedDirectAttemptImporter(gateA, directAttempt) ||
 		!approvedDirectAttemptImporter(oobAttempt, directAttempt) || !approvedDirectAttemptImporter(oobCarrier, directAttempt) ||
-		!approvedDirectAttemptImporter(pairgen, directAttempt) ||
+		!approvedDirectAttemptImporter(pairgen, directAttempt) || !approvedDirectAttemptImporter(gateCAttempt, directAttempt) ||
 		approvedDirectAttemptImporter(modulePath+"/cmd/wink", directAttempt) || approvedDirectAttemptImporter(directSim+"/child", directAttempt) {
 		t.Fatal("direct-attempt approval is not exact and bidirectional")
 	}
@@ -670,6 +672,7 @@ func v2RestrictedDependencyViolations(result scanResult) []string {
 	rendezvousCarrier := modulePath + "/internal/v2/rendezvouscarrier"
 	directConnect := modulePath + "/internal/v2/directconnect"
 	pairgen := modulePath + "/internal/v2/pairgen"
+	gateCAttempt := modulePath + "/internal/v2/gatecattempt"
 	rendezvousWire := modulePath + "/internal/v2/rendezvouswire"
 	rendezvousAdmission := modulePath + "/internal/v2/rendezvousadmission"
 	rendezvousServer := modulePath + "/internal/v2/rendezvousserver"
@@ -782,7 +785,9 @@ func v2RestrictedDependencyViolations(result scanResult) []string {
 		modulePath + "/internal/v2/rendezvouscarrier": {},
 	}
 	allowedPairgenImports := map[string]struct{}{
-		modulePath + "/internal/v2/directattempt":       {},
+		modulePath + "/internal/v2/directattempt": {},
+		gateCAttempt:                                    {},
+		modulePath + "/internal/v2/hardnatplan":         {},
 		modulePath + "/internal/v2/pairingcontext":      {},
 		modulePath + "/internal/v2/rendezvousadmission": {},
 	}
@@ -1155,6 +1160,7 @@ func approvedLoopbackPrimitiveImporter(importer, imported string) bool {
 	oobAttempt := modulePath + "/internal/v2/oobattempt"
 	oobCarrier := modulePath + "/internal/v2/oobcarrier"
 	pairgen := modulePath + "/internal/v2/pairgen"
+	gateCAttempt := modulePath + "/internal/v2/gatecattempt"
 	hardNATAttempt := modulePath + "/internal/v2/hardnatattempt"
 	hardNATControl := modulePath + "/internal/v2/hardnatcontrol"
 	gateB := modulePath + "/internal/v2/directconnect/gateb"
@@ -1165,7 +1171,7 @@ func approvedLoopbackPrimitiveImporter(importer, imported string) bool {
 	case punchProto:
 		return importer == punchSim || importer == carrier
 	case pairingContext:
-		return importer == testPairing || importer == carrier || importer == directAttempt || importer == directSim || importer == pairgen || importer == oobAttempt || importer == hardNATAttempt || importer == gateB
+		return importer == testPairing || importer == carrier || importer == directAttempt || importer == directSim || importer == pairgen || importer == gateCAttempt || importer == oobAttempt || importer == hardNATAttempt || importer == gateB
 	default:
 		return false
 	}
@@ -1180,6 +1186,9 @@ func approvedHardNATPlannerImporter(importer string) bool {
 		modulePath + "/internal/v2/hardnatobserve":      {},
 		modulePath + "/internal/v2/oobcarrier":          {},
 		modulePath + "/internal/v2/directconnect/gateb": {},
+		modulePath + "/internal/v2/gatecattempt":        {},
+		modulePath + "/internal/v2/pairgen":             {},
+		modulePath + "/internal/v2/sshassembly":         {},
 	}
 	_, ok := approved[importer]
 	return ok
@@ -1190,7 +1199,8 @@ func approvedHardNATB2Importer(importer, imported string) bool {
 	switch imported {
 	case modulePath + "/internal/v2/hardnatbudget":
 		return importer == gateB || importer == modulePath+"/internal/v2/hardnatattempt" ||
-			importer == modulePath+"/internal/v2/hardnatobserve" || importer == modulePath+"/internal/v2/oobcarrier"
+			importer == modulePath+"/internal/v2/hardnatobserve" || importer == modulePath+"/internal/v2/oobcarrier" ||
+			importer == modulePath+"/internal/v2/gatecattempt" || importer == modulePath+"/internal/v2/sshassembly"
 	case modulePath + "/internal/v2/hardnatattempt":
 		return importer == gateB || importer == modulePath+"/internal/v2/hardnatcontrol"
 	case modulePath + "/internal/v2/hardnatcontrol":
@@ -1212,6 +1222,7 @@ func approvedDirectAttemptImporter(importer, imported string) bool {
 		importer == modulePath+"/internal/v2/oobattempt" ||
 		importer == modulePath+"/internal/v2/oobcarrier" ||
 		importer == modulePath+"/internal/v2/pairgen" ||
+		importer == modulePath+"/internal/v2/gatecattempt" ||
 		importer == modulePath+"/internal/v2/hardnatattempt" ||
 		importer == modulePath+"/internal/v2/hardnatcontrol" ||
 		importer == modulePath+"/internal/v2/directconnect/gateb") &&
