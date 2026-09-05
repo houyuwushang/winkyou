@@ -183,10 +183,10 @@ func newSolverDirectChildCmd(options *Options, runner gateCProductRunner) *cobra
 			}
 			// FINISH detached the OOB child pipes. A closed diagnostic pipe is
 			// expected while the foreground responder owns the data plane.
-			if err := writeGateCResult(command.ErrOrStderr(), result); err != nil && !result.FinishRecorded {
-				return err
+			if result.FinishRecorded {
+				return nil
 			}
-			return nil
+			return writeGateCResult(command.ErrOrStderr(), result)
 		},
 	}
 	command.Flags().BoolVar(&stdio, "stdio", false, "use the dedicated bounded SSH child byte stream (required)")
@@ -210,14 +210,16 @@ func (writer *gateCProgressWriter) Report(progress gatecorchestrator.Progress) e
 	if writer.responder && progress.Stage == gatecorchestrator.StageFinishRecorded {
 		writer.detached = true
 	}
+	// Do not even attempt a write to the detached SSH stderr. A real Unix
+	// fd 2 pipe may deliver SIGPIPE before an io.Writer error can be ignored.
+	if writer.detached {
+		return nil
+	}
 	err := writer.encoder.Encode(struct {
 		Stage             string `json:"stage"`
 		RemainingBudgetMS int64  `json:"remaining_budget_ms"`
 		Cancellable       bool   `json:"cancellable"`
 	}{Stage: progress.Stage, RemainingBudgetMS: progress.RemainingBudget.Milliseconds(), Cancellable: progress.Cancellable})
-	if writer.detached {
-		return nil
-	}
 	return err
 }
 

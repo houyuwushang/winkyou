@@ -344,7 +344,8 @@ func TestGateCForegroundCommandsKeepSecretsOffOutput(t *testing.T) {
 		t.Fatal(err)
 	}
 	if runner.childCalls != 1 || runner.childInput != secretMarker || childOut.Len() != 0 ||
-		strings.Contains(childErr.String(), secretMarker) || !strings.Contains(childErr.String(), `"session_end":"authenticated_close"`) {
+		strings.Contains(childErr.String(), secretMarker) || strings.Contains(childErr.String(), `"session_end"`) ||
+		!strings.Contains(childErr.String(), `"stage":"preflight"`) {
 		t.Fatalf("child invocation/output mismatch stdout=%q stderr=%q", childOut.String(), childErr.String())
 	}
 }
