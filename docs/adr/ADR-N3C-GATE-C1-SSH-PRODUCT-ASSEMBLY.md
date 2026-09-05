@@ -948,3 +948,29 @@ handshake。此前 race 重复中出现了 initiation 已发出、对端无 resp
 - 必过：延迟 responder AddPeer 时零 WireGuard 发射，随后单次正常握手；超时/取消/错 ACK/
   重放/跨域负向；40-byte frame 与 AD golden；共享第 4 包门禁；三 profile race×20 和 100 fresh
   runs。此裁决仍仅授权 C1b memory/loopback/required netns，不授权现场 I/O。
+
+## 18. C1b Linux 执行身份裁决（2026-09-05）
+
+维护者选择方案 B：Linux Gate C 节点执行域采用 UID 0，而不是把现有 owner-only 安装放宽为
+group-readable/executable 后交给非 root SSH account。此处的 A/B 是**执行身份**选择，与 §17
+已接受的 consumer readiness 方案 A、§16.6 的 challenge 方案 B 分别独立。
+
+- **选择：** wrapper 与 fixed binary 继续 root-owned、owner-only executable（测试安装为
+  `0700`），私有 request/artifact/config/key 为 `0600`；保留既有 symlink/hardlink、parent
+  ownership 与可写权限检查。responder 的 fixed stage/claim 与 machine owner 在同一 UID 0
+  执行域完成，不修改 canonical governor directory 的权限，不增加 per-user authority。
+- **SSH 边界：** 使用只承担 Gate C forced command 的专用公钥；隔离 sshd 的 root 登录策略为
+  `PermitRootLogin forced-commands-only`，并禁止 password、keyboard-interactive、user environment
+  与 forwarding。`restrict,command=`、固定 command/argv/environment、host-key pinning、一个
+  SSH child/connection 的约束不变。root 执行不等于开放通用 root shell，也不增加 sudo password
+  或远端任意命令入口。
+- **理由：** 当前 0.x 至 1.0 只服务同一用户自有设备的虚拟网络与穿透。节点所需的系统级网络
+  管理可以采用管理员身份；非 root 权限拆分不是 C1b 的前置功能。此裁决不引入存储、计算或
+  多用户调度，也不把本机权限当作上游 NAT 或公网 target authority。
+- **证明：** 真实 OpenSSH child 取证必须检查 effective sshd 配置、fixed installation、执行 UID
+  与私有文件权限；错误身份、非精确 command、密码/交互认证或可写安装均在产品 I/O 前拒绝。
+  临时 key、sshd、stage 与安装只属于隔离测试环境；退出后核对 child/socket/lock 与测试资源
+  残留。不得修改或复用操作者的 SSH 配置、密钥、服务或既有管理信道。
+- **授权范围不变：** 仅完成 C1b memory、literal-loopback、required Linux netns 的实现与取证；
+  不授权 C1c/C2、宿主虚拟网卡/路由部署、普通构建非回环能力、长期 daemon 或任何现场 I/O。
+  Windows 不因此获得新的远端 child 或非回环权限；所有已冻结预算、golden 与单次终局规则不变。
