@@ -47,46 +47,47 @@ type staticPSK [noisecore.PSKSize]byte
 func (source staticPSK) LoadPSK() ([noisecore.PSKSize]byte, error) { return source, nil }
 
 type runtime struct {
-	config            Config
-	envelopeContext   context.Context
-	activeContext     context.Context
-	activeCancel      context.CancelCauseFunc
-	deadlineCancel    context.CancelFunc
-	carrierWatchDone  chan struct{}
-	artifact          AttemptArtifact
-	request           governor.PairingAdmissionRequest
-	peer              *governor.PeerLease
-	attempt           *governor.AttemptLease
-	carrier           *oobcarrier.Carrier
-	authorization     *governor.CommittedCarrierAuthorization
-	protocol          *hardnatcontrol.Protocol
-	plannerSource     *noisecore.PlannerKeySource
-	controller        *probeio.Controller
-	sockets           []*probeio.ProbeSocket
-	transportLease    *probeio.TransportLease
-	transport         transport.PacketTransport
-	wireGuardGate     *probeio.WireGuardSessionGate
-	binding           hardnatcontrol.Binding
-	observation       hardnatobserve.Result
-	localCommitment   hardnatplan.LocalSourceCommitment
-	peerCommitment    hardnatplan.LocalSourceCommitment
-	localPlan         hardnatplan.Plan
-	peerPlan          hardnatplan.Plan
-	joint             hardnatplan.JointPlanCommitment
-	executionDigest   [32]byte
-	localPublic       hardnatplan.Address
-	peerPublic        hardnatplan.Address
-	stage             string
-	burned            bool
-	finishRecorded    bool
-	success           bool
-	challengeComplete atomic.Bool
-	emissionsMu       sync.Mutex
-	emissions         Emissions
-	candidateStart    time.Time
-	candidateLast     time.Time
-	product           bool
-	activeDeadline    time.Time
+	config                Config
+	envelopeContext       context.Context
+	activeContext         context.Context
+	activeCancel          context.CancelCauseFunc
+	deadlineCancel        context.CancelFunc
+	carrierWatchDone      chan struct{}
+	artifact              AttemptArtifact
+	request               governor.PairingAdmissionRequest
+	peer                  *governor.PeerLease
+	attempt               *governor.AttemptLease
+	carrier               *oobcarrier.Carrier
+	authorization         *governor.CommittedCarrierAuthorization
+	protocol              *hardnatcontrol.Protocol
+	plannerSource         *noisecore.PlannerKeySource
+	controller            *probeio.Controller
+	sockets               []*probeio.ProbeSocket
+	transportLease        *probeio.TransportLease
+	transport             transport.PacketTransport
+	wireGuardGate         *probeio.WireGuardSessionGate
+	binding               hardnatcontrol.Binding
+	observation           hardnatobserve.Result
+	localCommitment       hardnatplan.LocalSourceCommitment
+	peerCommitment        hardnatplan.LocalSourceCommitment
+	localPlan             hardnatplan.Plan
+	peerPlan              hardnatplan.Plan
+	joint                 hardnatplan.JointPlanCommitment
+	executionDigest       [32]byte
+	localPublic           hardnatplan.Address
+	peerPublic            hardnatplan.Address
+	stage                 string
+	burned                bool
+	finishRecorded        bool
+	success               bool
+	challengeComplete     atomic.Bool
+	productFinishRecorded atomic.Bool
+	emissionsMu           sync.Mutex
+	emissions             Emissions
+	candidateStart        time.Time
+	candidateLast         time.Time
+	product               bool
+	activeDeadline        time.Time
 }
 
 func run(ctx context.Context, config Config) (Result, error) {
@@ -316,6 +317,18 @@ func (runtime *runtime) execute(ctx context.Context, product bool) error {
 		defer close(runtime.carrierWatchDone)
 		select {
 		case <-runtime.carrier.Done():
+			if runtime.product {
+				// R1 makes the successful durable journal boundary observable to
+				// the peer before it closes OOB. Local trace completion is not it.
+				cause := runtime.carrier.TerminalCause()
+				witness := runtime.carrier.Witness()
+				expectedClose := errors.Is(cause, oobcarrier.ErrCarrierTerminal) ||
+					(errors.Is(cause, oobcarrier.ErrCarrierTransport) && witness.EOF)
+				if !runtime.productFinishRecorded.Load() || !expectedClose {
+					runtime.activeCancel(cause)
+				}
+				return
+			}
 			// Once the data-plane challenge has completed there are no further
 			// UDP emissions to cancel. Before that point every carrier terminal
 			// event cancels the one absolute active-attempt context immediately.

@@ -55,7 +55,6 @@ func (handoff *ProductHandoff) ConsumerReady(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	defer codec.Close()
 	return handoff.gate.ConsumerReady(ctx, codec)
 }
 
@@ -79,6 +78,7 @@ func (handoff *ProductHandoff) FinishAndDetach(sessionCtx context.Context) (Prod
 		runtime.authorization = nil
 		if finishErr == nil {
 			runtime.finishRecorded = true
+			runtime.productFinishRecorded.Store(true)
 		}
 		return finishErr
 	})

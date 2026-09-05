@@ -9,6 +9,8 @@ const consumerReadinessFrameBytes = 40
 type ConsumerReadinessCodec interface {
 	Seal() ([]byte, error)
 	Open([]byte) error
+	SealFinish() ([]byte, error)
+	OpenFinish([]byte) error
 	Close() error
 }
 
@@ -19,13 +21,14 @@ func (gate *WireGuardSessionGate) ConsumerReady(ctx context.Context, codec Consu
 	if gate == nil || ctx == nil || codec == nil {
 		return ErrWireGuardGateState
 	}
-	defer codec.Close()
 	gate.mu.Lock()
 	if gate.state != WireGuardGateChallengeCapped || gate.readyStarted {
 		gate.mu.Unlock()
+		_ = codec.Close()
 		return gate.fail(ErrWireGuardGateState)
 	}
 	gate.readyStarted = true
+	gate.completionCodec = codec // sole ownership continues through R1 completion
 	gate.mu.Unlock()
 	gate.readMu.Lock()
 	defer gate.readMu.Unlock()

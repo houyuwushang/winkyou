@@ -99,6 +99,7 @@ func TestWireGuardSessionGateOptionBTraceGoldenAndActivation(t *testing.T) {
 		t.Fatal(err)
 	}
 	finishCalls := 0
+	initiatorTransport.queueRead(fakeConsumerFinishedFrame())
 	sessionCtx, sessionCancel := context.WithTimeout(context.Background(), time.Second)
 	defer sessionCancel()
 	if err := initiatorGate.FinishAndActivate(sessionCtx, func() error {
@@ -508,6 +509,19 @@ func (fakeConsumerReadyCodec) Open(frame []byte) error {
 	return nil
 }
 func (fakeConsumerReadyCodec) Close() error { return nil }
+
+func fakeConsumerFinishedFrame() []byte {
+	frame := make([]byte, consumerFinishedFrameBytes)
+	copy(frame, "WYCF")
+	return frame
+}
+func (fakeConsumerReadyCodec) SealFinish() ([]byte, error) { return fakeConsumerFinishedFrame(), nil }
+func (fakeConsumerReadyCodec) OpenFinish(frame []byte) error {
+	if !bytes.Equal(frame, fakeConsumerFinishedFrame()) {
+		return ErrWireGuardGate
+	}
+	return nil
+}
 
 func beginReadyChallenge(gate *WireGuardSessionGate, underlying *wireGuardGateTransport) error {
 	if err := gate.BeginChallenge(); err != nil {

@@ -85,11 +85,15 @@ func init() {
 	if !readN1JSON(gateC1bProofConfig, &cfg) || !gateC1bIsolatedMount(cfg.ParentMount) || os.Getuid() != 0 || os.Geteuid() != 0 {
 		os.Exit(91)
 	}
+	reject := func(stage string, code int) {
+		_ = writeN1JSON(cfg.ResultFile, gateC1bProcessResult{Root: true, Class: "harness_child_rejected", Stage: stage})
+		os.Exit(code)
+	}
 	if os.Args[0] == sshchildwrapper.FixedWrapperPath {
 		runtime.LockOSThread() // Keep setns and the replacing exec on this thread.
 		plan, err := sshchildwrapper.PrepareRootExecution(os.Getenv("SSH_ORIGINAL_COMMAND"))
 		if err != nil || !safeNamePattern.MatchString(cfg.Namespace) {
-			os.Exit(92)
+			reject("wrapper_validation", 92)
 		}
 		// The loopback-SSH case hosts sshd beside the client. The test-only
 		// wrapper enters the other endpoint netns before the sole exact exec;
@@ -98,20 +102,20 @@ func init() {
 		if !gateC1bCurrentNamespace(cfg.Namespace) {
 			file, err := os.Open("/var/run/netns/" + cfg.Namespace)
 			if err != nil || unix.Setns(int(file.Fd()), unix.CLONE_NEWNET) != nil {
-				os.Exit(93)
+				reject("wrapper_namespace", 93)
 			}
 			_ = file.Close()
 		}
 		unix.Umask(int(plan.Umask))
 		if err := syscall.Exec(plan.Executable, append([]string{plan.Executable}, plan.Arguments...), plan.Environment); err != nil {
-			os.Exit(94)
+			reject("wrapper_exec", 94)
 		}
 	}
 	if !gateC1bCurrentNamespace(cfg.Namespace) || len(os.Args) != 5 {
-		os.Exit(95)
+		reject("child_entry", 95)
 	}
 	if err := os.Chdir("/root"); err != nil {
-		os.Exit(96)
+		reject("child_directory", 96)
 	}
 	result := runGateC1bCLI(cfg, os.Args[1:])
 	if writeN1JSON(cfg.ResultFile, result) != nil {

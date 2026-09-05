@@ -408,7 +408,7 @@ jobs:
       - name: Repeat consumer readiness, shared cap, cancellation and session tests
         run: >-
           go test -race ./internal/probeio ./internal/v2/hardnatcontrol ./internal/v2/gatecorchestrator
-          -run 'WireGuard|ConsumerReady|Foreground|CanceledInner|PostOOB|Conflict'
+          -run 'WireGuard|ConsumerReady|ConsumerFinished|Foreground|CanceledInner|PostOOB|Conflict'
           -count=20 -timeout=3m
 
       - name: Prove 100 fresh CLI and durable-slot lifecycles

@@ -1,9 +1,9 @@
 # Gate C1b 产品组合证明（实现中）
 
-状态：维护者已授权 C1b；实现因双方 FINISH / OOB 关闭缺口暂停，等待 ADR §19 裁决。
+状态：维护者已接受 ADR §19 的 R1 完成确认，C1b 继续实现和取证。
 本文件是中间验证记录，不是出口、独立审查结论或现场授权；required CI 尚未全绿。
 基线：`0a61c5882381b5518400dc233edc1801bab4da4b`。实现遵循
-[Gate C1 ADR](adr/ADR-N3C-GATE-C1-SSH-PRODUCT-ASSEMBLY.md) §16/§17/§18；§19 仍为未批准提案。
+[Gate C1 ADR](adr/ADR-N3C-GATE-C1-SSH-PRODUCT-ASSEMBLY.md) §16–§19；R1 细节先以独立文档提交冻结。
 真实 OpenSSH loopback 和 required netns 的全产品组合证明尚未完成，不以 memory 结果代替。
 
 ## 1. 已落地的 memory 组合
@@ -18,8 +18,9 @@
   namespace/journal 和 WireGuard key，旧 slot 不能再次 claim。100 次重复证明生命周期，不证明
   100 个随机 NAT 均可穿透，也不重试失败的 credential。
 - consumer readiness 使用 §17 的 40-byte WYCR frame 和独立 AD；原 Noise cipher 单次移交，
-  原 WYHB parser 仍拒绝新 frame。握手前共享上限：initiator 3 outbound / 2 inbound，responder
-  2 outbound / 3 inbound（各含一次 readiness）。第四个 outbound 在底层 I/O 前拒绝。
+  原 WYHB parser 仍拒绝新 frame。R1 在 responder durable FINISH 后增加唯一 40-byte WYCF 确认，
+  两端 establishment 合计均为 3 outbound / 3 inbound（含 readiness/确认），没有第九个 OOB
+  frame。第四个 outbound 在底层 I/O 前拒绝，confirmation 不计作无限 active data。
 
 ## 2. 本地实测快照（2026-09-05）
 
@@ -67,12 +68,16 @@
 9. 同一 required Linux memory job 的三 profile × 两条入口 ×20 中有 12 个失败子样例：底层 7、
    CLI 5。initiator 已 FINISH 并关闭 OOB，responder 仍处于成功 FINISH 之前，触发已有 EOF 终局。
    这是阻断，不是可隔离的随机 NAT 失败。ADR §19 保留双端 trace、固定顺序与 R1/R2 修订提案。
-   `go test -race -tags=c1bdiagnostic ./internal/probeio -run '^TestC1bUnilateralFinishGapDiagnostic$'
+   历史提交 `45512fc` 的 `go test -race -tags=c1bdiagnostic ./internal/probeio -run '^TestC1bUnilateralFinishGapDiagnostic$'
    -count=20 -timeout=1m` 在 Windows **20/20 命中，exit 1，0.487s**；明确不算通过。
 10. `68eca51` 的 [第三轮](https://github.com/houyuwushang/winkyou/actions/runs/33964194965) 中，
     既有 N1、N2d/N3b、Gate A/B2/B3 required job 均通过；新真实 SSH/netns job 在首个
     loopback-SSH/predictive 样例等待 responder 私有结果时超时，未取得全链路/零残留出口证据。
     此失败需独立定位，不冒充已证明与 memory 完成竞态同源；未进行 rerun。
+11. R1 首次本地组合仍在 hard-16K 出现已 FINISH 而 echo 失败。排空 reader 在 decrement
+    inFlight 后才处理取消，此时状态可能已推进；另有排队等待读取锁的 polling context 先行
+    到期。两者都不能误关已移交 session。新增确定性回归并保留原 deadline 后，两入口三
+    profile 加 governed handoff 的 race×3 通过（58.944s）；此为中间验证，不是最终出口。
 
 ## 4. root 执行域与 OS 证明的当前范围
 
@@ -96,7 +101,7 @@ root wrapper/orchestrator `-race -count=20` 通过（1.259s / 2.345s）；Linux
 
 ## 5. 未完成门禁
 
-- ADR §19：完成确认或 EOF 阈值修订的维护者裁决及精确协议冻结。
+- ADR §19 的 R1 已冻结并实现；最终 SHA 的双端确认/失败矩阵与重复取证仍须全绿。
 - dedicated literal-loopback OpenSSH/forced-command wrapper 的真实 child/pipe 生命周期。
 - required Linux netns：三个 profile 的真实 SSH child + UDP + harness TUN 全产品组合，以及
   packet/socket/process/conntrack/governor lock 的进程外零残留见证。

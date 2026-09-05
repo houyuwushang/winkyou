@@ -215,6 +215,8 @@ func bypass() {
   _ = NewProductProtocol
   _ = TakeConsumerReadiness
   _ = ConsumerReady
+  _ = SealFinish
+  _ = OpenFinish
   _ = RunMemoryInitiator
   _ = RunMemoryResponder
   _ = OpenMemoryProofClient
@@ -229,7 +231,7 @@ func bypass() {
 	for _, name := range []string{
 		"WireGuardDirectSessionConsumer", "PromoteToWireGuardSessionLease", "AdoptWireGuardSession",
 		"NewGateCMemoryInterface", "NewMemoryWireGuard", "RunForProduct", "RunResponderStdio",
-		"NewProductProtocol", "TakeConsumerReadiness", "ConsumerReady",
+		"NewProductProtocol", "TakeConsumerReadiness", "ConsumerReady", "SealFinish", "OpenFinish",
 		"RunMemoryInitiator", "RunMemoryResponder", "OpenMemoryProofClient", "ClaimMemoryProof", "ExecuteGateCMemoryProof",
 	} {
 		if !containsLineFragment(violations, "unapproved Gate C1b authority "+name) {
@@ -554,7 +556,18 @@ func gateC1bAuthorityUseViolations(root string) ([]string, error) {
 		"TakeConsumerReadiness": {
 			"internal/v2/hardnatcontrol/consumer_ready.go": {}, "internal/v2/directconnect/gateb/product_handoff.go": {},
 		},
-		"ConsumerReadinessCodec": {"internal/probeio/wireguard_consumer_ready.go": {}},
+		"ConsumerReadinessCodec": {
+			"internal/probeio/wireguard_consumer_ready.go": {}, "internal/probeio/wireguard_session_gate.go": {},
+			"internal/probeio/wireguard_consumer_finish.go": {},
+		},
+		"SealFinish": {
+			"internal/v2/hardnatcontrol/consumer_ready.go": {}, "internal/probeio/wireguard_consumer_ready.go": {},
+			"internal/probeio/wireguard_consumer_finish.go": {},
+		},
+		"OpenFinish": {
+			"internal/v2/hardnatcontrol/consumer_ready.go": {}, "internal/probeio/wireguard_consumer_ready.go": {},
+			"internal/probeio/wireguard_consumer_finish.go": {},
+		},
 		"ConsumerReady": {
 			"internal/probeio/wireguard_consumer_ready.go": {}, "internal/probeio/wireguard_session_gate.go": {},
 			"internal/v2/directconnect/gateb/product_handoff.go": {}, "internal/v2/gatecorchestrator/orchestrator.go": {},

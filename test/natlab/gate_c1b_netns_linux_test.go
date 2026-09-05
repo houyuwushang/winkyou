@@ -109,8 +109,20 @@ func testGateC1bProfile(t *testing.T, profile gateC1bProfile, loopbackSSH bool) 
 	server.waitFile(t, configs[1].ReadyFile, 5*time.Second)
 	client := startGateC1bHost(t, configs[0])
 	client.waitFile(t, configs[0].ResultFile, gateC1bHostLimit)
-	server.waitFile(t, configs[1].ResultFile, 5*time.Second)
 	var results [2]gateC1bProcessResult
+	if !readN1JSON(configs[0].ResultFile, &results[0]) {
+		t.Fatal("Gate C1b initiator result unavailable")
+	}
+	// Never hide an already available client failure behind a secondary wait
+	// for a child which SSH may not have started. Only frozen classes/stages
+	// and counters are published; no raw SSH error or private fixture content.
+	if !results[0].OK {
+		got := results[0]
+		t.Fatalf("Gate C1b initiator terminal: class=%s stage=%s burned=%t finish=%t ready=%t stages=%v ssh=%+v",
+			got.Class, got.Stage, got.Product.CredentialBurned, got.Product.FinishRecorded, got.Product.DataPlaneReady,
+			got.Stages, got.Product.Witness.SSH)
+	}
+	server.waitFile(t, configs[1].ResultFile, 5*time.Second)
 	for index := range results {
 		if !readN1JSON(configs[index].ResultFile, &results[index]) {
 			t.Fatal("Gate C1b private result unavailable")
@@ -123,7 +135,7 @@ func testGateC1bProfile(t *testing.T, profile gateC1bProfile, loopbackSSH bool) 
 		}
 		wg := got.Product.Witness.WireGuard
 		if !wg.ConsumerReady || wg.ReadinessReads != 1 || wg.ReadinessWrites != 1 ||
-			len(wg.Outbound)+wg.ReadinessWrites > 3 || len(wg.Inbound)+wg.ReadinessReads > 3 ||
+			len(wg.Outbound)+wg.ReadinessWrites+wg.CompletionWrites != 3 || len(wg.Inbound)+wg.ReadinessReads+wg.CompletionReads != 3 ||
 			!got.Product.Witness.Handoff.OOBDrained || !got.Product.Witness.Handoff.AttemptReleased ||
 			!got.Product.Witness.InterfaceClosed || !got.Product.Witness.TunnelStopped {
 			t.Fatal("Gate C1b handoff/challenge/echo witness rejected")
@@ -153,12 +165,12 @@ func testGateC1bProfile(t *testing.T, profile gateC1bProfile, loopbackSSH bool) 
 	counts := requireGateB2PacketCounts(t, topology)
 	for index, actual := range []uint64{counts.InitiatorTotal, counts.ResponderTotal} {
 		got := results[index].Product.Witness
-		want := uint64(got.GateB.Emissions.UDPPacketsTotal + got.WireGuard.ReadinessWrites + len(got.WireGuard.Outbound) + got.WireGuard.ActiveWrites)
+		want := uint64(got.GateB.Emissions.UDPPacketsTotal + got.WireGuard.ReadinessWrites + got.WireGuard.CompletionWrites + len(got.WireGuard.Outbound) + got.WireGuard.ActiveWrites)
 		if actual != want {
 			t.Fatalf("Gate C1b OS packet accounting mismatch: side=%d actual=%d charged=%d", index, actual, want)
 		}
 	}
-	t.Logf("Gate C1b profile=%s loopback_ssh=%t root=true evidence=%d/%d candidates=%d/%d udp=%d/%d challenge=3/2 post_oob_echo=true",
+	t.Logf("Gate C1b profile=%s loopback_ssh=%t root=true evidence=%d/%d candidates=%d/%d udp=%d/%d challenge=3/3 post_oob_echo=true",
 		profile.name, loopbackSSH, results[0].Product.Witness.GateB.Emissions.EvidencePackets,
 		results[1].Product.Witness.GateB.Emissions.EvidencePackets, results[0].Product.Witness.GateB.Emissions.CandidatePackets,
 		results[1].Product.Witness.GateB.Emissions.CandidatePackets, counts.InitiatorTotal, counts.ResponderTotal)

@@ -36,30 +36,34 @@ const (
 type WireGuardGateState string
 
 const (
-	WireGuardGateStandby         WireGuardGateState = "standby"
-	WireGuardGateChallengeCapped WireGuardGateState = "challenge_capped"
-	wireGuardGateChallengeDrain  WireGuardGateState = "challenge_drain"
-	WireGuardGateChallengePassed WireGuardGateState = "challenge_passed"
-	WireGuardGateFinishDetached  WireGuardGateState = "finish_detached"
-	WireGuardGateActive          WireGuardGateState = "active"
-	WireGuardGateClosed          WireGuardGateState = "closed"
+	WireGuardGateStandby          WireGuardGateState = "standby"
+	WireGuardGateChallengeCapped  WireGuardGateState = "challenge_capped"
+	wireGuardGateChallengeDrain   WireGuardGateState = "challenge_drain"
+	WireGuardGateChallengePassed  WireGuardGateState = "challenge_passed"
+	wireGuardGateFinishConfirming WireGuardGateState = "finish_confirming"
+	WireGuardGateFinishDetached   WireGuardGateState = "finish_detached"
+	WireGuardGateActive           WireGuardGateState = "active"
+	WireGuardGateClosed           WireGuardGateState = "closed"
 )
 
 // WireGuardSessionGateWitness intentionally contains only local bounded
 // counters and message types. It carries no peer, attempt, endpoint, path, or
 // key material.
 type WireGuardSessionGateWitness struct {
-	State           WireGuardGateState
-	ConsumerReady   bool
-	ReadinessWrites int
-	ReadinessReads  int
-	Outbound        []WireGuardMessageType
-	Inbound         []WireGuardMessageType
-	FinishRecorded  bool
-	AttemptDetached bool
-	ActiveWrites    int
-	ActiveReads     int
-	Closed          bool
+	State               WireGuardGateState
+	ConsumerReady       bool
+	ReadinessWrites     int
+	ReadinessReads      int
+	CompletionWrites    int  `json:",omitempty"`
+	CompletionReads     int  `json:",omitempty"`
+	PeerFinishConfirmed bool `json:",omitempty"`
+	Outbound            []WireGuardMessageType
+	Inbound             []WireGuardMessageType
+	FinishRecorded      bool
+	AttemptDetached     bool
+	ActiveWrites        int
+	ActiveReads         int
+	Closed              bool
 }
 
 // WireGuardSessionGate is the only production consumer wrapper accepted by a
@@ -68,9 +72,10 @@ type WireGuardSessionGateWitness struct {
 // trace. After a durable FINISH callback and lease detach it switches to the
 // caller's independently bounded foreground-session context.
 type WireGuardSessionGate struct {
-	mu      sync.Mutex
-	writeMu sync.Mutex
-	readMu  sync.Mutex
+	mu       sync.Mutex
+	writeMu  sync.Mutex
+	readMu   sync.Mutex
+	finishMu sync.Mutex
 
 	lease     *TransportLease
 	transport transport.PacketTransport
@@ -81,21 +86,29 @@ type WireGuardSessionGate struct {
 	attemptCancel context.CancelFunc
 	challengeCtx  context.Context
 	challengeStop context.CancelFunc
+	binderCtx     context.Context
+	binderStop    context.CancelFunc
 	activeCtx     context.Context
 	activeStop    context.CancelFunc
 
-	outbound        []WireGuardMessageType
-	inbound         []WireGuardMessageType
-	inFlight        int
-	finishRecorded  bool
-	detached        bool
-	activeWrites    int
-	activeReads     int
-	readyDone       chan struct{}
-	readyStarted    bool
-	consumerReady   bool
-	readinessWrites int
-	readinessReads  int
+	outbound            []WireGuardMessageType
+	inbound             []WireGuardMessageType
+	inFlight            int
+	finishRecorded      bool
+	detached            bool
+	activeWrites        int
+	activeReads         int
+	readyDone           chan struct{}
+	readyStarted        bool
+	consumerReady       bool
+	readinessWrites     int
+	readinessReads      int
+	completionCodec     ConsumerReadinessCodec
+	completionFrame     []byte
+	completionReads     int
+	completionWrites    int
+	peerFinishConfirmed bool
+	activeReady         chan struct{}
 
 	closeOnce sync.Once
 	closeErr  error
@@ -132,7 +145,7 @@ func (lease *TransportLease) AdoptWireGuardSession(
 	gate := &WireGuardSessionGate{
 		lease: lease, transport: owned, role: role, state: WireGuardGateStandby,
 		attemptCtx: attemptCtx, attemptCancel: attemptCancel,
-		readyDone: make(chan struct{}),
+		readyDone: make(chan struct{}), activeReady: make(chan struct{}),
 	}
 	return gate, nil
 }
@@ -149,6 +162,7 @@ func (gate *WireGuardSessionGate) BeginChallenge() error {
 		return ErrWireGuardGateState
 	}
 	gate.challengeCtx, gate.challengeStop = context.WithTimeout(gate.attemptCtx, WireGuardChallengeTimeout)
+	gate.binderCtx, gate.binderStop = context.WithCancel(gate.challengeCtx)
 	gate.state = WireGuardGateChallengeCapped
 	return nil
 }
@@ -170,7 +184,7 @@ func (gate *WireGuardSessionGate) CompleteChallenge() error {
 	// cancel that controlled read, and wait for it to leave before changing the
 	// lease state. New reads see challenge_drain and cannot start another I/O.
 	gate.state = wireGuardGateChallengeDrain
-	stop := gate.challengeStop
+	stop := gate.binderStop
 	gate.mu.Unlock()
 	if stop != nil {
 		stop()
@@ -217,46 +231,7 @@ func (gate *WireGuardSessionGate) CompleteChallenge() error {
 // the challenge cap. sessionCtx must carry the local trusted absolute session
 // ceiling.
 func (gate *WireGuardSessionGate) FinishAndActivate(sessionCtx context.Context, durableFinish func() error) error {
-	if gate == nil || sessionCtx == nil || durableFinish == nil {
-		return ErrWireGuardGateState
-	}
-	deadline, bounded := sessionCtx.Deadline()
-	if !bounded || !deadline.After(time.Now()) || sessionCtx.Err() != nil {
-		return ErrWireGuardGateState
-	}
-	gate.mu.Lock()
-	if gate.state != WireGuardGateChallengePassed || gate.inFlight != 0 || gate.attemptCtx == nil ||
-		gate.attemptCtx.Err() != nil {
-		gate.mu.Unlock()
-		return ErrWireGuardGateState
-	}
-	gate.mu.Unlock()
-	if err := durableFinish(); err != nil {
-		_ = gate.Close()
-		return errors.Join(ErrWireGuardGateState, err)
-	}
-	gate.mu.Lock()
-	gate.finishRecorded = true
-	gate.mu.Unlock()
-	if err := gate.lease.DetachAfterFinish(); err != nil {
-		_ = gate.Close()
-		return err
-	}
-	activeCtx, activeStop := context.WithCancel(sessionCtx)
-	gate.mu.Lock()
-	if gate.state != WireGuardGateChallengePassed {
-		gate.mu.Unlock()
-		activeStop()
-		_ = gate.Close()
-		return ErrWireGuardGateState
-	}
-	gate.state = WireGuardGateFinishDetached
-	gate.detached = true
-	gate.activeCtx = activeCtx
-	gate.activeStop = activeStop
-	gate.state = WireGuardGateActive
-	gate.mu.Unlock()
-	return nil
+	return gate.finishWithConfirmation(sessionCtx, durableFinish)
 }
 
 func (gate *WireGuardSessionGate) WritePacket(ctx context.Context, packet []byte) error {
@@ -269,7 +244,7 @@ func (gate *WireGuardSessionGate) WritePacket(ctx context.Context, packet []byte
 	gate.mu.Lock()
 	state := gate.state
 	if state == WireGuardGateChallengeCapped {
-		if len(gate.outbound)+gate.readinessWrites >= WireGuardChallengePackets {
+		if len(gate.outbound)+gate.readinessWrites+gate.completionWrites >= WireGuardChallengePackets {
 			gate.mu.Unlock()
 			return gate.fail(ErrWireGuardGateLimit)
 		}
@@ -337,12 +312,20 @@ func (gate *WireGuardSessionGate) ReadPacket(ctx context.Context, dst []byte) (i
 		return 0, transport.PacketMeta{}, err
 	}
 	gate.readMu.Lock()
-	defer gate.readMu.Unlock()
+	readLocked := true
+	defer func() {
+		if readLocked {
+			gate.readMu.Unlock()
+		}
+	}()
 
 	gate.mu.Lock()
 	state := gate.state
-	if state == wireGuardGateChallengeDrain || state == WireGuardGateChallengePassed || state == WireGuardGateFinishDetached {
+	if state == wireGuardGateChallengeDrain || state == WireGuardGateChallengePassed || state == WireGuardGateFinishDetached ||
+		state == wireGuardGateFinishConfirming || (state == WireGuardGateChallengeCapped && gate.completionReads != 0) {
 		gate.mu.Unlock()
+		gate.readMu.Unlock()
+		readLocked = false
 		// No underlying packet I/O is legal between the completed challenge and
 		// durable FINISH. Keep wireguard-go's bounded polling reader alive until
 		// it re-enters after the active transition.
@@ -351,11 +334,13 @@ func (gate *WireGuardSessionGate) ReadPacket(ctx context.Context, dst []byte) (i
 			return 0, transport.PacketMeta{}, ctx.Err()
 		case <-gate.attemptCtx.Done():
 			return 0, transport.PacketMeta{}, context.DeadlineExceeded
+		case <-gate.activeReady:
+			return 0, transport.PacketMeta{}, context.DeadlineExceeded
 		}
 	}
-	if state == WireGuardGateChallengeCapped && len(gate.inbound)+gate.readinessReads >= WireGuardChallengePackets {
+	if state == WireGuardGateChallengeCapped && len(gate.inbound)+gate.readinessReads+gate.completionReads >= WireGuardChallengePackets {
 		if gate.traceCompleteLocked() {
-			phaseCtx := gate.challengeCtx
+			phaseCtx := gate.binderCtx
 			gate.mu.Unlock()
 			// The exact last keepalive filled the inbound allowance. A pending
 			// polling receive is not a fourth packet and must not kill success.
@@ -378,6 +363,9 @@ func (gate *WireGuardSessionGate) ReadPacket(ctx context.Context, dst []byte) (i
 	opCtx, done, err := gate.operationContext(ctx, state)
 	if err != nil {
 		gate.finishOperation()
+		if benign, ok := gate.benignReadContextEnd(ctx, state, err); ok {
+			return 0, transport.PacketMeta{}, benign
+		}
 		return 0, transport.PacketMeta{}, gate.fail(err)
 	}
 	n, meta, err := gate.transport.ReadPacket(opCtx, dst)
@@ -392,6 +380,16 @@ func (gate *WireGuardSessionGate) ReadPacket(ctx context.Context, dst []byte) (i
 
 	gate.mu.Lock()
 	gate.inFlight--
+	if isConsumerFinishedFrame(dst[:n]) {
+		err := gate.bufferCompletionLocked(state, dst[:n])
+		gate.mu.Unlock()
+		if err != nil {
+			return 0, transport.PacketMeta{}, gate.fail(err)
+		}
+		// A control datagram never reaches WireGuard, even when the peer's
+		// FINISH ran before our local CompleteChallenge was scheduled.
+		return 0, transport.PacketMeta{}, context.DeadlineExceeded
+	}
 	if state == WireGuardGateChallengeCapped {
 		messageType, parseErr := wireGuardMessageType(dst[:n])
 		if parseErr != nil || messageType == WireGuardCookieReply || containsWireGuardType(gate.inbound, messageType) ||
@@ -431,9 +429,19 @@ func (gate *WireGuardSessionGate) Close() error {
 		attemptCancel := gate.attemptCancel
 		challengeStop := gate.challengeStop
 		activeStop := gate.activeStop
+		binderStop := gate.binderStop
+		codec := gate.completionCodec
+		clear(gate.completionFrame)
+		gate.completionFrame = nil
 		gate.mu.Unlock()
 		if challengeStop != nil {
 			challengeStop()
+		}
+		if binderStop != nil {
+			binderStop()
+		}
+		if codec != nil {
+			_ = codec.Close()
 		}
 		if attemptCancel != nil {
 			attemptCancel()
@@ -457,6 +465,7 @@ func (gate *WireGuardSessionGate) Witness() WireGuardSessionGateWitness {
 	return WireGuardSessionGateWitness{
 		State: gate.state, Outbound: append([]WireGuardMessageType(nil), gate.outbound...),
 		ConsumerReady: gate.consumerReady, ReadinessWrites: gate.readinessWrites, ReadinessReads: gate.readinessReads,
+		CompletionWrites: gate.completionWrites, CompletionReads: gate.completionReads, PeerFinishConfirmed: gate.peerFinishConfirmed,
 		Inbound: append([]WireGuardMessageType(nil), gate.inbound...), FinishRecorded: gate.finishRecorded,
 		AttemptDetached: gate.detached, ActiveWrites: gate.activeWrites, ActiveReads: gate.activeReads,
 		Closed: gate.state == WireGuardGateClosed,
@@ -468,13 +477,19 @@ func (gate *WireGuardSessionGate) operationContext(callCtx context.Context, stat
 	var phaseCtx context.Context
 	switch state {
 	case WireGuardGateChallengeCapped:
-		phaseCtx = gate.challengeCtx
+		phaseCtx = gate.binderCtx
 	case WireGuardGateActive:
 		phaseCtx = gate.activeCtx
 	}
 	gate.mu.Unlock()
-	if phaseCtx == nil || phaseCtx.Err() != nil || callCtx.Err() != nil {
+	if phaseCtx == nil {
 		return nil, nil, ErrWireGuardGateState
+	}
+	if err := phaseCtx.Err(); err != nil {
+		return nil, nil, err
+	}
+	if err := callCtx.Err(); err != nil {
+		return nil, nil, err
 	}
 	opCtx, cancel := context.WithCancel(phaseCtx)
 	stop := context.AfterFunc(callCtx, cancel)
@@ -498,16 +513,13 @@ func (gate *WireGuardSessionGate) benignReadContextEnd(callCtx context.Context, 
 	}
 	gate.mu.Lock()
 	defer gate.mu.Unlock()
-	if state == WireGuardGateChallengeCapped && gate.state == wireGuardGateChallengeDrain {
-		// CompleteChallenge deliberately canceled the one pending receive. Return
-		// a polling sentinel so the tunnel reader exits/re-evaluates without
-		// closing the lease-owned transport.
-		return context.DeadlineExceeded, true
-	}
-	if state == WireGuardGateChallengeCapped && gate.state == WireGuardGateActive {
-		// A read started during the capped phase may still be blocked when the
-		// durable FINISH transition replaces its phase context. Surface a poll
-		// timeout so wireguard-go's bind loop immediately starts an active read.
+	if state == WireGuardGateChallengeCapped && (gate.state == wireGuardGateChallengeDrain ||
+		gate.state == WireGuardGateChallengePassed || gate.state == wireGuardGateFinishConfirming ||
+		gate.state == WireGuardGateFinishDetached || gate.state == WireGuardGateActive) {
+		// CompleteChallenge canceled the binder subcontext. The read decrements
+		// inFlight before reaching here, so FINISH may already have advanced the
+		// state. Every post-drain state must treat that same canceled read as a
+		// polling sentinel, never as a reason to close the now-owned session.
 		return context.DeadlineExceeded, true
 	}
 	if callCtx == nil || callCtx.Err() == nil {

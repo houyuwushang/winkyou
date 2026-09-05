@@ -396,7 +396,7 @@ func runGateC1bMemoryProductProfile(t *testing.T, label string, test gateC1bMemo
 		}
 		wg := got.result.Witness.WireGuard
 		if !wg.ConsumerReady || wg.ReadinessWrites != 1 || wg.ReadinessReads != 1 ||
-			len(wg.Outbound)+wg.ReadinessWrites > 3 || len(wg.Inbound)+wg.ReadinessReads > 3 {
+			len(wg.Outbound)+wg.ReadinessWrites+wg.CompletionWrites != 3 || len(wg.Inbound)+wg.ReadinessReads+wg.CompletionReads != 3 {
 			t.Errorf("%s shared challenge allowance violated: %+v", got.role, wg)
 		}
 	}

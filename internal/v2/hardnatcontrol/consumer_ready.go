@@ -11,9 +11,12 @@ import (
 )
 
 const (
-	ConsumerReadyFrameBytes  = 40
-	consumerReadyHeaderBytes = 24
-	consumerReadyLabel       = "winkyou-gate-c-consumer-ready/1\x00"
+	ConsumerReadyFrameBytes    = 40
+	ConsumerFinishedFrameBytes = 40
+	consumerReadyHeaderBytes   = 24
+	consumerReadyLabel         = "winkyou-gate-c-consumer-ready/1\x00"
+	consumerFinishedLabel      = "winkyou-gate-c-consumer-finished/1\x00"
+	consumerFinishedProfile    = "wireguard-direct-session/1"
 )
 
 // ConsumerReadiness is a one-shot, post-VERIFY product codec. It has no I/O or
@@ -24,6 +27,7 @@ type ConsumerReadiness struct {
 	packets                *noisecore.PacketCipher
 	binding                []byte
 	sent, received, closed bool
+	finished               bool
 }
 
 // NewProductProtocol differs only in post-VERIFY key ownership. The legacy
@@ -143,5 +147,65 @@ func (codec *ConsumerReadiness) Close() error {
 	codec.mu.Lock()
 	defer codec.mu.Unlock()
 	_ = codec.failLocked()
+	return nil
+}
+
+func consumerFinishedHeader() []byte {
+	header := make([]byte, consumerReadyHeaderBytes)
+	copy(header, "WYCF")
+	header[4], header[5], header[6] = 1, 1, 2
+	binary.BigEndian.PutUint64(header[8:16], 10)
+	binary.BigEndian.PutUint64(header[16:24], Generation)
+	return header
+}
+
+func (codec *ConsumerReadiness) finishedAD(header []byte) []byte {
+	ad := append([]byte(consumerFinishedLabel), header...)
+	ad = append(ad, codec.binding...)
+	return append(ad, consumerFinishedProfile...)
+}
+
+// SealFinish is the responder's one post-durable-FINISH confirmation. The
+// lease-owned gate, not the pure codec, enforces the journal-before-write order.
+func (codec *ConsumerReadiness) SealFinish() ([]byte, error) {
+	if codec == nil {
+		return nil, ErrInvalidTransition
+	}
+	codec.mu.Lock()
+	defer codec.mu.Unlock()
+	if codec.closed || codec.finished || !codec.sent || !codec.received || codec.role != RoleResponder {
+		return nil, codec.failLocked()
+	}
+	header := consumerFinishedHeader()
+	ciphertext, err := codec.packets.Seal(10, codec.finishedAD(header), nil)
+	if err != nil {
+		return nil, codec.failLocked()
+	}
+	codec.finished = true
+	return append(header, ciphertext...), nil
+}
+
+// OpenFinish authenticates peer durability before the initiator may FINISH or
+// close OOB. It consumes the same cipher's original nonce ledger exactly once.
+func (codec *ConsumerReadiness) OpenFinish(frame []byte) error {
+	if codec == nil {
+		return ErrInvalidTransition
+	}
+	codec.mu.Lock()
+	defer codec.mu.Unlock()
+	if codec.closed || codec.finished || !codec.sent || !codec.received || codec.role != RoleInitiator ||
+		len(frame) != ConsumerFinishedFrameBytes {
+		return codec.failLocked()
+	}
+	header := consumerFinishedHeader()
+	if !bytes.Equal(frame[:consumerReadyHeaderBytes], header) {
+		return codec.failLocked()
+	}
+	plaintext, err := codec.packets.Open(10, codec.finishedAD(header), frame[consumerReadyHeaderBytes:])
+	defer clear(plaintext)
+	if err != nil || len(plaintext) != 0 {
+		return codec.failLocked()
+	}
+	codec.finished = true
 	return nil
 }
