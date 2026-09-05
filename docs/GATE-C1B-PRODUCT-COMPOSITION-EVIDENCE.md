@@ -1,10 +1,10 @@
-# Gate C1b 产品组合证明（实现中）
+# Gate C1b 产品组合证明（Draft，待独立评审）
 
-状态：维护者已接受 ADR §19 的 R1 完成确认，C1b 继续实现和取证。
-本文件是中间验证记录，不是出口、独立审查结论或现场授权；required CI 尚未全绿。
+状态：维护者已接受 ADR §19 的 R1 完成确认；本分支已实现 C1b，三种拓扑与故障证据如下。
+本文件不是独立审查结论或现场授权；最后提交的 CI 状态以 Draft PR #104 的 checks 为准。
 基线：`0a61c5882381b5518400dc233edc1801bab4da4b`。实现遵循
 [Gate C1 ADR](adr/ADR-N3C-GATE-C1-SSH-PRODUCT-ASSEMBLY.md) §16–§19；R1 细节先以独立文档提交冻结。
-真实 OpenSSH loopback 和 required netns 的全产品组合证明尚未完成，不以 memory 结果代替。
+真实 OpenSSH loopback 与 required netns 已有成功实测，和 memory 证据分列，不互相替代。
 
 ## 1. 已落地的 memory 组合
 
@@ -40,6 +40,20 @@
 100-run 每轮检查：`ActivePacketConns=0`、`ActiveMappings=0`、`QueuedPackets=0`、
 `ActivePeers=0`、`ActiveAttempts=0`、`HeavyweightAttempts=0`、`Reserved=0`、safety trip clear。
 这些是进程内模拟与真实临时 governor 的见证，不冒充 `ss`/conntrack/子进程 OS 残留证明。
+
+### 2.1 R1 修复后的重复实测
+
+- 两入口三 profile 加真实 governor handoff 的 Windows `-race -count=20` 通过，343.717s；
+  100 fresh CLI/slot lifecycle 通过，193.520s。每轮仍检查上述模拟资源与 governor 归零。
+- 六个受影响包的完整 `-race -count=20`：probeio 54.347s、gatecorchestrator 3.208s、
+  gatecchildstream 3.206s、hardnatcontrol 103.183s、sshassembly 146.899s、sshchildwrapper 1.460s。
+- 实际 CLI + fake SSH runner 的 evidence-drift / candidate-exhaustion 矩阵 race×20 通过，61.377s。
+  前者在观测中途改变 NAT allocation，两端均 13 evidence / 0 candidate；后者在 13 次观测后改变
+  mapping，两端均 13 evidence / 32 candidate 后耗尽。双方 durable burn/FINISH、零 data/handoff、
+  无重试、无 trip、无模拟资源或 governor residue。
+- product lease 的八种 binding/未 Promote 负向加 standby consumer crash，race×20 通过，2.315s；
+  底层 writes=0，未完成的 attempt 不 detach。
+- required Linux 的真实 SSH/UDP/TUN 证据为 §4；旧红色 CI 保留在 §3，不以 rerun 抹去。
 
 ## 3. 保留的失败记录与修复
 
@@ -104,6 +118,11 @@
     `wink-c1b-proof` TUN，仍强制 no-op native bind；原 memory guard 不改、不伪装接口类型，
     architecture 对 tag/native bind/name/type/port 和生产消费者做变异检测。同时测试 route helper
     使用私有配置中的绝对工具路径，responder 的固定无 PATH environment 不放宽。
+16. `0e2e922` 的 [required TUN 计数](https://github.com/houyuwushang/winkyou/actions/runs/33970103244/job/101316970377)
+    实测 initiator KernelReads=3、InnerSends=2、NonIPv4Reads=1，echo/CLOSE 本身已通过。
+    新建 TUN link-up 产生额外 IPv6 控制包；harness 在精确 namespace/接口验证后，仅对新建且尚未
+    up 的 `wink-c1b-proof` 禁用 IPv6，并回读确认。没有改变 host/default/all 设置，也没有放宽
+    KernelReads=InnerSends、KernelWrites=InnerReads 的精确断言。`13734ba` 的下一轮通过全部矩阵。
 
 ## 4. root 执行域与 OS 证明的当前范围
 
@@ -113,26 +132,74 @@
 - exact `linux && natlab && c1bproof` seam 只消费既有 sealed B2/B3/SSH factory；不提供新 raw
   unicast boolean。普通 build 的 authority 和 parser 不变。
 - 新 harness 使用真实 SSH client、私有 sshd/安装/stage/canonical governor、race 子进程；kernel
-  TUN 分支的 echo 经内核 UDP → route → TUN → WireGuard，而非 memory shortcut。该分支只有
-  交叉编译/vet 证据，因前序失败尚未完成 required OS 运行，不能宣称通过。
+  TUN 分支的 echo 经内核 UDP → route → TUN → WireGuard，而非 memory shortcut。
 - cleanup 的 PID 操作仅在固定 endpoint namespace 内，以 pidfd 固定已核对的测试进程；失败清理
-  不算成功排水。现阶段不承诺真实 child/UDP/TUN/conntrack 的全链路零残留已被证明。
+  不算成功排水。通过路径先要求 endpoint 自行退出，再核对 OS 资源；不能靠 cleanup 杀掉残留而通过。
+
+### 4.1 真实进程与内核数据面
+
+`13734ba` 的 [required race-enabled OS 运行](https://github.com/houyuwushang/winkyou/actions/runs/33971212225/job/101319945035)
+首跑通过 6 个完整链路 + 7 个故障，176.71s，无 rerun。两种 SSH 拓扑所得外层计数一致：
+
+| profile | evidence I/R | candidate I/R | OS UDP I/R | establishment I/R |
+| --- | --- | --- | --- | --- |
+| predictive | 13/13 | 31/32 | 50/49 | 3/3 |
+| asymmetric | 13/13 | 64/512 | 82/530 | 3/3 |
+| hard-16K | 13/13 | 16384/16384 | 16403/16401 | 3/3 |
+
+这里的 3/3 是每端 outbound/inbound shared readiness + WireGuard + R1 allowance；UDP 总计还包含
+命中后的单 winner 与 post-FINISH data。每端 iptables 实测值严格等于各分类计费之和。SSH/OOB
+退出后 initiator 仅发送一个 echo request 与一个 CLOSE，responder 仅回复一个 echo；真实 SSH client
+`Exited=true, Drained=true, Killed=false`。carrier 仍最多 8 frame / 8256 byte，每方向单列计数。
+
+loopback-SSH 分支的 UDP 仍位于 TEST-NET NAT，inner interface 为 memory；netns-SSH 分支的 inner
+interface 是真实、非 persistent TUN，KernelReads=InnerSends、KernelWrites=InnerReads，额外 IPv6=0。
+两者都是真实 child，不将 fake process runner 冒充真实 SSH。
+
+### 4.2 真实 child 故障与磁盘见证
+
+| 注入 | OS UDP I/R | ledger sequence I/R | 终局前实测 wall ms |
+| --- | --- | --- | --- |
+| presence 前 stdout EOF | 0/0 | 1/1，未 burn | 1742 |
+| parent cancel | 0/1 | 3/3 | 1741 |
+| stdout writer error | 13/13 | 3/3 | 21493 |
+| WireGuard peer key 不匹配 | 47/46 | 3/3 | 7177 |
+| post-burn parent SIGKILL | 0/1 | 2/3 | 1710 |
+| post-burn child SIGKILL | 0/0 | 3/2 | 1747 |
+| consumer FINISH 后 SIGKILL | 49/48 | 3/3 | 6214 |
+
+wall 包含固定测试启动；writer error 在原 20s active + drain 内结束，不宣称即时检测。
+sequence=2 是已 durable burn、未 FINISH 的崩溃见证，不伪造正常 FINISH；正常失败保持 sequence=3，
+无退款、无第二 attempt。SIGKILL 不能写进程内 result，故用磁盘 journal、私有固定 marker 与 OS
+process/socket/lock 见证；日志中的空 peer class 不被伪装成对端成功。
+
+全部正常/故障路径均先验证 packet counters 在终局后稳定，关闭 observer/router，然后要求
+`sockets=0, processes=0`；重新取得 machine owner 验证 lock 已释放。conntrack 在显式清理后为 0，
+最后验证 namespace/veth=0；非 persistent TUN、测试 address/route 也不存在。
+conntrack 的零值是 **teardown 后**，不是声称内核立即自然老化；failure cleanup 不计作排水通过。
 
 暂停前的本地回归：`go vet ./...` 与 `go test ./... -count=1 -timeout=12m` 通过
 （governor 214.634s）；architecture/mutation、CLI、root wrapper、orchestrator 定向通过；
 root wrapper/orchestrator `-race -count=20` 通过（1.259s / 2.345s）；Linux
 `-tags=natlab,c1bproof` 交叉 vet 通过。`git diff --check` 干净，相对链接检查为 0 broken，
 新增 diff 的私有路径/设备代号扫描为 0；已有 v1/v2/N3b/Gate A/B golden 没有修改。
-这些通过项不替代 §3.9 的红色 required pipeline，也不代表已满足全部受影响包 race×20 出口。
+这段保留暂停前快照；后续 R1 与 required OS 证据见 §2.1/§4，不覆盖历史失败记录。
 
-## 5. 未完成门禁
+## 5. 验收映射与剩余门
 
-- ADR §19 的 R1 已冻结并实现；最终 SHA 的双端确认/失败矩阵与重复取证仍须全绿。
-- dedicated literal-loopback OpenSSH/forced-command wrapper 的真实 child/pipe 生命周期。
-- required Linux netns：三个 profile 的真实 SSH child + UDP + harness TUN 全产品组合，以及
-  packet/socket/process/conntrack/governor lock 的进程外零残留见证。
-- 对上述真实拓扑的 EOF/parent kill/child kill/writer error/failure matrix。
-- 最终 SHA 的全仓重跑、远端 CI 全绿、独立评审。
+| ADR §10.2 | 证据入口 |
+| --- | --- |
+| 三 profile / 三拓扑全管线 | `TestGateC1bMemoryCLIAndClaimedChildPipeline`、`TestLinuxGateC1bProductProof` |
+| local target / raw capability 零 I/O | Gate C request/entry preflight、Gate C1b architecture mutation、原 Gate B target scope 回归 |
+| lease-before-Promote / binding / old handle | `TestGateC1bGateBProductHandoffRetainsOwnershipUntilFinish`、`TestWireGuardProductLeaseRejectsBindingAndMissingPromotionWithoutIO`、原 TransportLease poisoning 回归 |
+| shared 3/3 / FINISH / R1 | `TestWireGuardSessionGate*`、`TestConsumerFinished*` 与字节 golden；真实 OS 精确计数 |
+| OOB 后 echo / replay / role | `TestPostOOBEcho*`、真实 CLI 的完整 progress 前缀与 post-OOB echo |
+| conflict preflight | `TestConflictPreflightRejectsBeforeSSHOrGateBFactory`（up/key/interface/route，spawn=0、factory=0） |
+| cancel / EOF / drift / exhaustion / error / crash | §2.1、§4.2；`TestForegroundResponderSessionTerminationModes` 分别证明 CLOSE/inactivity/absolute/cancel |
+| 100 fresh / race×20 / 隔离 | 两平台 required memory + Linux required race binary；architecture/mutation |
+| 旧协议与默认 up 不变 | 既有 v1/v2/N3b/Gate A/B golden 零修改；全仓 Windows/Linux 测试 |
+
+剩余交付门：最后提交的 CI checks 全绿、独立评审；PR 保持 Draft，不自行合并。
 
 本分支不授权 C1c/C2、LAN/公网、宿主 interface/route/firewall/service/task/sshd 改动或自动恢复。
 未签发现场窗口；保留单个 Draft PR、不得自行合并的交付约束。

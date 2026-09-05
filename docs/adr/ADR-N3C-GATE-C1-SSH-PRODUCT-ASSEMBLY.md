@@ -5,6 +5,9 @@
   memory、literal-loopback、`linux && natlab` required netns 取证。仍不授权 C1c、构建现场
   binary、普通构建的非回环 SSH/UDP、disposable router 或任何现场 I/O**
 - 日期：2026-08-31
+- 实现状态：Gate C1b 已在 Draft PR #104 组合实现；memory、literal-loopback SSH 与 required
+  netns 的实测和历史失败见 [C1b 证据](../GATE-C1B-PRODUCT-COMPOSITION-EVIDENCE.md)。待最后
+  CI 与独立复审，不代表实现已被批准；C1c/C2 和现场权限仍冻结。
 - 基线：`main` = `39ff9780ec295ca8af7339bca8f5e023adf17931`
 - 跟踪议题：[#98](https://github.com/houyuwushang/winkyou/issues/98)
 - 上位决策：
