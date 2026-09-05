@@ -73,6 +73,11 @@ func TestLinuxGateC1bProductProof(t *testing.T) {
 			}
 		}
 	}
+	for _, fault := range []string{"pre-finish-eof", "parent-cancel", "writer-error", "wireguard-failure", "parent-kill", "child-kill", "consumer-crash"} {
+		if !t.Run("fault/"+fault, func(t *testing.T) { testGateC1bFault(t, fault) }) {
+			t.FailNow()
+		}
+	}
 }
 
 func gateC1bSSHDPath(t *testing.T) string {
@@ -176,7 +181,7 @@ func testGateC1bProfile(t *testing.T, profile gateC1bProfile, loopbackSSH bool) 
 		}
 		if configs[index].UseTUN && (!got.TUN.Used || !got.TUN.Closed || got.TUN.KernelReads == 0 || got.TUN.KernelWrites == 0 ||
 			got.TUN.KernelReads != got.TUN.InnerSends || got.TUN.KernelWrites != got.TUN.InnerReads) {
-			t.Fatal("Gate C1b real kernel TUN echo witness rejected")
+			t.Fatalf("Gate C1b real kernel TUN echo witness rejected: side=%d tun=%+v echo=%+v", index, got.TUN, echo)
 		}
 	}
 	if !results[0].Product.Witness.SSH.Spawned || !results[0].Product.Witness.SSH.Exited || !results[0].Product.Witness.SSH.Drained || results[0].Product.Witness.SSH.Killed {
@@ -277,6 +282,10 @@ func gateC1bRouters(t *testing.T, topology *n2dTopology, profile gateC1bProfile)
 }
 
 func gateC1bFixture(t *testing.T, topology *n2dTopology, observer hardnatobserve.Topology, profile gateC1bProfile, loopbackSSH bool) [2]gateC1bHostConfig {
+	return gateC1bFixtureForFault(t, topology, observer, profile, loopbackSSH, "")
+}
+
+func gateC1bFixtureForFault(t *testing.T, topology *n2dTopology, observer hardnatobserve.Topology, profile gateC1bProfile, loopbackSSH bool, fault string) [2]gateC1bHostConfig {
 	t.Helper()
 	ipBinary, err := exec.LookPath("ip")
 	if err != nil || !filepath.IsAbs(ipBinary) {
@@ -363,7 +372,7 @@ AllowUsers root
 		if os.Mkdir(sideDir, 0o700) != nil {
 			t.Fatal("Gate C1b endpoint fixture setup failed")
 		}
-		cfg := gateC1bHostConfig{Server: index == 1, UseTUN: !loopbackSSH, ParentMount: parentMount.Ino, SSHDConfig: sshdFile, SSHDBinary: gateC1bSSHDPath(t), IPBinary: ipBinary, Observers: observers,
+		cfg := gateC1bHostConfig{Server: index == 1, Fault: fault, UseTUN: !loopbackSSH, ParentMount: parentMount.Ino, SSHDConfig: sshdFile, SSHDBinary: gateC1bSSHDPath(t), IPBinary: ipBinary, Observers: observers,
 			MachineBase: filepath.Join(sideDir, "machine-base"), InstallBase: filepath.Join(sideDir, "install-base"), HomeDirectory: filepath.Join(sideDir, "private-home"), ShadowFile: filepath.Join(sideDir, "shadow"),
 			RuntimeBase: filepath.Join(sideDir, "runtime"),
 			RequestFile: filepath.Join(sideDir, "request.json"), ConfigFile: filepath.Join(sideDir, "config.yaml"), ResultFile: filepath.Join(sideDir, "result.json"),
@@ -406,6 +415,13 @@ AllowUsers root
 		productConfig.GateC.Peers = []config.GateCPeerConfig{{Ref: "private-peer", PublicKey: private[1-index].PublicKey().String(),
 			AllowedIPs: []string{virtual[1-index] + "/32"}, LocalVirtualIP: virtual[index], PeerVirtualIP: virtual[1-index],
 			MemoryInterfaceName: "wink-c1b-proof", MemoryMTU: 1280, SessionCeiling: 8 * time.Second}}
+		if fault == "wireguard-failure" && index == 0 {
+			wrongKey, err := tunnel.GeneratePrivateKey()
+			if err != nil {
+				t.Fatal("synthetic wrong-key fixture failed")
+			}
+			productConfig.GateC.Peers[0].PublicKey = wrongKey.PublicKey().String()
+		}
 		encodedConfig, err := yaml.Marshal(productConfig)
 		if err != nil {
 			t.Fatal("Gate C1b private configuration encoding failed")

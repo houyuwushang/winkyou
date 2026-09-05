@@ -25,6 +25,7 @@ import (
 	winkcmd "winkyou/cmd/wink/cmd"
 	"winkyou/internal/governor"
 	"winkyou/internal/probeio"
+	"winkyou/internal/v2/directconnect/gateb"
 	"winkyou/internal/v2/gatecorchestrator"
 	"winkyou/internal/v2/gatecstage"
 	"winkyou/internal/v2/sshassembly"
@@ -401,6 +402,32 @@ func runGateC1bCLI(cfg gateC1bHostConfig, args []string) gateC1bProcessResult {
 		result.Stages = append(result.Stages, progress.Stage)
 		if err := os.WriteFile(cfg.StageFile, []byte(progress.Stage), 0o600); err != nil {
 			return errors.New("private stage witness failed")
+		}
+		if cfg.Server && cfg.Fault == "pre-finish-eof" && progress.Stage == gateb.StageOOBAdopt {
+			_ = os.Stdout.Close()
+		}
+		if cfg.Server && cfg.Fault == "writer-error" && progress.Stage == gateb.StagePrepare {
+			_ = os.Stdout.Close()
+		}
+		if !cfg.Server && cfg.Fault == "parent-cancel" && progress.Stage == gateb.StagePrepare {
+			cancel()
+		}
+		if !cfg.Server && cfg.Fault == "parent-kill" && progress.Stage == gateb.StagePrepare {
+			// Hold this exact post-burn boundary for the external owned-process
+			// kill witness; there is no further emission or retry while held.
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(2 * time.Second):
+				return errors.New("synthetic kill barrier expired")
+			}
+		}
+		if cfg.Server && ((cfg.Fault == "child-kill" && progress.Stage == gateb.StageBurned) ||
+			(cfg.Fault == "consumer-crash" && progress.Stage == gatecorchestrator.StageFinishRecorded)) {
+			if os.WriteFile(cfg.StageFile+".fault", []byte(cfg.Fault), 0o600) != nil {
+				return errors.New("private crash witness failed")
+			}
+			_ = syscall.Kill(os.Getpid(), syscall.SIGKILL) // only this isolated endpoint process
 		}
 		if progress.Stage == gatecorchestrator.StageDataPlaneReady && !cfg.Server {
 			// Stop only after one completed post-OOB echo; this is the CLI's

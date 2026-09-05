@@ -25,6 +25,7 @@ type gateC1bTUNWitness struct {
 	KernelWrites uint64 `json:"kernel_writes"`
 	InnerSends   uint64 `json:"inner_sends"`
 	InnerReads   uint64 `json:"inner_reads"`
+	NonIPv4Reads uint64 `json:"non_ipv4_reads"`
 }
 
 // The only inner listener is a harness-owned, fixed TEST-NET UDP socket. Its
@@ -44,6 +45,7 @@ type gateC1bKernelInterface struct {
 	kernelWrites atomic.Uint64
 	innerSends   atomic.Uint64
 	innerReads   atomic.Uint64
+	nonIPv4Reads atomic.Uint64
 }
 
 func newGateC1bKernelInterface(cfg gateC1bHostConfig, name string, mtu int) (*gateC1bKernelInterface, error) {
@@ -98,6 +100,9 @@ func (instance *gateC1bKernelInterface) Read(buffer []byte) (int, error) {
 	n, err := instance.tun.Read(buffer)
 	if n > 0 {
 		instance.kernelReads.Add(1)
+		if buffer[0]>>4 != 4 {
+			instance.nonIPv4Reads.Add(1)
+		}
 	}
 	return n, err
 }
@@ -159,7 +164,7 @@ func (instance *gateC1bKernelInterface) Close() error {
 
 func (instance *gateC1bKernelInterface) witness() gateC1bTUNWitness {
 	return gateC1bTUNWitness{Used: true, Closed: instance.closed.Load(), KernelReads: instance.kernelReads.Load(),
-		KernelWrites: instance.kernelWrites.Load(), InnerSends: instance.innerSends.Load(), InnerReads: instance.innerReads.Load()}
+		KernelWrites: instance.kernelWrites.Load(), InnerSends: instance.innerSends.Load(), InnerReads: instance.innerReads.Load(), NonIPv4Reads: instance.nonIPv4Reads.Load()}
 }
 
 var _ netif.MemoryTestInterface = (*gateC1bKernelInterface)(nil)
