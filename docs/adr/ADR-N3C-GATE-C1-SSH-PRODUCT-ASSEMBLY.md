@@ -975,9 +975,9 @@ group-readable/executable 后交给非 root SSH account。此处的 A/B 是**执
   不授权 C1c/C2、宿主虚拟网卡/路由部署、普通构建非回环能力、长期 daemon 或任何现场 I/O。
   Windows 不因此获得新的远端 child 或非回环权限；所有已冻结预算、golden 与单次终局规则不变。
 
-## 19. C1b 双方 FINISH / OOB 关闭缺口（Draft，2026-09-05，未批准）
+## 19. C1b 双方 FINISH / OOB 关闭缺口与 R1 裁决（Accepted，2026-09-05）
 
-状态：**实现暂停，等待维护者裁决；本节不修改 Accepted 规则，不授权绕过失败 CI。**
+状态：**维护者接受 R1，授权按 §19.4 冻结内容继续 C1b 实现；不授权绕过失败 CI。**
 §18 的 UID 0 裁决仍然成立，本缺口与 root/非 root 执行身份无关。
 
 ### 19.1 实测与最小复现
@@ -1023,7 +1023,7 @@ Gate B carrier watcher 在本地 `challengeComplete=false` 时取消 active atte
 watcher 的 challengeComplete 阈值与 §16.8 的 durable FINISH 阈值也须在裁决时明确对齐，
 不能把前者自动解释成后者。
 
-### 19.3 最小二选一修订提案（尚无决策）
+### 19.3 原二选一提案（保留裁决依据；采纳 R1，不采纳 R2）
 
 | 提案 | 语义变化 | 必须保留 / 需要重新冻结 |
 | --- | --- | --- |
@@ -1037,3 +1037,45 @@ watcher 的 challengeComplete 阈值与 §16.8 的 durable FINISH 阈值也须�
 退出时序、双端 journal 顺序、100 fresh runs、race×20，以及 required netns 的 TUN/packet/socket/
 process/conntrack/lock 全部证明。另需核实 SSH 的 2s graceful drain 与 post-OOB echo 2s 的计时
 交接；当前真实 SSH/netns matrix 仍未通过，不能宣称上述 memory 缺口是其失败的唯一根因。
+
+### 19.4 R1 完成确认：线格式、额度与所有权冻结
+
+维护者先接受“认证完成确认后才关闭 OOB”，再授权冻结细节并继续实现。以下为本次实现的
+约束，不增加原有任何额度或现场权限，也不把本地 trace 完成提前解释为 durable FINISH。
+
+- **唯一确认包：** responder → initiator 的 `CONSUMER_FINISHED`，复用已 Promote 的唯一
+  fixed-target UDP transport。独立 magic `WYCF`、version=1、type=1、sender=2、reserved=0；
+  header 仍为 24 bytes，offset 与 §17.1 相同，sequence=10、generation=1（big-endian）。
+  使用原 Noise responder directional key 的保留 nonce 10；plaintext 为空，16-byte tag，
+  完整 datagram 严格 40 bytes。没有第九个 OOB frame，没有 ACK、重传或额外确认往返。
+- **AD：** UTF8(`winkyou-gate-c-consumer-finished/1`) || `0x00` || header || §17.1 的
+  16-byte attempt ID 与六个 32-byte digest（原顺序）||
+  UTF8(`wireguard-direct-session/1`)。原 product prologue、WYHB/WYCR bytes、nonce 上限及
+  parser 不变。wrong role/generation/context/consumer、跨域、重复、篡改和非精确长度均终局。
+- **cipher 所有权：** `TakeConsumerReadiness` 仍只转移一次原 PacketCipher。readiness codec
+  由 gate 独占保留到本次完成确认成功或失败，随后清零；不重新 split、不导出 key、不允许
+  orchestrator 获取 codec/frame。只有 READY/ACK 双向完成后才允许一次 SealFinish/OpenFinish。
+- **读取所有权：** binder 只得到 WireGuard packet。若确认早于本地 completion 调度到达，
+  gate 最多暂存一个 40-byte frame，并消耗一个 read 额度，不交给 binder。本地 trace 齐全后
+  先冻结 binder I/O、排空在途调用，再由完成步骤独占读取并验证该包；未缓冲时只读一次。
+  暂存不构成认证成功或激活。错误包与 post-completion 重放不得被当成普通用户数据。
+- **顺序：** responder 本地 trace → bounded reader drain → successful durable FINISH →
+  单次 seal/write FINISHED → detach/active → 等待 initiator 关闭 OOB；initiator 本地 trace →
+  bounded reader drain → open/验证 FINISHED → successful durable FINISH → detach/active →
+  关闭 OOB。双方各自 FINISH 都先于 attempt 释放；responder 的 FINISH 不代表 initiator
+  已成功，不跳过后续 post-OOB echo。写确认失败即关闭 session，已写 FINISH 不撤销、不重复。
+- **时间：** READY/ACK、WireGuard handshake、完成确认共用 BeginChallenge 起算的原 ≤3s
+  deadline，并受所选 profile 的原 absolute envelope/caller context 限制；取消 binder 子
+  context 仅为读取权交接，不重启或取消原 challenge deadline。2s 仍仅用于 drain。
+- **精确计费：** initiator outbound=READY+initiation+keepalive（3），inbound=ACK+response+
+  FINISHED（3）；responder 为相反方向（3/3）。FINISHED 即使在本地 FINISH 后发送，仍计入
+  capped establishment counter，不能计作无限 active data。witness 单列 completion reads/
+  writes；第四次写在底层 I/O 前拒绝。Gate B probe packets/PPS/stream/frame/cost 均不变。
+- **EOF 边界：** product watcher 以 successful durable FINISH 为阈值，不用 challengeComplete。
+  此前 EOF 必须取消 attempt；之后只有预期关闭/EOF 可作为 OOB drain，协议违规、parent cancel
+  和 absolute expiry 仍终局。FINISH 写入期间的异常取消不得激活 session。旧 test consumer
+  行为保持不变；不采纳 R2 的提前忽略 EOF。
+- **恢复门：** 新 40-byte/AD golden，确定性“延迟 responder FINISH 时 initiator 零 FINISH/
+  零 OOB close”回归，FINISH 错误/确认静默/提前 EOF/跨域/replay/超额矩阵及双端 journal；
+  再跑三 profile race×20、100 fresh、真实 SSH 与 required netns。§19.1 原红色诊断作为缺陷
+  证据保留在文档，测试替换成上述双端通过/拒绝断言，不把故意失败当作通过证据。
