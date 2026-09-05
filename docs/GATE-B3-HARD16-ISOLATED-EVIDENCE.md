@@ -343,6 +343,6 @@ early one-way hit 和只读 kernel flow 见证；未修改生产协议/预算。
 所以不能追溯认定与这个已复现机制完全同源。完整原始见证见
 [#106 报告](https://github.com/houyuwushang/winkyou/issues/106#issuecomment-5554497891)。
 
-[映射寿命与提前确认 ADR 草案](./adr/ADR-N3C-HARD16-MAPPING-LIFETIME.md) 建议分别裁决稳定
-模型/失效层与提前确认协议。60s/30s 新 fixture、失效验收和 early-stop 均未被本提案实现或批准；
-不得把文档加入仓库、本地测试通过或其他 CI 绿灯视为关闭 #106、接受 #107 或开启 C1c/现场。
+[映射寿命与提前确认 ADR](./adr/ADR-N3C-HARD16-MAPPING-LIFETIME.md) 已按 D1–D6 接受：分别裁决稳定
+模型/失效层（M，接受）与提前确认协议（E，仅研究方向）。60s/30s 新 fixture、失效验收和 early-stop 均未
+实现或获实现授权；不得把文档合入、本地测试通过或其他 CI 绿灯视为关闭 #106、接受 #107 或开启 C1c/现场。

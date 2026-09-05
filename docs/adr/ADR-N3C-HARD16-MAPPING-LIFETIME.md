@@ -1,6 +1,8 @@
 # ADR 草案：Hard16 映射寿命与提前确认
 
-- 状态：**Draft / 待维护者与独立评审裁决；仅获准起草 docs-only 提案。**
+- 状态：**Accepted（2026-09-06）：D1–D6 由维护者委托独立复审人按复审推荐代填（复审记录见
+  [PR #108 评论](https://github.com/houyuwushang/winkyou/pull/108#issuecomment-5554767343)）；
+  文本接受不等于 M 实现授权或 E 协议批准，均须维护者另行下达；不授权现场 I/O。**
 - 日期：2026-09-06
 - 文档基线：`main = f2df7456a553ee731fa8801114985413ebb49540`
 - 跟踪：[#106](https://github.com/houyuwushang/winkyou/issues/106)；诊断
@@ -11,8 +13,9 @@
   [restart safety](../PAIRING-RESTART-SAFETY-CONTRACT.md)、
   [cancellation/drain](../CANCELLATION-DRAIN-CONTRACT.md)。
 
-本文所有新增规则、数值、测试层和协议方向均为**建议**，不覆盖现行 Accepted 规则。
-准许写提案不等于接受提案，也不授权实现、修改测试期望、设置 netns 参数或现场 I/O。
+本文的规则、数值、测试层和协议方向已按 §8 裁决接受（2026-09-06）；它们不覆盖 Gate B ADR 的
+现行 Accepted 预算/wire/§20/§22 规则，只在其之上增加测试模型、失效验收与研究方向。
+接受文本不授权实现、修改测试期望、设置 netns 参数或现场 I/O；M 实现须另行授权并独立复审。
 本 PR 不改变任何代码、测试、配置、工作流、golden、artifact 或 parser。
 
 ## 1. 要解决的问题与推荐顺序
@@ -124,7 +127,9 @@ Linux [conntrack 文档](https://docs.kernel.org/networking/nf_conntrack-sysctl.
 
 60s 只是覆盖现有 attempt/排水期的隔离模型选择，不是要求用户配置路由器，也不代表确认了
 真实网络的寿命下界。M-E 把 replied 也设为 30s 是为了固定反例，必须区别于 #107 首次只读普通
-30s 的历史证据；没有执行过的配置不能写成实测。
+30s 的历史证据；没有执行过的配置不能写成实测。现有 `full_shape_tail_hit`（runner 默认 30s、
+尾部命中）已构成"30s 模型下 late hit 成功"的对照，须原样保留；M-S 的 60s 层不得被解读为放弃
+默认 30s 覆盖，两者分别报告。
 
 ### 4.3 未来 isolated harness 的设置权限建议
 
@@ -274,23 +279,25 @@ loopback carrier、live authorization、daemon、scheduler 或永久回归门禁
 
 ## 8. 裁决栏与实施前置
 
-以下“建议”不是 Accepted；批准人、独立复审、日期和 exact-SHA 接受记录均留待维护者填写。
+维护者（houyuwushang）委托独立复审人按其复审推荐代填以下裁决；复审记录为
+[PR #108 评论](https://github.com/houyuwushang/winkyou/pull/108#issuecomment-5554767343)。
+代填不改变角色边界：M 实现授权与 E mini-spec 接受仍须维护者另行下达。
 
 | 待决项 | 本文建议 | 裁决 |
 | --- | --- | --- |
-| D1 证据边界 | 接受时间有效性与五秒 FIRE freshness 分离，不追溯认定 #105 唯一根因 | 待定 |
-| D2 M 模型 | M-S=60s、M-E=30s，mapping/filter 与 kernel 两档均显式；逐 namespace 权限/回读/清理 | 待定 |
-| D3 M-E 验收 | 只在独立 expiry 层接受 §4.4 精确失败证明，不改普通 loss gate | 待定 |
-| D4 E 方向 | 研究 E2 双角色提前停止/唯一仲裁；须先证明原 8-frame envelope 可行 | 待定 |
-| D5 兼容与资源 | E 需新显式语义标识与 golden；不增加任何上限，不能静默改 `/1` | 待定 |
-| D6 实施次序 | 先裁决 M，再独立实现/复审；E 完整 wire 冻结前不开 executor；不推进 C1c/现场 | 待定 |
+| D1 证据边界 | 接受时间有效性与五秒 FIRE freshness 分离，不追溯认定 #105 唯一根因 | **接受。** 一次 candidate 命中不证明后续 winner/VERIFY 可达；#105 原失败无 reverse-flow 见证，不追溯归因。 |
+| D2 M 模型 | M-S=60s、M-E=30s，mapping/filter 与 kernel 两档均显式；逐 namespace 权限/回读/清理 | **接受。** sysctl 只在 fresh、已证明 owned、非 init 的 NAT namespace 设置；设置前保存、设置后逐值回读、完成后恢复/回读并删除；须实测证明 init 与旁侧 namespace 值不变，任一环节失败 fail-closed。 |
+| D3 M-E 验收 | 只在独立 expiry 层接受 §4.4 精确失败证明，不改普通 loss gate | **接受。** 普通 50% loss gate 继续拒绝 timeout/winner-positive 元组（#107 已把 #106 观测元组固化为负向变异）；M-E 须同时证明 reverse flow 曾存在且确认前消失、winner out=1/peer in=0、完整 16K、唯一 winner、FINISH/排水/零残留；initiator-winner 形状先作负向向量。 |
+| D4 E 方向 | 研究 E2 双角色提前停止/唯一仲裁；须先证明原 8-frame envelope 可行 | **接受为研究方向，不批准实现。** mini-spec 须优先评估"将 early-stop 承载于既有第 7 帧 selection、放宽 role-order 为任一侧可先发"能否避开第 9 帧；交叉 proposal 的唯一仲裁仍须逐事件状态表；不恢复 §20 已证伪的定时 deferred winner。 |
+| D5 兼容与资源 | E 需新显式语义标识与 golden；不增加任何上限，不能静默改 `/1` | **接受。** 新 identifier 进 Noise prologue/固定 AD 并反映到双方独立重算的 commitment；`/1` 字节解释不变；未知版本零 I/O 拒绝，无协商/fallback。 |
+| D6 实施次序 | 先裁决 M，再独立实现/复审；E 完整 wire 冻结前不开 executor；不推进 C1c/现场 | **接受。** M 实现须拆 #107 为 M-S/M-E 两个显式 fixture 并保留原 RED 记录为旧模型反例；`16,381 != 16,397` 须单独定位并保持相等断言。 |
 
-- 维护者裁决人/日期：未填写。
-- 独立评审人/结论：未填写。
-- 接受的文档 exact SHA：未填写。
-- M 实现授权范围与编号：未填写。
-- E mini-spec 接受与实现授权：未填写。
+- 维护者裁决人/日期：houyuwushang 委托独立复审人代填，2026-09-06。
+- 独立评审人/结论：Copilot 独立复审——接受草案文本（见上引评论）。
+- 接受的文档 exact SHA：复审文本为 `a1c96d44857d312cbcae6536817e3b80476fd2d4`；裁决填写为 PR #108 最终 head（合并记录以 merge commit 为准）。
+- M 实现授权范围与编号：**待维护者另行下达**（建议范围：#107 拆分 + §4.2 三层 fixture + §4.3 netns sysctl 权限，仅 `linux && natlab` test-only）。
+- E mini-spec 接受与实现授权：**待 mini-spec 提交并独立复审后另行裁决**。
 
-合入本 Draft 文档（若以后发生）不自动关闭 #106、不使 #107 可合并，也不授权任何实现。
-恢复 #107 前至少需要 D1–D3/D5/D6 的明确接受、独立评审和新的实现续令；E 还需要 D4 与
+合入本文档不自动关闭 #106、不使 #107 可合并，也不授权任何实现。
+恢复 #107 前至少需要 M 的实现续令、独立评审与两层 fixture 通过；E 还需要 D4 的 mini-spec、
 §5.3 的完整协议可行性及字节冻结。M 绿灯不能替代 E、C1c inactivity 或任何现场窗口的前置。
