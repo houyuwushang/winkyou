@@ -890,10 +890,12 @@ C1a 的 Windows 零连接 `ssh -G` 实现验证进一步发现：即使使用 `-
   config 控制的 interval、增加 initiator 侧 liveness 感知；此处不预选、不实现任何候选，
   不改变 C1b 已接受实现的行为，也不签发 C1c/现场权限。
 
-**后续提案（2026-09-06，尚未裁决）：** 维护者确认当前保留 WireGuard、不自研替代数据面。
-[session liveness 重裁决草案](./ADR-N3C-SESSION-LIVENESS.md) 提议由 WinkYou 的双端挑战与
-写强制点管理健康空闲/失联，包含独立控制额度、时钟与排水验收门。该文仍为 Draft；本节
-已接受规则不因链接、产品取舍或 docs CI 通过而改变，C1c 前置门仍开放。
+**重裁决结果（2026-09-06）：** 维护者确认当前保留 WireGuard、不自研替代数据面。
+[session liveness ADR](./ADR-N3C-SESSION-LIVENESS.md) 已按其 §11 接受：由 WinkYou 的双端
+随机挑战（K=20s/R=5s/M=2|3）与写强制点管理健康空闲/失联，含独立控制额度、时钟与排水
+验收门；policy 生效时整体替换本节的 5s×3 inner-inactivity 规则，缺 policy 的 C1b 路径原样。
+本节"C1c 前 inactivity 重裁决"前置门在文本层面关闭；liveness 实现、C1c 与现场 I/O 仍分别
+需要维护者另行授权与独立复审，不因链接或 docs CI 通过而推定。
 
 ### 16.9 responder stdio bounded stream
 

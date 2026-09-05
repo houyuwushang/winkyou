@@ -1,15 +1,18 @@
 # ADR 提案：C1c 前的 session inactivity / liveness 重裁决
 
-- 状态：**Draft（2026-09-06），供维护者与独立专家裁决；不是 Accepted，不授权实现或现场 I/O。**
+- 状态：**Accepted（2026-09-06）：§11 六项裁决由维护者委托独立复审人按复审推荐代填（复审记录见
+  [PR #105 评论](https://github.com/houyuwushang/winkyou/pull/105#issuecomment-5554766996)）；
+  文本接受不等于实现授权——liveness 实现与 C1c 仍须维护者另行下达，不授权现场 I/O。**
 - 基线：`main = f2df7456a553ee731fa8801114985413ebb49540`，PR #104 已独立复审并合入。
 - 跟踪：[#98](https://github.com/houyuwushang/winkyou/issues/98)。
 - 上位约束：[Gate C1 ADR](./ADR-N3C-GATE-C1-SSH-PRODUCT-ASSEMBLY.md) §16.8、§16.10、§18、§19，
   [取消排水契约](../CANCELLATION-DRAIN-CONTRACT.md)、
   [跨重启契约](../PAIRING-RESTART-SAFETY-CONTRACT.md)。
 
-本文所有新增参数、线格式、接口要求和验收条目都是**待接受的完整方案**。文档合入本身不关闭
-C1c 前置门；必须填写 §11 决策栏、完成独立复审，并由维护者另行授权实现。现有 C1b 的常量、
-packet trace、golden、parser、默认行为及历史失败证据保持原样。
+本文所有新增参数、线格式、接口要求和验收条目已按 §11 裁决**接受为完整方案**（2026-09-06）。
+文本接受关闭的只是 Gate C1 §16.8 的"重裁决"前置门；liveness 实现须由维护者另行授权并独立复审，
+C1c 与现场 I/O 仍分别冻结。现有 C1b 的常量、packet trace、golden、parser、默认行为及历史失败
+证据保持原样，直到获授权的实现 PR 按 §9 取证后才改变。
 
 ### 已确认的产品取舍（不等于接受本提案）
 
@@ -97,9 +100,22 @@ C 不是重复使用一次性的 post-OOB echo，也不是复制 legacy ping dae
   不静默改变行为。C1c 缺字段、未知 mode/成员、非整数或超界 M 在 SSH/UDP 前拒绝。
 - 两端使用同一经审查构建；M 可分别更保守。policy 不来自 artifact、OOB 或 peer report，
   不通过网络协商，不改变四套 artifact/parser 或 Noise prologue；跨版本兼容不在此门。
+- **policy 生效即整体替换 Gate C1 §16.8 的 inner-inactivity 规则（复审必补项）。** C1b 的
+  responder 以 5s×3 inner 数据报 ticker 判定失联，而 §7.1 的分流 adapter 会在 foreground
+  reader 之前截走 WYCL PING/PONG；若两套规则并行，健康但业务空闲的 session 仍会在 15 秒内以
+  `inactivity_ceiling` 退出，直接否定 §1 第一条。因此 `session_liveness` 存在时：responder
+  不再运行 inner-inactivity ticker，`inactivity_ceiling` 终局在该路径不再产生；两端对称地只以
+  本节许可到期、authenticated CLOSE、absolute ceiling 与 §8 的稳定错误结束。缺 policy 的旧
+  C1b 路径保持 §16.8 原行为，不受影响。
 
 20s 是给常用 25s 映射保持建议留余量的**待验证工程值**，不是 NAT 分类结论。短于该间隔的
 映射寿命、超出 5s 的 RTT 或连续丢包可以导致保守终局；不能通过在线缩短 K/扩大 M 补救。
+每 20 秒的双向 PING/PONG 客观上也刷新 fixed-target 路径上的 NAT 映射，且低于
+[#106](https://github.com/houyuwushang/winkyou/issues/106) / [PR #107](https://github.com/houyuwushang/winkyou/pull/107)
+在隔离 runner 只读实测到的 30s 普通 UDP conntrack 默认值；这只是与该实测的对照，不构成
+NAT 分类或寿命下界结论。本节 liveness 只在 durable FINISH 之后运行，不能用于 VERIFY 之前的
+候选路径续命——建立阶段的映射寿命问题由
+[Hard16 映射寿命 ADR](./ADR-N3C-HARD16-MAPPING-LIFETIME.md) 单独裁决。
 
 ### 4.2 绝不能提前激活
 
@@ -151,9 +167,14 @@ headroom。同一 transport、同一 peer/attempt/generation/path/consumer/owner
 提案为保守检测：arm 时固定本地 `(mono0, UTC0)`；每次判定用
 `elapsed=max(monoNow-mono0, UTCNow-UTC0)`。所有槽、答复窗及续许可统一按此 elapsed 计算；
 原 absolute deadline 仍保留，并以 arm 时的剩余时间再约束 elapsed，不能重新起算绝对寿命。
-以**固定起点**计算的两种 elapsed 差值绝对值超过 2s、任一时钟相对上次读数倒退或溢出，
-在下一次 I/O 前以 `session_liveness_clock_invalid` 终局。不重置起点来吃掉多次短挂起，
-不校准/延长既有许可；小幅前跳最多提前退出，不用较慢时钟延寿。
+以**固定起点**计算的两种 elapsed 差值绝对值超过 2s、单调时钟相对上次读数倒退或任一
+时钟溢出，在下一次 I/O 前以 `session_liveness_clock_invalid` 终局。不重置起点来吃掉多次短
+挂起，不校准/延长既有许可；小幅前跳最多提前退出，不用较慢时钟延寿。
+
+**裁决（2026-09-06）：UTC 相对上次读数倒退本身不终局，只记入 witness。** 理由：`max()` 已
+保证任何回拨都不能延长许可（回拨只会让 UTC 项变小、由单调项兜底），因此 NTP step 或手动
+校时的小幅回拨没有安全后果，将其判为终局只损失可用性。单调时钟倒退、任一溢出与 >2s
+发散仍按上文终局；回拨若同时造成 >2s 发散，仍由发散规则终局。
 
 支持平台必须用系统 suspend/resume 证据验证，不能只用缩短 ticker 的单测替代。本地校时也
 可能保守终止，这是待接受的可用性代价。机器完全不被调度期间无法保证清理在物理 2s 内
@@ -197,7 +218,8 @@ sequence。PONG 的 role 是实际答复方，不复制 PING sender。128-bit no
 - 经过认证却属于本控制端口的错 binding/role/type/格式按稳定 protocol error 终局；普通业务
   流量不进入该 parser，不能因为“不像 WYCL”被吞掉。
 - 旧 WYCE、WYCR、WYCF、WYHB 在此 parser 拒绝；旧 parser 不增加接受 WYCL 的分支。新 frame
-  不进 SSH/OOB，不改变任何已冻结建立序列。
+  不进 SSH/OOB，不改变任何已冻结建立序列。既有 WYCE echo 不生成/校验 UDP checksum，保持原样
+  不回溯修改；本节 checksum 要求只约束 WYCL。
 
 ## 7. 所有权、计费与停止发送的强制点
 
@@ -207,6 +229,12 @@ orchestrator 拥有 liveness 状态与 policy；`pkg/tunnel` 仍不认识 solver
 使用 session-owned 的 inner 分流 adapter：只截获 exact virtual control tuple 的解密入站包，
 普通包继续交给原 TUN/interface **恰好一次**。不能与应用竞争读取 `ReceivePacket`，不能把
 业务包消费掉后只给计数。发出的控制包走现有 inner 注入与同一 lease-owned transport。
+
+**接口冻结（2026-09-06）：** 实现该 adapter 需要 `pkg/tunnel` 提供一个通用的 inner-tap 接口，
+位于 wireguard-go 解密/AllowedIPs 检查之后、TUN 写入之前；它只按调用方给定的 exact
+`(src, dst, proto, sport, dport)` 匹配并把匹配包交给注册方、其余包原路交付恰好一次，不认识
+solver、artifact、NAT、attempt 或 policy，不做重试、缓冲或再注入。该接口的存在、单注册方、
+恰好一次与零认知不变量在此冻结；其命名与签名由实现 PR 固定并进入 architecture gate。
 
 新增队列最多 2 个待出站、2 个入站控制包；每个 inner 包至多 92 bytes；满队列不派生 goroutine
 或等待队列，只丢弃该控制事件并单列 witness。新增协议 worker 至多 2 个、显式 timer 至多
@@ -322,15 +350,20 @@ daemon、scheduler、自动恢复、默认 `wink up` 或 stdio v1/v2 接线。�
 现场实例、不配置宿主网络。接入实现若需要额外权限或不能满足上述资源/时钟/分流契约，必须
 回到 ADR，不把本提案当作“为实现方便可以变通”。
 
-## 11. 待裁决栏（刻意留空）
+## 11. 裁决栏（2026-09-06 填写）
+
+维护者（houyuwushang）委托独立复审人按其复审推荐代填以下裁决；复审记录为
+[PR #105 评论](https://github.com/houyuwushang/winkyou/pull/105#issuecomment-5554766996)。
+代填不改变角色边界：实现授权与 C1c 开工仍须维护者另行下达。
 
 | 决策 | 维护者选择 / 独立复审记录 |
 | --- | --- |
-| 是否接受 C 的双端随机挑战，而不是 outer-only 续租 | 待裁决 |
-| 是否接受 K=20s、R=5s、M=2/3、L=45/65s，保留原 absolute ceiling | 待裁决 |
-| 是否接受 WYCL 定长格式、虚拟端口与单次 nonce/sequence 规则 | 待裁决 |
-| 是否接受新增 post-FINISH 两类控制账与写强制点；WG 控制 lane 上限是否足够 | 待裁决 |
-| 是否接受时钟/挂起 fail-closed、双侧失联终局与新的稳定错误 | 待裁决 |
-| 是否接受不改旧默认/无协商，以及先隔离证明再授权 C1c 的执行顺序 | 待裁决 |
+| 是否接受 C 的双端随机挑战，而不是 outer-only 续租 | **接受。** A 把业务空闲当失联且两端不对称；B 受 WireGuard persistent timer 收发互重置反例约束、raw 统计非双向证明。C 失败后不得回退 A/B。 |
+| 是否接受 K=20s、R=5s、M=2/3、L=45/65s，保留原 absolute ceiling | **接受为待验证工程值。** §9 "真 WireGuard 下无业务 ≥180s 双侧 proof 持续"与黑洞 ≤65s/≤67s 见证为必过；实测超界则回到本 ADR 修订，不在实现中调参求绿。 |
+| 是否接受 WYCL 定长格式、虚拟端口与单次 nonce/sequence 规则 | **接受。** 64-byte payload / 92-byte inner / 128-byte WG payload 核算无误；端口 32113 与 WYCE 32112 分离；旧 parser 不增加分支。 |
+| 是否接受新增 post-FINISH 两类控制账与写强制点；WG 控制 lane 上限是否足够 | **接受两类控制账与写强制点。** WG 控制 lane 的 rolling 1s ≤4 / 单包 ≤148 bytes 作为**提案上限**接受，须以真实 rekey 与丢包实测证明不误伤正常路径后才算冻结；实测不足即回 ADR，不得自行扩额。 |
+| 是否接受时钟/挂起 fail-closed、双侧失联终局与新的稳定错误 | **接受**,并按 §5.1 裁决修正一处：单调时钟倒退、任一溢出、固定起点 elapsed 发散 >2s 终局;UTC 相对上次读数倒退本身只记 witness 不终局。五个新稳定错误类接受。 |
+| 是否接受不改旧默认/无协商，以及先隔离证明再授权 C1c 的执行顺序 | **接受。** policy 缺失的 C1b 路径原样;policy 生效时整体替换 §16.8 inner-inactivity 规则（§4.1 必补项）;先 memory/loopback/required netns 证明，再 C1c exact build 评审。 |
 
-推荐意见不是维护者选择；表格未闭合、Status 未 Accepted 时，Gate C1 §16.8 前置门保持开放。
+表格已闭合、Status 为 Accepted，因此 Gate C1 §16.8 的"C1c 前 inactivity 重裁决"前置门**在文本层面关闭**；
+但 §9 验收矛阵全部待实现/待实测，liveness 实现、C1c 与任何现场窗口仍各需维护者另行授权与独立复审。
