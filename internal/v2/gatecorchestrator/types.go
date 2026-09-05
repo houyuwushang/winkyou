@@ -177,10 +177,7 @@ type conflictState struct {
 type dependencies struct {
 	now              func() time.Time
 	random           io.Reader
-	probeFactory     probeio.Factory
-	natlabFactory    probeio.IsolatedNATLabFactory
-	hardNATFactory   probeio.HardNATCampaignNATLabFactory
-	harness          *gateb.HarnessHooks
+	configureGateB   func(*gateb.Config)
 	inspectConflict  func(context.Context, preparedInput, trustedPeer) (conflictState, error)
 	openSSH          func(context.Context, sshassembly.Config) (sshProductStream, error)
 	claimPending     func(time.Time) (*gatecstage.Claimed, error)

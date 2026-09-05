@@ -42,8 +42,10 @@ type MemoryProofOptions struct {
 func RunMemoryProof(ctx context.Context, options MemoryProofOptions) (Result, error) {
 	wrapped := &proofSSHStream{BoundedStream: options.Stream}
 	deps := defaultDependencies()
-	deps.probeFactory = options.ProbeFactory
-	deps.harness = options.Harness
+	deps.configureGateB = func(configuration *gateb.Config) {
+		configuration.ProbeFactory = options.ProbeFactory
+		configuration.Harness = options.Harness
+	}
 	deps.inspectConflict = func(context.Context, preparedInput, trustedPeer) (conflictState, error) {
 		return conflictState{}, nil
 	}

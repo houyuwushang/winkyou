@@ -149,11 +149,12 @@ func gateC1aDependencyViolations(result scanResult) []string {
 	wrapper := modulePath + "/internal/v2/sshchildwrapper"
 	pairgen := modulePath + "/internal/v2/pairgen"
 	command := modulePath + "/cmd/wink/cmd"
+	orchestrator := modulePath + "/internal/v2/gatecorchestrator"
 	allowed := map[string]map[string]struct{}{
-		gateCAttempt: {pairgen: {}, gateCRequest: {}, gateCStage: {}, command: {}},
-		gateCRequest: {gateCStage: {}, assembly: {}},
-		gateCStage:   {command: {}},
-		assembly:     {},
+		gateCAttempt: {pairgen: {}, gateCRequest: {}, gateCStage: {}, command: {}, orchestrator: {}},
+		gateCRequest: {gateCStage: {}, assembly: {}, orchestrator: {}},
+		gateCStage:   {command: {}, orchestrator: {}},
+		assembly:     {orchestrator: {}},
 		wrapper:      {},
 	}
 	labels := map[string]string{

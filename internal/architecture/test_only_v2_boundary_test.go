@@ -676,6 +676,8 @@ func v2RestrictedDependencyViolations(result scanResult) []string {
 	rendezvousWire := modulePath + "/internal/v2/rendezvouswire"
 	rendezvousAdmission := modulePath + "/internal/v2/rendezvousadmission"
 	rendezvousServer := modulePath + "/internal/v2/rendezvousserver"
+	gateCOrchestrator := modulePath + "/internal/v2/gatecorchestrator"
+	gateCChildStream := modulePath + "/internal/v2/gatecchildstream"
 	solverStdio := modulePath + "/internal/solverstdio"
 	rendezvousCommand := modulePath + "/cmd/wink-rendezvous"
 	simulationOnlyPackages := map[string]struct{}{
@@ -835,15 +837,15 @@ func v2RestrictedDependencyViolations(result scanResult) []string {
 				violations = append(violations, importer+" imports forbidden admission dependency "+imported)
 			case importer == rendezvousServer && strings.HasPrefix(imported, modulePath+"/") && !containsImportOrChild(allowedRendezvousServerImports, imported):
 				violations = append(violations, importer+" imports forbidden one-shot-server dependency "+imported)
-			case imported == gateB || strings.HasPrefix(imported, gateB+"/"):
+			case (imported == gateB || strings.HasPrefix(imported, gateB+"/")) && importer != gateCOrchestrator:
 				violations = append(violations, importer+" imports disconnected Gate B2 executor "+imported)
 			case imported == gateA || strings.HasPrefix(imported, gateA+"/"):
 				violations = append(violations, importer+" imports Gate A test-only boundary "+imported)
-			case (imported == directConnect || strings.HasPrefix(imported, directConnect+"/")) && importer != solverStdio:
+			case (imported == directConnect || strings.HasPrefix(imported, directConnect+"/")) && importer != solverStdio && importer != gateCOrchestrator:
 				violations = append(violations, importer+" imports product direct-connect boundary "+imported)
 			case (imported == rendezvousServer || strings.HasPrefix(imported, rendezvousServer+"/")) && importer != rendezvousCommand:
 				violations = append(violations, importer+" imports one-shot rendezvous server "+imported)
-			case (imported == oobCarrier || strings.HasPrefix(imported, oobCarrier+"/")) && importer != gateA && importer != gateB:
+			case (imported == oobCarrier || strings.HasPrefix(imported, oobCarrier+"/")) && importer != gateA && importer != gateB && importer != gateCOrchestrator && importer != gateCChildStream:
 				violations = append(violations, importer+" imports Gate A bounded carrier "+imported+" without approval")
 			case (imported == oobAttempt || strings.HasPrefix(imported, oobAttempt+"/")) && importer != oobCarrier && importer != gateA:
 				violations = append(violations, importer+" imports Gate A OOB artifact "+imported+" without approval")
@@ -1189,6 +1191,7 @@ func approvedHardNATPlannerImporter(importer string) bool {
 		modulePath + "/internal/v2/gatecattempt":        {},
 		modulePath + "/internal/v2/pairgen":             {},
 		modulePath + "/internal/v2/sshassembly":         {},
+		modulePath + "/internal/v2/gatecorchestrator":   {},
 	}
 	_, ok := approved[importer]
 	return ok
@@ -1200,13 +1203,14 @@ func approvedHardNATB2Importer(importer, imported string) bool {
 	case modulePath + "/internal/v2/hardnatbudget":
 		return importer == gateB || importer == modulePath+"/internal/v2/hardnatattempt" ||
 			importer == modulePath+"/internal/v2/hardnatobserve" || importer == modulePath+"/internal/v2/oobcarrier" ||
-			importer == modulePath+"/internal/v2/gatecattempt" || importer == modulePath+"/internal/v2/sshassembly"
+			importer == modulePath+"/internal/v2/gatecattempt" || importer == modulePath+"/internal/v2/sshassembly" ||
+			importer == modulePath+"/internal/v2/gatecorchestrator"
 	case modulePath + "/internal/v2/hardnatattempt":
 		return importer == gateB || importer == modulePath+"/internal/v2/hardnatcontrol"
 	case modulePath + "/internal/v2/hardnatcontrol":
 		return importer == gateB || importer == modulePath+"/internal/v2/oobcarrier"
 	case modulePath + "/internal/v2/hardnatobserve":
-		return importer == gateB
+		return importer == gateB || importer == modulePath+"/internal/v2/gatecorchestrator"
 	default:
 		return false
 	}
@@ -1225,7 +1229,8 @@ func approvedDirectAttemptImporter(importer, imported string) bool {
 		importer == modulePath+"/internal/v2/gatecattempt" ||
 		importer == modulePath+"/internal/v2/hardnatattempt" ||
 		importer == modulePath+"/internal/v2/hardnatcontrol" ||
-		importer == modulePath+"/internal/v2/directconnect/gateb") &&
+		importer == modulePath+"/internal/v2/directconnect/gateb" ||
+		importer == modulePath+"/internal/v2/gatecorchestrator") &&
 		imported == modulePath+"/internal/v2/directattempt"
 }
 

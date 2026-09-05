@@ -18,7 +18,6 @@ import (
 	"winkyou/internal/v2/oobcarrier"
 	"winkyou/internal/v2/sshassembly"
 	"winkyou/pkg/netif"
-	"winkyou/pkg/session"
 	"winkyou/pkg/tunnel"
 )
 
@@ -58,10 +57,7 @@ func runPrepared(ctx context.Context, input preparedInput, deps dependencies) (r
 	if err != nil {
 		return Result{}, localFailure(ClassRequestInvalid, StagePreflight, false, profileOf(input), resourceOf(input), err, nil)
 	}
-	if deps.probeFactory == nil && deps.natlabFactory == nil && deps.hardNATFactory == nil {
-		return Result{}, localFailure(ClassPeerUnauthorized, StagePreflight, false, profileOf(input), resourceOf(input), ErrPeerUnauthorized, nil)
-	}
-	if _, raw := deps.probeFactory.(*probeio.UDPFactory); raw {
+	if deps.configureGateB == nil {
 		return Result{}, localFailure(ClassPeerUnauthorized, StagePreflight, false, profileOf(input), resourceOf(input), ErrPeerUnauthorized, nil)
 	}
 	state, err := deps.inspectConflict(ctx, input, peer)
@@ -102,8 +98,6 @@ func runPrepared(ctx context.Context, input preparedInput, deps dependencies) (r
 		Machine: input.machine, Ledger: input.ledger, PreparedArtifact: input.artifact,
 		ExpectedPeerAddress: input.request.ExpectedPeerPublicAddress,
 		ObserverTopology:    topology, BuildVersion: input.buildVersion,
-		ProbeFactory: deps.probeFactory, NATLabFactory: deps.natlabFactory,
-		HardNATLabFactory: deps.hardNATFactory, Harness: deps.harness,
 		Progress: func(stage string, cancellable bool) error {
 			if stage == gateb.StagePreflight || stage == gateb.StageTerminal {
 				return nil
@@ -111,6 +105,7 @@ func runPrepared(ctx context.Context, input preparedInput, deps dependencies) (r
 			return sequence.emit(stage, cancellable)
 		},
 	}
+	deps.configureGateB(&gateConfig)
 	gateConfig.OpenProductStream = func(openCtx context.Context, attempt *governor.AttemptLease, deadline time.Time) (stream oobcarrier.BoundedStream, openErr error) {
 		if attempt == nil || attempt.Request().ID != input.artifact.AttemptID || !deadline.After(deps.now()) {
 			return nil, ErrRequestInvalid
@@ -197,15 +192,15 @@ func runPrepared(ctx context.Context, input preparedInput, deps dependencies) (r
 	if err != nil {
 		return result, classifyLocalFailure(ErrWireGuardBinding, gateb.StageHandoff, true, input, nil)
 	}
-	binder := session.NewTunnelBinder(tun, fixedPeerProvider{peerID: peer.ref, peer: configuredPeer})
 	if err := handoff.BeginWireGuardChallenge(); err != nil {
 		return result, classifyLocalFailure(ErrWireGuardBinding, gateb.StageDataPlaneChallenge, true, input, nil)
 	}
-	if err := binder.Bind(ctx, peer.ref, handoff.Transport()); err != nil {
+	configuredPeer.Transport = handoff.Transport()
+	if err := tun.AddPeer(configuredPeer); err != nil {
 		return result, classifyLocalFailure(ErrWireGuardBinding, gateb.StageDataPlaneChallenge, true, input, nil)
 	}
 	if input.request.Role == directattempt.RoleInitiator {
-		if err := binder.InitiateHandshake(ctx, peer.ref); err != nil {
+		if err := initiateOneShotHandshake(ctx, tun, peer.publicKey); err != nil {
 			return result, classifyLocalFailure(ErrWireGuardBinding, gateb.StageDataPlaneChallenge, true, input, nil)
 		}
 	}
@@ -289,6 +284,23 @@ func completeWireGuardChallenge(ctx context.Context, handoff *gateb.ProductHando
 		case <-ticker.C:
 		}
 	}
+}
+
+func initiateOneShotHandshake(ctx context.Context, tun tunnel.Tunnel, publicKey tunnel.PublicKey) error {
+	if ctx == nil || tun == nil {
+		return ErrWireGuardBinding
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	initiator, ok := tun.(tunnel.OneShotHandshakeInitiator)
+	if !ok {
+		return ErrWireGuardBinding
+	}
+	if err := initiator.InitiatePeerHandshake(publicKey); err != nil {
+		return err
+	}
+	return ctx.Err()
 }
 
 func challengeTraceComplete(witness probeio.WireGuardSessionGateWitness) bool {

@@ -17,7 +17,6 @@ import (
 	"winkyou/internal/v2/hardnatobserve"
 	"winkyou/internal/v2/hardnatplan"
 	"winkyou/pkg/config"
-	"winkyou/pkg/session"
 	"winkyou/pkg/tunnel"
 )
 
@@ -104,14 +103,17 @@ func observerTopology(request gatecrequest.Request) (hardnatobserve.Topology, er
 	return topology, nil
 }
 
-func bindingPeer(peer trustedPeer) (*session.BindingPeer, error) {
+func bindingPeer(peer trustedPeer) (*tunnel.PeerConfig, error) {
 	allowed := make([]net.IPNet, 0, len(peer.allowedIPs))
 	for _, prefix := range peer.allowedIPs {
+		if !prefix.Addr().Is4() {
+			return nil, ErrRequestInvalid
+		}
 		address := prefix.Addr().As4()
 		mask := net.CIDRMask(prefix.Bits(), 32)
 		allowed = append(allowed, net.IPNet{IP: net.IPv4(address[0], address[1], address[2], address[3]), Mask: mask})
 	}
-	return &session.BindingPeer{PublicKey: peer.publicKey, AllowedIPs: allowed, Keepalive: 0}, nil
+	return &tunnel.PeerConfig{PublicKey: peer.publicKey, AllowedIPs: allowed, Keepalive: 0}, nil
 }
 
 func acquireMachine(profile hardnatplan.Profile, resource hardnatplan.ResourceClass, buildVersion string) (*governor.Governor, *governor.PairingAdmissionLedger, error) {

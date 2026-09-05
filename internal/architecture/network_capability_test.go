@@ -519,7 +519,7 @@ func capabilityDependencyPath(start string, packages map[string]*packageInfo, ca
 				continue
 			}
 			nextPath := append(append([]string(nil), current.path...), imported)
-			if _, capable := capabilityPackages[imported]; capable {
+			if _, capable := capabilityPackages[imported]; capable && !approvedCapabilityDependencyEndpoint(start, imported) {
 				return append(nextPath, "[raw network capability]")
 			}
 			visited[imported] = struct{}{}
@@ -527,6 +527,14 @@ func capabilityDependencyPath(start string, packages map[string]*packageInfo, ca
 		}
 	}
 	return nil
+}
+
+// Gate C1b passes only the exact in-process MemoryTestInterface to the sealed
+// NewMemoryWireGuard constructor. pkg/netif also contains platform TUN files,
+// so the package-level graph needs this one endpoint exception; the Gate C1b
+// shape gate separately rejects every OS-interface constructor or new import.
+func approvedCapabilityDependencyEndpoint(start, endpoint string) bool {
+	return start == modulePath+"/internal/v2/gatecorchestrator" && endpoint == modulePath+"/pkg/netif"
 }
 
 func isGovernedPackage(pkg string) bool {
