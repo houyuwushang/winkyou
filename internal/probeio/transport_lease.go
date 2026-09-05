@@ -15,10 +15,17 @@ import (
 const (
 	// GateATestConsumer, GateB2TestConsumer, and GateB3TestConsumer are separately reviewed,
 	// disconnected test consumers. Neither authorizes a product data plane.
-	GateATestConsumer     = "gate-a-test-consumer/1"
-	GateB2TestConsumer    = "gate-b2-test-consumer/1"
-	GateB3TestConsumer    = "gate-b3-test-consumer/1"
-	TransportAdoptTimeout = time.Second
+	GateATestConsumer                  = "gate-a-test-consumer/1"
+	GateB2TestConsumer                 = "gate-b2-test-consumer/1"
+	GateB3TestConsumer                 = "gate-b3-test-consumer/1"
+	WireGuardDirectSessionConsumer     = "wireguard-direct-session/1"
+	WireGuardProfilePredictiveEDM      = "predictive_edm/1"
+	WireGuardProfileAsymmetricBirthday = "asymmetric_birthday/1"
+	WireGuardProfileHardBirthday       = "hard_birthday_campaign/1"
+	WireGuardPredictivePath            = "gate-c/predictive_edm/1"
+	WireGuardAsymmetricPath            = "gate-c/asymmetric_birthday/1"
+	WireGuardHardBirthdayPath          = "gate-c/hard_birthday_campaign/1"
+	TransportAdoptTimeout              = time.Second
 )
 
 // TransportLeaseBinding is immutable local authority. No field may be
@@ -30,6 +37,7 @@ type TransportLeaseBinding struct {
 	PathID       string
 	Target       netip.AddrPort
 	ConsumerKind string
+	Profile      string
 }
 
 type transportLeaseState uint8
@@ -89,8 +97,8 @@ type TransportLease struct {
 	stopOnce   sync.Once
 }
 
-// IssueTransportLease reserves the one reviewed test-consumer handoff. It
-// grants no socket or packet I/O and must run before ProbeSocket promotion.
+// IssueTransportLease reserves one exact reviewed consumer handoff. It grants
+// no socket or packet I/O and must run before ProbeSocket promotion.
 func IssueTransportLease(attempt *governor.AttemptLease, binding TransportLeaseBinding) (*TransportLease, error) {
 	if attempt == nil {
 		return nil, ErrTransportLease
@@ -107,6 +115,8 @@ func issueTransportLease(attempt AttemptLease, binding TransportLeaseBinding) (*
 		drainName = "gate-b2-transport-lease"
 	} else if binding.ConsumerKind == GateB3TestConsumer {
 		drainName = "gate-b3-transport-lease"
+	} else if binding.ConsumerKind == WireGuardDirectSessionConsumer {
+		drainName = "gate-c-wireguard-transport-lease"
 	}
 	drain, err := attempt.RegisterDrain(drainName)
 	if err != nil {
@@ -124,7 +134,7 @@ func issueTransportLease(attempt AttemptLease, binding TransportLeaseBinding) (*
 
 func validTransportLeaseBinding(attempt AttemptLease, binding TransportLeaseBinding) bool {
 	request := attempt.Request()
-	if !validTransportConsumer(binding.ConsumerKind, request) || binding.Generation == 0 ||
+	if !validTransportConsumer(binding, request) || binding.Generation == 0 ||
 		binding.PeerID == "" || binding.AttemptID == "" || binding.PathID == "" ||
 		binding.PeerID != attempt.PeerID() || binding.AttemptID != request.ID {
 		return false
@@ -138,20 +148,65 @@ func validTransportLeaseBinding(attempt AttemptLease, binding TransportLeaseBind
 	return validateText("path id", binding.PathID, 256, false) == nil
 }
 
-func validTransportConsumer(consumer string, request governor.AttemptRequest) bool {
-	if consumer == GateATestConsumer {
-		return request.Operation == governor.OperationConnectTest
+func validTransportConsumer(binding TransportLeaseBinding, request governor.AttemptRequest) bool {
+	if binding.ConsumerKind == GateATestConsumer {
+		return binding.Profile == "" && request.Operation == governor.OperationConnectTest
 	}
-	if consumer == GateB2TestConsumer {
-		return request.Operation == governor.OperationPrediction || request.Operation == governor.OperationBirthday
+	if binding.ConsumerKind == GateB2TestConsumer {
+		return binding.Profile == "" &&
+			(request.Operation == governor.OperationPrediction || request.Operation == governor.OperationBirthday)
 	}
-	return consumer == GateB3TestConsumer && request.Operation == governor.OperationBirthday &&
-		request.Cost == (governor.AttemptCost{
-			Resources: governor.Resources{
-				Sockets: 16, Targets: 16_400, FiveTuples: 16_400, Packets: 16_432, PacketsPerSecond: 512,
-			},
-			Duration: 47 * time.Second, Heavyweight: true,
-		})
+	if binding.ConsumerKind == GateB3TestConsumer {
+		return binding.Profile == "" && request.Operation == governor.OperationBirthday &&
+			request.Cost == (governor.AttemptCost{
+				Resources: governor.Resources{
+					Sockets: 16, Targets: 16_400, FiveTuples: 16_400, Packets: 16_432, PacketsPerSecond: 512,
+				},
+				Duration: 47 * time.Second, Heavyweight: true,
+			})
+	}
+	return validWireGuardProductConsumer(binding, request)
+}
+
+func validWireGuardProductConsumer(binding TransportLeaseBinding, request governor.AttemptRequest) bool {
+	if binding.ConsumerKind != WireGuardDirectSessionConsumer {
+		return false
+	}
+	var operation governor.Operation
+	var cost governor.AttemptCost
+	switch binding.Profile {
+	case WireGuardProfilePredictiveEDM:
+		if binding.PathID != WireGuardPredictivePath {
+			return false
+		}
+		operation = governor.OperationPrediction
+		cost = wireGuardProductCost(8, 64, 64, 64, 32, 22*time.Second)
+	case WireGuardProfileAsymmetricBirthday:
+		if binding.PathID != WireGuardAsymmetricPath {
+			return false
+		}
+		operation = governor.OperationBirthday
+		cost = wireGuardProductCost(128, 516, 523, 526, 64, 22*time.Second)
+	case WireGuardProfileHardBirthday:
+		if binding.PathID != WireGuardHardBirthdayPath || binding.Target.Port() < 49_152 {
+			return false
+		}
+		operation = governor.OperationBirthday
+		cost = wireGuardProductCost(16, 16_400, 16_400, 16_432, 512, 47*time.Second)
+	default:
+		return false
+	}
+	return request.Operation == operation && request.Cost == cost
+}
+
+func wireGuardProductCost(sockets, targets, fiveTuples, packets, packetsPerSecond int, duration time.Duration) governor.AttemptCost {
+	return governor.AttemptCost{
+		Resources: governor.Resources{
+			Sockets: sockets, Targets: targets, FiveTuples: fiveTuples,
+			Packets: packets, PacketsPerSecond: packetsPerSecond,
+		},
+		Duration: duration, Heavyweight: true,
+	}
 }
 
 func (lease *TransportLease) checkPromotionBinding(binding TransportLeaseBinding) error {
@@ -173,6 +228,7 @@ func (lease *TransportLease) attach(promotion Promotion) error {
 	binding := TransportLeaseBinding{
 		PeerID: promotion.PeerID, AttemptID: promotion.AttemptID, Generation: promotion.Generation,
 		PathID: lease.binding.PathID, Target: promotion.Target, ConsumerKind: lease.binding.ConsumerKind,
+		Profile: lease.binding.Profile,
 	}
 	lease.mu.Lock()
 	if lease.state != transportLeaseIssued || lease.detached || lease.binding != binding {
@@ -240,7 +296,7 @@ func (lease *TransportLease) MarkStandby() error {
 	return nil
 }
 
-// MarkChallengePassed records the final test-only data-plane proof.
+// MarkChallengePassed records the reviewed bounded data-plane proof.
 func (lease *TransportLease) MarkChallengePassed() error {
 	if lease == nil {
 		return ErrTransportLease

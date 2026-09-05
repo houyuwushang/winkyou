@@ -39,6 +39,9 @@ var (
 	ErrTransportLease      = errors.New("probeio: transport lease is unavailable")
 	ErrTransportBinding    = errors.New("probeio: transport lease binding mismatch")
 	ErrTransportInactive   = errors.New("probeio: transport lease is not active")
+	ErrWireGuardGate       = errors.New("probeio: wireguard session gate rejected packet")
+	ErrWireGuardGateState  = errors.New("probeio: wireguard session gate state mismatch")
+	ErrWireGuardGateLimit  = errors.New("probeio: wireguard session challenge limit exceeded")
 )
 
 // AttemptLease is the narrow governor capability required by probeio.
@@ -762,6 +765,13 @@ func (socket *ProbeSocket) PromoteToHardNATCampaignLease(target netip.AddrPort, 
 	return socket.promoteToLease(target, pathID, GateB3TestConsumer, destination)
 }
 
+// PromoteToWireGuardSessionLease is the production Gate C handoff. It can
+// attach only to the exact wireguard-direct-session/1 lease issued before
+// promotion; no raw PacketTransport is returned.
+func (socket *ProbeSocket) PromoteToWireGuardSessionLease(target netip.AddrPort, pathID string, destination *TransportLease) error {
+	return socket.promoteToLease(target, pathID, WireGuardDirectSessionConsumer, destination)
+}
+
 func (socket *ProbeSocket) promoteToLease(target netip.AddrPort, pathID, consumerKind string, destination *TransportLease) error {
 	if destination == nil {
 		return ErrTransportLease
@@ -776,7 +786,7 @@ func (socket *ProbeSocket) promoteToLease(target netip.AddrPort, pathID, consume
 	}
 	if err := destination.checkPromotionBinding(TransportLeaseBinding{
 		PeerID: c.lease.PeerID(), AttemptID: c.request.ID, Generation: c.expectedGeneration,
-		PathID: pathID, Target: canonical, ConsumerKind: consumerKind,
+		PathID: pathID, Target: canonical, ConsumerKind: consumerKind, Profile: destination.binding.Profile,
 	}); err != nil {
 		return err
 	}
