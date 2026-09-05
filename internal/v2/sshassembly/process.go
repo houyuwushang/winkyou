@@ -7,6 +7,7 @@ import (
 )
 
 type processContainment interface {
+	RequestExit() error
 	Kill() error
 	Close() error
 }
@@ -66,6 +67,13 @@ func (process *execOwnedProcess) Kill() error {
 		return ErrChildTerminated
 	}
 	return process.containment.Kill()
+}
+
+func (process *execOwnedProcess) RequestExit() error {
+	if process == nil || process.containment == nil {
+		return ErrChildTerminated
+	}
+	return process.containment.RequestExit()
 }
 
 func validateSystemExecutable(path string) error {

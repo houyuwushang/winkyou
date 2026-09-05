@@ -485,7 +485,7 @@ jobs:
             env GORACE=halt_on_error=1 \
             "${RUNNER_TEMP}/winkyou-gatec1b.test" \
             -test.v \
-            -test.run '^TestLinuxGateC1bProductProof$' \
+            -test.run '^(TestGateC1bSSHDiagnosticsAreBoundedAndRedacted|TestLinuxGateC1bProductProof)$' \
             -test.count=1 \
             -test.timeout=12m
 

@@ -45,6 +45,7 @@ type ownedProcess interface {
 	Stdout() io.ReadCloser
 	Stderr() io.ReadCloser
 	Wait() error
+	RequestExit() error
 	Kill() error
 }
 
@@ -423,6 +424,7 @@ func (stream *Stream) shutdown() {
 	_ = stream.stdin.Close()
 	_ = stream.stdout.Close()
 	_ = stream.stderr.Close()
+	_ = stream.child.RequestExit()
 	stream.ops.Wait()
 	timer := time.NewTimer(DrainTimeout)
 	select {

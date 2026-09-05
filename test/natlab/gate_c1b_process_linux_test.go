@@ -4,6 +4,7 @@ package natlab
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -242,6 +243,12 @@ func runGateC1bPrivateSSHD(t *testing.T, cfg gateC1bHostConfig) {
 	// Private test sshd diagnostics are reduced at the pipe boundary. No raw
 	// line, address, key, account, path or command is saved or published.
 	diagnostics := &gateC1bSSHDCounters{path: cfg.ReadyFile + ".counts"}
+	defer func() {
+		diagnostics.mu.Lock()
+		clear(diagnostics.pending)
+		diagnostics.pending = nil
+		diagnostics.mu.Unlock()
+	}()
 	command.Stdout, command.Stderr = io.Discard, diagnostics
 	command.SysProcAttr = &syscall.SysProcAttr{Pdeathsig: syscall.SIGKILL}
 	done, err := startGateC1bOwnedProcess(command)
@@ -344,6 +351,33 @@ func (counter *gateC1bSSHDCounters) Write(data []byte) (int, error) {
 		_ = writeN1JSON(counter.path, counter.witness)
 	}
 	return len(data), nil
+}
+
+func TestGateC1bSSHDiagnosticsAreBoundedAndRedacted(t *testing.T) {
+	counter := &gateC1bSSHDCounters{}
+	for _, chunk := range []string{"Authentication refused: bad owner", "ship or modes for directory /synthetic/private\n",
+		"Accepted publickey for synthetic from 192.0.2.12 port 1234 ssh2: synthetic-key\n"} {
+		if n, err := counter.Write([]byte(chunk)); n != len(chunk) || err != nil {
+			t.Fatal("diagnostic sink blocked sshd")
+		}
+	}
+	if counter.witness.FileRejected != 1 || counter.witness.AcceptedKey != 1 {
+		t.Fatal("diagnostic classification lost a split line")
+	}
+	payload, err := json.Marshal(counter.witness)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, forbidden := range []string{"synthetic", "192.0.2.12", "/private", "1234", "ssh2"} {
+		if strings.Contains(string(payload), forbidden) {
+			t.Fatal("diagnostic witness leaked source metadata")
+		}
+	}
+	_, _ = counter.Write([]byte(strings.Repeat("x", 70*1024)))
+	if !counter.witness.Overflow || counter.total > 64*1024 || len(counter.pending) > 512 {
+		t.Fatal("diagnostic sink exceeded its hard memory bound")
+	}
+	clear(counter.pending)
 }
 
 func runGateC1bCLI(cfg gateC1bHostConfig, args []string) gateC1bProcessResult {

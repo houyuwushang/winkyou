@@ -84,6 +84,13 @@
     [OpenSSH 9.6 safe_path 的逐层父目录规则](https://github.com/openssh/openssh-portable/blob/V_9_6_P1/misc.c#L2086)。
     改为现有私有 mount 内 `/root/.ssh/authorized_keys`（0700/0600），保留 StrictModes 与 root
     forced-command 要求；没有放宽认证或接触宿主 home/SSH。后续完整管线仍须 CI 证明。
+13. `6cb6290` 的 [required 真实 SSH 运行](https://github.com/houyuwushang/winkyou/actions/runs/33967873724/job/101311076228)
+    已为 AcceptedKey=1、SessionStarted=1、双端 FINISH/OOB drain，仍在 post-OOB echo 失败；
+    initiator SSH Killed=true。原 assembly 仅关闭管道，不请求仍等待 remote session 的 SSH client
+    退出，必然可能耗尽 2s drain，与 responder 的 2s echo 窗口竞争。按原 ADR §5.3 补对
+    已持有 Linux child handle 的 SIGTERM 请求，2s 后才 SIGKILL 的上限不变；Windows 不发送
+    console/group signal，原 pipe/Job Object 规则不变。fake 确定性测试检查请求先于等待/kill；
+    真实 SSH 是否无强杀完成并保住 data plane 仍交由下一轮 required 取证。
 
 ## 4. root 执行域与 OS 证明的当前范围
 

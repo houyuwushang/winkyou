@@ -49,6 +49,7 @@ func (process *memoryProofProcess) Stdout() io.ReadCloser { return process }
 func (process *memoryProofProcess) Stderr() io.ReadCloser { return io.NopCloser(bytes.NewReader(nil)) }
 func (process *memoryProofProcess) Wait() error           { <-process.done; return nil }
 func (process *memoryProofProcess) Kill() error           { return process.Close() }
+func (process *memoryProofProcess) RequestExit() error    { return process.Close() }
 func (process *memoryProofProcess) Close() error {
 	var err error
 	process.once.Do(func() { err = process.ReadWriteCloser.Close(); close(process.done) })

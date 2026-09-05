@@ -51,6 +51,16 @@ func (containment *linuxProcessContainment) Kill() error {
 	return containment.process.Kill()
 }
 
+// RequestExit targets only the existing owned process handle. Closing stdin
+// alone sends SSH channel EOF but does not ask the SSH client itself to exit
+// while the post-FINISH remote foreground owner is still alive.
+func (containment *linuxProcessContainment) RequestExit() error {
+	if containment == nil || containment.process == nil {
+		return ErrChildTerminated
+	}
+	return containment.process.Signal(syscall.SIGTERM)
+}
+
 func (containment *linuxProcessContainment) Close() error {
 	if containment != nil {
 		containment.once.Do(func() { close(containment.release) })
