@@ -77,6 +77,35 @@ func TestGateB3Hard16NATSimFullShapeHandoff(t *testing.T) {
 	}
 }
 
+func TestGateB3Hard16SelectionUsesActiveMarginAfterCandidateWindow(t *testing.T) {
+	left, right, closeFixture := newGateB3NATSimFixtureFor(t, "selection-margin", 11, 29)
+	defer closeFixture()
+
+	delayed := &gateB3DelayedWriteConn{Conn: right.stream, writeOrdinal: 7, delay: 2250 * time.Millisecond}
+	right.stream = delayed
+	// The seventh responder write is the role-ordered selection status. Delay it
+	// beyond the compressed candidate window while retaining ample room inside
+	// a still-lower-than-production active envelope.
+	outcomes := runGateB3Pair(t, left, right, 10*time.Second, 2*time.Second)
+	if !delayed.triggered.Load() {
+		t.Fatalf("Gate B3 selection-margin fixture did not delay the responder selection frame: writes=%d", delayed.writeCount())
+	}
+	winners := 0
+	for index, outcome := range outcomes {
+		if outcome.err != nil || outcome.result.Terminal != "success" || !outcome.result.Bidirectional ||
+			!outcome.result.CredentialBurned || !outcome.result.FinishRecorded ||
+			outcome.result.Emissions.CandidatePackets != hardnatbudget.Hard16CandidatePackets ||
+			outcome.result.Emissions.CarrierFramesRead != 8 || outcome.result.Emissions.CarrierFramesWrite != 8 ||
+			outcome.result.SafetyTrip.BlocksActiveWork {
+			t.Fatalf("side %d delayed selection result=%+v err=%v", index, outcome.result, outcome.err)
+		}
+		winners += outcome.result.Emissions.WinnerPackets
+	}
+	if winners != 1 {
+		t.Fatalf("delayed selection winner packets=%d, want 1", winners)
+	}
+}
+
 func TestGateB3Hard16FullExhaustionIsOneShotAndOpensOnlyCampaignCircuit(t *testing.T) {
 	left, right, closeFixture := newGateB3NATSimFixture(t, 7, 17)
 	defer closeFixture()
@@ -514,6 +543,33 @@ func (factory *gateB3CandidateFaultFactory) Open(ctx context.Context) (probeio.D
 type gateB3CandidateFaultDatagram struct {
 	probeio.Datagram
 	owner *gateB3CandidateFaultFactory
+}
+
+type gateB3DelayedWriteConn struct {
+	net.Conn
+	mu           sync.Mutex
+	writes       int
+	writeOrdinal int
+	delay        time.Duration
+	triggered    atomic.Bool
+}
+
+func (connection *gateB3DelayedWriteConn) Write(payload []byte) (int, error) {
+	connection.mu.Lock()
+	connection.writes++
+	ordinal := connection.writes
+	connection.mu.Unlock()
+	if ordinal == connection.writeOrdinal {
+		connection.triggered.Store(true)
+		time.Sleep(connection.delay)
+	}
+	return connection.Conn.Write(payload)
+}
+
+func (connection *gateB3DelayedWriteConn) writeCount() int {
+	connection.mu.Lock()
+	defer connection.mu.Unlock()
+	return connection.writes
 }
 
 func (datagram *gateB3CandidateFaultDatagram) WriteTo(ctx context.Context, packet []byte, target netip.AddrPort) (int, error) {

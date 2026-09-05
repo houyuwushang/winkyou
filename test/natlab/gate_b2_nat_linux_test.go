@@ -29,6 +29,7 @@ const (
 	gateB2MappingPortMin   = uint16(40000)
 	gateB2MappingPortMax   = uint16(49000)
 	gateB2RouterDrain      = 2 * time.Second
+	gateB2NATQueueDefault  = 1_024
 	gateB3PerNATMappingCap = 40_000
 )
 
@@ -116,6 +117,7 @@ type gateB2NATConfig struct {
 	dropAllCandidateInbound   bool
 	dropEveryCandidateInbound uint64
 	mappingHardCap            int
+	packetQueueCapacity       int
 	gateB3MappingPlan         interface {
 		preferred(context.Context, bool, uint16) (uint16, error)
 	}
@@ -202,9 +204,13 @@ func startGateB2NATRouter(t testing.TB, config gateB2NATConfig) *gateB2NATRouter
 	if config.randomSeed == 0 {
 		config.randomSeed = 1
 	}
+	if config.packetQueueCapacity == 0 {
+		config.packetQueueCapacity = gateB2NATQueueDefault
+	}
 	if config.namespace == "" || config.tunName == "" || !config.private.Is4() || !config.public.Is4() ||
 		!config.peerPublic.Is4() || (config.mode != gateB2NATAPDM && config.mode != gateB2NATEIM) ||
 		config.mappingPortMin > config.mappingPortMax || config.mappingHardCap < 0 ||
+		config.packetQueueCapacity < 1 || config.packetQueueCapacity > gateB3PerNATMappingCap ||
 		(config.reusePortsByTarget && config.mode != gateB2NATAPDM) ||
 		(config.gateB3MappingPlan != nil && (!config.reusePortsByTarget || config.mode != gateB2NATAPDM)) {
 		t.Fatal("Gate B2 isolated NAT configuration rejected")
@@ -247,8 +253,8 @@ func (router *gateB2NATRouter) run() error {
 	router.tunMu.Unlock()
 	router.ready <- nil
 
-	outbound := make(chan gateB2TUNPacket, 1024)
-	replies := make(chan gateB2MappedReply, 1024)
+	outbound := make(chan gateB2TUNPacket, router.config.packetQueueCapacity)
+	replies := make(chan gateB2MappedReply, router.config.packetQueueCapacity)
 	readErr := make(chan error, 1)
 	router.readers.Add(1)
 	go router.readTUN(tun, outbound, readErr)
