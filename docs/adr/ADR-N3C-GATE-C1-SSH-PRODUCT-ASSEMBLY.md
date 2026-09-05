@@ -391,6 +391,15 @@ responder 端必须使用一把只服务本 Gate 的 SSH public key，其执行�
 - witness 只报告 spawned/exited/killed、stdin/stdout/stderr bytes、deadline、drained，禁止
   endpoint、username、path、host key、PID、command 或底层 error。
 
+**平台退出见证（C1b 冻结）：** Linux 在关闭 pipes 后，由 `process_linux.go` 的 `RequestExit`
+向已持有的 ssh client 进程句柄发送 SIGTERM，隔离实测 `Killed=false`。Windows 的
+`RequestExit` 为 no-op：本 no-console profile 没有等价的安全 per-process 信号，不发送
+console/group event；pipe 关闭是唯一协作退出请求，若 ssh.exe 未在原 2s drain 内退出，
+则由 owned Job Object 强杀。此时 `Killed=true` 是预期见证，不是回归；C1c Windows 取证
+不得仅因此判定失败。按 §16.8/§19，responder 已 FINISH/detach，预期 EOF 不撤销其数据面
+所有权；Windows 真实 ssh.exe 尚未取证，仍须独立证明 post-OOB echo 与完整 drain，不能仅凭
+预期的 killed 值声称数据面已验证。
+
 关闭 dedicated SSH child 不得停止、重配或删除 operator 的 Tailscale、VPN、SSH server、
 route、firewall 或其他管理信道。
 
@@ -863,6 +872,22 @@ C1a 的 Windows 零连接 `ssh -G` 实现验证进一步发现：即使使用 `-
 - **证明：** 三种终止路径分别测试；FINISH 前/后 EOF 和 EPIPE 分开注入；owner loser 的 SSH
   child/UDP witness 为零，所有退出路径完成 durable close 与 drain。
 
+**C1b inactivity 实现语义与 C1c 前置门（2026-09-06）：** 保留上文原裁决；其中“keepalive
+周期”按此处写实的活动周期解释，不表示配置中存在 persistent keepalive。
+
+- responder 连续 3 个 5 秒活动周期未收到任何已解密 inner 数据报，即以 `inactivity_ceiling`
+  结束；`SessionActivityInterval=5s`、`SessionInactiveIntervals=3`（常量乘积 15 秒）为代码
+  冻结值，不由 request、peer 或 config 覆盖。实现按固定 ticker 累计，收到 inner 数据报将
+  inactive 计数清零，并非从最后一包开始重置的 15 秒滑动计时器。
+- initiator 侧没有 inactivity 判定，仅在本地 Ctrl-C/caller cancel 时发送 authenticated CLOSE，
+  或到达 absolute session ceiling 后结束；它不能感知 responder 已按 inactivity 退出。
+  当前 peer `Keepalive: 0`，没有 persistent keepalive；WireGuard 空 keepalive 不产生 inner
+  数据报，不计作上述活动。15 秒的名义 inactivity 窗口对真实用户 session 过短。
+- **C1c 开工前必须对照真实流量与 keepalive 语义重新裁决 inactivity 规则，并写入 ADR 后
+  才能进入 C1c 实现。** 候选方向为以 WireGuard 已认证 outer 报文作为活动信号、引入受
+  config 控制的 interval、增加 initiator 侧 liveness 感知；此处不预选、不实现任何候选，
+  不改变 C1b 已接受实现的行为，也不签发 C1c/现场权限。
+
 ### 16.9 responder stdio bounded stream
 
 - **选择：** `solver direct child --stdio` 用独立的 stdin/stdout `BoundedStream` adapter 承载 WYRC，
@@ -977,6 +1002,27 @@ group-readable/executable 后交给非 root SSH account。此处的 A/B 是**执
 - **授权范围不变：** 仅完成 C1b memory、literal-loopback、required Linux netns 的实现与取证；
   不授权 C1c/C2、宿主虚拟网卡/路由部署、普通构建非回环能力、长期 daemon 或任何现场 I/O。
   Windows 不因此获得新的远端 child 或非回环权限；所有已冻结预算、golden 与单次终局规则不变。
+
+### 18.1 已接受风险与后续硬化
+
+持有 initiator 专用 SSH key 的任一对端，可以让 responder 以 **UID 0** 执行固定的
+`wink solver direct child --stdio`。因此该子命令的全部输入解析面——stdio bounded stream、
+carrier 8 帧、Noise/hardnatcontrol/WYCR/WYCF 解析，以及 slot/artifact 读取——构成 root 权限下
+的远端可达攻击面。固定命令不等于不存在攻击面，也不意味着 parser 漏洞只影响低权限进程。
+
+补偿控制为 key-only、`restrict,command=`、`PermitRootLogin forced-commands-only`、wrapper
+逐字验证 `SSH_ORIGINAL_COMMAND`、清空环境、fail-closed parser 与一次性 slot。维护者接受此
+风险的适用前提是：0.x–1.0 仅服务同一操作者自有设备；initiator 专用 key 泄露，在此威胁模型
+中视同该设备已被攻破。不得将此接受扩展到不同用户或不受信任的设备协作。
+
+登记以下后续硬化项；不在 C1b 范围、不承诺期限、不预先批准实现。C1c 授权记录及后续
+[现场授权模板](../N3C-GATE-C-LIVE-AUTHORIZATION-TEMPLATE.md) 必须逐项回答“已做/未做”，
+并附证据或未做原因；root 执行身份与风险接受须由 operator 和 independent reviewer 两人签字。
+
+1. 取得 machine governor owner 与 slot 后，降权到专用非 root 账户。
+2. 使用 Linux seccomp/landlock 限制 child 系统调用与文件可达范围。
+3. 把 OOB 解析移入独立低权限进程，root 进程只持 socket/TUN；进程边界和资源所有权须另行
+   评审，本条不授权跨进程传递 fd/transport，也不改变 C1b 的同进程 handoff。
 
 ## 19. C1b 双方 FINISH / OOB 关闭缺口与 R1 裁决（Accepted，2026-09-05）
 

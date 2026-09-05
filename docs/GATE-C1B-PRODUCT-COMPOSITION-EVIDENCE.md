@@ -150,7 +150,11 @@
 这里的 3/3 是每端 outbound/inbound shared readiness + WireGuard + R1 allowance；UDP 总计还包含
 命中后的单 winner 与 post-FINISH data。每端 iptables 实测值严格等于各分类计费之和。SSH/OOB
 退出后 initiator 仅发送一个 echo request 与一个 CLOSE，responder 仅回复一个 echo；真实 SSH client
-`Exited=true, Drained=true, Killed=false`。carrier 仍最多 8 frame / 8256 byte，每方向单列计数。
+`Exited=true, Drained=true, Killed=false`，该实测值仅属于 Linux 分支。Windows 的 `RequestExit`
+为 no-op，真实 ssh.exe 尚未取证；预期是在 pipe 关闭后若仍存活至 2s drain 界，由 Job Object
+强杀并见证 `Killed=true`。C1c Windows 取证不得仅因该值判定回归，但仍须证明已 FINISH/detach
+的数据面在预期 EOF 后完成 post-OOB echo 与排水；本节不将平台预期冒充实测。
+carrier 仍最多 8 frame / 8256 byte，每方向单列计数。
 
 loopback-SSH 分支的 UDP 仍位于 TEST-NET NAT，inner interface 为 memory；netns-SSH 分支的 inner
 interface 是真实、非 persistent TUN，KernelReads=InnerSends、KernelWrites=InnerReads，额外 IPv6=0。
