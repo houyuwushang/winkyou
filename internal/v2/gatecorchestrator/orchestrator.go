@@ -25,9 +25,10 @@ const gateCSessionTripDetail = "Gate C foreground session did not drain within i
 
 func defaultDependencies() dependencies {
 	return dependencies{
-		now:         time.Now,
-		artifactNow: time.Now,
-		random:      rand.Reader,
+		now:             time.Now,
+		artifactNow:     time.Now,
+		random:          rand.Reader,
+		newSSHAuthority: sshassembly.NewLoopbackAuthority,
 		openSSH: func(ctx context.Context, cfg sshassembly.Config) (sshProductStream, error) {
 			return sshassembly.OpenClient(ctx, cfg)
 		},

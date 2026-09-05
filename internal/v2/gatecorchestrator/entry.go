@@ -10,7 +10,6 @@ import (
 	"winkyou/internal/v2/gatecattempt"
 	"winkyou/internal/v2/gatecrequest"
 	"winkyou/internal/v2/pairgen"
-	"winkyou/internal/v2/sshassembly"
 )
 
 // RunInitiator executes one foreground Gate C1b attempt. The ordinary build
@@ -21,7 +20,7 @@ func RunInitiator(ctx context.Context, options InitiatorOptions) (Result, error)
 }
 
 func runInitiator(ctx context.Context, options InitiatorOptions, deps dependencies) (Result, error) {
-	if ctx == nil || options.RequestFile == "" || options.Config == nil || options.BuildVersion == "" || options.Progress == nil || deps.inspectMachine == nil || deps.artifactNow == nil {
+	if ctx == nil || options.RequestFile == "" || options.Config == nil || options.BuildVersion == "" || options.Progress == nil || deps.inspectMachine == nil || deps.artifactNow == nil || deps.newSSHAuthority == nil {
 		return Result{}, localFailure(ClassRequestInvalid, StagePreflight, false, "", "", ErrRequestInvalid, nil)
 	}
 	request, err := gatecrequest.LoadPrivate(options.RequestFile)
@@ -36,7 +35,7 @@ func runInitiator(ctx context.Context, options InitiatorOptions, deps dependenci
 		return Result{}, localFailure(ClassRequestInvalid, StagePreflight, false, "", "", ErrRequestInvalid, nil)
 	}
 	defer artifact.Close()
-	authority, err := sshassembly.NewLoopbackAuthority(request.SSH.Endpoint)
+	authority, err := deps.newSSHAuthority(request.SSH.Endpoint)
 	if err != nil {
 		return Result{}, localFailure(ClassPeerUnauthorized, StagePreflight, false,
 			string(artifact.PlannerProfile), string(artifact.ResourceClass), ErrPeerUnauthorized, nil)

@@ -414,7 +414,7 @@ func gateC1bShapeViolations(root string) ([]string, error) {
 		{"internal/v2/gatecorchestrator", modulePath + "/pkg/tunnel", "NewMemoryWireGuard", 1},
 		{"internal/v2/gatecorchestrator", modulePath + "/pkg/tunnel", "New", 0},
 		{"internal/v2/gatecorchestrator", modulePath + "/internal/probeio", "NewUDPFactory", 0},
-		{"internal/v2/gatecorchestrator", modulePath + "/internal/v2/sshassembly", "NewNATLabAuthority", 0},
+		{"internal/v2/gatecorchestrator", modulePath + "/internal/v2/sshassembly", "NewNATLabAuthority", 1},
 		{"internal/v2/gatecorchestrator", "context", "WithoutCancel", 1},
 		{"internal/v2/gatecorchestrator", "context", "Background", 0},
 		{"cmd/wink/cmd", modulePath + "/internal/v2/gatecorchestrator", "RunInitiator", 1},
@@ -534,6 +534,14 @@ func gateC1bShapeViolations(root string) ([]string, error) {
 
 func gateC1bAuthorityUseViolations(root string) ([]string, error) {
 	allowed := map[string]map[string]struct{}{
+		"RunNATLabInitiator":      {"internal/v2/gatecorchestrator/natlab_proof_linux.go": {}, "cmd/wink/cmd/gate_c1b_natlab_proof_linux.go": {}},
+		"RunNATLabResponder":      {"internal/v2/gatecorchestrator/natlab_proof_linux.go": {}, "cmd/wink/cmd/gate_c1b_natlab_proof_linux.go": {}},
+		"ExecuteGateCNATLabProof": {"cmd/wink/cmd/gate_c1b_natlab_proof_linux.go": {}},
+		"newSSHAuthority": {
+			"internal/v2/gatecorchestrator/types.go": {}, "internal/v2/gatecorchestrator/entry.go": {},
+			"internal/v2/gatecorchestrator/orchestrator.go": {}, "internal/v2/gatecorchestrator/natlab_proof_linux.go": {},
+		},
+		"PrepareRootExecution":    {"internal/v2/sshchildwrapper/root_linux.go": {}, "internal/v2/sshchildwrapper/root_unsupported.go": {}},
 		"RunMemoryInitiator":      {"internal/v2/gatecorchestrator/memory_proof_c1bproof.go": {}, "cmd/wink/cmd/gate_c1b_memory_proof.go": {}},
 		"RunMemoryResponder":      {"internal/v2/gatecorchestrator/memory_proof_c1bproof.go": {}, "cmd/wink/cmd/gate_c1b_memory_proof.go": {}},
 		"OpenMemoryProofClient":   {"internal/v2/gatecorchestrator/memory_proof_c1bproof.go": {}, "internal/v2/sshassembly/memory_c1bproof.go": {}},
@@ -578,7 +586,7 @@ func gateC1bAuthorityUseViolations(root string) ([]string, error) {
 		},
 		"configureGateB": {
 			"internal/v2/gatecorchestrator/types.go": {}, "internal/v2/gatecorchestrator/orchestrator.go": {},
-			"internal/v2/gatecorchestrator/memory_proof_c1bproof.go": {},
+			"internal/v2/gatecorchestrator/memory_proof_c1bproof.go": {}, "internal/v2/gatecorchestrator/natlab_proof_linux.go": {},
 		},
 		"TakePSK": {
 			"internal/v2/hardnatattempt/artifact.go": {}, "internal/v2/oobattempt/artifact.go": {},
