@@ -974,3 +974,66 @@ group-readable/executable 后交给非 root SSH account。此处的 A/B 是**执
 - **授权范围不变：** 仅完成 C1b memory、literal-loopback、required Linux netns 的实现与取证；
   不授权 C1c/C2、宿主虚拟网卡/路由部署、普通构建非回环能力、长期 daemon 或任何现场 I/O。
   Windows 不因此获得新的远端 child 或非回环权限；所有已冻结预算、golden 与单次终局规则不变。
+
+## 19. C1b 双方 FINISH / OOB 关闭缺口（Draft，2026-09-05，未批准）
+
+状态：**实现暂停，等待维护者裁决；本节不修改 Accepted 规则，不授权绕过失败 CI。**
+§18 的 UID 0 裁决仍然成立，本缺口与 root/非 root 执行身份无关。
+
+### 19.1 实测与最小复现
+
+[CI run 33963899522 的 required Linux memory job](https://github.com/houyuwushang/winkyou/actions/runs/33963899522/job/101300455663)
+在两个三-profile pipeline 各重复 20 次时，记录 12 个失败子样例：底层 composition 7 个、实际 CLI 5 个。
+predictive/asymmetric/hard-16K 均有命中，不能解释为困难 NAT 的随机未命中。
+其中一组双端见证为：
+
+- initiator：readiness 1 write / 1 read；WireGuard outbound `[1,4]` / inbound `[2]`；
+  本地 FINISH 成功、attempt 已 detach、OOB 已 drain；后续 echo 没有响应。
+- responder：readiness 1/1；WireGuard outbound `[2]` / inbound `[1,4]` 已到齐；
+  成功 FINISH 尚未完成，随后 `wireguard_binding_failed` 并执行失败清理。
+- 双端没有超额重试；hard-16K 样例仍为 evidence 13/13、candidate 16,384/16,384。
+  这是单侧完成后关闭引起的时序缺口，不是放宽 packets/PPS 的理由。
+
+纯内存 opt-in 复现 `internal/probeio/c1b_finish_gap_diagnostic_test.go` 人为固定同一合法调度：
+双方 trace 已齐，但 responder 的本地 completion 尚未获得调度；initiator 先 FINISH，随后按现有
+pre-FINISH EOF 规则取消 responder。`-race -count=20` **20/20 命中并返回失败**，输出只有：
+`local_finish=1 peer_finish=0 both_traces_complete=true peer_eof_rejected=true extra_packets=0`。
+它使用 fake packet transport，不是实际 WireGuard 解密或 durable journal 的替代证明；真实组合
+与 journal 证据来自上述 CI。该诊断需要显式 `-tags=c1bdiagnostic`，刻意保持红色，不属于“测试全绿”。
+
+### 19.2 冻结规则中缺少的因果关系
+
+§6.2 要求本地 challenge → durable FINISH → detach/OOB drain；§16.8 要求 **FINISH 前 EOF
+必须终局**；§17 的 READY/ACK 只证明双方 AddPeer 已就绪，不证明双方本地 challenge/FINISH 已完成。
+现有 `[initiation,response,keepalive]` trace 没有携带对端 durable 完成的确认。
+
+```text
+initiator: local trace complete -> FINISH -> detach -> close OOB
+responder: local trace complete -> [completion not yet scheduled] -> EOF -> cancel -> reject
+```
+
+这条顺序可达，且不能通过缩短 5ms 轮询、添加 sleep、依赖 fsync/线程调度速度或 rerun 证明不存在。
+把 EOF 直接忽略直到本地 FINISH 同样改变 §16.8，不能作为普通竞态修复悄悄合入。
+现有 carrier 已用满 8 frame/方向，不能直接再附一个第 9 帧；现有预 FINISH cap 与 §17 的
+精确 trace 也不能自行更改。
+
+代码定位：`gatecorchestrator.completeWireGuardChallenge` 只检查本地 trace；
+`ProductHandoff.FinishAndDetach/releaseProductEstablishment` 在本地 FINISH 后关闭 initiator OOB；
+Gate B carrier watcher 在本地 `challengeComplete=false` 时取消 active attempt。
+watcher 的 challengeComplete 阈值与 §16.8 的 durable FINISH 阈值也须在裁决时明确对齐，
+不能把前者自动解释成后者。
+
+### 19.3 最小二选一修订提案（尚无决策）
+
+| 提案 | 语义变化 | 必须保留 / 需要重新冻结 |
+| --- | --- | --- |
+| R1：显式完成确认（建议） | responder 成功记录 FINISH 后发一个经认证、绑定本 attempt/context/consumer 的完成确认；initiator 收到并验证后才允许关闭 OOB。不得将本地握手完成等同于对端 durable 完成。 | 保留 FINISH 前意外 EOF 终局。先验证能否使用 responder/initiator 尚余的单个 outbound/inbound 额度，仍不超过 3/3；nonce、AD、frame/gate 读取所有权、双方 FINISH/释放顺序与 deadline 必须另行冻结，不预先宣称已可满足所有 cap。 |
+| R2：修改 EOF 的完成阈值 | 将“预期 EOF”的阈值前移到本地已验证的 WireGuard challenge 完成；之后只允许在原有时间界内完成本地 FINISH，不再发 establishment 包，再进入 post-OOB 验证。 | 不增加报文，但明确修订 §16.8；须区分 EOF、协议违规、parent cancel 与 absolute expiry，并证明落盘失败/超时不激活 session。这是持久化边界变化，不能自我批准。 |
+
+两种提案都不得增加 retry、第二 attempt、目标权限、SSH child 或现场权限。R1 若不能在既有上限内
+形成完整证明，须再次提出精确成本修订，不能借“剩余预算”先行实现。
+
+两种提案共同的恢复门：确定性延迟 peer completion/FINISH 和落盘失败矩阵、真实 SSH EOF/child
+退出时序、双端 journal 顺序、100 fresh runs、race×20，以及 required netns 的 TUN/packet/socket/
+process/conntrack/lock 全部证明。另需核实 SSH 的 2s graceful drain 与 post-OOB echo 2s 的计时
+交接；当前真实 SSH/netns matrix 仍未通过，不能宣称上述 memory 缺口是其失败的唯一根因。
