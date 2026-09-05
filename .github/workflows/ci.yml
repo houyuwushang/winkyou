@@ -411,6 +411,12 @@ jobs:
           -run 'WireGuard|ConsumerReady|ConsumerFinished|Foreground|CanceledInner|PostOOB|Conflict'
           -count=20 -timeout=3m
 
+      - name: Repeat real-entry memory evidence drift and candidate exhaustion
+        run: >-
+          go test -race -tags=c1bproof ./internal/governor
+          -run '^TestGateC1bMemoryCLIEvidenceDriftAndExhaustionAreOneShot$'
+          -count=20 -timeout=3m
+
       - name: Prove 100 fresh CLI and durable-slot lifecycles
         env:
           WINKYOU_GATE_C1B_REPEAT_REQUIRED: "1"

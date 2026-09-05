@@ -50,6 +50,7 @@ type gateC1bMemoryProfile struct {
 	activeTime    time.Duration
 	acquire       func(string, string) (*governor.Governor, error)
 	cli           bool
+	fault         string
 }
 
 var gateC1bMemoryProfiles = []gateC1bMemoryProfile{
@@ -135,6 +136,17 @@ func TestGateC1bMemoryCLIAndClaimedChildPipeline(t *testing.T) {
 	}
 }
 
+func TestGateC1bMemoryCLIEvidenceDriftAndExhaustionAreOneShot(t *testing.T) {
+	for _, fault := range []string{"evidence-drift", "candidate-exhaustion"} {
+		t.Run(fault, func(t *testing.T) {
+			profile := gateC1bMemoryProfiles[0]
+			profile.cli, profile.fault = true, fault
+			profile.candidateTime = 500 * time.Millisecond
+			runGateC1bMemoryProductProfile(t, fault, profile)
+		})
+	}
+}
+
 func runGateC1bMemoryProductProfile(t *testing.T, label string, test gateC1bMemoryProfile) {
 	t.Helper()
 	// The protocol key includes the validity window. Freeze it so the
@@ -177,8 +189,18 @@ func runGateC1bMemoryProductProfile(t *testing.T, label string, test gateC1bMemo
 	public := [2]netip.Addr{netip.MustParseAddr("198.51.100.10"), netip.MustParseAddr("198.51.100.20")}
 	nats := [2]*natsim.NAT{}
 	for index := range nats {
+		var changes []natsim.BehaviorChange
+		if test.fault != "" {
+			after := test.models[index]
+			after.PortMin, after.PortMax = 50000, 55000
+			boundary := uint64(8) // Changes during the eight-sample evidence suffix.
+			if test.fault == "candidate-exhaustion" {
+				boundary = 13 // Valid evidence, then a changed mapping before punch.
+			}
+			changes = []natsim.BehaviorChange{{AfterOutboundPackets: boundary, Model: after}}
+		}
 		nats[index], err = network.NewNAT(natsim.NATConfig{Name: []string{"left-c1b-product-", "right-c1b-product-"}[index] + label,
-			PublicAddr: public[index], Model: test.models[index]})
+			PublicAddr: public[index], Model: test.models[index], Changes: changes})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -377,7 +399,37 @@ func runGateC1bMemoryProductProfile(t *testing.T, label string, test gateC1bMemo
 			t.Fatal("Gate C1b memory product pipeline exceeded its bound")
 		}
 	}
+	matchedFault := 0
 	for _, got := range outcomes {
+		if test.fault != "" {
+			var failure *gatecorchestrator.Failure
+			if !errors.As(got.err, &failure) || failure.Retryable || !failure.CredentialBurned || got.result.DataPlaneReady {
+				t.Fatalf("%s fault lost its terminal: error=%v", got.role, got.err)
+			}
+			wanted := gateb.ClassCandidateExhausted
+			if test.fault == "evidence-drift" {
+				wanted = gateb.ClassEvidenceInsufficient
+			}
+			if failure.Class == wanted || (test.fault == "evidence-drift" && failure.Class == gateb.ClassEvidenceDrifted) {
+				matchedFault++
+			} else if failure.Class != gateb.ClassOOBStreamClosed {
+				t.Fatalf("%s unexpected fault class=%s", got.role, failure.Class)
+			}
+			gate := got.result.Witness.GateB
+			if !gate.CredentialBurned || !gate.FinishRecorded || gate.Bidirectional || gate.Emissions.CandidatePackets > 32 ||
+				gate.Emissions.DataPacketsRead != 0 || gate.Emissions.DataPacketsWritten != 0 ||
+				got.result.Witness.WireGuard.ReadinessWrites != 0 || got.result.Witness.WireGuard.ActiveWrites != 0 ||
+				(test.fault == "evidence-drift" && gate.Emissions.CandidatePackets != 0) {
+				t.Fatalf("%s fault emission/finish witness=%+v", got.role, gate)
+			}
+			if len(got.stages) < 2 || got.stages[len(got.stages)-1] != gatecorchestrator.StageTerminal ||
+				!reflect.DeepEqual(got.stages[:len(got.stages)-1], gatecorchestrator.ProductProgressSequence[:len(got.stages)-1]) {
+				t.Fatalf("%s fault did not preserve longest completed prefix: %v", got.role, got.stages)
+			}
+			t.Logf("C1b memory CLI fault=%s role=%s class=%s evidence=%d candidates=%d finish=true retry=0",
+				test.fault, got.role, failure.Class, gate.Emissions.EvidencePackets, gate.Emissions.CandidatePackets)
+			continue
+		}
 		if got.err != nil {
 			var failure *gatecorchestrator.Failure
 			var cause error
@@ -400,6 +452,9 @@ func runGateC1bMemoryProductProfile(t *testing.T, label string, test gateC1bMemo
 			t.Errorf("%s shared challenge allowance violated: %+v", got.role, wg)
 		}
 	}
+	if test.fault != "" && matchedFault == 0 {
+		t.Fatal("fault matrix did not observe its injected root cause")
+	}
 	for _, responder := range responders {
 		_ = responder.Close()
 	}
@@ -419,6 +474,12 @@ func runGateC1bMemoryProductProfile(t *testing.T, label string, test gateC1bMemo
 		if snapshot.ActivePeers != 0 || snapshot.ActiveAttempts != 0 || snapshot.HeavyweightAttempts != 0 ||
 			snapshot.Reserved != (governor.Resources{}) || snapshot.SafetyTrip.BlocksActiveWork {
 			t.Fatalf("%s side %d governor residue=%+v", label, index, snapshot)
+		}
+		if test.fault != "" {
+			status, err := governor.InspectLoopbackCarrierTestLedger(namespaces[index], now)
+			if err != nil || status.Sequence != 3 || status.TwentyFourHourAdmissions != 1 {
+				t.Fatalf("fault durable burn/FINISH witness=%+v error=%v", status, err)
+			}
 		}
 	}
 	if test.cli {

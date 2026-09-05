@@ -168,6 +168,11 @@ func testGateC1bProfile(t *testing.T, profile gateC1bProfile, loopbackSSH bool) 
 				got.Product.DataPlaneReady, got.Stages)
 		}
 		wg := got.Product.Witness.WireGuard
+		carrier := got.Product.Witness.GateB.Emissions
+		if carrier.CarrierFramesRead <= 0 || carrier.CarrierFramesRead > 8 || carrier.CarrierFramesWrite <= 0 || carrier.CarrierFramesWrite > 8 ||
+			carrier.CarrierBytesRead > 8256 || carrier.CarrierBytesWrite > 8256 {
+			t.Fatal("Gate C1b OOB frame or byte witness rejected")
+		}
 		if !wg.ConsumerReady || wg.ReadinessReads != 1 || wg.ReadinessWrites != 1 ||
 			len(wg.Outbound)+wg.ReadinessWrites+wg.CompletionWrites != 3 || len(wg.Inbound)+wg.ReadinessReads+wg.CompletionReads != 3 ||
 			!got.Product.Witness.Handoff.OOBDrained || !got.Product.Witness.Handoff.AttemptReleased ||
@@ -180,7 +185,7 @@ func testGateC1bProfile(t *testing.T, profile gateC1bProfile, loopbackSSH bool) 
 			t.Fatal("Gate C1b directional echo/CLOSE witness rejected")
 		}
 		if configs[index].UseTUN && (!got.TUN.Used || !got.TUN.Closed || got.TUN.KernelReads == 0 || got.TUN.KernelWrites == 0 ||
-			got.TUN.KernelReads != got.TUN.InnerSends || got.TUN.KernelWrites != got.TUN.InnerReads) {
+			got.TUN.KernelReads != got.TUN.InnerSends || got.TUN.KernelWrites != got.TUN.InnerReads || got.TUN.NonIPv4Reads != 0) {
 			t.Fatalf("Gate C1b real kernel TUN echo witness rejected: side=%d tun=%+v echo=%+v", index, got.TUN, echo)
 		}
 	}
@@ -208,6 +213,12 @@ func testGateC1bProfile(t *testing.T, profile gateC1bProfile, loopbackSSH bool) 
 		profile.name, loopbackSSH, results[0].Product.Witness.GateB.Emissions.EvidencePackets,
 		results[1].Product.Witness.GateB.Emissions.EvidencePackets, results[0].Product.Witness.GateB.Emissions.CandidatePackets,
 		results[1].Product.Witness.GateB.Emissions.CandidatePackets, counts.InitiatorTotal, counts.ResponderTotal)
+	for index, got := range results {
+		carrier := got.Product.Witness.GateB.Emissions
+		t.Logf("Gate C1b side=%d carrier_read_write=%d/%d bytes_read_write=%d/%d kernel_tun=%t tun_read_write=%d/%d inner_send_receive=%d/%d ssh_killed=%t",
+			index, carrier.CarrierFramesRead, carrier.CarrierFramesWrite, carrier.CarrierBytesRead, carrier.CarrierBytesWrite,
+			got.TUN.Used, got.TUN.KernelReads, got.TUN.KernelWrites, got.TUN.InnerSends, got.TUN.InnerReads, got.Product.Witness.SSH.Killed)
+	}
 	governorDirs := []string{filepath.Join(configs[0].MachineBase, "winkyou-safety-v2"), filepath.Join(configs[1].MachineBase, "winkyou-safety-v2")}
 	for _, release := range removeSSHPolicy {
 		release()

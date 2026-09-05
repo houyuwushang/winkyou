@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"winkyou/internal/governor"
 	"winkyou/internal/v2/directconnect/gateb"
 )
 
@@ -97,7 +98,16 @@ func testGateC1bFault(t *testing.T, fault string) {
 	}
 	var sequences [2]uint64
 	for index, cfg := range configs {
-		status := inspectGateALedger(t, filepath.Join(cfg.MachineBase, "winkyou-safety-v2"))
+		namespace := filepath.Join(cfg.MachineBase, "winkyou-safety-v2")
+		status := inspectGateALedger(t, namespace)
+		owner, err := governor.AcquirePreparedNamespace(namespace, governor.ScopeMachine, "gate-c1b-fault-reinspect")
+		if err != nil {
+			t.Fatal("fault machine lock was not released")
+		}
+		trip := owner.SafetyTripStatus()
+		if err := owner.Close(); err != nil || trip.BlocksActiveWork {
+			t.Fatal("clean fault left a persistent safety trip or owner residue")
+		}
 		sequences[index] = status.Sequence
 		if fault == "pre-finish-eof" {
 			if status.Sequence != 1 || status.TwentyFourHourAdmissions != 0 {
@@ -108,7 +118,7 @@ func testGateC1bFault(t *testing.T, fault string) {
 				t.Fatal("crash lost the durable burn or fabricated FINISH")
 			}
 		} else if fault != "child-kill" && (status.Sequence != 3 || status.TwentyFourHourAdmissions != 1) {
-			t.Fatal("fault did not preserve durable FINISH before release")
+			t.Fatalf("fault did not preserve durable FINISH before release: side=%d sequence=%d admissions=%d", index, status.Sequence, status.TwentyFourHourAdmissions)
 		}
 	}
 	if fault == "pre-finish-eof" && (counts.InitiatorTotal != 0 || counts.ResponderTotal != 0) {
