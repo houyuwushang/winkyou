@@ -5,9 +5,11 @@
   memory、literal-loopback、`linux && natlab` required netns 取证。仍不授权 C1c、构建现场
   binary、普通构建的非回环 SSH/UDP、disposable router 或任何现场 I/O**
 - 日期：2026-08-31
-- 实现状态：Gate C1b 已在 Draft PR #104 组合实现；memory、literal-loopback SSH 与 required
-  netns 的实测和历史失败见 [C1b 证据](../GATE-C1B-PRODUCT-COMPOSITION-EVIDENCE.md)。待最后
-  CI 与独立复审，不代表实现已被批准；C1c/C2 和现场权限仍冻结。
+- 实现状态（2026-09-06 核对）：Gate C1b 已独立复审并由
+  [PR #104](https://github.com/houyuwushang/winkyou/pull/104) 合入，merge commit `f2df745`；memory、
+  literal-loopback SSH 与 required netns 的实测和历史失败见
+  [C1b 证据](../GATE-C1B-PRODUCT-COMPOSITION-EVIDENCE.md)。C1c/C2 和现场权限仍冻结；
+  §16.8 的 inactivity 重裁决必须先闭合，不能由 C1b 合并推定后续授权。
 - 基线：`main` = `39ff9780ec295ca8af7339bca8f5e023adf17931`
 - 跟踪议题：[#98](https://github.com/houyuwushang/winkyou/issues/98)
 - 上位决策：
@@ -887,6 +889,11 @@ C1a 的 Windows 零连接 `ssh -G` 实现验证进一步发现：即使使用 `-
   才能进入 C1c 实现。** 候选方向为以 WireGuard 已认证 outer 报文作为活动信号、引入受
   config 控制的 interval、增加 initiator 侧 liveness 感知；此处不预选、不实现任何候选，
   不改变 C1b 已接受实现的行为，也不签发 C1c/现场权限。
+
+**后续提案（2026-09-06，尚未裁决）：** 维护者确认当前保留 WireGuard、不自研替代数据面。
+[session liveness 重裁决草案](./ADR-N3C-SESSION-LIVENESS.md) 提议由 WinkYou 的双端挑战与
+写强制点管理健康空闲/失联，包含独立控制额度、时钟与排水验收门。该文仍为 Draft；本节
+已接受规则不因链接、产品取舍或 docs CI 通过而改变，C1c 前置门仍开放。
 
 ### 16.9 responder stdio bounded stream
 
