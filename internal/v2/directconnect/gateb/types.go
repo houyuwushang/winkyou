@@ -4,13 +4,18 @@ import (
 	"context"
 	"errors"
 	"io"
+	"net/netip"
+	"sync"
 	"time"
 
 	"winkyou/internal/governor"
 	"winkyou/internal/probeio"
+	"winkyou/internal/v2/directattempt"
 	"winkyou/internal/v2/hardnatobserve"
 	"winkyou/internal/v2/hardnatplan"
 	"winkyou/internal/v2/oobcarrier"
+	"winkyou/internal/v2/pairingcontext"
+	"winkyou/pkg/transport"
 )
 
 const (
@@ -95,6 +100,41 @@ func (failure *Failure) Unwrap() error {
 
 type ProgressReporter func(stage string, cancellable bool) error
 
+// ProductStreamOpener receives the exact Gate B attempt lease and its already
+// frozen absolute deadline. Gate C uses this single callback to attach the
+// C1a SSH assembly to the same attempt that owns all later UDP work.
+type ProductStreamOpener func(
+	context.Context,
+	*governor.AttemptLease,
+	time.Time,
+) (oobcarrier.BoundedStream, error)
+
+const (
+	ArtifactKindHardNATTest = "hard-nat-test-artifact/1"
+	ArtifactKindGateC       = "gate-c-product-artifact/1"
+)
+
+// AttemptArtifact is the minimum immutable behavior Gate B needs. The
+// package intentionally does not import the Gate C artifact implementation;
+// only the orchestrator may inject that implementation through this boundary.
+type AttemptArtifact interface {
+	GateBArtifactKind() string
+	GateBLocalRole() directattempt.Role
+	GateBPlannerProfile() hardnatplan.Profile
+	GateBResourceClass() hardnatplan.ResourceClass
+	GateBLocalPlannerRole() hardnatplan.Role
+	GateBPeerPlannerRole() hardnatplan.Role
+	GateBOOBChannelID() string
+	GateBCredentialID() string
+	GateBAttemptID() string
+	GateBExpiresAt() time.Time
+	PairingContext() (pairingcontext.PairingContext, error)
+	ContextDigest() ([32]byte, error)
+	NoisePrologue() ([]byte, error)
+	TakePSK() ([32]byte, error)
+	Close()
+}
+
 // HarnessHooks compress deterministic simulation time and randomness. Hooks
 // are accepted only together with an injected ProbeFactory; the reviewed OS
 // UDP factory can never run with them.
@@ -109,13 +149,22 @@ type HarnessHooks struct {
 }
 
 type Config struct {
-	Machine          *governor.Governor
-	Ledger           *governor.PairingAdmissionLedger
-	Artifact         []byte
+	Machine  *governor.Governor
+	Ledger   *governor.PairingAdmissionLedger
+	Artifact []byte
+	// PreparedArtifact is accepted only by RunForProduct. Run continues to
+	// parse Artifact bytes through the frozen hardnatattempt parser.
+	PreparedArtifact AttemptArtifact
 	Stream           oobcarrier.BoundedStream
-	ObserverTopology hardnatobserve.Topology
-	BuildVersion     string
-	Progress         ProgressReporter
+	// OpenProductStream is required only by RunForProduct. The legacy Run path
+	// continues to consume Stream directly and cannot invoke a product opener.
+	OpenProductStream ProductStreamOpener
+	// ExpectedPeerAddress is mandatory only for RunForProduct and represents
+	// one local, operator-authorized address. No peer frame can replace it.
+	ExpectedPeerAddress netip.Addr
+	ObserverTopology    hardnatobserve.Topology
+	BuildVersion        string
+	Progress            ProgressReporter
 
 	// ProbeFactory is an in-memory harness seam. A concrete *probeio.UDPFactory
 	// is rejected here; the nil production default remains loopback-only.
@@ -132,6 +181,34 @@ type Config struct {
 	HardNATLabFactory probeio.HardNATCampaignNATLabFactory
 
 	Harness *HarnessHooks
+}
+
+// ProductHandoff is an opaque, single-owner continuation returned only after
+// VERIFY, production lease issuance, Promote, adoption, and standby. The raw
+// promoted transport is never exposed; Transport returns the WireGuard gate.
+type ProductHandoff struct {
+	mu                sync.Mutex
+	runtime           *runtime
+	gate              *probeio.WireGuardSessionGate
+	binding           ProductBinding
+	establishmentDone bool
+	closed            bool
+}
+
+type ProductBinding struct {
+	Role          directattempt.Role
+	Profile       hardnatplan.Profile
+	ResourceClass hardnatplan.ResourceClass
+	AttemptID     string
+	ContextDigest [32]byte
+}
+
+type ProductHandoffWitness struct {
+	FinishRecorded  bool
+	OOBDrained      bool
+	AttemptReleased bool
+	Carrier         oobcarrier.Witness
+	Transport       probeio.WireGuardSessionGateWitness
 }
 
 type Emissions struct {
@@ -178,3 +255,42 @@ var (
 )
 
 func Run(ctx context.Context, config Config) (Result, error) { return run(ctx, config) }
+
+// RunForProduct stops at the reviewed ownership handoff. The caller must
+// complete the bounded WireGuard challenge and then either FinishAndDetach or
+// Abort; abandoning the returned object would retain the attempt lease.
+func RunForProduct(ctx context.Context, config Config) (*ProductHandoff, Result, error) {
+	return runForProduct(ctx, config)
+}
+
+func (handoff *ProductHandoff) Binding() ProductBinding {
+	if handoff == nil {
+		return ProductBinding{}
+	}
+	return handoff.binding
+}
+
+func (handoff *ProductHandoff) Transport() transport.PacketTransport {
+	if handoff == nil {
+		return nil
+	}
+	handoff.mu.Lock()
+	defer handoff.mu.Unlock()
+	if handoff.closed {
+		return nil
+	}
+	return handoff.gate
+}
+
+// Result returns a redacted lifecycle snapshot without changing ownership.
+func (handoff *ProductHandoff) Result() Result {
+	if handoff == nil {
+		return Result{}
+	}
+	handoff.mu.Lock()
+	defer handoff.mu.Unlock()
+	if handoff.runtime == nil {
+		return Result{}
+	}
+	return handoff.runtime.result()
+}

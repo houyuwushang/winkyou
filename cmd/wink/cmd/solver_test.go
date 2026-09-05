@@ -5,12 +5,16 @@ import (
 	"context"
 	"errors"
 	"io"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/spf13/cobra"
 
 	"winkyou/internal/solverstdio"
+	"winkyou/internal/v2/gatecorchestrator"
 	"winkyou/internal/v2/pairgen"
 )
 
@@ -40,6 +44,34 @@ type fakeResponderStager struct {
 	stageCalls, cleanupCalls int
 	stageValue, cleanupValue string
 	err                      error
+}
+
+type fakeGateCProductRunner struct {
+	connectCalls int
+	childCalls   int
+	initiator    gatecorchestrator.InitiatorOptions
+	responder    gatecorchestrator.ResponderOptions
+	childInput   string
+	result       gatecorchestrator.Result
+	err          error
+}
+
+func (runner *fakeGateCProductRunner) Connect(_ context.Context, options gatecorchestrator.InitiatorOptions) (gatecorchestrator.Result, error) {
+	runner.connectCalls++
+	runner.initiator = options
+	_ = options.Progress(gatecorchestrator.Progress{Stage: gatecorchestrator.StagePreflight, RemainingBudget: 2 * time.Second, Cancellable: true})
+	_ = options.Progress(gatecorchestrator.Progress{Stage: gatecorchestrator.StageTerminal, Cancellable: false})
+	return runner.result, runner.err
+}
+
+func (runner *fakeGateCProductRunner) Child(_ context.Context, input io.Reader, _ io.Writer, options gatecorchestrator.ResponderOptions) (gatecorchestrator.Result, error) {
+	runner.childCalls++
+	runner.responder = options
+	payload, _ := io.ReadAll(input)
+	runner.childInput = string(payload)
+	_ = options.Progress(gatecorchestrator.Progress{Stage: gatecorchestrator.StagePreflight, RemainingBudget: time.Second, Cancellable: true})
+	_ = options.Progress(gatecorchestrator.Progress{Stage: gatecorchestrator.StageTerminal, Cancellable: false})
+	return runner.result, runner.err
 }
 
 func (stager *fakeResponderStager) Stage(value string) error {
@@ -269,18 +301,64 @@ func TestSolverDirectStageAndCleanupWriteOnlyFixedStatus(t *testing.T) {
 	}
 }
 
-func TestRootExposesLocalGateCStageWithoutChildOrConnectEntry(t *testing.T) {
+func TestRootExposesGateCForegroundEntriesWithoutChangingStaging(t *testing.T) {
 	root := newRootCmd()
-	for _, path := range [][]string{{"solver", "direct", "stage"}, {"solver", "direct", "cleanup"}} {
+	for _, path := range [][]string{{"solver", "direct", "stage"}, {"solver", "direct", "cleanup"},
+		{"solver", "direct", "child"}, {"solver", "direct", "connect"}} {
 		command, _, err := root.Find(path)
 		if err != nil || command == nil || command.Name() != path[len(path)-1] {
 			t.Fatalf("Find(%v) command=%+v err=%v", path, command, err)
 		}
 	}
-	if command, remaining, err := root.Find([]string{"solver", "direct", "child"}); err == nil && command != nil && len(remaining) == 0 {
-		t.Fatal("C1a unexpectedly exposes the C1b remote child entry")
+}
+
+func TestGateCForegroundCommandsKeepSecretsOffOutput(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(configPath, []byte("{}\n"), 0o600); err != nil {
+		t.Fatal(err)
 	}
-	if command, remaining, err := root.Find([]string{"solver", "direct", "connect"}); err == nil && command != nil && len(remaining) == 0 {
-		t.Fatal("C1a unexpectedly exposes the Gate C product connect entry")
+	secretMarker := "private-secret-marker"
+	result := gatecorchestrator.Result{Terminal: "success", DataPlaneReady: true, FinishRecorded: true, SessionEnd: "authenticated_close"}
+	runner := &fakeGateCProductRunner{result: result}
+
+	connect := newSolverDirectConnectCmd(&Options{ConfigPath: configPath}, runner)
+	connect.SetArgs([]string{"--request-file", secretMarker})
+	var connectOut, connectErr bytes.Buffer
+	connect.SetOut(&connectOut)
+	connect.SetErr(&connectErr)
+	if err := connect.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	if runner.connectCalls != 1 || runner.initiator.RequestFile != secretMarker || connectOut.Len() != 0 ||
+		strings.Contains(connectErr.String(), secretMarker) || !strings.Contains(connectErr.String(), `"data_plane_ready":true`) {
+		t.Fatalf("connect invocation/output mismatch stdout=%q stderr=%q", connectOut.String(), connectErr.String())
+	}
+
+	child := newSolverDirectChildCmd(&Options{ConfigPath: configPath}, runner)
+	child.SetArgs([]string{"--stdio"})
+	child.SetIn(strings.NewReader(secretMarker))
+	var childOut, childErr bytes.Buffer
+	child.SetOut(&childOut)
+	child.SetErr(&childErr)
+	if err := child.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	if runner.childCalls != 1 || runner.childInput != secretMarker || childOut.Len() != 0 ||
+		strings.Contains(childErr.String(), secretMarker) || strings.Contains(childErr.String(), `"session_end"`) ||
+		!strings.Contains(childErr.String(), `"stage":"preflight"`) {
+		t.Fatalf("child invocation/output mismatch stdout=%q stderr=%q", childOut.String(), childErr.String())
+	}
+}
+
+func TestGateCConnectRequiresExplicitConfigAndChildRequiresStdio(t *testing.T) {
+	runner := &fakeGateCProductRunner{}
+	connect := newSolverDirectConnectCmd(&Options{}, runner)
+	connect.SetArgs([]string{"--request-file", "private.json"})
+	if err := connect.Execute(); !errors.Is(err, gatecorchestrator.ErrRequestInvalid) || runner.connectCalls != 0 {
+		t.Fatalf("connect without config error=%v calls=%d", err, runner.connectCalls)
+	}
+	child := newSolverDirectChildCmd(&Options{}, runner)
+	if err := child.Execute(); !errors.Is(err, gatecorchestrator.ErrRequestInvalid) || runner.childCalls != 0 {
+		t.Fatalf("child without stdio error=%v calls=%d", err, runner.childCalls)
 	}
 }

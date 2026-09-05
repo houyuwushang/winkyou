@@ -370,6 +370,134 @@ jobs:
           -count=1
           -timeout=8m
 
+  gate-c1b-memory-pipeline:
+    name: Gate C1b Memory CLI Pipeline (${{ matrix.os }}, required)
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 25
+    env:
+      GORACE: halt_on_error=1
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Vet the tagged CLI and isolated process seams
+        run: >-
+          go vet -tags=c1bproof
+          ./cmd/wink/cmd ./internal/governor ./internal/probeio
+          ./internal/v2/gatecorchestrator ./internal/v2/gatecstage
+          ./internal/v2/sshassembly ./internal/v2/hardnatcontrol
+
+      - name: Prove the untagged capability boundary and mutations
+        run: go test ./internal/architecture -run 'GateC1b' -count=1
+
+      - name: Repeat the governed handoff and actual CLI pipelines with race detection
+        run: >-
+          go test -race -tags=c1bproof ./internal/governor
+          -run '^TestGateC1b(MemoryProductPipelineReachesPostOOBEcho|MemoryCLIAndClaimedChildPipeline|GateBProductHandoffRetainsOwnershipUntilFinish)$'
+          -count=20 -timeout=12m
+
+      - name: Repeat consumer readiness, shared cap, cancellation and session tests
+        run: >-
+          go test -race ./internal/probeio ./internal/v2/hardnatcontrol ./internal/v2/gatecorchestrator
+          -run 'WireGuard|ConsumerReady|ConsumerFinished|Foreground|CanceledInner|PostOOB|Conflict'
+          -count=20 -timeout=3m
+
+      - name: Repeat real-entry memory evidence drift and candidate exhaustion
+        run: >-
+          go test -race -tags=c1bproof ./internal/governor
+          -run '^TestGateC1bMemoryCLIEvidenceDriftAndExhaustionAreOneShot$'
+          -count=20 -timeout=3m
+
+      - name: Prove 100 fresh CLI and durable-slot lifecycles
+        env:
+          WINKYOU_GATE_C1B_REPEAT_REQUIRED: "1"
+        run: >-
+          go test -tags=c1bproof ./internal/governor
+          -run '^TestGateC1bMemoryProductPipelineFresh100$'
+          -v -count=1 -timeout=9m
+
+  gate-c1b-netns-product-proof:
+    name: Gate C1b Product Pipeline Netns Proof (required)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Verify SSH tools and install isolated-network witness tools
+        run: |
+          # Do not install, start, reconfigure, or reuse the host SSH service.
+          # Each test runs its own sshd in private mount/network namespaces.
+          test -x /usr/bin/ssh || { echo 'required SSH client absent'; exit 1; }
+          test -d /usr/libexec || { echo 'required installation mountpoint absent'; exit 1; }
+          sudo apt-get update
+          sudo apt-get install -y iproute2 iptables conntrack
+          if test -x /usr/sbin/sshd; then
+            echo 'WINKYOU_C1B_SSHD_BINARY=/usr/sbin/sshd' >> "$GITHUB_ENV"
+          else
+            c1b_tools="$(mktemp -d "${RUNNER_TEMP}/c1b-sshd.XXXXXX")"
+            (
+              cd "$c1b_tools"
+              apt-get download openssh-server
+              dpkg-deb --extract openssh-server_*.deb extracted
+            )
+            test -x "$c1b_tools/extracted/usr/sbin/sshd"
+            echo "WINKYOU_C1B_SSHD_BINARY=$c1b_tools/extracted/usr/sbin/sshd" >> "$GITHUB_ENV"
+          fi
+          sudo modprobe tun || true
+          command -v ip
+          command -v iptables
+          command -v ss
+          command -v conntrack
+          command -v flock
+          command -v readlink
+          command -v setsid
+          test -c /dev/net/tun
+
+      - name: Vet the exact isolated C1b composition
+        run: >-
+          go vet -tags=natlab,c1bproof
+          ./internal/governor ./internal/probeio ./internal/architecture
+          ./internal/v2/gatecorchestrator ./internal/v2/sshchildwrapper
+          ./cmd/wink/cmd ./test/natlab
+
+      - name: Build race-enabled product composition proof
+        run: go test -race -c -tags=natlab,c1bproof -o "${RUNNER_TEMP}/winkyou-gatec1b.test" ./test/natlab
+
+      - name: Reject native bind and ordinary constructor escape in the isolated TUN bridge
+        run: go test -race -tags=natlab,c1bproof ./pkg/tunnel -run '^TestGateCNATLabConstructorKeepsNativeBindDisabled$' -count=20
+
+      - name: Prove real root SSH child and TEST-NET-only UDP composition
+        run: |
+          sudo env \
+            WINKYOU_GATE_C1B_REQUIRED=1 \
+            WINKYOU_C1B_SSHD_BINARY="$WINKYOU_C1B_SSHD_BINARY" \
+            WINKYOU_GATE_B3_REQUIRED=1 \
+            WINKYOU_GATE_B3_DISPOSABLE_RUNNER=github-hosted \
+            GITHUB_ACTIONS=true \
+            RUNNER_ENVIRONMENT=github-hosted \
+            bash test/natlab/run_gate_b3_required_linux.sh \
+            env GORACE=halt_on_error=1 \
+            "${RUNNER_TEMP}/winkyou-gatec1b.test" \
+            -test.v \
+            -test.run '^(TestGateC1bSSHDiagnosticsAreBoundedAndRedacted|TestLinuxGateC1bProductProof)$' \
+            -test.count=1 \
+            -test.timeout=12m
+
   relay-smoke-linux:
     name: Relay Smoke (Linux)
     needs: test-linux

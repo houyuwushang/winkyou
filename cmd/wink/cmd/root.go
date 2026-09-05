@@ -17,6 +17,10 @@ func Execute() error {
 }
 
 func newRootCmd() *cobra.Command {
+	return newRootCmdWithGateC(systemGateCProductRunner{})
+}
+
+func newRootCmdWithGateC(product gateCProductRunner) *cobra.Command {
 	opts := &Options{
 		ConfigPath: "",
 	}
@@ -36,7 +40,7 @@ func newRootCmd() *cobra.Command {
 		newUpCmd(opts),
 		newDownCmd(opts),
 		newStatusCmd(opts),
-		newSolverCmd(opts),
+		newSolverCmdWithGateC(opts, product),
 		newDiagnoseCmd(opts),
 		newDoctorCmd(opts),
 		newDebugCmd(opts),

@@ -1,6 +1,7 @@
 package config
 
 import (
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"net"
@@ -8,6 +9,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"time"
 )
 
 var (
@@ -189,8 +191,104 @@ func (c *Config) Validate() error {
 	if err := validateAutonomousMesh(c.AutonomousMesh); err != nil {
 		return err
 	}
+	if err := validateGateC(c.WireGuard.PrivateKey, c.GateC); err != nil {
+		return err
+	}
 
 	return nil
+}
+
+func validateGateC(privateKey string, gate GateCConfig) error {
+	if len(gate.Peers) == 0 {
+		return nil
+	}
+	if len(gate.Peers) > 32 || !canonicalWireGuardKey(privateKey) {
+		return errors.New("gate_c requires one canonical local wireguard private key and at most 32 peers")
+	}
+	seenRefs := make(map[string]struct{}, len(gate.Peers))
+	seenInterfaces := make(map[string]struct{}, len(gate.Peers))
+	for index, peer := range gate.Peers {
+		prefix := fmt.Sprintf("gate_c.peers[%d]", index)
+		if !safeGateCName(peer.Ref, 256) || !safeGateCInterfaceName(peer.MemoryInterfaceName) ||
+			!canonicalWireGuardKey(peer.PublicKey) ||
+			peer.MemoryMTU < 1280 || peer.MemoryMTU > 9000 ||
+			peer.SessionCeiling < 5*time.Second || peer.SessionCeiling > 24*time.Hour {
+			return fmt.Errorf("%s is not canonical", prefix)
+		}
+		if _, duplicate := seenRefs[peer.Ref]; duplicate {
+			return fmt.Errorf("duplicate %s.ref", prefix)
+		}
+		seenRefs[peer.Ref] = struct{}{}
+		if _, duplicate := seenInterfaces[peer.MemoryInterfaceName]; duplicate {
+			return fmt.Errorf("duplicate %s.memory_interface_name", prefix)
+		}
+		seenInterfaces[peer.MemoryInterfaceName] = struct{}{}
+		local, localErr := parseGateCVirtualIP(peer.LocalVirtualIP)
+		remote, remoteErr := parseGateCVirtualIP(peer.PeerVirtualIP)
+		if localErr != nil || remoteErr != nil || local == remote || len(peer.AllowedIPs) == 0 || len(peer.AllowedIPs) > 16 {
+			return fmt.Errorf("%s virtual identity is invalid", prefix)
+		}
+		seenPrefixes := make(map[string]struct{}, len(peer.AllowedIPs))
+		remoteCovered := false
+		for allowedIndex, raw := range peer.AllowedIPs {
+			allowed, err := netip.ParsePrefix(raw)
+			if err != nil || allowed.Addr().Zone() != "" || !allowed.Addr().Is4() || allowed.String() != raw ||
+				allowed.Contains(local) {
+				return fmt.Errorf("%s.allowed_ips[%d] is invalid", prefix, allowedIndex)
+			}
+			if _, duplicate := seenPrefixes[raw]; duplicate {
+				return fmt.Errorf("duplicate %s.allowed_ips[%d]", prefix, allowedIndex)
+			}
+			seenPrefixes[raw] = struct{}{}
+			remoteCovered = remoteCovered || allowed.Contains(remote)
+		}
+		if !remoteCovered {
+			return fmt.Errorf("%s.allowed_ips does not cover peer_virtual_ip", prefix)
+		}
+	}
+	return nil
+}
+
+func canonicalWireGuardKey(value string) bool {
+	decoded, err := base64.StdEncoding.DecodeString(value)
+	if err != nil || len(decoded) != 32 || base64.StdEncoding.EncodeToString(decoded) != value {
+		clear(decoded)
+		return false
+	}
+	zero := true
+	for _, octet := range decoded {
+		zero = zero && octet == 0
+	}
+	clear(decoded)
+	return !zero
+}
+
+func parseGateCVirtualIP(value string) (netip.Addr, error) {
+	address, err := netip.ParseAddr(value)
+	if err != nil || !address.Is4() || address.Zone() != "" || address.String() != value ||
+		!address.IsGlobalUnicast() || address.IsLoopback() || address.IsMulticast() || address.IsUnspecified() {
+		return netip.Addr{}, errors.New("invalid Gate C virtual IP")
+	}
+	return address.Unmap(), nil
+}
+
+func safeGateCName(value string, maximum int) bool {
+	return value != "" && len(value) <= maximum && value == strings.TrimSpace(value) &&
+		!strings.ContainsAny(value, "\r\n\t\x00")
+}
+
+func safeGateCInterfaceName(value string) bool {
+	if len(value) == 0 || len(value) > 32 || value != strings.TrimSpace(value) {
+		return false
+	}
+	for index, character := range value {
+		if character >= 'a' && character <= 'z' || character >= 'A' && character <= 'Z' ||
+			index > 0 && character >= '0' && character <= '9' || index > 0 && (character == '-' || character == '_') {
+			continue
+		}
+		return false
+	}
+	return true
 }
 
 func validateAutonomousMesh(cfg AutonomousMeshConfig) error {

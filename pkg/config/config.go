@@ -11,6 +11,7 @@ type Config struct {
 	NAT            NATConfig            `mapstructure:"nat" yaml:"nat"`
 	Connectivity   ConnectivityConfig   `mapstructure:"connectivity" yaml:"connectivity"`
 	TCPFramed      TCPFramedConfig      `mapstructure:"tcp_framed" yaml:"tcp_framed"`
+	GateC          GateCConfig          `mapstructure:"gate_c" yaml:"gate_c"`
 	AutonomousMesh AutonomousMeshConfig `mapstructure:"autonomous_mesh" yaml:"autonomous_mesh"`
 }
 
@@ -96,6 +97,25 @@ type TCPFramedConfig struct {
 	DialAddr      string        `mapstructure:"dial_addr" yaml:"dial_addr"`
 	Role          string        `mapstructure:"role" yaml:"role"`
 	DialTimeout   time.Duration `mapstructure:"dial_timeout" yaml:"dial_timeout"`
+}
+
+// GateCConfig is inert unless the explicit foreground Gate C command is
+// invoked. It never changes wink up, the runtime, or autonomous mesh.
+type GateCConfig struct {
+	Peers []GateCPeerConfig `mapstructure:"peers" yaml:"peers"`
+}
+
+// GateCPeerConfig is trusted local authority. No field has a wire or artifact
+// counterpart, and a remote peer cannot replace any value during an attempt.
+type GateCPeerConfig struct {
+	Ref                 string        `mapstructure:"ref" yaml:"ref"`
+	PublicKey           string        `mapstructure:"public_key" yaml:"public_key"`
+	AllowedIPs          []string      `mapstructure:"allowed_ips" yaml:"allowed_ips"`
+	LocalVirtualIP      string        `mapstructure:"local_virtual_ip" yaml:"local_virtual_ip"`
+	PeerVirtualIP       string        `mapstructure:"peer_virtual_ip" yaml:"peer_virtual_ip"`
+	MemoryInterfaceName string        `mapstructure:"memory_interface_name" yaml:"memory_interface_name"`
+	MemoryMTU           int           `mapstructure:"memory_mtu" yaml:"memory_mtu"`
+	SessionCeiling      time.Duration `mapstructure:"session_ceiling" yaml:"session_ceiling"`
 }
 
 // AutonomousMeshConfig describes the coordinator-independent graph runtime.

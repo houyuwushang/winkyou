@@ -734,8 +734,10 @@ type fakeProcess struct {
 	stderrWriter  *io.PipeWriter
 	done          chan struct{}
 	killRequested chan struct{}
+	exitRequested chan struct{}
 	finishOnce    sync.Once
 	killOnce      sync.Once
+	exitOnce      sync.Once
 	mu            sync.Mutex
 	waitErr       error
 }
@@ -746,7 +748,7 @@ func newFakeProcess() *fakeProcess {
 	stderrReader, stderrWriter := io.Pipe()
 	return &fakeProcess{
 		stdinReader: stdinReader, stdinWriter: stdinWriter, stdoutReader: stdoutReader, stdoutWriter: stdoutWriter,
-		stderrReader: stderrReader, stderrWriter: stderrWriter, done: make(chan struct{}), killRequested: make(chan struct{}),
+		stderrReader: stderrReader, stderrWriter: stderrWriter, done: make(chan struct{}), killRequested: make(chan struct{}), exitRequested: make(chan struct{}),
 	}
 }
 
@@ -763,6 +765,26 @@ func (process *fakeProcess) Kill() error {
 	process.killOnce.Do(func() { close(process.killRequested) })
 	process.finish(errors.New("fake process killed"))
 	return nil
+}
+func (process *fakeProcess) RequestExit() error {
+	process.exitOnce.Do(func() { close(process.exitRequested) })
+	return nil
+}
+
+func TestShutdownRequestsExitBeforeWaitingForForceKill(t *testing.T) {
+	runner := &fakeRunner{behavior: func(process *fakeProcess) { <-process.exitRequested; process.finish(nil) }}
+	config, lease := testAssemblyConfig(t)
+	stream, err := openClient(context.Background(), config, fakeDependencies(runner))
+	if err != nil {
+		t.Fatal(err)
+	}
+	started := time.Now()
+	if err := stream.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if w := stream.Witness(); !w.Exited || w.Killed || !w.Drained || !lease.drain.completed || time.Since(started) >= DrainTimeout {
+		t.Fatal("child waited for force kill instead of the required exit request")
+	}
 }
 func (process *fakeProcess) finish(err error) {
 	process.finishOnce.Do(func() {

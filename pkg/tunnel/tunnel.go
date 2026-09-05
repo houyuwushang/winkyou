@@ -19,6 +19,14 @@ var ErrNotImplemented = errors.New("tunnel: not implemented")
 // ErrPeerExists is returned when adding a peer that is already configured.
 var ErrPeerExists = errors.New("tunnel: peer already exists")
 
+// ErrHandshakeUnavailable and ErrHandshakeAlreadyInitiated are stable local
+// errors for the explicit one-shot handshake trigger used by bounded
+// foreground consumers. They carry no peer key or endpoint details.
+var (
+	ErrHandshakeUnavailable      = errors.New("tunnel: one-shot handshake unavailable")
+	ErrHandshakeAlreadyInitiated = errors.New("tunnel: one-shot handshake already initiated")
+)
+
 // Config holds the parameters needed to create a Tunnel.
 type Config struct {
 	Interface  netif.NetworkInterface
@@ -126,6 +134,13 @@ type PeerAllowedIPsUpdater interface {
 	UpdatePeerAllowedIPs(publicKey PublicKey, allowedIPs []net.IPNet) error
 }
 
+// OneShotHandshakeInitiator is deliberately narrower than Tunnel. The Gate C
+// foreground composition uses it after binding a capped lease transport; it
+// cannot request a retry or alter peer configuration.
+type OneShotHandshakeInitiator interface {
+	InitiatePeerHandshake(publicKey PublicKey) error
+}
+
 // New creates a Tunnel backed by the given config.
 // Memory backend is retained for unit tests and unprivileged test runs.
 func New(cfg Config) (Tunnel, error) {
@@ -133,4 +148,19 @@ func New(cfg Config) (Tunnel, error) {
 		return newMemTunnel(cfg), nil
 	}
 	return newWGGoTunnel(cfg), nil
+}
+
+// NewMemoryWireGuard always selects wireguard-go but accepts only the
+// in-process memory interface. It is the C1b proof constructor and cannot
+// create an OS TUN, route, listener, or raw UDP socket.
+func NewMemoryWireGuard(cfg Config) (Tunnel, error) {
+	if cfg.Interface == nil || cfg.ListenPort != 0 {
+		return nil, errors.New("tunnel: invalid memory WireGuard config")
+	}
+	if _, ok := cfg.Interface.(netif.MemoryTestInterface); !ok || cfg.Interface.Type() != "memory" {
+		return nil, errors.New("tunnel: Gate C requires an in-process memory interface")
+	}
+	instance := newWGGoTunnel(cfg)
+	instance.memoryOnly = true
+	return instance, nil
 }

@@ -17,6 +17,12 @@ type Binder interface {
 	Unbind(ctx context.Context, peerID string) error
 }
 
+// OneShotHandshakeBinder is the narrow post-bind trigger used by the Gate C
+// foreground composition. It cannot request retries or replace the peer.
+type OneShotHandshakeBinder interface {
+	InitiateHandshake(ctx context.Context, peerID string) error
+}
+
 type BindingPeer struct {
 	PublicKey  tunnel.PublicKey
 	AllowedIPs []net.IPNet
@@ -82,4 +88,27 @@ func (b *TunnelBinder) Unbind(ctx context.Context, peerID string) error {
 		return err
 	}
 	return b.tun.RemovePeer(peer.PublicKey)
+}
+
+// InitiateHandshake resolves the peer only from the trusted local provider and
+// invokes the tunnel's one-shot trigger. It does not stage an inner packet.
+func (b *TunnelBinder) InitiateHandshake(ctx context.Context, peerID string) error {
+	if b == nil || b.tun == nil || b.provider == nil || ctx == nil {
+		return tunnel.ErrHandshakeUnavailable
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	peer, err := b.provider.BindingPeer(ctx, peerID)
+	if err != nil {
+		return err
+	}
+	initiator, ok := b.tun.(tunnel.OneShotHandshakeInitiator)
+	if !ok {
+		return tunnel.ErrHandshakeUnavailable
+	}
+	if err := initiator.InitiatePeerHandshake(peer.PublicKey); err != nil {
+		return err
+	}
+	return ctx.Err()
 }

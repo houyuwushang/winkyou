@@ -34,6 +34,7 @@ N3b 的 [`N3-LIVE-AUTHORIZATION-TEMPLATE.md`](./N3-LIVE-AUTHORIZATION-TEMPLATE.m
 | independent reviewer | `<PRIVATE_REVIEWER>` |
 | initiator alias | `<REDACTED_ALIAS_A>` |
 | responder alias | `<REDACTED_ALIAS_B>` |
+| responder 执行身份（UID）与已接受 root 风险确认（必填，两人签字） | `<PRIVATE_UID>`；`<PRIVATE_OPERATOR_SIGNATURE>`；`<PRIVATE_REVIEWER_SIGNATURE>`；`<PRIVATE_UTC_TIME>` |
 | network/environment | `<PRIVATE_NAMED_ENVIRONMENT>` |
 | not-before | `<PRIVATE_UTC_TIME>` |
 | not-after | `<PRIVATE_UTC_TIME>` |
@@ -46,6 +47,8 @@ N3b 的 [`N3-LIVE-AUTHORIZATION-TEMPLATE.md`](./N3-LIVE-AUTHORIZATION-TEMPLATE.m
 - [ ] operator 已签名并写入时间。
 - [ ] independent reviewer 已签名并写入时间。
 - [ ] 两人均确认本实例没有从此前模板、credential 或失败 attempt 继承权限。
+- [ ] 两人已阅读 Gate C1 ADR §18.1：专用 initiator key 持有方可触达 UID 0 child 的输入解析面；
+  风险接受仅适用于同一操作者自有设备，不被解释为不同用户协作或任意 root shell 权限。
 
 ## C. Exact build 与来源
 
@@ -175,6 +178,20 @@ N3b 的 [`N3-LIVE-AUTHORIZATION-TEMPLATE.md`](./N3-LIVE-AUTHORIZATION-TEMPLATE.m
 - [ ] remote command 没有 request-derived path/token/command/environment。
 - [ ] pairing PSK/artifact bytes 不进入 SSH adapter、argv、environment 或日志。
 - [ ] 关闭 dedicated child 不会停止或重配 operator 的独立管理 overlay/SSH server。
+
+### F.1 已接受 root 风险与后续硬化登记（必填）
+
+以下三项在 C1c 授权记录及本现场实例中均须逐项回答“已做/未做”；未做须记录原因与两人
+风险接受，已做须引用独立审查过的实现与证据。它们不在 C1b 范围、不设期限承诺；填写本表
+本身不授权实现或部署硬化方案，也不免除 ADR §16.8 的 C1c 前 inactivity 重裁决。
+
+| 后续硬化项 | 状态（已做/未做） | 证据或未做原因（私有） |
+| --- | --- | --- |
+| 取得 machine governor owner 与 slot 后降权到专用非 root 账户 | `<已做/未做>` | `<PRIVATE_REFERENCE_OR_REASON>` |
+| Linux seccomp/landlock 限制 child 系统调用与文件可达范围 | `<已做/未做>` | `<PRIVATE_REFERENCE_OR_REASON>` |
+| OOB 解析移入独立低权限进程，root 进程只持 socket/TUN | `<已做/未做>` | `<PRIVATE_REFERENCE_OR_REASON>` |
+
+- [ ] operator 与 independent reviewer 已核对上述状态，并在 §B 签署执行 UID 与 root 风险确认。
 
 ## G. UDP target 与 observer 权限
 

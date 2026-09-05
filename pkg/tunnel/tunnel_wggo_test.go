@@ -2,7 +2,9 @@ package tunnel
 
 import (
 	"context"
+	"encoding/binary"
 	"encoding/hex"
+	"errors"
 	"net"
 	"os"
 	"strings"
@@ -11,6 +13,7 @@ import (
 	"time"
 
 	wgconn "golang.zx2c4.com/wireguard/conn"
+	"winkyou/pkg/netif"
 	"winkyou/pkg/solver"
 	"winkyou/pkg/transport"
 	"winkyou/pkg/transport/framedstream"
@@ -61,6 +64,77 @@ func TestNewForceWGGo(t *testing.T) {
 	}
 	if _, ok := tun.(*wggoTunnel); !ok {
 		t.Fatalf("New() returned %T, want *wggoTunnel", tun)
+	}
+}
+
+func TestNewMemoryWireGuardRejectsOSTUNAndSelectsWGGo(t *testing.T) {
+	private := mustPrivateKey(t)
+	if _, err := NewMemoryWireGuard(Config{Interface: &fakeNetif{name: "host", mtu: 1280}, PrivateKey: private}); err == nil {
+		t.Fatal("Gate C memory constructor accepted an OS-style interface")
+	}
+	memory, err := netif.NewGateCMemoryInterface("wink-c1b-tunnel", 1280)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer memory.Close()
+	tun, err := NewMemoryWireGuard(Config{Interface: memory, PrivateKey: private, ListenPort: 0})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := tun.(*wggoTunnel); !ok {
+		t.Fatalf("NewMemoryWireGuard returned %T, want wireguard-go", tun)
+	}
+	instance := tun.(*wggoTunnel)
+	if !instance.memoryOnly {
+		t.Fatal("memory WireGuard did not disable the native bind")
+	}
+	if err := instance.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer instance.Stop()
+	if _, ok := instance.bind.base.(*noOpBind); !ok {
+		t.Fatalf("memory WireGuard native bind = %T, want noOpBind", instance.bind.base)
+	}
+}
+
+func TestWGGoTunnelInitiatesExactlyOneHandshakeOverSelectedTransport(t *testing.T) {
+	localPrivate := mustPrivateKey(t)
+	peerPrivate := mustPrivateKey(t)
+	iface := newHandshakeNetif()
+	transport := newHandshakeTransport()
+	tun := newWGGoTunnel(Config{Interface: iface, PrivateKey: localPrivate})
+	if err := tun.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = tun.Stop() })
+	_, allowed, err := net.ParseCIDR("fd00::2/128")
+	if err != nil {
+		t.Fatal(err)
+	}
+	peerKey := peerPrivate.PublicKey()
+	if err := tun.AddPeer(&PeerConfig{
+		PublicKey: peerKey, AllowedIPs: []net.IPNet{*allowed}, Transport: transport,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := tun.InitiatePeerHandshake(peerKey); err != nil {
+		t.Fatalf("initiate = %v", err)
+	}
+	select {
+	case packet := <-transport.writes:
+		if len(packet) < 4 || binary.LittleEndian.Uint32(packet[:4]) != 1 {
+			t.Fatalf("first outer packet type = %v", packet)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("one-shot handshake emitted no initiation")
+	}
+	if err := tun.InitiatePeerHandshake(peerKey); !errors.Is(err, ErrHandshakeAlreadyInitiated) {
+		t.Fatalf("second initiate = %v, want ErrHandshakeAlreadyInitiated", err)
+	}
+	select {
+	case packet := <-transport.writes:
+		t.Fatalf("second initiation emitted packet type %d", binary.LittleEndian.Uint32(packet[:4]))
+	case <-time.After(50 * time.Millisecond):
 	}
 }
 
@@ -152,6 +226,66 @@ func TestPeerTransportBindSendAndReceive(t *testing.T) {
 		t.Fatalf("transport last error = %q, want empty", stats.lastError)
 	}
 }
+
+type handshakeNetif struct {
+	closed chan struct{}
+	once   sync.Once
+}
+
+func newHandshakeNetif() *handshakeNetif { return &handshakeNetif{closed: make(chan struct{})} }
+
+func (iface *handshakeNetif) Name() string                      { return "memory-gate-c" }
+func (iface *handshakeNetif) Type() string                      { return "memory" }
+func (iface *handshakeNetif) MTU() int                          { return 1280 }
+func (iface *handshakeNetif) Read([]byte) (int, error)          { <-iface.closed; return 0, net.ErrClosed }
+func (iface *handshakeNetif) Write(packet []byte) (int, error)  { return len(packet), nil }
+func (iface *handshakeNetif) SetIP(net.IP, net.IPMask) error    { return nil }
+func (iface *handshakeNetif) AddRoute(*net.IPNet, net.IP) error { return nil }
+func (iface *handshakeNetif) RemoveRoute(*net.IPNet) error      { return nil }
+func (iface *handshakeNetif) Close() error                      { iface.once.Do(func() { close(iface.closed) }); return nil }
+
+type handshakeTransport struct {
+	writes chan []byte
+	closed chan struct{}
+	once   sync.Once
+}
+
+func newHandshakeTransport() *handshakeTransport {
+	return &handshakeTransport{writes: make(chan []byte, 4), closed: make(chan struct{})}
+}
+
+func (selected *handshakeTransport) ReadPacket(ctx context.Context, _ []byte) (int, transport.PacketMeta, error) {
+	select {
+	case <-ctx.Done():
+		return 0, transport.PacketMeta{}, ctx.Err()
+	case <-selected.closed:
+		return 0, transport.PacketMeta{}, net.ErrClosed
+	}
+}
+
+func (selected *handshakeTransport) WritePacket(ctx context.Context, packet []byte) error {
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-selected.closed:
+		return net.ErrClosed
+	case selected.writes <- append([]byte(nil), packet...):
+		return nil
+	}
+}
+
+func (selected *handshakeTransport) LocalAddr() net.Addr {
+	return &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 32000}
+}
+func (selected *handshakeTransport) RemoteAddr() net.Addr {
+	return &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 32001}
+}
+func (selected *handshakeTransport) Close() error {
+	selected.once.Do(func() { close(selected.closed) })
+	return nil
+}
+
+var _ transport.PacketTransport = (*handshakeTransport)(nil)
 
 func TestPeerTransportBindAcceptsFramedStreamAdapter(t *testing.T) {
 	bind := newPeerTransportBind()

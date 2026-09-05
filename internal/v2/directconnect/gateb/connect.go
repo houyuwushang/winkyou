@@ -47,53 +47,57 @@ type staticPSK [noisecore.PSKSize]byte
 func (source staticPSK) LoadPSK() ([noisecore.PSKSize]byte, error) { return source, nil }
 
 type runtime struct {
-	config            Config
-	envelopeContext   context.Context
-	activeContext     context.Context
-	activeCancel      context.CancelCauseFunc
-	deadlineCancel    context.CancelFunc
-	carrierWatchDone  chan struct{}
-	artifact          *hardnatattempt.Artifact
-	request           governor.PairingAdmissionRequest
-	peer              *governor.PeerLease
-	attempt           *governor.AttemptLease
-	carrier           *oobcarrier.Carrier
-	authorization     *governor.CommittedCarrierAuthorization
-	protocol          *hardnatcontrol.Protocol
-	plannerSource     *noisecore.PlannerKeySource
-	controller        *probeio.Controller
-	sockets           []*probeio.ProbeSocket
-	transportLease    *probeio.TransportLease
-	transport         transport.PacketTransport
-	binding           hardnatcontrol.Binding
-	observation       hardnatobserve.Result
-	localCommitment   hardnatplan.LocalSourceCommitment
-	peerCommitment    hardnatplan.LocalSourceCommitment
-	localPlan         hardnatplan.Plan
-	peerPlan          hardnatplan.Plan
-	joint             hardnatplan.JointPlanCommitment
-	executionDigest   [32]byte
-	localPublic       hardnatplan.Address
-	peerPublic        hardnatplan.Address
-	stage             string
-	burned            bool
-	finishRecorded    bool
-	success           bool
-	challengeComplete atomic.Bool
-	emissionsMu       sync.Mutex
-	emissions         Emissions
-	candidateStart    time.Time
-	candidateLast     time.Time
+	config                Config
+	envelopeContext       context.Context
+	activeContext         context.Context
+	activeCancel          context.CancelCauseFunc
+	deadlineCancel        context.CancelFunc
+	carrierWatchDone      chan struct{}
+	artifact              AttemptArtifact
+	request               governor.PairingAdmissionRequest
+	peer                  *governor.PeerLease
+	attempt               *governor.AttemptLease
+	carrier               *oobcarrier.Carrier
+	authorization         *governor.CommittedCarrierAuthorization
+	protocol              *hardnatcontrol.Protocol
+	plannerSource         *noisecore.PlannerKeySource
+	controller            *probeio.Controller
+	sockets               []*probeio.ProbeSocket
+	transportLease        *probeio.TransportLease
+	transport             transport.PacketTransport
+	wireGuardGate         *probeio.WireGuardSessionGate
+	binding               hardnatcontrol.Binding
+	observation           hardnatobserve.Result
+	localCommitment       hardnatplan.LocalSourceCommitment
+	peerCommitment        hardnatplan.LocalSourceCommitment
+	localPlan             hardnatplan.Plan
+	peerPlan              hardnatplan.Plan
+	joint                 hardnatplan.JointPlanCommitment
+	executionDigest       [32]byte
+	localPublic           hardnatplan.Address
+	peerPublic            hardnatplan.Address
+	stage                 string
+	burned                bool
+	finishRecorded        bool
+	success               bool
+	challengeComplete     atomic.Bool
+	productFinishRecorded atomic.Bool
+	emissionsMu           sync.Mutex
+	emissions             Emissions
+	candidateStart        time.Time
+	candidateLast         time.Time
+	product               bool
+	activeDeadline        time.Time
 }
 
 func run(ctx context.Context, config Config) (Result, error) {
-	runtime, err := prepare(ctx, config)
+	runtime, err := prepare(ctx, config, false)
 	if err != nil {
 		_ = terminalProgress(config.Progress)
 		return Result{}, err
 	}
 	defer runtime.artifact.Close()
-	runErr := runtime.execute(ctx)
+	runErr := runtime.execute(ctx, false)
 	cleanupErr := runtime.cleanup(terminalReason(runErr))
 	if cleanupErr != nil {
 		runErr = runtime.failure(ClassDrainFailed, StageTerminal, cleanupErr)
@@ -111,7 +115,44 @@ func run(ctx context.Context, config Config) (Result, error) {
 	return result, nil
 }
 
-func prepare(ctx context.Context, config Config) (*runtime, error) {
+func runForProduct(ctx context.Context, config Config) (*ProductHandoff, Result, error) {
+	runtime, err := prepare(ctx, config, true)
+	if err != nil {
+		_ = terminalProgress(config.Progress)
+		return nil, Result{}, err
+	}
+	runErr := runtime.execute(ctx, true)
+	if runErr != nil {
+		cleanupErr := runtime.cleanup(terminalReason(runErr))
+		if cleanupErr != nil {
+			runErr = runtime.failure(ClassDrainFailed, StageTerminal, cleanupErr)
+		}
+		_ = terminalProgress(config.Progress)
+		result := runtime.result()
+		runtime.artifact.Close()
+		return nil, result, runErr
+	}
+	contextDigest, digestErr := runtime.artifact.ContextDigest()
+	if digestErr != nil {
+		cleanupErr := runtime.cleanup(governor.PairingTerminalProtocolError)
+		_ = terminalProgress(config.Progress)
+		result := runtime.result()
+		runtime.artifact.Close()
+		return nil, result, errors.Join(digestErr, cleanupErr)
+	}
+	handoff := &ProductHandoff{
+		runtime: runtime, gate: runtime.wireGuardGate,
+		binding: ProductBinding{
+			Role: runtime.artifact.GateBLocalRole(), Profile: runtime.artifact.GateBPlannerProfile(),
+			ResourceClass: runtime.artifact.GateBResourceClass(), AttemptID: runtime.artifact.GateBAttemptID(),
+			ContextDigest: contextDigest,
+		},
+	}
+	clear(contextDigest[:])
+	return handoff, runtime.result(), nil
+}
+
+func prepare(ctx context.Context, config Config, product bool) (*runtime, error) {
 	if ctx == nil {
 		return nil, preflightFailure(context.Canceled)
 	}
@@ -119,23 +160,40 @@ func prepare(ctx context.Context, config Config) (*runtime, error) {
 	if config.Harness != nil && config.Harness.Now != nil {
 		now = config.Harness.Now().UTC()
 	}
-	artifact, err := hardnatattempt.ParseArtifact(config.Artifact, now)
-	if err != nil {
-		return nil, preflightFailure(err)
+	var artifact AttemptArtifact
+	var err error
+	if product {
+		if len(config.Artifact) != 0 || config.PreparedArtifact == nil ||
+			config.PreparedArtifact.GateBArtifactKind() != ArtifactKindGateC {
+			return nil, preflightFailure(hardnatattempt.ErrUnsupportedProfile)
+		}
+		artifact = config.PreparedArtifact
+	} else {
+		if config.PreparedArtifact != nil {
+			return nil, preflightFailure(hardnatattempt.ErrUnsupportedProfile)
+		}
+		artifact, err = hardnatattempt.ParseArtifact(config.Artifact, now)
+		if err != nil {
+			return nil, preflightFailure(err)
+		}
+		if artifact.GateBArtifactKind() != ArtifactKindHardNATTest {
+			artifact.Close()
+			return nil, preflightFailure(hardnatattempt.ErrUnsupportedProfile)
+		}
 	}
 	fail := func(cause error) (*runtime, error) {
 		artifact.Close()
 		return nil, preflightFailure(cause)
 	}
-	envelope, err := hardnatbudget.For(artifact.PlannerProfile, artifact.ResourceClass)
+	envelope, err := hardnatbudget.For(artifact.GateBPlannerProfile(), artifact.GateBResourceClass())
 	if err != nil {
 		return fail(err)
 	}
-	activeMaximum, err := hardnatbudget.ActiveDuration(artifact.PlannerProfile, artifact.ResourceClass)
+	activeMaximum, err := hardnatbudget.ActiveDuration(artifact.GateBPlannerProfile(), artifact.GateBResourceClass())
 	if err != nil {
 		return fail(err)
 	}
-	candidateMaximum, err := hardnatbudget.CandidateDuration(artifact.PlannerProfile, artifact.ResourceClass)
+	candidateMaximum, err := hardnatbudget.CandidateDuration(artifact.GateBPlannerProfile(), artifact.GateBResourceClass())
 	if err != nil {
 		return fail(err)
 	}
@@ -145,7 +203,16 @@ func prepare(ctx context.Context, config Config) (*runtime, error) {
 			factoryCount++
 		}
 	}
-	if config.Machine == nil || config.Ledger == nil || config.Stream == nil || config.Progress == nil || config.BuildVersion == "" ||
+	invalidStreamBoundary := config.Stream == nil || config.OpenProductStream != nil
+	invalidPeerAuthority := config.ExpectedPeerAddress.IsValid()
+	if product {
+		invalidStreamBoundary = config.Stream != nil || config.OpenProductStream == nil
+		expected := config.ExpectedPeerAddress.Unmap()
+		invalidPeerAuthority = !expected.IsValid() || expected.Zone() != "" || expected != config.ExpectedPeerAddress ||
+			!expected.IsGlobalUnicast() || expected.IsLoopback()
+	}
+	if config.Machine == nil || config.Ledger == nil || invalidStreamBoundary || invalidPeerAuthority ||
+		config.Progress == nil || config.BuildVersion == "" ||
 		factoryCount > 1 ||
 		(config.Harness != nil && (config.ProbeFactory == nil || config.Harness.ActiveEnvelope < 0 ||
 			config.Harness.ActiveEnvelope > activeMaximum || config.Harness.CandidateWindow < 0 ||
@@ -155,11 +222,11 @@ func prepare(ctx context.Context, config Config) (*runtime, error) {
 	if _, rawOSFactory := config.ProbeFactory.(*probeio.UDPFactory); rawOSFactory {
 		return fail(oobcarrier.ErrInvalidConfig)
 	}
-	expectedGovernor, err := hardnatbudget.GovernorProfile(artifact.PlannerProfile, artifact.ResourceClass)
+	expectedGovernor, err := hardnatbudget.GovernorProfile(artifact.GateBPlannerProfile(), artifact.GateBResourceClass())
 	if err != nil || config.Machine.Snapshot().Profile != expectedGovernor {
 		return fail(governor.ErrNotAllowed)
 	}
-	if hardnatbudget.IsHardCampaign(artifact.PlannerProfile, artifact.ResourceClass) {
+	if hardnatbudget.IsHardCampaign(artifact.GateBPlannerProfile(), artifact.GateBResourceClass()) {
 		if config.NATLabFactory != nil || (config.ProbeFactory == nil && config.HardNATLabFactory == nil) {
 			return fail(oobcarrier.ErrInvalidConfig)
 		}
@@ -180,21 +247,21 @@ func prepare(ctx context.Context, config Config) (*runtime, error) {
 		return fail(err)
 	}
 	request := governor.PairingAdmissionRequest{
-		CredentialID: artifact.CredentialID, AttemptID: artifact.AttemptID,
+		CredentialID: artifact.GateBCredentialID(), AttemptID: artifact.GateBAttemptID(),
 		ContextDigest: hex.EncodeToString(contextDigest[:]), Scope: governor.ScopeMachine,
-		ExpiresAt: artifact.ExpiresAt, Envelope: governor.PairingEnvelopeFromAttemptCost(envelope.Cost),
+		ExpiresAt: artifact.GateBExpiresAt(), Envelope: governor.PairingEnvelopeFromAttemptCost(envelope.Cost),
 	}
-	if hardnatbudget.IsHardCampaign(artifact.PlannerProfile, artifact.ResourceClass) {
+	if hardnatbudget.IsHardCampaign(artifact.GateBPlannerProfile(), artifact.GateBResourceClass()) {
 		request.RecordClass = governor.PairingRecordClassHardNATCampaign
 	}
 	clear(contextDigest[:])
 	if err := config.Ledger.Preflight(request); err != nil {
 		return fail(err)
 	}
-	return &runtime{config: config, artifact: artifact, request: request, stage: StagePreflight}, nil
+	return &runtime{config: config, artifact: artifact, request: request, stage: StagePreflight, product: product}, nil
 }
 
-func (runtime *runtime) execute(ctx context.Context) error {
+func (runtime *runtime) execute(ctx context.Context, product bool) error {
 	if err := runtime.emit(StagePreflight); err != nil {
 		return runtime.failure(ClassOOBStreamInvalid, StagePreflight, err)
 	}
@@ -203,34 +270,44 @@ func (runtime *runtime) execute(ctx context.Context) error {
 		return runtime.failure(ClassOOBStreamInvalid, StagePreflight, err)
 	}
 	peerID := pairingContext.ResponderParticipantID
-	if runtime.artifact.LocalRole == directattempt.RoleResponder {
+	if runtime.artifact.GateBLocalRole() == directattempt.RoleResponder {
 		peerID = pairingContext.InitiatorParticipantID
 	}
 	runtime.peer, err = runtime.config.Machine.AcquirePeer(peerID)
 	if err != nil {
 		return runtime.classify(StagePreflight, err)
 	}
-	envelope, _ := hardnatbudget.For(runtime.artifact.PlannerProfile, runtime.artifact.ResourceClass)
-	operation, _ := hardnatbudget.Operation(runtime.artifact.PlannerProfile)
+	envelope, _ := hardnatbudget.For(runtime.artifact.GateBPlannerProfile(), runtime.artifact.GateBResourceClass())
+	operation, _ := hardnatbudget.Operation(runtime.artifact.GateBPlannerProfile())
 	// The active context below owns cancellation of every emission. Keep the
 	// lease alive through cleanup so durable FINISH is recorded before the
 	// attempt reservation is released even when the caller cancels.
 	runtime.attempt, err = runtime.peer.AcquireAttempt(context.WithoutCancel(ctx), governor.AttemptRequest{
-		ID: runtime.artifact.AttemptID, Operation: operation, Cost: envelope.Cost,
+		ID: runtime.artifact.GateBAttemptID(), Operation: operation, Cost: envelope.Cost,
 	})
 	if err != nil {
 		return runtime.classify(StagePreflight, err)
 	}
 	activeDeadline := time.Now().Add(runtime.activeEnvelope())
+	runtime.activeDeadline = activeDeadline
 	envelopeContext, deadlineCancel := context.WithDeadline(ctx, activeDeadline)
 	activeContext, activeCancel := context.WithCancelCause(envelopeContext)
 	runtime.envelopeContext, runtime.activeContext = envelopeContext, activeContext
 	runtime.activeCancel, runtime.deadlineCancel = activeCancel, deadlineCancel
 	ctx = activeContext
+	if product {
+		runtime.config.Stream, err = runtime.config.OpenProductStream(ctx, runtime.attempt, activeDeadline)
+		if err != nil {
+			return err
+		}
+		if runtime.config.Stream == nil {
+			return runtime.failure(ClassOOBStreamInvalid, StageOOBAdopt, oobcarrier.ErrInvalidConfig)
+		}
+	}
 	runtime.carrier, err = oobcarrier.AdoptHardNAT(oobcarrier.HardNATConfig{
-		Lease: runtime.attempt, Stream: runtime.config.Stream, OOBChannelID: runtime.artifact.OOBChannelID,
-		Role: runtime.artifact.LocalRole, PlannerProfile: runtime.artifact.PlannerProfile,
-		ResourceClass: runtime.artifact.ResourceClass, ActiveDeadline: activeDeadline,
+		Lease: runtime.attempt, Stream: runtime.config.Stream, OOBChannelID: runtime.artifact.GateBOOBChannelID(),
+		Role: runtime.artifact.GateBLocalRole(), PlannerProfile: runtime.artifact.GateBPlannerProfile(),
+		ResourceClass: runtime.artifact.GateBResourceClass(), ActiveDeadline: activeDeadline,
 	})
 	if err != nil {
 		return runtime.classify(StageOOBAdopt, err)
@@ -240,6 +317,10 @@ func (runtime *runtime) execute(ctx context.Context) error {
 		defer close(runtime.carrierWatchDone)
 		select {
 		case <-runtime.carrier.Done():
+			if runtime.product {
+				runtime.productCarrierTerminal(runtime.carrier.TerminalCause(), runtime.carrier.Witness().EOF)
+				return
+			}
 			// Once the data-plane challenge has completed there are no further
 			// UDP emissions to cancel. Before that point every carrier terminal
 			// event cancels the one absolute active-attempt context immediately.
@@ -304,7 +385,7 @@ func (runtime *runtime) execute(ctx context.Context) error {
 		return runtime.classify(StageEvidence, err)
 	}
 	runtime.observation, err = hardnatobserve.Collect(ctx, hardnatobserve.Config{
-		Profile: runtime.artifact.PlannerProfile, ResourceClass: runtime.artifact.ResourceClass,
+		Profile: runtime.artifact.GateBPlannerProfile(), ResourceClass: runtime.artifact.GateBResourceClass(),
 		Sockets: runtime.sockets[:hardnatobserve.ObservationSocketCount], Topology: runtime.config.ObserverTopology,
 		Trust: trust, Random: runtime.harnessObservationRandom(), Now: runtime.harnessNow(),
 	})
@@ -383,11 +464,18 @@ func (runtime *runtime) execute(ctx context.Context) error {
 		pathPrefix = hardCampaignPathPrefix
 		consumerKind = probeio.GateB3TestConsumer
 	}
-	pathID := pathPrefix + string(runtime.artifact.PlannerProfile)
+	if product {
+		pathPrefix = "gate-c/"
+		consumerKind = probeio.WireGuardDirectSessionConsumer
+	}
+	pathID := pathPrefix + string(runtime.artifact.GateBPlannerProfile())
 	leaseBinding := probeio.TransportLeaseBinding{
 		PeerID: runtime.attempt.PeerID(), AttemptID: runtime.attempt.Request().ID,
 		Generation: hardnatcontrol.Generation, PathID: pathID, Target: winnerTarget,
 		ConsumerKind: consumerKind,
+	}
+	if product {
+		leaseBinding.Profile = string(runtime.artifact.GateBPlannerProfile())
 	}
 	runtime.transportLease, err = probeio.IssueTransportLease(runtime.attempt, leaseBinding)
 	if err != nil {
@@ -396,7 +484,9 @@ func (runtime *runtime) execute(ctx context.Context) error {
 	if err := runtime.emit(StageTransportLease); err != nil {
 		return runtime.failure(ClassTransportLeaseUnavailable, StageTransportLease, err)
 	}
-	if runtime.isHardCampaign() {
+	if product {
+		err = winnerSocket.PromoteToWireGuardSessionLease(winnerTarget, pathID, runtime.transportLease)
+	} else if runtime.isHardCampaign() {
 		err = winnerSocket.PromoteToHardNATCampaignLease(winnerTarget, pathID, runtime.transportLease)
 	} else {
 		err = winnerSocket.PromoteToHardNATLease(winnerTarget, pathID, runtime.transportLease)
@@ -404,15 +494,29 @@ func (runtime *runtime) execute(ctx context.Context) error {
 	if err != nil {
 		return runtime.classify(StageHandoff, err)
 	}
-	runtime.transport, err = runtime.transportLease.Adopt(ctx, leaseBinding)
-	if err != nil {
-		return runtime.classify(StageHandoff, err)
+	if product {
+		role := probeio.WireGuardInitiator
+		if runtime.artifact.GateBLocalRole() == directattempt.RoleResponder {
+			role = probeio.WireGuardResponder
+		}
+		runtime.wireGuardGate, err = runtime.transportLease.AdoptWireGuardSession(
+			ctx, leaseBinding, role, runtime.activeDeadline,
+		)
+		runtime.transport = runtime.wireGuardGate
+	} else {
+		runtime.transport, err = runtime.transportLease.Adopt(ctx, leaseBinding)
+		if err == nil {
+			err = runtime.transportLease.MarkStandby()
+		}
 	}
-	if err := runtime.transportLease.MarkStandby(); err != nil {
+	if err != nil {
 		return runtime.classify(StageHandoff, err)
 	}
 	if err := runtime.emit(StageHandoff); err != nil {
 		return runtime.failure(ClassTransportHandoffFailed, StageHandoff, err)
+	}
+	if product {
+		return nil
 	}
 	if err := runtime.challenge(ctx); err != nil {
 		return runtime.classify(StageDataPlaneChallenge, err)
@@ -440,7 +544,7 @@ func (runtime *runtime) handshake(ctx context.Context) error {
 	defer clear(psk[:])
 	config := noisecore.Config{Prologue: prologue, PSK: staticPSK(psk), Random: runtime.harnessNoiseRandom()}
 	var session *noisecore.Session
-	if runtime.artifact.LocalRole == directattempt.RoleInitiator {
+	if runtime.artifact.GateBLocalRole() == directattempt.RoleInitiator {
 		session, err = noisecore.NewInitiator(config)
 	} else {
 		session, err = noisecore.NewResponder(config)
@@ -449,7 +553,7 @@ func (runtime *runtime) handshake(ctx context.Context) error {
 		return err
 	}
 	defer session.Close()
-	if runtime.artifact.LocalRole == directattempt.RoleInitiator {
+	if runtime.artifact.GateBLocalRole() == directattempt.RoleInitiator {
 		first, writeErr := session.WriteMessage(nil)
 		if writeErr != nil {
 			return writeErr
@@ -503,7 +607,7 @@ func (runtime *runtime) handshake(ctx context.Context) error {
 		clear(handshakeHash[:])
 		return err
 	}
-	maxSequence, err := hardnatcontrol.MaxSequenceFor(runtime.artifact.PlannerProfile, runtime.artifact.ResourceClass)
+	maxSequence, err := hardnatcontrol.MaxSequenceFor(runtime.artifact.GateBPlannerProfile(), runtime.artifact.GateBResourceClass())
 	if err != nil {
 		clear(handshakeHash[:])
 		clear(contextDigest[:])
@@ -522,7 +626,7 @@ func (runtime *runtime) handshake(ctx context.Context) error {
 		clear(contextDigest[:])
 		return err
 	}
-	envelope, _ := hardnatbudget.For(runtime.artifact.PlannerProfile, runtime.artifact.ResourceClass)
+	envelope, _ := hardnatbudget.For(runtime.artifact.GateBPlannerProfile(), runtime.artifact.GateBResourceClass())
 	envelopeDigest, err := hardnatbudget.Digest(envelope)
 	if err != nil {
 		_ = packets.Close()
@@ -530,14 +634,18 @@ func (runtime *runtime) handshake(ctx context.Context) error {
 		return err
 	}
 	runtime.binding = hardnatcontrol.Binding{
-		AttemptID: runtime.artifact.AttemptID, ContextDigest: contextDigest, HandshakeHash: handshakeHash,
-		Generation: hardnatcontrol.Generation, Profile: runtime.artifact.PlannerProfile,
-		ResourceClass: runtime.artifact.ResourceClass, EnvelopeDigest: envelopeDigest,
+		AttemptID: runtime.artifact.GateBAttemptID(), ContextDigest: contextDigest, HandshakeHash: handshakeHash,
+		Generation: hardnatcontrol.Generation, Profile: runtime.artifact.GateBPlannerProfile(),
+		ResourceClass: runtime.artifact.GateBResourceClass(), EnvelopeDigest: envelopeDigest,
 	}
 	clear(handshakeHash[:])
 	clear(contextDigest[:])
 	clear(envelopeDigest[:])
-	runtime.protocol, err = hardnatcontrol.NewProtocol(runtime.artifact.LocalRole, runtime.artifact.LocalPlannerRole, runtime.binding, packets)
+	if runtime.product {
+		runtime.protocol, err = hardnatcontrol.NewProductProtocol(runtime.artifact.GateBLocalRole(), runtime.artifact.GateBLocalPlannerRole(), runtime.binding, packets)
+	} else {
+		runtime.protocol, err = hardnatcontrol.NewProtocol(runtime.artifact.GateBLocalRole(), runtime.artifact.GateBLocalPlannerRole(), runtime.binding, packets)
+	}
 	if err != nil {
 		plannerSource.Close()
 		return err
@@ -647,7 +755,7 @@ func (runtime *runtime) trustAnchors(pairing pairingcontext.PairingContext) (har
 	}
 	defer clear(contextDigest[:])
 	localID, peerID := pairing.InitiatorParticipantID, pairing.ResponderParticipantID
-	if runtime.artifact.LocalRole == directattempt.RoleResponder {
+	if runtime.artifact.GateBLocalRole() == directattempt.RoleResponder {
 		localID, peerID = peerID, localID
 	}
 	endpoints, err := runtime.config.ObserverTopology.Endpoints()
@@ -655,7 +763,7 @@ func (runtime *runtime) trustAnchors(pairing pairingcontext.PairingContext) (har
 		return hardnatobserve.TrustAnchors{}, err
 	}
 	trust := hardnatobserve.TrustAnchors{Generation: hardnatcontrol.Generation}
-	trust.AttemptDigest = digestFields("winkyou-hardnat-attempt-digest-v1\x00", contextDigest[:], []byte(runtime.artifact.AttemptID))
+	trust.AttemptDigest = digestFields("winkyou-hardnat-attempt-digest-v1\x00", contextDigest[:], []byte(runtime.artifact.GateBAttemptID()))
 	trust.MachineScopeDigest = digestFields("winkyou-hardnat-machine-scope-v1\x00", []byte(localID))
 	trust.PeerDigest = digestFields("winkyou-hardnat-peer-v1\x00", []byte(peerID))
 	var observer bytes.Buffer
@@ -664,7 +772,7 @@ func (runtime *runtime) trustAnchors(pairing pairingcontext.PairingContext) (har
 		appendEndpoint(&observer, endpoint)
 	}
 	trust.ObservationSetDigest = digestFields("winkyou-hardnat-observer-set-v1\x00", observer.Bytes())
-	trust.SocketOwnerDigest = digestFields("winkyou-hardnat-socket-owner-v1\x00", []byte(runtime.artifact.AttemptID), []byte(localID), []byte(runtime.artifact.LocalRole))
+	trust.SocketOwnerDigest = digestFields("winkyou-hardnat-socket-owner-v1\x00", []byte(runtime.artifact.GateBAttemptID()), []byte(localID), []byte(runtime.artifact.GateBLocalRole()))
 	return trust, nil
 }
 
@@ -679,9 +787,9 @@ func (runtime *runtime) freezeAndExchangePlan(ctx context.Context, envelope hard
 		PacketsPerSecond: uint32(envelope.Cost.Resources.PacketsPerSecond), ActiveMillis: uint32(active.Milliseconds()),
 	}
 	local, err := hardnatplan.BuildLocalCommitment(hardnatplan.LocalCommitmentInput{
-		Profile: runtime.artifact.PlannerProfile, ResourceClass: runtime.artifact.ResourceClass,
+		Profile: runtime.artifact.GateBPlannerProfile(), ResourceClass: runtime.artifact.GateBResourceClass(),
 		Context: hardnatplan.AttemptContext{AttemptDigest: runtime.observation.Graph.AttemptDigest,
-			Generation: hardnatcontrol.Generation, Role: runtime.artifact.LocalPlannerRole},
+			Generation: hardnatcontrol.Generation, Role: runtime.artifact.GateBLocalPlannerRole()},
 		Evidence: runtime.observation.Graph, Validation: runtime.observation.Trusted, Budget: budget,
 	})
 	if err != nil {
@@ -698,8 +806,8 @@ func (runtime *runtime) freezeAndExchangePlan(ctx context.Context, envelope hard
 	if err := runtime.validateExecutionAddresses(runtime.observation.PublicAddress, peerPayload.PublicAddress); err != nil {
 		return err
 	}
-	peer, err := peerPayload.Commitment(runtime.artifact.PlannerProfile, runtime.artifact.ResourceClass)
-	if err != nil || peer.Role != runtime.artifact.PeerPlannerRole {
+	peer, err := peerPayload.Commitment(runtime.artifact.GateBPlannerProfile(), runtime.artifact.GateBResourceClass())
+	if err != nil || peer.Role != runtime.artifact.GateBPeerPlannerRole() {
 		return errors.Join(hardnatplan.ErrPlanMismatch, err)
 	}
 	bilateral, err := hardnatplan.BuildBilateralPlan(hardnatplan.BilateralPlannerInput{
@@ -708,11 +816,11 @@ func (runtime *runtime) freezeAndExchangePlan(ctx context.Context, envelope hard
 	if err != nil {
 		return err
 	}
-	localPlan, ok := bilateral.PlanForRole(runtime.artifact.LocalPlannerRole)
+	localPlan, ok := bilateral.PlanForRole(runtime.artifact.GateBLocalPlannerRole())
 	if !ok {
 		return hardnatplan.ErrPlanMismatch
 	}
-	peerPlan, ok := bilateral.PlanForRole(runtime.artifact.PeerPlannerRole)
+	peerPlan, ok := bilateral.PlanForRole(runtime.artifact.GateBPeerPlannerRole())
 	if !ok {
 		return hardnatplan.ErrPlanMismatch
 	}
@@ -727,9 +835,9 @@ func (runtime *runtime) freezeAndExchangePlan(ctx context.Context, envelope hard
 	if err != nil {
 		return err
 	}
-	localExecution := hardnatcontrol.ExecutionSource{CarrierRole: runtime.artifact.LocalRole,
+	localExecution := hardnatcontrol.ExecutionSource{CarrierRole: runtime.artifact.GateBLocalRole(),
 		PlannerRole: local.Role, SourceDigest: local.SourceDigest, PublicAddress: runtime.observation.PublicAddress}
-	peerExecution := hardnatcontrol.ExecutionSource{CarrierRole: runtime.artifact.LocalRole.Peer(),
+	peerExecution := hardnatcontrol.ExecutionSource{CarrierRole: runtime.artifact.GateBLocalRole().Peer(),
 		PlannerRole: peer.Role, SourceDigest: peer.SourceDigest, PublicAddress: peerPayload.PublicAddress}
 	executionDigest, err := hardnatcontrol.BuildExecutionDigest(joint, envelopeDigest, localExecution, peerExecution)
 	clear(envelopeDigest[:])
@@ -756,6 +864,9 @@ func (runtime *runtime) validateExecutionAddresses(localAddress, peerAddress har
 	peer, err := fromPlanAddress(peerAddress)
 	if err != nil {
 		return err
+	}
+	if runtime.product && peer != runtime.config.ExpectedPeerAddress {
+		return oobcarrier.ErrInvalidConfig
 	}
 	if runtime.config.NATLabFactory != nil || runtime.config.HardNATLabFactory != nil {
 		var localErr, peerErr error
@@ -784,7 +895,7 @@ func (runtime *runtime) validateExecutionAddresses(localAddress, peerAddress har
 }
 
 func (runtime *runtime) exchangeControl(ctx context.Context, frameType hardnatcontrol.FrameType) error {
-	if runtime.artifact.LocalRole == directattempt.RoleInitiator {
+	if runtime.artifact.GateBLocalRole() == directattempt.RoleInitiator {
 		if err := runtime.sendControl(ctx, frameType); err != nil {
 			return err
 		}
@@ -861,7 +972,7 @@ func (runtime *runtime) exchangeSource(ctx context.Context, local hardnatcontrol
 		}
 		return *opened.Source, nil
 	}
-	if runtime.artifact.LocalRole == directattempt.RoleInitiator {
+	if runtime.artifact.GateBLocalRole() == directattempt.RoleInitiator {
 		if err := send(); err != nil {
 			return hardnatcontrol.SourcePayload{}, err
 		}
@@ -893,7 +1004,7 @@ func (runtime *runtime) fire(ctx context.Context) error {
 		// order while keeping the eight-frame OOB ceiling after winner selection.
 		frameType = hardnatcontrol.FrameReadyFire
 	}
-	if runtime.artifact.LocalRole == directattempt.RoleInitiator {
+	if runtime.artifact.GateBLocalRole() == directattempt.RoleInitiator {
 		if err := runtime.sendControl(ctx, frameType); err != nil {
 			return err
 		}
@@ -1064,8 +1175,8 @@ func (runtime *runtime) punch(ctx context.Context) (*probeio.ProbeSocket, netip.
 				// race the sender and place the ACK in the last 64-packet PPS
 				// window. This waits for the already-frozen schedule; it does not
 				// add a packet, retry, candidate, or fallback.
-				if runtime.artifact.PlannerProfile == hardnatplan.ProfileAsymmetricBirthday &&
-					runtime.artifact.LocalPlannerRole == hardnatplan.RoleTargetSet && senderDone != nil {
+				if runtime.artifact.GateBPlannerProfile() == hardnatplan.ProfileAsymmetricBirthday &&
+					runtime.artifact.GateBLocalPlannerRole() == hardnatplan.RoleTargetSet && senderDone != nil {
 					sendErr := <-senderDone
 					senderFinished = true
 					senderDone = nil
@@ -1273,7 +1384,7 @@ func (runtime *runtime) punchHardCampaign(ctx context.Context) (*probeio.ProbeSo
 	}
 
 	var selection hardnatcontrol.WinnerSelection
-	if runtime.artifact.LocalRole == directattempt.RoleResponder {
+	if runtime.artifact.GateBLocalRole() == directattempt.RoleResponder {
 		var err error
 		selection, err = runtime.sendHardWinnerSelection(ctx)
 		if err == nil {
@@ -1299,7 +1410,7 @@ func (runtime *runtime) punchHardCampaign(ctx context.Context) (*probeio.ProbeSo
 	}
 	if !hasWinner {
 		var err error
-		if runtime.artifact.LocalRole == directattempt.RoleResponder {
+		if runtime.artifact.GateBLocalRole() == directattempt.RoleResponder {
 			err = runtime.sendHardExhausted(ctx)
 		} else {
 			// Carrier EOF cancels punchCtx immediately so no further network
@@ -1459,8 +1570,8 @@ func (runtime *runtime) receiveHardExhausted(ctx context.Context) error {
 // the one-second window occupied by its eighth 64-packet target batch. A hit
 // from the mapping-set's second batch is already in a fresh PPS window.
 func (runtime *runtime) waitForAsymmetricWinnerSlot(ctx context.Context) error {
-	if runtime.artifact.PlannerProfile != hardnatplan.ProfileAsymmetricBirthday ||
-		runtime.artifact.LocalPlannerRole != hardnatplan.RoleTargetSet {
+	if runtime.artifact.GateBPlannerProfile() != hardnatplan.ProfileAsymmetricBirthday ||
+		runtime.artifact.GateBLocalPlannerRole() != hardnatplan.RoleTargetSet {
 		return nil
 	}
 	runtime.emissionsMu.Lock()
@@ -1580,8 +1691,8 @@ func (runtime *runtime) sendCandidates(ctx context.Context) error {
 	// opens its reciprocal filters first, then the responder emits once. This
 	// removes scheduler-dependent simultaneous one-shot loss without retrying
 	// or changing a candidate tuple.
-	if runtime.artifact.PlannerProfile == hardnatplan.ProfilePredictiveEdm &&
-		runtime.artifact.LocalRole == directattempt.RoleResponder {
+	if runtime.artifact.GateBPlannerProfile() == hardnatplan.ProfilePredictiveEdm &&
+		runtime.artifact.GateBLocalRole() == directattempt.RoleResponder {
 		if err := runtime.wait(ctx, predictiveResponderLead); err != nil {
 			return err
 		}
@@ -1590,8 +1701,8 @@ func (runtime *runtime) sendCandidates(ctx context.Context) error {
 	// possible mapping-set source endpoint. The mapping side therefore starts
 	// only after the target side has emitted its eight fixed 64-packet batches.
 	// This is role-separated scheduling, not retry or fallback.
-	if runtime.artifact.PlannerProfile == hardnatplan.ProfileAsymmetricBirthday &&
-		runtime.artifact.LocalPlannerRole == hardnatplan.RoleMappingSet {
+	if runtime.artifact.GateBPlannerProfile() == hardnatplan.ProfileAsymmetricBirthday &&
+		runtime.artifact.GateBLocalPlannerRole() == hardnatplan.RoleMappingSet {
 		if err := runtime.wait(ctx, asymmetricMappingLead); err != nil {
 			return err
 		}
@@ -1719,20 +1830,20 @@ func hardnatbudgetForPPS(profile hardnatplan.Profile) int {
 }
 
 func (runtime *runtime) chooser() bool {
-	return runtime.artifact.PlannerProfile == hardnatplan.ProfilePredictiveEdm && runtime.artifact.LocalRole == directattempt.RoleInitiator ||
-		runtime.artifact.PlannerProfile == hardnatplan.ProfileHardBirthday && runtime.artifact.LocalRole == directattempt.RoleInitiator ||
-		runtime.artifact.PlannerProfile == hardnatplan.ProfileAsymmetricBirthday && runtime.artifact.LocalPlannerRole == hardnatplan.RoleTargetSet
+	return runtime.artifact.GateBPlannerProfile() == hardnatplan.ProfilePredictiveEdm && runtime.artifact.GateBLocalRole() == directattempt.RoleInitiator ||
+		runtime.artifact.GateBPlannerProfile() == hardnatplan.ProfileHardBirthday && runtime.artifact.GateBLocalRole() == directattempt.RoleInitiator ||
+		runtime.artifact.GateBPlannerProfile() == hardnatplan.ProfileAsymmetricBirthday && runtime.artifact.GateBLocalPlannerRole() == hardnatplan.RoleTargetSet
 }
 
 func (runtime *runtime) candidateBatchSize() int {
-	limit := hardnatbudgetForPPS(runtime.artifact.PlannerProfile)
+	limit := hardnatbudgetForPPS(runtime.artifact.GateBPlannerProfile())
 	if runtime.isHardCampaign() {
 		// Gate B3 selects its sole winner only after both complete schedules,
 		// so all 512 slots belong to candidates. The winner waits for a fresh
 		// rolling PPS interval and never borrows a 513th slot.
 		return limit
 	}
-	if (runtime.artifact.PlannerProfile == hardnatplan.ProfilePredictiveEdm || runtime.artifact.PlannerProfile == hardnatplan.ProfileHardBirthday) && runtime.chooser() {
+	if (runtime.artifact.GateBPlannerProfile() == hardnatplan.ProfilePredictiveEdm || runtime.artifact.GateBPlannerProfile() == hardnatplan.ProfileHardBirthday) && runtime.chooser() {
 		return limit - 1
 	}
 	return limit
@@ -1770,7 +1881,7 @@ func (runtime *runtime) candidateWindow() time.Duration {
 	if runtime != nil && runtime.config.Harness != nil && runtime.config.Harness.CandidateWindow > 0 {
 		return runtime.config.Harness.CandidateWindow
 	}
-	duration, err := hardnatbudget.CandidateDuration(runtime.artifact.PlannerProfile, runtime.artifact.ResourceClass)
+	duration, err := hardnatbudget.CandidateDuration(runtime.artifact.GateBPlannerProfile(), runtime.artifact.GateBResourceClass())
 	if err != nil {
 		return 0
 	}
@@ -1781,7 +1892,7 @@ func (runtime *runtime) activeEnvelope() time.Duration {
 	if runtime != nil && runtime.config.Harness != nil && runtime.config.Harness.ActiveEnvelope > 0 {
 		return runtime.config.Harness.ActiveEnvelope
 	}
-	duration, err := hardnatbudget.ActiveDuration(runtime.artifact.PlannerProfile, runtime.artifact.ResourceClass)
+	duration, err := hardnatbudget.ActiveDuration(runtime.artifact.GateBPlannerProfile(), runtime.artifact.GateBResourceClass())
 	if err != nil {
 		return 0
 	}
@@ -1790,7 +1901,7 @@ func (runtime *runtime) activeEnvelope() time.Duration {
 
 func (runtime *runtime) isHardCampaign() bool {
 	return runtime != nil && runtime.artifact != nil &&
-		hardnatbudget.IsHardCampaign(runtime.artifact.PlannerProfile, runtime.artifact.ResourceClass)
+		hardnatbudget.IsHardCampaign(runtime.artifact.GateBPlannerProfile(), runtime.artifact.GateBResourceClass())
 }
 
 func (runtime *runtime) now() time.Time {
@@ -1820,7 +1931,7 @@ func (runtime *runtime) challenge(ctx context.Context) error {
 	buffer := make([]byte, 64)
 	defer clear(buffer)
 	write := func(ordinal int) error {
-		packet := challengePacket(runtime.binding, runtime.artifact.LocalRole, uint8(ordinal))
+		packet := challengePacket(runtime.binding, runtime.artifact.GateBLocalRole(), uint8(ordinal))
 		defer clear(packet)
 		if err := runtime.transport.WritePacket(challengeCtx, packet); err != nil {
 			return err
@@ -1833,7 +1944,7 @@ func (runtime *runtime) challenge(ctx context.Context) error {
 		if err != nil {
 			return err
 		}
-		actual, err := validateChallengePacket(buffer[:n], runtime.binding, runtime.artifact.LocalRole.Peer())
+		actual, err := validateChallengePacket(buffer[:n], runtime.binding, runtime.artifact.GateBLocalRole().Peer())
 		if err != nil || int(actual) != ordinal {
 			return errors.Join(err, errors.New("out-of-order data-plane challenge"))
 		}
@@ -1841,7 +1952,7 @@ func (runtime *runtime) challenge(ctx context.Context) error {
 		return nil
 	}
 	for ordinal := 0; ordinal < challengePackets; ordinal++ {
-		if runtime.artifact.LocalRole == directattempt.RoleInitiator {
+		if runtime.artifact.GateBLocalRole() == directattempt.RoleInitiator {
 			if err := write(ordinal); err != nil {
 				return err
 			}
@@ -1945,7 +2056,7 @@ func (runtime *runtime) cleanup(reason governor.PairingTerminalReason) error {
 	}
 	if runtime.carrier != nil {
 		if runtime.success && runtime.challengeComplete.Load() &&
-			runtime.artifact.LocalRole == directattempt.RoleResponder {
+			runtime.artifact.GateBLocalRole() == directattempt.RoleResponder {
 			// The initiator can complete only after receiving the responder's
 			// third challenge packet. It closes the carrier after recording
 			// FINISH; the responder waits for that bounded terminal signal before
@@ -1967,6 +2078,10 @@ func (runtime *runtime) cleanup(reason governor.PairingTerminalReason) error {
 		}
 	}
 	if runtime.transportLease != nil {
+		if runtime.wireGuardGate != nil {
+			cleanupErr = errors.Join(cleanupErr, runtime.wireGuardGate.Close())
+			runtime.wireGuardGate = nil
+		}
 		if runtime.success && finishOK {
 			cleanupErr = errors.Join(cleanupErr, runtime.transportLease.DetachAfterFinish())
 		} else {
@@ -2016,8 +2131,8 @@ func (runtime *runtime) result() Result {
 	emissions := runtime.emissions
 	runtime.emissionsMu.Unlock()
 	result := Result{
-		AttemptKind: "hard_nat_direct_handoff", Profile: runtime.artifact.PlannerProfile,
-		ResourceClass: runtime.artifact.ResourceClass, Terminal: "failed", CredentialBurned: runtime.burned,
+		AttemptKind: "hard_nat_direct_handoff", Profile: runtime.artifact.GateBPlannerProfile(),
+		ResourceClass: runtime.artifact.GateBResourceClass(), Terminal: "failed", CredentialBurned: runtime.burned,
 		FinishRecorded: runtime.finishRecorded, Emissions: emissions, ReservedEnvelope: runtime.request.Envelope,
 	}
 	if runtime.localPlan.Probability.Model != "" {

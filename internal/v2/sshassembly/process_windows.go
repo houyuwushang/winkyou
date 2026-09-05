@@ -110,6 +110,11 @@ func (containment *windowsProcessContainment) Kill() error {
 	return windows.TerminateJobObject(containment.job, 1)
 }
 
+// This no-console profile has no safe per-process graceful console signal.
+// Pipe closure remains its cooperative request; the existing two-second
+// owned Job Object kill bound is unchanged. No console/group signal is sent.
+func (containment *windowsProcessContainment) RequestExit() error { return nil }
+
 func (containment *windowsProcessContainment) Close() error {
 	if containment == nil {
 		return nil

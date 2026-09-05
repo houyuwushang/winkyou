@@ -394,7 +394,7 @@ func gateB2NonLoopbackAuthorityViolations(root string) ([]string, error) {
 		ast.Inspect(parsed, func(node ast.Node) bool {
 			switch value := node.(type) {
 			case *ast.SelectorExpr:
-				if value.Sel.Name == "NewGateB2NATLabFactory" && relative != allowedConsumer {
+				if value.Sel.Name == "NewGateB2NATLabFactory" && relative != allowedConsumer && !approvedGateC1bNATLabAdapter(root, relative) {
 					violations = append(violations, relative+" constructs sealed Gate B2 natlab factory")
 				}
 			case *ast.KeyValueExpr:

@@ -1,0 +1,39 @@
+{
+  "schema": "winkyou-gate-c-wireguard-option-b-trace/1",
+  "initiator": {
+    "State": "",
+    "ConsumerReady": true,
+    "ReadinessWrites": 1,
+    "ReadinessReads": 1,
+    "Outbound": [
+      1,
+      4
+    ],
+    "Inbound": [
+      2
+    ],
+    "FinishRecorded": false,
+    "AttemptDetached": false,
+    "ActiveWrites": 0,
+    "ActiveReads": 0,
+    "Closed": false
+  },
+  "responder": {
+    "State": "",
+    "ConsumerReady": true,
+    "ReadinessWrites": 1,
+    "ReadinessReads": 1,
+    "Outbound": [
+      2
+    ],
+    "Inbound": [
+      1,
+      4
+    ],
+    "FinishRecorded": false,
+    "AttemptDetached": false,
+    "ActiveWrites": 0,
+    "ActiveReads": 0,
+    "Closed": false
+  }
+}

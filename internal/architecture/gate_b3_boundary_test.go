@@ -209,6 +209,10 @@ func scanGateB3Identifiers(root string, identifiers map[string]struct{}, allowed
 			if _, watched := identifiers[identifier.Name]; !watched {
 				return true
 			}
+			if approvedGateC1bNATLabAdapter(root, relative) &&
+				(identifier.Name == "NewGateB3NATLabFactory" || identifier.Name == "HardNATLabFactory") {
+				return true
+			}
 			if names := allowed[relative]; names != nil {
 				if _, approved := names[identifier.Name]; approved {
 					return true
@@ -263,7 +267,8 @@ func gateB3NATLabAuthorityViolations(root string) ([]string, error) {
 		ast.Inspect(parsed, func(node ast.Node) bool {
 			selector, ok := node.(*ast.SelectorExpr)
 			constructor := ok && (selector.Sel.Name == "NewGateB3NATLabFactory" || selector.Sel.Name == "NewGateB3ENOBUFSNATLabFactory")
-			if constructor && relative != allowedConsumer && relative != "internal/probeio/gate_b3_natlab_linux.go" {
+			if constructor && relative != allowedConsumer && relative != "internal/probeio/gate_b3_natlab_linux.go" &&
+				!(selector.Sel.Name == "NewGateB3NATLabFactory" && approvedGateC1bNATLabAdapter(root, relative)) {
 				violations = append(violations, relative+" constructs sealed Gate B3 natlab factory")
 			}
 			return true
