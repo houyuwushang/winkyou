@@ -176,9 +176,11 @@ type conflictState struct {
 
 type dependencies struct {
 	now              func() time.Time
+	artifactNow      func() time.Time
 	random           io.Reader
 	configureGateB   func(*gateb.Config)
 	inspectConflict  func(context.Context, preparedInput, trustedPeer) (conflictState, error)
+	inspectMachine   func() error
 	openSSH          func(context.Context, sshassembly.Config) (sshProductStream, error)
 	claimPending     func(time.Time) (*gatecstage.Claimed, error)
 	acquireMachine   func(hardnatplan.Profile, hardnatplan.ResourceClass, string) (*governor.Governor, *governor.PairingAdmissionLedger, error)

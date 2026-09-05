@@ -91,6 +91,10 @@ func (systemResponderStager) Cleanup(manifestFile string) error {
 }
 
 func newSolverCmd(opts *Options) *cobra.Command {
+	return newSolverCmdWithGateC(opts, systemGateCProductRunner{})
+}
+
+func newSolverCmdWithGateC(opts *Options, product gateCProductRunner) *cobra.Command {
 	command := &cobra.Command{
 		Use:   "solver",
 		Short: "Use the versioned local connectivity-solver API",
@@ -99,7 +103,7 @@ func newSolverCmd(opts *Options) *cobra.Command {
 	command.AddCommand(
 		newSolverServeCmd(opts, systemSolverStdioRunner{}),
 		newSolverPairCmd(systemDirectPairGenerator{}, systemOOBPairGenerator{}),
-		newSolverDirectCmd(systemResponderStager{}, systemGateCProductRunner{}, opts),
+		newSolverDirectCmd(systemResponderStager{}, product, opts),
 	)
 	return command
 }
@@ -168,6 +172,7 @@ func newSolverDirectChildCmd(options *Options, runner gateCProductRunner) *cobra
 				return gatecorchestrator.ErrRequestInvalid
 			}
 			progress := newGateCProgressWriter(command.ErrOrStderr())
+			progress.responder = true
 			ctx, stop := signal.NotifyContext(command.Context(), os.Interrupt)
 			defer stop()
 			result, err := runner.Child(ctx, command.InOrStdin(), command.OutOrStdout(), gatecorchestrator.ResponderOptions{
@@ -176,7 +181,12 @@ func newSolverDirectChildCmd(options *Options, runner gateCProductRunner) *cobra
 			if err != nil {
 				return err
 			}
-			return writeGateCResult(command.ErrOrStderr(), result)
+			// FINISH detached the OOB child pipes. A closed diagnostic pipe is
+			// expected while the foreground responder owns the data plane.
+			if err := writeGateCResult(command.ErrOrStderr(), result); err != nil && !result.FinishRecorded {
+				return err
+			}
+			return nil
 		},
 	}
 	command.Flags().BoolVar(&stdio, "stdio", false, "use the dedicated bounded SSH child byte stream (required)")
@@ -184,8 +194,10 @@ func newSolverDirectChildCmd(options *Options, runner gateCProductRunner) *cobra
 }
 
 type gateCProgressWriter struct {
-	mu      sync.Mutex
-	encoder *json.Encoder
+	mu        sync.Mutex
+	encoder   *json.Encoder
+	responder bool
+	detached  bool
 }
 
 func newGateCProgressWriter(output io.Writer) *gateCProgressWriter {
@@ -195,11 +207,18 @@ func newGateCProgressWriter(output io.Writer) *gateCProgressWriter {
 func (writer *gateCProgressWriter) Report(progress gatecorchestrator.Progress) error {
 	writer.mu.Lock()
 	defer writer.mu.Unlock()
-	return writer.encoder.Encode(struct {
+	if writer.responder && progress.Stage == gatecorchestrator.StageFinishRecorded {
+		writer.detached = true
+	}
+	err := writer.encoder.Encode(struct {
 		Stage             string `json:"stage"`
 		RemainingBudgetMS int64  `json:"remaining_budget_ms"`
 		Cancellable       bool   `json:"cancellable"`
 	}{Stage: progress.Stage, RemainingBudgetMS: progress.RemainingBudget.Milliseconds(), Cancellable: progress.Cancellable})
+	if writer.detached {
+		return nil
+	}
+	return err
 }
 
 func writeGateCResult(output io.Writer, result gatecorchestrator.Result) error {

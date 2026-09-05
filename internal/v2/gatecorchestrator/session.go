@@ -42,7 +42,7 @@ func postOOBEcho(ctx context.Context, role directattempt.Role, networkInterface 
 		witness.RequestsWritten++
 		response, err := receiveInnerPacket(echoCtx, networkInterface)
 		if err != nil {
-			return witness, ErrEchoInvalid
+			return witness, errors.Join(ErrEchoInvalid, err)
 		}
 		defer clear(response)
 		if _, err := parseEchoPacket(response, binding, echoResponse, &nonce); err != nil {
@@ -54,7 +54,7 @@ func postOOBEcho(ctx context.Context, role directattempt.Role, networkInterface 
 
 	request, err := receiveInnerPacket(echoCtx, networkInterface)
 	if err != nil {
-		return witness, ErrEchoInvalid
+		return witness, errors.Join(ErrEchoInvalid, err)
 	}
 	defer clear(request)
 	message, err := parseEchoPacket(request, binding, echoRequest, nil)
@@ -77,7 +77,7 @@ func postOOBEcho(ctx context.Context, role directattempt.Role, networkInterface 
 
 func foregroundSession(callerCtx, sessionCtx context.Context, role directattempt.Role,
 	networkInterface netif.MemoryTestInterface, handoff *gateb.ProductHandoff, binding echoBinding,
-	random io.Reader, activityInterval time.Duration) (string, EchoWitness, error) {
+	random io.Reader, activityInterval time.Duration) (end string, witness EchoWitness, runErr error) {
 	if callerCtx == nil || sessionCtx == nil || networkInterface == nil || handoff == nil || random == nil ||
 		!role.Valid() || activityInterval <= 0 {
 		return "", EchoWitness{}, ErrPostHandoff
@@ -112,18 +112,31 @@ func foregroundSession(callerCtx, sessionCtx context.Context, role directattempt
 	}
 
 	packets := make(chan receivedInnerPacket, 1)
+	readerStop := make(chan struct{})
+	readerDone := make(chan struct{})
+	defer func() {
+		close(readerStop)
+		if err := drainInnerReader(networkInterface, readerDone); err != nil {
+			witness.Drained = false
+			runErr = errors.Join(runErr, err)
+		}
+	}()
 	go func() {
+		defer close(readerDone)
 		buffer := make([]byte, 65535)
 		for {
 			n, err := networkInterface.ReceivePacket(buffer)
 			if err != nil {
-				packets <- receivedInnerPacket{err: err}
+				select {
+				case packets <- receivedInnerPacket{err: err}:
+				case <-readerStop:
+				}
 				return
 			}
 			payload := append([]byte(nil), buffer[:n]...)
 			select {
 			case packets <- receivedInnerPacket{payload: payload}:
-			case <-sessionCtx.Done():
+			case <-readerStop:
 				clear(payload)
 				return
 			}
@@ -162,7 +175,9 @@ func foregroundSession(callerCtx, sessionCtx context.Context, role directattempt
 
 func receiveInnerPacket(ctx context.Context, networkInterface netif.MemoryTestInterface) ([]byte, error) {
 	result := make(chan receivedInnerPacket, 1)
+	done := make(chan struct{})
 	go func() {
+		defer close(done)
 		buffer := make([]byte, 65535)
 		n, err := networkInterface.ReceivePacket(buffer)
 		if err != nil {
@@ -173,9 +188,32 @@ func receiveInnerPacket(ctx context.Context, networkInterface netif.MemoryTestIn
 	}()
 	select {
 	case <-ctx.Done():
-		return nil, ctx.Err()
+		err := drainInnerReader(networkInterface, done)
+		select {
+		case abandoned := <-result:
+			clear(abandoned.payload)
+		default:
+		}
+		return nil, errors.Join(ctx.Err(), err)
 	case received := <-result:
+		<-done
 		return received.payload, received.err
+	}
+}
+
+// ReceivePacket has no context argument. Terminal cancellation therefore owns
+// Close and must witness the reader exiting, not just abandon its goroutine.
+func drainInnerReader(networkInterface netif.MemoryTestInterface, done <-chan struct{}) error {
+	if err := networkInterface.Close(); err != nil {
+		return ErrSessionDrain
+	}
+	timer := time.NewTimer(SessionDrainTimeout)
+	defer timer.Stop()
+	select {
+	case <-done:
+		return nil
+	case <-timer.C:
+		return ErrSessionDrain
 	}
 }
 

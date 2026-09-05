@@ -6,13 +6,20 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"io"
 	"net"
 	"net/netip"
+	"os"
 	"path/filepath"
 	"reflect"
+	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
+
+	"gopkg.in/yaml.v3"
+	winkcmd "winkyou/cmd/wink/cmd"
 
 	"winkyou/internal/governor"
 	"winkyou/internal/natsim"
@@ -21,6 +28,7 @@ import (
 	"winkyou/internal/v2/gatecattempt"
 	"winkyou/internal/v2/gatecorchestrator"
 	"winkyou/internal/v2/gatecrequest"
+	"winkyou/internal/v2/gatecstage"
 	"winkyou/internal/v2/hardnatobserve"
 	"winkyou/internal/v2/hardnatplan"
 	"winkyou/internal/v2/pairgen"
@@ -29,8 +37,111 @@ import (
 	"winkyou/pkg/tunnel"
 )
 
+type gateC1bMemoryProfile struct {
+	name          string
+	profile       hardnatplan.Profile
+	resource      hardnatplan.ResourceClass
+	plannerRoles  [2]hardnatplan.Role
+	models        [2]natsim.Model
+	maxConns      int
+	maxMappings   int
+	queueCapacity int
+	candidateTime time.Duration
+	activeTime    time.Duration
+	acquire       func(string, string) (*governor.Governor, error)
+	cli           bool
+}
+
+var gateC1bMemoryProfiles = []gateC1bMemoryProfile{
+	{
+		name: "predictive", profile: hardnatplan.ProfilePredictiveEdm, resource: hardnatplan.ResourcePredictive,
+		plannerRoles: [2]hardnatplan.Role{hardnatplan.RoleInitiator, hardnatplan.RoleResponder},
+		models: [2]natsim.Model{
+			{Mapping: natsim.MappingEndpointDependent, Allocation: natsim.PortIncrement,
+				Filtering: natsim.FilterAddressPortDependent, PortMin: 40000, PortMax: 45000},
+			{Mapping: natsim.MappingEndpointDependent, Allocation: natsim.PortIncrement,
+				Filtering: natsim.FilterAddressPortDependent, PortMin: 40000, PortMax: 45000},
+		},
+		maxConns: 32, maxMappings: 256, queueCapacity: 4096, candidateTime: 100 * time.Millisecond,
+		acquire: governor.AcquireManualTraversalTestGovernor,
+	},
+	{
+		name: "asymmetric", profile: hardnatplan.ProfileAsymmetricBirthday, resource: hardnatplan.ResourceAsymmetric,
+		plannerRoles: [2]hardnatplan.Role{hardnatplan.RoleMappingSet, hardnatplan.RoleTargetSet},
+		models: [2]natsim.Model{
+			{Mapping: natsim.MappingEndpointDependent, Allocation: natsim.PortIncrement,
+				Filtering: natsim.FilterAddressPortDependent, PortMin: 40000, PortMax: 65535},
+			{Mapping: natsim.MappingEndpointIndependent, Allocation: natsim.PortIncrement,
+				Filtering: natsim.FilterAddressPortDependent, PortMin: 46000, PortMax: 65535},
+		},
+		maxConns: 300, maxMappings: 4096, queueCapacity: 4096, candidateTime: 250 * time.Millisecond,
+		acquire: governor.AcquireManualTraversalTestGovernor,
+	},
+	{
+		name: "hard-16k", profile: hardnatplan.ProfileHardBirthday, resource: hardnatplan.ResourceHard16KLab,
+
+		plannerRoles: [2]hardnatplan.Role{hardnatplan.RoleInitiator, hardnatplan.RoleResponder},
+		models: [2]natsim.Model{
+			{Mapping: natsim.MappingEndpointDependent, Allocation: natsim.PortRandom,
+				Filtering: natsim.FilterAddressPortDependent, EndpointDependentPortReuse: true,
+				PortMin: hardnatplan.DynamicPortMin, PortMax: hardnatplan.DynamicPortMax, RandomSeed: 3},
+			{Mapping: natsim.MappingEndpointDependent, Allocation: natsim.PortRandom,
+				Filtering: natsim.FilterAddressPortDependent, EndpointDependentPortReuse: true,
+				PortMin: hardnatplan.DynamicPortMin, PortMax: hardnatplan.DynamicPortMax, RandomSeed: 4},
+		},
+		maxConns: 40, maxMappings: 40_000, queueCapacity: 16_398,
+		candidateTime: 2 * time.Second, activeTime: 6 * time.Second,
+		acquire: governor.AcquireHardNATCampaignTestGovernor,
+	},
+}
+
 func TestGateC1bMemoryProductPipelineReachesPostOOBEcho(t *testing.T) {
-	now := time.Now().UTC().Truncate(time.Second)
+	for _, test := range gateC1bMemoryProfiles {
+		t.Run(test.name, func(t *testing.T) {
+			runGateC1bMemoryProductProfile(t, test.name, test)
+		})
+	}
+}
+
+func TestGateC1bMemoryProductPipelineFresh100(t *testing.T) {
+	if os.Getenv("WINKYOU_GATE_C1B_REPEAT_REQUIRED") != "1" {
+		t.Skip("Gate C1b 100-run proof was not explicitly required")
+	}
+	started := time.Now()
+	for iteration := range 100 {
+		test := gateC1bMemoryProfiles[iteration%len(gateC1bMemoryProfiles)]
+		test.cli = true
+		if test.candidateTime < 500*time.Millisecond {
+			test.candidateTime = 500 * time.Millisecond
+		}
+		label := test.name + "-fresh-" + strconv.Itoa(iteration)
+		if !t.Run(label, func(t *testing.T) { runGateC1bMemoryProductProfile(t, label, test) }) {
+			t.FailNow()
+		}
+	}
+	t.Logf("Gate C1b memory lifecycle witness: fresh_namespaces=100 deterministic_schedules=3 residue=0 wall_ms=%d", time.Since(started).Milliseconds())
+}
+
+func TestGateC1bMemoryCLIAndClaimedChildPipeline(t *testing.T) {
+	for _, profile := range gateC1bMemoryProfiles {
+		profile.cli = true
+		// The real CLI/slot/process accounting adds scheduler work. Keep this
+		// proof below the frozen production window without compressing it to
+		// 100ms (one Windows race run exhausted before a sender was scheduled).
+		if profile.candidateTime < 500*time.Millisecond {
+			profile.candidateTime = 500 * time.Millisecond
+		}
+		t.Run(profile.name, func(t *testing.T) { runGateC1bMemoryProductProfile(t, "cli-"+profile.name, profile) })
+	}
+}
+
+func runGateC1bMemoryProductProfile(t *testing.T, label string, test gateC1bMemoryProfile) {
+	t.Helper()
+	// The protocol key includes the validity window. Freeze it so the
+	// conditional birthday profiles exercise a reproducible successful
+	// schedule instead of turning this composition proof into a probability
+	// flake.
+	now := time.Date(2026, 8, 29, 16, 0, 0, 0, time.UTC)
 	namespaces := [2]string{t.TempDir(), t.TempDir()}
 	for _, namespace := range namespaces {
 		if err := governor.PrepareLoopbackCarrierTestNamespace(namespace, now); err != nil {
@@ -40,44 +151,48 @@ func TestGateC1bMemoryProductPipelineReachesPostOOBEcho(t *testing.T) {
 	machines := [2]*governor.Governor{}
 	ledgers := [2]*governor.PairingAdmissionLedger{}
 	for index, namespace := range namespaces {
-		machine, err := governor.AcquireManualTraversalTestGovernor(namespace, "gate-c1b-memory-product")
+		machine, err := test.acquire(namespace, "gate-c1b-memory-product-"+label)
 		if err != nil {
 			t.Fatal(err)
 		}
 		machines[index] = machine
-		t.Cleanup(func() { _ = machine.Close() })
+		defer machine.Close()
 		ledgers[index], err = governor.LoopbackCarrierTestLedger(machine)
 		if err != nil {
 			t.Fatal(err)
 		}
+		if err := governor.SetCarrierTestLedgerTime(machine, now); err != nil {
+			t.Fatal(err)
+		}
 	}
 
-	network, err := natsim.NewNetwork(natsim.Config{MaxPacketConns: 32, MaxMappings: 256, QueueCapacity: 4096, MaxDatagram: 2048})
+	network, err := natsim.NewNetwork(natsim.Config{
+		MaxPacketConns: test.maxConns, MaxMappings: test.maxMappings,
+		QueueCapacity: test.queueCapacity, MaxDatagram: 2048,
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer network.Close()
-	model := natsim.Model{Mapping: natsim.MappingEndpointDependent, Allocation: natsim.PortIncrement,
-		Filtering: natsim.FilterAddressPortDependent, PortMin: 40000, PortMax: 45000}
 	public := [2]netip.Addr{netip.MustParseAddr("198.51.100.10"), netip.MustParseAddr("198.51.100.20")}
 	nats := [2]*natsim.NAT{}
 	for index := range nats {
-		nats[index], err = network.NewNAT(natsim.NATConfig{Name: []string{"left-c1b-product", "right-c1b-product"}[index],
-			PublicAddr: public[index], Model: model})
+		nats[index], err = network.NewNAT(natsim.NATConfig{Name: []string{"left-c1b-product-", "right-c1b-product-"}[index] + label,
+			PublicAddr: public[index], Model: test.models[index]})
 		if err != nil {
 			t.Fatal(err)
 		}
 	}
 	topology := hardnatobserve.Topology{Primary: netip.MustParseAddrPort("203.0.113.10:3478"),
 		Other: netip.MustParseAddrPort("203.0.113.11:3479")}
-	_ = startNATSimRFC5780Responders(t, network, topology)
+	responders := startNATSimRFC5780Responders(t, network, topology)
 
 	set, err := gatecattempt.EncodeArtifactSet(gatecattempt.ArtifactMaterial{
 		CredentialID: gateB2OpaqueID("c1b-product-credential"), AttemptID: gateB2OpaqueID("c1b-product-attempt"),
 		InitiatorParticipantID: gateB2OpaqueID("c1b-product-initiator"),
 		ResponderParticipantID: gateB2OpaqueID("c1b-product-responder"), OOBChannelID: gateB2OpaqueID("c1b-product-channel"),
-		PlannerProfile: hardnatplan.ProfilePredictiveEdm, ResourceClass: hardnatplan.ResourcePredictive,
-		InitiatorPlannerRole: hardnatplan.RoleInitiator, ResponderPlannerRole: hardnatplan.RoleResponder,
+		PlannerProfile: test.profile, ResourceClass: test.resource,
+		InitiatorPlannerRole: test.plannerRoles[0], ResponderPlannerRole: test.plannerRoles[1],
 		IssuedAt: now, ExpiresAt: now.Add(10 * time.Minute),
 	}, [32]byte{7, 11, 13, 17, 19, 23, 29, 31})
 	if err != nil {
@@ -89,10 +204,12 @@ func TestGateC1bMemoryProductPipelineReachesPostOOBEcho(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer artifacts[0].Close()
 	artifacts[1], err = gatecattempt.ParseArtifact(set.Responder, now)
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer artifacts[1].Close()
 
 	private := [2]tunnel.PrivateKey{}
 	for index := range private {
@@ -143,16 +260,44 @@ func TestGateC1bMemoryProductPipelineReachesPostOOBEcho(t *testing.T) {
 		}
 	}
 	requests[0].SSH = &gatecrequest.SSHConfig{Endpoint: sshEndpoint, User: "c1btest", IdentityFile: identity, KnownHostsFile: knownHosts}
+	var configPaths, requestPaths [2]string
+	if test.cli {
+		for index := range 2 {
+			if err := pairgen.WritePrivateFileExclusive(requests[index].ArtifactFile, [][]byte{set.Initiator, set.Responder}[index]); err != nil {
+				t.Fatal("private artifact write failed")
+			}
+			requestBytes, err := gatecrequest.Encode(requests[index])
+			if err != nil {
+				t.Fatal("request encoding failed")
+			}
+			requestPaths[index] = filepath.Join(t.TempDir(), "request.json")
+			if err := pairgen.WritePrivateFileExclusive(requestPaths[index], requestBytes); err != nil {
+				t.Fatal("private request write failed")
+			}
+			configBytes, err := yaml.Marshal(configs[index])
+			if err != nil {
+				t.Fatal("config encoding failed")
+			}
+			configPaths[index] = filepath.Join(t.TempDir(), "config.yaml")
+			if err := pairgen.WritePrivateFileExclusive(configPaths[index], configBytes); err != nil {
+				t.Fatal("private config write failed")
+			}
+			clear(configBytes)
+		}
+		if err := gatecstage.StageMemoryProof(namespaces[1], requestPaths[1], now); err != nil {
+			t.Fatal("durable responder stage failed")
+		}
+	}
 
 	leftStream, rightStream := net.Pipe()
 	defer leftStream.Close()
 	defer rightStream.Close()
-	clock := newGateB2ManualClock(now)
+	clocks := [2]*gateB2ManualClock{newGateB2ManualClock(now), newGateB2ManualClock(now)}
 	ready := 0
 	var readyMu sync.Mutex
 	initiatorCtx, cancelInitiator := context.WithCancel(context.Background())
 	defer cancelInitiator()
-	responderCtx, cancelResponder := context.WithTimeout(context.Background(), 12*time.Second)
+	responderCtx, cancelResponder := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancelResponder()
 	type outcome struct {
 		role   directattempt.Role
@@ -170,15 +315,17 @@ func TestGateC1bMemoryProductPipelineReachesPostOOBEcho(t *testing.T) {
 				authority = sshAuthority
 			}
 			var stages []string
-			result, runErr := gatecorchestrator.RunMemoryProof([]context.Context{initiatorCtx, responderCtx}[index], gatecorchestrator.MemoryProofOptions{
+			proof := gatecorchestrator.MemoryProofOptions{
 				Request: requests[index], Artifact: artifacts[index], Config: configs[index], Machine: machines[index],
 				Ledger: ledgers[index], SSHAuthority: authority, Stream: []net.Conn{leftStream, rightStream}[index],
 				ProbeFactory: &natSimProbeFactory{network: network, nat: nats[index],
 					localAddress: []netip.Addr{netip.MustParseAddr("192.0.2.10"), netip.MustParseAddr("192.0.2.20")}[index],
-					basePort:     []uint16{30000, 31000}[index], plannerRole: []hardnatplan.Role{hardnatplan.RoleInitiator, hardnatplan.RoleResponder}[index],
+					basePort:     []uint16{30000, 31000}[index], plannerRole: test.plannerRoles[index],
 					witness: newCandidateWitness()},
 				Harness: &gateb.HarnessHooks{NoiseRandom: bytes.NewReader(bytes.Repeat([]byte{byte(40 + index)}, 4096)),
-					ObservationRandom: gateB2ObservationRandom(byte(70 + index)), Now: clock.Now, NewTimer: clock.NewTimer, Wait: clock.Wait},
+					ObservationRandom: gateB2ObservationRandom(byte(70 + index)), Now: clocks[index].Now,
+					NewTimer: clocks[index].NewTimer, Wait: clocks[index].Wait,
+					ActiveEnvelope: test.activeTime, CandidateWindow: test.candidateTime},
 				BuildVersion: "gate-c1b-memory-product", Random: bytes.NewReader(bytes.Repeat([]byte{byte(90 + index)}, 64)),
 				InactiveEvery: 100 * time.Millisecond,
 				Progress: func(progress gatecorchestrator.Progress) error {
@@ -193,7 +340,30 @@ func TestGateC1bMemoryProductPipelineReachesPostOOBEcho(t *testing.T) {
 					}
 					return nil
 				},
-			})
+				StageRoot: namespaces[index],
+			}
+			var result gatecorchestrator.Result
+			var runErr error
+			if test.cli {
+				arguments := []string{"--config", configPaths[index], "solver", "direct", "child", "--stdio"}
+				if index == 0 {
+					arguments = []string{"--config", configPaths[index], "solver", "direct", "connect", "--request-file", requestPaths[index]}
+				}
+				var diagnostics bytes.Buffer
+				var output io.Writer = rightStream
+				if index == 0 {
+					output = io.Discard
+				}
+				result, runErr = winkcmd.ExecuteGateCMemoryProof([]context.Context{initiatorCtx, responderCtx}[index], arguments,
+					rightStream, output, &diagnostics, proof)
+				for _, forbidden := range []string{configPaths[index], requestPaths[index], private[index].String(), public[index].String(), namespaces[index]} {
+					if strings.Contains(diagnostics.String(), forbidden) {
+						runErr = errors.Join(runErr, errors.New("CLI diagnostic privacy violation"))
+					}
+				}
+			} else {
+				result, runErr = gatecorchestrator.RunMemoryProof([]context.Context{initiatorCtx, responderCtx}[index], proof)
+			}
 			results <- outcome{role: role, result: result, err: runErr, stages: stages}
 		}()
 	}
@@ -203,15 +373,18 @@ func TestGateC1bMemoryProductPipelineReachesPostOOBEcho(t *testing.T) {
 		select {
 		case got := <-results:
 			outcomes = append(outcomes, got)
-		case <-time.After(15 * time.Second):
+		case <-time.After(35 * time.Second):
 			t.Fatal("Gate C1b memory product pipeline exceeded its bound")
 		}
 	}
 	for _, got := range outcomes {
 		if got.err != nil {
 			var failure *gatecorchestrator.Failure
-			_ = errors.As(got.err, &failure)
-			t.Errorf("%s pipeline error=%v cause=%v result=%+v stages=%v", got.role, got.err, failure.Cause, got.result, got.stages)
+			var cause error
+			if errors.As(got.err, &failure) {
+				cause = failure.Cause
+			}
+			t.Errorf("%s pipeline error=%v cause=%v result=%+v stages=%v", got.role, got.err, cause, got.result, got.stages)
 			continue
 		}
 		if !got.result.DataPlaneReady || !got.result.FinishRecorded || got.result.Terminal != "success" ||
@@ -220,6 +393,37 @@ func TestGateC1bMemoryProductPipelineReachesPostOOBEcho(t *testing.T) {
 		}
 		if got.result.Witness.WireGuard.State != "active" || got.result.Witness.Echo.Drained != true {
 			t.Errorf("%s wireguard/echo witness=%+v/%+v", got.role, got.result.Witness.WireGuard, got.result.Witness.Echo)
+		}
+		wg := got.result.Witness.WireGuard
+		if !wg.ConsumerReady || wg.ReadinessWrites != 1 || wg.ReadinessReads != 1 ||
+			len(wg.Outbound)+wg.ReadinessWrites > 3 || len(wg.Inbound)+wg.ReadinessReads > 3 {
+			t.Errorf("%s shared challenge allowance violated: %+v", got.role, wg)
+		}
+	}
+	for _, responder := range responders {
+		_ = responder.Close()
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		counters := network.Snapshot()
+		if counters.ActivePacketConns == 0 && counters.ActiveMappings == 0 && counters.QueuedPackets == 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("%s natsim residue=%+v", label, counters)
+		}
+		time.Sleep(time.Millisecond)
+	}
+	for index, machine := range machines {
+		snapshot := machine.Snapshot()
+		if snapshot.ActivePeers != 0 || snapshot.ActiveAttempts != 0 || snapshot.HeavyweightAttempts != 0 ||
+			snapshot.Reserved != (governor.Resources{}) || snapshot.SafetyTrip.BlocksActiveWork {
+			t.Fatalf("%s side %d governor residue=%+v", label, index, snapshot)
+		}
+	}
+	if test.cli {
+		if claimed, err := gatecstage.ClaimMemoryProof(namespaces[1], now); err == nil || claimed != nil {
+			t.Fatal("child slot was reusable")
 		}
 	}
 }

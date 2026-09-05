@@ -190,6 +190,14 @@ func TestGateC1bGateBProductHandoffRetainsOwnershipUntilFinish(t *testing.T) {
 	}
 	challengeCtx, challengeCancel := context.WithTimeout(context.Background(), time.Second)
 	defer challengeCancel()
+	readyResults := make(chan error, 2)
+	go func() { readyResults <- initiator.ConsumerReady(challengeCtx) }()
+	go func() { readyResults <- responder.ConsumerReady(challengeCtx) }()
+	for range 2 {
+		if err := <-readyResults; err != nil {
+			t.Fatal(err)
+		}
+	}
 	initTransport, respTransport := initiator.Transport(), responder.Transport()
 	writeGateC1bWireGuardPacket(t, challengeCtx, initTransport, probeio.WireGuardHandshakeInitiation)
 	readGateC1bWireGuardPacket(t, challengeCtx, respTransport, probeio.WireGuardHandshakeInitiation)

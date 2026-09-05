@@ -40,6 +40,25 @@ func (handoff *ProductHandoff) MarkWireGuardChallengePassed() error {
 	return nil
 }
 
+// ConsumerReady is the only product bridge to the post-VERIFY codec. The
+// orchestrator calls it after AddPeer; it never sees a cipher or a raw frame.
+func (handoff *ProductHandoff) ConsumerReady(ctx context.Context) error {
+	if handoff == nil {
+		return probeio.ErrWireGuardGateState
+	}
+	handoff.mu.Lock()
+	defer handoff.mu.Unlock()
+	if handoff.closed || handoff.establishmentDone || handoff.gate == nil || handoff.runtime == nil || handoff.runtime.protocol == nil {
+		return probeio.ErrWireGuardGateState
+	}
+	codec, err := handoff.runtime.protocol.TakeConsumerReadiness()
+	if err != nil {
+		return err
+	}
+	defer codec.Close()
+	return handoff.gate.ConsumerReady(ctx, codec)
+}
+
 // FinishAndDetach appends durable success FINISH through the existing
 // authorization, detaches the transport lease, drains the OOB carrier, and
 // releases the attempt. The WireGuard gate remains active under sessionCtx.

@@ -16,6 +16,9 @@ import (
 
 func TestGateC1bBoundaryIsExactAndCapabilityNarrow(t *testing.T) {
 	root := repositoryRoot(t)
+	if violations := gateC1bProofTagViolations(root); len(violations) != 0 {
+		t.Fatalf("Gate C1b test seam became ordinary authority: %v", violations)
+	}
 	repository, err := scanRepository(root)
 	if err != nil {
 		t.Fatal(err)
@@ -209,6 +212,14 @@ func bypass() {
   _ = NewMemoryWireGuard
   _ = RunForProduct
   _ = RunResponderStdio
+  _ = NewProductProtocol
+  _ = TakeConsumerReadiness
+  _ = ConsumerReady
+  _ = RunMemoryInitiator
+  _ = RunMemoryResponder
+  _ = OpenMemoryProofClient
+  _ = ClaimMemoryProof
+  _ = ExecuteGateCMemoryProof
 }
 `)
 	violations, err := gateC1bAuthorityUseViolations(root)
@@ -218,6 +229,8 @@ func bypass() {
 	for _, name := range []string{
 		"WireGuardDirectSessionConsumer", "PromoteToWireGuardSessionLease", "AdoptWireGuardSession",
 		"NewGateCMemoryInterface", "NewMemoryWireGuard", "RunForProduct", "RunResponderStdio",
+		"NewProductProtocol", "TakeConsumerReadiness", "ConsumerReady",
+		"RunMemoryInitiator", "RunMemoryResponder", "OpenMemoryProofClient", "ClaimMemoryProof", "ExecuteGateCMemoryProof",
 	} {
 		if !containsLineFragment(violations, "unapproved Gate C1b authority "+name) {
 			t.Errorf("authority mutation %s was not detected: %v", name, violations)
@@ -238,6 +251,59 @@ func TestGateC1bNetifCapabilityGraphExceptionIsExact(t *testing.T) {
 		if approvedCapabilityDependencyEndpoint(candidate[0], candidate[1]) {
 			t.Fatalf("capability graph exception widened to %q -> %q", candidate[0], candidate[1])
 		}
+	}
+}
+
+var gateC1bProofFiles = []string{
+	"internal/v2/gatecorchestrator/memory_proof_c1bproof.go",
+	"internal/v2/sshassembly/memory_c1bproof.go",
+	"internal/v2/gatecstage/memory_c1bproof.go",
+	"cmd/wink/cmd/gate_c1b_memory_proof.go",
+}
+
+func gateC1bProofTagViolations(root string) []string {
+	var violations []string
+	for _, relative := range gateC1bProofFiles {
+		payload, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(relative)))
+		if err != nil || !strings.HasPrefix(strings.ReplaceAll(string(payload), "\r\n", "\n"), "//go:build c1bproof\n") {
+			violations = append(violations, relative+" lacks exact c1bproof constraint")
+		}
+	}
+	return violations
+}
+
+func TestGateC1bMemorySeamTagRemovalIsDetected(t *testing.T) {
+	root := t.TempDir()
+	for _, relative := range gateC1bProofFiles {
+		writeArchitectureMutation(t, root, relative, "//go:build c1bproof\n\npackage mutation\n")
+	}
+	if got := gateC1bProofTagViolations(root); len(got) != 0 {
+		t.Fatal(got)
+	}
+	for _, relative := range gateC1bProofFiles {
+		writeArchitectureMutation(t, root, relative, "package mutation\n")
+		if got := gateC1bProofTagViolations(root); !containsLineFragment(got, relative+" lacks exact c1bproof constraint") {
+			t.Fatalf("untagged seam escaped: %v", got)
+		}
+		writeArchitectureMutation(t, root, relative, "//go:build c1bproof\n\npackage mutation\n")
+	}
+}
+
+func TestGateC1bMemorySeamCannotReplaceAttemptOwner(t *testing.T) {
+	root := t.TempDir()
+	relative := "internal/v2/gatecorchestrator/memory_proof_c1bproof.go"
+	base := "//go:build c1bproof\n\npackage mutation\nfunc f() { configuration.ProbeFactory = factory; configuration.Harness = hooks; _ = options.Machine == nil; _ = options.Ledger == nil; BODY }\n"
+	for _, field := range []string{"Machine", "Ledger"} {
+		writeArchitectureMutation(t, root, relative, strings.ReplaceAll(base, "BODY", "configuration."+field+" = replacement"))
+		violations, err := gateC1bShapeViolations(root)
+		if err != nil || !containsLineFragment(violations, "mutates forbidden "+field) {
+			t.Fatalf("attempt owner replacement escaped (%s): %v, %v", field, violations, err)
+		}
+	}
+	writeArchitectureMutation(t, root, relative, strings.ReplaceAll(base, "BODY", ""))
+	violations, err := gateC1bShapeViolations(root)
+	if err != nil || containsLineFragment(violations, "mutates forbidden Machine") || containsLineFragment(violations, "mutates forbidden Ledger") {
+		t.Fatalf("read-only owner validation was mistaken for replacement: %v, %v", violations, err)
 	}
 }
 
@@ -418,11 +484,27 @@ func gateC1bShapeViolations(root string) ([]string, error) {
 				violations = append(violations, fmt.Sprintf("memory_proof_c1bproof.go %q count=%d want=%d", fragment, count, want))
 			}
 		}
-		for _, forbidden := range []string{"ExpectedPeerAddress", "NATLabFactory", "HardNATLabFactory", "Machine =", "Ledger ="} {
+		for _, forbidden := range []string{"ExpectedPeerAddress", "NATLabFactory", "HardNATLabFactory"} {
 			if strings.Contains(normalized, forbidden) {
 				violations = append(violations, "memory_proof_c1bproof.go mutates forbidden "+forbidden)
 			}
 		}
+		parsed, err := parser.ParseFile(token.NewFileSet(), proofPath, payload, 0)
+		if err != nil {
+			return nil, err
+		}
+		ast.Inspect(parsed, func(node ast.Node) bool {
+			assignment, ok := node.(*ast.AssignStmt)
+			if !ok {
+				return true
+			}
+			for _, left := range assignment.Lhs {
+				if selector, ok := left.(*ast.SelectorExpr); ok && (selector.Sel.Name == "Machine" || selector.Sel.Name == "Ledger") {
+					violations = append(violations, "memory_proof_c1bproof.go mutates forbidden "+selector.Sel.Name)
+				}
+			}
+			return true
+		})
 	} else if !os.IsNotExist(err) {
 		return nil, err
 	}
@@ -452,6 +534,23 @@ func gateC1bShapeViolations(root string) ([]string, error) {
 
 func gateC1bAuthorityUseViolations(root string) ([]string, error) {
 	allowed := map[string]map[string]struct{}{
+		"RunMemoryInitiator":      {"internal/v2/gatecorchestrator/memory_proof_c1bproof.go": {}, "cmd/wink/cmd/gate_c1b_memory_proof.go": {}},
+		"RunMemoryResponder":      {"internal/v2/gatecorchestrator/memory_proof_c1bproof.go": {}, "cmd/wink/cmd/gate_c1b_memory_proof.go": {}},
+		"OpenMemoryProofClient":   {"internal/v2/gatecorchestrator/memory_proof_c1bproof.go": {}, "internal/v2/sshassembly/memory_c1bproof.go": {}},
+		"ClaimMemoryProof":        {"internal/v2/gatecorchestrator/memory_proof_c1bproof.go": {}, "internal/v2/gatecstage/memory_c1bproof.go": {}},
+		"StageMemoryProof":        {"internal/v2/gatecstage/memory_c1bproof.go": {}},
+		"ExecuteGateCMemoryProof": {"cmd/wink/cmd/gate_c1b_memory_proof.go": {}},
+		"NewProductProtocol": {
+			"internal/v2/hardnatcontrol/consumer_ready.go": {}, "internal/v2/directconnect/gateb/connect.go": {},
+		},
+		"TakeConsumerReadiness": {
+			"internal/v2/hardnatcontrol/consumer_ready.go": {}, "internal/v2/directconnect/gateb/product_handoff.go": {},
+		},
+		"ConsumerReadinessCodec": {"internal/probeio/wireguard_consumer_ready.go": {}},
+		"ConsumerReady": {
+			"internal/probeio/wireguard_consumer_ready.go": {}, "internal/probeio/wireguard_session_gate.go": {},
+			"internal/v2/directconnect/gateb/product_handoff.go": {}, "internal/v2/gatecorchestrator/orchestrator.go": {},
+		},
 		"WireGuardDirectSessionConsumer": {
 			"internal/probeio/probeio.go": {}, "internal/probeio/transport_lease.go": {},
 			"internal/probeio/wireguard_session_gate.go": {}, "internal/v2/directconnect/gateb/connect.go": {},

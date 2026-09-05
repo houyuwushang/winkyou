@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"winkyou/internal/v2/directattempt"
+	"winkyou/internal/v2/directconnect/gateb"
 	"winkyou/pkg/netif"
 )
 
@@ -65,6 +66,123 @@ func TestPostOOBEchoCrossesOnlyTheBoundMemoryInterfaces(t *testing.T) {
 		t.Fatal("echo direction witnesses were incomplete")
 	}
 }
+
+func TestForegroundResponderSessionTerminationModes(t *testing.T) {
+	binding := echoBinding{Role: directattempt.RoleResponder, Local: netip.MustParseAddr("10.99.0.2"),
+		Remote: netip.MustParseAddr("10.99.0.1"), AttemptID: "attempt-session", ContextDigest: [32]byte{1, 3, 5, 7}}
+	peerBinding := binding
+	peerBinding.Role = directattempt.RoleInitiator
+	peerBinding.Local, peerBinding.Remote = binding.Remote, binding.Local
+	nonce := [8]byte{2, 4, 6, 8, 1, 3, 5, 7}
+	closePacket, err := buildEchoPacket(peerBinding, echoClose, nonce)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	tests := []struct {
+		name       string
+		prepare    func(context.CancelFunc, context.CancelFunc, *sessionTestInterface)
+		want       string
+		wantClosed int
+	}{
+		{
+			name: "authenticated close",
+			prepare: func(_, _ context.CancelFunc, iface *sessionTestInterface) {
+				iface.queueReceive(closePacket)
+			},
+			want: "authenticated_close", wantClosed: 1,
+		},
+		{
+			name:    "inactivity ceiling",
+			prepare: func(_, _ context.CancelFunc, _ *sessionTestInterface) {},
+			want:    "inactivity_ceiling",
+		},
+		{
+			name:    "parent cancel",
+			prepare: func(cancelCaller, _ context.CancelFunc, _ *sessionTestInterface) { cancelCaller() },
+			want:    "parent_cancel",
+		},
+		{
+			name:    "absolute ceiling",
+			prepare: func(_, cancelSession context.CancelFunc, _ *sessionTestInterface) { cancelSession() },
+			want:    "absolute_ceiling",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			iface := newSessionTestInterface()
+			defer iface.Close()
+			callerCtx, cancelCaller := context.WithCancel(context.Background())
+			defer cancelCaller()
+			sessionCtx, cancelSession := context.WithTimeout(context.Background(), time.Second)
+			defer cancelSession()
+			test.prepare(cancelCaller, cancelSession, iface)
+			end, witness, runErr := foregroundSession(callerCtx, sessionCtx, directattempt.RoleResponder,
+				iface, &gateb.ProductHandoff{}, binding, bytes.NewReader(make([]byte, 8)), 5*time.Millisecond)
+			if runErr != nil || end != test.want || !witness.Drained || witness.CloseRead != test.wantClosed {
+				t.Fatalf("end=%q witness=%+v err=%v", end, witness, runErr)
+			}
+		})
+	}
+}
+
+type sessionTestInterface struct {
+	receive chan []byte
+	closed  chan struct{}
+	once    sync.Once
+}
+
+func newSessionTestInterface() *sessionTestInterface {
+	return &sessionTestInterface{receive: make(chan []byte, 4), closed: make(chan struct{})}
+}
+
+func (*sessionTestInterface) Name() string                      { return "gate-c-session-test" }
+func (*sessionTestInterface) Type() string                      { return "memory" }
+func (*sessionTestInterface) MTU() int                          { return 1280 }
+func (*sessionTestInterface) SetIP(net.IP, net.IPMask) error    { return netif.ErrNotImplemented }
+func (*sessionTestInterface) AddRoute(*net.IPNet, net.IP) error { return netif.ErrNotImplemented }
+func (*sessionTestInterface) RemoveRoute(*net.IPNet) error      { return netif.ErrNotImplemented }
+func (iface *sessionTestInterface) Read([]byte) (int, error) {
+	<-iface.closed
+	return 0, net.ErrClosed
+}
+func (iface *sessionTestInterface) Write(packet []byte) (int, error) {
+	return len(packet), nil
+}
+func (iface *sessionTestInterface) InjectPacket(packet []byte) (int, error) {
+	return len(packet), nil
+}
+func (iface *sessionTestInterface) ReceivePacket(destination []byte) (int, error) {
+	select {
+	case <-iface.closed:
+		return 0, net.ErrClosed
+	case packet := <-iface.receive:
+		return copy(destination, packet), nil
+	}
+}
+
+func TestCanceledInnerReceiveClosesAndJoinsItsReader(t *testing.T) {
+	iface := newSessionTestInterface()
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := receiveInnerPacket(ctx, iface); !errors.Is(err, context.Canceled) {
+		t.Fatalf("canceled receive = %v", err)
+	}
+	select {
+	case <-iface.closed:
+	default:
+		t.Fatal("canceled receive left interface open")
+	}
+}
+func (iface *sessionTestInterface) Close() error {
+	iface.once.Do(func() { close(iface.closed) })
+	return nil
+}
+func (iface *sessionTestInterface) queueReceive(packet []byte) {
+	iface.receive <- append([]byte(nil), packet...)
+}
+
+var _ netif.MemoryTestInterface = (*sessionTestInterface)(nil)
 
 func bridgeMemoryInterfaces(t *testing.T, left, right netif.MemoryTestInterface) <-chan struct{} {
 	t.Helper()

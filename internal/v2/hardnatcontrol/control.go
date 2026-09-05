@@ -289,16 +289,17 @@ type protocolState struct {
 }
 
 type Protocol struct {
-	mu              sync.Mutex
-	role            Role
-	plannerRole     hardnatplan.Role
-	binding         Binding
-	packets         *noisecore.PacketCipher
-	state           protocolState
-	localPlan       hardnatplan.Plan
-	peerPlan        hardnatplan.Plan
-	joint           hardnatplan.JointPlanCommitment
-	executionDigest [32]byte
+	mu                sync.Mutex
+	role              Role
+	plannerRole       hardnatplan.Role
+	binding           Binding
+	packets           *noisecore.PacketCipher
+	state             protocolState
+	localPlan         hardnatplan.Plan
+	peerPlan          hardnatplan.Plan
+	joint             hardnatplan.JointPlanCommitment
+	executionDigest   [32]byte
+	retainForConsumer bool
 }
 
 func NewProtocol(role Role, plannerRole hardnatplan.Role, binding Binding, packets *noisecore.PacketCipher) (*Protocol, error) {
@@ -984,7 +985,9 @@ func (protocol *Protocol) applyReceiveLocked(metadata FrameMetadata) {
 func (protocol *Protocol) completeLocked() {
 	if protocol.state.sentVerify && protocol.state.receivedVerify {
 		protocol.state.success, protocol.state.terminal = true, true
-		_ = protocol.packets.Close()
+		if !protocol.retainForConsumer {
+			_ = protocol.packets.Close()
+		}
 	}
 }
 

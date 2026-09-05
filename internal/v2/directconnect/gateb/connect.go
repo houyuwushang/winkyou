@@ -636,7 +636,11 @@ func (runtime *runtime) handshake(ctx context.Context) error {
 	clear(handshakeHash[:])
 	clear(contextDigest[:])
 	clear(envelopeDigest[:])
-	runtime.protocol, err = hardnatcontrol.NewProtocol(runtime.artifact.GateBLocalRole(), runtime.artifact.GateBLocalPlannerRole(), runtime.binding, packets)
+	if runtime.product {
+		runtime.protocol, err = hardnatcontrol.NewProductProtocol(runtime.artifact.GateBLocalRole(), runtime.artifact.GateBLocalPlannerRole(), runtime.binding, packets)
+	} else {
+		runtime.protocol, err = hardnatcontrol.NewProtocol(runtime.artifact.GateBLocalRole(), runtime.artifact.GateBLocalPlannerRole(), runtime.binding, packets)
+	}
 	if err != nil {
 		plannerSource.Close()
 		return err

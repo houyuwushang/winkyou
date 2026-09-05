@@ -82,7 +82,7 @@ func TestWireGuardProductConsumerMatchesFrozenGateBBudgets(t *testing.T) {
 
 func TestWireGuardSessionGateOptionBTraceGoldenAndActivation(t *testing.T) {
 	initiatorGate, initiatorTransport, initiatorLease := newWireGuardGate(t, WireGuardInitiator)
-	if err := initiatorGate.BeginChallenge(); err != nil {
+	if err := beginReadyChallenge(initiatorGate, initiatorTransport); err != nil {
 		t.Fatal(err)
 	}
 	if err := initiatorGate.WritePacket(context.Background(), wireGuardPacket(WireGuardHandshakeInitiation)); err != nil {
@@ -127,7 +127,7 @@ func TestWireGuardSessionGateOptionBTraceGoldenAndActivation(t *testing.T) {
 	}
 
 	responderGate, responderTransport, _ := newWireGuardGate(t, WireGuardResponder)
-	if err := responderGate.BeginChallenge(); err != nil {
+	if err := beginReadyChallenge(responderGate, responderTransport); err != nil {
 		t.Fatal(err)
 	}
 	responderTransport.queueRead(wireGuardPacket(WireGuardHandshakeInitiation))
@@ -171,11 +171,11 @@ func TestWireGuardSessionGateOptionBTraceGoldenAndActivation(t *testing.T) {
 
 func TestWireGuardSessionGateFourthWriteFailsBeforeUnderlyingIO(t *testing.T) {
 	gate, underlying, _ := newWireGuardGate(t, WireGuardInitiator)
-	if err := gate.BeginChallenge(); err != nil {
+	if err := beginReadyChallenge(gate, underlying); err != nil {
 		t.Fatal(err)
 	}
 	for _, messageType := range []WireGuardMessageType{
-		WireGuardHandshakeInitiation, WireGuardHandshakeResponse, WireGuardTransportData,
+		WireGuardHandshakeInitiation, WireGuardTransportData,
 	} {
 		if err := gate.WritePacket(context.Background(), wireGuardPacket(messageType)); err != nil {
 			t.Fatalf("write %d = %v", messageType, err)
@@ -220,7 +220,7 @@ func TestWireGuardSessionGateRejectsCookieReplayAndWrongTrace(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			gate, underlying, _ := newWireGuardGate(t, WireGuardInitiator)
-			if err := gate.BeginChallenge(); err != nil {
+			if err := beginReadyChallenge(gate, underlying); err != nil {
 				t.Fatal(err)
 			}
 			if err := test.run(gate, underlying); err == nil {
@@ -252,7 +252,7 @@ func TestWireGuardSessionGateFinishFailureNeverUnlocks(t *testing.T) {
 
 func TestWireGuardSessionGateOverridesBackgroundWithBoundedContext(t *testing.T) {
 	gate, underlying, _ := newWireGuardGate(t, WireGuardInitiator)
-	if err := gate.BeginChallenge(); err != nil {
+	if err := beginReadyChallenge(gate, underlying); err != nil {
 		t.Fatal(err)
 	}
 	if err := gate.WritePacket(context.Background(), wireGuardPacket(WireGuardHandshakeInitiation)); err != nil {
@@ -266,7 +266,7 @@ func TestWireGuardSessionGateOverridesBackgroundWithBoundedContext(t *testing.T)
 
 func TestWireGuardSessionGateCallerReadPollTimeoutDoesNotCloseSession(t *testing.T) {
 	gate, underlying, _ := newWireGuardGate(t, WireGuardInitiator)
-	if err := gate.BeginChallenge(); err != nil {
+	if err := beginReadyChallenge(gate, underlying); err != nil {
 		t.Fatal(err)
 	}
 	pollCtx, cancel := context.WithTimeout(context.Background(), time.Millisecond)
@@ -285,7 +285,7 @@ func TestWireGuardSessionGateCallerReadPollTimeoutDoesNotCloseSession(t *testing
 
 func TestWireGuardSessionGateDrainsWireGuardGoPendingReadBeforeChallengeCommit(t *testing.T) {
 	gate, underlying, _ := newWireGuardGate(t, WireGuardInitiator)
-	if err := gate.BeginChallenge(); err != nil {
+	if err := beginReadyChallenge(gate, underlying); err != nil {
 		t.Fatal(err)
 	}
 	if err := gate.WritePacket(context.Background(), wireGuardPacket(WireGuardHandshakeInitiation)); err != nil {
@@ -334,7 +334,7 @@ func TestWireGuardSessionGateDrainsWireGuardGoPendingReadBeforeChallengeCommit(t
 
 func completeInitiatorChallenge(t *testing.T, gate *WireGuardSessionGate, underlying *wireGuardGateTransport) {
 	t.Helper()
-	if err := gate.BeginChallenge(); err != nil {
+	if err := beginReadyChallenge(gate, underlying); err != nil {
 		t.Fatal(err)
 	}
 	if err := gate.WritePacket(context.Background(), wireGuardPacket(WireGuardHandshakeInitiation)); err != nil {
@@ -396,6 +396,7 @@ func wireGuardPacket(messageType WireGuardMessageType) []byte {
 
 func traceOnly(witness WireGuardSessionGateWitness) WireGuardSessionGateWitness {
 	return WireGuardSessionGateWitness{
+		ConsumerReady: witness.ConsumerReady, ReadinessWrites: witness.ReadinessWrites, ReadinessReads: witness.ReadinessReads,
 		Outbound: append([]WireGuardMessageType(nil), witness.Outbound...),
 		Inbound:  append([]WireGuardMessageType(nil), witness.Inbound...),
 	}
@@ -408,6 +409,7 @@ type wireGuardGateTransport struct {
 	reads          chan []byte
 	closed         chan struct{}
 	closeOnce      sync.Once
+	peer           *wireGuardGateTransport
 }
 
 func newWireGuardGateTransport() *wireGuardGateTransport {
@@ -439,6 +441,15 @@ func (underlying *wireGuardGateTransport) WritePacket(ctx context.Context, packe
 	underlying.writes = append(underlying.writes, append([]byte(nil), packet...))
 	underlying.writeDeadlines = append(underlying.writeDeadlines, deadline)
 	underlying.mu.Unlock()
+	if underlying.peer != nil {
+		select {
+		case underlying.peer.reads <- append([]byte(nil), packet...):
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-underlying.closed:
+			return net.ErrClosed
+		}
+	}
 	return nil
 }
 
@@ -484,3 +495,102 @@ func (underlying *wireGuardGateTransport) isClosed() bool {
 }
 
 var _ transport.PacketTransport = (*wireGuardGateTransport)(nil)
+
+type fakeConsumerReadyCodec struct{}
+
+func (fakeConsumerReadyCodec) Seal() ([]byte, error) {
+	return make([]byte, consumerReadinessFrameBytes), nil
+}
+func (fakeConsumerReadyCodec) Open(frame []byte) error {
+	if len(frame) != consumerReadinessFrameBytes {
+		return ErrWireGuardGate
+	}
+	return nil
+}
+func (fakeConsumerReadyCodec) Close() error { return nil }
+
+func beginReadyChallenge(gate *WireGuardSessionGate, underlying *wireGuardGateTransport) error {
+	if err := gate.BeginChallenge(); err != nil {
+		return err
+	}
+	underlying.queueRead(make([]byte, consumerReadinessFrameBytes))
+	return gate.ConsumerReady(context.Background(), fakeConsumerReadyCodec{})
+}
+
+func TestConsumerReadyHoldsBinderReaderUntilBothLocalConsumersInstalled(t *testing.T) {
+	left, leftIO, _ := newWireGuardGate(t, WireGuardInitiator)
+	right, rightIO, _ := newWireGuardGate(t, WireGuardResponder)
+	leftIO.peer, rightIO.peer = rightIO, leftIO
+	if err := left.BeginChallenge(); err != nil {
+		t.Fatal(err)
+	}
+	if err := right.BeginChallenge(); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	leftDone := make(chan error, 1)
+	go func() { leftDone <- left.ConsumerReady(ctx, fakeConsumerReadyCodec{}) }()
+	// This is the AddPeer race: AttachTransport has started a binder reader,
+	// but IpcSet has deliberately not returned on the responder yet.
+	pollCtx, pollCancel := context.WithTimeout(ctx, 20*time.Millisecond)
+	defer pollCancel()
+	if _, _, err := right.ReadPacket(pollCtx, make([]byte, 256)); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("pre-install binder read = %v", err)
+	}
+	if leftIO.writeCount() != 1 || rightIO.writeCount() != 0 || len(rightIO.reads) != 1 ||
+		len(left.Witness().Outbound) != 0 || len(right.Witness().Inbound) != 0 {
+		t.Fatal("pre-install reader consumed readiness or WireGuard emitted early")
+	}
+	if err := right.ConsumerReady(ctx, fakeConsumerReadyCodec{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-leftDone; err != nil {
+		t.Fatal(err)
+	}
+	for _, gate := range []*WireGuardSessionGate{left, right} {
+		if witness := gate.Witness(); !witness.ConsumerReady || witness.ReadinessWrites != 1 || witness.ReadinessReads != 1 {
+			t.Fatalf("readiness witness = %+v", witness)
+		}
+	}
+}
+
+func TestConsumerReadyNoHandshakeBeforeBarrierAndBoundedFailure(t *testing.T) {
+	for _, mode := range []string{"early-write", "cancel", "deadline", "oversize", "writer-error"} {
+		t.Run(mode, func(t *testing.T) {
+			gate, underlying, _ := newWireGuardGate(t, WireGuardInitiator)
+			if err := gate.BeginChallenge(); err != nil {
+				t.Fatal(err)
+			}
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			if mode == "early-write" {
+				if err := gate.WritePacket(ctx, wireGuardPacket(WireGuardHandshakeInitiation)); err == nil {
+					t.Fatal("early write accepted")
+				}
+				if underlying.writeCount() != 0 {
+					t.Fatal("early write reached underlying")
+				}
+				return
+			}
+			switch mode {
+			case "cancel":
+				cancel()
+			case "deadline":
+				gate.challengeStop()
+				gate.challengeCtx, gate.challengeStop = context.WithTimeout(gate.attemptCtx, 10*time.Millisecond)
+			case "oversize":
+				underlying.queueRead(make([]byte, consumerReadinessFrameBytes+1))
+			case "writer-error":
+				_ = underlying.Close()
+			}
+			start := time.Now()
+			if err := gate.ConsumerReady(ctx, fakeConsumerReadyCodec{}); err == nil {
+				t.Fatal("failure accepted")
+			}
+			if time.Since(start) > time.Second || !underlying.isClosed() || underlying.writeCount() > 1 {
+				t.Fatal("failure did not stop and drain within its existing allowance")
+			}
+		})
+	}
+}

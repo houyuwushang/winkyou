@@ -21,14 +21,14 @@ func RunInitiator(ctx context.Context, options InitiatorOptions) (Result, error)
 }
 
 func runInitiator(ctx context.Context, options InitiatorOptions, deps dependencies) (Result, error) {
-	if ctx == nil || options.RequestFile == "" || options.Config == nil || options.BuildVersion == "" || options.Progress == nil {
+	if ctx == nil || options.RequestFile == "" || options.Config == nil || options.BuildVersion == "" || options.Progress == nil || deps.inspectMachine == nil || deps.artifactNow == nil {
 		return Result{}, localFailure(ClassRequestInvalid, StagePreflight, false, "", "", ErrRequestInvalid, nil)
 	}
 	request, err := gatecrequest.LoadPrivate(options.RequestFile)
 	if err != nil || request.Role != gatecattempt.RoleInitiator || request.SSH == nil {
 		return Result{}, localFailure(ClassRequestInvalid, StagePreflight, false, "", "", ErrRequestInvalid, nil)
 	}
-	artifact, err := loadArtifact(request.ArtifactFile, deps.now())
+	artifact, err := loadArtifact(request.ArtifactFile, deps.artifactNow())
 	if err != nil || artifact.LocalRole != gatecattempt.RoleInitiator {
 		if artifact != nil {
 			artifact.Close()
@@ -49,7 +49,7 @@ func runInitiator(ctx context.Context, options InitiatorOptions, deps dependenci
 		return Result{}, localFailure(ClassRequestInvalid, StagePreflight, false,
 			string(artifact.PlannerProfile), string(artifact.ResourceClass), err, nil)
 	}
-	if err := passiveMachinePreflight(); err != nil {
+	if err := deps.inspectMachine(); err != nil {
 		return Result{}, localFailure(ClassRequestInvalid, StagePreflight, false,
 			string(artifact.PlannerProfile), string(artifact.ResourceClass), err, nil)
 	}
@@ -77,10 +77,10 @@ func RunResponderStdio(ctx context.Context, input io.Reader, output io.Writer, o
 func runResponderStdio(ctx context.Context, input io.Reader, output io.Writer,
 	options ResponderOptions, deps dependencies) (Result, error) {
 	if ctx == nil || input == nil || output == nil || options.Config == nil || options.BuildVersion == "" ||
-		options.Progress == nil || deps.now == nil || deps.claimPending == nil || deps.acquireMachine == nil {
+		options.Progress == nil || deps.now == nil || deps.artifactNow == nil || deps.claimPending == nil || deps.acquireMachine == nil {
 		return Result{}, localFailure(ClassRequestInvalid, StagePreflight, false, "", "", ErrRequestInvalid, nil)
 	}
-	claimed, err := deps.claimPending(deps.now().UTC())
+	claimed, err := deps.claimPending(deps.artifactNow().UTC())
 	if err != nil || claimed == nil || claimed.Artifact == nil {
 		if claimed != nil {
 			claimed.Close()

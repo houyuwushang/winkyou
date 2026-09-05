@@ -25,8 +25,9 @@ const gateCSessionTripDetail = "Gate C foreground session did not drain within i
 
 func defaultDependencies() dependencies {
 	return dependencies{
-		now:    time.Now,
-		random: rand.Reader,
+		now:         time.Now,
+		artifactNow: time.Now,
+		random:      rand.Reader,
 		openSSH: func(ctx context.Context, cfg sshassembly.Config) (sshProductStream, error) {
 			return sshassembly.OpenClient(ctx, cfg)
 		},
@@ -38,6 +39,7 @@ func defaultDependencies() dependencies {
 		newInterface:     netif.NewGateCMemoryInterface,
 		newTunnel:        tunnel.NewMemoryWireGuard,
 		inspectConflict:  defaultConflictInspector,
+		inspectMachine:   passiveMachinePreflight,
 		activityInterval: SessionActivityInterval,
 	}
 }
@@ -199,6 +201,9 @@ func runPrepared(ctx context.Context, input preparedInput, deps dependencies) (r
 	if err := tun.AddPeer(configuredPeer); err != nil {
 		return result, classifyLocalFailure(ErrWireGuardBinding, gateb.StageDataPlaneChallenge, true, input, nil)
 	}
+	if err := handoff.ConsumerReady(ctx); err != nil {
+		return result, classifyLocalFailure(ErrWireGuardBinding, gateb.StageDataPlaneChallenge, true, input, nil)
+	}
 	if input.request.Role == directattempt.RoleInitiator {
 		if err := initiateOneShotHandshake(ctx, tun, peer.publicKey); err != nil {
 			return result, classifyLocalFailure(ErrWireGuardBinding, gateb.StageDataPlaneChallenge, true, input, nil)
@@ -219,6 +224,11 @@ func runPrepared(ctx context.Context, input preparedInput, deps dependencies) (r
 		return result, classifyLocalFailure(ErrWireGuardBinding, gateb.StageDataPlaneChallenge, true, input, nil)
 	}
 	finished = true
+	defer func() {
+		if closeErr := handoff.CloseSession(); closeErr != nil {
+			runErr = errors.Join(runErr, sessionDrainFailure(input, closeErr))
+		}
+	}()
 	if err := sequence.emit(StageFinishRecorded, true); err != nil {
 		return result, classifyLocalFailure(err, StageFinishRecorded, true, input, nil)
 	}
@@ -236,6 +246,9 @@ func runPrepared(ctx context.Context, input preparedInput, deps dependencies) (r
 	}, deps.random)
 	result.Witness.Echo = echoWitness
 	if err != nil {
+		if errors.Is(err, ErrSessionDrain) {
+			return result, sessionDrainFailure(input, err)
+		}
 		return result, classifyLocalFailure(ErrPostHandoff, StageDataPlaneReady, true, input, map[string]int{
 			"echo_requests_written": echoWitness.RequestsWritten,
 			"echo_responses_read":   echoWitness.ResponsesRead,
@@ -255,6 +268,9 @@ func runPrepared(ctx context.Context, input preparedInput, deps dependencies) (r
 	result.Witness.Handoff = handoff.Witness()
 	result.Witness.GateB = handoff.Result()
 	if err != nil {
+		if errors.Is(err, ErrSessionDrain) {
+			return result, sessionDrainFailure(input, err)
+		}
 		return result, classifyLocalFailure(ErrPostHandoff, StageDataPlaneReady, true, input, nil)
 	}
 	if closeErr := handoff.CloseSession(); closeErr != nil {
