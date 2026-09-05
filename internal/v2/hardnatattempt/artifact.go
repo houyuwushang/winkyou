@@ -329,6 +329,62 @@ func (artifact *Artifact) Close() {
 	artifact.context = pairingcontext.PairingContext{}
 }
 
+func (artifact *Artifact) GateBArtifactKind() string { return "hard-nat-test-artifact/1" }
+func (artifact *Artifact) GateBLocalRole() directattempt.Role {
+	if artifact == nil {
+		return ""
+	}
+	return artifact.LocalRole
+}
+func (artifact *Artifact) GateBPlannerProfile() hardnatplan.Profile {
+	if artifact == nil {
+		return ""
+	}
+	return artifact.PlannerProfile
+}
+func (artifact *Artifact) GateBResourceClass() hardnatplan.ResourceClass {
+	if artifact == nil {
+		return ""
+	}
+	return artifact.ResourceClass
+}
+func (artifact *Artifact) GateBLocalPlannerRole() hardnatplan.Role {
+	if artifact == nil {
+		return ""
+	}
+	return artifact.LocalPlannerRole
+}
+func (artifact *Artifact) GateBPeerPlannerRole() hardnatplan.Role {
+	if artifact == nil {
+		return ""
+	}
+	return artifact.PeerPlannerRole
+}
+func (artifact *Artifact) GateBOOBChannelID() string {
+	if artifact == nil {
+		return ""
+	}
+	return artifact.OOBChannelID
+}
+func (artifact *Artifact) GateBCredentialID() string {
+	if artifact == nil {
+		return ""
+	}
+	return artifact.CredentialID
+}
+func (artifact *Artifact) GateBAttemptID() string {
+	if artifact == nil {
+		return ""
+	}
+	return artifact.AttemptID
+}
+func (artifact *Artifact) GateBExpiresAt() time.Time {
+	if artifact == nil {
+		return time.Time{}
+	}
+	return artifact.ExpiresAt
+}
+
 type ArtifactMaterial struct {
 	CredentialID, AttemptID, InitiatorParticipantID, ResponderParticipantID, OOBChannelID string
 	PlannerProfile                                                                        hardnatplan.Profile

@@ -142,10 +142,10 @@ func (gate *WireGuardSessionGate) BeginChallenge() error {
 	return nil
 }
 
-// MarkChallengePassed accepts only the frozen option-B trace: the initiator
+// CompleteChallenge accepts only the frozen option-B trace: the initiator
 // writes initiation then the empty transport keepalive and reads one response;
 // the responder reads initiation/keepalive and writes one response.
-func (gate *WireGuardSessionGate) MarkChallengePassed() error {
+func (gate *WireGuardSessionGate) CompleteChallenge() error {
 	if gate == nil {
 		return ErrWireGuardGateState
 	}
@@ -310,8 +310,8 @@ func (gate *WireGuardSessionGate) ReadPacket(ctx context.Context, dst []byte) (i
 	done()
 	if err != nil {
 		gate.finishOperation()
-		if gate.callerPollEnded(ctx, state, err) {
-			return n, meta, ctx.Err()
+		if benign, ok := gate.benignReadContextEnd(ctx, state, err); ok {
+			return n, meta, benign
 		}
 		return n, meta, gate.fail(err)
 	}
@@ -417,13 +417,21 @@ func (gate *WireGuardSessionGate) finishOperation() {
 	gate.mu.Unlock()
 }
 
-func (gate *WireGuardSessionGate) callerPollEnded(callCtx context.Context, state WireGuardGateState, err error) bool {
-	if callCtx == nil || callCtx.Err() == nil ||
-		(!errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded)) {
-		return false
+func (gate *WireGuardSessionGate) benignReadContextEnd(callCtx context.Context, state WireGuardGateState, err error) (error, bool) {
+	if !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
+		return nil, false
 	}
 	gate.mu.Lock()
 	defer gate.mu.Unlock()
+	if state == WireGuardGateChallengeCapped && gate.state == WireGuardGateActive {
+		// A read started during the capped phase may still be blocked when the
+		// durable FINISH transition replaces its phase context. Surface a poll
+		// timeout so wireguard-go's bind loop immediately starts an active read.
+		return context.DeadlineExceeded, true
+	}
+	if callCtx == nil || callCtx.Err() == nil {
+		return nil, false
+	}
 	var phaseCtx context.Context
 	switch state {
 	case WireGuardGateChallengeCapped:
@@ -431,7 +439,10 @@ func (gate *WireGuardSessionGate) callerPollEnded(callCtx context.Context, state
 	case WireGuardGateActive:
 		phaseCtx = gate.activeCtx
 	}
-	return gate.state == state && phaseCtx != nil && phaseCtx.Err() == nil
+	if gate.state == state && phaseCtx != nil && phaseCtx.Err() == nil {
+		return callCtx.Err(), true
+	}
+	return nil, false
 }
 
 func (gate *WireGuardSessionGate) fail(cause error) error {

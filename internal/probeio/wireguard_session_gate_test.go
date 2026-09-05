@@ -95,7 +95,7 @@ func TestWireGuardSessionGateOptionBTraceGoldenAndActivation(t *testing.T) {
 	if err := initiatorGate.WritePacket(context.Background(), wireGuardPacket(WireGuardTransportData)); err != nil {
 		t.Fatal(err)
 	}
-	if err := initiatorGate.MarkChallengePassed(); err != nil {
+	if err := initiatorGate.CompleteChallenge(); err != nil {
 		t.Fatal(err)
 	}
 	finishCalls := 0
@@ -141,7 +141,7 @@ func TestWireGuardSessionGateOptionBTraceGoldenAndActivation(t *testing.T) {
 	if _, _, err := responderGate.ReadPacket(context.Background(), make([]byte, 256)); err != nil {
 		t.Fatal(err)
 	}
-	if err := responderGate.MarkChallengePassed(); err != nil {
+	if err := responderGate.CompleteChallenge(); err != nil {
 		t.Fatal(err)
 	}
 	responderWitness := responderGate.Witness()
@@ -214,7 +214,7 @@ func TestWireGuardSessionGateRejectsCookieReplayAndWrongTrace(t *testing.T) {
 			if _, _, err := g.ReadPacket(context.Background(), make([]byte, 256)); err != nil {
 				return err
 			}
-			return g.MarkChallengePassed()
+			return g.CompleteChallenge()
 		}},
 	}
 	for _, test := range tests {
@@ -298,7 +298,7 @@ func completeInitiatorChallenge(t *testing.T, gate *WireGuardSessionGate, underl
 	if err := gate.WritePacket(context.Background(), wireGuardPacket(WireGuardTransportData)); err != nil {
 		t.Fatal(err)
 	}
-	if err := gate.MarkChallengePassed(); err != nil {
+	if err := gate.CompleteChallenge(); err != nil {
 		t.Fatal(err)
 	}
 }
