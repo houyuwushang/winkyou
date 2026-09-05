@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -238,7 +239,10 @@ func runGateC1bPrivateSSHD(t *testing.T, cfg gateC1bHostConfig) {
 	}
 	clear(configuration)
 	command := exec.Command(cfg.SSHDBinary, "-D", "-e", "-f", cfg.SSHDConfig)
-	command.Stdout, command.Stderr = io.Discard, io.Discard
+	// Private test sshd diagnostics are reduced at the pipe boundary. No raw
+	// line, address, key, account, path or command is saved or published.
+	diagnostics := &gateC1bSSHDCounters{path: cfg.ReadyFile + ".counts"}
+	command.Stdout, command.Stderr = io.Discard, diagnostics
 	command.SysProcAttr = &syscall.SysProcAttr{Pdeathsig: syscall.SIGKILL}
 	done, err := startGateC1bOwnedProcess(command)
 	if err != nil {
@@ -279,6 +283,67 @@ func runGateC1bPrivateSSHD(t *testing.T, cfg gateC1bHostConfig) {
 		}
 	}
 	t.Fatal("Gate C1b isolated sshd lifetime exhausted")
+}
+
+type gateC1bSSHDWitness struct {
+	Lines, AcceptedKey, FailedKey, AccountRejected, FileRejected, SessionStarted, SessionClosed, Fatal, OtherError int
+	Overflow                                                                                                       bool
+}
+
+type gateC1bSSHDCounters struct {
+	mu      sync.Mutex
+	path    string
+	pending []byte
+	total   int
+	witness gateC1bSSHDWitness
+}
+
+func (counter *gateC1bSSHDCounters) Write(data []byte) (int, error) {
+	counter.mu.Lock()
+	defer counter.mu.Unlock()
+	for _, value := range data {
+		if counter.total >= 64*1024 {
+			counter.witness.Overflow = true
+			break
+		}
+		counter.total++
+		if value == '\n' {
+			line := strings.ToLower(string(counter.pending))
+			counter.witness.Lines++
+			if strings.Contains(line, "accepted publickey") {
+				counter.witness.AcceptedKey++
+			}
+			if strings.Contains(line, "failed publickey") {
+				counter.witness.FailedKey++
+			}
+			if strings.Contains(line, "not allowed") || strings.Contains(line, "account is locked") {
+				counter.witness.AccountRejected++
+			}
+			if strings.Contains(line, "bad ownership") || strings.Contains(line, "could not open") || strings.Contains(line, "authentication refused") {
+				counter.witness.FileRejected++
+			}
+			if strings.Contains(line, "starting session") {
+				counter.witness.SessionStarted++
+			}
+			if strings.Contains(line, "close session") || strings.Contains(line, "session closed") {
+				counter.witness.SessionClosed++
+			}
+			if strings.Contains(line, "fatal:") {
+				counter.witness.Fatal++
+			}
+			if strings.Contains(line, "error:") {
+				counter.witness.OtherError++
+			}
+			clear(counter.pending)
+			counter.pending = counter.pending[:0]
+		} else if len(counter.pending) < 512 {
+			counter.pending = append(counter.pending, value)
+		}
+	}
+	if counter.path != "" {
+		_ = writeN1JSON(counter.path, counter.witness)
+	}
+	return len(data), nil
 }
 
 func runGateC1bCLI(cfg gateC1bHostConfig, args []string) gateC1bProcessResult {

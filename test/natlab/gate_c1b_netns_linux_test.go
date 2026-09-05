@@ -118,6 +118,11 @@ func testGateC1bProfile(t *testing.T, profile gateC1bProfile, loopbackSSH bool) 
 	// and counters are published; no raw SSH error or private fixture content.
 	if !results[0].OK {
 		got := results[0]
+		var peer gateC1bProcessResult
+		peerResult := readN1JSON(configs[1].ResultFile, &peer)
+		var sshd gateC1bSSHDWitness
+		_ = readN1JSON(configs[1].ReadyFile+".counts", &sshd)
+		t.Logf("Gate C1b peer diagnostic: result=%t class=%s stage=%s stages=%v sshd=%+v", peerResult, peer.Class, peer.Stage, peer.Stages, sshd)
 		t.Fatalf("Gate C1b initiator terminal: class=%s stage=%s burned=%t finish=%t ready=%t stages=%v ssh=%+v",
 			got.Class, got.Stage, got.Product.CredentialBurned, got.Product.FinishRecorded, got.Product.DataPlaneReady,
 			got.Stages, got.Product.Witness.SSH)
@@ -288,7 +293,7 @@ UsePAM no
 UseDNS no
 PrintMotd no
 PrintLastLog no
-LogLevel QUIET
+LogLevel VERBOSE
 LoginGraceTime 3
 MaxSessions 1
 AllowUsers root
@@ -477,6 +482,11 @@ func (process *gateC1bHostProcess) waitFile(t *testing.T, path string, limit tim
 		select {
 		case <-process.done:
 			var result gateC1bProcessResult
+			// The process can publish then exit between the Stat and select.
+			// Let the caller inspect that terminal result (including the peer).
+			if _, err := os.Stat(path); err == nil {
+				return
+			}
 			if readN1JSON(process.config.ResultFile, &result) {
 				t.Fatalf("Gate C1b helper exited: class=%s stage=%s stages=%v", result.Class, result.Stage, result.Stages)
 			}
