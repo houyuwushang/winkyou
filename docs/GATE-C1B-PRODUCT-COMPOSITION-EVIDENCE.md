@@ -91,6 +91,13 @@
     已持有 Linux child handle 的 SIGTERM 请求，2s 后才 SIGKILL 的上限不变；Windows 不发送
     console/group signal，原 pipe/Job Object 规则不变。fake 确定性测试检查请求先于等待/kill；
     真实 SSH 是否无强杀完成并保住 data plane 仍交由下一轮 required 取证。
+14. `e77b1ae` 的 [required 运行](https://github.com/houyuwushang/winkyou/actions/runs/33968297402/job/101312205843)
+    已通过 loopback-SSH 三 profile（真实 OpenSSH + TEST-NET UDP + memory-TUN），post-OOB echo
+    成功，challenge 均 3/3。UDP 计数 predictive=50/49、asymmetric=82/530、hard16=16403/16401；
+    随后的 netns-SSH/predictive 在 presence 前超时、burn=false。B2 NAT 模型的 lan0 policy
+    route 将 TCP 一并送入 UDP-only TUN；C1b harness 增加仅匹配固定 SSH TCP tuple/回包的
+    main-table 优先规则，UDP 模型与产品 authority 不变。规则仅在测试 NAT namespace，
+    并显式清理；尚未取得 kernel-TUN 分支的成功出口。
 
 ## 4. root 执行域与 OS 证明的当前范围
 

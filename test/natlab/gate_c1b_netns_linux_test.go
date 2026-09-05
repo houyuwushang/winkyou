@@ -99,6 +99,24 @@ func testGateC1bProfile(t *testing.T, profile gateC1bProfile, loopbackSSH bool) 
 	// One exact TCP underlay route to the responder, never an arbitrary
 	// port-forwarding feature. It exists only in this disposable NAT namespace.
 	if !loopbackSSH {
+		// B2's UDP-model policy rule catches all traffic arriving on lan0.
+		// Give only the fixed SSH underlay tuple (and its reply) an earlier
+		// main-table rule; UDP still goes exclusively through the NAT model.
+		for _, rule := range []struct{ namespace, source, destination, portKind string }{
+			{topology.natA, n2dClientAAddress, n2dNATBWAN, "dport"},
+			{topology.natB, n2dClientBAddress, n2dNATAWAN, "sport"},
+		} {
+			args := []string{"rule", "add", "priority", "101", "iif", "lan0", "from", rule.source + "/32", "to", rule.destination + "/32",
+				"ipproto", "tcp", rule.portKind, "22", "lookup", "main"}
+			if _, err := runNamespaced(rule.namespace, "ip", nil, args...); err != nil {
+				t.Fatal("Gate C1b exact SSH policy route failed")
+			}
+			t.Cleanup(func() {
+				if _, err := runNamespaced(rule.namespace, "ip", nil, "rule", "del", "priority", "101"); err != nil {
+					t.Error("Gate C1b SSH policy route cleanup failed")
+				}
+			})
+		}
 		if _, err := runNamespaced(topology.natB, "iptables", nil, "-t", "nat", "-A", "PREROUTING",
 			"-i", "wan0", "-p", "tcp", "-d", n2dNATBWAN, "--dport", "22", "-j", "DNAT", "--to-destination", n2dClientBAddress+":22"); err != nil {
 			t.Fatal("Gate C1b exact test SSH underlay setup failed")
@@ -155,7 +173,7 @@ func testGateC1bProfile(t *testing.T, profile gateC1bProfile, loopbackSSH bool) 
 			t.Fatal("Gate C1b real kernel TUN echo witness rejected")
 		}
 	}
-	if !results[0].Product.Witness.SSH.Spawned || !results[0].Product.Witness.SSH.Exited || !results[0].Product.Witness.SSH.Drained {
+	if !results[0].Product.Witness.SSH.Spawned || !results[0].Product.Witness.SSH.Exited || !results[0].Product.Witness.SSH.Drained || results[0].Product.Witness.SSH.Killed {
 		t.Fatal("Gate C1b real SSH child exit witness missing")
 	}
 	client.wait(t)
