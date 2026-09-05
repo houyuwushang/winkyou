@@ -5,6 +5,7 @@ package natlab
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net/netip"
 	"os"
@@ -45,7 +46,9 @@ type gateC1bHostConfig struct {
 	MachineBase   string
 	InstallBase   string
 	HomeDirectory string
+	RuntimeBase   string
 	ShadowFile    string
+	SSHDBinary    string
 	SSHDConfig    string
 	RequestFile   string
 	ConfigFile    string
@@ -197,8 +200,15 @@ func prepareGateC1bPrivateMounts(cfg gateC1bHostConfig) error {
 	if err := unix.Mount("", "/", "", unix.MS_REC|unix.MS_PRIVATE, ""); err != nil {
 		return err
 	}
+	// Keep the named TEST-NET namespace registry visible after replacing /run.
+	// Privilege separation must never require creating /run/sshd on the host.
+	namespaceDirectory, err := os.Open("/run/netns")
+	if err != nil {
+		return err
+	}
+	defer namespaceDirectory.Close()
 	for _, mount := range [][2]string{{cfg.MachineBase, "/var/lib"}, {cfg.InstallBase, "/usr/libexec"},
-		{cfg.HomeDirectory, "/root"}, {cfg.ShadowFile, "/etc/shadow"}} {
+		{cfg.HomeDirectory, "/root"}, {cfg.ShadowFile, "/etc/shadow"}, {cfg.RuntimeBase, "/run"}} {
 		if !filepath.IsAbs(mount[0]) {
 			return errors.New("private mount path rejected")
 		}
@@ -206,19 +216,22 @@ func prepareGateC1bPrivateMounts(cfg gateC1bHostConfig) error {
 			return err
 		}
 	}
+	if err := unix.Mount(fmt.Sprintf("/proc/self/fd/%d", namespaceDirectory.Fd()), "/run/netns", "", unix.MS_BIND, ""); err != nil {
+		return err
+	}
 	return os.Chdir("/root")
 }
 
 func runGateC1bPrivateSSHD(t *testing.T, cfg gateC1bHostConfig) {
 	t.Helper()
-	resolved := exec.Command("/usr/sbin/sshd", "-T", "-f", cfg.SSHDConfig, "-C", "user=root,addr=127.0.0.1")
+	resolved := exec.Command(cfg.SSHDBinary, "-T", "-f", cfg.SSHDConfig, "-C", "user=root,addr=127.0.0.1")
 	resolved.Stderr = io.Discard
 	configuration, err := resolved.Output()
 	if err != nil || sshchildwrapper.ValidateRootSSHDResolvedConfig(configuration) != nil {
 		gateC1bSetupFailure(t, cfg, "effective_sshd_policy")
 	}
 	clear(configuration)
-	command := exec.Command("/usr/sbin/sshd", "-D", "-e", "-f", cfg.SSHDConfig)
+	command := exec.Command(cfg.SSHDBinary, "-D", "-e", "-f", cfg.SSHDConfig)
 	command.Stdout, command.Stderr = io.Discard, io.Discard
 	command.SysProcAttr = &syscall.SysProcAttr{Pdeathsig: syscall.SIGKILL}
 	done, err := startGateC1bOwnedProcess(command)

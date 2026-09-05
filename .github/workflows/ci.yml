@@ -436,12 +436,22 @@ jobs:
         run: |
           # Do not install, start, reconfigure, or reuse the host SSH service.
           # Each test runs its own sshd in private mount/network namespaces.
-          test -x /usr/bin/ssh
-          test -x /usr/sbin/sshd
-          test -d /run/sshd
-          test -d /usr/libexec
+          test -x /usr/bin/ssh || { echo 'required SSH client absent'; exit 1; }
+          test -d /usr/libexec || { echo 'required installation mountpoint absent'; exit 1; }
           sudo apt-get update
           sudo apt-get install -y iproute2 iptables conntrack
+          if test -x /usr/sbin/sshd; then
+            echo 'WINKYOU_C1B_SSHD_BINARY=/usr/sbin/sshd' >> "$GITHUB_ENV"
+          else
+            c1b_tools="$(mktemp -d "${RUNNER_TEMP}/c1b-sshd.XXXXXX")"
+            (
+              cd "$c1b_tools"
+              apt-get download openssh-server
+              dpkg-deb --extract openssh-server_*.deb extracted
+            )
+            test -x "$c1b_tools/extracted/usr/sbin/sshd"
+            echo "WINKYOU_C1B_SSHD_BINARY=$c1b_tools/extracted/usr/sbin/sshd" >> "$GITHUB_ENV"
+          fi
           sudo modprobe tun || true
           command -v ip
           command -v iptables
@@ -466,6 +476,7 @@ jobs:
         run: |
           sudo env \
             WINKYOU_GATE_C1B_REQUIRED=1 \
+            WINKYOU_C1B_SSHD_BINARY="$WINKYOU_C1B_SSHD_BINARY" \
             WINKYOU_GATE_B3_REQUIRED=1 \
             WINKYOU_GATE_B3_DISPOSABLE_RUNNER=github-hosted \
             GITHUB_ACTIONS=true \

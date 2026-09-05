@@ -55,7 +55,7 @@ func TestLinuxGateC1bProductProof(t *testing.T) {
 	}
 	requireGateB3Environment(t)
 	requireGateB3HostConntrackGuard(t)
-	for _, path := range []string{"/usr/bin/ssh", "/usr/sbin/sshd", "/usr/libexec", "/run/sshd"} {
+	for _, path := range []string{"/usr/bin/ssh", gateC1bSSHDPath(t), "/usr/libexec"} {
 		if _, err := os.Stat(path); err != nil {
 			t.Fatal("required isolated SSH tools or privilege-separation directory are unavailable")
 		}
@@ -71,6 +71,18 @@ func TestLinuxGateC1bProductProof(t *testing.T) {
 			}
 		}
 	}
+}
+
+func gateC1bSSHDPath(t *testing.T) string {
+	t.Helper()
+	path := os.Getenv("WINKYOU_C1B_SSHD_BINARY")
+	if path == "" {
+		path = "/usr/sbin/sshd"
+	}
+	if !filepath.IsAbs(path) {
+		t.Fatal("isolated sshd fixture binary must have an absolute path")
+	}
+	return path
 }
 
 func testGateC1bProfile(t *testing.T, profile gateC1bProfile, loopbackSSH bool) {
@@ -241,15 +253,17 @@ AllowUsers root
 		if os.Mkdir(sideDir, 0o700) != nil {
 			t.Fatal("Gate C1b endpoint fixture setup failed")
 		}
-		cfg := gateC1bHostConfig{Server: index == 1, ParentMount: parentMount.Ino, SSHDConfig: sshdFile, Observers: observers,
+		cfg := gateC1bHostConfig{Server: index == 1, ParentMount: parentMount.Ino, SSHDConfig: sshdFile, SSHDBinary: gateC1bSSHDPath(t), Observers: observers,
 			MachineBase: filepath.Join(sideDir, "machine-base"), InstallBase: filepath.Join(sideDir, "install-base"), HomeDirectory: filepath.Join(sideDir, "private-home"), ShadowFile: filepath.Join(sideDir, "shadow"),
+			RuntimeBase: filepath.Join(sideDir, "runtime"),
 			RequestFile: filepath.Join(sideDir, "request.json"), ConfigFile: filepath.Join(sideDir, "config.yaml"), ResultFile: filepath.Join(sideDir, "result.json"),
 			ReadyFile: filepath.Join(sideDir, "ready"), StageFile: filepath.Join(sideDir, "stage"), StopFile: filepath.Join(sideDir, "stop")}
 		cfg.Namespace, cfg.HostNamespace, cfg.Side, cfg.SSHSide = topology.clientA, topology.clientA, probeio.GateB2NATLabLeft, sshassembly.NATLabRight
 		if index == 1 {
 			cfg.Namespace, cfg.HostNamespace, cfg.Side, cfg.SSHSide = topology.clientB, serverNamespace, probeio.GateB2NATLabRight, sshassembly.NATLabLeft
 		}
-		for _, path := range []string{cfg.MachineBase, cfg.InstallBase, cfg.HomeDirectory, filepath.Join(cfg.InstallBase, "winkyou")} {
+		for _, path := range []string{cfg.MachineBase, cfg.InstallBase, cfg.HomeDirectory, filepath.Join(cfg.InstallBase, "winkyou"),
+			cfg.RuntimeBase, filepath.Join(cfg.RuntimeBase, "sshd"), filepath.Join(cfg.RuntimeBase, "netns")} {
 			if os.Mkdir(path, 0o755) != nil {
 				t.Fatal("Gate C1b private mount directory failed")
 			}
