@@ -36,6 +36,7 @@ type wggoTunnel struct {
 	stopped    bool
 	listenPort int
 	peers      map[PublicKey]*PeerStatus
+	initiated  map[PublicKey]struct{}
 
 	device    *wgdevice.Device
 	tunDevice *netifDevice
@@ -90,6 +91,7 @@ func (w *wggoTunnel) Start() error {
 
 	w.started = true
 	w.stopped = false
+	w.initiated = make(map[PublicKey]struct{})
 	w.closeCh = make(chan struct{})
 	w.refreshPeerStatsLocked()
 	w.wg.Add(1)
@@ -131,6 +133,7 @@ func (w *wggoTunnel) Stop() error {
 	w.device = nil
 	w.bind = nil
 	w.tunDevice = nil
+	w.initiated = nil
 	w.mu.Unlock()
 	return nil
 }
@@ -327,6 +330,32 @@ func (w *wggoTunnel) UpdatePeerAllowedIPs(publicKey PublicKey, allowedIPs []net.
 	ps.AllowedIPs = cloneIPNets(allowedIPs)
 	w.emitLocked(TunnelEvent{Type: EventPeerEndpointChanged, PeerKey: publicKey, Timestamp: w.now()})
 	w.mu.Unlock()
+	return nil
+}
+
+// InitiatePeerHandshake emits at most one non-retry initiation for this peer
+// during the tunnel lifetime. The selected PacketTransport remains
+// responsible for its own context, packet cap, and FINISH gate.
+func (w *wggoTunnel) InitiatePeerHandshake(publicKey PublicKey) error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if !w.started || w.device == nil || w.bind == nil || w.initiated == nil {
+		return ErrHandshakeUnavailable
+	}
+	if _, ok := w.peers[publicKey]; !ok || !w.bind.HasTransport(publicKey) {
+		return ErrHandshakeUnavailable
+	}
+	if _, exists := w.initiated[publicKey]; exists {
+		return ErrHandshakeAlreadyInitiated
+	}
+	w.initiated[publicKey] = struct{}{}
+	peer := w.device.LookupPeer(wgdevice.NoisePublicKey(publicKey))
+	if peer == nil {
+		return ErrHandshakeUnavailable
+	}
+	if err := peer.SendHandshakeInitiation(false); err != nil {
+		return ErrHandshakeUnavailable
+	}
 	return nil
 }
 
