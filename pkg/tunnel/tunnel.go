@@ -149,3 +149,18 @@ func New(cfg Config) (Tunnel, error) {
 	}
 	return newWGGoTunnel(cfg), nil
 }
+
+// NewMemoryWireGuard always selects wireguard-go but accepts only the
+// in-process memory interface. It is the C1b proof constructor and cannot
+// create an OS TUN, route, listener, or raw UDP socket.
+func NewMemoryWireGuard(cfg Config) (Tunnel, error) {
+	if cfg.Interface == nil || cfg.ListenPort != 0 {
+		return nil, errors.New("tunnel: invalid memory WireGuard config")
+	}
+	if _, ok := cfg.Interface.(netif.MemoryTestInterface); !ok || cfg.Interface.Type() != "memory" {
+		return nil, errors.New("tunnel: Gate C requires an in-process memory interface")
+	}
+	instance := newWGGoTunnel(cfg)
+	instance.memoryOnly = true
+	return instance, nil
+}

@@ -14,6 +14,7 @@ import (
 const (
 	WireGuardChallengeTimeout = 3 * time.Second
 	WireGuardChallengePackets = 3
+	wireGuardReadDrainTimeout = 300 * time.Millisecond
 )
 
 type WireGuardRole string
@@ -37,6 +38,7 @@ type WireGuardGateState string
 const (
 	WireGuardGateStandby         WireGuardGateState = "standby"
 	WireGuardGateChallengeCapped WireGuardGateState = "challenge_capped"
+	wireGuardGateChallengeDrain  WireGuardGateState = "challenge_drain"
 	WireGuardGateChallengePassed WireGuardGateState = "challenge_passed"
 	WireGuardGateFinishDetached  WireGuardGateState = "finish_detached"
 	WireGuardGateActive          WireGuardGateState = "active"
@@ -150,18 +152,48 @@ func (gate *WireGuardSessionGate) CompleteChallenge() error {
 		return ErrWireGuardGateState
 	}
 	gate.mu.Lock()
-	if gate.state != WireGuardGateChallengeCapped || gate.inFlight != 0 || gate.challengeCtx == nil ||
+	if gate.state != WireGuardGateChallengeCapped || gate.challengeCtx == nil ||
 		gate.challengeCtx.Err() != nil || !gate.traceCompleteLocked() {
 		gate.mu.Unlock()
 		return ErrWireGuardGateState
 	}
+	// wireguard-go keeps one receive call pending. Freeze the transition first,
+	// cancel that controlled read, and wait for it to leave before changing the
+	// lease state. New reads see challenge_drain and cannot start another I/O.
+	gate.state = wireGuardGateChallengeDrain
+	stop := gate.challengeStop
 	gate.mu.Unlock()
+	if stop != nil {
+		stop()
+	}
+	drainDeadline := time.NewTimer(wireGuardReadDrainTimeout)
+	defer drainDeadline.Stop()
+	drainPoll := time.NewTicker(time.Millisecond)
+	defer drainPoll.Stop()
+	for {
+		gate.mu.Lock()
+		inFlight := gate.inFlight
+		state := gate.state
+		gate.mu.Unlock()
+		if state != wireGuardGateChallengeDrain {
+			return ErrWireGuardGateState
+		}
+		if inFlight == 0 {
+			break
+		}
+		select {
+		case <-drainDeadline.C:
+			_ = gate.Close()
+			return ErrWireGuardGateState
+		case <-drainPoll.C:
+		}
+	}
 	if err := gate.lease.MarkChallengePassed(); err != nil {
 		_ = gate.Close()
 		return err
 	}
 	gate.mu.Lock()
-	if gate.state != WireGuardGateChallengeCapped {
+	if gate.state != wireGuardGateChallengeDrain {
 		gate.mu.Unlock()
 		_ = gate.Close()
 		return ErrWireGuardGateState
@@ -291,6 +323,14 @@ func (gate *WireGuardSessionGate) ReadPacket(ctx context.Context, dst []byte) (i
 
 	gate.mu.Lock()
 	state := gate.state
+	if state == wireGuardGateChallengeDrain || state == WireGuardGateChallengePassed || state == WireGuardGateFinishDetached {
+		gate.mu.Unlock()
+		// No underlying packet I/O is legal between the completed challenge and
+		// durable FINISH. Keep wireguard-go's bounded polling reader alive until
+		// it re-enters after the active transition.
+		<-ctx.Done()
+		return 0, transport.PacketMeta{}, ctx.Err()
+	}
 	if state == WireGuardGateChallengeCapped && len(gate.inbound) >= WireGuardChallengePackets {
 		gate.mu.Unlock()
 		return 0, transport.PacketMeta{}, gate.fail(ErrWireGuardGateLimit)
@@ -423,6 +463,12 @@ func (gate *WireGuardSessionGate) benignReadContextEnd(callCtx context.Context, 
 	}
 	gate.mu.Lock()
 	defer gate.mu.Unlock()
+	if state == WireGuardGateChallengeCapped && gate.state == wireGuardGateChallengeDrain {
+		// CompleteChallenge deliberately canceled the one pending receive. Return
+		// a polling sentinel so the tunnel reader exits/re-evaluates without
+		// closing the lease-owned transport.
+		return context.DeadlineExceeded, true
+	}
 	if state == WireGuardGateChallengeCapped && gate.state == WireGuardGateActive {
 		// A read started during the capped phase may still be blocked when the
 		// durable FINISH transition replaces its phase context. Surface a poll

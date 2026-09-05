@@ -30,6 +30,9 @@ const (
 type wggoTunnel struct {
 	cfg    Config
 	events chan TunnelEvent
+	// memoryOnly selects a no-op native bind. All peer traffic must use the
+	// caller-owned PacketTransport; no fallback UDP listener can be opened.
+	memoryOnly bool
 
 	mu         sync.RWMutex
 	started    bool
@@ -71,7 +74,11 @@ func (w *wggoTunnel) Start() error {
 	}
 
 	w.tunDevice = newNetifDevice(w.cfg.Interface)
-	w.bind = newPeerTransportBind()
+	if w.memoryOnly {
+		w.bind = newMemoryPeerTransportBind()
+	} else {
+		w.bind = newPeerTransportBind()
+	}
 	w.device = wgdevice.NewDevice(w.tunDevice, w.bind, wgdevice.NewLogger(wggoLogLevel(), "winkyou"))
 
 	if err := w.device.IpcSet(buildDeviceIPC(w.cfg.PrivateKey, w.cfg.ListenPort)); err != nil {
@@ -633,6 +640,15 @@ func newPeerTransportBind() *peerTransportBind {
 	}
 	return &peerTransportBind{
 		base:       wgconn.NewDefaultBind(),
+		shutdownCh: make(chan struct{}),
+		recvCh:     make(chan transportPacket, 1024),
+		transports: make(map[PublicKey]*boundTransport),
+	}
+}
+
+func newMemoryPeerTransportBind() *peerTransportBind {
+	return &peerTransportBind{
+		base:       &noOpBind{},
 		shutdownCh: make(chan struct{}),
 		recvCh:     make(chan transportPacket, 1024),
 		transports: make(map[PublicKey]*boundTransport),

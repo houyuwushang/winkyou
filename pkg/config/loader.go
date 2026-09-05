@@ -101,6 +101,7 @@ func setDefaults(v *viper.Viper, cfg Config) {
 	v.SetDefault("tcp_framed.dial_addr", cfg.TCPFramed.DialAddr)
 	v.SetDefault("tcp_framed.role", cfg.TCPFramed.Role)
 	v.SetDefault("tcp_framed.dial_timeout", cfg.TCPFramed.DialTimeout)
+	v.SetDefault("gate_c.peers", cfg.GateC.Peers)
 
 	v.SetDefault("autonomous_mesh.enabled", cfg.AutonomousMesh.Enabled)
 	v.SetDefault("autonomous_mesh.node_id", cfg.AutonomousMesh.NodeID)

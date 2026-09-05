@@ -13,6 +13,7 @@ import (
 	"time"
 
 	wgconn "golang.zx2c4.com/wireguard/conn"
+	"winkyou/pkg/netif"
 	"winkyou/pkg/solver"
 	"winkyou/pkg/transport"
 	"winkyou/pkg/transport/framedstream"
@@ -63,6 +64,36 @@ func TestNewForceWGGo(t *testing.T) {
 	}
 	if _, ok := tun.(*wggoTunnel); !ok {
 		t.Fatalf("New() returned %T, want *wggoTunnel", tun)
+	}
+}
+
+func TestNewMemoryWireGuardRejectsOSTUNAndSelectsWGGo(t *testing.T) {
+	private := mustPrivateKey(t)
+	if _, err := NewMemoryWireGuard(Config{Interface: &fakeNetif{name: "host", mtu: 1280}, PrivateKey: private}); err == nil {
+		t.Fatal("Gate C memory constructor accepted an OS-style interface")
+	}
+	memory, err := netif.NewGateCMemoryInterface("wink-c1b-tunnel", 1280)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer memory.Close()
+	tun, err := NewMemoryWireGuard(Config{Interface: memory, PrivateKey: private, ListenPort: 0})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := tun.(*wggoTunnel); !ok {
+		t.Fatalf("NewMemoryWireGuard returned %T, want wireguard-go", tun)
+	}
+	instance := tun.(*wggoTunnel)
+	if !instance.memoryOnly {
+		t.Fatal("memory WireGuard did not disable the native bind")
+	}
+	if err := instance.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer instance.Stop()
+	if _, ok := instance.bind.base.(*noOpBind); !ok {
+		t.Fatalf("memory WireGuard native bind = %T, want noOpBind", instance.bind.base)
 	}
 }
 

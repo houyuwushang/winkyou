@@ -252,6 +252,21 @@ func TestCloseUnblocksReceivePacket(t *testing.T) {
 	}
 }
 
+func TestGateCMemoryInterfaceIsNamedAndNeverNeedsTestEnvironment(t *testing.T) {
+	t.Setenv("WINKYOU_NETIF_ALLOW_MEMORY", "")
+	instance, err := NewGateCMemoryInterface("wink-c1b-proof", 1280)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer instance.Close()
+	if instance.Name() != "wink-c1b-proof" || instance.Type() != "memory" || instance.MTU() != 1280 {
+		t.Fatalf("Gate C memory interface = %q/%q/%d", instance.Name(), instance.Type(), instance.MTU())
+	}
+	if _, err := NewGateCMemoryInterface("../host", 1280); err == nil {
+		t.Fatal("unsafe memory interface name was accepted")
+	}
+}
+
 func TestCloseIsIdempotentAndOperationsFailAfterClose(t *testing.T) {
 	ni := newMemoryInterface(Config{Backend: "userspace", MTU: 1280})
 	_, dst, _ := net.ParseCIDR("10.20.0.0/16")

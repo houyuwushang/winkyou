@@ -5,6 +5,7 @@ package netif
 import (
 	"errors"
 	"net"
+	"strings"
 )
 
 // ErrNotImplemented is returned by stub methods that have no real
@@ -64,4 +65,30 @@ func New(cfg Config) (NetworkInterface, error) {
 	}
 
 	return newByBackend(cfg)
+}
+
+// NewGateCMemoryInterface creates only an in-process packet queue. It never
+// creates, names, configures, or routes an operating-system interface. The
+// Gate C architecture gate restricts its sole production caller.
+func NewGateCMemoryInterface(name string, mtu int) (MemoryTestInterface, error) {
+	if !validGateCMemoryName(name) || mtu < 1280 || mtu > 9000 {
+		return nil, errors.New("netif: invalid Gate C memory interface")
+	}
+	instance := newMemoryInterface(Config{Backend: "memory", MTU: mtu})
+	instance.name = name
+	return instance, nil
+}
+
+func validGateCMemoryName(name string) bool {
+	if name == "" || len(name) > 32 || name != strings.TrimSpace(name) {
+		return false
+	}
+	for index, character := range name {
+		if character >= 'a' && character <= 'z' || character >= 'A' && character <= 'Z' ||
+			index > 0 && character >= '0' && character <= '9' || index > 0 && (character == '-' || character == '_') {
+			continue
+		}
+		return false
+	}
+	return true
 }

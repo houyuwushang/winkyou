@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"net/netip"
 	"sync"
 	"time"
 
@@ -99,6 +100,15 @@ func (failure *Failure) Unwrap() error {
 
 type ProgressReporter func(stage string, cancellable bool) error
 
+// ProductStreamOpener receives the exact Gate B attempt lease and its already
+// frozen absolute deadline. Gate C uses this single callback to attach the
+// C1a SSH assembly to the same attempt that owns all later UDP work.
+type ProductStreamOpener func(
+	context.Context,
+	*governor.AttemptLease,
+	time.Time,
+) (oobcarrier.BoundedStream, error)
+
 const (
 	ArtifactKindHardNATTest = "hard-nat-test-artifact/1"
 	ArtifactKindGateC       = "gate-c-product-artifact/1"
@@ -146,9 +156,15 @@ type Config struct {
 	// parse Artifact bytes through the frozen hardnatattempt parser.
 	PreparedArtifact AttemptArtifact
 	Stream           oobcarrier.BoundedStream
-	ObserverTopology hardnatobserve.Topology
-	BuildVersion     string
-	Progress         ProgressReporter
+	// OpenProductStream is required only by RunForProduct. The legacy Run path
+	// continues to consume Stream directly and cannot invoke a product opener.
+	OpenProductStream ProductStreamOpener
+	// ExpectedPeerAddress is mandatory only for RunForProduct and represents
+	// one local, operator-authorized address. No peer frame can replace it.
+	ExpectedPeerAddress netip.Addr
+	ObserverTopology    hardnatobserve.Topology
+	BuildVersion        string
+	Progress            ProgressReporter
 
 	// ProbeFactory is an in-memory harness seam. A concrete *probeio.UDPFactory
 	// is rejected here; the nil production default remains loopback-only.
@@ -264,4 +280,17 @@ func (handoff *ProductHandoff) Transport() transport.PacketTransport {
 		return nil
 	}
 	return handoff.gate
+}
+
+// Result returns a redacted lifecycle snapshot without changing ownership.
+func (handoff *ProductHandoff) Result() Result {
+	if handoff == nil {
+		return Result{}
+	}
+	handoff.mu.Lock()
+	defer handoff.mu.Unlock()
+	if handoff.runtime == nil {
+		return Result{}
+	}
+	return handoff.runtime.result()
 }

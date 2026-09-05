@@ -283,6 +283,55 @@ func TestWireGuardSessionGateCallerReadPollTimeoutDoesNotCloseSession(t *testing
 	}
 }
 
+func TestWireGuardSessionGateDrainsWireGuardGoPendingReadBeforeChallengeCommit(t *testing.T) {
+	gate, underlying, _ := newWireGuardGate(t, WireGuardInitiator)
+	if err := gate.BeginChallenge(); err != nil {
+		t.Fatal(err)
+	}
+	if err := gate.WritePacket(context.Background(), wireGuardPacket(WireGuardHandshakeInitiation)); err != nil {
+		t.Fatal(err)
+	}
+	underlying.queueRead(wireGuardPacket(WireGuardHandshakeResponse))
+	if _, _, err := gate.ReadPacket(context.Background(), make([]byte, 256)); err != nil {
+		t.Fatal(err)
+	}
+	if err := gate.WritePacket(context.Background(), wireGuardPacket(WireGuardTransportData)); err != nil {
+		t.Fatal(err)
+	}
+	pendingDone := make(chan error, 1)
+	go func() {
+		_, _, err := gate.ReadPacket(context.Background(), make([]byte, 256))
+		pendingDone <- err
+	}()
+	deadline := time.Now().Add(time.Second)
+	for {
+		gate.mu.Lock()
+		inFlight := gate.inFlight
+		gate.mu.Unlock()
+		if inFlight == 1 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("pending reader did not enter the gate")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if err := gate.CompleteChallenge(); err != nil {
+		t.Fatalf("complete with pending read = %v", err)
+	}
+	select {
+	case err := <-pendingDone:
+		if !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("drained read = %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("pending read did not drain")
+	}
+	if witness := gate.Witness(); witness.State != WireGuardGateChallengePassed || underlying.isClosed() {
+		t.Fatalf("post-drain witness=%+v underlying closed=%v", witness, underlying.isClosed())
+	}
+}
+
 func completeInitiatorChallenge(t *testing.T, gate *WireGuardSessionGate, underlying *wireGuardGateTransport) {
 	t.Helper()
 	if err := gate.BeginChallenge(); err != nil {

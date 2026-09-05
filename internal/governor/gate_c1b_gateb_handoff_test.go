@@ -3,6 +3,7 @@ package governor_test
 import (
 	"context"
 	"encoding/binary"
+	"errors"
 	"net"
 	"net/netip"
 	"reflect"
@@ -17,6 +18,7 @@ import (
 	"winkyou/internal/v2/gatecattempt"
 	"winkyou/internal/v2/hardnatobserve"
 	"winkyou/internal/v2/hardnatplan"
+	"winkyou/internal/v2/oobcarrier"
 	"winkyou/pkg/transport"
 )
 
@@ -115,8 +117,18 @@ func TestGateC1bGateBProductHandoffRetainsOwnershipUntilFinish(t *testing.T) {
 		artifact *gatecattempt.Artifact, stream net.Conn, factory probeio.Factory) {
 		var stages []string
 		handoff, result, runErr := gateb.RunForProduct(context.Background(), gateb.Config{
-			Machine: machine, Ledger: ledger, PreparedArtifact: artifact, Stream: stream,
+			Machine: machine, Ledger: ledger, PreparedArtifact: artifact,
 			ObserverTopology: topology, BuildVersion: "gate-c1b-product-handoff", ProbeFactory: factory,
+			ExpectedPeerAddress: map[directattempt.Role]netip.Addr{
+				directattempt.RoleInitiator: netip.MustParseAddr("198.51.100.20"),
+				directattempt.RoleResponder: netip.MustParseAddr("198.51.100.10"),
+			}[role],
+			OpenProductStream: func(_ context.Context, attempt *governor.AttemptLease, deadline time.Time) (oobcarrier.BoundedStream, error) {
+				if attempt == nil || attempt.Request().ID != artifact.AttemptID || !deadline.After(time.Now()) {
+					return nil, errors.New("product stream did not receive the frozen attempt")
+				}
+				return stream, nil
+			},
 			Progress: func(stage string, _ bool) error {
 				stages = append(stages, stage)
 				return nil

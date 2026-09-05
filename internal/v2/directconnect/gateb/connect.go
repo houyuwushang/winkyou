@@ -202,7 +202,16 @@ func prepare(ctx context.Context, config Config, product bool) (*runtime, error)
 			factoryCount++
 		}
 	}
-	if config.Machine == nil || config.Ledger == nil || config.Stream == nil || config.Progress == nil || config.BuildVersion == "" ||
+	invalidStreamBoundary := config.Stream == nil || config.OpenProductStream != nil
+	invalidPeerAuthority := config.ExpectedPeerAddress.IsValid()
+	if product {
+		invalidStreamBoundary = config.Stream != nil || config.OpenProductStream == nil
+		expected := config.ExpectedPeerAddress.Unmap()
+		invalidPeerAuthority = !expected.IsValid() || expected.Zone() != "" || expected != config.ExpectedPeerAddress ||
+			!expected.IsGlobalUnicast() || expected.IsLoopback()
+	}
+	if config.Machine == nil || config.Ledger == nil || invalidStreamBoundary || invalidPeerAuthority ||
+		config.Progress == nil || config.BuildVersion == "" ||
 		factoryCount > 1 ||
 		(config.Harness != nil && (config.ProbeFactory == nil || config.Harness.ActiveEnvelope < 0 ||
 			config.Harness.ActiveEnvelope > activeMaximum || config.Harness.CandidateWindow < 0 ||
@@ -285,6 +294,15 @@ func (runtime *runtime) execute(ctx context.Context, product bool) error {
 	runtime.envelopeContext, runtime.activeContext = envelopeContext, activeContext
 	runtime.activeCancel, runtime.deadlineCancel = activeCancel, deadlineCancel
 	ctx = activeContext
+	if product {
+		runtime.config.Stream, err = runtime.config.OpenProductStream(ctx, runtime.attempt, activeDeadline)
+		if err != nil {
+			return err
+		}
+		if runtime.config.Stream == nil {
+			return runtime.failure(ClassOOBStreamInvalid, StageOOBAdopt, oobcarrier.ErrInvalidConfig)
+		}
+	}
 	runtime.carrier, err = oobcarrier.AdoptHardNAT(oobcarrier.HardNATConfig{
 		Lease: runtime.attempt, Stream: runtime.config.Stream, OOBChannelID: runtime.artifact.GateBOOBChannelID(),
 		Role: runtime.artifact.GateBLocalRole(), PlannerProfile: runtime.artifact.GateBPlannerProfile(),
@@ -837,6 +855,9 @@ func (runtime *runtime) validateExecutionAddresses(localAddress, peerAddress har
 	peer, err := fromPlanAddress(peerAddress)
 	if err != nil {
 		return err
+	}
+	if runtime.product && peer != runtime.config.ExpectedPeerAddress {
+		return oobcarrier.ErrInvalidConfig
 	}
 	if runtime.config.NATLabFactory != nil || runtime.config.HardNATLabFactory != nil {
 		var localErr, peerErr error
