@@ -69,6 +69,8 @@ When documents disagree, treat `CONNECTIVITY-SOLVER-BASELINE.md` as the source o
 
 These files are proposal/RFC material for future architecture work. They remain useful context, but they are not active authority and should not override the baseline. The deep-analysis and improvement notes below come from the 2026-05 architecture overhaul pass.
 
+- Draft Hard16 mapping-lifetime and early-confirmation adjudication: explicit stable/expiry test models, preserved RED evidence, and unresolved bounded early-stop protocol gates; docs-only, no implementation or live authorization: [`adr/ADR-N3C-HARD16-MAPPING-LIFETIME.md`](./adr/ADR-N3C-HARD16-MAPPING-LIFETIME.md), [Issue #106](https://github.com/houyuwushang/winkyou/issues/106)
+
 - [`proposals/WINKYOU-V2-DIRECT-FIRST-PLAN.md`](./proposals/WINKYOU-V2-DIRECT-FIRST-PLAN.md) — **Accepted** (2026-08-13, [`PHASE0-EXIT-RECORD.md`](./PHASE0-EXIT-RECORD.md)) direct-first v2 product, architecture, safety, validation, and adoption plan; acceptance scope and non-authorized actions per its §20
 - [`proposals/WINKYOU-V2-PLAN-REVIEW-2026-08-11.md`](./proposals/WINKYOU-V2-PLAN-REVIEW-2026-08-11.md) — code-backed expert review of the draft v2 plan
 - [`proposals/WINKYOU-V2-PLAN-REVIEW-RESPONSE-2026-08-11.md`](./proposals/WINKYOU-V2-PLAN-REVIEW-RESPONSE-2026-08-11.md) — maintainer response and proposed resolution of the expert review

@@ -319,3 +319,30 @@ child-kill 则先取得双端 ready witness，再开始原 15 秒 post-burn 阶�
 不新增 emission/retry/fallback，也不改变 2 秒产品 drain；下一 head 的原始 CI 结果仍须独立通过。
 
 本节等待独立复审，合入前 Issue #100 与 C1b 冻结仍保持打开。
+
+## 10. #106 映射寿命反例（2026-09-06，未闭合）
+
+上节为 #103 实现期历史记录；#103 已独立复审合入，#100 已关闭。本节是新的证据，
+不撤销历史记录、不自动重开 #100，也不宣布本次修复完成。
+
+[诊断 Draft PR #107](https://github.com/houyuwushang/winkyou/pull/107)，head
+`1da0bccd3047845991c1ce48cc08a90c6c991c1a`，在与本 docs-only 提案独立的分支上增加
+early one-way hit 和只读 kernel flow 见证；未修改生产协议/预算。两份 required job 均为 RED：
+
+- [PR-trigger job](https://github.com/houyuwushang/winkyou/actions/runs/33988801311/job/101367177233)：
+  early-hit 子测试 48.40s。两侧普通 UDP idle=30s；双方 candidate=16,384、evidence=13，
+  responder 发出全局唯一 winner 时 mapping 年龄 32,286ms、peer reverse flow=0、peer winner
+  入站=0。UDP=16,397/16,398、carrier 两侧 7/7、data=0；I 为 `attempt_expired/candidates`，
+  R 为 `oob_stream_closed/verify`。burn/FINISH/circuit=true、machine trip=false；原样全量
+  packet/ledger/零 residue 检查在成功断言拒绝之前完成。
+- [独立 push job](https://github.com/houyuwushang/winkyou/actions/runs/33988778671/job/101367119243)：
+  新用例先失败于 router outbound `16,381 != 16,397`，原因未确认，未到全量 residue 检查。
+  不能将其算作第二次寿命反例或零残留证明；不得放宽精确计数。
+
+该诊断 head 最终 CI 31/33；没有 rerun。原 #105 的失败未采集 reverse-flow-before-winner，
+所以不能追溯认定与这个已复现机制完全同源。完整原始见证见
+[#106 报告](https://github.com/houyuwushang/winkyou/issues/106#issuecomment-5554497891)。
+
+[映射寿命与提前确认 ADR 草案](./adr/ADR-N3C-HARD16-MAPPING-LIFETIME.md) 建议分别裁决稳定
+模型/失效层与提前确认协议。60s/30s 新 fixture、失效验收和 early-stop 均未被本提案实现或批准；
+不得把文档加入仓库、本地测试通过或其他 CI 绿灯视为关闭 #106、接受 #107 或开启 C1c/现场。
