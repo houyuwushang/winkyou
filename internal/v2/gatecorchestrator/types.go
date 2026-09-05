@@ -12,6 +12,8 @@ import (
 	"winkyou/internal/v2/directconnect/gateb"
 	"winkyou/internal/v2/gatecattempt"
 	"winkyou/internal/v2/gatecrequest"
+	"winkyou/internal/v2/gatecstage"
+	"winkyou/internal/v2/hardnatplan"
 	"winkyou/internal/v2/oobcarrier"
 	"winkyou/internal/v2/sshassembly"
 	"winkyou/pkg/config"
@@ -148,6 +150,8 @@ type preparedInput struct {
 	ledger        *governor.PairingAdmissionLedger
 	sshAuthority  sshassembly.SSHEndpointAuthority
 	stream        oobcarrier.BoundedStream
+	childInput    io.Reader
+	childOutput   io.Writer
 	progress      ProgressReporter
 }
 
@@ -179,6 +183,9 @@ type dependencies struct {
 	harness          *gateb.HarnessHooks
 	inspectConflict  func(context.Context, preparedInput, trustedPeer) (conflictState, error)
 	openSSH          func(context.Context, sshassembly.Config) (sshProductStream, error)
+	claimPending     func(time.Time) (*gatecstage.Claimed, error)
+	acquireMachine   func(hardnatplan.Profile, hardnatplan.ResourceClass, string) (*governor.Governor, *governor.PairingAdmissionLedger, error)
+	newChildStream   func(io.Reader, io.Writer, time.Time) (oobcarrier.BoundedStream, error)
 	newInterface     func(string, int) (netif.MemoryTestInterface, error)
 	newTunnel        func(tunnel.Config) (tunnel.Tunnel, error)
 	activityInterval time.Duration

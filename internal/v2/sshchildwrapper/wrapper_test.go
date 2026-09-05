@@ -26,6 +26,19 @@ func TestPlanFreezesAbsoluteBinaryArgvEnvironmentAndUmask(t *testing.T) {
 	}
 }
 
+func TestForcedCommandMatchesOnlyResponderStdioEntry(t *testing.T) {
+	if FixedClientCommand != "wink solver direct child --stdio" {
+		t.Fatalf("fixed client command=%q", FixedClientCommand)
+	}
+	plan, err := Plan(FixedClientCommand)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(plan.Arguments, " ") != "solver direct child --stdio" {
+		t.Fatalf("responder argv=%q", plan.Arguments)
+	}
+}
+
 func TestPlanRejectsEveryNonExactOriginalCommand(t *testing.T) {
 	for _, value := range []string{"", "wink solver direct child", FixedClientCommand + " ", "sh -c '" + FixedClientCommand + "'", "wink solver direct child --stdio --extra"} {
 		if _, err := Plan(value); !errors.Is(err, ErrWrapperInvalid) {

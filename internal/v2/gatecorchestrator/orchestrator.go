@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"errors"
+	"io"
 	"reflect"
 	"time"
 
@@ -11,6 +12,8 @@ import (
 	"winkyou/internal/probeio"
 	"winkyou/internal/v2/directattempt"
 	"winkyou/internal/v2/directconnect/gateb"
+	"winkyou/internal/v2/gatecchildstream"
+	"winkyou/internal/v2/gatecstage"
 	"winkyou/internal/v2/hardnatbudget"
 	"winkyou/internal/v2/oobcarrier"
 	"winkyou/internal/v2/sshassembly"
@@ -27,6 +30,11 @@ func defaultDependencies() dependencies {
 		random: rand.Reader,
 		openSSH: func(ctx context.Context, cfg sshassembly.Config) (sshProductStream, error) {
 			return sshassembly.OpenClient(ctx, cfg)
+		},
+		claimPending:   gatecstage.ClaimPending,
+		acquireMachine: acquireMachine,
+		newChildStream: func(input io.Reader, output io.Writer, deadline time.Time) (oobcarrier.BoundedStream, error) {
+			return gatecchildstream.New(input, output, deadline)
 		},
 		newInterface:     netif.NewGateCMemoryInterface,
 		newTunnel:        tunnel.NewMemoryWireGuard,
@@ -111,7 +119,13 @@ func runPrepared(ctx context.Context, input preparedInput, deps dependencies) (r
 			return nil, err
 		}
 		if input.request.Role == directattempt.RoleResponder {
-			return input.stream, nil
+			if input.stream != nil {
+				return input.stream, nil
+			}
+			if deps.newChildStream == nil {
+				return nil, ErrRequestInvalid
+			}
+			return deps.newChildStream(input.childInput, input.childOutput, deadline)
 		}
 		openedSSH, openErr = deps.openSSH(openCtx, sshassembly.Config{
 			Lease: attempt, Client: clientConfig, PlannerProfile: input.artifact.PlannerProfile,

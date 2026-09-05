@@ -3,13 +3,12 @@ package gatecorchestrator
 import (
 	"context"
 	"errors"
+	"io"
 	"time"
 
 	"winkyou/internal/governor"
 	"winkyou/internal/v2/gatecattempt"
 	"winkyou/internal/v2/gatecrequest"
-	"winkyou/internal/v2/gatecstage"
-	"winkyou/internal/v2/oobcarrier"
 	"winkyou/internal/v2/pairgen"
 	"winkyou/internal/v2/sshassembly"
 )
@@ -54,7 +53,11 @@ func runInitiator(ctx context.Context, options InitiatorOptions, deps dependenci
 		return Result{}, localFailure(ClassRequestInvalid, StagePreflight, false,
 			string(artifact.PlannerProfile), string(artifact.ResourceClass), err, nil)
 	}
-	machine, ledger, err := acquireMachine(artifact.PlannerProfile, artifact.ResourceClass, options.BuildVersion)
+	if deps.acquireMachine == nil {
+		return Result{}, localFailure(ClassRequestInvalid, StagePreflight, false,
+			string(artifact.PlannerProfile), string(artifact.ResourceClass), ErrRequestInvalid, nil)
+	}
+	machine, ledger, err := deps.acquireMachine(artifact.PlannerProfile, artifact.ResourceClass, options.BuildVersion)
 	if err != nil {
 		return Result{}, localFailure(ClassRequestInvalid, StagePreflight, false,
 			string(artifact.PlannerProfile), string(artifact.ResourceClass), err, nil)
@@ -64,10 +67,24 @@ func runInitiator(ctx context.Context, options InitiatorOptions, deps dependenci
 	return runPrepared(ctx, input, deps)
 }
 
-func runClaimedResponder(ctx context.Context, claimed *gatecstage.Claimed, stream oobcarrier.BoundedStream,
+// RunResponderStdio consumes the single staged responder slot and adopts the
+// forced-command stdin/stdout byte stream. It does not speak JSON-RPC and does
+// not create, dial, or listen on an SSH connection.
+func RunResponderStdio(ctx context.Context, input io.Reader, output io.Writer, options ResponderOptions) (Result, error) {
+	return runResponderStdio(ctx, input, output, options, defaultDependencies())
+}
+
+func runResponderStdio(ctx context.Context, input io.Reader, output io.Writer,
 	options ResponderOptions, deps dependencies) (Result, error) {
-	if ctx == nil || claimed == nil || claimed.Artifact == nil || stream == nil || options.Config == nil ||
-		options.BuildVersion == "" || options.Progress == nil {
+	if ctx == nil || input == nil || output == nil || options.Config == nil || options.BuildVersion == "" ||
+		options.Progress == nil || deps.now == nil || deps.claimPending == nil || deps.acquireMachine == nil {
+		return Result{}, localFailure(ClassRequestInvalid, StagePreflight, false, "", "", ErrRequestInvalid, nil)
+	}
+	claimed, err := deps.claimPending(deps.now().UTC())
+	if err != nil || claimed == nil || claimed.Artifact == nil {
+		if claimed != nil {
+			claimed.Close()
+		}
 		return Result{}, localFailure(ClassRequestInvalid, StagePreflight, false, "", "", ErrRequestInvalid, nil)
 	}
 	defer claimed.Close()
@@ -77,7 +94,7 @@ func runClaimedResponder(ctx context.Context, claimed *gatecstage.Claimed, strea
 	}
 	// ClaimPending has already durably consumed the single slot. Compete for
 	// the machine owner immediately; the loser cannot reach any UDP path.
-	machine, ledger, err := acquireMachine(claimed.Artifact.PlannerProfile, claimed.Artifact.ResourceClass, options.BuildVersion)
+	machine, ledger, err := deps.acquireMachine(claimed.Artifact.PlannerProfile, claimed.Artifact.ResourceClass, options.BuildVersion)
 	if err != nil {
 		return Result{}, localFailure(ClassRequestInvalid, StagePreflight, false,
 			string(claimed.Artifact.PlannerProfile), string(claimed.Artifact.ResourceClass), err, nil)
@@ -86,7 +103,7 @@ func runClaimedResponder(ctx context.Context, claimed *gatecstage.Claimed, strea
 	return runPrepared(ctx, preparedInput{
 		request: claimed.Request, artifact: claimed.Artifact, configuration: options.Config,
 		configPath: options.ConfigPath, buildVersion: options.BuildVersion, machine: machine,
-		ledger: ledger, stream: stream, progress: options.Progress,
+		ledger: ledger, childInput: input, childOutput: output, progress: options.Progress,
 	}, deps)
 }
 

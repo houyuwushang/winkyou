@@ -73,10 +73,8 @@ func (systemGateCProductRunner) Connect(ctx context.Context, options gatecorches
 	return gatecorchestrator.RunInitiator(ctx, options)
 }
 
-func (systemGateCProductRunner) Child(context.Context, io.Reader, io.Writer, gatecorchestrator.ResponderOptions) (gatecorchestrator.Result, error) {
-	// The command surface lands one commit before the dedicated bounded-stdio
-	// adapter. It remains fail-closed until that adapter is connected.
-	return gatecorchestrator.Result{}, gatecorchestrator.ErrRequestInvalid
+func (systemGateCProductRunner) Child(ctx context.Context, input io.Reader, output io.Writer, options gatecorchestrator.ResponderOptions) (gatecorchestrator.Result, error) {
+	return gatecorchestrator.RunResponderStdio(ctx, input, output, options)
 }
 
 func (systemResponderStager) Cleanup(manifestFile string) error {
