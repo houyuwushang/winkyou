@@ -98,6 +98,12 @@
     route 将 TCP 一并送入 UDP-only TUN；C1b harness 增加仅匹配固定 SSH TCP tuple/回包的
     main-table 优先规则，UDP 模型与产品 authority 不变。规则仅在测试 NAT namespace，
     并显式清理；尚未取得 kernel-TUN 分支的成功出口。
+15. `c9ec4f5` 的 [required netns 分支](https://github.com/houyuwushang/winkyou/actions/runs/33968695931/job/101313254845)
+    已跨 namespace 完成 SSH 与 Gate B VERIFY；handoff 被普通 `NewMemoryWireGuard` 的 memory-only
+    guard 正确拒绝。新增精确 `linux && natlab && c1bproof` 测试构造器只接受 harness-owned
+    `wink-c1b-proof` TUN，仍强制 no-op native bind；原 memory guard 不改、不伪装接口类型，
+    architecture 对 tag/native bind/name/type/port 和生产消费者做变异检测。同时测试 route helper
+    使用私有配置中的绝对工具路径，responder 的固定无 PATH environment 不放宽。
 
 ## 4. root 执行域与 OS 证明的当前范围
 

@@ -52,6 +52,7 @@ type gateC1bHostConfig struct {
 	RuntimeBase   string
 	ShadowFile    string
 	SSHDBinary    string
+	IPBinary      string
 	SSHDConfig    string
 	RequestFile   string
 	ConfigFile    string

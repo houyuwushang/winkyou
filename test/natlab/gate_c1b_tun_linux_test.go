@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/netip"
 	"os"
+	"path/filepath"
 	"strconv"
 	"sync"
 	"sync/atomic"
@@ -47,7 +48,7 @@ type gateC1bKernelInterface struct {
 
 func newGateC1bKernelInterface(cfg gateC1bHostConfig, name string, mtu int) (*gateC1bKernelInterface, error) {
 	if !gateC1bCurrentNamespace(cfg.Namespace) || !gateC1bIsolatedMount(cfg.ParentMount) ||
-		name != "wink-c1b-proof" || mtu != 1280 {
+		name != "wink-c1b-proof" || mtu != 1280 || !filepath.IsAbs(cfg.IPBinary) {
 		return nil, errors.New("isolated interface authority rejected")
 	}
 	local, remote := netip.MustParseAddr("192.0.2.100"), netip.MustParseAddr("192.0.2.101")
@@ -65,7 +66,9 @@ func newGateC1bKernelInterface(cfg gateC1bHostConfig, name string, mtu int) (*ga
 		{"address", "add", local.String() + "/32", "dev", name},
 		{"route", "add", remote.String() + "/32", "dev", name, "src", local.String()},
 	} {
-		if _, err := runNamespaced(cfg.Namespace, "ip", nil, args...); err != nil {
+		// The exact wrapper intentionally clears PATH. Use the private harness
+		// tool path and ip -n directly, without another shell or inherited env.
+		if _, err := runCommand(cfg.IPBinary, append([]string{"-n", cfg.Namespace}, args...)...); err != nil {
 			_ = instance.Close()
 			return nil, errors.New("isolated interface route setup failed")
 		}

@@ -472,6 +472,9 @@ jobs:
       - name: Build race-enabled product composition proof
         run: go test -race -c -tags=natlab,c1bproof -o "${RUNNER_TEMP}/winkyou-gatec1b.test" ./test/natlab
 
+      - name: Reject native bind and ordinary constructor escape in the isolated TUN bridge
+        run: go test -race -tags=natlab,c1bproof ./pkg/tunnel -run '^TestGateCNATLabConstructorKeepsNativeBindDisabled$' -count=20
+
       - name: Prove real root SSH child and TEST-NET-only UDP composition
         run: |
           sudo env \

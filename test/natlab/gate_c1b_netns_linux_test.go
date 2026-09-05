@@ -98,6 +98,7 @@ func testGateC1bProfile(t *testing.T, profile gateC1bProfile, loopbackSSH bool) 
 	}
 	// One exact TCP underlay route to the responder, never an arbitrary
 	// port-forwarding feature. It exists only in this disposable NAT namespace.
+	var removeSSHPolicy []func()
 	if !loopbackSSH {
 		// B2's UDP-model policy rule catches all traffic arriving on lan0.
 		// Give only the fixed SSH underlay tuple (and its reply) an earlier
@@ -111,11 +112,16 @@ func testGateC1bProfile(t *testing.T, profile gateC1bProfile, loopbackSSH bool) 
 			if _, err := runNamespaced(rule.namespace, "ip", nil, args...); err != nil {
 				t.Fatal("Gate C1b exact SSH policy route failed")
 			}
-			t.Cleanup(func() {
-				if _, err := runNamespaced(rule.namespace, "ip", nil, "rule", "del", "priority", "101"); err != nil {
-					t.Error("Gate C1b SSH policy route cleanup failed")
-				}
-			})
+			var once sync.Once
+			release := func() {
+				once.Do(func() {
+					if _, err := runNamespaced(rule.namespace, "ip", nil, "rule", "del", "priority", "101"); err != nil {
+						t.Error("Gate C1b SSH policy route cleanup failed")
+					}
+				})
+			}
+			removeSSHPolicy = append(removeSSHPolicy, release)
+			t.Cleanup(release)
 		}
 		if _, err := runNamespaced(topology.natB, "iptables", nil, "-t", "nat", "-A", "PREROUTING",
 			"-i", "wan0", "-p", "tcp", "-d", n2dNATBWAN, "--dport", "22", "-j", "DNAT", "--to-destination", n2dClientBAddress+":22"); err != nil {
@@ -198,6 +204,9 @@ func testGateC1bProfile(t *testing.T, profile gateC1bProfile, loopbackSSH bool) 
 		results[1].Product.Witness.GateB.Emissions.EvidencePackets, results[0].Product.Witness.GateB.Emissions.CandidatePackets,
 		results[1].Product.Witness.GateB.Emissions.CandidatePackets, counts.InitiatorTotal, counts.ResponderTotal)
 	governorDirs := []string{filepath.Join(configs[0].MachineBase, "winkyou-safety-v2"), filepath.Join(configs[1].MachineBase, "winkyou-safety-v2")}
+	for _, release := range removeSSHPolicy {
+		release()
+	}
 	if profile.profile == hardnatplan.ProfileHardBirthday {
 		assertGateB3NoResidue(t, topology, observer, left, right, false, false, governorDirs...)
 	} else {
@@ -269,6 +278,10 @@ func gateC1bRouters(t *testing.T, topology *n2dTopology, profile gateC1bProfile)
 
 func gateC1bFixture(t *testing.T, topology *n2dTopology, observer hardnatobserve.Topology, profile gateC1bProfile, loopbackSSH bool) [2]gateC1bHostConfig {
 	t.Helper()
+	ipBinary, err := exec.LookPath("ip")
+	if err != nil || !filepath.IsAbs(ipBinary) {
+		t.Fatal("Gate C1b private interface helper unavailable")
+	}
 	directory := t.TempDir()
 	if err := os.Chmod(directory, 0o700); err != nil {
 		t.Fatal("Gate C1b private fixture permissions failed")
@@ -350,7 +363,7 @@ AllowUsers root
 		if os.Mkdir(sideDir, 0o700) != nil {
 			t.Fatal("Gate C1b endpoint fixture setup failed")
 		}
-		cfg := gateC1bHostConfig{Server: index == 1, UseTUN: !loopbackSSH, ParentMount: parentMount.Ino, SSHDConfig: sshdFile, SSHDBinary: gateC1bSSHDPath(t), Observers: observers,
+		cfg := gateC1bHostConfig{Server: index == 1, UseTUN: !loopbackSSH, ParentMount: parentMount.Ino, SSHDConfig: sshdFile, SSHDBinary: gateC1bSSHDPath(t), IPBinary: ipBinary, Observers: observers,
 			MachineBase: filepath.Join(sideDir, "machine-base"), InstallBase: filepath.Join(sideDir, "install-base"), HomeDirectory: filepath.Join(sideDir, "private-home"), ShadowFile: filepath.Join(sideDir, "shadow"),
 			RuntimeBase: filepath.Join(sideDir, "runtime"),
 			RequestFile: filepath.Join(sideDir, "request.json"), ConfigFile: filepath.Join(sideDir, "config.yaml"), ResultFile: filepath.Join(sideDir, "result.json"),

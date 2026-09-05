@@ -13,6 +13,7 @@ import (
 	"winkyou/internal/v2/hardnatplan"
 	"winkyou/internal/v2/sshassembly"
 	"winkyou/pkg/netif"
+	"winkyou/pkg/tunnel"
 )
 
 // NATLabProofOptions grants no raw factory, owner, address, or resource
@@ -81,6 +82,7 @@ func natlabProofDependencies(proof NATLabProofOptions) (dependencies, error) {
 	}
 	if proof.NewInterface != nil {
 		deps.newInterface = proof.NewInterface
+		deps.newTunnel = tunnel.NewGateCNATLabWireGuard
 	}
 	return deps, nil
 }

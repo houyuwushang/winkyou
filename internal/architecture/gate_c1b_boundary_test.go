@@ -536,6 +536,7 @@ func gateC1bShapeViolations(root string) ([]string, error) {
 
 func gateC1bAuthorityUseViolations(root string) ([]string, error) {
 	allowed := map[string]map[string]struct{}{
+		"NewGateCNATLabWireGuard": {"pkg/tunnel/gate_c1b_natlab_linux.go": {}, "internal/v2/gatecorchestrator/natlab_proof_linux.go": {}},
 		"RunNATLabInitiator":      {"internal/v2/gatecorchestrator/natlab_proof_linux.go": {}, "cmd/wink/cmd/gate_c1b_natlab_proof_linux.go": {}},
 		"RunNATLabResponder":      {"internal/v2/gatecorchestrator/natlab_proof_linux.go": {}, "cmd/wink/cmd/gate_c1b_natlab_proof_linux.go": {}},
 		"ExecuteGateCNATLabProof": {"cmd/wink/cmd/gate_c1b_natlab_proof_linux.go": {}},

@@ -12,6 +12,7 @@ const gateC1bNATLabAdapter = "internal/v2/gatecorchestrator/natlab_proof_linux.g
 var gateC1bNATLabFiles = []string{
 	gateC1bNATLabAdapter,
 	"cmd/wink/cmd/gate_c1b_natlab_proof_linux.go",
+	"pkg/tunnel/gate_c1b_natlab_linux.go",
 }
 
 func approvedGateC1bNATLabAdapter(root, relative string) bool {
@@ -33,6 +34,9 @@ func TestGateC1bNATLabSeamsAreAbsentFromOrdinaryBuilds(t *testing.T) {
 			t.Fatalf("%s lacks exact linux+natlab+c1bproof boundary", relative)
 		}
 	}
+	if !gateC1bNATLabTunnelSealed(root) {
+		t.Fatal("isolated WireGuard constructor enabled a native bind or widened its interface")
+	}
 	payload, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(gateC1bNATLabAdapter)))
 	if err != nil {
 		t.Fatal(err)
@@ -52,6 +56,42 @@ func TestGateC1bNATLabSeamsAreAbsentFromOrdinaryBuilds(t *testing.T) {
 	}
 }
 
+func gateC1bNATLabTunnelSealed(root string) bool {
+	path := "pkg/tunnel/gate_c1b_natlab_linux.go"
+	if !hasExactGateC1bNATLabTag(root, path) {
+		return false
+	}
+	payload, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(path)))
+	if err != nil {
+		return false
+	}
+	for _, required := range []string{"instance.memoryOnly = true", "cfg.ListenPort != 0", `cfg.Interface.Type() != "tun"`, `cfg.Interface.Name() != "wink-c1b-proof"`} {
+		if strings.Count(string(payload), required) != 1 {
+			return false
+		}
+	}
+	return true
+}
+
+func TestGateC1bNATLabTunnelRejectsTagAndNativeBindMutations(t *testing.T) {
+	repository := repositoryRoot(t)
+	path := "pkg/tunnel/gate_c1b_natlab_linux.go"
+	payload, err := os.ReadFile(filepath.Join(repository, filepath.FromSlash(path)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, change := range [][2]string{
+		{"linux && natlab && c1bproof", "linux"}, {"instance.memoryOnly = true", "instance.memoryOnly = false"},
+		{"cfg.ListenPort != 0", "false"}, {`cfg.Interface.Type() != "tun"`, "false"}, {`cfg.Interface.Name() != "wink-c1b-proof"`, "false"},
+	} {
+		root := t.TempDir()
+		writeArchitectureMutation(t, root, path, strings.ReplaceAll(string(payload), change[0], change[1]))
+		if gateC1bNATLabTunnelSealed(root) {
+			t.Fatal("isolated tunnel capability mutation was accepted")
+		}
+	}
+}
+
 func TestGateC1bNATLabTagAndConsumerMutationsAreRejected(t *testing.T) {
 	root := t.TempDir()
 	for _, tag := range []string{"", "//go:build linux\n", "//go:build natlab\n", "//go:build linux && natlab\n"} {
@@ -65,13 +105,13 @@ func TestGateC1bNATLabTagAndConsumerMutationsAreRejected(t *testing.T) {
 		t.Fatal("exact natlab consumer boundary changed")
 	}
 	writeArchitectureMutation(t, root, "pkg/runtime/bypass.go", `package runtime
-func bypass() { _ = RunNATLabInitiator; _ = RunNATLabResponder; _ = ExecuteGateCNATLabProof; _ = PrepareRootExecution; _ = newSSHAuthority }
+func bypass() { _ = RunNATLabInitiator; _ = RunNATLabResponder; _ = ExecuteGateCNATLabProof; _ = PrepareRootExecution; _ = newSSHAuthority; _ = NewGateCNATLabWireGuard }
 `)
 	violations, err := gateC1bAuthorityUseViolations(root)
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range []string{"RunNATLabInitiator", "RunNATLabResponder", "ExecuteGateCNATLabProof", "PrepareRootExecution", "newSSHAuthority"} {
+	for _, name := range []string{"RunNATLabInitiator", "RunNATLabResponder", "ExecuteGateCNATLabProof", "PrepareRootExecution", "newSSHAuthority", "NewGateCNATLabWireGuard"} {
 		if !containsLineFragment(violations, "unapproved Gate C1b authority "+name) {
 			t.Fatalf("production escape %s was not detected", name)
 		}
