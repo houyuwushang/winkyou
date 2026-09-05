@@ -2,18 +2,23 @@ package cmd
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"os"
 	"os/signal"
+	"sync"
 	"time"
 
 	"github.com/spf13/cobra"
 
 	"winkyou/internal/solverstdio"
 	"winkyou/internal/v2/gatecattempt"
+	"winkyou/internal/v2/gatecorchestrator"
 	"winkyou/internal/v2/gatecstage"
 	"winkyou/internal/v2/pairgen"
+	"winkyou/pkg/config"
+	"winkyou/pkg/version"
 )
 
 type solverStdioRunner interface {
@@ -57,6 +62,23 @@ func (systemResponderStager) Stage(requestFile string) error {
 	return gatecstage.Stage(requestFile, time.Now())
 }
 
+type gateCProductRunner interface {
+	Connect(context.Context, gatecorchestrator.InitiatorOptions) (gatecorchestrator.Result, error)
+	Child(context.Context, io.Reader, io.Writer, gatecorchestrator.ResponderOptions) (gatecorchestrator.Result, error)
+}
+
+type systemGateCProductRunner struct{}
+
+func (systemGateCProductRunner) Connect(ctx context.Context, options gatecorchestrator.InitiatorOptions) (gatecorchestrator.Result, error) {
+	return gatecorchestrator.RunInitiator(ctx, options)
+}
+
+func (systemGateCProductRunner) Child(context.Context, io.Reader, io.Writer, gatecorchestrator.ResponderOptions) (gatecorchestrator.Result, error) {
+	// The command surface lands one commit before the dedicated bounded-stdio
+	// adapter. It remains fail-closed until that adapter is connected.
+	return gatecorchestrator.Result{}, gatecorchestrator.ErrRequestInvalid
+}
+
 func (systemResponderStager) Cleanup(manifestFile string) error {
 	payload, err := pairgen.ReadPrivateFile(manifestFile, gatecattempt.MaxManifestBytes)
 	if err != nil {
@@ -79,19 +101,119 @@ func newSolverCmd(opts *Options) *cobra.Command {
 	command.AddCommand(
 		newSolverServeCmd(opts, systemSolverStdioRunner{}),
 		newSolverPairCmd(systemDirectPairGenerator{}, systemOOBPairGenerator{}),
-		newSolverDirectCmd(systemResponderStager{}),
+		newSolverDirectCmd(systemResponderStager{}, systemGateCProductRunner{}, opts),
 	)
 	return command
 }
 
-func newSolverDirectCmd(stager responderStager) *cobra.Command {
+func newSolverDirectCmd(stager responderStager, product gateCProductRunner, options *Options) *cobra.Command {
 	command := &cobra.Command{
 		Use:   "direct",
 		Short: "Manage the local one-shot Gate C responder slot",
 		Args:  cobra.NoArgs,
 	}
-	command.AddCommand(newSolverDirectStageCmd(stager), newSolverDirectCleanupCmd(stager))
+	command.AddCommand(
+		newSolverDirectStageCmd(stager), newSolverDirectCleanupCmd(stager),
+		newSolverDirectConnectCmd(options, product), newSolverDirectChildCmd(options, product),
+	)
 	return command
+}
+
+func newSolverDirectConnectCmd(options *Options, runner gateCProductRunner) *cobra.Command {
+	var requestFile string
+	command := &cobra.Command{
+		Use:   "connect",
+		Short: "Run one bounded foreground Gate C direct attempt",
+		Args:  cobra.NoArgs,
+		RunE: func(command *cobra.Command, _ []string) error {
+			if runner == nil || options == nil || options.ConfigPath == "" || requestFile == "" {
+				return gatecorchestrator.ErrRequestInvalid
+			}
+			configuration, err := config.Load(options.ConfigPath)
+			if err != nil {
+				return gatecorchestrator.ErrRequestInvalid
+			}
+			progress := newGateCProgressWriter(command.ErrOrStderr())
+			ctx, stop := signal.NotifyContext(command.Context(), os.Interrupt)
+			defer stop()
+			result, err := runner.Connect(ctx, gatecorchestrator.InitiatorOptions{
+				RequestFile: requestFile, Config: configuration, ConfigPath: options.ConfigPath,
+				BuildVersion: version.Version, Progress: progress.Report,
+			})
+			if err != nil {
+				return err
+			}
+			return writeGateCResult(command.ErrOrStderr(), result)
+		},
+	}
+	command.Flags().StringVar(&requestFile, "request-file", "", "private initiator request file (required)")
+	return command
+}
+
+func newSolverDirectChildCmd(options *Options, runner gateCProductRunner) *cobra.Command {
+	var stdio bool
+	command := &cobra.Command{
+		Use:    "child",
+		Short:  "Run the bounded Gate C responder over the forced-command byte stream",
+		Args:   cobra.NoArgs,
+		Hidden: true,
+		RunE: func(command *cobra.Command, _ []string) error {
+			if runner == nil || !stdio {
+				return gatecorchestrator.ErrRequestInvalid
+			}
+			configPath := ""
+			if options != nil {
+				configPath = options.ConfigPath
+			}
+			configuration, err := config.Load(configPath)
+			if err != nil {
+				return gatecorchestrator.ErrRequestInvalid
+			}
+			progress := newGateCProgressWriter(command.ErrOrStderr())
+			ctx, stop := signal.NotifyContext(command.Context(), os.Interrupt)
+			defer stop()
+			result, err := runner.Child(ctx, command.InOrStdin(), command.OutOrStdout(), gatecorchestrator.ResponderOptions{
+				Config: configuration, ConfigPath: configPath, BuildVersion: version.Version, Progress: progress.Report,
+			})
+			if err != nil {
+				return err
+			}
+			return writeGateCResult(command.ErrOrStderr(), result)
+		},
+	}
+	command.Flags().BoolVar(&stdio, "stdio", false, "use the dedicated bounded SSH child byte stream (required)")
+	return command
+}
+
+type gateCProgressWriter struct {
+	mu      sync.Mutex
+	encoder *json.Encoder
+}
+
+func newGateCProgressWriter(output io.Writer) *gateCProgressWriter {
+	return &gateCProgressWriter{encoder: json.NewEncoder(output)}
+}
+
+func (writer *gateCProgressWriter) Report(progress gatecorchestrator.Progress) error {
+	writer.mu.Lock()
+	defer writer.mu.Unlock()
+	return writer.encoder.Encode(struct {
+		Stage             string `json:"stage"`
+		RemainingBudgetMS int64  `json:"remaining_budget_ms"`
+		Cancellable       bool   `json:"cancellable"`
+	}{Stage: progress.Stage, RemainingBudgetMS: progress.RemainingBudget.Milliseconds(), Cancellable: progress.Cancellable})
+}
+
+func writeGateCResult(output io.Writer, result gatecorchestrator.Result) error {
+	return json.NewEncoder(output).Encode(struct {
+		Terminal       string `json:"terminal"`
+		DataPlaneReady bool   `json:"data_plane_ready"`
+		FinishRecorded bool   `json:"finish_recorded"`
+		SessionEnd     string `json:"session_end"`
+	}{
+		Terminal: result.Terminal, DataPlaneReady: result.DataPlaneReady,
+		FinishRecorded: result.FinishRecorded, SessionEnd: result.SessionEnd,
+	})
 }
 
 func newSolverDirectStageCmd(stager responderStager) *cobra.Command {
