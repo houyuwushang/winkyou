@@ -101,6 +101,13 @@ func testGateB3LossTerminalContract(t *testing.T) {
 			left.CarrierFramesRead, left.CarrierFramesWrite = 7, 8
 			right.CarrierFramesRead, right.CarrierFramesWrite = 8, 7
 		}},
+		{name: "observed responder winner timeout after PR 103", mutate: func(left, right *gateB3LossTerminalWitness) {
+			left.ErrorClass, left.ErrorStage = gateb.ClassOOBStreamClosed, gateb.StageCandidates
+			left.CarrierFramesRead, left.CarrierFramesWrite = 7, 7
+			right.ErrorClass, right.ErrorStage = gateb.ClassAttemptExpired, gateb.StageVerify
+			right.WinnerPackets, right.UDPPackets = 1, hardnatbudget.FreshEvidencePackets+hardnatbudget.Hard16CandidatePackets+1
+			right.CarrierFramesRead, right.CarrierFramesWrite = 7, 7
+		}},
 		{name: "wrong stage", mutate: func(left, _ *gateB3LossTerminalWitness) { left.ErrorStage = gateb.StageWinner }},
 		{name: "missing finish", mutate: func(_, right *gateB3LossTerminalWitness) { right.FinishRecorded = false }},
 		{name: "machine trip", mutate: func(left, _ *gateB3LossTerminalWitness) { left.SafetyBlocksWork = true }},

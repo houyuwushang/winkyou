@@ -15,6 +15,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
@@ -104,6 +105,7 @@ func TestLinuxGateB3Hard16Proof(t *testing.T) {
 	t.Run("full_shape_tail_hit", func(t *testing.T) { testGateB3FullShape(t, 0, gateB3ConntrackCap) })
 	t.Run("full_exhaustion", func(t *testing.T) { testGateB3FullShape(t, 1, gateB3ConntrackCap) })
 	t.Run("fifty_percent_candidate_loss", func(t *testing.T) { testGateB3FullShape(t, 2, gateB3ConntrackCap) })
+	t.Run("early_one_way_hit_winner_delivery", func(t *testing.T) { testGateB3FullShapeWithEarlyHit(t, 0, gateB3ConntrackCap, true) })
 	t.Run("enobufs", testGateB3ENOBUFS)
 	t.Run("oob_eof_after_child_kill", testGateB3ChildKill)
 	t.Run("parent_kill", testGateB3ParentKill)
@@ -111,6 +113,10 @@ func TestLinuxGateB3Hard16Proof(t *testing.T) {
 }
 
 func testGateB3FullShape(t *testing.T, dropEvery uint64, conntrackCap int) {
+	testGateB3FullShapeWithEarlyHit(t, dropEvery, conntrackCap, false)
+}
+
+func testGateB3FullShapeWithEarlyHit(t *testing.T, dropEvery uint64, conntrackCap int, earlyHit bool) {
 	armGateB3KernelReleaseMargin(t)
 	started := time.Now()
 	setGateB3HostConntrackCapForSubtest(t, conntrackCap)
@@ -120,8 +126,45 @@ func testGateB3FullShape(t *testing.T, dropEvery uint64, conntrackCap int) {
 	}
 	observer := startGateB2ObserverSet(t, topology.public)
 	leftConfig, rightConfig := gateB3RouterConfig(topology, true, 11, dropEvery), gateB3RouterConfig(topology, false, 29, dropEvery)
+	var leftPeerFlow, rightPeerFlow atomic.Int64
+	leftPeerFlow.Store(-1)
+	rightPeerFlow.Store(-1)
+	beforeWinner := func(namespace string, count *atomic.Int64) func(netip.AddrPort, netip.AddrPort) error {
+		return func(source, target netip.AddrPort) error {
+			output, err := runNamespaced(namespace, "conntrack", nil, "-L", "-p", "udp",
+				"--orig-src", target.Addr().String(), "--orig-dst", source.Addr().String(),
+				"--sport", strconv.Itoa(int(target.Port())), "--dport", strconv.Itoa(int(source.Port())))
+			if err != nil {
+				return errors.New("Gate B3 reverse kernel flow witness failed")
+			}
+			var flows int64
+			for _, line := range strings.Split(output, "\n") {
+				if strings.HasPrefix(strings.TrimSpace(line), "udp ") {
+					flows++
+				}
+			}
+			count.Store(flows)
+			return nil
+		}
+	}
+	leftConfig.gateB3BeforeWinner = beforeWinner(topology.natB, &leftPeerFlow)
+	rightConfig.gateB3BeforeWinner = beforeWinner(topology.natA, &rightPeerFlow)
+	for _, namespace := range []string{topology.natA, topology.natB} {
+		output, err := runNamespaced(namespace, "sysctl", nil, "-n", "net.netfilter.nf_conntrack_udp_timeout")
+		seconds, parseErr := strconv.Atoi(strings.TrimSpace(output))
+		if err != nil || parseErr != nil || seconds <= 0 {
+			t.Fatal("Gate B3 UDP conntrack lifetime witness failed")
+		}
+		t.Logf("Gate B3 kernel UDP idle lifetime seconds=%d (read-only)", seconds)
+	}
 	if dropEvery == 0 && conntrackCap == gateB3ConntrackCap {
 		lateHit := newGateB3LateHitMappingPlan()
+		if earlyHit {
+			// Keep the full frozen schedule, but select the first reciprocal
+			// mapping instead of its tail. Only the responder observes a hit.
+			lateHit.hitOrdinal = 0
+			leftConfig.dropAllCandidateInbound = true
+		}
 		leftConfig.gateB3MappingPlan, leftConfig.gateB3MappingPlanLeft = lateHit, true
 		rightConfig.gateB3MappingPlan = lateHit
 	}
@@ -149,6 +192,11 @@ func testGateB3FullShape(t *testing.T, dropEvery uint64, conntrackCap int) {
 	counts := requireGateB2PacketCounts(t, topology)
 	assertGateB2PacketCounts(t, counts, initiatorResult.gateB2EndpointResult, responderResult.gateB2EndpointResult)
 	leftWitness, rightWitness := leftRouter.Witness(), rightRouter.Witness()
+	t.Logf("Gate B3 delivery witness: early_hit=%t candidate_in=%d/%d winner_out=%d/%d winner_in=%d/%d winner_mapping_age_ms=%d/%d",
+		earlyHit, leftWitness.CandidateInbound, rightWitness.CandidateInbound,
+		leftWitness.WinnerOutbound, rightWitness.WinnerOutbound, leftWitness.WinnerInbound, rightWitness.WinnerInbound,
+		leftWitness.WinnerMappingAgeMS, rightWitness.WinnerMappingAgeMS)
+	t.Logf("Gate B3 reverse kernel flow before winner: initiator=%d responder=%d (minus_one=not_sent)", leftPeerFlow.Load(), rightPeerFlow.Load())
 	if leftWitness.MappingHardCap != gateB3PerNATMappingCap || rightWitness.MappingHardCap != gateB3PerNATMappingCap ||
 		leftWitness.MappingCapHit || rightWitness.MappingCapHit || leftWitness.PeakMappings > gateB3PerNATMappingCap ||
 		rightWitness.PeakMappings > gateB3PerNATMappingCap {
@@ -183,13 +231,16 @@ func testGateB3FullShape(t *testing.T, dropEvery uint64, conntrackCap int) {
 	}
 
 	success := initiatorResult.Terminal == "success" && responderResult.Terminal == "success"
+	// A rejected terminal is still required to leave complete OS cleanup
+	// evidence. Do not let Fatal below bypass the independent residue gate.
+	assertGateB3NoResidue(t, topology, observer, leftRouter, rightRouter, !success,
+		conntrackCap < gateB3ConntrackCap, initiator.governorDir, responder.governorDir)
 	if dropEvery == 0 && conntrackCap == gateB3ConntrackCap {
 		if !success || initiatorResult.CandidatePackets != hardnatbudget.Hard16CandidatePackets ||
 			responderResult.CandidatePackets != hardnatbudget.Hard16CandidatePackets ||
 			initiatorResult.WinnerPackets+responderResult.WinnerPackets != 1 {
 			t.Fatalf("Gate B3 full-shape success rejected: initiator=%+v responder=%+v", initiatorResult, responderResult)
 		}
-		assertGateB3NoResidue(t, topology, observer, leftRouter, rightRouter, false, false, initiator.governorDir, responder.governorDir)
 	} else {
 		if (dropEvery == 1 || conntrackCap < gateB3ConntrackCap) && success {
 			t.Fatal("Gate B3 full candidate loss unexpectedly succeeded")
@@ -213,8 +264,6 @@ func testGateB3FullShape(t *testing.T, dropEvery uint64, conntrackCap int) {
 			t.Fatalf("Gate B3 lossy exhaustion did not consume the fixed schedule: %d/%d",
 				initiatorResult.CandidatePackets, responderResult.CandidatePackets)
 		}
-		assertGateB3NoResidue(t, topology, observer, leftRouter, rightRouter, !success,
-			conntrackCap < gateB3ConntrackCap, initiator.governorDir, responder.governorDir)
 	}
 	peakPPS := maxInt(initiatorResult.EnvelopePPS, responderResult.EnvelopePPS)
 	t.Logf("Gate B3 isolated witness: success=%t loss_divisor=%d conntrack_cap=%d wall_ms=%d pps_max=%d packets=%d/%d targets=%d/%d tuples=%d/%d sockets=%d/%d conntrack_peak=%d/%d conntrack_terminal=%d/%d drain_ms<=2000",
@@ -292,15 +341,16 @@ func testGateB3TopologySetupErrorRedaction(t *testing.T) {
 }
 
 type gateB3LateHitMappingPlan struct {
-	mu      sync.Mutex
-	counts  [2]int
-	final   [2]uint16
-	ready   chan struct{}
-	readyOK bool
+	mu         sync.Mutex
+	counts     [2]int
+	final      [2]uint16
+	ready      chan struct{}
+	readyOK    bool
+	hitOrdinal int
 }
 
 func newGateB3LateHitMappingPlan() *gateB3LateHitMappingPlan {
-	return &gateB3LateHitMappingPlan{ready: make(chan struct{})}
+	return &gateB3LateHitMappingPlan{ready: make(chan struct{}), hitOrdinal: hardnatbudget.Hard16CandidatePackets - 1}
 }
 
 func (plan *gateB3LateHitMappingPlan) preferred(ctx context.Context, left bool, target uint16) (uint16, error) {
@@ -314,7 +364,7 @@ func (plan *gateB3LateHitMappingPlan) preferred(ctx context.Context, left bool, 
 	plan.mu.Lock()
 	ordinal := plan.counts[side]
 	plan.counts[side]++
-	if ordinal < hardnatbudget.Hard16CandidatePackets-1 {
+	if ordinal < hardnatbudget.Hard16CandidatePackets && ordinal != plan.hitOrdinal {
 		plan.mu.Unlock()
 		if left {
 			return target, nil
@@ -324,7 +374,7 @@ func (plan *gateB3LateHitMappingPlan) preferred(ctx context.Context, left bool, 
 		}
 		return target + 1, nil
 	}
-	if ordinal != hardnatbudget.Hard16CandidatePackets-1 {
+	if ordinal != plan.hitOrdinal {
 		plan.mu.Unlock()
 		return 0, errors.New("Gate B3 late-hit mapping schedule exceeded")
 	}

@@ -122,6 +122,9 @@ type gateB2NATConfig struct {
 		preferred(context.Context, bool, uint16) (uint16, error)
 	}
 	gateB3MappingPlanLeft bool
+	// Test-only read-only observation of the reverse kernel pinhole before
+	// forwarding the sole winner. The callback must not create/refresh a flow.
+	gateB3BeforeWinner func(netip.AddrPort, netip.AddrPort) error
 }
 
 type gateB2UsedPort struct {
@@ -139,6 +142,7 @@ type gateB2NATMapping struct {
 	internal   netip.AddrPort
 	public     netip.AddrPort
 	allowed    map[netip.AddrPort]struct{}
+	createdAt  time.Time
 }
 
 type gateB2TUNPacket struct {
@@ -154,13 +158,17 @@ type gateB2MappedReply struct {
 }
 
 type gateB2NATWitness struct {
-	Mappings       int
-	Outbound       uint64
-	Inbound        uint64
-	DroppedInbound uint64
-	PeakMappings   int
-	MappingHardCap int
-	MappingCapHit  bool
+	Mappings           int
+	Outbound           uint64
+	Inbound            uint64
+	DroppedInbound     uint64
+	PeakMappings       int
+	MappingHardCap     int
+	MappingCapHit      bool
+	CandidateInbound   uint64
+	WinnerOutbound     uint64
+	WinnerInbound      uint64
+	WinnerMappingAgeMS int64
 }
 
 type gateB2NATRouter struct {
@@ -185,12 +193,15 @@ type gateB2NATRouter struct {
 	readers sync.WaitGroup
 	close   sync.Once
 
-	outbound         atomic.Uint64
-	inbound          atomic.Uint64
-	droppedInbound   atomic.Uint64
-	candidateInbound atomic.Uint64
-	peakMappings     atomic.Int64
-	mappingCapHit    atomic.Bool
+	outbound           atomic.Uint64
+	inbound            atomic.Uint64
+	droppedInbound     atomic.Uint64
+	candidateInbound   atomic.Uint64
+	winnerOutbound     atomic.Uint64
+	winnerInbound      atomic.Uint64
+	winnerMappingAgeMS atomic.Int64
+	peakMappings       atomic.Int64
+	mappingCapHit      atomic.Bool
 }
 
 func startGateB2NATRouter(t testing.TB, config gateB2NATConfig) *gateB2NATRouter {
@@ -390,6 +401,11 @@ func (router *gateB2NATRouter) forwardOutbound(packet gateB2TUNPacket, replies c
 	if router.config.recordTargets != nil && packet.destination.Addr() == router.config.peerPublic {
 		router.config.recordTargets.record(packet.destination.Port())
 	}
+	if metadata, err := hardnatcontrol.InspectFrame(packet.payload); err == nil && metadata.Type == hardnatcontrol.FrameWinner && router.config.gateB3BeforeWinner != nil {
+		if err := router.config.gateB3BeforeWinner(mapping.public, packet.destination); err != nil {
+			return err
+		}
+	}
 	var _, err = mapping.connection.WriteToUDPAddrPort(packet.payload, packet.destination)
 	if router.config.reusePortsByTarget {
 		_, err = mapping.connection.Write(packet.payload)
@@ -398,6 +414,10 @@ func (router *gateB2NATRouter) forwardOutbound(packet gateB2TUNPacket, replies c
 		return err
 	}
 	router.outbound.Add(1)
+	if metadata, inspectErr := hardnatcontrol.InspectFrame(packet.payload); inspectErr == nil && metadata.Type == hardnatcontrol.FrameWinner {
+		router.winnerOutbound.Add(1)
+		router.winnerMappingAgeMS.Store(time.Since(mapping.createdAt).Milliseconds())
+	}
 	return nil
 }
 
@@ -444,7 +464,8 @@ func (router *gateB2NATRouter) newMapping(key gateB2NATKey, internal, target net
 	}
 	mapping := &gateB2NATMapping{
 		connection: connection, internal: internal, public: public,
-		allowed: make(map[netip.AddrPort]struct{}, 512),
+		allowed:   make(map[netip.AddrPort]struct{}, 512),
+		createdAt: time.Now(),
 	}
 	router.mappingsMu.Lock()
 	if reserved {
@@ -621,6 +642,9 @@ func (router *gateB2NATRouter) forwardInbound(tun *os.File, reply gateB2MappedRe
 		return errors.New("Gate B2 isolated NAT short TUN write")
 	}
 	router.inbound.Add(1)
+	if metadata, err := hardnatcontrol.InspectFrame(reply.payload); err == nil && metadata.Type == hardnatcontrol.FrameWinner {
+		router.winnerInbound.Add(1)
+	}
 	return nil
 }
 
@@ -635,6 +659,8 @@ func (router *gateB2NATRouter) Witness() gateB2NATWitness {
 		Mappings: mappings, Outbound: router.outbound.Load(), Inbound: router.inbound.Load(),
 		DroppedInbound: router.droppedInbound.Load(), PeakMappings: int(router.peakMappings.Load()),
 		MappingHardCap: router.config.mappingHardCap, MappingCapHit: router.mappingCapHit.Load(),
+		CandidateInbound: router.candidateInbound.Load(), WinnerOutbound: router.winnerOutbound.Load(),
+		WinnerInbound: router.winnerInbound.Load(), WinnerMappingAgeMS: router.winnerMappingAgeMS.Load(),
 	}
 }
 
