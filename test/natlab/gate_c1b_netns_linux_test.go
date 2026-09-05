@@ -265,7 +265,7 @@ func gateC1bFixture(t *testing.T, topology *n2dTopology, observer hardnatobserve
 	hostKey, hostPublic := gateC1bSSHKey(t)
 	defer clear(clientKey)
 	defer clear(hostKey)
-	identity, known, authorized, host := filepath.Join(directory, "identity"), filepath.Join(directory, "known"), filepath.Join(directory, "authorized"), filepath.Join(directory, "host")
+	identity, known, host := filepath.Join(directory, "identity"), filepath.Join(directory, "known"), filepath.Join(directory, "host")
 	endpoint, listen, serverNamespace := n2dNATBWAN, n2dClientBAddress, topology.clientB
 	if loopbackSSH {
 		endpoint, listen, serverNamespace = "127.0.0.1", "127.0.0.1", topology.clientA
@@ -273,12 +273,11 @@ func gateC1bFixture(t *testing.T, topology *n2dTopology, observer hardnatobserve
 	write(identity, clientKey)
 	write(host, hostKey)
 	write(known, []byte(endpoint+" "+string(hostPublic)))
-	write(authorized, []byte(sshchildwrapper.AuthorizedKeyOptions()+" "+string(clientPublic)))
 	sshdFile := filepath.Join(directory, "sshd_config")
 	write(sshdFile, []byte(fmt.Sprintf(`Port 22
 ListenAddress %s
 HostKey %s
-AuthorizedKeysFile %s
+AuthorizedKeysFile /root/.ssh/authorized_keys
 PidFile none
 PermitRootLogin forced-commands-only
 AuthenticationMethods publickey
@@ -297,7 +296,7 @@ LogLevel VERBOSE
 LoginGraceTime 3
 MaxSessions 1
 AllowUsers root
-`, listen, host, authorized)))
+`, listen, host)))
 	issued := time.Now().UTC().Truncate(time.Second).Add(-time.Second)
 	label := profile.name + "/" + endpoint
 	psk := sha256.Sum256([]byte("gate-c1b-synthetic/" + label))
@@ -350,6 +349,17 @@ AllowUsers root
 		}
 		if os.Chmod(cfg.HomeDirectory, 0o700) != nil {
 			t.Fatal("Gate C1b private home permissions failed")
+		}
+		if cfg.Server {
+			// StrictModes walks parent directories to the home/root boundary.
+			// A private file below the shared temp ancestor is insufficient.
+			// This directory is visible as /root only in the existing private
+			// mount namespace; the host's SSH home is never read or changed.
+			keyDirectory := filepath.Join(cfg.HomeDirectory, ".ssh")
+			if os.Mkdir(keyDirectory, 0o700) != nil {
+				t.Fatal("Gate C1b private authorized-key directory failed")
+			}
+			write(filepath.Join(keyDirectory, "authorized_keys"), []byte(sshchildwrapper.AuthorizedKeyOptions()+" "+string(clientPublic)))
 		}
 		write(cfg.ShadowFile, []byte("root:x:19000:0:99999:7:::\n")) // Non-password fixture; password authentication is disabled.
 		for _, name := range []string{"wink", "gate-c-child-wrapper"} {

@@ -78,6 +78,12 @@
     inFlight 后才处理取消，此时状态可能已推进；另有排队等待读取锁的 polling context 先行
     到期。两者都不能误关已移交 session。新增确定性回归并保留原 deadline 后，两入口三
     profile 加 governed handoff 的 race×3 通过（58.944s）；此为中间验证，不是最终出口。
+12. `ae1ec97` 的 [required SSH/netns 诊断](https://github.com/houyuwushang/winkyou/actions/runs/33967538739/job/101310187950)
+    为 AcceptedKey=0、FailedKey=1、FileRejected=1、SessionStarted=0，presence 前关闭且 burn=false。
+    与 R1 无关：fixture 的 authorized_keys 位于共享临时目录祖先之下，不满足
+    [OpenSSH 9.6 safe_path 的逐层父目录规则](https://github.com/openssh/openssh-portable/blob/V_9_6_P1/misc.c#L2086)。
+    改为现有私有 mount 内 `/root/.ssh/authorized_keys`（0700/0600），保留 StrictModes 与 root
+    forced-command 要求；没有放宽认证或接触宿主 home/SSH。后续完整管线仍须 CI 证明。
 
 ## 4. root 执行域与 OS 证明的当前范围
 
