@@ -904,3 +904,47 @@ C1a 的 Windows 零连接 `ssh -G` 实现验证进一步发现：即使使用 `-
 - **证明：** required jobs 设置 `WINKYOU_*_REQUIRED=1` 防静默 skip；报告双端 stage、UDP、carrier、
   WireGuard challenge、post-OOB echo、child/socket/process/lock/conntrack residue。hard-16K 继续
   强制单端队列不超过 16,398、10 秒 router witness，并在 kill 前取得双端 ready。
+
+## 17. C1b consumer readiness 屏障裁决（2026-09-05）
+
+维护者接受方案 A：在双方本地 WireGuard `AddPeer` 完成后，以已认证的 promoted transport
+执行一次 `CONSUMER_READY / CONSUMER_READY_ACK`，然后 initiator 才能触发唯一一次 WireGuard
+handshake。此前 race 重复中出现了 initiation 已发出、对端无 response 的失败；代码中
+`AttachTransport` 启动 reader 先于 `IpcSet` 安装 peer，存在可达的未就绪读取窗口。该窗口须用
+确定性延迟测试覆盖，不能把一次无 response 的日志当成已经排除了其它原因。
+
+### 17.1 密码学与线格式
+
+- 仅 product handoff 在双向 VERIFY 成功后，从原 `hardnatcontrol.Protocol` 一次性取得窄
+  readiness codec 的所有权。它独占原 Noise `PacketCipher`，不导出 key，不重新 split；原协议
+  失去 cipher 后不能继续 seal/open。既有 WYHB parser、wire、cost、golden 全部不变。
+- 独立 magic `WYCR`，版本 1；24-byte header：offset 0..3 magic，4 version，5 type
+  （READY=1、ACK=2），6 sender（initiator=1、responder=2），7 reserved=0，8..15 sequence，
+  16..23 generation。整数一律 big-endian；generation=1。
+- READY 仅 initiator 使用原 directional key 的保留 nonce 8；ACK 仅 responder 使用 nonce 9。
+  二者位于现有 4..15 空洞，不增加 max sequence，也不与 candidate/control nonce 重叠。
+  plaintext 严格为空，ciphertext 恰好 16-byte tag，完整 datagram 恰好 40 bytes。
+- AD = UTF8(`winkyou-gate-c-consumer-ready/1`) || `0x00` || header || decoded attempt ID
+  （16 bytes）|| context digest || final handshake hash || envelope digest || joint plan digest ||
+  execution digest || winner digest（后六项各 32 bytes）。product profile 已绑定 Noise prologue，
+  此 AD 同时绑定双方独立重算的 plan 和唯一 winner，不引入远端可改写的 target。
+- initiator seal READY → open ACK；responder open READY → seal ACK。unknown value、非精确长度、
+  非法次序、重复、篡改、错误 role/generation/context/winner、跨域重放均关闭 codec/transport，
+  无重试、无 fallback，映射为已有 `wireguard_binding_failed`。
+
+### 17.2 时序、计费与排水
+
+- `BeginChallenge` 开始原有 ≤3s 窗口；本地 AddPeer 完成 → readiness barrier → WireGuard
+  handshake 均在这一窗口及原 caller/absolute envelope 内，不重启 timer。屏障结束前 binder
+  reader 不得消费任何底层 datagram，binder writer 不得发送 WireGuard packet。
+- readiness 与 WireGuard **共用**原有每方向 ≤3 outer datagram 硬上限。initiator outbound
+  为 READY、initiation、empty keepalive（3），responder outbound 为 ACK、response（2）；
+  反方向 reads 分别为 2/3。barrier 单列 witness，不伪装成 WireGuard message type。
+- 第 4 次 outbound 在底层 I/O 前拒绝；barrier 失败也消费已用额度。零新增 socket、target、
+  stream、carrier frame、attempt 或 probe reservation；不能挪用 headroom。
+- 等待就绪的 reader、屏障 I/O 和后续 handshake 都响应 cancel/EOF/deadline，失败沿用先
+  durable FINISH 再释放 attempt。post-FINISH 任一路径均关闭 session；不影响既有成功 OOB drain
+  与 foreground session 语义。
+- 必过：延迟 responder AddPeer 时零 WireGuard 发射，随后单次正常握手；超时/取消/错 ACK/
+  重放/跨域负向；40-byte frame 与 AD golden；共享第 4 包门禁；三 profile race×20 和 100 fresh
+  runs。此裁决仍仅授权 C1b memory/loopback/required netns，不授权现场 I/O。
