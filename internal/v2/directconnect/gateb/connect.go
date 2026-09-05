@@ -318,15 +318,7 @@ func (runtime *runtime) execute(ctx context.Context, product bool) error {
 		select {
 		case <-runtime.carrier.Done():
 			if runtime.product {
-				// R1 makes the successful durable journal boundary observable to
-				// the peer before it closes OOB. Local trace completion is not it.
-				cause := runtime.carrier.TerminalCause()
-				witness := runtime.carrier.Witness()
-				expectedClose := errors.Is(cause, oobcarrier.ErrCarrierTerminal) ||
-					(errors.Is(cause, oobcarrier.ErrCarrierTransport) && witness.EOF)
-				if !runtime.productFinishRecorded.Load() || !expectedClose {
-					runtime.activeCancel(cause)
-				}
+				runtime.productCarrierTerminal(runtime.carrier.TerminalCause(), runtime.carrier.Witness().EOF)
 				return
 			}
 			// Once the data-plane challenge has completed there are no further

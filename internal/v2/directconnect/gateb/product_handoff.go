@@ -7,7 +7,22 @@ import (
 	"winkyou/internal/governor"
 	"winkyou/internal/probeio"
 	"winkyou/internal/v2/directattempt"
+	"winkyou/internal/v2/oobcarrier"
 )
+
+func (runtime *runtime) productCarrierTerminal(cause error, eof bool) {
+	// R1 exposes peer durability, not permission to ignore arbitrary carrier
+	// failures. The atomic success publication also follows gate construction.
+	finished := runtime.productFinishRecorded.Load()
+	expectedClose := errors.Is(cause, oobcarrier.ErrCarrierTerminal) || (errors.Is(cause, oobcarrier.ErrCarrierTransport) && eof)
+	if finished && expectedClose {
+		return
+	}
+	runtime.activeCancel(cause)
+	if finished && runtime.wireGuardGate != nil {
+		_ = runtime.wireGuardGate.Close()
+	}
+}
 
 func (handoff *ProductHandoff) BeginWireGuardChallenge() error {
 	if handoff == nil {
@@ -204,6 +219,11 @@ func (runtime *runtime) releaseProductEstablishment() error {
 		if !witness.Closed || !witness.Drained {
 			releaseErr = errors.Join(releaseErr, errors.New("carrier drain incomplete"))
 		}
+	}
+	// A peer's expected EOF is not parent cancellation or envelope expiry.
+	// Neither failure may be converted into a post-OOB echo by local cleanup.
+	if runtime.activeContext.Err() != nil {
+		releaseErr = errors.Join(releaseErr, context.Cause(runtime.activeContext))
 	}
 	for _, socket := range runtime.sockets {
 		if socket == nil {

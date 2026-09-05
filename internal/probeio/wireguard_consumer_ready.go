@@ -19,6 +19,9 @@ type ConsumerReadinessCodec interface {
 // opening an auxiliary handshake budget. It never retries either datagram.
 func (gate *WireGuardSessionGate) ConsumerReady(ctx context.Context, codec ConsumerReadinessCodec) error {
 	if gate == nil || ctx == nil || codec == nil {
+		if codec != nil {
+			_ = codec.Close()
+		}
 		return ErrWireGuardGateState
 	}
 	gate.mu.Lock()
