@@ -63,6 +63,21 @@ func newGateC1bKernelInterface(cfg gateC1bHostConfig, name string, mtu int) (*ga
 	}
 	instance := &gateC1bKernelInterface{name: name, mtu: mtu, tun: tun,
 		local: netip.AddrPortFrom(local, gateC1bInnerPort), remote: netip.AddrPortFrom(remote, gateC1bInnerPort)}
+	// This fixture proves exactly the fixed IPv4 echo/CLOSE, not IPv6 address
+	// discovery. Disable it on this newly created, still-down TUN only. The
+	// namespace and fixed interface checks above precede this namespace-local
+	// sysctl; no host/default/all setting is changed. Otherwise Linux generates
+	// a link-local control packet that is unrelated to the authorized inner data.
+	const disableIPv6 = "/proc/sys/net/ipv6/conf/wink-c1b-proof/disable_ipv6"
+	if err := os.WriteFile(disableIPv6, []byte("1\n"), 0); err != nil {
+		_ = instance.Close()
+		return nil, errors.New("isolated interface IPv4-only setup failed")
+	}
+	value, err := os.ReadFile(disableIPv6)
+	if err != nil || string(value) != "1\n" {
+		_ = instance.Close()
+		return nil, errors.New("isolated interface IPv4-only witness rejected")
+	}
 	for _, args := range [][]string{
 		{"link", "set", "dev", name, "mtu", strconv.Itoa(mtu), "up"},
 		{"address", "add", local.String() + "/32", "dev", name},
