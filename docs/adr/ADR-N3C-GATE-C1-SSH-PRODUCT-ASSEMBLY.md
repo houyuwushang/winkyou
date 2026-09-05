@@ -1,8 +1,9 @@
 # ADR：N3c Gate C1 SSH/OOB assembly 与产品入口设计冻结
 
-- 状态：**Accepted（2026-08-31）：独立评审已接受设计冻结；仅授权 Gate C1a 的纯内存、
-  fake child 与 literal-loopback SSH assembly 实现。仍不授权 C1b、构建现场 binary、非回环
-  SSH/UDP、WireGuard 接线、disposable router 或任何现场 I/O**
+- 状态：**Accepted（2026-09-05）：独立评审已接受设计冻结；Gate C1a 已完成，Issue #100
+  已由 PR #103 关闭，并另行授权 Gate C1b 的前台一次性 product composition 实现与
+  memory、literal-loopback、`linux && natlab` required netns 取证。仍不授权 C1c、构建现场
+  binary、普通构建的非回环 SSH/UDP、disposable router 或任何现场 I/O**
 - 日期：2026-08-31
 - 基线：`main` = `39ff9780ec295ca8af7339bca8f5e023adf17931`
 - 跟踪议题：[#98](https://github.com/houyuwushang/winkyou/issues/98)
@@ -761,3 +762,145 @@ C1a 的 Windows 零连接 `ssh -G` 实现验证进一步发现：即使使用 `-
 启动前失败。因此最小 child environment 固定为这三个系统值，不继承 `PATH`、`HOME`、
 `USERPROFILE`、`SSH_AUTH_SOCK` 或 `SSH_ASKPASS*`。该兼容性修正不引入 request-derived env，
 不读取 ssh config，也不增加连接或网络权限。
+
+## 16. C1b 实现期裁决（2026-09-05）
+
+维护者在 Gate B3 终局竞态由 PR #103 修复并关闭 Issue #100 后，授权基于
+`0a61c5882381b5518400dc233edc1801bab4da4b` 实现 Gate C1b。以下十二项选择在任何代码提交
+之前冻结；它们只授权前台一次性 composition 与隔离取证，不改变 §3 的 C1c/C2 门，也不构成
+任何真实网络授权。
+
+### 16.1 Gate B artifact 适配
+
+- **选择：** Gate B 消费一个最小的 artifact 行为接口，接口只暴露 pairing context、context
+  digest、Noise prologue、一次性 `TakePSK`、角色、planner profile、resource class 与绑定所需
+  的本地字段。`hardnatattempt.Artifact` 与 `gatecattempt.Artifact` 分别实现；Gate B 不 import
+  `gatecattempt`，product artifact 只由 Gate C orchestrator 注入。既有 `Config.Artifact` 解析
+  路径保持原状。
+- **理由：** 两类 artifact 的 parser、fingerprint、prologue、consumer 与 challenge profile
+  必须互拒，组合点不能借类型转换削弱这条隔离边界。
+- **证明：** 原 Gate B golden 与 parser 负向测试逐字节不变；architecture mutation 必须抓住
+  Gate B import `gatecattempt`，并证明两类实现经同一接口仍保持四套 parser 互拒。
+
+### 16.2 production consumer kind
+
+- **选择：** 新增唯一 production kind `wireguard-direct-session/1`，逐字对应
+  `gatecattempt.DataPlaneConsumerProfile`。它分别绑定 predictive、asymmetric、hard-16K 的 exact
+  operation/cost，并使用与 `gate-a/`、`gate-b2/`、`gate-b3/` 不相交的 `gate-c/` PathID 前缀。
+- **理由：** consumer kind 是 Promote 后能力的最后一道类型边界；测试 consumer 不能成为产品
+  开关，production consumer 也不能回流模拟 harness。
+- **证明：** 正向表驱动测试逐 profile 比对 operation/cost/path；双向负向和 mutation 测试分别
+  证明 product CLI 不能选择三个 test kind，既有 harness 不能选择 production kind。
+
+### 16.3 Gate B 到 orchestrator 的 transport 交接
+
+- **选择：** 保留既有 `Run` 的 test challenge 与清理行为，新增明确的 product 入口。该入口在
+  `StageVerify`、production `TransportLease` 签发、`PromoteTo*Lease`、`Adopt`、`MarkStandby`
+  全部成功后，返回一个仍拥有 attempt authorization、lease-owned transport 和 OOB carrier 的
+  一次性 handoff；Gate B 不做 raw data-plane challenge、不 detach、不 close。
+- **理由：** 只有 orchestrator 同时拥有 WireGuard consumer 与 durable FINISH 时，才能满足
+  “FINISH 先于 attempt release”，同时避免把旧测试路径改成长期 transport API。
+- **证明：** failure-injection journal 断言任一失败先 FINISH 再释放；成功交接后旧
+  `ProbeSocket`、Controller 与 Promote 前句柄均已毒化，只有 handoff 可完成或排水一次。
+
+### 16.4 lease-bound WireGuard gate
+
+- **选择：** `probeio.WireGuardSessionGate` 包装 production lease transport，状态固定为
+  `standby -> challenge_capped -> challenge_passed -> finish_detached -> active`。前三态分别与
+  `TransportLease.Adopt`、`MarkStandby`、`MarkChallengePassed` 对齐；durable FINISH 成功后才调用
+  `DetachAfterFinish` 并原子进入 `active`。
+- **理由：** WireGuard 内部计时器不能绕过 attempt 的 absolute/caller context，也不能在 durable
+  终局见证之前把 probe transport 变成无限数据面。
+- **证明：** fake underlying transport 证明每方向第 4 个 pre-FINISH outer datagram 在底层 I/O
+  前失败并关闭；所有 read/write 同时受 caller context 和 profile absolute envelope 约束；FINISH
+  失败测试证明 cap 永不解除。
+
+### 16.5 tunnel context 传播
+
+- **选择：** 不改变其它 tunnel consumer；Gate C 在 transport 进入 tunnel binder 前，用
+  `WireGuardSessionGate` 包装它。wrapper 忽略 wireguard-go 传入的 `context.Background()`，改用其
+  自己持有的 caller/absolute context 执行底层 I/O。
+- **理由：** 这是把 `tunnel_wggo.go` 两处 background context 对 Gate C 变为不可达的最小改动，
+  不扩大 `pkg/tunnel` 对 artifact、governor 或 Gate C 的认知。
+- **证明：** context cancellation/deadline 测试在底层 fake 观察到同一受控 context；mutation
+  测试注入绕过 wrapper 的 background 直写并要求 architecture gate 检出；第四包见证仍为 3。
+
+### 16.6 pre-FINISH challenge 注入顺序
+
+- **选择：** 采用方案 B：不预 stage inner packet。initiator 只显式触发一次 handshake；固定
+  wireguard-go 在 handshake response 后自动发出的空 keepalive 是握手序列的第 3 个 outer
+  datagram，业务 echo 移到 FINISH 与 OOB 排水之后。packet-type trace 为 initiator outbound
+  `handshake-initiation, transport-keepalive`、inbound `handshake-response`；responder 为相反方向。
+- **理由：** 该顺序不依赖 peer 建立前的 TUN queue 时序，也不把尚未 durable FINISH 的业务包
+  当作 session 成功。
+- **证明：** 字节级 message-type trace golden 固定上述序列；cookie reply、5 秒 retransmit、重复
+  initiation/response 或任一方向第 4 包均在底层 I/O 前关闭为 challenge failure；挑战窗口固定
+  不超过 3 秒，因此重传计时器不能成为合法发送。
+
+### 16.7 post-OOB echo
+
+- **选择：** echo 由 orchestrator 实现为不超过 64 字节的固定 inner datagram，含 magic、版本、
+  sender role、attempt/context digest 各前 16 字节、nonce 与方向；src/dst 必须逐字匹配 trusted
+  local/remote virtual identity。每方向仅一个 request/reply，使用独立 bounded timeout，随后 nonce
+  永久消费。
+- **理由：** OOB 排水后的 in-tunnel 数据才证明 handoff 成功；协议不属于 tunnel，也不能复用
+  现有 33434 ping daemon 或创建长驻 listener。
+- **证明：** memory-TUN 正向测试单列 inner/outer 计数；duplicate、replay、wrong role、wrong
+  direction、wrong virtual identity 与 digest mismatch 均拒绝，listener/worker 与 session 同寿命。
+
+### 16.8 responder child 退出与 session 终止
+
+- **选择：** responder 在 `gatecstage.ClaimPending` 后立即竞争 machine governor owner，loser 在
+  任何 UDP 前退出。durable FINISH 前 stdin EOF 或 stdout EPIPE 是 carrier terminal；FINISH 后
+  二者是 initiator 主动排水的预期事件，responder 继续拥有前台 data plane。session 由 authenticated
+  in-tunnel CLOSE、连续三个 keepalive 周期无有效 WireGuard 数据的 inactivity ceiling、或本地
+  trusted absolute session ceiling 三者之一有界结束。
+- **理由：** OpenSSH 断开 non-PTY session 只关闭管道，不保证杀子进程；同时 responder 不能变成
+  daemon 或从 remote request 接受无限寿命。
+- **证明：** 三种终止路径分别测试；FINISH 前/后 EOF 和 EPIPE 分开注入；owner loser 的 SSH
+  child/UDP witness 为零，所有退出路径完成 durable close 与 drain。
+
+### 16.9 responder stdio bounded stream
+
+- **选择：** `solver direct child --stdio` 用独立的 stdin/stdout `BoundedStream` adapter 承载 WYRC，
+  不进入 `winkyou.stdio/v2`。adapter 继承 8 frame、8,256 byte、single absolute deadline 与 2 秒
+  drain；stderr 只输出 stable class/stage/count。
+- **理由：** SSH forced command 需要字节流而不是 JSON-RPC，混用 parser 会同时扩大协议面并破坏
+  v2 golden。
+- **证明：** half/sticky/oversize/EOF/EPIPE/deadline 测试与 v1/v2 golden 同跑；隐私扫描证明
+  stderr/stdout 不含 secret、artifact、path、endpoint、user、key 或底层错误。
+
+### 16.10 trusted peer config
+
+- **选择：** 本地 `--config` 增加显式 Gate C peer 表，以 `peer_ref` 唯一索引 WireGuard public key、
+  AllowedIPs、本地/对端 virtual identity、memory-TUN 名称/MTU 与 absolute session ceiling。配置加载
+  后做严格 canonical validation；request、artifact、OOB frame 和 remote report 均不能提供或覆盖
+  这些字段。
+- **理由：** 传输对端只能证明 attempt，不应获得本机路由、tunnel identity 或 session lifetime
+  的配置权限。
+- **证明：** 缺失、重复、非 canonical、冲突与 remote overwrite 均在零 SSH/零 UDP 的 preflight
+  返回 `gate_c_request_invalid`；配置所有权 mutation 必须检出从 wire/artifact 赋值。
+
+### 16.11 interface conflict preflight
+
+- **选择：** C1b 只构造 memory-TUN，但在任何 SSH/UDP 前执行只读 conflict inspector：已有
+  `wink up` 运行、相同 WireGuard private key 已被使用、目标 memory interface name 或 route owner
+  已存在，任一命中即拒绝。inspector 不创建 interface/address/route/firewall 对象。
+- **理由：** memory backend 不等于可以复用现有 session ownership；同 key/route 的双 owner 会让
+  失败排水和流量归属不可证明。
+- **证明：** 三类冲突分别注入，见证 SSH spawn=0、UDP=0；architecture mutation 抓住 orchestrator
+  import OS TUN/route writer 或 `pkg/netif.New` 选择非 memory backend。
+
+### 16.12 CI 取证拓扑
+
+- **选择：** memory job 在 Windows/Linux 以真实 CLI、fake process runner 与 probeio memory factory
+  覆盖三个 profile；literal-loopback job 使用真实 OpenSSH client 与 dedicated loopback sshd（固定
+  key、`restrict,command=` wrapper、`PermitUserEnvironment no`），不可用平台明确只跑 memory；
+  required `linux && natlab` job 在 TEST-NET sealed namespaces 内运行真实 child、UDP 与 harness TUN，
+  predictive/asymmetric/hard-16K 均走 full pipeline，并复用 Gate B3 的 conntrack、queue、router 与
+  zero-residue 约束。
+- **理由：** 三层证据分别证明纯 composition、真实 child/pipe 生命周期和受控非回环 OS 行为，且
+  不把测试 authority 编译进 ordinary product build。
+- **证明：** required jobs 设置 `WINKYOU_*_REQUIRED=1` 防静默 skip；报告双端 stage、UDP、carrier、
+  WireGuard challenge、post-OOB echo、child/socket/process/lock/conntrack residue。hard-16K 继续
+  强制单端队列不超过 16,398、10 秒 router witness，并在 kill 前取得双端 ready。
