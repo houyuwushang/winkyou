@@ -27,6 +27,7 @@ import (
 	"winkyou/internal/v2/gatecstage"
 	"winkyou/internal/v2/sshassembly"
 	"winkyou/internal/v2/sshchildwrapper"
+	"winkyou/pkg/netif"
 )
 
 const (
@@ -70,6 +71,7 @@ type gateC1bProcessResult struct {
 	Stage   string                   `json:"stage,omitempty"`
 	Stages  []string                 `json:"stages"`
 	Product gatecorchestrator.Result `json:"product"`
+	TUN     gateC1bTUNWitness        `json:"tun"`
 }
 
 // A copy of the race-enabled test binary supplies the two exact installed
@@ -216,7 +218,7 @@ func prepareGateC1bPrivateMounts(cfg gateC1bHostConfig) error {
 			return err
 		}
 	}
-	if err := unix.Mount(fmt.Sprintf("/proc/self/fd/%d", namespaceDirectory.Fd()), "/run/netns", "", unix.MS_BIND, ""); err != nil {
+	if err := unix.Mount(fmt.Sprintf("/proc/self/fd/%d", namespaceDirectory.Fd()), "/run/netns", "", unix.MS_BIND|unix.MS_REC, ""); err != nil {
 		return err
 	}
 	return os.Chdir("/root")
@@ -283,6 +285,14 @@ func runGateC1bCLI(cfg gateC1bHostConfig, args []string) gateC1bProcessResult {
 	defer cancel()
 	proof := gatecorchestrator.NATLabProofOptions{Namespace: cfg.Namespace, Side: cfg.Side,
 		SSHSide: cfg.SSHSide, Observers: cfg.Observers}
+	var kernelInterface *gateC1bKernelInterface
+	if cfg.UseTUN {
+		proof.NewInterface = func(name string, mtu int) (netif.MemoryTestInterface, error) {
+			var err error
+			kernelInterface, err = newGateC1bKernelInterface(cfg, name, mtu)
+			return kernelInterface, err
+		}
+	}
 	proof.Progress = func(progress gatecorchestrator.Progress) error {
 		result.Stages = append(result.Stages, progress.Stage)
 		if err := os.WriteFile(cfg.StageFile, []byte(progress.Stage), 0o600); err != nil {
@@ -297,10 +307,15 @@ func runGateC1bCLI(cfg gateC1bHostConfig, args []string) gateC1bProcessResult {
 	}
 	var err error
 	result.Product, err = winkcmd.ExecuteGateCNATLabProof(ctx, args, os.Stdin, os.Stdout, os.Stderr, proof)
+	if kernelInterface != nil {
+		result.TUN = kernelInterface.witness()
+	}
 	if err != nil {
 		var failure *gatecorchestrator.Failure
 		if errors.As(err, &failure) {
 			result.Class, result.Stage = failure.Class, failure.Stage
+		} else if errors.Is(err, gatecorchestrator.ErrPeerUnauthorized) {
+			result.Class, result.Stage = "peer_address_not_authorized", "isolated_authority"
 		} else {
 			result.Class = "gate_c_request_invalid"
 		}

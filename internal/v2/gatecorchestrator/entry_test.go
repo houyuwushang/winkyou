@@ -29,6 +29,7 @@ func TestResponderClaimImmediatelyCompetesForMachineBeforeStreamAdoption(t *test
 	steps := make([]string, 0, 3)
 	deps := defaultDependencies()
 	deps.now = func() time.Time { return now }
+	deps.artifactNow = func() time.Time { return now }
 	deps.claimPending = func(got time.Time) (*gatecstage.Claimed, error) {
 		steps = append(steps, "claim")
 		if !got.Equal(now) {

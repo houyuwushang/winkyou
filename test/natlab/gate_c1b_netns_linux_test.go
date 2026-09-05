@@ -14,6 +14,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"strconv"
+	"strings"
 	"sync"
 	"syscall"
 	"testing"
@@ -88,6 +90,7 @@ func gateC1bSSHDPath(t *testing.T) string {
 func testGateC1bProfile(t *testing.T, profile gateC1bProfile, loopbackSSH bool) {
 	armGateB3KernelReleaseMargin(t)
 	topology := newN2DTopology(t, n2dMappingEDM, n2dMappingEDM)
+	t.Cleanup(func() { cleanupGateC1bEndpointProcesses(t, topology) })
 	observer := startGateB2ObserverSet(t, topology.public)
 	left, right := gateC1bRouters(t, topology, profile)
 	if err := topology.installGateB2PacketCounters(observer.topology); err != nil {
@@ -122,9 +125,17 @@ func testGateC1bProfile(t *testing.T, profile gateC1bProfile, loopbackSSH bool) 
 		if !wg.ConsumerReady || wg.ReadinessReads != 1 || wg.ReadinessWrites != 1 ||
 			len(wg.Outbound)+wg.ReadinessWrites > 3 || len(wg.Inbound)+wg.ReadinessReads > 3 ||
 			!got.Product.Witness.Handoff.OOBDrained || !got.Product.Witness.Handoff.AttemptReleased ||
-			!got.Product.Witness.InterfaceClosed || !got.Product.Witness.TunnelStopped ||
-			got.Product.Witness.Echo.RequestsWritten < 1 || got.Product.Witness.Echo.ResponsesRead < 1 {
+			!got.Product.Witness.InterfaceClosed || !got.Product.Witness.TunnelStopped {
 			t.Fatal("Gate C1b handoff/challenge/echo witness rejected")
+		}
+		echo := got.Product.Witness.Echo
+		if index == 0 && (echo.RequestsWritten != 1 || echo.ResponsesRead != 1 || echo.CloseWritten != 1) ||
+			index == 1 && (echo.RequestsRead != 1 || echo.ResponsesWritten != 1 || echo.CloseRead != 1) {
+			t.Fatal("Gate C1b directional echo/CLOSE witness rejected")
+		}
+		if configs[index].UseTUN && (!got.TUN.Used || !got.TUN.Closed || got.TUN.KernelReads == 0 || got.TUN.KernelWrites == 0 ||
+			got.TUN.KernelReads != got.TUN.InnerSends || got.TUN.KernelWrites != got.TUN.InnerReads) {
+			t.Fatal("Gate C1b real kernel TUN echo witness rejected")
 		}
 	}
 	if !results[0].Product.Witness.SSH.Spawned || !results[0].Product.Witness.SSH.Exited || !results[0].Product.Witness.SSH.Drained {
@@ -132,6 +143,13 @@ func testGateC1bProfile(t *testing.T, profile gateC1bProfile, loopbackSSH bool) 
 	}
 	client.wait(t)
 	server.stop(t)
+	for _, namespace := range []string{topology.clientA, topology.clientB} {
+		links, linkErr := runNamespaced(namespace, "ip", nil, "-o", "link", "show")
+		routes, routeErr := runNamespaced(namespace, "ip", nil, "-o", "route", "show", "table", "all")
+		if linkErr != nil || routeErr != nil || strings.Contains(links, "wink-c1b-proof") || strings.Contains(routes, "wink-c1b-proof") {
+			t.Fatal("Gate C1b kernel interface/route residue")
+		}
+	}
 	counts := requireGateB2PacketCounts(t, topology)
 	for index, actual := range []uint64{counts.InitiatorTotal, counts.ResponderTotal} {
 		got := results[index].Product.Witness
@@ -149,6 +167,51 @@ func testGateC1bProfile(t *testing.T, profile gateC1bProfile, loopbackSSH bool) 
 		assertGateB3NoResidue(t, topology, observer, left, right, false, false, governorDirs...)
 	} else {
 		assertGateB2NoResidue(t, topology, observer, left, right, governorDirs...)
+	}
+}
+
+// Failure cleanup is not a successful drain witness. Never delete a namespace
+// name while a remote child can still own it invisibly. pidfd pins the exact
+// enumerated process; the namespace check excludes every host process.
+func cleanupGateC1bEndpointProcesses(t *testing.T, topology *n2dTopology) {
+	t.Helper()
+	for _, namespace := range []string{topology.clientA, topology.clientB} {
+		if !safeNamePattern.MatchString(namespace) {
+			t.Error("Gate C1b endpoint cleanup identity rejected")
+			continue
+		}
+		expected, err := os.Stat("/run/netns/" + namespace)
+		if os.IsNotExist(err) {
+			continue
+		}
+		if err != nil {
+			t.Error("Gate C1b endpoint cleanup identity unavailable")
+			continue
+		}
+		output, err := runCommand("ip", "netns", "pids", namespace)
+		if err != nil {
+			t.Error("Gate C1b endpoint process enumeration failed")
+			continue
+		}
+		for _, value := range strings.Fields(output) {
+			pid, err := strconv.Atoi(value)
+			if err != nil || pid <= 1 || pid == os.Getpid() {
+				t.Error("Gate C1b endpoint process identity rejected")
+				continue
+			}
+			descriptor, err := unix.PidfdOpen(pid, 0)
+			if err != nil {
+				continue // Already exited; no numeric-PID fallback.
+			}
+			current, statErr := os.Stat(fmt.Sprintf("/proc/%d/ns/net", pid))
+			if statErr == nil && os.SameFile(current, expected) {
+				if !t.Failed() {
+					t.Error("Gate C1b unproven endpoint drain required cleanup")
+				}
+				_ = unix.PidfdSendSignal(descriptor, unix.SIGKILL, nil, 0)
+			}
+			_ = unix.Close(descriptor)
+		}
 	}
 }
 
@@ -253,7 +316,7 @@ AllowUsers root
 		if os.Mkdir(sideDir, 0o700) != nil {
 			t.Fatal("Gate C1b endpoint fixture setup failed")
 		}
-		cfg := gateC1bHostConfig{Server: index == 1, ParentMount: parentMount.Ino, SSHDConfig: sshdFile, SSHDBinary: gateC1bSSHDPath(t), Observers: observers,
+		cfg := gateC1bHostConfig{Server: index == 1, UseTUN: !loopbackSSH, ParentMount: parentMount.Ino, SSHDConfig: sshdFile, SSHDBinary: gateC1bSSHDPath(t), Observers: observers,
 			MachineBase: filepath.Join(sideDir, "machine-base"), InstallBase: filepath.Join(sideDir, "install-base"), HomeDirectory: filepath.Join(sideDir, "private-home"), ShadowFile: filepath.Join(sideDir, "shadow"),
 			RuntimeBase: filepath.Join(sideDir, "runtime"),
 			RequestFile: filepath.Join(sideDir, "request.json"), ConfigFile: filepath.Join(sideDir, "config.yaml"), ResultFile: filepath.Join(sideDir, "result.json"),
