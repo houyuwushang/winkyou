@@ -1200,3 +1200,9 @@ product handoff、orchestrator 顺序、binder drain/read ownership 和已有错
 永久保留：initiator FINISH/PeerFinishConfirmed=true、AttemptDetached=false、gate=closed；
 responder 已 detach/active，但 post-OOB echo 失败。两侧 3/3 trace、carrier 8/8、burn 无退款、
 无 trip 的见证不能冒充完整 session 成功。
+
+本轮执行状态：第 4 项的内存验收尚未闭合。原数字来自 C1b 证据 §4.1 的 **OS/netns**
+场景；当前内存 fixture 的候选数量及 winner role 不同，无延迟对照与慢 FINISH 得到相同的
+另一组总计。具体计数、首次红输出及父 context 取消传播回归见
+[C1b 证据 §6](../GATE-C1B-PRODUCT-COMPOSITION-EVIDENCE.md#6-issue-109-完成阶段修复与未闭合验收2026-09-06)。
+本 PR 保留上述要求及其失败断言，不自行修订验收数字、调候选调度或宣布 #109 关闭。

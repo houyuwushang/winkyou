@@ -6,7 +6,7 @@
 [Gate C1 ADR](adr/ADR-N3C-GATE-C1-SSH-PRODUCT-ASSEMBLY.md) §16–§19；R1 细节先以独立文档提交冻结。
 真实 OpenSSH loopback 与 required netns 已有成功实测，和 memory 证据分列，不互相替代。
 
-2026-09-06：[Issue #109](https://github.com/houyuwushang/winkyou/issues/109) 的完成阶段时间边界按 [ADR §19.5](adr/ADR-N3C-GATE-C1-SSH-PRODUCT-ASSEMBLY.md) 修订；本轮实现与红→绿证据待独立复审，历史 C1b 成功不覆盖该新反例。
+2026-09-06：[Issue #109](https://github.com/houyuwushang/winkyou/issues/109) 的完成阶段时间边界按 [ADR §19.5](adr/ADR-N3C-GATE-C1-SSH-PRODUCT-ASSEMBLY.md) 修订；[本轮红→绿与未闭合验收](#6-issue-109-完成阶段修复与未闭合验收2026-09-06) 单列于 §6。§1–§5 是 #104 历史快照，不能覆盖本轮反例或代替当前 CI。
 
 ## 1. 已落地的 memory 组合
 
@@ -209,3 +209,134 @@ root wrapper/orchestrator `-race -count=20` 通过（1.259s / 2.345s）；Linux
 
 本分支不授权 C1c/C2、LAN/公网、宿主 interface/route/firewall/service/task/sshd 改动或自动恢复。
 未签发现场窗口；保留单个 Draft PR、不得自行合并的交付约束。
+
+## 6. Issue #109 完成阶段修复与未闭合验收（2026-09-06）
+
+状态：**Draft，未完成全部验收，不应合并或关闭 #109**。本轮基线为
+`c2d1ef50e354da87eea536176f8dddfe55aa4b6e`；#105/#108 已合入，但不在这里实现 liveness、
+映射寿命模型或 C1c。只修改 `wireguard_consumer_finish.go` 的本地阶段 context；不改
+TransportLease、ProductHandoff、Gate B executor、orchestrator、carrier、SSH/child stream。
+
+### 6.1 原始反例与确定性红→绿
+
+保留 [#109 原 required Windows 红运行](https://github.com/houyuwushang/winkyou/actions/runs/33992470623/job/101377022894)。
+该签名是 initiator 已 durable FINISH 且已认证 peer FINISHED，但本地旧 challenge context
+到期，AttemptDetached=false、gate=closed；对侧 active 并不能代替双方 post-OOB echo 成功。
+
+修复前先提交回归 `0717d8c`，执行：
+
+```text
+go test -race ./internal/probeio -run 'TestConsumerFinished(Completion|ResponderWriteRetains|DetachAfter)' -count=1 -v
+```
+
+首次 RED（4.038s）：实时接收与先缓冲再认证两分支均在 3.20s 复现：
+
+```text
+completion after challenge deadline rejected:
+gate_error=true deadline=true finish=true peer_finish=true
+detached=false state=closed reads=3 writes=3
+```
+
+两侧慢 detach 分支也 RED；session 回调立即取消分支未保留 Canceled 原因。absolute 到期与
+responder 迟写分支按原规则拒绝。`791e6e7` 的同一命令 GREEN（4.719s）；原 gate/readiness/
+FINISHED/lease-failure 定向回归 GREEN（5.441s）。不是删测、改期望或重复运行原代码转绿。
+
+| 回归 | 实测要求 |
+| --- | --- |
+| initiator 本地 FINISH 至原 challenge deadline + 200ms | 实时/缓冲认证两路 active；FINISH/peer confirmation/detach=true；底层调用读 3、写 3 |
+| initiator FINISH 跨原 absolute deadline | FINISH=true；不 detach、不 active；transport 关闭，读写仍 3/3 |
+| FINISH 回调内立即取消 session | 同上，并保留 Canceled 原因，不等待 AfterFunc 调度才检查 |
+| responder FINISH 至原 challenge deadline + 200ms | 关闭；CompletionWrites=0，底层读 3、写 2；已写 FINISH 不撤销 |
+| 两侧 FINISHED 在 3s 内完成，detach 延迟至 3.2s | active，底层读写仍 3/3；无 active-data I/O |
+
+首轮完整三包 `-race -count=20` 又发现一次 absolute 负向失败（probeio 114.037s；另外两个
+包通过）。gate 已 closed、FINISH/peer confirmation=true、gate 的 AttemptDetached=false，
+但组合 ownership 断言失败。没有把一次通过冒充 20 轮通过。
+
+随后 `0f4a249` 增加确定性取消传播屏障：保留父 context 的 Deadline/Done/Err，只阻塞子
+取消回调的调度；原检查会错误地返回成功，证明问题不是 transport 关闭见证读取过早：
+
+```text
+go test -race ./internal/probeio -run '^TestConsumerFinishedCompletionAbsolutePropagationDoesNotDetach$' -count=1 -v
+expired parent accepted before child cancellation:
+gate_error=false deadline=false lease_detached=true state=active
+```
+
+该 RED 在 1.00s 出现。`f8b93b2` 仅在同一 completion 函数内同步检查 `gate.attemptCtx.Err()`
+与 `sessionCtx.Err()`，不依赖派生子 context 的取消已完成；同一确定性测试 GREEN（2.572s）。
+测试屏障在 defer 中解除并等待回调结束，没有延长任何生产 timer 或修改 lease 的行为。
+
+### 6.2 慢 FINISH 管线与计数口径阻塞
+
+注入仅存在于 `c1bproof` 的 `_test.go`：在 initiator 的真实成功 FINISH append+fsync 后，
+把回调返回延迟 3.5s，保持实际 journal、锁、顺序、单次成功及原时钟。没有 fake FINISH、
+新增生产 hook 或重启 timer。新 Hard16 用例使用原 45s profile absolute envelope，而非原有
+快速 fixture 的 lower-only 6s；原用例及其窗口不改。predictive/asymmetric 原 20s 不变。
+
+首次运行（在 `791e6e7` 上添加待提交注入用例）：
+
+```text
+go test -race -tags=c1bproof ./internal/governor -run '^TestGateC1bMemoryProductPipelineReachesPostOOBEcho/slow_initiator_finish' -count=1 -v -timeout=2m
+```
+
+结果 **RED（19.987s）**：三 profile 的双端均到达 `data_plane_ready`，仅下表的继承 OS 总计
+断言失败。每个 fixture 的成功落盘回调恰好一次、post-fsync delay 实测 3500ms；每端
+FINISH/detach=true、shared challenge=3/3、carrier=8/8、OOB/echo drained=true、attempt released。
+initiator PeerFinishConfirmed=true、completion 写/读=0/1；responder 对应 false、1/0，含义不变。
+既有 residue 断言仍在计数错误后执行，未报告 memory connection/mapping/queue、governor
+attempt/peer/reservation 残留或持久 safety trip；这不是 OS socket/netns 的新实测。
+
+为区分“修复新增报文”和“fixture 本身不同”，另执行一次 **无延迟原场景对照**，不是重新
+运行失败用例求绿：
+
+```text
+go test -race -tags=c1bproof ./internal/governor -run '^TestGateC1bMemoryProductPipelineReachesPostOOBEcho/(predictive|asymmetric|hard-16k)$' -count=1 -v -timeout=2m
+```
+
+对照 PASS（8.778s），保持原候选窗口、Hard16 原 6s 快速 fixture，使用同一修复后 gate。
+下表记录两次运行的实际数值，不声称是未运行的 main 二进制结果或未来 20 轮的恒等式。
+
+| profile | 提示词继承的 OS UDP I/R（§4.1） | 内存无延迟对照 I/R | 内存慢 FINISH I/R | 内存 candidate I/R | 内存 winner I/R |
+| --- | --- | --- | --- | --- | --- |
+| predictive | 50/49 | 51/49 | 51/49 | 32/32 | 1/0 |
+| asymmetric | 82/530 | 146/530 | 146/530 | 128/512 | 0/1 |
+| hard-16K | 16403/16401 | 16402/16402 | 16402/16402 | 16384/16384 | 0/1 |
+
+分项可核算：内存每端 evidence=13、establishment=3；post-OOB active writes 为 I=2/R=1。
+每端实际 UDP 等于 evidence + candidate + winner + establishment + active writes。
+§4.1 原 OS 场景则为 predictive candidate=31/32、asymmetric=64/512、Hard16 winner=1/0。
+因此首次内存差额逐项有来源，不能靠调 PPS/候选窗口、减半调度或挪 winner 来凑原表。
+
+**待维护者裁决，不自行选择：**
+
+- 修订内存验收口径：按同一 fixture 的分项计费、3/3/no-extra-I/O、完成/排水见证验证，
+  与 OS 证明分列；§4.1 OS 原表与 required netns 断言保持不变。
+- 或仍要求内存精确重现 OS 场景：另行明确批准可调整的 test fixture/调度证明范围；不能
+  把调整掺入这个 completion-only 修复，也不授权改求解器或扩大预算。
+
+当前保留 §19.5 第 4 项以及新用例的原失败断言。已有 required CI 精确 selector 会运行该
+子用例，预期在此拒绝；不 skip、不放宽比较、不修改 workflow，不以“其他检查通过”代替。
+
+### 6.3 本轮验证及尚未达到的出口
+
+- `go vet ./...`、`go vet -tags=c1bproof ./internal/governor` 通过。
+- `go test ./internal/architecture -run 'GateC1b|GateC1a|GateB' -count=1` 最终代码通过（2.150s）。
+- `go test ./internal/probeio ./internal/v2/directconnect/gateb ./internal/v2/gatecorchestrator -race -count=20`
+  在 `f8b93b2` 通过：113.366s / 1.732s / 1.839s。此前失败、确定性反例及针对性修改保留于 §6.1，
+  不是对同一代码 rerun 求绿。
+- Windows `go test ./... -count=1` 首跑 **FAIL**：仅
+  `pkg/client.TestRelayWGGoTwoEnginesExchangeIPv4Packets` 在 33.02s 等待 relay transport 超时
+  （`relay_wggo_test.go:62`）；症状与已隔离 #97 同类，不据此声称根因已确认，也不顺手修复。
+  其它包通过，其中 governor 201.322s、probeio 11.914s。没有重跑全仓掩盖此失败；生成的
+  测试 key、endpoint、时间戳和 runtime dump 不复制进公共证据。
+- c1bproof 的已知红计数用例不通过；不得报告该矩阵 race×20 全绿。远端 required job 结果
+  以本修复 Draft PR 的精确 head checks 为准，不能引用 #104 的成功代替。
+- 本机没有可用的 WSL/Linux/Docker，未执行本地 Linux/netns/真实 SSH 证明；Linux 全仓和
+  required OS 证明交由现有隔离 CI，本 PR 不增加任何现场权限。
+- 原 3s/3 包常量、40-byte FINISHED、nonce 8/9/10、AD、所有既有 golden 与成本表零修改；
+  未改 workflow、依赖、TransportLease 或其它生产模块。不混修 #97/#101/#106/#107。
+- `git diff --check` 干净；七文件精确范围、严格 UTF-8/NUL、52 个相对文件链接与新增证据
+  anchor 校验通过；新增 diff 的凭据/私有地址/本机身份与路径扫描为 0。停用任务保持 Disabled。
+
+在计数口径裁决、全部 required 验证和独立复审完成之前，保持 Draft/未合并，#109 不关闭；
+不推进 liveness/M/C1c 或现场 I/O，不启用计划任务或自动恢复。
