@@ -217,6 +217,9 @@ root wrapper/orchestrator `-race -count=20` 通过（1.259s / 2.345s）；Linux
 映射寿命模型或 C1c。只修改 `wireguard_consumer_finish.go` 的本地阶段 context；不改
 TransportLease、ProductHandoff、Gate B executor、orchestrator、carrier、SSH/child stream。
 
+§6.1–6.3 保留 `0b7800b` 及以前的原始反例和暂停记录；内存/OS 分列验收已获维护者同意，
+修订规范为 ADR §19.6，新验证另列 §6.4。历史红结果不是被覆盖成绿，也不再是待裁决事项。
+
 ### 6.1 原始反例与确定性红→绿
 
 保留 [#109 原 required Windows 红运行](https://github.com/houyuwushang/winkyou/actions/runs/33992470623/job/101377022894)。
@@ -307,17 +310,17 @@ go test -race -tags=c1bproof ./internal/governor -run '^TestGateC1bMemoryProduct
 §4.1 原 OS 场景则为 predictive candidate=31/32、asymmetric=64/512、Hard16 winner=1/0。
 因此首次内存差额逐项有来源，不能靠调 PPS/候选窗口、减半调度或挪 winner 来凑原表。
 
-**待维护者裁决，不自行选择：**
+**当时待维护者裁决（历史记录；现已接受第一项，见 §6.4）：**
 
 - 修订内存验收口径：按同一 fixture 的分项计费、3/3/no-extra-I/O、完成/排水见证验证，
   与 OS 证明分列；§4.1 OS 原表与 required netns 断言保持不变。
 - 或仍要求内存精确重现 OS 场景：另行明确批准可调整的 test fixture/调度证明范围；不能
   把调整掺入这个 completion-only 修复，也不授权改求解器或扩大预算。
 
-当前保留 §19.5 第 4 项以及新用例的原失败断言。已有 required CI 精确 selector 会运行该
+`0b7800b` 当时保留 §19.5 第 4 项以及新用例的原失败断言。已有 required CI 精确 selector 会运行该
 子用例，预期在此拒绝；不 skip、不放宽比较、不修改 workflow，不以“其他检查通过”代替。
 
-### 6.3 本轮验证及尚未达到的出口
+### 6.3 首轮验证及当时尚未达到的出口（历史快照 `0b7800b`）
 
 - `go vet ./...`、`go vet -tags=c1bproof ./internal/governor` 通过。
 - `go test ./internal/architecture -run 'GateC1b|GateC1a|GateB' -count=1` 最终代码通过（2.150s）。
@@ -340,3 +343,101 @@ go test -race -tags=c1bproof ./internal/governor -run '^TestGateC1bMemoryProduct
 
 在计数口径裁决、全部 required 验证和独立复审完成之前，保持 Draft/未合并，#109 不关闭；
 不推进 liveness/M/C1c 或现场 I/O，不启用计划任务或自动恢复。
+
+### 6.4 接受分列验收后的证明（2026-09-06）
+
+维护者明确接受“内存按自身场景分项计费、慢 FINISH 无新增报文；OS/netns 原表不变”。
+先以 `a8967b3` 写入 ADR §19.6，再以 `c038657` 修改测试；没有继续扩大生产修改。
+新增的 `gate_c1b_packet_accounting_c1bproof_test.go` 只核算本次真实分项，不重排候选或 winner，
+也不把另一组固定总计替换成新的内存常量。
+
+- 独立的底层 NAT 计数必须精确等于 evidence + candidate + winner + establishment + active；
+  evidence=13，既有 role 候选上限、asymmetric target-set/Hard16 完整 schedule 与双方一个 winner
+  均独立检查，再与 Gate B 分项、总计、冻结的 attempt 预算交叉核对。
+- 在真实 initiator FINISH append+fsync 后、原 3.5s 等待前后，读取双侧 NAT 发包快照；两侧
+  必须分别不增长，且快照必须落在 establishment 已完成、active 尚未开始的精确计费边界。
+  getter 只读计数，不开 socket、不发送、不暂停另一线程、不更换时钟或 ledger writer。
+- 仍断言双方 ready/FINISH/detach、shared challenge 3/3、carrier 8/8、单个 echo/CLOSE 与排水。
+  新核算报错后仍继续执行原 residue/safety 检查，不用提早退出跳过清理见证。
+- 20 个纯输入负向用例包括两侧额外 UDP、等待期间新增报文、错误阶段边界、少等待/重复 FINISH、
+  第四个建立包、额外 active、分项不符、越权候选及不完整 schedule；新增报文即使自报分项
+  一起变化也须满足原上限和固定数据阶段，不能仅用自报总计自证。
+
+首次新口径慢 FINISH 验证：`-race -count=1` PASS（20.902s），每侧结果均 ready，且：
+
+| profile | 底层等待前 I/R | 等待后 I/R | 全程实际 UDP I/R | post-fsync 等待 |
+| --- | --- | --- | --- | --- |
+| predictive | 48/48 | 48/48 | 50/49 | 3500ms |
+| asymmetric | 144/529 | 144/529 | 146/530 | 3500ms |
+| hard-16K | 16400/16401 | 16400/16401 | 16402/16402 | 3500ms |
+
+本次 predictive candidates=31/32，和 §6.2 首跑的 32/32 不同；本表是一次实测，不是允许
+硬编码的新 expected total。§4.1 OS 表和所有 netns 断言未动。纯核算的 3 个正向、20 个负向
+用例 `-race -count=20` PASS（3.298s）；全仓与 tagged governor vet PASS，完整 architecture
+（含 mutation）PASS（5.270s）。更广的重复验证已执行，未通过；见 §6.5。
+
+旧 head `0b7800b` 的 CI 最终结果另行保留：**28 SUCCESS / 5 FAILURE / 33**。
+[PR-event](https://github.com/houyuwushang/winkyou/actions/runs/34017008251) 和
+[push-event](https://github.com/houyuwushang/winkyou/actions/runs/34016973185) 均为首次运行。
+四个 Linux/Windows memory job 被原继承 OS 总计的断言拒绝；PR 两平台日志未出现 pipeline error
+或 test timeout。两个 C1b netns required job 通过，不能因此冒充当前新 head 的 OS 验证。
+
+第五个失败来自 push 的 Gate B3 `fifty_percent_candidate_loss`：initiator
+`attempt_expired/verify`（candidate=16384、winner=1、UDP=16398），responder
+`attempt_expired/candidates`（candidate=16384、winner=0、UDP=16397），共同见证以
+`initiator_common_witness` 拒绝；同 head 的 PR-event B3 通过。这里不据症状认定新根因，
+不宣称该失败场景 residue 已通过，不混修 #100/#106，不手动 rerun。旧 Windows 全仓本地 #97
+失败同样保留；旧 head 远端 Linux/Windows 全仓通过不抹去它。
+
+### 6.5 race×20 新反例与停止条件（代码 `c038657`）
+
+```text
+go test -race -tags=c1bproof ./internal/governor -run GateC1b -count=20 -timeout=20m -json
+FAIL: 777.224s; first run, no retry
+```
+
+20m 仅为本地全选择器测试 runner 的外层 watchdog，不是任何产品/fixture deadline 的变化；
+CI 原分拆 selector、12m/3m runner 与全部预算未改。原始 JSON 保存在仓库外，公共证据只保留
+脱敏计数和稳定失败类，不上传生成的身份、PID 或完整 runtime dump。
+
+| 本地重复项 | 结果 |
+| --- | --- |
+| 普通 memory 三 profile | 各 20/20 |
+| CLI/claimed-child 三 profile | 20 轮入口全部通过 |
+| CLI evidence-drift / exhaustion | 20 轮入口全部通过 |
+| lease/ownership 回归 | 20/20 |
+| 慢 FINISH predictive / asymmetric / Hard16 | **19/20、20/20、20/20** |
+| 只读 post-fsync 快照 | 60/60 恰好一个回调，3500–3501ms；双侧计数全部不增长 |
+| 核算正向 / 负向变异 | 60/60、400/400 |
+
+第 11 轮 slow predictive 失败，子用例 7.27s。其等待前/后计数均为 **48/48**，没有新增发射；
+但这不能代替完成/排水验收：
+
+- initiator：`wireguard_binding_failed`，progress 止于 `data_plane_challenge → terminal`；
+  `PeerFinishConfirmed=true`、`FinishRecorded=true`、`AttemptDetached=false`、`State=closed`，
+  shared trace 3/3、active writes/reads=0/0。
+- responder：`post_handoff_validation_failed`，progress 到 `finish_recorded → oob_drained → terminal`；
+  `FinishRecorded=true`、`AttemptDetached=true`、`State=closed`，同样 3/3、active=0/0；
+  双方 `DataPlaneReady=false`。不把 responder 已 FINISH 当作双方成功。
+- natsim connection/mapping/queue 的原检查未报错；**initiator governor residue 明确失败**：
+  active peer/attempt/heavyweight 各 1，仍预留 socket=8、target=64、PPS=32、packet=64、
+  five-tuple=64，safety trip clear。测试 deferred governor/network Close 不是正常路径排水证据。
+- 核算校验随后也拒绝缺失的成功分项；它是管线失败的后果，不是再次出现内存/OS 计数口径问题。
+
+受保护生产代码的只读核对发现了残留的确切控制流：
+
+1. `gateb/product_handoff.go:90–101` 的 durable 回调成功后，将 `runtime.authorization=nil`、
+   `runtime.finishRecorded=true`；后续 `FinishAndActivate` 错误进入 `runtime.cleanup`。
+2. `gateb/connect.go:2038–2049` 的 cleanup 却只以 `finishOK := !runtime.burned` 初始化，
+   只有非 nil authorization 再次成功 FINISH 才把它设为 true，未使用已有 durable 见证。
+3. `gateb/connect.go:2100` 因而跳过 controller/attempt/peer 释放，和本次残留一致。不能通过
+   重写 FINISH、退款或无条件释放来修复；这里没有修改该函数。
+
+启动此次终局的更早原因尚未细化：orchestrator 暴露通用 `wireguard_binding_failed`，现有结果
+没有区分具体父取消、session ceiling 或 lease 错误来源；**不能仅凭慢回调就认定 5s session
+ceiling 是根因**，更不能加长它求绿。
+
+这命中 #109 修复提示词 §0 的明确停止条件：时间修订仍未闭合原签名时，在同一 Draft PR 报告
+见证，不静默修改其它模块。暂停新增实现；需要单独授权精准取消/时间源见证与 FINISH 后错误
+清理的修复范围。没有修改 Gate B、orchestrator、TransportLease 或任何超时/调度参数；不重跑
+失败矩阵，不以其它测试或后续 CI 偶然成功覆盖这次反例。PR #110 未达到合入条件，#109 不关闭。
