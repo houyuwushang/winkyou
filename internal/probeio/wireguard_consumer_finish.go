@@ -57,7 +57,7 @@ func (gate *WireGuardSessionGate) finishWithConfirmation(sessionCtx context.Cont
 	gate.writeMu.Lock()
 	defer gate.writeMu.Unlock()
 
-	if err := errors.Join(opCtx.Err(), sessionCtx.Err()); err != nil {
+	if err := errors.Join(opCtx.Err(), gate.attemptCtx.Err(), sessionCtx.Err()); err != nil {
 		return gate.fail(err)
 	}
 	finishCtx := opCtx
@@ -70,7 +70,7 @@ func (gate *WireGuardSessionGate) finishWithConfirmation(sessionCtx context.Cont
 		// envelope, not the elapsed challenge timer (ADR C1 section 19.5).
 		finishCtx = completionCtx
 	}
-	if err := errors.Join(finishCtx.Err(), sessionCtx.Err()); err != nil {
+	if err := errors.Join(finishCtx.Err(), gate.attemptCtx.Err(), sessionCtx.Err()); err != nil {
 		return gate.fail(err)
 	}
 	if err := durableFinish(); err != nil {
@@ -79,7 +79,7 @@ func (gate *WireGuardSessionGate) finishWithConfirmation(sessionCtx context.Cont
 	gate.mu.Lock()
 	gate.finishRecorded = true
 	gate.mu.Unlock()
-	if err := errors.Join(finishCtx.Err(), sessionCtx.Err()); err != nil {
+	if err := errors.Join(finishCtx.Err(), gate.attemptCtx.Err(), sessionCtx.Err()); err != nil {
 		return gate.fail(err)
 	}
 	if gate.role == WireGuardResponder {
@@ -90,7 +90,7 @@ func (gate *WireGuardSessionGate) finishWithConfirmation(sessionCtx context.Cont
 		// window. Only its subsequent local detach uses completionCtx.
 		finishCtx = completionCtx
 	}
-	if err := errors.Join(finishCtx.Err(), sessionCtx.Err()); err != nil {
+	if err := errors.Join(finishCtx.Err(), gate.attemptCtx.Err(), sessionCtx.Err()); err != nil {
 		return gate.fail(err)
 	}
 	if err := gate.lease.DetachAfterFinish(); err != nil {
@@ -98,9 +98,9 @@ func (gate *WireGuardSessionGate) finishWithConfirmation(sessionCtx context.Cont
 	}
 	activeCtx, activeStop := context.WithCancel(sessionCtx)
 	gate.mu.Lock()
-	// Check the caller synchronously too: AfterFunc cancellation propagation
-	// must not grant activation while its callback is awaiting scheduling.
-	completionErr := errors.Join(finishCtx.Err(), sessionCtx.Err())
+	// Check both parents synchronously too: child/AfterFunc cancellation
+	// propagation must not grant detach or activation while still pending.
+	completionErr := errors.Join(finishCtx.Err(), gate.attemptCtx.Err(), sessionCtx.Err())
 	if gate.state != wireGuardGateFinishConfirming || completionErr != nil {
 		gate.mu.Unlock()
 		activeStop()
