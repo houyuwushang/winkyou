@@ -51,6 +51,7 @@ type gateC1bMemoryProfile struct {
 	acquire       func(string, string) (*governor.Governor, error)
 	cli           bool
 	fault         string
+	slowFinish    bool
 }
 
 var gateC1bMemoryProfiles = []gateC1bMemoryProfile{
@@ -102,6 +103,20 @@ func TestGateC1bMemoryProductPipelineReachesPostOOBEcho(t *testing.T) {
 			runGateC1bMemoryProductProfile(t, test.name, test)
 		})
 	}
+	// A subtest of the existing required entry keeps this proof in both CI
+	// platforms' exact -run selector. Original cases/windows stay unchanged.
+	t.Run("slow_initiator_finish", func(t *testing.T) {
+		for _, test := range gateC1bMemoryProfiles {
+			test.slowFinish = true
+			// This new durability fixture consumes the already frozen profile
+			// absolute envelope, not Hard16's compressed 6s timing fixture.
+			// No production limit or existing test window is raised.
+			test.activeTime = 0
+			t.Run(test.name, func(t *testing.T) {
+				runGateC1bMemoryProductProfile(t, "slow-finish-"+test.name, test)
+			})
+		}
+	})
 }
 
 func TestGateC1bMemoryProductPipelineFresh100(t *testing.T) {
@@ -175,6 +190,14 @@ func runGateC1bMemoryProductProfile(t *testing.T, label string, test gateC1bMemo
 		}
 		if err := governor.SetCarrierTestLedgerTime(machine, now); err != nil {
 			t.Fatal(err)
+		}
+	}
+	var finishDelayWitness func() (int32, time.Duration)
+	if test.slowFinish {
+		var err error
+		finishDelayWitness, err = governor.DelayC1bSuccessFinishForProof(machines[0])
+		if err != nil {
+			t.Fatal("install test-only durable FINISH delay failed")
 		}
 	}
 
@@ -451,6 +474,41 @@ func runGateC1bMemoryProductProfile(t *testing.T, label string, test gateC1bMemo
 			len(wg.Outbound)+wg.ReadinessWrites+wg.CompletionWrites != 3 || len(wg.Inbound)+wg.ReadinessReads+wg.CompletionReads != 3 {
 			t.Errorf("%s shared challenge allowance violated: %+v", got.role, wg)
 		}
+		endpointIndex := 0
+		if got.role == directattempt.RoleResponder {
+			endpointIndex = 1
+		}
+		emissions := got.result.Witness.GateB.Emissions
+		t.Logf("C1b packet components: profile=%s slow_finish=%t role=%s evidence=%d candidates=%d winner=%d active_writes=%d UDP=%d",
+			test.name, test.slowFinish, got.role, emissions.EvidencePackets, emissions.CandidatePackets,
+			emissions.WinnerPackets, wg.ActiveWrites, nats[endpointIndex].Snapshot().OutboundPackets)
+		if test.slowFinish {
+			if !wg.FinishRecorded || !wg.AttemptDetached || (endpointIndex == 0 && !wg.PeerFinishConfirmed) ||
+				!got.result.Witness.Handoff.OOBDrained || !got.result.Witness.Handoff.AttemptReleased ||
+				got.result.Witness.Handoff.Carrier.FramesRead != 8 || got.result.Witness.Handoff.Carrier.FramesWritten != 8 {
+				t.Errorf("%s slow FINISH lost authenticated completion/ownership: %+v", got.role, got.result.Witness.Handoff)
+			}
+			// Keep the #109 prompt's exact OS/netns table. The first memory run
+			// disagreed even without the delay; do not rewrite this oracle or
+			// change candidate scheduling without a maintainer adjudication.
+			wantPackets := map[string][2]uint64{
+				"predictive": {50, 49}, "asymmetric": {82, 530}, "hard-16k": {16403, 16401},
+			}[test.name]
+			actualPackets := nats[endpointIndex].Snapshot().OutboundPackets
+			if actualPackets != wantPackets[endpointIndex] {
+				t.Errorf("%s slow FINISH actual UDP=%d want=%d", got.role, actualPackets, wantPackets[endpointIndex])
+			}
+			t.Logf("C1b slow FINISH profile=%s role=%s data_plane_ready=%t finish=%t peer_confirmed=%t detached=%t completion_w=%d completion_r=%d UDP=%d carrier=8/8 challenge=3/3 echo_drained=%t",
+				test.name, got.role, got.result.DataPlaneReady, wg.FinishRecorded, wg.PeerFinishConfirmed,
+				wg.AttemptDetached, wg.CompletionWrites, wg.CompletionReads, actualPackets, got.result.Witness.Echo.Drained)
+		}
+	}
+	if finishDelayWitness != nil {
+		calls, waited := finishDelayWitness()
+		if calls != 1 || waited < 3500*time.Millisecond {
+			t.Fatalf("durable success delay witness calls=%d waited_ms=%d", calls, waited.Milliseconds())
+		}
+		t.Logf("C1b slow FINISH durable witness: calls=1 post_fsync_delay_ms=%d", waited.Milliseconds())
 	}
 	if test.fault != "" && matchedFault == 0 {
 		t.Fatal("fault matrix did not observe its injected root cause")
