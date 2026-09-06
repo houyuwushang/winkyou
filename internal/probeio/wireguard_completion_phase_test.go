@@ -3,6 +3,7 @@ package probeio
 import (
 	"context"
 	"errors"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -78,6 +79,43 @@ func TestConsumerFinishedCompletionSessionCancelStillCloses(t *testing.T) {
 	})
 	if !errors.Is(err, ErrWireGuardGate) || !errors.Is(err, context.Canceled) {
 		t.Fatalf("session cancellation = %v, want gate/cancel failure", err)
+	}
+	assertCompletionPhaseClosed(t, gate, packets, lease, calls, 3)
+}
+
+func TestConsumerFinishedCompletionAbsolutePropagationDoesNotDetach(t *testing.T) {
+	t.Parallel()
+	gate, packets, lease, calls := completionPhaseFixture(t, WireGuardInitiator, false, time.Second)
+	// Preserve the exact parent deadline/Done/Err. Only hold its asynchronous
+	// child-cancellation callback, making the parent-done/child-not-yet-done
+	// interval deterministic instead of relying on scheduler contention.
+	parent := &completionPhaseDelayedParent{
+		Context: gate.attemptCtx, started: make(chan struct{}),
+		release: make(chan struct{}), finished: make(chan struct{}),
+	}
+	gate.attemptCtx = parent
+	defer func() {
+		close(parent.release)
+		select {
+		case <-parent.finished:
+		case <-time.After(time.Second):
+			t.Error("completion cancellation callback did not drain")
+		}
+	}()
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	defer cancel()
+	err := gate.FinishAndActivate(ctx, func() error {
+		<-parent.Done()
+		select {
+		case <-parent.started:
+		case <-time.After(time.Second):
+			return errors.New("completion child cancellation did not reach proof barrier")
+		}
+		return nil
+	})
+	if !errors.Is(err, ErrWireGuardGate) || !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("expired parent accepted before child cancellation: gate_error=%t deadline=%t lease_detached=%t state=%s",
+			errors.Is(err, ErrWireGuardGate), errors.Is(err, context.DeadlineExceeded), lease.Witness().AttemptDetached, gate.Witness().State)
 	}
 	assertCompletionPhaseClosed(t, gate, packets, lease, calls, 3)
 }
@@ -225,7 +263,8 @@ func assertCompletionPhaseClosed(t *testing.T, gate *WireGuardSessionGate, packe
 	if !w.FinishRecorded || w.AttemptDetached || w.State != WireGuardGateClosed || !w.Closed ||
 		lease.Witness().AttemptDetached || !packets.isClosed() || w.ActiveReads != 0 || w.ActiveWrites != 0 ||
 		(gate.role == WireGuardInitiator && !w.PeerFinishConfirmed) {
-		t.Fatalf("failed completion ownership witness = %+v", w)
+		t.Fatalf("failed completion ownership witness = %+v; lease_detached=%t transport_closed=%t",
+			w, lease.Witness().AttemptDetached, packets.isClosed())
 	}
 	if calls.reads.Load() != 3 || calls.writes.Load() != writes || packets.writeCount() != int(writes) {
 		t.Fatalf("failed completion reached extra I/O: reads=%d writes=%d", calls.reads.Load(), calls.writes.Load())
@@ -256,4 +295,30 @@ type completionPhaseDrain struct {
 func (drain *completionPhaseDrain) Complete() error {
 	drain.beforeComplete()
 	return drain.DrainHandle.Complete()
+}
+
+type completionPhaseDelayedParent struct {
+	context.Context
+	started, release, finished chan struct{}
+	finishOnce                 sync.Once
+}
+
+// Hide context's private parent key so WithCancel uses the documented
+// AfterFunc path. This fixture has no application values to discard.
+func (*completionPhaseDelayedParent) Value(any) any { return nil }
+
+func (parent *completionPhaseDelayedParent) AfterFunc(fn func()) func() bool {
+	stop := context.AfterFunc(parent.Context, func() {
+		defer parent.finishOnce.Do(func() { close(parent.finished) })
+		close(parent.started)
+		<-parent.release
+		fn()
+	})
+	return func() bool {
+		stopped := stop()
+		if stopped {
+			parent.finishOnce.Do(func() { close(parent.finished) })
+		}
+		return stopped
+	}
 }
