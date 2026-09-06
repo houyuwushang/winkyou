@@ -47,21 +47,31 @@ func (gate *WireGuardSessionGate) finishWithConfirmation(sessionCtx context.Cont
 	gate.state = wireGuardGateFinishConfirming
 	codec := gate.completionCodec
 	opCtx, cancel := context.WithCancel(gate.challengeCtx) // original deadline; never restarted
+	completionCtx, cancelCompletion := context.WithCancel(gate.attemptCtx)
 	gate.mu.Unlock()
 	stop := context.AfterFunc(sessionCtx, cancel)
-	defer func() { stop(); cancel(); _ = codec.Close() }()
+	stopCompletion := context.AfterFunc(sessionCtx, cancelCompletion)
+	defer func() { stop(); stopCompletion(); cancel(); cancelCompletion(); _ = codec.Close() }()
 	gate.readMu.Lock()
 	defer gate.readMu.Unlock()
 	gate.writeMu.Lock()
 	defer gate.writeMu.Unlock()
 
+	if err := errors.Join(opCtx.Err(), sessionCtx.Err()); err != nil {
+		return gate.fail(err)
+	}
+	finishCtx := opCtx
 	if gate.role == WireGuardInitiator {
 		if err := gate.receiveCompletion(opCtx, codec); err != nil {
 			return gate.fail(err)
 		}
+		// The third inbound datagram is authenticated. No more establishment
+		// I/O is possible; local durability now uses the unchanged absolute
+		// envelope, not the elapsed challenge timer (ADR C1 section 19.5).
+		finishCtx = completionCtx
 	}
-	if opCtx.Err() != nil {
-		return gate.fail(opCtx.Err())
+	if err := errors.Join(finishCtx.Err(), sessionCtx.Err()); err != nil {
+		return gate.fail(err)
 	}
 	if err := durableFinish(); err != nil {
 		return gate.fail(errors.Join(ErrWireGuardGateState, err))
@@ -69,26 +79,32 @@ func (gate *WireGuardSessionGate) finishWithConfirmation(sessionCtx context.Cont
 	gate.mu.Lock()
 	gate.finishRecorded = true
 	gate.mu.Unlock()
-	if opCtx.Err() != nil {
-		return gate.fail(opCtx.Err())
+	if err := errors.Join(finishCtx.Err(), sessionCtx.Err()); err != nil {
+		return gate.fail(err)
 	}
 	if gate.role == WireGuardResponder {
 		if err := gate.sendCompletion(opCtx, codec); err != nil {
 			return gate.fail(err)
 		}
+		// Responder durability AND FINISHED writing stayed inside the 3s
+		// window. Only its subsequent local detach uses completionCtx.
+		finishCtx = completionCtx
 	}
-	if opCtx.Err() != nil {
-		return gate.fail(opCtx.Err())
+	if err := errors.Join(finishCtx.Err(), sessionCtx.Err()); err != nil {
+		return gate.fail(err)
 	}
 	if err := gate.lease.DetachAfterFinish(); err != nil {
 		return gate.fail(err)
 	}
 	activeCtx, activeStop := context.WithCancel(sessionCtx)
 	gate.mu.Lock()
-	if gate.state != wireGuardGateFinishConfirming || opCtx.Err() != nil {
+	// Check the caller synchronously too: AfterFunc cancellation propagation
+	// must not grant activation while its callback is awaiting scheduling.
+	completionErr := errors.Join(finishCtx.Err(), sessionCtx.Err())
+	if gate.state != wireGuardGateFinishConfirming || completionErr != nil {
 		gate.mu.Unlock()
 		activeStop()
-		return gate.fail(ErrWireGuardGateState)
+		return gate.fail(errors.Join(ErrWireGuardGateState, completionErr))
 	}
 	gate.state = WireGuardGateFinishDetached
 	gate.detached = true
