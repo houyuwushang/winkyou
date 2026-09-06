@@ -1192,7 +1192,8 @@ product handoff、orchestrator 顺序、binder drain/read ownership 和已有错
    后，慢 detach 超过 3s 但未过 absolute/session ceiling 则可 active。
 4. 原 readiness/FINISHED/lease-failure 回归与 packet-type trace golden 原样通过；仅
    `c1bproof` 内存用例注入 initiator durable FINISH 延迟 3.5s，三 profile 双端仍到
-   `data_plane_ready`，UDP 保持 predictive 50/49、asymmetric 82/530、hard-16K 16403/16401。
+   `data_plane_ready`；内存按 §19.6 的分项计费和完成阶段零新增报文验收。OS/netns 原表
+   predictive 50/49、asymmetric 82/530、hard-16K 16403/16401 及其 required 断言不变。
 5. 本地及 CI 保留首次失败与红→绿输出，覆盖 Windows/Linux、race×20、architecture/mutation、
    全仓和 required 管线；不以 rerun 或断言放宽抹去反例。
 
@@ -1201,8 +1202,32 @@ product handoff、orchestrator 顺序、binder drain/read ownership 和已有错
 responder 已 detach/active，但 post-OOB echo 失败。两侧 3/3 trace、carrier 8/8、burn 无退款、
 无 trip 的见证不能冒充完整 session 成功。
 
-本轮执行状态：第 4 项的内存验收尚未闭合。原数字来自 C1b 证据 §4.1 的 **OS/netns**
+裁决前执行记录：第 4 项曾因验收口径无法闭合。原数字来自 C1b 证据 §4.1 的 **OS/netns**
 场景；当前内存 fixture 的候选数量及 winner role 不同，无延迟对照与慢 FINISH 得到相同的
 另一组总计。具体计数、首次红输出及父 context 取消传播回归见
 [C1b 证据 §6](../GATE-C1B-PRODUCT-COMPOSITION-EVIDENCE.md#6-issue-109-完成阶段修复与未闭合验收2026-09-06)。
-本 PR 保留上述要求及其失败断言，不自行修订验收数字、调候选调度或宣布 #109 关闭。
+原要求和失败断言保留于提交 `0b7800b`，不抹去历史。后续按维护者接受的 §19.6 修订验收，
+不调候选调度，不据此宣布 #109 关闭。
+
+### 19.6 内存与 OS 验收分列（2026-09-06，维护者已接受）
+
+维护者在看到 §19.5 首轮反例后，明确同意：内存按自身场景的分项计费与“慢 FINISH 不新增
+报文”验收，同时保持 netns 原表和断言不变。本节只修订测试口径，不改变产品、协议、资源
+上限、候选调度、winner 选择、3s/3 包、原 absolute/session ceiling 或任何现场权限。
+
+1. **分项独立核算。** 每侧底层 natsim `OutboundPackets` 必须严格等于本次实际 evidence +
+   candidate + winner + establishment + active writes；不能再把 OS 场景的固定总数当作内存
+   常量，也不能只判断“小于某个宽松总数”。evidence 固定 13，candidate 受已有 profile/role
+   上限约束；asymmetric target-set 和 Hard16 仍完成原完整 schedule；成功双方合计恰好一个
+   winner。Gate B 的分项和、其总计及原 attempt 预算独立交叉检查。
+2. **完成阶段零发射。** 仅在 c1bproof 测试 hook 的真实 initiator FINISH append+fsync 后，
+   于原 3.5s 等待前后读取双侧底层发包快照；两个计数都必须逐项不变。计数只读，不开 socket、
+   不发包、不驱动重试、不改变时钟或暂停发包线程来制造零值。等待完成后的全程计数仍须满足
+   第 1 项。新增一个未归类报文或任一侧等待期间计数改变，负向测试都必须拒绝。
+3. **数据面与终局不变。** 每端 establishment 仍严格 3 入/3 出；post-OOB 仍是 initiator
+   一个 echo request 加一个 CLOSE、responder 一个 echo reply。双端 ready、FINISH、detach、
+   carrier 8/8、单次凭据与落盘、排水、零残留及无意外 safety trip 的断言全部保留。
+4. **OS 证据不变。** C1b 证据 §4.1 与 `test/natlab` 的原表、iptables 实测及 required CI
+   原样保留；不能用内存模型通过代替 OS 证明，不能因本节授权改 NAT 模型、调度或超时。
+5. **交付不变。** 独立复审、全部 required 验证、Draft/未合并与原 red 链接保留；本节没有
+   授权混修 #97/#101/#106/#107、liveness/M/C1c 或手动 rerun 求绿。
