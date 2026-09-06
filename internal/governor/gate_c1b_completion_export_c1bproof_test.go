@@ -4,7 +4,7 @@ package governor
 
 import (
 	"errors"
-	"sync/atomic"
+	"sync"
 	"time"
 )
 
@@ -12,7 +12,10 @@ import (
 // external tests, never to a normal or c1bproof product build. It delays the
 // return from an actual successful append+fsync, without replacing the journal,
 // its owner, clocks, callback, or record ordering. Every fixture owns its ledger.
-func DelayC1bSuccessFinishForProof(machine *Governor) (func() (int32, time.Duration), error) {
+func DelayC1bSuccessFinishForProof(machine *Governor, snapshot func() [2]uint64) (func() C1bFinishDelayProof, error) {
+	if snapshot == nil {
+		return nil, errors.New("C1b completion proof requires packet snapshots")
+	}
 	ledger, err := LoopbackCarrierTestLedger(machine)
 	if err != nil {
 		return nil, err
@@ -22,21 +25,41 @@ func DelayC1bSuccessFinishForProof(machine *Governor) (func() (int32, time.Durat
 	if ledger.hooks.afterSync != nil || ledger.hooks.afterAppendBeforeSync != nil || ledger.hooks.writeFrame != nil {
 		return nil, errors.New("C1b completion proof requires an unmodified journal writer")
 	}
-	var calls atomic.Int32
-	var waited atomic.Int64
+	var proofMu sync.Mutex
+	var proof C1bFinishDelayProof
 	ledger.hooks.afterSync = func(record pairingJournalRecord) error {
 		if record.Type != pairingRecordFinish || record.Reason != PairingTerminalSuccess {
 			return nil
 		}
-		if calls.Add(1) != 1 {
+		proofMu.Lock()
+		proof.Calls++
+		calls := proof.Calls
+		proofMu.Unlock()
+		if calls != 1 {
 			return errors.New("C1b completion proof observed repeated success FINISH")
 		}
+		before := snapshot()
 		started := time.Now()
 		timer := time.NewTimer(3500 * time.Millisecond)
 		defer timer.Stop()
 		<-timer.C
-		waited.Store(int64(time.Since(started)))
+		after := snapshot()
+		proofMu.Lock()
+		proof.Waited, proof.Before, proof.After = time.Since(started), before, after
+		proofMu.Unlock()
 		return nil
 	}
-	return func() (int32, time.Duration) { return calls.Load(), time.Duration(waited.Load()) }, nil
+	return func() C1bFinishDelayProof {
+		proofMu.Lock()
+		defer proofMu.Unlock()
+		return proof
+	}, nil
+}
+
+// C1bFinishDelayProof contains only counters from the test callback. It cannot
+// expose a live endpoint, key, or journal handle to an ordinary product build.
+type C1bFinishDelayProof struct {
+	Calls         int32
+	Waited        time.Duration
+	Before, After [2]uint64
 }

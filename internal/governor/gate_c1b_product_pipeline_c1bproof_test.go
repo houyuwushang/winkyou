@@ -98,6 +98,7 @@ var gateC1bMemoryProfiles = []gateC1bMemoryProfile{
 }
 
 func TestGateC1bMemoryProductPipelineReachesPostOOBEcho(t *testing.T) {
+	t.Run("packet_accounting_oracle", testGateC1bPacketAccountingOracle)
 	for _, test := range gateC1bMemoryProfiles {
 		t.Run(test.name, func(t *testing.T) {
 			runGateC1bMemoryProductProfile(t, test.name, test)
@@ -192,15 +193,6 @@ func runGateC1bMemoryProductProfile(t *testing.T, label string, test gateC1bMemo
 			t.Fatal(err)
 		}
 	}
-	var finishDelayWitness func() (int32, time.Duration)
-	if test.slowFinish {
-		var err error
-		finishDelayWitness, err = governor.DelayC1bSuccessFinishForProof(machines[0])
-		if err != nil {
-			t.Fatal("install test-only durable FINISH delay failed")
-		}
-	}
-
 	network, err := natsim.NewNetwork(natsim.Config{
 		MaxPacketConns: test.maxConns, MaxMappings: test.maxMappings,
 		QueueCapacity: test.queueCapacity, MaxDatagram: 2048,
@@ -226,6 +218,15 @@ func runGateC1bMemoryProductProfile(t *testing.T, label string, test gateC1bMemo
 			PublicAddr: public[index], Model: test.models[index], Changes: changes})
 		if err != nil {
 			t.Fatal(err)
+		}
+	}
+	var finishDelayWitness func() governor.C1bFinishDelayProof
+	if test.slowFinish {
+		finishDelayWitness, err = governor.DelayC1bSuccessFinishForProof(machines[0], func() [2]uint64 {
+			return [2]uint64{nats[0].Snapshot().OutboundPackets, nats[1].Snapshot().OutboundPackets}
+		})
+		if err != nil {
+			t.Fatal("install test-only durable FINISH delay failed")
 		}
 	}
 	topology := hardnatobserve.Topology{Primary: netip.MustParseAddrPort("203.0.113.10:3478"),
@@ -423,6 +424,7 @@ func runGateC1bMemoryProductProfile(t *testing.T, label string, test gateC1bMemo
 		}
 	}
 	matchedFault := 0
+	var packetProofs [2]gateC1bPacketProof
 	for _, got := range outcomes {
 		if test.fault != "" {
 			var failure *gatecorchestrator.Failure
@@ -479,6 +481,10 @@ func runGateC1bMemoryProductProfile(t *testing.T, label string, test gateC1bMemo
 			endpointIndex = 1
 		}
 		emissions := got.result.Witness.GateB.Emissions
+		packetProofs[endpointIndex] = gateC1bPacketProof{
+			emissions: emissions, establishment: len(wg.Outbound) + wg.ReadinessWrites + wg.CompletionWrites,
+			active: wg.ActiveWrites, actualUDP: nats[endpointIndex].Snapshot().OutboundPackets,
+		}
 		t.Logf("C1b packet components: profile=%s slow_finish=%t role=%s evidence=%d candidates=%d winner=%d active_writes=%d UDP=%d",
 			test.name, test.slowFinish, got.role, emissions.EvidencePackets, emissions.CandidatePackets,
 			emissions.WinnerPackets, wg.ActiveWrites, nats[endpointIndex].Snapshot().OutboundPackets)
@@ -488,27 +494,23 @@ func runGateC1bMemoryProductProfile(t *testing.T, label string, test gateC1bMemo
 				got.result.Witness.Handoff.Carrier.FramesRead != 8 || got.result.Witness.Handoff.Carrier.FramesWritten != 8 {
 				t.Errorf("%s slow FINISH lost authenticated completion/ownership: %+v", got.role, got.result.Witness.Handoff)
 			}
-			// Keep the #109 prompt's exact OS/netns table. The first memory run
-			// disagreed even without the delay; do not rewrite this oracle or
-			// change candidate scheduling without a maintainer adjudication.
-			wantPackets := map[string][2]uint64{
-				"predictive": {50, 49}, "asymmetric": {82, 530}, "hard-16k": {16403, 16401},
-			}[test.name]
 			actualPackets := nats[endpointIndex].Snapshot().OutboundPackets
-			if actualPackets != wantPackets[endpointIndex] {
-				t.Errorf("%s slow FINISH actual UDP=%d want=%d", got.role, actualPackets, wantPackets[endpointIndex])
-			}
 			t.Logf("C1b slow FINISH profile=%s role=%s data_plane_ready=%t finish=%t peer_confirmed=%t detached=%t completion_w=%d completion_r=%d UDP=%d carrier=8/8 challenge=3/3 echo_drained=%t",
 				test.name, got.role, got.result.DataPlaneReady, wg.FinishRecorded, wg.PeerFinishConfirmed,
 				wg.AttemptDetached, wg.CompletionWrites, wg.CompletionReads, actualPackets, got.result.Witness.Echo.Drained)
 		}
 	}
+	var delayProof *governor.C1bFinishDelayProof
 	if finishDelayWitness != nil {
-		calls, waited := finishDelayWitness()
-		if calls != 1 || waited < 3500*time.Millisecond {
-			t.Fatalf("durable success delay witness calls=%d waited_ms=%d", calls, waited.Milliseconds())
+		proof := finishDelayWitness()
+		delayProof = &proof
+		t.Logf("C1b slow FINISH durable witness: calls=%d post_fsync_delay_ms=%d UDP_before=%v UDP_after=%v",
+			proof.Calls, proof.Waited.Milliseconds(), proof.Before, proof.After)
+	}
+	if test.fault == "" {
+		if err := validateGateC1bPacketAccounting(test, packetProofs, delayProof); err != nil {
+			t.Error(err)
 		}
-		t.Logf("C1b slow FINISH durable witness: calls=1 post_fsync_delay_ms=%d", waited.Milliseconds())
 	}
 	if test.fault != "" && matchedFault == 0 {
 		t.Fatal("fault matrix did not observe its injected root cause")
