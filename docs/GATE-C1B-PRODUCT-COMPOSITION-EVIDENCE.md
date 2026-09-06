@@ -6,6 +6,8 @@
 [Gate C1 ADR](adr/ADR-N3C-GATE-C1-SSH-PRODUCT-ASSEMBLY.md) §16–§19；R1 细节先以独立文档提交冻结。
 真实 OpenSSH loopback 与 required netns 已有成功实测，和 memory 证据分列，不互相替代。
 
+2026-09-06：[Issue #109](https://github.com/houyuwushang/winkyou/issues/109) 的完成阶段时间边界按 [ADR §19.5](adr/ADR-N3C-GATE-C1-SSH-PRODUCT-ASSEMBLY.md) 修订；本轮实现与红→绿证据待独立复审，历史 C1b 成功不覆盖该新反例。
+
 ## 1. 已落地的 memory 组合
 
 - 实际 Cobra root → `solver direct connect/child` → private request/config/artifact parser →

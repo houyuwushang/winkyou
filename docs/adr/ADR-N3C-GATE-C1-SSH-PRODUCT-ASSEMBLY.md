@@ -1125,6 +1125,7 @@ process/conntrack/lock 全部证明。另需核实 SSH 的 2s graceful drain 与
 - **时间：** READY/ACK、WireGuard handshake、完成确认共用 BeginChallenge 起算的原 ≤3s
   deadline，并受所选 profile 的原 absolute envelope/caller context 限制；取消 binder 子
   context 仅为读取权交接，不重启或取消原 challenge deadline。2s 仍仅用于 drain。
+  已完成最后一个认证 datagram 后的本地完成阶段，按 §19.5 的窄范围时间边界修订执行。
 - **精确计费：** initiator outbound=READY+initiation+keepalive（3），inbound=ACK+response+
   FINISHED（3）；responder 为相反方向（3/3）。FINISHED 即使在本地 FINISH 后发送，仍计入
   capped establishment counter，不能计作无限 active data。witness 单列 completion reads/
@@ -1137,3 +1138,65 @@ process/conntrack/lock 全部证明。另需核实 SSH 的 2s graceful drain 与
   零 OOB close”回归，FINISH 错误/确认静默/提前 EOF/跨域/replay/超额矩阵及双端 journal；
   再跑三 profile race×20、100 fresh、真实 SSH 与 required netns。§19.1 原红色诊断作为缺陷
   证据保留在文档，测试替换成上述双端通过/拒绝断言，不把故意失败当作通过证据。
+
+### 19.5 完成阶段时间边界修订（2026-09-06，Issue #109）
+
+维护者授权按 [Issue #109](https://github.com/houyuwushang/winkyou/issues/109) 的修复提示词实现
+本节窄范围修订。§19.4 保留为原裁决记录；本修订、实现与证据仍通过同一个 Draft PR 接受独立
+复审，不授权 liveness、映射寿命模型、C1c 或现场 I/O，也不关闭尚未合入修复的 #109。
+
+**两阶段时间边界：**
+
+| 阶段 | 必须完成的操作 | 时间权威 |
+| --- | --- | --- |
+| challenge | READY/ACK、WG initiation/response/keepalive，以及 responder 写 FINISHED、initiator 读并认证 FINISHED | `BeginChallenge` 起算原 ≤3s，且受 profile absolute envelope / caller context 约束 |
+| completion | initiator 已认证 FINISHED 后的本地 durable FINISH、双方 `DetachAfterFinish` 与进入 active | 原 `attemptCtx` absolute envelope、caller context 与独立 session ceiling；不再受 3s challenge 窗口约束 |
+
+- 每一个 outer datagram 仍必须在原 3s 窗口内进入底层 I/O。3s 到期仍未完成 3/3 trace 或
+  未收/发 FINISHED，仍为原 challenge failure；不重启、延长或替换 `challengeCtx` timer。
+- completion 仅在本侧三入/三出额度全部消费之后进入，不再有任何 outer datagram。第四个
+  pre-FINISH datagram 仍在底层 I/O 前拒绝；不新增 OOB frame、socket、target、probe packet
+  或 retry，不使用 Gate B 预算 headroom。
+- responder 顺序仍为本地 trace → bounded reader drain → durable FINISH → FINISHED 写 →
+  detach/active。因此 responder 的 durable FINISH **仍在 3s 窗口内**：若落盘拖到 FINISHED
+  无法在原窗口写出，仍失败并关闭 transport；已写 FINISH 不撤销、不重复。只有成功写出
+  FINISHED 后的本地 detach/active 使用 completion 边界。
+- initiator 顺序仍为本地 trace → bounded reader drain → 读并认证 FINISHED → durable
+  FINISH → detach/active → OOB drain。收到未认证或仅缓冲的 frame 不能进入 completion。
+  本修订解除的是“认证 FINISHED 后”的本地 3s 检查，不提前 FINISH，不移动 OOB EOF 阈值。
+- completion context 从原 `gate.attemptCtx` 派生，并传播 `sessionCtx` 的取消；每个新增
+  `context.AfterFunc` 必须在 defer 中 stop。caller/absolute/session 取消在 FINISH 或 detach
+  期间发生时仍不激活 session，错误路径关闭 transport。不得另起无界 worker 隐藏慢落盘。
+
+**理由与不变量：**
+
+原 Blocker 3 的 3s 窗口用于排除 `RekeyTimeout=5s` 重传并限定 pre-FINISH 挑战。datagram
+硬计数与 message-type 校验仍在 I/O 前强制，不能因完成阶段改变而使重传、cookie reply、
+重复 type 或第四包合法。initiator 在第三个 inbound FINISHED 认证后已无剩余额度；此后的
+本地 fsync 不产生报文。继续让旧 3s 窗口裁决它，会出现 journal 已记录成功而本地 session
+被判死的分裂。此理由不适用于 responder 的 FINISH，因为其后仍须发出第三个 datagram。
+
+`WireGuardChallengePackets=3`、`WireGuardChallengeTimeout=3s`、原 3/3 trace golden、nonce
+8/9/10、AD、40-byte frame、FINISH-before-detach、已写 FINISH 不撤销不重复全部不变。
+responder 的 FINISH 不代表 initiator 成功；post-OOB echo 仍必需。`TransportLease`、Gate B
+product handoff、orchestrator 顺序、binder drain/read ownership 和已有错误类保持不变。
+
+**必过证据（实现 PR 回填，不预先视为通过）：**
+
+1. initiator 在认证 FINISHED 后延迟本地 FINISH 至 `BeginChallenge+3.2s`，仍在 ≥6s 的
+   absolute envelope 内：先红后绿，最终 active、FINISH/detach/peer confirmation 为 true，
+   fake transport 恰好读三次、写三次，无第四包。
+2. 慢 FINISH 跨 absolute envelope 或 FINISH 回调内取消 session：已写 FINISH 为 true，
+   但不 detach、不 active，transport 关闭且无额外报文。
+3. responder FINISH 超过 3s：FINISHED 写仍失败、不退款、不激活；FINISHED 在 3s 内写出
+   后，慢 detach 超过 3s 但未过 absolute/session ceiling 则可 active。
+4. 原 readiness/FINISHED/lease-failure 回归与 packet-type trace golden 原样通过；仅
+   `c1bproof` 内存用例注入 initiator durable FINISH 延迟 3.5s，三 profile 双端仍到
+   `data_plane_ready`，UDP 保持 predictive 50/49、asymmetric 82/530、hard-16K 16403/16401。
+5. 本地及 CI 保留首次失败与红→绿输出，覆盖 Windows/Linux、race×20、architecture/mutation、
+   全仓和 required 管线；不以 rerun 或断言放宽抹去反例。
+
+原始 [Windows required red job](https://github.com/houyuwushang/winkyou/actions/runs/33992470623/job/101377022894)
+永久保留：initiator FINISH/PeerFinishConfirmed=true、AttemptDetached=false、gate=closed；
+responder 已 detach/active，但 post-OOB echo 失败。两侧 3/3 trace、carrier 8/8、burn 无退款、
+无 trip 的见证不能冒充完整 session 成功。
