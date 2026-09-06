@@ -19,6 +19,12 @@
 > Gate B 的验收对象就是普通 fixed-endpoint hole punch 无法处理的 endpoint-dependent NAT。
 > 本 ADR 不复活 legacy puncher，不启用自动恢复，也不签发 live authorization。
 
+> 2026-09-06 新增已裁决问题：[#106](https://github.com/houyuwushang/winkyou/issues/106) /
+> [诊断 PR #107](https://github.com/houyuwushang/winkyou/pull/107) 复现了早期命中在最终确认前
+> 失去 kernel flow 的机制；[映射寿命与提前确认 ADR](./ADR-N3C-HARD16-MAPPING-LIFETIME.md)
+> 已接受 D1–D6（M 测试模型/失效层接受，E 仅为研究方向）。该 ADR 不覆盖本 ADR 的预算、wire 或
+> §20/§22 规则，不授权修实现、放宽测试、C1c 或现场 I/O；M 实现须另行授权。
+
 ## 1. 产品裁决
 
 WinkYou 面向的用户是：两台身份已确认的设备分别位于用户无法配置的 NAT 后，已有一个
