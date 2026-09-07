@@ -55,6 +55,16 @@ type gateC1bMemoryProfile struct {
 	cancelAfterFinish bool
 }
 
+// Test-only session configuration, not a product deadline or probe allowance.
+// The slow fixture must cover the unchanged 3s challenge plus its real 3.5s
+// post-fsync delay and local completion; ordinary fixtures retain their 5s cap.
+func (profile gateC1bMemoryProfile) sessionCeiling() time.Duration {
+	if profile.slowFinish {
+		return 10 * time.Second
+	}
+	return 5 * time.Second
+}
+
 var gateC1bMemoryProfiles = []gateC1bMemoryProfile{
 	{
 		name: "predictive", profile: hardnatplan.ProfilePredictiveEdm, resource: hardnatplan.ResourcePredictive,
@@ -105,20 +115,51 @@ func TestGateC1bMemoryProductPipelineReachesPostOOBEcho(t *testing.T) {
 			runGateC1bMemoryProductProfile(t, test.name, test)
 		})
 	}
-	// A subtest of the existing required entry keeps this proof in both CI
-	// platforms' exact -run selector. Original cases/windows stay unchanged.
-	t.Run("slow_initiator_finish", func(t *testing.T) {
-		for _, test := range gateC1bMemoryProfiles {
-			test.slowFinish = true
-			// This new durability fixture consumes the already frozen profile
-			// absolute envelope, not Hard16's compressed 6s timing fixture.
-			// No production limit or existing test window is raised.
-			test.activeTime = 0
-			t.Run(test.name, func(t *testing.T) {
-				runGateC1bMemoryProductProfile(t, "slow-finish-"+test.name, test)
+}
+
+// Both CI platforms run this entry separately with -race -count=20, preserving
+// the three slow proofs without consuming the ordinary pipeline runner's time.
+func TestGateC1bMemorySlowDurableFinishReachesPostOOBEcho(t *testing.T) {
+	for _, test := range gateC1bMemoryProfiles {
+		test.slowFinish = true
+		// Consume the already frozen profile absolute envelope, not Hard16's
+		// compressed 6s timing fixture. Only the slow session config is 10s.
+		test.activeTime = 0
+		t.Run(test.name, func(t *testing.T) {
+			runGateC1bMemoryProductProfile(t, "slow-finish-"+test.name, test)
+		})
+	}
+}
+
+func TestGateC1bMemoryFixtureSessionWindows(t *testing.T) {
+	for _, base := range gateC1bMemoryProfiles {
+		for _, scenario := range []string{"ordinary", "cli", "cancel", "evidence-drift", "candidate-exhaustion", "slow-finish"} {
+			t.Run(base.name+"/"+scenario, func(t *testing.T) {
+				profile := base
+				want := 5 * time.Second
+				switch scenario {
+				case "cli":
+					profile.cli = true
+				case "cancel":
+					profile.cancelAfterFinish = true
+				case "evidence-drift", "candidate-exhaustion":
+					profile.cli, profile.fault = true, scenario
+				case "slow-finish":
+					profile.slowFinish = true
+					want = 10 * time.Second
+				}
+				if got := profile.sessionCeiling(); got != want {
+					t.Fatalf("fixture session ceiling=%s, want %s", got, want)
+				}
+				if profile.slowFinish && profile.sessionCeiling() <= 3*time.Second+3500*time.Millisecond {
+					t.Fatal("slow fixture leaves no completion margin after the challenge and injected delay")
+				}
+				if base.sessionCeiling() != 5*time.Second || profile.activeTime != base.activeTime || profile.candidateTime != base.candidateTime {
+					t.Fatal("session configuration changed the base fixture or its attempt timing")
+				}
 			})
 		}
-	})
+	}
 }
 
 // Kept as a separate required race-20 step so this new regression does not
@@ -301,7 +342,7 @@ func runGateC1bMemoryProductProfile(t *testing.T, label string, test gateC1bMemo
 			Ref: []string{"right", "left"}[index], PublicKey: private[1-index].PublicKey().String(),
 			AllowedIPs: []string{virtual[1-index] + "/32"}, LocalVirtualIP: virtual[index], PeerVirtualIP: virtual[1-index],
 			MemoryInterfaceName: []string{"wink-c1b-left", "wink-c1b-right"}[index], MemoryMTU: 1280,
-			SessionCeiling: 5 * time.Second,
+			SessionCeiling: test.sessionCeiling(),
 		}}
 		if err := cfg.Validate(); err != nil {
 			t.Fatal(err)
@@ -314,6 +355,9 @@ func runGateC1bMemoryProductProfile(t *testing.T, label string, test gateC1bMemo
 			ObserverSet: gatecrequest.ObserverSet{Primary: observerEndpoints[0], AlternatePort: observerEndpoints[1],
 				AlternateAddress: observerEndpoints[2], AlternateAddressPort: observerEndpoints[3]},
 		}
+	}
+	if test.slowFinish {
+		t.Logf("C1b slow fixture session witness: endpoints=2 session_ms=%d", test.sessionCeiling().Milliseconds())
 	}
 	requests[0].SSH = &gatecrequest.SSHConfig{Endpoint: sshEndpoint, User: "c1btest", IdentityFile: identity, KnownHostsFile: knownHosts}
 	var configPaths, requestPaths [2]string
