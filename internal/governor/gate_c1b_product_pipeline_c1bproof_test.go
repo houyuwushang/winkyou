@@ -100,11 +100,6 @@ var gateC1bMemoryProfiles = []gateC1bMemoryProfile{
 
 func TestGateC1bMemoryProductPipelineReachesPostOOBEcho(t *testing.T) {
 	t.Run("packet_accounting_oracle", testGateC1bPacketAccountingOracle)
-	t.Run("cancel_after_durable_finish", func(t *testing.T) {
-		profile := gateC1bMemoryProfiles[0]
-		profile.cancelAfterFinish = true
-		runGateC1bMemoryProductProfile(t, "cancel-after-finish", profile)
-	})
 	for _, test := range gateC1bMemoryProfiles {
 		t.Run(test.name, func(t *testing.T) {
 			runGateC1bMemoryProductProfile(t, test.name, test)
@@ -124,6 +119,15 @@ func TestGateC1bMemoryProductPipelineReachesPostOOBEcho(t *testing.T) {
 			})
 		}
 	})
+}
+
+// Kept as a separate required race-20 step so this new regression does not
+// consume the existing three-profile pipeline runner's 12-minute envelope.
+// The same fixture, fault, attempt/session deadlines and assertions are used.
+func TestGateC1bMemoryCancellationAfterDurableFinish(t *testing.T) {
+	profile := gateC1bMemoryProfiles[0]
+	profile.cancelAfterFinish = true
+	runGateC1bMemoryProductProfile(t, "cancel-after-finish", profile)
 }
 
 func TestGateC1bMemoryProductPipelineFresh100(t *testing.T) {

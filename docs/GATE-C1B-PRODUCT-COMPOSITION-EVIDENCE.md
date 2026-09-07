@@ -521,3 +521,29 @@ envelope、调度、netns 原断言、workflow、依赖均未改，不混修其�
 远端 required 结果以 [Draft PR #110](https://github.com/houyuwushang/winkyou/pull/110) 的精确
 head checks 和 PR 验证汇总为准；不能引用旧 head 的成功代替。独立复审前不合并、不关闭 #109，
 也不增加任何现场或后续 gate 权限。
+
+### 6.7 新取消回归的 CI 分组与首跑 runner 超时
+
+`b7a43e8` 的首次 [PR CI](https://github.com/houyuwushang/winkyou/actions/runs/34072897788) 与
+[push CI](https://github.com/houyuwushang/winkyou/actions/runs/34072896223) 已完成：**31 SUCCESS /
+2 FAILURE / 33**。两项失败均为 Windows 主管线的 test runner 12 分钟总时限；没有手动 rerun。
+
+| Windows 首跑 | 原始错误 | 包耗时 |
+| --- | --- | --- |
+| [PR job](https://github.com/houyuwushang/winkyou/actions/runs/34072897788/job/101593426732) | `panic: test timed out after 12m0s` | 721.495s |
+| [push job](https://github.com/houyuwushang/winkyou/actions/runs/34072896223/job/101593422200) | 同上 | 720.192s |
+
+两份失败日志未记录 `--- FAIL` 断言、completion failure witness 或 data race；不据此断言
+被 runner 截断的余下测试或 residue 已通过。Linux 同一主管线通过；两个完整 Linux memory
+job、两个 C1b OS/netns job 和其它门禁通过，不能代替 Windows 的未完成验收。
+
+原因属于测试分组：新增取消场景进入原 selector 后也重复 20 次。本地已通过的 JSON 中，
+主管线、CLI、ownership 三个入口的实测合计为 767.20s，已超 720s，尚未计 runner 开销。
+因此保留原产品/fixture 时限与旧 CI 步骤，只将新增场景移动为独立顶层
+`TestGateC1bMemoryCancellationAfterDurableFinish`，在同一个两平台 required job 中新增一个
+显式 `-race -count=20 -timeout=3m` 步骤。旧 selector、12m/3m/9m、25 分钟 job 上限、其它
+测试体及所有产品代码不变；不 skip、不降低重复次数、不并发重排产品管线或追加重试。
+
+新分组的完全相同取消 fixture 首次单独验证 PASS **75.217s**（20/20）；`go test -run GateC1b`
+仍包含该回归。§6.6 的全仓/三包/全选择器记录属于分组前相同生产代码，不冒充新的 CI 结果。
+本节唯一 workflow 增量是该必过步骤；此前“workflow 未改”的记录保持其旧 head 时点含义。
