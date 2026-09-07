@@ -725,3 +725,25 @@ envelope 或重跑失败集合；完整日志留仓库外。
 
 本增量的确认路径与 120 个慢场景已验证，但完整验收仍未闭合。保持 Draft/未合并，停止
 进一步语义修正，等待维护者处理两个范围外反例；不关闭 #109、不推进 C1c/现场。
+
+### 6.12 生产改动复审接受后的测试配置修订
+
+2026-09-07 [独立复审](https://github.com/houyuwushang/winkyou/pull/110#issuecomment-5568851539)
+接受 `9b47ebc` 的 §19.9 生产改动，维护者续令继续处理测试配置与 CI。处置范围见
+[ADR §19.10](./adr/ADR-N3C-GATE-C1-SSH-PRODUCT-ASSEMBLY.md#1910-复审后的测试配置与执行器分组2026-09-07)：
+普通/CLI/取消/fresh100 内存 fixture 与慢 fixture 统一 10s；将真实墙钟 completion
+回归从原 3m consumer 步骤分出，独立 race×20/12m，原 job 25m 不变。
+
+**修订前证据保留。** `9b47ebc` 最终为 28/33：四个 consumer 步骤在 180.015–180.210s
+被 Go test 的 3m watchdog 截断，日志在截断前未报告 assertion/race failure；后续 slow
+FINISH/cancel/fresh100 未运行，不能记为通过。
+[PR-trigger](https://github.com/houyuwushang/winkyou/actions/runs/34094477977) 与
+[push](https://github.com/houyuwushang/winkyou/actions/runs/34094474735) 首跑均保留。
+这些是执行器超时，不是产品 3s 挑战失败；§6.11 的本地普通 5s session 反例仍是不同证据。
+
+N2d 首跑 `expired/verify` 已由复审登记到 [#101](https://github.com/houyuwushang/winkyou/issues/101#issuecomment-5568859853)，
+本地 loopback 15s 反例已登记 [#111](https://github.com/houyuwushang/winkyou/issues/111)。
+两个路径/断言在本 PR 均不修改，不把类别登记当作根因修复，也不补称旧 Fatal 路径已排空。
+
+以下配置回归、分组完整性、完整重复验证和新 head CI 尚待实际执行；本条 docs 提交不
+宣称通过。后续追加实测，原 §6.1–6.11 内容保持。

@@ -1277,6 +1277,7 @@ responder 已 detach/active，但 post-OOB echo 失败。两侧 3/3 trace、carr
    Linux/Windows 原 required job 显式执行 `-race -count=20`；原普通/CLI/ownership、取消、
    drift/exhaustion、fresh100 步骤仍必跑。不减次数、不 skip、不重试求绿；runner 分组只分摊
    测试耗时，不改变产品调度。增加纯测试配置回归，守住慢场景 10s 与其它场景 5s 的分离。
+   本轮 10s/5s 的测试配置快照后来由 §19.10 统一为 10s；不是产品时间边界变更。
 4. **保留反例与审查。** `1cadf84` 的 Windows 首跑 session 到期与本地 runner 超时分别记录，
    不能混称同一原因；此前红记录、§4.1 OS 表和 required netns 原断言不变。新测试通过只
    证明本次有界完成与排水，不冒充长期在线或真实网络成功。继续同一 Draft PR，独立复审
@@ -1331,5 +1332,36 @@ challenge 后通常只余数秒。fsync 跨过它仍 fail-closed，已写 FINISH
 `c1bproof` 分别注入 initiator/responder 3.5s 慢 FINISH，三 profile 双端 ready、FINISH、
 detach、post-OOB echo、carrier 8/8 和残留检查不变。按 §19.6 精确分项核算、等待期间双方
 计数不增长；responder 注入点在 FINISHED 写之前，其等待快照恰少该侧一包，最终仍是 3/3，
-不能把等待快照误算成已经写出 FINISHED。慢 fixture 10s、其它 fixture 5s 保持分离。
+不能把等待快照误算成已经写出 FINISHED。慢 fixture 10s、其它 fixture 5s 保持分离
+（该测试配置快照由 §19.10 取代；本节的生产规则不变）。
 验证命令与首次红→绿写入证据 §6.11；未实测项不得预先标绿。
+
+### 19.10 复审后的测试配置与执行器分组（2026-09-07）
+
+[独立复审](https://github.com/houyuwushang/winkyou/pull/110#issuecomment-5568851539)
+接受 §19.9 生产改动，并明确以下调整属于 §19.8 已授权的测试配置/分组。维护者续令继续
+处理 #110；仍为同一 Draft PR，不合并、不关闭 #109。本节不作新的协议或现场裁决。
+
+1. **统一内存 fixture session 为 10s。** 普通、CLI、显式取消、drift/exhaustion、fresh100
+   与 I/R 慢 FINISH 的三个 profile、双端均使用 10s。旧 5s 是测试选择，不是必须满足的
+   成功 SLA；§6.11 的普通场景已实测在 session 边界失败、attempt 当时仍有效。不能据此
+   把未经分段测量的延迟确定归因于 fsync。原 5s 配置和反例保留为历史证据，配置回归
+   改为守住统一的 10s；profile absolute/candidate 时间和生产默认/校验地板不变。
+2. **分开执行真实墙钟 completion 回归。** 原 consumer 步骤保留 3m、race、20 轮；
+   completion/迟 confirmation/detach 跨 challenge 边界测试转入独立 12m 步骤，仍 race、
+   20 轮。该时限只限测试进程，不改变 3s 挑战、3.5s 注入或任何产品 deadline。保留原
+   Linux/Windows required job 的 25m 上限、其它步骤与所有测试；增加分组覆盖与负向
+   回归，证明两组无遗漏、无重复。`Confirmation` 与 `DetachAfterChallengeDeadline`
+   不都包含 `Completion`，选择器须覆盖实际名称，不能仅按一个关键字推断完整性。
+3. **继续守住真实失败边界。** session/caller/absolute 取消仍不激活、FINISH 不撤销；
+   原 3s/三包、nonce/AD/40-byte、计费、无 retry/fallback、FINISH-before-detach、原
+   golden、OS §4.1 与 required netns 均不变。新增本轮生产代码不在该处置范围内。
+4. **分离已有债务。** loopback absence 15s 反例已登记为
+   [#111](https://github.com/houyuwushang/winkyou/issues/111)，N2d `expired/verify` 是
+   [#101 的第二签名](https://github.com/houyuwushang/winkyou/issues/101#issuecomment-5568859853)。
+   不在 #110 修改这两个路径或其断言，不把独立通过覆盖失败。复审允许的 N2d 单次透明
+   rerun 仅限已登记签名且同 SHA 同 job 存在通过证据，若实际使用必须单独记录；它不是
+   无限重跑许可，更不能证明该缺陷已修复。无残留证据的失败不得补称零残留。
+
+本轮测试命令、原 28/33 RED、选择器覆盖证明和实际结果追加到 C1b 证据 §6.12；通过前
+不预填绿灯，不推进 C1c/现场。原 §6.1–6.11 保留，不以测试参数更新删除历史。
