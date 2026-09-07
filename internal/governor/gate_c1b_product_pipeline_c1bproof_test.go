@@ -38,20 +38,21 @@ import (
 )
 
 type gateC1bMemoryProfile struct {
-	name          string
-	profile       hardnatplan.Profile
-	resource      hardnatplan.ResourceClass
-	plannerRoles  [2]hardnatplan.Role
-	models        [2]natsim.Model
-	maxConns      int
-	maxMappings   int
-	queueCapacity int
-	candidateTime time.Duration
-	activeTime    time.Duration
-	acquire       func(string, string) (*governor.Governor, error)
-	cli           bool
-	fault         string
-	slowFinish    bool
+	name              string
+	profile           hardnatplan.Profile
+	resource          hardnatplan.ResourceClass
+	plannerRoles      [2]hardnatplan.Role
+	models            [2]natsim.Model
+	maxConns          int
+	maxMappings       int
+	queueCapacity     int
+	candidateTime     time.Duration
+	activeTime        time.Duration
+	acquire           func(string, string) (*governor.Governor, error)
+	cli               bool
+	fault             string
+	slowFinish        bool
+	cancelAfterFinish bool
 }
 
 var gateC1bMemoryProfiles = []gateC1bMemoryProfile{
@@ -99,6 +100,11 @@ var gateC1bMemoryProfiles = []gateC1bMemoryProfile{
 
 func TestGateC1bMemoryProductPipelineReachesPostOOBEcho(t *testing.T) {
 	t.Run("packet_accounting_oracle", testGateC1bPacketAccountingOracle)
+	t.Run("cancel_after_durable_finish", func(t *testing.T) {
+		profile := gateC1bMemoryProfiles[0]
+		profile.cancelAfterFinish = true
+		runGateC1bMemoryProductProfile(t, "cancel-after-finish", profile)
+	})
 	for _, test := range gateC1bMemoryProfiles {
 		t.Run(test.name, func(t *testing.T) {
 			runGateC1bMemoryProductProfile(t, test.name, test)
@@ -345,6 +351,13 @@ func runGateC1bMemoryProductProfile(t *testing.T, label string, test gateC1bMemo
 	defer cancelInitiator()
 	responderCtx, cancelResponder := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancelResponder()
+	var finishCancelWitness func() int32
+	if test.cancelAfterFinish {
+		finishCancelWitness, err = governor.CancelC1bAfterDurableFinishForProof(machines[0], cancelInitiator)
+		if err != nil {
+			t.Fatal("install test-only durable FINISH cancellation failed")
+		}
+	}
 	type outcome struct {
 		role   directattempt.Role
 		result gatecorchestrator.Result
@@ -426,6 +439,42 @@ func runGateC1bMemoryProductProfile(t *testing.T, label string, test gateC1bMemo
 	matchedFault := 0
 	var packetProofs [2]gateC1bPacketProof
 	for _, got := range outcomes {
+		if test.cancelAfterFinish {
+			var failure *gatecorchestrator.Failure
+			if !errors.As(got.err, &failure) || failure.Retryable || !failure.CredentialBurned ||
+				got.result.DataPlaneReady || !got.result.FinishRecorded {
+				t.Errorf("%s post-FINISH cancellation lost terminal/durability", got.role)
+				continue
+			}
+			wg, handoff := got.result.Witness.WireGuard, got.result.Witness.Handoff
+			side := 0
+			if got.role == directattempt.RoleResponder {
+				side = 1
+			}
+			if side == 0 && (!wg.PeerFinishConfirmed || wg.AttemptDetached || wg.State != "closed") {
+				t.Error("cancelled initiator activated or lost authenticated FINISHED")
+			}
+			if side == 0 {
+				failure := wg.CompletionFailure
+				if failure == nil || failure.Point != "after_durable_finish" || failure.Attempt.State != "canceled" || failure.Session.State != "active" {
+					t.Errorf("caller cancellation source was lost: %+v", failure)
+				} else {
+					t.Logf("C1b cancellation source: %+v", *failure)
+				}
+			}
+			if !wg.FinishRecorded || !handoff.FinishRecorded || !handoff.AttemptReleased || !handoff.OOBDrained ||
+				len(wg.Outbound)+wg.ReadinessWrites+wg.CompletionWrites != 3 ||
+				len(wg.Inbound)+wg.ReadinessReads+wg.CompletionReads != 3 || wg.ActiveWrites != 0 || wg.ActiveReads != 0 ||
+				handoff.Carrier.FramesRead != 8 || handoff.Carrier.FramesWritten != 8 {
+				t.Errorf("%s cancelled completion lost ownership/3-packet/drain boundary", got.role)
+			}
+			if nats[side].Snapshot().OutboundPackets != uint64(got.result.Witness.GateB.Emissions.UDPPacketsTotal+3) {
+				t.Errorf("%s cancelled completion emitted outside establishment", got.role)
+			}
+			t.Logf("C1b cancelled FINISH role=%s class=%s finish=%t detached=%t attempt_released=%t carrier_drained=%t active=0/0",
+				got.role, failure.Class, wg.FinishRecorded, wg.AttemptDetached, handoff.AttemptReleased, handoff.OOBDrained)
+			continue
+		}
 		if test.fault != "" {
 			var failure *gatecorchestrator.Failure
 			if !errors.As(got.err, &failure) || failure.Retryable || !failure.CredentialBurned || got.result.DataPlaneReady {
@@ -456,6 +505,9 @@ func runGateC1bMemoryProductProfile(t *testing.T, label string, test gateC1bMemo
 			continue
 		}
 		if got.err != nil {
+			if failure := got.result.Witness.WireGuard.CompletionFailure; failure != nil {
+				t.Logf("C1b completion failure role=%s: %+v", got.role, *failure)
+			}
 			var failure *gatecorchestrator.Failure
 			var cause error
 			if errors.As(got.err, &failure) {
@@ -507,7 +559,10 @@ func runGateC1bMemoryProductProfile(t *testing.T, label string, test gateC1bMemo
 		t.Logf("C1b slow FINISH durable witness: calls=%d post_fsync_delay_ms=%d UDP_before=%v UDP_after=%v",
 			proof.Calls, proof.Waited.Milliseconds(), proof.Before, proof.After)
 	}
-	if test.fault == "" {
+	if finishCancelWitness != nil && finishCancelWitness() != 1 {
+		t.Error("post-fsync caller cancellation was not exactly once")
+	}
+	if test.fault == "" && !test.cancelAfterFinish {
 		if err := validateGateC1bPacketAccounting(test, packetProofs, delayProof); err != nil {
 			t.Error(err)
 		}
@@ -539,6 +594,14 @@ func runGateC1bMemoryProductProfile(t *testing.T, label string, test gateC1bMemo
 			status, err := governor.InspectLoopbackCarrierTestLedger(namespaces[index], now)
 			if err != nil || status.Sequence != 3 || status.TwentyFourHourAdmissions != 1 {
 				t.Fatalf("fault durable burn/FINISH witness=%+v error=%v", status, err)
+			}
+		}
+		if test.cancelAfterFinish {
+			status, inspectErr := governor.InspectLoopbackCarrierTestLedger(namespaces[index], now)
+			unfinished, _, occupancyErr := governor.InspectLoopbackCarrierTestOccupancy(namespaces[index], now)
+			if inspectErr != nil || occupancyErr != nil || status.Sequence != 3 || status.Records != 3 ||
+				status.TwentyFourHourAdmissions != 1 || status.ConsecutiveFailures != 0 || unfinished != 0 {
+				t.Errorf("side %d cancellation rewrote or lost successful durable FINISH", index)
 			}
 		}
 	}

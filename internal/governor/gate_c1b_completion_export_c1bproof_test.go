@@ -3,8 +3,10 @@
 package governor
 
 import (
+	"context"
 	"errors"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -62,4 +64,33 @@ type C1bFinishDelayProof struct {
 	Calls         int32
 	Waited        time.Duration
 	Before, After [2]uint64
+}
+
+// CancelC1bAfterDurableFinishForProof cancels only the test caller after the
+// actual success record has been appended and synced. It never rewrites FINISH.
+func CancelC1bAfterDurableFinishForProof(machine *Governor, cancel context.CancelFunc) (func() int32, error) {
+	if cancel == nil {
+		return nil, errors.New("C1b cancellation proof requires a caller cancel")
+	}
+	ledger, err := LoopbackCarrierTestLedger(machine)
+	if err != nil {
+		return nil, err
+	}
+	ledger.mu.Lock()
+	defer ledger.mu.Unlock()
+	if ledger.hooks.afterSync != nil || ledger.hooks.afterAppendBeforeSync != nil || ledger.hooks.writeFrame != nil {
+		return nil, errors.New("C1b cancellation proof requires an unmodified journal writer")
+	}
+	var calls atomic.Int32
+	ledger.hooks.afterSync = func(record pairingJournalRecord) error {
+		if record.Type != pairingRecordFinish || record.Reason != PairingTerminalSuccess {
+			return nil
+		}
+		if calls.Add(1) != 1 {
+			return errors.New("C1b cancellation proof observed repeated FINISH")
+		}
+		cancel()
+		return nil
+	}
+	return calls.Load, nil
 }
