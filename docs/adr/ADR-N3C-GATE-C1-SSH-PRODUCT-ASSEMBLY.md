@@ -1234,6 +1234,8 @@ responder 已 detach/active，但 post-OOB echo 失败。两侧 3/3 trace、carr
 
 ### 19.7 已落盘 FINISH 后失败清理与取消见证（2026-09-07，维护者已授权）
 
+本节原 5s 慢 FINISH fixture 冻结已由 §19.8 的维护者授权修订；其它不变量保留。
+
 维护者针对证据 §6.5 的新反例，仅授权在同一 Draft PR 中补充取消来源见证，并修复已成功
 落盘 FINISH 后错误清理仍不释放的路径。§19.5–19.6 的时间、报文、所有权与复审边界不变。
 
@@ -1252,3 +1254,28 @@ responder 已 detach/active，但 post-OOB echo 失败。两侧 3/3 trace、carr
 - 不改变任何预算、3s/3 包、5s fixture session ceiling、profile absolute envelope、调度或
   drain；不据此认定此前失败一定来自某个 timer。若见证定位到本次授权之外的缺口，报告后
   再裁决，不顺手修其它模块或推进 C1c/现场。
+
+### 19.8 慢 FINISH 测试窗口与验证分组（2026-09-07，维护者已授权）
+
+维护者接受修正慢落盘测试的 session 时间配置，并明确建立连接前可以付出较长等待，
+优先保证连接建立后的可用性与稳定性。本次仅落实 #109 的测试与验证修订，不改变产品
+会话生命周期、探测预算或现场权限；后续长期连接可用性仍由其独立设计与验收证明。
+
+1. **测试配置与产品上限分离。** 三个 `slowFinish` profile 的双端 fixture session ceiling
+   本轮设为 10s：容纳原最多 3s 的挑战、成功 FINISH append+fsync 后原 3.5s 注入，以及
+   本地完成余量。普通、CLI、取消与 fresh100 fixture 本轮仍为 5s；原 Hard16 快速 fixture
+   和慢场景使用的 profile absolute envelope 均不变。10s 是测试配置，不是新增协议常量、
+   产品默认或对无限等待的许可。范围内必要的测试配置/runner 分组调整须记录原因和验证，
+   不再把每个实现参数单独升格为维护者裁决。
+2. **不以更多发包换取通过。** 原 3s/3 包、40-byte FINISHED、nonce/AD、PPS、socket/target、
+   candidate/winner、单 attempt、无 retry/fallback、FINISH-before-release 和 drain 全部不变。
+   session/caller/absolute 真正取消或到期仍须关闭、不激活、无额外 I/O；慢 fixture 的双方
+   ready、post-OOB echo、精确计费及零残留断言原样保留，不改成允许超时失败。
+3. **完整执行慢回归。** 将三个慢 FINISH 场景从普通管线子测试移为独立 `GateC1b` 顶层入口，
+   Linux/Windows 原 required job 显式执行 `-race -count=20`；原普通/CLI/ownership、取消、
+   drift/exhaustion、fresh100 步骤仍必跑。不减次数、不 skip、不重试求绿；runner 分组只分摊
+   测试耗时，不改变产品调度。增加纯测试配置回归，守住慢场景 10s 与其它场景 5s 的分离。
+4. **保留反例与审查。** `1cadf84` 的 Windows 首跑 session 到期与本地 runner 超时分别记录，
+   不能混称同一原因；此前红记录、§4.1 OS 表和 required netns 原断言不变。新测试通过只
+   证明本次有界完成与排水，不冒充长期在线或真实网络成功。继续同一 Draft PR，独立复审
+   前不合并、不关闭 #109；不混修其它 issue，不推进 liveness/M/C1c 或现场 I/O。
