@@ -34,15 +34,20 @@ func (gate *WireGuardSessionGate) finishWithConfirmation(sessionCtx context.Cont
 	}
 	gate.finishMu.Lock()
 	defer gate.finishMu.Unlock()
+	fail := func(point string, cause error) error {
+		gate.recordCompletionFailure(point, cause, sessionCtx)
+		return gate.fail(cause)
+	}
 	deadline, bounded := sessionCtx.Deadline()
 	if !bounded || !deadline.After(time.Now()) || sessionCtx.Err() != nil {
+		gate.recordCompletionFailure("session_precondition", ErrWireGuardGateState, sessionCtx)
 		return ErrWireGuardGateState
 	}
 	gate.mu.Lock()
 	if gate.state != WireGuardGateChallengePassed || gate.inFlight != 0 || gate.completionCodec == nil ||
 		gate.challengeCtx == nil || gate.challengeCtx.Err() != nil || gate.attemptCtx.Err() != nil {
 		gate.mu.Unlock()
-		return gate.fail(ErrWireGuardGateState)
+		return fail("challenge_precondition", ErrWireGuardGateState)
 	}
 	gate.state = wireGuardGateFinishConfirming
 	codec := gate.completionCodec
@@ -58,12 +63,12 @@ func (gate *WireGuardSessionGate) finishWithConfirmation(sessionCtx context.Cont
 	defer gate.writeMu.Unlock()
 
 	if err := errors.Join(opCtx.Err(), gate.attemptCtx.Err(), sessionCtx.Err()); err != nil {
-		return gate.fail(err)
+		return fail("before_confirmation", err)
 	}
 	finishCtx := opCtx
 	if gate.role == WireGuardInitiator {
 		if err := gate.receiveCompletion(opCtx, codec); err != nil {
-			return gate.fail(err)
+			return fail("receive_confirmation", err)
 		}
 		// The third inbound datagram is authenticated. No more establishment
 		// I/O is possible; local durability now uses the unchanged absolute
@@ -71,30 +76,31 @@ func (gate *WireGuardSessionGate) finishWithConfirmation(sessionCtx context.Cont
 		finishCtx = completionCtx
 	}
 	if err := errors.Join(finishCtx.Err(), gate.attemptCtx.Err(), sessionCtx.Err()); err != nil {
-		return gate.fail(err)
+		return fail("before_durable_finish", err)
 	}
 	if err := durableFinish(); err != nil {
+		gate.recordCompletionFailure("durable_finish", err, sessionCtx)
 		return gate.fail(errors.Join(ErrWireGuardGateState, err))
 	}
 	gate.mu.Lock()
 	gate.finishRecorded = true
 	gate.mu.Unlock()
 	if err := errors.Join(finishCtx.Err(), gate.attemptCtx.Err(), sessionCtx.Err()); err != nil {
-		return gate.fail(err)
+		return fail("after_durable_finish", err)
 	}
 	if gate.role == WireGuardResponder {
 		if err := gate.sendCompletion(opCtx, codec); err != nil {
-			return gate.fail(err)
+			return fail("send_confirmation", err)
 		}
 		// Responder durability AND FINISHED writing stayed inside the 3s
 		// window. Only its subsequent local detach uses completionCtx.
 		finishCtx = completionCtx
 	}
 	if err := errors.Join(finishCtx.Err(), gate.attemptCtx.Err(), sessionCtx.Err()); err != nil {
-		return gate.fail(err)
+		return fail("before_detach", err)
 	}
 	if err := gate.lease.DetachAfterFinish(); err != nil {
-		return gate.fail(err)
+		return fail("detach", err)
 	}
 	activeCtx, activeStop := context.WithCancel(sessionCtx)
 	gate.mu.Lock()
@@ -104,7 +110,7 @@ func (gate *WireGuardSessionGate) finishWithConfirmation(sessionCtx context.Cont
 	if gate.state != wireGuardGateFinishConfirming || completionErr != nil {
 		gate.mu.Unlock()
 		activeStop()
-		return gate.fail(errors.Join(ErrWireGuardGateState, completionErr))
+		return fail("activation", errors.Join(ErrWireGuardGateState, completionErr))
 	}
 	gate.state = WireGuardGateFinishDetached
 	gate.detached = true

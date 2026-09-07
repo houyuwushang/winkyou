@@ -64,6 +64,7 @@ type WireGuardSessionGateWitness struct {
 	ActiveWrites        int
 	ActiveReads         int
 	Closed              bool
+	CompletionFailure   *WireGuardCompletionFailure `json:",omitempty"`
 }
 
 // WireGuardSessionGate is the only production consumer wrapper accepted by a
@@ -108,6 +109,7 @@ type WireGuardSessionGate struct {
 	completionReads     int
 	completionWrites    int
 	peerFinishConfirmed bool
+	completionFailure   *WireGuardCompletionFailure
 	activeReady         chan struct{}
 
 	closeOnce sync.Once
@@ -462,13 +464,19 @@ func (gate *WireGuardSessionGate) Witness() WireGuardSessionGateWitness {
 	}
 	gate.mu.Lock()
 	defer gate.mu.Unlock()
+	var completionFailure *WireGuardCompletionFailure
+	if gate.completionFailure != nil {
+		copy := *gate.completionFailure
+		completionFailure = &copy
+	}
 	return WireGuardSessionGateWitness{
 		State: gate.state, Outbound: append([]WireGuardMessageType(nil), gate.outbound...),
 		ConsumerReady: gate.consumerReady, ReadinessWrites: gate.readinessWrites, ReadinessReads: gate.readinessReads,
 		CompletionWrites: gate.completionWrites, CompletionReads: gate.completionReads, PeerFinishConfirmed: gate.peerFinishConfirmed,
 		Inbound: append([]WireGuardMessageType(nil), gate.inbound...), FinishRecorded: gate.finishRecorded,
 		AttemptDetached: gate.detached, ActiveWrites: gate.activeWrites, ActiveReads: gate.activeReads,
-		Closed: gate.state == WireGuardGateClosed,
+		Closed:            gate.state == WireGuardGateClosed,
+		CompletionFailure: completionFailure,
 	}
 }
 
