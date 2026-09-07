@@ -220,6 +220,7 @@ root wrapper/orchestrator `-race -count=20` 通过（1.259s / 2.345s）；Linux
 
 §6.1–6.3 保留 `0b7800b` 及以前的原始反例和暂停记录；内存/OS 分列验收已获维护者同意，
 修订规范为 ADR §19.6，新验证另列 §6.4–6.5；第二次授权与实测见 §6.6 / ADR §19.7。
+慢 fixture 的新反例与维护者授权的测试窗口修订见 §6.8–6.9 / ADR §19.8。
 历史红结果不是被覆盖成绿，也不再是待裁决事项。
 
 ### 6.1 原始反例与确定性红→绿
@@ -547,3 +548,116 @@ job、两个 C1b OS/netns job 和其它门禁通过，不能代替 Windows 的�
 新分组的完全相同取消 fixture 首次单独验证 PASS **75.217s**（20/20）；`go test -run GateC1b`
 仍包含该回归。§6.6 的全仓/三包/全选择器记录属于分组前相同生产代码，不冒充新的 CI 结果。
 本节唯一 workflow 增量是该必过步骤；此前“workflow 未改”的记录保持其旧 head 时点含义。
+
+### 6.8 分组后实际 session 到期反例（历史 `1cadf84`）
+
+精确 head 首次自动 CI 最终 **32 SUCCESS / 1 FAILURE / 33**；[PR run](https://github.com/houyuwushang/winkyou/actions/runs/34074262254)
+通过，[push run](https://github.com/houyuwushang/winkyou/actions/runs/34074259573) 仅
+[Windows C1b job](https://github.com/houyuwushang/winkyou/actions/runs/34074259573/job/101597221866)
+失败。slow predictive 子用例 7.36s，包最终 723.070s；日志没有 runner timeout 或 race report，
+不能仅凭总耗时接近 12 分钟就把它误判为 §6.7 的同类问题。
+
+| 清理前首个见证 | 实测 |
+| --- | --- |
+| point / cause / gate state | `after_durable_finish` / `deadline_exceeded` / `finish_confirming` |
+| attempt | active，剩余 12712ms |
+| session | deadline_exceeded，剩余 −1257ms |
+| challenge（已完成阶段） | deadline_exceeded，剩余 −3272ms |
+| 已成功 FINISH 后注入 | 单次 append+fsync 后等待 3500ms |
+| 双端等待前 / 后 UDP | 48/48 → 48/48，零增长 |
+
+initiator FINISH/peer FINISHED=true，未 detach；responder FINISH/detach=true。双方最终 closed、
+DataPlaneReady=false，shared challenge=3/3、active=0/0、carrier=8/8。但与 §6.5 旧反例不同，
+两侧 **AttemptReleased=true、OOBDrained=true**，其后原 connection/mapping/queue、governor
+peer/attempt/heavyweight/reservation/safety 检查执行通过。清理修复在该失败路径生效；不能
+以这次清理成功把原本要求的双端连接成功改成允许失败。
+
+两侧当时配置的 `SessionCeiling=5s` 小于挑战最多 3s 加注入 3.5s 的允许组合耗时，更没有本地
+完成余量。这次新见证定位到该反例的 session 到期，不倒推 §6.5 原反例必定具有相同来源。
+
+同 head 本地原 CI selector 加 `-json` 的 12m 首跑另有 **FAIL 721.444s**，明确是
+`panic: test timed out after 12m0s`，仅完成 17/20 主管线/CLI、51 个慢窗口。它和上述 CI 断言
+失败分开保留；被 watchdog 截断的尾部与残留不能算通过。两种失败都没有手动 rerun。
+
+### 6.9 授权的慢测试 10s session 与独立 required 验证（2026-09-07）
+
+维护者已授权修正测试时间配置，先以 `11c64ca` 写入 ADR §19.8，再修改测试。慢 FINISH 三个
+profile 的双端 session 本轮采用 10s；其它普通、CLI、取消、fresh100 fixture 仍为 5s。
+原挑战 3s/3 包、3.5s 注入、Gate B profile absolute envelope、候选调度与 drain 均未改变。
+这不是产品默认值变化或无限等待授权，不能宣称该测试已经证明长期在线可用性。
+
+新增纯配置回归覆盖三 profile × 六种场景，确保慢窗口与普通窗口分离、不修改原 profile。
+三个慢场景的原测试体、计费/完成/清理断言移至
+`TestGateC1bMemorySlowDurableFinishReachesPostOOBEcho`；Linux/Windows 原 required job 新增
+独立 `-race -count=20 -timeout=10m` 步骤，与配置回归一起必跑。原普通主管线 selector 的
+12m、其它步骤与 25 分钟 job 上限不变，广义 `-run GateC1b` 仍覆盖所有场景；不 skip 或减次数。
+
+首次定向执行：
+
+```text
+go test -race -tags=c1bproof ./internal/governor -run '^TestGateC1bMemory(FixtureSessionWindows|SlowDurableFinishReachesPostOOBEcho)$' -count=1 -v -timeout=2m
+PASS: 24.328s; slow profiles 3/3, configuration cases 18/18
+```
+
+| profile | 等待前 I/R | 等待后 I/R | 实际 UDP 总计 I/R | post-fsync 等待 |
+| --- | --- | --- | --- | --- |
+| predictive | 48/33 | 48/33 | 50/34 | 3500ms |
+| asymmetric | 144/529 | 144/529 | 146/530 | 3501ms |
+| hard-16K | 16400/16401 | 16400/16401 | 16402/16402 | 3500ms |
+
+双端均 ready/FINISH/detached、challenge=3/3、carrier=8/8，完成 post-OOB echo 与原残留检查。
+predictive 本轮候选为 31/17，仍按 §19.6 原分项规则精确核算，不把这次总计硬编码为新期望。
+该表仅为首轮观测；完整 race×20、全仓与最终 required CI 结果另以
+[同一 Draft PR #110](https://github.com/houyuwushang/winkyou/pull/110) 的精确 head 汇总记录，
+不以历史绿结果替代。§4.1 OS 表、required netns、协议 golden 与所有生产文件在本增量零改动。
+
+### 6.10 完整 race×20 的不同挑战阶段反例（10s fixture 首跑）
+
+```text
+go test -race -tags=c1bproof ./internal/governor -run GateC1b -count=20 -timeout=20m -json
+FAIL: 990.046s; first run, no retry
+```
+
+普通 memory/CLI 三 profile、ownership、取消、drift/exhaustion 各入口均 20/20；配置检查
+360/360、核算正向 60/60、负向 400/400。慢 predictive 为 **19/20**，asymmetric 和 Hard16
+各 20/20。60 次慢场景中 59 次实际执行单次 3500–3501ms 等待，两侧计数全部不增长；另一次
+在 initiator 注入之前失败，不能把它计为通过。fresh100 仍由 CI 原 required 步骤单独证明。
+
+失败在第一轮 slow predictive（10.53s），与 §6.8 的已过期 5s session 不同：
+
+| 各端清理前的失败采集 | initiator | responder |
+| --- | --- | --- |
+| point | `receive_confirmation` | `after_durable_finish` |
+| cause | `deadline_exceeded` | `deadline_exceeded` |
+| attempt | active，剩余 15858ms | active，剩余 10899ms |
+| session | active，剩余 7015ms | active，剩余 2060ms |
+| challenge | 已到期，剩余 0ms | 已到期，剩余 −4956ms |
+| FINISHED 写 / 读 | 0 / 0 | 0 / 0 |
+
+initiator 尚未认证 FINISHED，慢 FINISH hook 调用数为 0；responder 在成功 durable FINISH
+返回后发现原 challenge 已到期，依 §19.5 拒绝 FINISHED 写。两端未 detach、未 active，
+DataPlaneReady=false；最终 Handoff.FinishRecorded/AttemptReleased/OOBDrained 均为 true，
+接口/tunnel 关闭，原 memory/governor residue 与 safety 检查执行通过。initiator 的最终
+Handoff FINISH 是失败清理记录，不冒充 WireGuard 成功 FINISH 或 peer confirmation。
+
+本次两个源见证定位到了仍受原 3s 约束的确认路径，不提供 `Finish` 内锁等待、append、fsync
+各阶段的分段耗时。不能把它直接归因为磁盘、系统调度或同时执行的 vet/architecture 检查，
+也不能声称改 10s session 已解决它。保留完整首次日志于仓库外；错误路径未输出底层最终
+UDP 总计，不能填入成功场景的计数冒充实测。
+
+原规范明确要求 responder FINISH 与 FINISHED 写在 3s 内（ADR §19.5），且有迟写必须失败的
+永久回归。本增量不改变该生产语义，不把两端必成功改成接受失败、不删测、不重跑求绿。
+当前完整验收未闭合，保持同一 Draft PR 阻塞并报告此独立反例；扩大 fixture session 不能
+替代对确认阶段时序及真实持久化延迟的独立分析。其它测试/CI 通过也不覆盖该首次失败。
+
+本增量其它首次本地验证结果：
+
+| 验证 | 结果 |
+| --- | --- |
+| `go vet ./...`、tagged governor vet | PASS |
+| 完整 architecture/mutation | PASS，15.751s |
+| 三个核心包 `-race -count=20` | PASS；probeio 134.046s、gateb 15.443s、gatecorchestrator 2.097s |
+| Windows `go test ./... -count=1 -json` | PASS，88 个有测试的包；governor 245.805s、client 34.698s |
+| 相对 `1cadf84` 范围/隐私/UTF-8/链接/diff | 仅四文件，生产 delta=0；12 个相对文件链接有效，§4.1 原文不变 |
+
+没有复跑失败矩阵；core/全仓是不同且原要求的验证集合，不代替新的 tagged race×20 反例。
