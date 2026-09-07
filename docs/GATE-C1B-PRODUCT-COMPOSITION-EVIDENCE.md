@@ -661,3 +661,15 @@ UDP 总计，不能填入成功场景的计数冒充实测。
 | 相对 `1cadf84` 范围/隐私/UTF-8/链接/diff | 仅四文件，生产 delta=0；12 个相对文件链接有效，§4.1 原文不变 |
 
 没有复跑失败矩阵；core/全仓是不同且原要求的验证集合，不代替新的 tagged race×20 反例。
+
+### 6.11 R1 确认交换移入完成阶段：裁决与验证
+
+2026-09-07 维护者接受 [PR #110 独立复审裁决](https://github.com/houyuwushang/winkyou/pull/110#issuecomment-5565715193)，
+先以 docs-only commit 冻结 [ADR §19.9](./adr/ADR-N3C-GATE-C1-SSH-PRODUCT-ASSEMBLY.md#199-r1-确认交换的时间边界2026-09-07维护者接受独立复审裁决)。
+§6.1–6.10 历史证据不修改、不删除；§6.10 反例是本次纠正 R1 时间模型的依据。
+旧 `TestConsumerFinishedResponderWriteRetainsChallengeDeadline` 将按裁决替换为超过 3s、
+未过原 absolute/session 时必须完成 FINISHED 的回归；不得把它描述为保持旧期望值。
+
+本节初始为规范冻结记录，代码、红→绿、完整 race×20 与新 head CI 尚待实测回填。
+新 responder 慢 FINISH 与旧 initiator 慢 FINISH 分开运行；前者快照在 FINISHED 写前，
+后者在 FINISHED 认证后，均按真实阶段精确核算且等待期间双侧发包计数必须不变。

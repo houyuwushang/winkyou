@@ -1145,7 +1145,7 @@ process/conntrack/lock 全部证明。另需核实 SSH 的 2s graceful drain 与
 本节窄范围修订。§19.4 保留为原裁决记录；本修订、实现与证据仍通过同一个 Draft PR 接受独立
 复审，不授权 liveness、映射寿命模型、C1c 或现场 I/O，也不关闭尚未合入修复的 #109。
 
-**两阶段时间边界：**
+**历史两阶段时间边界（以下表格及 FINISHED 的 3s 约束由 §19.9 取代）：**
 
 | 阶段 | 必须完成的操作 | 时间权威 |
 | --- | --- | --- |
@@ -1158,7 +1158,7 @@ process/conntrack/lock 全部证明。另需核实 SSH 的 2s graceful drain 与
   pre-FINISH datagram 仍在底层 I/O 前拒绝；不新增 OOB frame、socket、target、probe packet
   或 retry，不使用 Gate B 预算 headroom。
 - responder 顺序仍为本地 trace → bounded reader drain → durable FINISH → FINISHED 写 →
-  detach/active。因此 responder 的 durable FINISH **仍在 3s 窗口内**：若落盘拖到 FINISHED
+  detach/active。**本段时间裁决由 §19.9 取代。** 原要求 responder 的 durable FINISH **仍在 3s 窗口内**：若落盘拖到 FINISHED
   无法在原窗口写出，仍失败并关闭 transport；已写 FINISH 不撤销、不重复。只有成功写出
   FINISHED 后的本地 detach/active 使用 completion 边界。
 - initiator 顺序仍为本地 trace → bounded reader drain → 读并认证 FINISHED → durable
@@ -1174,7 +1174,8 @@ process/conntrack/lock 全部证明。另需核实 SSH 的 2s graceful drain 与
 硬计数与 message-type 校验仍在 I/O 前强制，不能因完成阶段改变而使重传、cookie reply、
 重复 type 或第四包合法。initiator 在第三个 inbound FINISHED 认证后已无剩余额度；此后的
 本地 fsync 不产生报文。继续让旧 3s 窗口裁决它，会出现 journal 已记录成功而本地 session
-被判死的分裂。此理由不适用于 responder 的 FINISH，因为其后仍须发出第三个 datagram。
+被判死的分裂。原“此理由不适用于 responder”的判断由 §19.9 取代；第三个 datagram 的
+数量约束不等于必须使用 challenge 的时间边界。
 
 `WireGuardChallengePackets=3`、`WireGuardChallengeTimeout=3s`、原 3/3 trace golden、nonce
 8/9/10、AD、40-byte frame、FINISH-before-detach、已写 FINISH 不撤销不重复全部不变。
@@ -1188,8 +1189,9 @@ product handoff、orchestrator 顺序、binder drain/read ownership 和已有错
    fake transport 恰好读三次、写三次，无第四包。
 2. 慢 FINISH 跨 absolute envelope 或 FINISH 回调内取消 session：已写 FINISH 为 true，
    但不 detach、不 active，transport 关闭且无额外报文。
-3. responder FINISH 超过 3s：FINISHED 写仍失败、不退款、不激活；FINISHED 在 3s 内写出
-   后，慢 detach 超过 3s 但未过 absolute/session ceiling 则可 active。
+3. 按 §19.9 裁决性替换：responder FINISH 至 `BeginChallenge+3.5s`、initiator 等待 FINISHED
+   超过 3s，在原 absolute/session 内均须完成认证与 active，精确三入/三出；跨 absolute 或
+   session 取消仍关闭、不激活。慢 detach 超过 3s 但未过 absolute/session 仍可 active。
 4. 原 readiness/FINISHED/lease-failure 回归与 packet-type trace golden 原样通过；仅
    `c1bproof` 内存用例注入 initiator durable FINISH 延迟 3.5s，三 profile 双端仍到
    `data_plane_ready`；内存按 §19.6 的分项计费和完成阶段零新增报文验收。OS/netns 原表
@@ -1279,3 +1281,55 @@ responder 已 detach/active，但 post-OOB echo 失败。两侧 3/3 trace、carr
    不能混称同一原因；此前红记录、§4.1 OS 表和 required netns 原断言不变。新测试通过只
    证明本次有界完成与排水，不冒充长期在线或真实网络成功。继续同一 Draft PR，独立复审
    前不合并、不关闭 #109；不混修其它 issue，不推进 liveness/M/C1c 或现场 I/O。
+
+### 19.9 R1 确认交换的时间边界（2026-09-07，维护者接受独立复审裁决）
+
+维护者接受 [独立复审裁决](https://github.com/houyuwushang/winkyou/pull/110#issuecomment-5565715193)，
+授权在同一 Draft PR #110 实现本节；仍须独立复审，不合并、不关闭 #109、不授权现场。
+裁决依据是 [C1b 证据 §6.10](../GATE-C1B-PRODUCT-COMPOSITION-EVIDENCE.md#610-完整-race20-的不同挑战阶段反例10s-fixture-首跑)，
+不是把 CI 通过解释为旧时间模型正确。
+
+| 阶段 | 操作 | 时间权威 |
+| --- | --- | --- |
+| challenge | READY/ACK、WG initiation/response/空 keepalive，`CompleteChallenge` 与原 reader drain | `BeginChallenge` 起原 ≤3s，且受 absolute envelope / caller 约束；不变 |
+| completion | responder durable FINISH → FINISHED 写；initiator FINISHED 读并认证 → durable FINISH；双方 detach → active | 原 `attemptCtx`（profile absolute envelope）+ caller context + session ceiling；不再受 3s 约束 |
+
+计数不因重新划界而改变：FINISHED 仍是 R→I 的第三个 datagram，完整 capped establishment
+trace 仍为每侧三入/三出。其余握手报文完成时 I 已三出/两入、R 已两出/三入（若 FINISHED
+早到则可按原规则缓冲），不能误称进入 completion 就已经消费了尚未收发的 FINISHED。
+进入条件仍为 `challenge_passed`、零在途 I/O、有效 codec 和未过期 attempt；缓冲不授予认证。
+
+**技术依据。** 原 Blocker 3 的 3s 用于排除 wireguard-go `RekeyTimeout=5s` 重传，限定
+pre-FINISH 的 WireGuard 挑战。仓库锁定的 `f333402bd9cb` 实现中，initiator 收 response、
+responder 收首个 data 后调用 `timersHandshakeComplete` 停止重传 timer；`Keepalive=0`，
+`timersDataSent` 不对空 keepalive 触发，按时间 rekey 为 120s。固定 trace 完成后，在本次
+有界 completion、无用户数据的前提下，WireGuard 不再自发产生报文，与 FINISHED 何时收发
+无关。FINISHED 仍由原 cap 限定仅一次，移入 absolute envelope 不增加第四包。
+
+**取代关系。** §19.4“时间”中完成确认共用 ≤3s、§17.2 共用时间上限中涉及 FINISHED 的
+表述，以及 §19.5 表格和四条旧划界说明，均由本节取代。§19.5 第 3 项回归为裁决性替换，
+不是删去反例或放宽计数。`challengeCtx` 不续期、不重启，不参与已通过 challenge 后的
+completion 判定；completion 使用原 attempt 的子 context 并传播 session/caller 取消，
+所有取消回调仍须 stop，失败见证仍在关闭前采集。
+
+**不变量。**
+
+- `WireGuardChallengeTimeout=3s`、`WireGuardChallengePackets=3`、原 trace golden 不变。
+- nonce 8/9/10、AD、40-byte frame、原第四包 I/O 前拒绝和 capped establishment 计费不变。
+- FINISH-before-detach、已写 FINISH 不撤销/不重复、responder FINISH 不代表双方成功不变。
+- `TransportLease`、`ProductHandoff`、orchestrator 顺序、OOB/SSH carrier 不变。
+- Gate B/A/C1a 的 golden、预算及 OS 证据 §4.1、required netns 代码不变。
+- 不加 retry、重传、调参 sleep；不混修其它 issue，不用 rerun 抹去首次失败。
+
+**残余限制。** 完成阶段仍受 profile absolute envelope 约束；Hard16 的 45s envelope 在
+challenge 后通常只余数秒。fsync 跨过它仍 fail-closed，已写 FINISH 不撤销且不激活。
+“journal 成功而 session 关闭”在 envelope 边界仍可能出现，这是冻结预算的固有边界，
+本裁决不延长它，也不承诺所有磁盘延迟下必成功。
+
+**必过证据。** responder FINISH 至 challenge 起点 +3.5s、initiator 等 FINISHED 超过 3s
+须先红后绿；两侧分别跨 absolute/session 的负向、第四包与全部原 golden 仍必过。
+`c1bproof` 分别注入 initiator/responder 3.5s 慢 FINISH，三 profile 双端 ready、FINISH、
+detach、post-OOB echo、carrier 8/8 和残留检查不变。按 §19.6 精确分项核算、等待期间双方
+计数不增长；responder 注入点在 FINISHED 写之前，其等待快照恰少该侧一包，最终仍是 3/3，
+不能把等待快照误算成已经写出 FINISHED。慢 fixture 10s、其它 fixture 5s 保持分离。
+验证命令与首次红→绿写入证据 §6.11；未实测项不得预先标绿。
