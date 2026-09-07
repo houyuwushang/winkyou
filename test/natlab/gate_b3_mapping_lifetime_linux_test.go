@@ -16,6 +16,7 @@ type gateB3LifetimeCase struct {
 	early      bool
 	winnerLeft bool
 	layer      string
+	point      string
 }
 
 // Both peers keep the exact same frozen candidate schedule. The emulator
@@ -94,6 +95,12 @@ func TestLinuxGateB3MappingLifetimeProof(t *testing.T) {
 			// a changed ADR row or progression into M-X to hide this failure.
 			return
 		}
+	}
+	for _, point := range []string{"before_selection", "before_winner"} {
+		t.Run("M_X_single_side_filter_"+point, func(t *testing.T) {
+			cfg := gateB3LifetimeCase{seconds: 60, early: true, winnerLeft: false, layer: "M-X", point: point}
+			testGateB3FullShapeLifetime(t, 0, gateB3ConntrackCap, false, &cfg)
+		})
 	}
 }
 

@@ -497,6 +497,9 @@ func (router *gateB2NATRouter) forwardOutbound(packet gateB2TUNPacket, replies c
 		}
 	}
 	if metadata, inspectErr := hardnatcontrol.InspectFrame(packet.payload); inspectErr == nil && metadata.Type == hardnatcontrol.FrameCandidate {
+		if model := router.config.gateB3Lifetime; model != nil && metadata.Ordinal == 16383 {
+			model.inject("before_selection")
+		}
 		router.candidateForwarded.Add(1)
 		if metadata.SocketSlot < 16 {
 			router.candidateForwardedBySlot[metadata.SocketSlot].Add(1)
@@ -718,7 +721,7 @@ func (router *gateB2NATRouter) forwardInbound(tun *os.File, reply gateB2MappedRe
 	if reply.mapping == nil {
 		return errors.New("Gate B2 isolated NAT reply lacked a mapping")
 	}
-	if model := router.config.gateB3Lifetime; model != nil && !reply.mapping.lifetime.permits(time.Since(model.started)) {
+	if model := router.config.gateB3Lifetime; model != nil && (model.blocked.Load() || !reply.mapping.lifetime.permits(time.Since(model.started))) {
 		router.droppedInbound.Add(1)
 		return nil
 	}

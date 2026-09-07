@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -24,19 +25,23 @@ type gateB3LifetimeFlow struct {
 }
 
 type gateB3NATLifetime struct {
-	started time.Time
-	idle    time.Duration
-	peerNS  string
-	ctx     context.Context
-	cancel  context.CancelFunc
-	done    chan struct{}
-	mu      sync.Mutex
-	flows   map[gateB3LifetimeTuple]gateB3LifetimeFlow
-	failure error
-	winner  gateB3LifetimeFlow
-	age     time.Duration
-	refresh uint64
-	sentAt  time.Time
+	started  time.Time
+	idle     time.Duration
+	peerNS   string
+	ctx      context.Context
+	cancel   context.CancelFunc
+	done     chan struct{}
+	mu       sync.Mutex
+	flows    map[gateB3LifetimeTuple]gateB3LifetimeFlow
+	failure  error
+	winner   gateB3LifetimeFlow
+	age      time.Duration
+	refresh  uint64
+	sentAt   time.Time
+	peer     *gateB3NATLifetime
+	point    string
+	blocked  atomic.Bool
+	injected atomic.Uint64
 }
 
 func newGateB3NATLifetime(peerNS string, seconds int) *gateB3NATLifetime {
@@ -64,11 +69,22 @@ func (model *gateB3NATLifetime) track(local, peer netip.AddrPort) {
 // kernel query or waiting is permitted here. A missing pre-send sample FAILS
 // the fixture; an after-send observation cannot fill in that evidence later.
 func (model *gateB3NATLifetime) beforeWinner(local, peer netip.AddrPort, age time.Duration, refresh uint64) {
+	model.inject("before_winner")
 	model.mu.Lock()
 	defer model.mu.Unlock()
 	model.winner = model.flows[gateB3LifetimeTuple{local, peer}]
 	model.age, model.refresh = age, refresh
 	model.sentAt = time.Now()
+}
+
+// Test-only one-sided filter policy change. Unlike expiry, the kernel flow
+// remains live. No endpoint, tuple, syscall order, packet or protocol is
+// substituted; every later inbound datagram on that side is denied until
+// the disposable model is destroyed. There is no recovery or unblocking.
+func (model *gateB3NATLifetime) inject(point string) {
+	if model.point == point && model.peer != nil && model.injected.CompareAndSwap(0, 1) {
+		model.peer.blocked.Store(true)
+	}
 }
 
 func (model *gateB3NATLifetime) observe() {
