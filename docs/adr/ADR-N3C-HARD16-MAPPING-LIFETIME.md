@@ -296,7 +296,7 @@ loopback carrier、live authorization、daemon、scheduler 或永久回归门禁
 - 独立评审人/结论：Copilot 独立复审——接受草案文本（见上引评论）。
 - 接受的文档 exact SHA：复审文本为 `a1c96d44857d312cbcae6536817e3b80476fd2d4`；裁决填写为 PR #108 最终 head（合并记录以 merge commit 为准）。
 - M 实现授权范围与编号：**维护者于 2026-09-07 下达 #107 M 实现续令**，范围为 §4.2 三层 fixture、§4.3 namespace 设置/恢复与独立隔离证明，以及先行 harness 入队缺口修复；仅 `linux && natlab` test-only 与配套 docs/required CI，不授权 E 或现场。
-- M 实现 PR：[Draft #107](https://github.com/houyuwushang/winkyou/pull/107)；TUN 修复实测 SHA `6bc3c551adccb888810c19eadbea1150eeba686f`，M 矩阵的首次 OS 实测 SHA 与逐门状态待首跑后回填。证据：[§11](../GATE-B3-HARD16-ISOLATED-EVIDENCE.md#11-107-m-实现与首跑记录2026-09-07draft)。
+- M 实现 PR：[Draft #107](https://github.com/houyuwushang/winkyou/pull/107)；TUN 修复实测 SHA `6bc3c551adccb888810c19eadbea1150eeba686f`；M 完整矩阵实测 SHA `d4cd90a8bd6fb9c9c80b19bb3c80bddac2de1907`，35/35 CI、两份共 18/18 完整 OS campaign，通过本批最小 M-S/M-E/M-X 范围但尚待独立复审。初次 M 首跑失败与未闭合的 §7 项逐项保留于 [§11](../GATE-B3-HARD16-ISOLATED-EVIDENCE.md#11-107-m-实现与首跑记录2026-09-07draft)，不是 E 或现场授权。
 - E mini-spec 接受与实现授权：**待 mini-spec 提交并独立复审后另行裁决**。
 
 合入本文档不自动关闭 #106、不使 #107 可合并，也不授权任何实现。

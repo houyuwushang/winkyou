@@ -429,7 +429,7 @@ required 主集合的 default-30s tail、full exhaustion、50% loss、cap、kill
 新增独立 required M job（job 12min、测试 10min），旧 Hard16 job 的 10min ceiling 不动。
 M job 仍经现有 `nf_conntrack_max` guardian/REQUIRED/sudo/race；timeout 隔离失败不能 skip。
 
-### 11.3 本轮验收状态（首次 M CI 尚待填写）
+### 11.3 首次运行前的验收清单（当时快照；结果见 §11.4–§11.5）
 
 | 项目 | 当前状态 |
 | --- | --- |
@@ -474,3 +474,55 @@ flow observer 的首跑错误没有足够诊断，暂不作根因归因；后续
 避免 dump 整张动态表，且增加脱敏的退出码/deadline 分类。只有工具明确的 conntrack ENOENT
 诊断可记为 GONE；任意失败、半结果或未知输出仍拒绝，不能以错误代替失效证明。
 后续新 head 的结果独立记录，不覆盖本节。
+
+### 11.5 修正后首次完整验收（`d4cd90a8bd6fb9c9c80b19bb3c80bddac2de1907`）
+
+该代码 head 的两个独立触发 CI 均首跑通过，汇总 **35/35 SUCCESS，0 pending**：
+[PR-trigger CI](https://github.com/houyuwushang/winkyou/actions/runs/34103701622)、
+[push CI](https://github.com/houyuwushang/winkyou/actions/runs/34103698667)。没有 rerun、merge 或
+close。本段是随后的文档回填，不拿新 head 通过覆盖 `c0243c5` 的首跑失败。
+
+M job 原始证据：[PR job](https://github.com/houyuwushang/winkyou/actions/runs/34103701622/job/101683768572)
+391.26s、[push job](https://github.com/houyuwushang/winkyou/actions/runs/34103698667/job/101683759465)
+396.08s。每份 5 个 M-S + 2 个 M-E + 2 个 M-X 全过，即 **18/18 完整 OS campaign**；另有两份
+post-burn child crash/namespace 恢复证明与两类纯函数 contract。以下 read/write 均按本端口径，
+不是把两端计数相加；表中 TTL 两档与用户态 mapping/filter 相同。
+
+| fixture / TTL | I/R terminal 与 stage | UDP I/R | frame read/write：I；R | byte read/write：I；R |
+| --- | --- | --- | --- | --- |
+| M-S early I / 60s | 双 success | 16,398 / 16,397 | 8/8；8/8 | 834/873；873/834 |
+| M-S early R / 60s | 双 success | 16,397 / 16,398 | 8/8；8/8 | 873/873；873/873 |
+| M-S tail / 60s | 双 success | 16,398 / 16,397 | 8/8；8/8 | 873/873；873/873 |
+| M-S full exhaustion / 60s | 双 `hard_nat_candidate_exhausted/candidates` | 16,397 / 16,397 | 8/7；7/8 | 802/754；754/802 |
+| M-S 50% / 60s，PR-trigger | 双 `hard_nat_candidate_exhausted/candidates` | 16,397 / 16,397 | 8/7；7/8 | 802/754；754/802 |
+| M-S 50% / 60s，push | 双 success（I winner） | 16,398 / 16,397 | 8/8；8/8 | 834/873；873/834 |
+| M-E R winner / 30s | I `attempt_expired/candidates`；R `attempt_expired/verify`（PR）或 `oob_stream_closed/verify`（push） | 16,397 / 16,398 | 7/7；7/7 | 793/793；793/793 |
+| M-E I winner / 30s | I `oob_stream_closed/verify`、R `attempt_expired/candidates`（PR）；I `attempt_expired/verify`、R `oob_stream_closed/candidates`（push） | 16,398 / 16,397 | 7/8；8/7 | 754/873；873/754 |
+| M-X before selection / 60s | I `attempt_expired/candidates`；R `oob_stream_closed/verify` | 16,397 / 16,398 | 7/7；7/7 | 793/793；793/793 |
+| M-X before winner / 60s | I `attempt_expired/candidates`；R `oob_stream_closed/verify` | 16,397 / 16,398 | 7/7；7/7 | 793/793；793/793 |
+
+共同见证：每端 evidence=13、candidate=16,384、socket=16、target=16,388、five-tuple=16,395，
+reservation=16,432；UDP 仅为 16,397 + 本地 winner 数。成功路径 synthetic data 为每方向 3，
+所有 M-E/M-X/full-exhaustion 失败 data=0、burn/FINISH/circuit=true、trip=false；逐项原 governor
+shape、真实 packet counters、独立 wire byte/digest、carrier drain 与永久 admission 均通过。
+
+寿命/注入因果链（PR / push）：
+
+- M-S early I winner age **32,171 / 32,154ms**，early R **32,183 / 32,195ms**；发送前 reverse
+  flow 在、未曾消失。tail 为 **958 / 902ms**。命中 tuple 在 winner 前都仅有一次出站，没有保活刷新。
+- M-E R winner age **32,206 / 32,175ms**，I winner **32,198 / 32,171ms**；四次均见证
+  PRESENT→GONE→winner，缓存负面样本在 winner 前取得，winner out=1、peer in=0、额外故障注入=0。
+  initiator-winner 的此前未实测 7/8、8/7 表得到首次有效 OS 负向验证，没有修改冻结数字。
+  三种允许 class pair 本轮均实际出现；I-winner 同时覆盖了本地 deadline 与 peer EOF 两种先到结果。
+- M-X 两个点均恰好一次单侧 filter change；发送前 reverse kernel flow 仍在、没有 TTL 消失，
+  winner out=1/peer in=0。故障没有被假装成 M-E，也没有第二 winner、换 tuple、retry/fallback 或假成功。
+- 每个场景均记录 kernel 60/60 或 30/30 安装、两个 owned non-init namespace、init/control 前后值
+  不变、恢复回读成功、named handle 消失；socket/process/conntrack/governor lock/netns/veth residue=0。
+  post-burn 子进程 crash 的同套恢复/清理也通过。整个 harness 自身 SIGKILL 的恢复不新增保证；
+  仍受既有 disposable-runner guardian 与 VM 回收边界约束，不伪称 Go cleanup 会在 SIGKILL 后运行。
+
+本地 Linux 交叉 vet/编译、architecture/mutation（8.381s）、`git diff --check` 均通过；
+Linux required M job 另执行纯函数/expiry predicate `-race -count=20`。原 Hard16 job（含 default-30s
+tail 与普通 50% loss）、fresh natsim100、campaign restart1000、其余全仓/required gates 均通过。
+这是本批获授权的最小 M 证明，不是 §7 所有未来工作闭合：容量驱逐、其余 M-X/VERIFY 边界、
+更多重复寿命分布与 E2 仍未做。PR 保持 Draft 等独立复审，不自行合并、不关闭 #106、不推进现场。
