@@ -275,6 +275,28 @@ func testGateB3FullShapeLifetime(t *testing.T, dropEvery uint64, conntrackCap in
 	if leftRouter.observationFailed.Load() || rightRouter.observationFailed.Load() {
 		t.Fatal("Gate B3 asynchronous reverse-flow observation failed")
 	}
+	if lifetime != nil && lifetime.layer == "M-E" {
+		if !validGateB3ExpiryPair(lifetime.winnerLeft, initiatorResult, responderResult) {
+			t.Errorf("mapping lifetime frozen expiry role/frame/class contract differs: initiator=%+v responder=%+v", initiatorResult, responderResult)
+		}
+		winnerModel, winnerWitness, peerWitness := rightModel, rightWitness, leftWitness
+		if lifetime.winnerLeft {
+			winnerModel, winnerWitness, peerWitness = leftModel, leftWitness, rightWitness
+		}
+		winnerModel.mu.Lock()
+		flow, sentAt, age, refresh := winnerModel.winner, winnerModel.sentAt, winnerModel.age, winnerModel.refresh
+		winnerModel.mu.Unlock()
+		if flow.presentAt.IsZero() || flow.goneAt.IsZero() || !flow.presentAt.Before(flow.goneAt) ||
+			!flow.goneAt.Before(sentAt) || flow.present || sentAt.Sub(flow.sampledAt) > 1500*time.Millisecond ||
+			age < 30*time.Second || refresh != 1 || winnerWitness.WinnerOutbound != 1 || peerWitness.WinnerInbound != 0 ||
+			leftConfig.dropAllCandidateInbound || rightConfig.dropAllCandidateInbound || dropEvery != 0 {
+			t.Error("mapping lifetime expiry causal witness incomplete or another fault was injected")
+		}
+		t.Logf("mapping lifetime expiry terminal: wall_ms=%d exact_tuple_contract=%t reverse_expired_before_winner=%t no_additional_fault=true",
+			time.Since(started).Milliseconds(), validGateB3ExpiryPair(lifetime.winnerLeft, initiatorResult, responderResult),
+			!flow.goneAt.IsZero() && flow.goneAt.Before(sentAt))
+		return
+	}
 	if dropEvery == 0 && conntrackCap == gateB3ConntrackCap {
 		if !success || initiatorResult.CandidatePackets != hardnatbudget.Hard16CandidatePackets ||
 			responderResult.CandidatePackets != hardnatbudget.Hard16CandidatePackets ||

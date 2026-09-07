@@ -17,6 +17,7 @@ type gateB3LifetimeState struct {
 	mappingUntil time.Duration
 	filterUntil  time.Duration
 	lastOutbound time.Duration
+	outbounds    uint64
 	evicted      bool
 }
 
@@ -25,11 +26,13 @@ func (state gateB3LifetimeState) permits(now time.Duration) bool {
 }
 
 func (state gateB3LifetimeState) outbound(now, mappingIdle, filterIdle time.Duration) gateB3LifetimeState {
+	outbounds := state.outbounds + 1
 	if state.generation == 0 || state.evicted || now >= state.mappingUntil {
 		state = gateB3LifetimeState{generation: state.generation + 1}
 	}
 	state.mappingUntil, state.filterUntil = now+mappingIdle, now+filterIdle
 	state.lastOutbound = now
+	state.outbounds = outbounds
 	return state
 }
 

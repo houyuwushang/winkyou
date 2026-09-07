@@ -36,6 +36,7 @@ type gateB3NATLifetime struct {
 	winner  gateB3LifetimeFlow
 	age     time.Duration
 	refresh uint64
+	sentAt  time.Time
 }
 
 func newGateB3NATLifetime(peerNS string, seconds int) *gateB3NATLifetime {
@@ -67,6 +68,7 @@ func (model *gateB3NATLifetime) beforeWinner(local, peer netip.AddrPort, age tim
 	defer model.mu.Unlock()
 	model.winner = model.flows[gateB3LifetimeTuple{local, peer}]
 	model.age, model.refresh = age, refresh
+	model.sentAt = time.Now()
 }
 
 func (model *gateB3NATLifetime) observe() {

@@ -4,7 +4,6 @@ package natlab
 
 import (
 	"context"
-	"errors"
 	"sync"
 	"testing"
 	"time"
@@ -39,19 +38,20 @@ func (plan *gateB3OrderedEarlyMappingPlan) preferred(ctx context.Context, left b
 	}
 	first := plan.base.counts[side] == 0
 	plan.base.mu.Unlock()
+	if first {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, 2*time.Second)
+		defer cancel()
+	}
 	port, err := plan.base.preferred(ctx, left, target)
 	if err != nil || !first || left == plan.firstLeft {
 		return port, err
 	}
-	timer := time.NewTimer(2 * time.Second)
-	defer timer.Stop()
 	select {
 	case <-plan.firstSent:
 		return port, nil
 	case <-ctx.Done():
 		return 0, ctx.Err()
-	case <-timer.C:
-		return 0, errors.New("mapping lifetime initial egress ordering expired")
 	}
 }
 
@@ -80,6 +80,21 @@ func TestLinuxGateB3MappingLifetimeProof(t *testing.T) {
 			testGateB3FullShapeLifetime(t, test.loss, gateB3ConntrackCap, false, &test.cfg)
 		})
 	}
+	t.Run("M_E_negative_vector_contract", testGateB3ExpiryContract)
+	for _, winnerLeft := range []bool{false, true} {
+		name := "M_E_responder_winner"
+		if winnerLeft {
+			name = "M_E_initiator_winner_unmeasured_contract"
+		}
+		if !t.Run(name, func(t *testing.T) {
+			cfg := gateB3LifetimeCase{seconds: 30, early: true, winnerLeft: winnerLeft, layer: "M-E"}
+			testGateB3FullShapeLifetime(t, 0, gateB3ConntrackCap, false, &cfg)
+		}) {
+			// A different observed role/frame shape requires adjudication, not
+			// a changed ADR row or progression into M-X to hide this failure.
+			return
+		}
+	}
 }
 
 func configureGateB3LifetimeCase(cfg gateB3LifetimeCase, left, right *gateB2NATConfig) {
@@ -105,18 +120,19 @@ func assertGateB3LifetimeStable(t *testing.T, cfg gateB3LifetimeCase, left, righ
 	for side, endpoint := range []gateB3EndpointResult{left, right} {
 		model := []*gateB3NATLifetime{leftModel, rightModel}[side]
 		model.mu.Lock()
-		flow, age, refresh, failed := model.winner, model.age, model.refresh, model.failure != nil
+		flow, age, refresh, sentAt, failed := model.winner, model.age, model.refresh, model.sentAt, model.failure != nil
 		model.mu.Unlock()
 		if failed {
 			t.Error("mapping lifetime independent observer failed")
 		}
-		if endpoint.WinnerPackets == 1 && (!flow.present || flow.presentAt.IsZero() || !flow.goneAt.IsZero() || refresh != 1 || age >= model.idle) {
+		if cfg.layer == "M-S" && endpoint.WinnerPackets == 1 && (!flow.present || flow.presentAt.IsZero() || !flow.goneAt.IsZero() ||
+			refresh != 1 || age >= model.idle || sentAt.Sub(flow.sampledAt) > 1500*time.Millisecond) {
 			t.Error("mapping lifetime stable winner lacked unchanged live reverse-flow evidence")
 		}
-		t.Logf("mapping lifetime endpoint: layer=%s role=%s class=%s stage=%s evidence=%d candidates=%d winner=%d udp=%d frames=%d/%d bytes=%d/%d mapping_age_ms=%d reverse_seen=%t reverse_gone=%t reverse_present_before_winner=%t samples=%d prewinner_generation=%d",
+		t.Logf("mapping lifetime endpoint: layer=%s role=%s class=%s stage=%s evidence=%d candidates=%d winner=%d udp=%d frames=%d/%d bytes=%d/%d mapping_age_ms=%d reverse_seen=%t reverse_gone=%t reverse_present_before_winner=%t samples=%d prewinner_tuple_outbounds=%d local_deadline=%t",
 			cfg.layer, endpoint.Role, endpoint.ErrorClass, endpoint.ErrorStage, endpoint.EvidencePackets, endpoint.CandidatePackets,
 			endpoint.WinnerPackets, endpoint.UDPPackets, endpoint.CarrierFramesRead, endpoint.CarrierFramesWrite,
-			endpoint.CarrierBytesRead, endpoint.CarrierBytesWrite, age.Milliseconds(), !flow.presentAt.IsZero(), !flow.goneAt.IsZero(), flow.present, flow.samples, refresh)
+			endpoint.CarrierBytesRead, endpoint.CarrierBytesWrite, age.Milliseconds(), !flow.presentAt.IsZero(), !flow.goneAt.IsZero(), flow.present, flow.samples, refresh, endpoint.LocalDeadline)
 	}
 }
 

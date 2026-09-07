@@ -471,7 +471,7 @@ func (router *gateB2NATRouter) forwardOutbound(packet gateB2TUNPacket, replies c
 	if model := router.config.gateB3Lifetime; model != nil {
 		now := time.Since(model.started)
 		if metadata, err := hardnatcontrol.InspectFrame(packet.payload); err == nil && metadata.Type == hardnatcontrol.FrameWinner {
-			model.beforeWinner(mapping.public, packet.destination, time.Since(mapping.createdAt), mapping.lifetime.generation)
+			model.beforeWinner(mapping.public, packet.destination, time.Since(mapping.createdAt), mapping.lifetime.outbounds)
 		}
 		oldGeneration := mapping.lifetime.generation
 		mapping.lifetime = mapping.lifetime.outbound(now, model.idle, model.idle)

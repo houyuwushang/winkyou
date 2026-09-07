@@ -34,6 +34,7 @@ type gateB3EndpointResult struct {
 	CampaignAdmissions int    `json:"campaign_admissions"`
 	CampaignPackets    int    `json:"campaign_packets"`
 	CampaignCircuit    bool   `json:"campaign_circuit_open"`
+	LocalDeadline      bool   `json:"local_deadline"`
 }
 
 func TestGateB3EndpointProcess(t *testing.T) {
@@ -146,6 +147,7 @@ func runGateB3Endpoint(config gateB2EndpointConfig) (result gateB3EndpointResult
 		Progress: func(string, bool) error { return nil },
 	})
 	copyGateB3Result(&result, gateResult)
+	result.LocalDeadline = errors.Is(runErr, context.DeadlineExceeded)
 	if runErr != nil {
 		var failure *gateb.Failure
 		if !errors.As(runErr, &failure) {
