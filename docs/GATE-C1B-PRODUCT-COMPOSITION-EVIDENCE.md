@@ -745,5 +745,26 @@ N2d 首跑 `expired/verify` 已由复审登记到 [#101](https://github.com/houy
 本地 loopback 15s 反例已登记 [#111](https://github.com/houyuwushang/winkyou/issues/111)。
 两个路径/断言在本 PR 均不修改，不把类别登记当作根因修复，也不补称旧 Fatal 路径已排空。
 
-以下配置回归、分组完整性、完整重复验证和新 head CI 尚待实际执行；本条 docs 提交不
-宣称通过。后续追加实测，原 §6.1–6.11 内容保持。
+配置/分组先加守门测试，再改实现，定向红→绿如下；配置 RED 是新评审要求的配置守门，
+不是把它冒称为新的生产缺陷复现。真实普通 5s 失败仍以 §6.11 原日志为准。
+
+| 定向实测 | 结果 |
+| --- | --- |
+| 未分组 workflow 的新覆盖守门 | RED，0.812s；缺少原组与 completion 组的完整分区 |
+| 旧 10s/5s fixture 对新统一配置的回归 | RED，1.118s；三个 profile 的基准配置仍为 5s |
+| 分组覆盖 + 七个负向变异 | GREEN，0.186s；缺组、漏 confirmation、重复、减次数、改旧时限、advisory/条件跳过均被拒 |
+| 新统一配置，三个 profile × 八类场景 | GREEN，24/24，1.416s；含 ordinary/CLI/cancel/fresh100/两种故障/I 与 R 慢 FINISH |
+| 普通 consumer 组，`-race -count=20 -parallel=2 -timeout=3m` | PASS；27 × 20 = 540 次顶层执行；probeio 43.136s、hardnatcontrol 4.362s、orchestrator 2.541s |
+| completion 组，`-race -count=20 -parallel=2 -timeout=12m` | PASS；12 × 20 = 240 次顶层执行；probeio 336.878s，无 assertion/race 失败 |
+| `go vet ./...` 与 tagged governor/probeio/control/orchestrator vet | PASS |
+| 完整 architecture；新增分组门禁 race×20 | PASS，4.449s / 4.434s |
+
+两组仍在原三个包、原两平台 required job 中，原 39 个顶层入口各选中且只选中一次；
+第二组不改变子测试、真实 3.2s/3.5s 等待、3s challenge 或任何计费/取消断言。该低并发
+实测证明新增墙钟回归不能继续挤进原 3m 步骤，但没有将该时间上限改成产品 deadline。
+本轮生产文件、golden、OS/netns 代码为零增量；普通 session 配置变化不改其 attempt 的
+candidate/absolute 时间，成功仍要求 ready/echo/FINISH/排水，不能以干净失败代替。
+
+完整 C1b 重复矩阵、全仓结果与每个最终 SHA 的 CI 在 [PR #110](https://github.com/houyuwushang/winkyou/pull/110)
+描述中逐项记录；上述定向结果不能代替它们。保留全部首次失败，不提前宣称全绿，原
+§6.1–6.11 内容保持。

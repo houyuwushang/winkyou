@@ -57,13 +57,11 @@ type gateC1bMemoryProfile struct {
 }
 
 // Test-only session configuration, not a product deadline or probe allowance.
-// The slow fixture must cover the unchanged 3s challenge plus its real 3.5s
-// post-fsync delay and local completion; ordinary fixtures retain their 5s cap.
-func (profile gateC1bMemoryProfile) sessionCeiling() time.Duration {
-	if profile.slowFinish || profile.slowResponderFinish {
-		return 10 * time.Second
-	}
-	return 5 * time.Second
+// ADR 19.10 gives ordinary/CLI/cancellation/fresh100 the same 10s session as
+// slow FINISH. The profile absolute/candidate windows and all I/O caps stay
+// unchanged; the production 5s validation floor is not a success SLA.
+func (gateC1bMemoryProfile) sessionCeiling() time.Duration {
+	return 10 * time.Second
 }
 
 var gateC1bMemoryProfiles = []gateC1bMemoryProfile{
@@ -124,7 +122,7 @@ func TestGateC1bMemorySlowDurableFinishReachesPostOOBEcho(t *testing.T) {
 	for _, test := range gateC1bMemoryProfiles {
 		test.slowFinish = true
 		// Consume the already frozen profile absolute envelope, not Hard16's
-		// compressed 6s timing fixture. Only the slow session config is 10s.
+		// compressed 6s timing fixture. All memory sessions are now 10s.
 		test.activeTime = 0
 		t.Run(test.name, func(t *testing.T) {
 			runGateC1bMemoryProductProfile(t, "slow-finish-"+test.name, test)
@@ -134,12 +132,12 @@ func TestGateC1bMemorySlowDurableFinishReachesPostOOBEcho(t *testing.T) {
 
 func TestGateC1bMemoryFixtureSessionWindows(t *testing.T) {
 	for _, base := range gateC1bMemoryProfiles {
-		for _, scenario := range []string{"ordinary", "cli", "cancel", "evidence-drift", "candidate-exhaustion", "slow-finish", "slow-responder-finish"} {
+		for _, scenario := range []string{"ordinary", "cli", "cancel", "fresh100", "evidence-drift", "candidate-exhaustion", "slow-finish", "slow-responder-finish"} {
 			t.Run(base.name+"/"+scenario, func(t *testing.T) {
 				profile := base
-				want := 5 * time.Second
+				want := 10 * time.Second
 				switch scenario {
-				case "cli":
+				case "cli", "fresh100":
 					profile.cli = true
 				case "cancel":
 					profile.cancelAfterFinish = true
@@ -147,10 +145,8 @@ func TestGateC1bMemoryFixtureSessionWindows(t *testing.T) {
 					profile.cli, profile.fault = true, scenario
 				case "slow-finish":
 					profile.slowFinish = true
-					want = 10 * time.Second
 				case "slow-responder-finish":
 					profile.slowResponderFinish = true
-					want = 10 * time.Second
 				}
 				if got := profile.sessionCeiling(); got != want {
 					t.Fatalf("fixture session ceiling=%s, want %s", got, want)
@@ -158,7 +154,7 @@ func TestGateC1bMemoryFixtureSessionWindows(t *testing.T) {
 				if (profile.slowFinish || profile.slowResponderFinish) && profile.sessionCeiling() <= 3*time.Second+3500*time.Millisecond {
 					t.Fatal("slow fixture leaves no completion margin after the challenge and injected delay")
 				}
-				if base.sessionCeiling() != 5*time.Second || profile.activeTime != base.activeTime || profile.candidateTime != base.candidateTime {
+				if base.sessionCeiling() != 10*time.Second || profile.activeTime != base.activeTime || profile.candidateTime != base.candidateTime {
 					t.Fatal("session configuration changed the base fixture or its attempt timing")
 				}
 			})

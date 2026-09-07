@@ -409,7 +409,14 @@ jobs:
         run: >-
           go test -race ./internal/probeio ./internal/v2/hardnatcontrol ./internal/v2/gatecorchestrator
           -run 'WireGuard|ConsumerReady|ConsumerFinished|Foreground|CanceledInner|PostOOB|Conflict'
+          -skip '^Test(ConsumerFinished.*(Completion|ConfirmationAfterChallengeDeadline|DetachAfterChallengeDeadline)|WireGuardCompletion)'
           -count=20 -timeout=3m
+
+      - name: Repeat completion-phase wall-clock and cancellation regressions
+        run: >-
+          go test -race ./internal/probeio ./internal/v2/hardnatcontrol ./internal/v2/gatecorchestrator
+          -run '^Test(ConsumerFinished.*(Completion|ConfirmationAfterChallengeDeadline|DetachAfterChallengeDeadline)|WireGuardCompletion)'
+          -count=20 -timeout=12m
 
       - name: Repeat slow durable FINISH with bounded test-session headroom
         run: >-

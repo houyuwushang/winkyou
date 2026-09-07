@@ -15,8 +15,9 @@ import (
 // The fake codec/packets prove gate ownership and actual transport calls, not
 // cryptography. The c1bproof composition separately exercises real FINISHED
 // authentication and the durable journal. Every fixture is independent, so
-// parallel tests preserve the real 3s deadline without inflating the existing
-// repeated-test CI wall-clock allowance.
+// parallel tests preserve the real 3s deadline. ADR 19.10 gives these actual
+// wall-clock regressions their own repeated CI group; the ordinary consumer
+// group keeps its original 3m runner allowance.
 func TestConsumerFinishedCompletionAfterChallengeDeadline(t *testing.T) {
 	t.Parallel()
 	for _, buffered := range []bool{false, true} {
