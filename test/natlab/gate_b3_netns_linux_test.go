@@ -195,7 +195,7 @@ func testGateB3FullShapeLifetime(t *testing.T, dropEvery uint64, conntrackCap in
 	}
 	var leftModel, rightModel *gateB3NATLifetime
 	if lifetime != nil {
-		configureGateB3LifetimeCase(*lifetime, &leftConfig, &rightConfig)
+		configureGateB3LifetimeCase(t, *lifetime, &leftConfig, &rightConfig)
 		leftModel, rightModel = newGateB3NATLifetime(topology.natB, lifetime.seconds), newGateB3NATLifetime(topology.natA, lifetime.seconds)
 		t.Cleanup(func() { _ = leftModel.close(); _ = rightModel.close() })
 		leftConfig.gateB3Lifetime, rightConfig.gateB3Lifetime = leftModel, rightModel
@@ -268,7 +268,7 @@ func testGateB3FullShapeLifetime(t *testing.T, dropEvery uint64, conntrackCap in
 	success := initiatorResult.Terminal == "success" && responderResult.Terminal == "success"
 	if lifetime != nil {
 		if leftErr, rightErr := leftModel.close(), rightModel.close(); leftErr != nil || rightErr != nil {
-			t.Error("mapping lifetime observer drain failed")
+			t.Errorf("mapping lifetime observer drain failed: left=%v right=%v", leftErr, rightErr)
 		}
 		assertGateB3WirePair(t, initiator, responder, initiatorResult, responderResult)
 		assertGateB3LifetimeStable(t, *lifetime, initiatorResult, responderResult, leftModel, rightModel)

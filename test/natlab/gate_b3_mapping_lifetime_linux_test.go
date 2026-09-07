@@ -4,6 +4,9 @@ package natlab
 
 import (
 	"context"
+	"os/exec"
+	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -25,10 +28,15 @@ type gateB3LifetimeCase struct {
 // gives one genuine incoming hit without a candidate-aware drop rule, packet
 // duplication, retry or extension of the existing mapping-plan 2s barrier.
 type gateB3OrderedEarlyMappingPlan struct {
-	base      *gateB3LateHitMappingPlan
-	firstLeft bool
-	firstSent chan struct{}
-	once      sync.Once
+	base          *gateB3LateHitMappingPlan
+	firstLeft     bool
+	firstSent     chan struct{}
+	firstDenied   chan struct{}
+	ctx           context.Context
+	cancel        context.CancelFunc
+	done          chan struct{}
+	peerNamespace string
+	once          sync.Once
 }
 
 func (plan *gateB3OrderedEarlyMappingPlan) preferred(ctx context.Context, left bool, target uint16) (uint16, error) {
@@ -49,10 +57,50 @@ func (plan *gateB3OrderedEarlyMappingPlan) preferred(ctx context.Context, left b
 		return port, err
 	}
 	select {
-	case <-plan.firstSent:
+	case <-plan.firstDenied:
 		return port, nil
 	case <-ctx.Done():
 		return 0, ctx.Err()
+	}
+}
+
+// The inherited topology includes WAN propagation delay. A successful send
+// syscall proves neither arrival nor the receiving firewall's decision. This
+// independent observer waits for the EXISTING default-deny policy to process
+// the opener before the other mapping may open. No timer tunes the ordering.
+func (plan *gateB3OrderedEarlyMappingPlan) observeInitialDenial() {
+	defer close(plan.done)
+	select {
+	case <-plan.firstSent:
+	case <-plan.ctx.Done():
+		return
+	}
+	ctx, cancel := context.WithTimeout(plan.ctx, 2*time.Second)
+	defer cancel()
+	for {
+		command := exec.CommandContext(ctx, "ip", "netns", "exec", plan.peerNamespace, "iptables", "-w", "1", "-nvxL", "WYM_INITIAL")
+		command.WaitDelay = 100 * time.Millisecond
+		output, err := command.Output()
+		if err != nil {
+			return
+		}
+		for _, line := range strings.Split(string(output), "\n") {
+			fields := strings.Fields(line)
+			if len(fields) >= 3 && fields[2] == "DROP" {
+				count, err := strconv.ParseUint(fields[0], 10, 64)
+				if err == nil && count > 0 {
+					close(plan.firstDenied)
+					return
+				}
+			}
+		}
+		timer := time.NewTimer(time.Millisecond)
+		select {
+		case <-timer.C:
+		case <-ctx.Done():
+			timer.Stop()
+			return
+		}
 	}
 }
 
@@ -105,11 +153,25 @@ func TestLinuxGateB3MappingLifetimeProof(t *testing.T) {
 	}
 }
 
-func configureGateB3LifetimeCase(cfg gateB3LifetimeCase, left, right *gateB2NATConfig) {
+func configureGateB3LifetimeCase(t *testing.T, cfg gateB3LifetimeCase, left, right *gateB2NATConfig) {
 	if cfg.early {
 		base := newGateB3LateHitMappingPlan()
 		base.hitOrdinal = 0
-		plan := &gateB3OrderedEarlyMappingPlan{base: base, firstLeft: cfg.winnerLeft, firstSent: make(chan struct{})}
+		ctx, cancel := context.WithCancel(context.Background())
+		plan := &gateB3OrderedEarlyMappingPlan{base: base, firstLeft: cfg.winnerLeft, firstSent: make(chan struct{}),
+			firstDenied: make(chan struct{}), ctx: ctx, cancel: cancel, done: make(chan struct{}), peerNamespace: left.namespace}
+		if cfg.winnerLeft {
+			plan.peerNamespace = right.namespace
+		}
+		go plan.observeInitialDenial()
+		t.Cleanup(func() {
+			cancel()
+			select {
+			case <-plan.done:
+			case <-time.After(2 * time.Second):
+				t.Error("mapping lifetime initial-denial observer did not drain")
+			}
+		})
 		left.gateB3MappingPlan, left.gateB3MappingPlanLeft = plan, true
 		right.gateB3MappingPlan = plan
 	}
@@ -123,7 +185,7 @@ func assertGateB3LifetimeStable(t *testing.T, cfg gateB3LifetimeCase, left, righ
 		t.Fatal("mapping lifetime did not consume both complete frozen schedules")
 	}
 	if cfg.early && (left.WinnerPackets != boolGateB3Int(cfg.winnerLeft) || right.WinnerPackets != boolGateB3Int(!cfg.winnerLeft)) {
-		t.Fatal("mapping lifetime initial tuple ordering did not select the requested winner direction")
+		t.Error("mapping lifetime initial tuple ordering did not select the requested winner direction")
 	}
 	for side, endpoint := range []gateB3EndpointResult{left, right} {
 		model := []*gateB3NATLifetime{leftModel, rightModel}[side]

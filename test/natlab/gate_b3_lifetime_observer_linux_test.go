@@ -5,7 +5,9 @@ package natlab
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/netip"
+	"os"
 	"os/exec"
 	"strconv"
 	"strings"
@@ -131,13 +133,27 @@ func (model *gateB3NATLifetime) observe() {
 }
 
 func readGateB3LifetimeFlow(ctx context.Context, namespace string, tuple gateB3LifetimeTuple) (bool, error) {
-	command := exec.CommandContext(ctx, "ip", "netns", "exec", namespace, "conntrack", "-L", "-p", "udp",
+	// Exact-key GET does not dump/walk the changing 32K table. A failed or
+	// interrupted query is never an absence witness; only the CLI's explicit
+	// conntrack ENOENT diagnostic is accepted as a completed negative lookup.
+	command := exec.CommandContext(ctx, "ip", "netns", "exec", namespace, "conntrack", "-G", "-p", "udp",
 		"--orig-src", tuple[1].Addr().String(), "--orig-dst", tuple[0].Addr().String(),
 		"--sport", strconv.Itoa(int(tuple[1].Port())), "--dport", strconv.Itoa(int(tuple[0].Port())))
 	command.WaitDelay = 100 * time.Millisecond
+	command.Env = append(os.Environ(), "LC_ALL=C")
 	output, err := command.CombinedOutput()
 	if err != nil {
-		return false, errors.New("mapping lifetime reverse-flow read failed")
+		var exitError *exec.ExitError
+		if errors.As(err, &exitError) {
+			message := strings.ToLower(strings.TrimSpace(string(output)))
+			if exitError.ExitCode() == 1 && strings.HasPrefix(message, "conntrack v") &&
+				strings.Contains(message, "such conntrack doesn't exist") &&
+				!strings.Contains(message, "\nudp ") {
+				return false, nil
+			}
+			return false, fmt.Errorf("mapping lifetime reverse-flow read failed: exit=%d deadline=%t", exitError.ExitCode(), errors.Is(ctx.Err(), context.DeadlineExceeded))
+		}
+		return false, errors.New("mapping lifetime reverse-flow command unavailable")
 	}
 	flows := 0
 	for _, line := range strings.Split(string(output), "\n") {
@@ -145,7 +161,7 @@ func readGateB3LifetimeFlow(ctx context.Context, namespace string, tuple gateB3L
 			flows++
 		}
 	}
-	if flows > 1 {
+	if flows != 1 {
 		return false, errors.New("mapping lifetime tuple was not unique")
 	}
 	return flows == 1, nil

@@ -445,3 +445,32 @@ M job 仍经现有 `nf_conntrack_max` guardian/REQUIRED/sudo/race；timeout 隔�
 
 实现仍在 Draft #107；首跑失败必须保留。M 不提高生产成功率，不开启 E、C1c、现场 I/O，
 #106 只在独立复审通过并合并后关闭。后续表须分别列出首跑失败、修正后的新 head 与仍未闭合项。
+
+### 11.4 M 首跑 RED（`c0243c53552a747dd835805bfd220cf86a295d08`）
+
+[PR-trigger M job](https://github.com/houyuwushang/winkyou/actions/runs/34101188957/job/101675781841)
+与 [独立 push M job](https://github.com/houyuwushang/winkyou/actions/runs/34101185307/job/101675769586)
+均保留为首次失败（241.98s / 243.32s），没有 rerun：
+
+| 场景 | 实测结果 |
+| --- | --- |
+| pure model / expiry 负向 predicate | 通过；普通 loss 未接纳 expiry 元组 |
+| namespace + child crash | 两份均通过；60/60 安装、init/control 不变、恢复回读、handle/residue=0 |
+| M-S early initiator | 两份通过；UDP 16,398/16,397；8/8 frame、873/873 byte；winner age 32,142/32,158ms；reverse flow 发送前在，未刷新命中 tuple |
+| M-S early responder | 失败：实际仍为 I winner；不是预期方向的成功证明 |
+| M-S tail | 两份通过；UDP 16,398/16,397，8/8 frame，winner age 961/994ms |
+| M-S full exhaustion | 两份通过；UDP 16,397/16,397；I 8/7 frame、802/754 byte，R 7/8、754/802；双 `hard_nat_candidate_exhausted` |
+| M-S 50% candidate-only loss | PR-trigger 成功（唯一 I winner）；push 无命中（双 exhaustion），均通过原严格 predicate 与零残留 |
+| M-E responder | 失败：实际 I winner；PR-trigger 另有 observer error，不能把它记为 flow 消失；未取得完整 M-E 因果/残留证明 |
+| M-E initiator / M-X | 未运行：M-E 首个失败后停止，不能报通过 |
+
+首包方向 fixture 的原因已确认：既有 N2d topology 在 WAN 链路配置传播延迟，原 fixture
+在首个 send 返回时即放开另一侧 mapping；send 返回不是对端收到/过滤完成，因此实际两个方向
+都收到 candidate。后续修正不加 sleep：在原 default-deny 路径增加等价 verdict 的计数分支，
+独立 worker 见证首个 peer opener 已被原策略拒绝，才释放原 2s mapping-plan barrier。
+没有附加 candidate drop、端点调度变化、重传或延期。
+
+flow observer 的首跑错误没有足够诊断，暂不作根因归因；后续改为 exact-tuple `conntrack -G`，
+避免 dump 整张动态表，且增加脱敏的退出码/deadline 分类。只有工具明确的 conntrack ENOENT
+诊断可记为 GONE；任意失败、半结果或未知输出仍拒绝，不能以错误代替失效证明。
+后续新 head 的结果独立记录，不覆盖本节。

@@ -375,6 +375,24 @@ func (router *gateB2NATRouter) configureNamespace() error {
 	_, err := runNamespaced(router.config.namespace, "iptables", nil,
 		"-w", "5", "-I", "INPUT", "1", "-i", "wan0", "-p", "udp", "-d", router.config.public.String(),
 		"-m", "conntrack", "--ctstate", "ESTABLISHED,RELATED", "-j", "ACCEPT")
+	if err != nil {
+		return err
+	}
+	if plan, ok := router.config.gateB3MappingPlan.(*gateB3OrderedEarlyMappingPlan); ok && router.config.gateB3MappingPlanLeft != plan.firstLeft {
+		// Split the already-default-denied peer UDP path into a counted chain.
+		// ESTABLISHED stays ahead of it; the verdict is identical to the
+		// immediately following original default DROP. This is not extra loss.
+		for _, args := range [][]string{
+			{"-w", "5", "-N", "WYM_INITIAL"},
+			{"-w", "5", "-A", "WYM_INITIAL", "-j", "DROP"},
+			{"-w", "5", "-I", "INPUT", "2", "-i", "wan0", "-p", "udp", "-s", router.config.peerPublic.String(),
+				"-d", router.config.public.String(), "-j", "WYM_INITIAL"},
+		} {
+			if _, err := runNamespaced(router.config.namespace, "iptables", nil, args...); err != nil {
+				return errors.New("mapping lifetime initial-denial counter installation failed")
+			}
+		}
+	}
 	return err
 }
 
