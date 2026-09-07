@@ -212,13 +212,15 @@ root wrapper/orchestrator `-race -count=20` 通过（1.259s / 2.345s）；Linux
 
 ## 6. Issue #109 完成阶段修复与未闭合验收（2026-09-06）
 
-状态：**Draft，未完成全部验收，不应合并或关闭 #109**。本轮基线为
+状态：**Draft，未完成全部验收，不应合并或关闭 #109**。修复基线为
 `c2d1ef50e354da87eea536176f8dddfe55aa4b6e`；#105/#108 已合入，但不在这里实现 liveness、
-映射寿命模型或 C1c。只修改 `wireguard_consumer_finish.go` 的本地阶段 context；不改
-TransportLease、ProductHandoff、Gate B executor、orchestrator、carrier、SSH/child stream。
+映射寿命模型或 C1c。最初仅修改 `wireguard_consumer_finish.go` 的本地阶段 context；
+2026-09-07 经单独授权，扩展为完成失败见证及已落盘 FINISH 后的 Gate B 错误清理（§6.6）。
+不改 TransportLease、ProductHandoff、Gate B 发包执行、orchestrator、carrier、SSH/child stream。
 
 §6.1–6.3 保留 `0b7800b` 及以前的原始反例和暂停记录；内存/OS 分列验收已获维护者同意，
-修订规范为 ADR §19.6，新验证另列 §6.4。历史红结果不是被覆盖成绿，也不再是待裁决事项。
+修订规范为 ADR §19.6，新验证另列 §6.4–6.5；第二次授权与实测见 §6.6 / ADR §19.7。
+历史红结果不是被覆盖成绿，也不再是待裁决事项。
 
 ### 6.1 原始反例与确定性红→绿
 
@@ -441,3 +443,81 @@ ceiling 是根因**，更不能加长它求绿。
 见证，不静默修改其它模块。暂停新增实现；需要单独授权精准取消/时间源见证与 FINISH 后错误
 清理的修复范围。没有修改 Gate B、orchestrator、TransportLease 或任何超时/调度参数；不重跑
 失败矩阵，不以其它测试或后续 CI 偶然成功覆盖这次反例。PR #110 未达到合入条件，#109 不关闭。
+
+### 6.6 授权的 FINISH 后清理与失败来源见证（2026-09-07）
+
+维护者已单独授权这两项，先提交 `20ed1a4` 写入 ADR §19.7，再实现；§6.5 的停止记录属于
+旧 head，不是仍待回答的授权问题。旧 head `40826a5` 的两次自动 CI 已完成 **33/33 SUCCESS**，
+但这不覆盖本地 59/60 与残留反例，也不证明新代码已经通过 CI。
+
+**清理控制流先红后绿。** `a401239` 的 `TestCleanupHonorsPreviouslyDurableFinish` 在真实临时
+governor 上覆盖 controller / 直接 attempt 两种持有方式，每种分别测试 preflight、已 durable
+FINISH、缺失 FINISH、失败 FINISH；每个场景重复 cleanup，factory 打开次数必须为 0。
+
+```text
+go test -race ./internal/v2/directconnect/gateb -run '^TestCleanupHonorsPreviouslyDurableFinish$' -count=1 -v
+RED: 1.371s; both previously-durable cases retain peers=1 attempts=1 heavy=1
+GREEN at 9472f7a: 1.824s; all 8 cases pass
+```
+
+唯一清理条件修订为 `finishOK := !runtime.burned || runtime.finishRecorded`；后者只能来自本
+runtime 已成功落盘的本地见证。没有 FINISH、失败 FINISH 仍保留原 fail-closed 预留，不重写
+FINISH、不退款、不返回 active。布尔真值表单测不冒充持久化证明，真实 journal 另测如下。
+
+**真实落盘后取消。** 新 `c1bproof` 子用例位于原 required memory selector 内，只在 initiator
+实际成功 FINISH append+fsync 后取消原 caller，不延迟或重写 journal。首次组合证明 PASS
+6.917s；补失败来源采集后的同一组合 PASS 6.285s。每侧真实 ledger 最终 sequence/records=3/3、
+admissions=1、consecutive failures=0、unfinished=0，证明未二次 FINISH 或退款。
+
+- initiator 在 `after_durable_finish` 失败，见证为 attempt=canceled、session=active；采集时
+  相对剩余分别为 18949ms / 4934ms，challenge=取消传播后的 canceled。先采集，再本地 Close；
+  这些是本次实测而非新的时限常量，也不据此倒推 §6.5 的旧失败来源。
+- 双侧 FINISH=true、attempt released、carrier drained；initiator 不 detach、不 active；
+  responder 已 detach 后终局。每端 shared challenge 恰好 3/3、active I/O=0/0、carrier=8/8。
+- 每端底层 UDP 严格等于 Gate B 已计费发射 + 3 个建立包；原 memory connection/mapping/queue、
+  governor peer/attempt/reservation 与 safety 断言全部执行且通过，未靠 deferred Close 遮盖残留。
+
+**脱敏、只读诊断。** `ca54cc3` 在原失败点、清理取消之前，记录固定 point/cause 与
+attempt/session/challenge 的状态和相对剩余毫秒；只有首个失败有效，返回深度足够的值副本。
+不保留 context 或原始 error 文本，私有 cancel cause 归类为 `other`；不参与授权、计时或
+错误返回裁决。成功路径省略新增字段，原 JSON、协议 golden 与错误类不变。七个负向场景
+覆盖两种父 context 的取消/到期、落盘错误、lease 关闭和带私有 cause 的取消，并检查返回
+副本不可变、二次调用不覆盖首个见证；加成功 JSON 兼容测试，定向 race PASS 2.231s。
+
+本轮三包 `go test -race ./internal/probeio ./internal/v2/directconnect/gateb
+./internal/v2/gatecorchestrator -count=20` 全绿，耗时分别为 128.063s / 10.770s / 2.562s。
+`go vet ./...`、tagged governor vet 通过，完整 architecture/mutation PASS 4.354s。
+
+同一新代码的全选择器首轮验证：
+
+```text
+go test -race -tags=c1bproof ./internal/governor -run GateC1b -count=20 -timeout=20m -json
+PASS: 836.014s; first run, no retry
+```
+
+| 本轮重复项 | 实测 |
+| --- | --- |
+| 普通 memory / CLI 三 profile | 各入口 20/20 |
+| slow predictive / asymmetric / Hard16 | 各 20/20，共 60/60 |
+| 真实 FINISH 后 caller 取消 | 20/20；40 个双侧终局见证均满足 FINISH/计费/清理 |
+| 只读 post-fsync 快照 | 60/60 单次回调、3500–3501ms，两侧底层计数都不增长 |
+| 分项核算正向 / 负向 | 60/60、400/400 |
+| CLI drift/exhaustion、lease/ownership | 各入口 20/20 |
+| 原 connection/mapping/queue、governor residue/safety 断言 | 全部通过，没有 deferred 清理代替正常终局 |
+
+`Fresh100` 仍按原环境开关在本地这个命令中 skip；它是两平台 CI 的单独 required 步骤，不把
+20 轮结果冒充 100 次 fresh run。没有任何真实 OS/netns 或 SSH 本地执行；该权限与证据仍只在
+原隔离 CI 中使用。原始 JSON 在仓库外保留，公开记录没有生成的身份或完整 runtime dump。
+
+这次没有重现 §6.5 更早的完成失败，因此只能确认已授权清理修复及新见证通过本次验证，不能
+倒推旧反例一定来自某个父 context；旧失败保留。预算、3s/3 包、5s session fixture、profile
+envelope、调度、netns 原断言、workflow、依赖均未改，不混修其它 issue。
+
+本轮新代码 Windows 全仓 `go test ./... -count=1 -json` 首次 **PASS**，88 个有测试的包通过，
+其中 governor 213.753s、probeio 8.654s、client 33.373s；没有 rerun。§6.3 的旧全仓 #97 失败
+仍保留，不声称本次改变修复了它。最终累计 13 文件；严格 UTF-8/NUL、52 个相对链接、增量
+隐私扫描与 `git diff --check` 通过，§4.1 OS 原表逐段比较不变。
+
+远端 required 结果以 [Draft PR #110](https://github.com/houyuwushang/winkyou/pull/110) 的精确
+head checks 和 PR 验证汇总为准；不能引用旧 head 的成功代替。独立复审前不合并、不关闭 #109，
+也不增加任何现场或后续 gate 权限。

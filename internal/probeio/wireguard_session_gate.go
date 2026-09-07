@@ -47,8 +47,8 @@ const (
 )
 
 // WireGuardSessionGateWitness intentionally contains only local bounded
-// counters and message types. It carries no peer, attempt, endpoint, path, or
-// key material.
+// counters, message types, and redacted completion context snapshots. It carries
+// no peer or attempt identity, endpoint, path, or key material.
 type WireGuardSessionGateWitness struct {
 	State               WireGuardGateState
 	ConsumerReady       bool
