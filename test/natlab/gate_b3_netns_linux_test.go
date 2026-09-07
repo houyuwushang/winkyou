@@ -118,10 +118,21 @@ func testGateB3FullShape(t *testing.T, dropEvery uint64, conntrackCap int) {
 }
 
 func testGateB3FullShapeWithEarlyHit(t *testing.T, dropEvery uint64, conntrackCap int, earlyHit bool) {
+	testGateB3FullShapeLifetime(t, dropEvery, conntrackCap, earlyHit, nil)
+}
+
+func testGateB3FullShapeLifetime(t *testing.T, dropEvery uint64, conntrackCap int, earlyHit bool, lifetime *gateB3LifetimeCase) {
 	armGateB3KernelReleaseMargin(t)
 	started := time.Now()
 	setGateB3HostConntrackCapForSubtest(t, conntrackCap)
-	topology := newN2DTopology(t, n2dMappingEDM, n2dMappingEDM)
+	var topology *n2dTopology
+	var lifetimeGuard *gateB3LifetimeGuard
+	if lifetime == nil {
+		topology = newN2DTopology(t, n2dMappingEDM, n2dMappingEDM)
+	} else {
+		lifetimeGuard = newGateB3LifetimeTopology(t, lifetime.seconds)
+		topology = lifetimeGuard.topology
+	}
 	if err := verifyGateB3NamespacedConntrackCap(topology.natA, topology.natB, conntrackCap); err != nil {
 		t.Fatal("Gate B3 shared namespace conntrack cap could not be verified")
 	}
@@ -170,6 +181,13 @@ func testGateB3FullShapeWithEarlyHit(t *testing.T, dropEvery uint64, conntrackCa
 		}
 		leftConfig.gateB3MappingPlan, leftConfig.gateB3MappingPlanLeft = lateHit, true
 		rightConfig.gateB3MappingPlan = lateHit
+	}
+	var leftModel, rightModel *gateB3NATLifetime
+	if lifetime != nil {
+		configureGateB3LifetimeCase(*lifetime, &leftConfig, &rightConfig)
+		leftModel, rightModel = newGateB3NATLifetime(topology.natB, lifetime.seconds), newGateB3NATLifetime(topology.natA, lifetime.seconds)
+		t.Cleanup(func() { _ = leftModel.close(); _ = rightModel.close() })
+		leftConfig.gateB3Lifetime, rightConfig.gateB3Lifetime = leftModel, rightModel
 	}
 	leftRouter := startGateB2NATRouter(t, leftConfig)
 	rightRouter := startGateB2NATRouter(t, rightConfig)
@@ -234,10 +252,26 @@ func testGateB3FullShapeWithEarlyHit(t *testing.T, dropEvery uint64, conntrackCa
 	}
 
 	success := initiatorResult.Terminal == "success" && responderResult.Terminal == "success"
+	if lifetime != nil {
+		if leftErr, rightErr := leftModel.close(), rightModel.close(); leftErr != nil || rightErr != nil {
+			t.Error("mapping lifetime observer drain failed")
+		}
+		assertGateB3WirePair(t, initiator, responder, initiatorResult, responderResult)
+		assertGateB3LifetimeStable(t, *lifetime, initiatorResult, responderResult, leftModel, rightModel)
+		if err := lifetimeGuard.restore(); err != nil {
+			t.Error("mapping lifetime original timeout restoration failed")
+		}
+	}
 	// A rejected terminal is still required to leave complete OS cleanup
 	// evidence. Do not let Fatal below bypass the independent residue gate.
 	assertGateB3NoResidue(t, topology, observer, leftRouter, rightRouter, !success,
 		conntrackCap < gateB3ConntrackCap, initiator.governorDir, responder.governorDir)
+	if lifetime != nil {
+		if err := lifetimeGuard.close(); err != nil {
+			t.Fatal("mapping lifetime isolation restoration/handle witness failed")
+		}
+		t.Log("mapping lifetime teardown: restored_readback=true initial_unchanged=true control_unchanged=true namespace_handles=0 socket_process_conntrack_lock_veth_residue=0")
+	}
 	if leftRouter.observationFailed.Load() || rightRouter.observationFailed.Load() {
 		t.Fatal("Gate B3 asynchronous reverse-flow observation failed")
 	}

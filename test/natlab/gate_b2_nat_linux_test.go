@@ -125,6 +125,7 @@ type gateB2NATConfig struct {
 	// Read-only snapshot AFTER the winner syscall, on a separate bounded
 	// worker. It is not a before-send witness and never blocks forwarding.
 	gateB3AfterWinner func(context.Context, netip.AddrPort, netip.AddrPort) error
+	gateB3Lifetime    *gateB3NATLifetime
 }
 
 type gateB2UsedPort struct {
@@ -143,6 +144,7 @@ type gateB2NATMapping struct {
 	public     netip.AddrPort
 	allowed    map[netip.AddrPort]struct{}
 	createdAt  time.Time
+	lifetime   gateB3LifetimeState
 }
 
 type gateB2TUNPacket struct {
@@ -466,6 +468,17 @@ func (router *gateB2NATRouter) forwardOutbound(packet gateB2TUNPacket, replies c
 			return err
 		}
 	}
+	if model := router.config.gateB3Lifetime; model != nil {
+		now := time.Since(model.started)
+		if metadata, err := hardnatcontrol.InspectFrame(packet.payload); err == nil && metadata.Type == hardnatcontrol.FrameWinner {
+			model.beforeWinner(mapping.public, packet.destination, time.Since(mapping.createdAt), mapping.lifetime.generation)
+		}
+		oldGeneration := mapping.lifetime.generation
+		mapping.lifetime = mapping.lifetime.outbound(now, model.idle, model.idle)
+		if mapping.lifetime.generation != oldGeneration {
+			clear(mapping.allowed)
+		}
+	}
 	mapping.allowed[packet.destination] = struct{}{}
 	if router.config.recordTargets != nil && packet.destination.Addr() == router.config.peerPublic {
 		router.config.recordTargets.record(packet.destination.Port())
@@ -478,6 +491,11 @@ func (router *gateB2NATRouter) forwardOutbound(packet gateB2TUNPacket, replies c
 		return err
 	}
 	router.outbound.Add(1)
+	if plan, ok := router.config.gateB3MappingPlan.(*gateB3OrderedEarlyMappingPlan); ok {
+		if metadata, err := hardnatcontrol.InspectFrame(packet.payload); err == nil && metadata.Type == hardnatcontrol.FrameCandidate && metadata.Ordinal == 0 {
+			plan.forwarded(router.config.gateB3MappingPlanLeft)
+		}
+	}
 	if metadata, inspectErr := hardnatcontrol.InspectFrame(packet.payload); inspectErr == nil && metadata.Type == hardnatcontrol.FrameCandidate {
 		router.candidateForwarded.Add(1)
 		if metadata.SocketSlot < 16 {
@@ -700,6 +718,10 @@ func (router *gateB2NATRouter) forwardInbound(tun *os.File, reply gateB2MappedRe
 	if reply.mapping == nil {
 		return errors.New("Gate B2 isolated NAT reply lacked a mapping")
 	}
+	if model := router.config.gateB3Lifetime; model != nil && !reply.mapping.lifetime.permits(time.Since(model.started)) {
+		router.droppedInbound.Add(1)
+		return nil
+	}
 	if _, allowed := reply.mapping.allowed[reply.source]; !allowed {
 		router.droppedInbound.Add(1)
 		return nil
@@ -710,6 +732,9 @@ func (router *gateB2NATRouter) forwardInbound(tun *os.File, reply gateB2MappedRe
 			(router.config.dropEveryCandidateInbound > 0 && ordinal%router.config.dropEveryCandidateInbound == 0) {
 			router.droppedInbound.Add(1)
 			return nil
+		}
+		if model := router.config.gateB3Lifetime; model != nil {
+			model.track(reply.mapping.public, reply.source)
 		}
 	}
 	packet, err := buildGateB2IPv4UDP(reply.source, reply.mapping.internal, reply.payload)

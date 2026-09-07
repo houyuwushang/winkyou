@@ -73,6 +73,14 @@ func runGateB3Endpoint(config gateB2EndpointConfig) (result gateB3EndpointResult
 		return result, err
 	}
 	defer stream.Close()
+	recordedStream := &gateB3WireRecorder{Conn: stream}
+	defer func() {
+		// gateb.Run has already drained the carrier before this snapshot.
+		// It is a private test witness, separate from product result/logs.
+		if err := writeN1JSON(config.ResultPath+".wire", recordedStream.witness()); err != nil {
+			resultErr = errors.Join(resultErr, errors.New("Gate B3 wire witness write failed"))
+		}
+	}()
 
 	artifact, err := os.ReadFile(config.ArtifactPath)
 	if err != nil {
@@ -133,7 +141,7 @@ func runGateB3Endpoint(config gateB2EndpointConfig) (result gateB3EndpointResult
 		return result, err
 	}
 	gateResult, runErr := gateb.Run(ctx, gateb.Config{
-		Machine: machine, Ledger: ledger, Artifact: artifact, Stream: stream,
+		Machine: machine, Ledger: ledger, Artifact: artifact, Stream: recordedStream,
 		ObserverTopology: topology, HardNATLabFactory: natLabFactory, BuildVersion: "gate-b3-netns",
 		Progress: func(string, bool) error { return nil },
 	})
