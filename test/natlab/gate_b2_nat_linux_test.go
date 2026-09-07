@@ -158,24 +158,28 @@ type gateB2MappedReply struct {
 }
 
 type gateB2NATWitness struct {
-	Mappings             int
-	Outbound             uint64
-	Inbound              uint64
-	DroppedInbound       uint64
-	PeakMappings         int
-	MappingHardCap       int
-	MappingCapHit        bool
-	TUNRead              uint64
-	TUNRejected          uint64
-	CandidateRead        uint64
-	CandidateForwarded   uint64
-	LastOrdinalRead      uint64
-	LastOrdinalForwarded uint64
-	RunFailure           string
-	CandidateInbound     uint64
-	WinnerOutbound       uint64
-	WinnerInbound        uint64
-	WinnerMappingAgeMS   int64
+	Mappings                 int
+	Outbound                 uint64
+	Inbound                  uint64
+	DroppedInbound           uint64
+	PeakMappings             int
+	MappingHardCap           int
+	MappingCapHit            bool
+	TUNRead                  uint64
+	TUNRejected              uint64
+	CandidateRead            uint64
+	CandidateForwarded       uint64
+	LastOrdinalRead          uint64
+	LastOrdinalForwarded     uint64
+	CandidateReadBySlot      [16]uint64
+	CandidateForwardedBySlot [16]uint64
+	Tail16Read               uint64
+	Tail16Forwarded          uint64
+	RunFailure               string
+	CandidateInbound         uint64
+	WinnerOutbound           uint64
+	WinnerInbound            uint64
+	WinnerMappingAgeMS       int64
 }
 
 type gateB2NATRouter struct {
@@ -200,25 +204,29 @@ type gateB2NATRouter struct {
 	readers sync.WaitGroup
 	close   sync.Once
 
-	outbound             atomic.Uint64
-	inbound              atomic.Uint64
-	droppedInbound       atomic.Uint64
-	candidateInbound     atomic.Uint64
-	winnerOutbound       atomic.Uint64
-	winnerInbound        atomic.Uint64
-	winnerMappingAgeMS   atomic.Int64
-	peakMappings         atomic.Int64
-	mappingCapHit        atomic.Bool
-	tunRead              atomic.Uint64
-	tunRejected          atomic.Uint64
-	candidateRead        atomic.Uint64
-	candidateForwarded   atomic.Uint64
-	lastOrdinalRead      atomic.Uint64
-	lastOrdinalForwarded atomic.Uint64
-	runFailure           atomic.Pointer[string]
-	winnerObservation    chan [2]netip.AddrPort
-	observationDone      chan struct{}
-	observationFailed    atomic.Bool
+	outbound                 atomic.Uint64
+	inbound                  atomic.Uint64
+	droppedInbound           atomic.Uint64
+	candidateInbound         atomic.Uint64
+	winnerOutbound           atomic.Uint64
+	winnerInbound            atomic.Uint64
+	winnerMappingAgeMS       atomic.Int64
+	peakMappings             atomic.Int64
+	mappingCapHit            atomic.Bool
+	tunRead                  atomic.Uint64
+	tunRejected              atomic.Uint64
+	candidateRead            atomic.Uint64
+	candidateForwarded       atomic.Uint64
+	lastOrdinalRead          atomic.Uint64
+	lastOrdinalForwarded     atomic.Uint64
+	candidateReadBySlot      [16]atomic.Uint64
+	candidateForwardedBySlot [16]atomic.Uint64
+	tail16Read               atomic.Uint64
+	tail16Forwarded          atomic.Uint64
+	runFailure               atomic.Pointer[string]
+	winnerObservation        chan [2]netip.AddrPort
+	observationDone          chan struct{}
+	observationFailed        atomic.Bool
 }
 
 func startGateB2NATRouter(t testing.TB, config gateB2NATConfig) *gateB2NATRouter {
@@ -339,6 +347,14 @@ func (router *gateB2NATRouter) run() error {
 }
 
 func (router *gateB2NATRouter) configureNamespace() error {
+	if router.config.reusePortsByTarget {
+		// The Go channel cannot recover packets already dropped by the
+		// kernel TUN ring. Hard16 bounds BOTH queues by the same one-endpoint
+		// maximum; this creates no additional endpoint emission allowance.
+		if err := configureGateB3TUNQueue(router.config.namespace, router.config.tunName, router.config.packetQueueCapacity); err != nil {
+			return err
+		}
+	}
 	commands := [][]string{
 		{"link", "set", "dev", router.config.tunName, "up"},
 		{"route", "replace", "table", gateB2TUNTable, "default", "dev", router.config.tunName},
@@ -416,7 +432,13 @@ func (router *gateB2NATRouter) readTUN(tun *os.File, packets chan<- gateB2TUNPac
 		}
 		if metadata, err := hardnatcontrol.InspectFrame(packet.payload); err == nil && metadata.Type == hardnatcontrol.FrameCandidate {
 			router.candidateRead.Add(1)
-			if metadata.Ordinal == 1023 {
+			if metadata.SocketSlot < 16 {
+				router.candidateReadBySlot[metadata.SocketSlot].Add(1)
+			}
+			if metadata.Ordinal >= 16368 && metadata.Ordinal < 16384 {
+				router.tail16Read.Add(1)
+			}
+			if metadata.Ordinal < 16384 && metadata.Ordinal%1024 == 1023 {
 				router.lastOrdinalRead.Add(1)
 			}
 		}
@@ -458,7 +480,13 @@ func (router *gateB2NATRouter) forwardOutbound(packet gateB2TUNPacket, replies c
 	router.outbound.Add(1)
 	if metadata, inspectErr := hardnatcontrol.InspectFrame(packet.payload); inspectErr == nil && metadata.Type == hardnatcontrol.FrameCandidate {
 		router.candidateForwarded.Add(1)
-		if metadata.Ordinal == 1023 {
+		if metadata.SocketSlot < 16 {
+			router.candidateForwardedBySlot[metadata.SocketSlot].Add(1)
+		}
+		if metadata.Ordinal >= 16368 && metadata.Ordinal < 16384 {
+			router.tail16Forwarded.Add(1)
+		}
+		if metadata.Ordinal < 16384 && metadata.Ordinal%1024 == 1023 {
 			router.lastOrdinalForwarded.Add(1)
 		}
 	}
@@ -714,7 +742,7 @@ func (router *gateB2NATRouter) Witness() gateB2NATWitness {
 	if failure := router.runFailure.Load(); failure != nil {
 		runFailure = *failure
 	}
-	return gateB2NATWitness{
+	witness := gateB2NATWitness{
 		Mappings: mappings, Outbound: router.outbound.Load(), Inbound: router.inbound.Load(),
 		DroppedInbound: router.droppedInbound.Load(), PeakMappings: int(router.peakMappings.Load()),
 		MappingHardCap: router.config.mappingHardCap, MappingCapHit: router.mappingCapHit.Load(),
@@ -723,7 +751,13 @@ func (router *gateB2NATRouter) Witness() gateB2NATWitness {
 		TUNRead: router.tunRead.Load(), TUNRejected: router.tunRejected.Load(), CandidateRead: router.candidateRead.Load(),
 		CandidateForwarded: router.candidateForwarded.Load(), LastOrdinalRead: router.lastOrdinalRead.Load(),
 		LastOrdinalForwarded: router.lastOrdinalForwarded.Load(), RunFailure: runFailure,
+		Tail16Read: router.tail16Read.Load(), Tail16Forwarded: router.tail16Forwarded.Load(),
 	}
+	for slot := range 16 {
+		witness.CandidateReadBySlot[slot] = router.candidateReadBySlot[slot].Load()
+		witness.CandidateForwardedBySlot[slot] = router.candidateForwardedBySlot[slot].Load()
+	}
+	return witness
 }
 
 func (router *gateB2NATRouter) closeDescriptors() {

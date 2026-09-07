@@ -97,6 +97,7 @@ func TestLinuxGateB3Hard16Proof(t *testing.T) {
 	t.Run("conntrack_counter_boundary", testGateB3ConntrackCounterBoundary)
 	t.Run("topology_setup_error_redaction", testGateB3TopologySetupErrorRedaction)
 	t.Run("router_mapping_cap_pre_io", testGateB3RouterMappingCapPreIO)
+	t.Run("tun_ingress_queue_contract", testGateB3TUNIngressQueueContract)
 	t.Run("loss_terminal_contract", testGateB3LossTerminalContract)
 	// Exercise the low-ceiling fault before any 16K topology can leave
 	// invisible conntrack/RCU reclamation behind. The fault remains one-shot
