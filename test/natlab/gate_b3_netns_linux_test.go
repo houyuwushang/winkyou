@@ -129,16 +129,18 @@ func testGateB3FullShapeWithEarlyHit(t *testing.T, dropEvery uint64, conntrackCa
 	var leftPeerFlow, rightPeerFlow atomic.Int64
 	leftPeerFlow.Store(-1)
 	rightPeerFlow.Store(-1)
-	beforeWinner := func(namespace string, count *atomic.Int64) func(netip.AddrPort, netip.AddrPort) error {
-		return func(source, target netip.AddrPort) error {
-			output, err := runNamespaced(namespace, "conntrack", nil, "-L", "-p", "udp",
+	afterWinner := func(namespace string, count *atomic.Int64) func(context.Context, netip.AddrPort, netip.AddrPort) error {
+		return func(ctx context.Context, source, target netip.AddrPort) error {
+			command := exec.CommandContext(ctx, "ip", "netns", "exec", namespace, "conntrack", "-L", "-p", "udp",
 				"--orig-src", target.Addr().String(), "--orig-dst", source.Addr().String(),
 				"--sport", strconv.Itoa(int(target.Port())), "--dport", strconv.Itoa(int(source.Port())))
+			command.WaitDelay = 100 * time.Millisecond
+			output, err := command.CombinedOutput()
 			if err != nil {
 				return errors.New("Gate B3 reverse kernel flow witness failed")
 			}
 			var flows int64
-			for _, line := range strings.Split(output, "\n") {
+			for _, line := range strings.Split(string(output), "\n") {
 				if strings.HasPrefix(strings.TrimSpace(line), "udp ") {
 					flows++
 				}
@@ -147,8 +149,8 @@ func testGateB3FullShapeWithEarlyHit(t *testing.T, dropEvery uint64, conntrackCa
 			return nil
 		}
 	}
-	leftConfig.gateB3BeforeWinner = beforeWinner(topology.natB, &leftPeerFlow)
-	rightConfig.gateB3BeforeWinner = beforeWinner(topology.natA, &rightPeerFlow)
+	leftConfig.gateB3AfterWinner = afterWinner(topology.natB, &leftPeerFlow)
+	rightConfig.gateB3AfterWinner = afterWinner(topology.natA, &rightPeerFlow)
 	for _, namespace := range []string{topology.natA, topology.natB} {
 		output, err := runNamespaced(namespace, "sysctl", nil, "-n", "net.netfilter.nf_conntrack_udp_timeout")
 		seconds, parseErr := strconv.Atoi(strings.TrimSpace(output))
@@ -196,7 +198,7 @@ func testGateB3FullShapeWithEarlyHit(t *testing.T, dropEvery uint64, conntrackCa
 		earlyHit, leftWitness.CandidateInbound, rightWitness.CandidateInbound,
 		leftWitness.WinnerOutbound, rightWitness.WinnerOutbound, leftWitness.WinnerInbound, rightWitness.WinnerInbound,
 		leftWitness.WinnerMappingAgeMS, rightWitness.WinnerMappingAgeMS)
-	t.Logf("Gate B3 reverse kernel flow before winner: initiator=%d responder=%d (minus_one=not_sent)", leftPeerFlow.Load(), rightPeerFlow.Load())
+	t.Logf("Gate B3 reverse kernel flow AFTER winner (async, not expiry proof): initiator=%d responder=%d", leftPeerFlow.Load(), rightPeerFlow.Load())
 	if leftWitness.MappingHardCap != gateB3PerNATMappingCap || rightWitness.MappingHardCap != gateB3PerNATMappingCap ||
 		leftWitness.MappingCapHit || rightWitness.MappingCapHit || leftWitness.PeakMappings > gateB3PerNATMappingCap ||
 		rightWitness.PeakMappings > gateB3PerNATMappingCap {
@@ -235,6 +237,9 @@ func testGateB3FullShapeWithEarlyHit(t *testing.T, dropEvery uint64, conntrackCa
 	// evidence. Do not let Fatal below bypass the independent residue gate.
 	assertGateB3NoResidue(t, topology, observer, leftRouter, rightRouter, !success,
 		conntrackCap < gateB3ConntrackCap, initiator.governorDir, responder.governorDir)
+	if leftRouter.observationFailed.Load() || rightRouter.observationFailed.Load() {
+		t.Fatal("Gate B3 asynchronous reverse-flow observation failed")
+	}
 	if dropEvery == 0 && conntrackCap == gateB3ConntrackCap {
 		if !success || initiatorResult.CandidatePackets != hardnatbudget.Hard16CandidatePackets ||
 			responderResult.CandidatePackets != hardnatbudget.Hard16CandidatePackets ||
@@ -747,6 +752,13 @@ func waitGateB3RouterOutbound(t testing.TB, router *gateB2NATRouter, want int) {
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
+	// Distinguish loss before TUN read from backlog/forwarder failure. Never
+	// infer the missing sixteen were a complete socket lane from the sum alone.
+	output, err := runNamespaced(router.config.namespace, "cat", nil,
+		"/sys/class/net/"+router.config.tunName+"/statistics/tx_dropped")
+	dropped, parseErr := strconv.ParseUint(strings.TrimSpace(output), 10, 64)
+	t.Logf("Gate B3 ingress gap witness: counters=%+v kernel_tun_tx_dropped=%d kernel_counter_valid=%t",
+		router.Witness(), dropped, err == nil && parseErr == nil)
 	t.Fatalf("Gate B3 NAT outbound witness did not drain accepted emissions: got=%d want=%d",
 		router.Witness().Outbound, want)
 }
