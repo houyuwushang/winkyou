@@ -2036,7 +2036,10 @@ func (runtime *runtime) cleanup(reason governor.PairingTerminalReason) error {
 		return nil
 	}
 	var cleanupErr error
-	finishOK := !runtime.burned
+	// Product completion may have durably finished and consumed authorization
+	// before a later activation failure. Reuse that local durable witness;
+	// missing or failed FINISH still cannot release a burned attempt.
+	finishOK := !runtime.burned || runtime.finishRecorded
 	if runtime.authorization != nil {
 		if err := runtime.authorization.Finish(reason); err != nil {
 			cleanupErr = errors.Join(cleanupErr, err)
