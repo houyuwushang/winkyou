@@ -346,3 +346,102 @@ early one-way hit 和只读 kernel flow 见证；未修改生产协议/预算。
 [映射寿命与提前确认 ADR](./adr/ADR-N3C-HARD16-MAPPING-LIFETIME.md) 已按 D1–D6 接受：分别裁决稳定
 模型/失效层（M，接受）与提前确认协议（E，仅研究方向）。60s/30s 新 fixture、失效验收和 early-stop 均未
 实现或获实现授权；不得把文档合入、本地测试通过或其他 CI 绿灯视为关闭 #106、接受 #107 或开启 C1c/现场。
+
+## 11. #107 M 实现与首跑记录（2026-09-07，Draft）
+
+维护者本轮授权执行 [M ADR](./adr/ADR-N3C-HARD16-MAPPING-LIFETIME.md) D1–D6；接续原 #107，
+不删除 §9–§10 的历史 RED，不修改生产协议、候选调度、预算、终局 class、WireGuard 或产品入口。
+以下把已实测的 harness 修复与尚待首次 OS 验证的寿命矩阵分开。
+
+### 11.1 入队缺口：先定位、独立修复，再建立 M fixture
+
+`39acfcfe7f17adac90cb82e2b654520fc860996b` 将同步 winner 前 `conntrack -L` 移出转发路径，
+同时增加 TUN read、parser reject、各 socket-slot/final-ordinal、candidate forwarded 与 kernel
+`tx_dropped` 见证；原 10s 等待、精确相等和 16,398 单端上限均不变。
+[独立 push 首跑](https://github.com/houyuwushang/winkyou/actions/runs/34092452794/job/101648643126)
+仍失败，但第一次把新缺口定位到用户态 reader 之前：
+
+| 项目 | 实测 |
+| --- | --- |
+| endpoint 已发 / router outbound | 16,397 / 16,216，缺 181 |
+| TUN 已读 / parser reject | 16,219 / 3 |
+| candidate read / forwarded | 16,203 / 16,203，进入转发器的 candidate 全部发出 |
+| kernel TUN `tx_dropped` | 182，计数读取成功 |
+| router 状态 | 仍运行；不是 winner 同步观察阻塞后停机 |
+
+这证明现有 harness 未约束内核 TUN ring，单独扩大 Go channel 不能回收已经丢在内核的包。
+不能追溯断言旧 `1da0bcc` 缺失的 16 个包对应哪一个 slot/ordinal：旧日志没有这些见证。
+本轮按“独立证明并修复既有 harness 缺口”闭合前置，不把不同数量的缺口冒充同一次复现。
+
+修复只给新建的 IPv4-only test TUN 设置 `txqueuelen=16,398`，与既有单端最大值一致；
+禁止自动 IPv6 地址生成/组播仅作用于该新 test interface，不修改 host sysctl。
+暂停读取、一次发出 48 个合成 UDP 包的隔离对照先命中自动控制报文污染，首跑失败保留于
+[`bc0f80d` job](https://github.com/houyuwushang/winkyou/actions/runs/34094066006/job/101653604996)。
+`6bc3c551adccb888810c19eadbea1150eeba686f` 修正 test interface 配置后，
+[原始 PR-trigger job](https://github.com/houyuwushang/winkyou/actions/runs/34095992952/job/101659672843)
+给出：
+
+| TUN ring capacity | 发出 | 收到 | kernel drop | 独立清理 |
+| --- | --- | --- | --- | --- |
+| 32 | 48 | 32 | 16 | socket/process/conntrack/netns/veth 零残留 |
+| 16,398 | 48 | 48 | 0 | socket/process/conntrack/netns/veth 零残留 |
+
+同 job 的 default-30s tail hit 与 50% loss 成功，UDP 均为 16,398/16,397；full exhaustion
+为 16,397/16,397；精确 router/packet/ledger 和清理均通过。旧 early-hit success 断言仍 RED：
+完整 16K、UDP 16,397/16,398、两侧 carrier 7/7 与 793/793 byte；R winner age 32,193ms，
+异步 **发送后** reverse flow=0，I/R 均 `attempt_expired`，stage 为 candidates/verify，
+burn/FINISH/circuit=true、trip=false、data=0，清理已完成。该 job 446.62s、仅旧反例失败。
+异步发送后快照不是 M-E 所要求的“发送前曾存在且消失”证明。
+
+### 11.2 M fixture、观察语义与隔离纪律
+
+新增 `TestLinuxGateB3MappingLifetimeProof`；每个场景使用 fresh TEST-NET topology、双真实
+endpoint 进程、原 governor/ledger 与原完整 schedule。尚未以 M 的结果宣称支持真实 NAT。
+
+- M-S：mapping/filter idle 与两档 kernel UDP timeout 均为 60s；early hit 两方向、tail hit、
+  full exhaustion、50% candidate-only loss。普通 loss predicate 及其负向 mutation 原样保留。
+- M-E：全部 30s，两个 winner 方向单独命名；先固化 ADR §4.4 的负向向量，再执行 OS 证明。
+  必须同时有每端完整 16K、全局一个 winner、对端零 winner 入站、缓存的 kernel flow
+  PRESENT→GONE→winner 顺序、未刷新命中 tuple、至少一侧真实 deadline cause、精确帧/包/byte、
+  FINISH 与清理。若实际 role/frame 形状不同，测试失败并停止后续 M-X，不修改 ADR 表。
+- M-X 本轮实现最小两个点：最后一个 candidate 发出后、selection 之前；唯一 winner 系统调用
+  之前。在一个 NAT 上一次性切换 inbound filter policy，直到终局不恢复；kernel flow 应仍在，
+  所以不冒充 TTL 失效。仍要求完整 schedule、唯一未交付 winner、原有界失败与 data=0。
+- 为获得两种单向 early hit，test NAT 仅排序首个 reciprocal tuple 的创建/出站：未来 winner
+  先发，另一侧尚未开启 reverse filter；不使用 candidate-aware drop 注入。该初始排序共用
+  原 2s mapping-plan barrier，不改变任何 endpoint candidate/port/slot/order/pacing。
+- 用户态寿命以注入的单调 duration 表达；mapping/filter 独立到期，入站不刷新。过期后的下一次
+  已授权出站创建新逻辑 generation，不复活旧状态；test socket 仅是 emulator 的 carrier，
+  其仍打开不等于旧 mapping/filter 仍有效。原 tuple、发射次数与 governor 计费不变。
+- 每侧一个独立 worker 每 250ms 读取已观测命中 tuple 的 reverse flow（最多 16,384 key，
+  单次命令 1s 上限、关闭 2s 上限）；转发器只取已完成缓存，不执行 `conntrack` 或等待观察。
+  winner 前缓存缺失/过旧即失败，不能用发送后的读数补齐。精确 tuple 和原始 conntrack 文本不日志化。
+- caller stream 的独立、每方向 8,256-byte 有界 recorder 比较双端每帧长度/密文摘要与 carrier
+  计费，日志只报布尔结果。它不读取 PSK、不解密 selection；双边认证依赖原协议对第七帧和
+  joint/execution AD 的验证，不能把被动摘要匹配称为独立密码学重算。
+- 两个 NAT timeout 原值全部保存后才写；绑定新 namespace inode 与固定 topology，拒绝 init。
+  设置后逐值回读，并对 init 与新建旁侧控制 namespace 作前后只读对照。结束先恢复/回读，再
+  删除 named handle 和验证消失；子进程 kill 路径复用原 post-burn crash/ledger/OS 清理门。
+  整个 runner 消失仍由 disposable VM 回收；不将 Go cleanup 说成能在进程自身 SIGKILL 后执行。
+
+旧 `early_one_way_hit_winner_delivery` 按 D6 移为显式历史负向入口，原 success 断言保留；
+required 主集合的 default-30s tail、full exhaustion、50% loss、cap、kill、fresh100 不改。
+新增独立 required M job（job 12min、测试 10min），旧 Hard16 job 的 10min ceiling 不动。
+M job 仍经现有 `nf_conntrack_max` guardian/REQUIRED/sudo/race；timeout 隔离失败不能 skip。
+
+### 11.3 本轮验收状态（首次 M CI 尚待填写）
+
+| 项目 | 当前状态 |
+| --- | --- |
+| kernel TUN 独立缺口/修复 | 已实测，见 §11.1；不追溯猜测旧缺 16 包的位置 |
+| Windows→Linux natlab vet / 编译 | 通过（`GOOS=linux GOARCH=amd64 CGO_ENABLED=0`）；不是 Linux OS 运行 |
+| M-S 五场景、M-E 双方向、M-X 两点 | 已实现，待首次 required OS 运行，尚不填成功数字 |
+| model 30s 前/等于/后、独立 expiry/refresh/新 generation | 纯函数测试已写，required M job race×20 |
+| namespace 正常/子进程 crash 恢复与隔离 | 已写强断言，尚待 required OS 见证 |
+| 其余 M-X 点、容量驱逐、VERIFY 边界 | 未做，后续独立测试工作，不声称 §7 全部闭合 |
+| M-E 每种 local deadline/EOF 先到排列 | 不人为改变时限；按首跑真实结果逐项报告，未出现的排列不算覆盖 |
+| natsim fresh100 / ledger restart1000 / 原 architecture gates | 保留原 required job；未给这些旧结果贴上新增寿命模型覆盖标签 |
+| E2 状态机/时间/概率/wire | 未做、未获实现授权 |
+
+实现仍在 Draft #107；首跑失败必须保留。M 不提高生产成功率，不开启 E、C1c、现场 I/O，
+#106 只在独立复审通过并合并后关闭。后续表须分别列出首跑失败、修正后的新 head 与仍未闭合项。
