@@ -325,6 +325,55 @@ jobs:
             -test.count=1 \
             -test.timeout=9m
 
+  gate-b3-mapping-lifetime-proof:
+    name: Gate B3 Mapping Lifetime Netns Proof (required)
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Install isolated-network witness tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y iproute2 iptables conntrack
+          sudo modprobe tun || true
+          test -c /dev/net/tun
+          command -v ip
+          command -v conntrack
+          command -v sysctl
+          command -v flock
+          command -v readlink
+          command -v setsid
+
+      - name: Vet and repeat pure lifetime boundaries
+        run: |
+          go vet -tags=natlab ./test/natlab
+          go test -race -tags=natlab ./test/natlab -run '^TestGateB3Lifetime' -count=20 -timeout=1m
+
+      - name: Build race-enabled lifetime proof
+        run: go test -race -c -tags=natlab -o "${RUNNER_TEMP}/winkyou-gateb3-m.test" ./test/natlab
+
+      - name: Run required M-S M-E and M-X with the existing guardian
+        run: |
+          sudo env \
+            WINKYOU_GATE_B3_REQUIRED=1 \
+            WINKYOU_GATE_B3_DISPOSABLE_RUNNER=github-hosted \
+            GITHUB_ACTIONS=true \
+            RUNNER_ENVIRONMENT=github-hosted \
+            bash test/natlab/run_gate_b3_required_linux.sh \
+            env GORACE=halt_on_error=1 \
+            "${RUNNER_TEMP}/winkyou-gateb3-m.test" \
+            -test.v \
+            -test.run '^TestLinuxGateB3MappingLifetimeProof$' \
+            -test.count=1 \
+            -test.timeout=10m
+
   gate-b3-natsim-repeat-proof:
     name: Gate B3 Fresh NATSim Campaign Proof (required)
     runs-on: ubuntu-latest

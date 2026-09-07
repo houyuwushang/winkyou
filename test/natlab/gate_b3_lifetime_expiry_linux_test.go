@@ -78,3 +78,5 @@ func testGateB3ExpiryContract(t *testing.T) {
 		}
 	}
 }
+
+func TestGateB3LifetimeExpiryContract(t *testing.T) { testGateB3ExpiryContract(t) }
