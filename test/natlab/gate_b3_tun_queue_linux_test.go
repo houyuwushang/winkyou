@@ -22,8 +22,11 @@ func configureGateB3TUNQueue(namespace, name string, capacity int) error {
 	if namespace == "" || name == "" || capacity < 1 || capacity > hardnatbudget.Hard16ActualPacketsMaximum {
 		return errors.New("Gate B3 TUN queue allowance rejected")
 	}
+	// This topology is IPv4-only. Prevent the new TUN's own IPv6 address/MLD
+	// traffic from occupying the ring or polluting the exact UDP witness.
+	// This changes only this fresh test interface, never host IPv6/sysctls.
 	if _, err := runCommand("ip", "-n", namespace, "link", "set", "dev", name,
-		"txqueuelen", strconv.Itoa(capacity)); err != nil {
+		"txqueuelen", strconv.Itoa(capacity), "addrgenmode", "none", "multicast", "off"); err != nil {
 		return errors.New("Gate B3 TUN queue installation failed")
 	}
 	actual, err := readGateB3TUNValue(namespace, name, "tx_queue_len")
@@ -63,6 +66,7 @@ func testGateB3TUNIngressQueueContract(t *testing.T) {
 				want = capacity
 			}
 			var received, dropped uint64
+			stage := "setup"
 			err := RunInNamespace(topology.natA, func() error {
 				name := gateB2TUNName(topology.natA)
 				tun, err := openGateB2TUN(name)
@@ -92,6 +96,7 @@ func testGateB3TUNIngressQueueContract(t *testing.T) {
 					return err
 				}
 				target := netip.MustParseAddrPort(n2dNATBWAN + ":51000")
+				stage = "send"
 				for ordinal := 0; ordinal < sent; ordinal++ {
 					var payload [8]byte
 					binary.BigEndian.PutUint64(payload[:], uint64(ordinal))
@@ -104,6 +109,7 @@ func testGateB3TUNIngressQueueContract(t *testing.T) {
 					return errors.New("TUN proof drop counter failed")
 				}
 				dropped = after - before
+				stage = "drop_count"
 				if dropped != uint64(sent-want) {
 					return errors.New("TUN proof kernel loss differed from exact queue overflow")
 				}
@@ -111,6 +117,7 @@ func testGateB3TUNIngressQueueContract(t *testing.T) {
 					return err
 				}
 				var buffer [256]byte
+				stage = "read_order"
 				for ordinal := 0; ordinal < want; ordinal++ {
 					n, err := tun.Read(buffer[:])
 					if err != nil {
@@ -125,7 +132,7 @@ func testGateB3TUNIngressQueueContract(t *testing.T) {
 				return nil
 			})
 			if err != nil {
-				t.Errorf("TUN ingress proof failed: received=%d dropped=%d deadline=%t", received, dropped, errors.Is(err, os.ErrDeadlineExceeded))
+				t.Errorf("TUN ingress proof failed: stage=%s received=%d dropped=%d deadline=%t", stage, received, dropped, errors.Is(err, os.ErrDeadlineExceeded))
 			}
 			if _, remaining, err := topology.flushConntrack(); err != nil || remaining != 0 {
 				t.Error("TUN proof conntrack residue")
@@ -139,7 +146,7 @@ func testGateB3TUNIngressQueueContract(t *testing.T) {
 			if err := topology.assertNoLeaks(); err != nil {
 				t.Fatal("TUN proof namespace/veth residue")
 			}
-			t.Logf("TUN ingress queue witness: capacity=%d sent=%d received=%d dropped=%d residue=0", capacity, sent, received, dropped)
+			t.Logf("TUN ingress queue witness: capacity=%d sent=%d received=%d dropped=%d proof_passed=%t", capacity, sent, received, dropped, !t.Failed())
 		})
 	}
 	if configureGateB3TUNQueue("", "", hardnatbudget.Hard16ActualPacketsMaximum+1) == nil {
