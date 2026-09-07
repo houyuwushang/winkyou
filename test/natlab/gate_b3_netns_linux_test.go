@@ -106,11 +106,22 @@ func TestLinuxGateB3Hard16Proof(t *testing.T) {
 	t.Run("full_shape_tail_hit", func(t *testing.T) { testGateB3FullShape(t, 0, gateB3ConntrackCap) })
 	t.Run("full_exhaustion", func(t *testing.T) { testGateB3FullShape(t, 1, gateB3ConntrackCap) })
 	t.Run("fifty_percent_candidate_loss", func(t *testing.T) { testGateB3FullShape(t, 2, gateB3ConntrackCap) })
-	t.Run("early_one_way_hit_winner_delivery", func(t *testing.T) { testGateB3FullShapeWithEarlyHit(t, 0, gateB3ConntrackCap, true) })
 	t.Run("enobufs", testGateB3ENOBUFS)
 	t.Run("oob_eof_after_child_kill", testGateB3ChildKill)
 	t.Run("parent_kill", testGateB3ParentKill)
 	t.Run("prefire_fresh_namespace_teardown_100", testGateB3PreFIRETeardown100)
+}
+
+// Accepted M/D6 explicitly historicalizes the old permanent-user-mapping /
+// default-kernel-timeout SUCCESS assertion. Keep its code and original RED
+// evidence; do not turn it into relaxed expiry or ordinary-loss acceptance.
+func TestLinuxGateB3HistoricalEarlyHitCounterexample(t *testing.T) {
+	if os.Getenv("WINKYOU_GATE_B3_HISTORICAL_COUNTEREXAMPLE") != "1" {
+		t.Skip("historical negative proof; original RED is retained in the Gate B3 evidence section 10")
+	}
+	requireGateB3Environment(t)
+	requireGateB3HostConntrackGuard(t)
+	testGateB3FullShapeWithEarlyHit(t, 0, gateB3ConntrackCap, true)
 }
 
 func testGateB3FullShape(t *testing.T, dropEvery uint64, conntrackCap int) {
