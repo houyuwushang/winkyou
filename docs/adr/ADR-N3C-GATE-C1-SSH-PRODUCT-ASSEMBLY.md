@@ -1231,3 +1231,24 @@ responder 已 detach/active，但 post-OOB echo 失败。两侧 3/3 trace、carr
    原样保留；不能用内存模型通过代替 OS 证明，不能因本节授权改 NAT 模型、调度或超时。
 5. **交付不变。** 独立复审、全部 required 验证、Draft/未合并与原 red 链接保留；本节没有
    授权混修 #97/#101/#106/#107、liveness/M/C1c 或手动 rerun 求绿。
+
+### 19.7 已落盘 FINISH 后失败清理与取消见证（2026-09-07，维护者已授权）
+
+维护者针对证据 §6.5 的新反例，仅授权在同一 Draft PR 中补充取消来源见证，并修复已成功
+落盘 FINISH 后错误清理仍不释放的路径。§19.5–19.6 的时间、报文、所有权与复审边界不变。
+
+- 清理可使用本 runtime 已有的 successful durable `finishRecorded` 见证；它不是远端声明、
+  缓冲 FINISHED 或本地 trace。未 burn 的 preflight 仍可释放；已 burn 但 FINISH 失败、缺失或
+  不确定时不得借本修订释放。不能重写 FINISH、退款、忽略落盘错误或无条件释放。
+- 在错误路径中，已 FINISH 只授权原有 transport/drain/controller/attempt/peer 清理，不授权
+  active、成功终局、第二次 Promote、重试或恢复。仍先关闭/排水 transport，再释放原 lease。
+- 完成阶段失败见证在本地 `gate.fail`/清理取消 context **之前**采集，记录固定失败点、有限
+  错误类别、attempt/session/challenge 的取消状态及相对剩余毫秒。不得保存原始 error 文本、
+  context、身份、endpoint、PID 或 key；返回副本。见证不参与授权、计时或错误分类裁决，成功
+  路径不新增 JSON 字段，旧 wire/schema/错误类/golden 不变。
+- 确定性回归分别覆盖已成功 FINISH 后 caller/session 取消与清理、未成功 FINISH 不释放、
+  重复清理无重复落盘；真实 journal/同一 governor 的组合证明不能由布尔单测代替。保留旧
+  59/60 与 governor residue 的首次反例，新的通过不抹去旧失败。
+- 不改变任何预算、3s/3 包、5s fixture session ceiling、profile absolute envelope、调度或
+  drain；不据此认定此前失败一定来自某个 timer。若见证定位到本次授权之外的缺口，报告后
+  再裁决，不顺手修其它模块或推进 C1c/现场。
