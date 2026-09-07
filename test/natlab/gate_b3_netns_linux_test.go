@@ -605,9 +605,20 @@ func testGateB3ENOBUFS(t *testing.T) {
 }
 
 func testGateB3ChildKill(t *testing.T) {
+	testGateB3ChildKillLifetime(t, false)
+}
+
+func testGateB3ChildKillLifetime(t *testing.T, lifetime bool) {
 	armGateB3KernelReleaseMargin(t)
 	setGateB3HostConntrackCapForSubtest(t, gateB3ConntrackCap)
-	topology := newN2DTopology(t, n2dMappingEDM, n2dMappingEDM)
+	var topology *n2dTopology
+	var guard *gateB3LifetimeGuard
+	if lifetime {
+		guard = newGateB3LifetimeTopology(t, 60)
+		topology = guard.topology
+	} else {
+		topology = newN2DTopology(t, n2dMappingEDM, n2dMappingEDM)
+	}
 	if err := verifyGateB3NamespacedConntrackCap(topology.natA, topology.natB, gateB3ConntrackCap); err != nil {
 		t.Fatal("Gate B3 child-kill conntrack cap could not be verified")
 	}
@@ -654,8 +665,19 @@ func testGateB3ChildKill(t *testing.T) {
 		t.Fatalf("Gate B3 child-kill durable witnesses rejected: killed=%+v/%+v peer=%+v/%+v",
 			killedOrdinary, killedCampaign, peerOrdinary, peerCampaign)
 	}
+	if guard != nil {
+		if err := guard.restore(); err != nil {
+			t.Error("mapping lifetime post-crash timeout restoration failed")
+		}
+	}
 	assertGateB3TripNoResidue(t, topology, observer, leftRouter, rightRouter,
 		map[string]bool{initiator.governorDir: false, responder.governorDir: false})
+	if guard != nil {
+		if err := guard.close(); err != nil {
+			t.Fatal("mapping lifetime post-crash namespace cleanup failed")
+		}
+		t.Log("mapping lifetime child crash: restored_readback=true initial_unchanged=true control_unchanged=true namespace_handles=0 residue=0")
+	}
 	t.Logf("Gate B3 child-kill witness: post_burn=true peer_class=%s packet_counters_stable=true residue=0",
 		responderResult.ErrorClass)
 }

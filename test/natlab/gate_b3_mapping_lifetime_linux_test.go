@@ -66,6 +66,7 @@ func TestLinuxGateB3MappingLifetimeProof(t *testing.T) {
 	requireGateB3Environment(t)
 	requireGateB3HostConntrackGuard(t)
 	t.Run("pure_model", TestGateB3LifetimePureModel)
+	t.Run("namespace_restoration_after_child_crash", func(t *testing.T) { testGateB3ChildKillLifetime(t, true) })
 	for _, test := range []struct {
 		name string
 		cfg  gateB3LifetimeCase
