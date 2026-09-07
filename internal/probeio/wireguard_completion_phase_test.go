@@ -120,23 +120,117 @@ func TestConsumerFinishedCompletionAbsolutePropagationDoesNotDetach(t *testing.T
 	assertCompletionPhaseClosed(t, gate, packets, lease, calls, 3)
 }
 
-func TestConsumerFinishedResponderWriteRetainsChallengeDeadline(t *testing.T) {
+// ADR 19.9 adjudicates replacement of the old responder-3s rejection test.
+func TestConsumerFinishedResponderConfirmationAfterChallengeDeadline(t *testing.T) {
 	t.Parallel()
 	gate, packets, lease, calls := completionPhaseFixture(t, WireGuardResponder, false, 0)
 	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
 	defer cancel()
 	deadline := completionChallengeDeadline(t, gate)
 	err := gate.FinishAndActivate(ctx, func() error {
-		waitCompletionBoundary(deadline.Add(200 * time.Millisecond))
+		waitCompletionBoundary(deadline.Add(500 * time.Millisecond))
 		return nil
 	})
-	if !errors.Is(err, ErrWireGuardGate) || !errors.Is(err, context.DeadlineExceeded) {
-		t.Fatalf("late responder FINISHED = %v, want gate/deadline failure", err)
+	if err != nil {
+		t.Fatalf("late responder FINISHED rejected: failure=%+v writes=%d", gate.Witness().CompletionFailure, calls.writes.Load())
 	}
-	if gate.Witness().CompletionWrites != 0 {
-		t.Fatal("expired responder entered FINISHED I/O")
+	if gate.Witness().CompletionWrites != 1 || gate.challengeCtx.Err() == nil || gate.attemptCtx.Err() != nil {
+		t.Fatal("fixture did not complete one FINISHED after only challenge expiry")
 	}
-	assertCompletionPhaseClosed(t, gate, packets, lease, calls, 2)
+	assertCompletionPhaseActive(t, gate, packets, lease, calls)
+}
+
+func TestConsumerFinishedInitiatorConfirmationAfterChallengeDeadline(t *testing.T) {
+	t.Parallel()
+	gate, packets, lease, calls := completionPhaseFixture(t, WireGuardInitiator, false, 0)
+	<-packets.reads // withhold the fixture's only FINISHED, not any WG datagram
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	defer cancel()
+	done := make(chan struct{})
+	arrival := completionChallengeDeadline(t, gate).Add(500 * time.Millisecond)
+	go func() {
+		defer close(done)
+		waitCompletionBoundary(arrival)
+		packets.queueRead(fakeConsumerFinishedFrame())
+	}()
+	defer func() { <-done }()
+	if err := gate.FinishAndActivate(ctx, func() error { return nil }); err != nil {
+		t.Fatalf("late initiator FINISHED rejected: failure=%+v reads=%d", gate.Witness().CompletionFailure, calls.reads.Load())
+	}
+	assertCompletionPhaseActive(t, gate, packets, lease, calls)
+}
+
+func TestConsumerFinishedCompletionEntryAfterPassedChallengeExpires(t *testing.T) {
+	t.Parallel()
+	for _, role := range []WireGuardRole{WireGuardInitiator, WireGuardResponder} {
+		t.Run(string(role), func(t *testing.T) {
+			t.Parallel()
+			gate, packets, lease, calls := completionPhaseFixture(t, role, false, 0)
+			ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+			defer cancel()
+			waitCompletionBoundary(completionChallengeDeadline(t, gate).Add(500 * time.Millisecond))
+			if err := gate.FinishAndActivate(ctx, func() error { return nil }); err != nil {
+				t.Fatalf("passed challenge lost completion admission: %v", err)
+			}
+			assertCompletionPhaseActive(t, gate, packets, lease, calls)
+		})
+	}
+}
+
+func TestConsumerFinishedCompletionResponderWriteAbsoluteExpiry(t *testing.T) {
+	t.Parallel()
+	gate, packets, lease, calls := completionPhaseFixture(t, WireGuardResponder, false, time.Second)
+	calls.PacketTransport = completionBlockedWrite{PacketTransport: packets}
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	defer cancel()
+	err := gate.FinishAndActivate(ctx, func() error { return nil })
+	w := gate.Witness()
+	if !errors.Is(err, context.DeadlineExceeded) || w.CompletionFailure == nil ||
+		w.CompletionFailure.Point != "send_confirmation" || !w.FinishRecorded || w.CompletionWrites != 1 ||
+		w.AttemptDetached || !w.Closed || lease.Witness().AttemptDetached || !packets.isClosed() ||
+		w.ActiveReads != 0 || w.ActiveWrites != 0 || calls.writes.Load() != 3 || packets.writeCount() != 2 {
+		t.Fatalf("expired confirmation write escaped cap/close: %+v", w)
+	}
+}
+
+func TestConsumerFinishedCompletionInitiatorWaitBoundaries(t *testing.T) {
+	t.Parallel()
+	for _, mode := range []string{"absolute", "session_cancel"} {
+		t.Run(mode, func(t *testing.T) {
+			t.Parallel()
+			absolute := time.Second
+			if mode == "session_cancel" {
+				absolute = 0
+			}
+			gate, packets, lease, calls := completionPhaseFixture(t, WireGuardInitiator, false, absolute)
+			<-packets.reads
+			ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+			defer cancel()
+			want := context.DeadlineExceeded
+			if mode == "session_cancel" {
+				want = context.Canceled
+				timer := time.AfterFunc(100*time.Millisecond, cancel)
+				defer timer.Stop()
+			}
+			finishes := 0
+			err := gate.FinishAndActivate(ctx, func() error { finishes++; return nil })
+			w := gate.Witness()
+			if !errors.Is(err, want) || finishes != 0 || w.FinishRecorded || w.PeerFinishConfirmed ||
+				w.AttemptDetached || !w.Closed || lease.Witness().AttemptDetached || !packets.isClosed() ||
+				w.CompletionReads != 0 || w.ActiveReads != 0 || w.ActiveWrites != 0 ||
+				calls.reads.Load() != 3 || calls.writes.Load() != 3 || packets.writeCount() != 3 {
+				t.Fatalf("expired/canceled confirmation wait activated or emitted: %+v", w)
+			}
+		})
+	}
+}
+
+// Blocks only the single admitted FINISHED write; no underlying fourth call.
+type completionBlockedWrite struct{ transport.PacketTransport }
+
+func (completionBlockedWrite) WritePacket(ctx context.Context, _ []byte) error {
+	<-ctx.Done()
+	return ctx.Err()
 }
 
 func TestConsumerFinishedDetachAfterChallengeDeadline(t *testing.T) {

@@ -38,28 +38,29 @@ import (
 )
 
 type gateC1bMemoryProfile struct {
-	name              string
-	profile           hardnatplan.Profile
-	resource          hardnatplan.ResourceClass
-	plannerRoles      [2]hardnatplan.Role
-	models            [2]natsim.Model
-	maxConns          int
-	maxMappings       int
-	queueCapacity     int
-	candidateTime     time.Duration
-	activeTime        time.Duration
-	acquire           func(string, string) (*governor.Governor, error)
-	cli               bool
-	fault             string
-	slowFinish        bool
-	cancelAfterFinish bool
+	name                string
+	profile             hardnatplan.Profile
+	resource            hardnatplan.ResourceClass
+	plannerRoles        [2]hardnatplan.Role
+	models              [2]natsim.Model
+	maxConns            int
+	maxMappings         int
+	queueCapacity       int
+	candidateTime       time.Duration
+	activeTime          time.Duration
+	acquire             func(string, string) (*governor.Governor, error)
+	cli                 bool
+	fault               string
+	slowFinish          bool
+	slowResponderFinish bool
+	cancelAfterFinish   bool
 }
 
 // Test-only session configuration, not a product deadline or probe allowance.
 // The slow fixture must cover the unchanged 3s challenge plus its real 3.5s
 // post-fsync delay and local completion; ordinary fixtures retain their 5s cap.
 func (profile gateC1bMemoryProfile) sessionCeiling() time.Duration {
-	if profile.slowFinish {
+	if profile.slowFinish || profile.slowResponderFinish {
 		return 10 * time.Second
 	}
 	return 5 * time.Second
@@ -133,7 +134,7 @@ func TestGateC1bMemorySlowDurableFinishReachesPostOOBEcho(t *testing.T) {
 
 func TestGateC1bMemoryFixtureSessionWindows(t *testing.T) {
 	for _, base := range gateC1bMemoryProfiles {
-		for _, scenario := range []string{"ordinary", "cli", "cancel", "evidence-drift", "candidate-exhaustion", "slow-finish"} {
+		for _, scenario := range []string{"ordinary", "cli", "cancel", "evidence-drift", "candidate-exhaustion", "slow-finish", "slow-responder-finish"} {
 			t.Run(base.name+"/"+scenario, func(t *testing.T) {
 				profile := base
 				want := 5 * time.Second
@@ -147,11 +148,14 @@ func TestGateC1bMemoryFixtureSessionWindows(t *testing.T) {
 				case "slow-finish":
 					profile.slowFinish = true
 					want = 10 * time.Second
+				case "slow-responder-finish":
+					profile.slowResponderFinish = true
+					want = 10 * time.Second
 				}
 				if got := profile.sessionCeiling(); got != want {
 					t.Fatalf("fixture session ceiling=%s, want %s", got, want)
 				}
-				if profile.slowFinish && profile.sessionCeiling() <= 3*time.Second+3500*time.Millisecond {
+				if (profile.slowFinish || profile.slowResponderFinish) && profile.sessionCeiling() <= 3*time.Second+3500*time.Millisecond {
 					t.Fatal("slow fixture leaves no completion margin after the challenge and injected delay")
 				}
 				if base.sessionCeiling() != 5*time.Second || profile.activeTime != base.activeTime || profile.candidateTime != base.candidateTime {
@@ -159,6 +163,19 @@ func TestGateC1bMemoryFixtureSessionWindows(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+// Independent governors, journals and in-memory networks permit parallel
+// profiles. Never combine this fault with the initiator's FINISH delay.
+func TestGateC1bMemorySlowResponderDurableFinishReachesPostOOBEcho(t *testing.T) {
+	for _, test := range gateC1bMemoryProfiles {
+		test.slowResponderFinish = true
+		test.activeTime = 0
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			runGateC1bMemoryProductProfile(t, "slow-responder-finish-"+test.name, test)
+		})
 	}
 }
 
@@ -272,8 +289,15 @@ func runGateC1bMemoryProductProfile(t *testing.T, label string, test gateC1bMemo
 		}
 	}
 	var finishDelayWitness func() governor.C1bFinishDelayProof
-	if test.slowFinish {
-		finishDelayWitness, err = governor.DelayC1bSuccessFinishForProof(machines[0], func() [2]uint64 {
+	if test.slowFinish && test.slowResponderFinish {
+		t.Fatal("FINISH delay fixtures must be independent")
+	}
+	if test.slowFinish || test.slowResponderFinish {
+		side := 0
+		if test.slowResponderFinish {
+			side = 1
+		}
+		finishDelayWitness, err = governor.DelayC1bSuccessFinishForProof(machines[side], func() [2]uint64 {
 			return [2]uint64{nats[0].Snapshot().OutboundPackets, nats[1].Snapshot().OutboundPackets}
 		})
 		if err != nil {
@@ -316,6 +340,18 @@ func runGateC1bMemoryProductProfile(t *testing.T, label string, test gateC1bMemo
 		}
 	}
 	virtual := [2]string{"10.88.0.1", "10.88.0.2"}
+	interfaceNames := [2]string{"wink-c1b-left", "wink-c1b-right"}
+	if test.slowResponderFinish {
+		// Parallel memory fixtures still pass real process-local ownership
+		// validation. Give each one distinct synthetic routes/interfaces;
+		// never bypass the product's collision guard.
+		for index, profile := range gateC1bMemoryProfiles {
+			if profile.name == test.name {
+				virtual = [2]string{"198.51.100." + strconv.Itoa(61+index*4), "198.51.100." + strconv.Itoa(62+index*4)}
+				interfaceNames = [2]string{"wc1b-l-" + strconv.Itoa(index), "wc1b-r-" + strconv.Itoa(index)}
+			}
+		}
+	}
 	configs := [2]*config.Config{}
 	requests := [2]gatecrequest.Request{}
 	identity := filepath.Join(t.TempDir(), "identity")
@@ -341,7 +377,7 @@ func runGateC1bMemoryProductProfile(t *testing.T, label string, test gateC1bMemo
 		cfg.GateC.Peers = []config.GateCPeerConfig{{
 			Ref: []string{"right", "left"}[index], PublicKey: private[1-index].PublicKey().String(),
 			AllowedIPs: []string{virtual[1-index] + "/32"}, LocalVirtualIP: virtual[index], PeerVirtualIP: virtual[1-index],
-			MemoryInterfaceName: []string{"wink-c1b-left", "wink-c1b-right"}[index], MemoryMTU: 1280,
+			MemoryInterfaceName: interfaceNames[index], MemoryMTU: 1280,
 			SessionCeiling: test.sessionCeiling(),
 		}}
 		if err := cfg.Validate(); err != nil {
@@ -356,7 +392,7 @@ func runGateC1bMemoryProductProfile(t *testing.T, label string, test gateC1bMemo
 				AlternateAddress: observerEndpoints[2], AlternateAddressPort: observerEndpoints[3]},
 		}
 	}
-	if test.slowFinish {
+	if test.slowFinish || test.slowResponderFinish {
 		t.Logf("C1b slow fixture session witness: endpoints=2 session_ms=%d", test.sessionCeiling().Milliseconds())
 	}
 	requests[0].SSH = &gatecrequest.SSHConfig{Endpoint: sshEndpoint, User: "c1btest", IdentityFile: identity, KnownHostsFile: knownHosts}
@@ -588,7 +624,7 @@ func runGateC1bMemoryProductProfile(t *testing.T, label string, test gateC1bMemo
 		t.Logf("C1b packet components: profile=%s slow_finish=%t role=%s evidence=%d candidates=%d winner=%d active_writes=%d UDP=%d",
 			test.name, test.slowFinish, got.role, emissions.EvidencePackets, emissions.CandidatePackets,
 			emissions.WinnerPackets, wg.ActiveWrites, nats[endpointIndex].Snapshot().OutboundPackets)
-		if test.slowFinish {
+		if test.slowFinish || test.slowResponderFinish {
 			if !wg.FinishRecorded || !wg.AttemptDetached || (endpointIndex == 0 && !wg.PeerFinishConfirmed) ||
 				!got.result.Witness.Handoff.OOBDrained || !got.result.Witness.Handoff.AttemptReleased ||
 				got.result.Witness.Handoff.Carrier.FramesRead != 8 || got.result.Witness.Handoff.Carrier.FramesWritten != 8 {

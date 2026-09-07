@@ -44,6 +44,9 @@ func validateGateC1bPacketAccounting(profile gateC1bMemoryProfile, packets [2]ga
 	if profile.plannerRoles != roles {
 		return fmt.Errorf("memory accounting role/profile mismatch")
 	}
+	if profile.slowFinish && profile.slowResponderFinish {
+		return fmt.Errorf("combined FINISH delay is not an authorized fixture")
+	}
 	if delay != nil && (delay.Calls != 1 || delay.Waited < 3500*time.Millisecond) {
 		return fmt.Errorf("memory FINISH delay did not observe exactly one complete wait")
 	}
@@ -73,7 +76,14 @@ func validateGateC1bPacketAccounting(profile gateC1bMemoryProfile, packets [2]ga
 		if packet.actualUDP != beforeActive+uint64(wantActive) {
 			return fmt.Errorf("side %d memory actual UDP differs from exact component sum", side)
 		}
-		if delay != nil && (delay.Before[side] != beforeActive || delay.After[side] != delay.Before[side]) {
+		waitBoundary := beforeActive
+		if profile.slowResponderFinish && side == 1 {
+			// R's post-fsync wait precedes its sole FINISHED write. Final
+			// establishment still must be exactly three; I's old boundary
+			// and the zero-emission assertion are unchanged (ADR 19.9).
+			waitBoundary--
+		}
+		if delay != nil && (delay.Before[side] != waitBoundary || delay.After[side] != delay.Before[side]) {
 			return fmt.Errorf("side %d emitted during or outside the FINISH completion boundary", side)
 		}
 		winners += e.WinnerPackets
@@ -119,6 +129,29 @@ func testGateC1bPacketAccountingOracle(t *testing.T) {
 			}
 		})
 	}
+	for index := range gateC1bMemoryProfiles {
+		fixture := gateC1bAccountingExample(index)
+		fixture.profile.slowResponderFinish = true
+		fixture.delay.Before[1]--
+		fixture.delay.After[1]--
+		t.Run(fixture.profile.name+"/responder_before_FINISHED", func(t *testing.T) {
+			if err := validateGateC1bPacketAccounting(fixture.profile, fixture.packets, &fixture.delay); err != nil {
+				t.Fatal(err)
+			}
+			for _, side := range []int{0, 1} {
+				changed := fixture
+				changed.delay.After[side]++
+				if validateGateC1bPacketAccounting(changed.profile, changed.packets, &changed.delay) == nil {
+					t.Fatal("responder wait accepted an emission")
+				}
+			}
+			fixture.delay.Before[1]++
+			fixture.delay.After[1]++
+			if validateGateC1bPacketAccounting(fixture.profile, fixture.packets, &fixture.delay) == nil {
+				t.Fatal("responder wait counted an unsent FINISHED")
+			}
+		})
+	}
 	mutations := []struct {
 		name string
 		edit func(*gateC1bAccountingFixture)
@@ -131,6 +164,7 @@ func testGateC1bPacketAccountingOracle(t *testing.T) {
 		{"short_wait", func(f *gateC1bAccountingFixture) { f.delay.Waited = 3499 * time.Millisecond }},
 		{"repeated_finish", func(f *gateC1bAccountingFixture) { f.delay.Calls = 2 }},
 		{"missing_finish", func(f *gateC1bAccountingFixture) { f.delay.Calls = 0 }},
+		{"combined_finish_delay", func(f *gateC1bAccountingFixture) { f.profile.slowFinish = true; f.profile.slowResponderFinish = true }},
 		{"fourth_establishment", func(f *gateC1bAccountingFixture) { f.packets[0].establishment = 4 }},
 		{"extra_active", func(f *gateC1bAccountingFixture) { f.packets[0].active++ }},
 		{"probe_total_mismatch", func(f *gateC1bAccountingFixture) { f.packets[0].emissions.UDPPacketsTotal++ }},

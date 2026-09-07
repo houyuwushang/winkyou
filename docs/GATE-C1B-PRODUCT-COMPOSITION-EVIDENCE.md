@@ -670,6 +670,58 @@ UDP 总计，不能填入成功场景的计数冒充实测。
 旧 `TestConsumerFinishedResponderWriteRetainsChallengeDeadline` 将按裁决替换为超过 3s、
 未过原 absolute/session 时必须完成 FINISHED 的回归；不得把它描述为保持旧期望值。
 
-本节初始为规范冻结记录，代码、红→绿、完整 race×20 与新 head CI 尚待实测回填。
+首个 docs-only commit 为 `6a541c9`；随后只在 `wireguard_consumer_finish.go` 改生产代码，
+整个 `finish_confirming` 使用原 attempt 派生并传播 session 取消的 context。缓冲、cap、计费、
+codec、read/write 所有权和失败采集点不变。新 head 的 CI 另在 PR 精确关联，不预先标绿。
 新 responder 慢 FINISH 与旧 initiator 慢 FINISH 分开运行；前者快照在 FINISHED 写前，
 后者在 FINISHED 认证后，均按真实阶段精确核算且等待期间双侧发包计数必须不变。
+
+**确定性红→绿（不修改任何 deadline/cap 数字）：**
+
+```text
+before: go test -race ./internal/probeio -run '^TestConsumerFinished(Responder|Initiator)ConfirmationAfterChallengeDeadline$' -count=1 -v -timeout=30s
+FAIL 4.300s
+I: receive_confirmation / deadline_exceeded; attempt=active, session=active; reads=3
+R: after_durable_finish / deadline_exceeded; attempt=active, session=active; writes=2
+after: go test -race ./internal/probeio -run 'ConsumerFinished|WireGuardSessionGate' -count=1 -v -timeout=1m
+PASS 8.497s; both late confirmations active; FINISH=true, detached=true, reads=3, writes=3
+```
+
+responder 的实际旧失败点为 `after_durable_finish`，早于提示词预计的 `send_confirmation`：
+旧代码在写包前就被同一个过期 challenge 拒绝。保留实测原文，不伪造预计标签。
+新负向覆盖 responder 已 FINISH 但确认写跨 absolute、initiator 等待跨 absolute/session
+取消、challenge 已通过后迟进入 completion；原第四包、缓冲与 golden 回归保留。
+
+新增 responder 三 profile 首轮并行 fixture 曾因复用虚拟路由/接口标识，在 preflight 被真实
+process-local ownership 门拒绝（asymmetric/Hard16，零 burn/发射）；这是新测试装配错误。
+只给新独立 fixture 分配互不冲突的合成路由/接口名后，6/6 慢 profile 与 21/21 配置检查
+通过（31.005s）。不绕过 ownership、不改普通 fixture，不把该次首跑失败归因于 R1。
+另一次本地启动在产生任何测试输出前被 Windows 终止（退出码 `0x40010004`）；它不计通过。
+
+| 完整验证（首次，不 rerun） | 结果 |
+| --- | --- |
+| `go vet ./...` | PASS |
+| `go test -race ./internal/probeio ./internal/v2/directconnect/gateb ./internal/v2/gatecorchestrator -count=20` | PASS；160.594s / 27.106s / 2.464s |
+| `go test ./internal/architecture -run 'GateC1b\|GateC1a' -count=1` | PASS，3.225s |
+| `go test -race -tags=c1bproof ./internal/governor -run GateC1b -count=20 -timeout=20m` | **FAIL，1195.792s**；不是 runner timeout，见下面独立反例 |
+| 慢 FINISH 子矩阵 | I 三 profile 各 20/20，R 三 profile 各 20/20，合计 **120/120**；单次 post-fsync 等待 3500–3724ms，双侧计数均不增长 |
+| 配置 / 分项核算（含负向） | 420 / 540 个子测试 PASS |
+| `go test ./... -count=1` | **FAIL**；既有 loopback absence 测试超出原 envelope，见下文；未修改它 |
+
+**新的普通 fixture 反例：按提示词停止，不改数字。**
+
+普通 memory predictive（非慢 FINISH 注入、session 仍为 5s）有一次失败，7.78s；其余该
+子场景 19/20。I 在 `receive_confirmation` 得到 `canceled`：session 已到期、剩余 0ms，
+attempt 当时仍 active、余 13979ms；R 在 `after_durable_finish` 得到 `deadline_exceeded`：
+session 余 −1430ms、attempt 因随后关闭已 canceled，challenge 余 −3441ms。两端未 ready，
+失败后原 natsim/governor residue 与 safety 断言未报错。该失败不再由 3s challenge 裁决，
+不能靠 §19.9 取消仍然有效的 5s session 上限；本记录也不把未分段测量的延迟归因于 fsync。
+
+全仓首跑另命中未改动的 `TestLoopbackCarrierAbsentPeerExpiresCleanlyWithoutSafetyTrip`：
+carrier 墙钟 16.6243212s，违反原严格小于 15s 的断言；测试在 `machine.Close()` 前 Fatal，
+临时目录随后报告 governor lock 文件仍被占用。因此该次不能宣称具备完整残留证明，
+也不能用 C1b 的通过见证代替它。governor 包总计 249.386s。没有改永久门禁、延长该
+envelope 或重跑失败集合；完整日志留仓库外。
+
+本增量的确认路径与 120 个慢场景已验证，但完整验收仍未闭合。保持 Draft/未合并，停止
+进一步语义修正，等待维护者处理两个范围外反例；不关闭 #109、不推进 C1c/现场。

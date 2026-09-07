@@ -414,7 +414,7 @@ jobs:
       - name: Repeat slow durable FINISH with bounded test-session headroom
         run: >-
           go test -race -tags=c1bproof ./internal/governor
-          -run '^TestGateC1bMemory(SlowDurableFinishReachesPostOOBEcho|FixtureSessionWindows)$'
+          -run '^TestGateC1bMemory(Slow(Responder)?DurableFinishReachesPostOOBEcho|FixtureSessionWindows)$'
           -count=20 -timeout=10m
 
       - name: Repeat cancellation after successful durable FINISH
