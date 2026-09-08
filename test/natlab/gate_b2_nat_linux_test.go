@@ -122,6 +122,10 @@ type gateB2NATConfig struct {
 		preferred(context.Context, bool, uint16) (uint16, error)
 	}
 	gateB3MappingPlanLeft bool
+	// Read-only snapshot AFTER the winner syscall, on a separate bounded
+	// worker. It is not a before-send witness and never blocks forwarding.
+	gateB3AfterWinner func(context.Context, netip.AddrPort, netip.AddrPort) error
+	gateB3Lifetime    *gateB3NATLifetime
 }
 
 type gateB2UsedPort struct {
@@ -139,6 +143,8 @@ type gateB2NATMapping struct {
 	internal   netip.AddrPort
 	public     netip.AddrPort
 	allowed    map[netip.AddrPort]struct{}
+	createdAt  time.Time
+	lifetime   gateB3LifetimeState
 }
 
 type gateB2TUNPacket struct {
@@ -154,13 +160,28 @@ type gateB2MappedReply struct {
 }
 
 type gateB2NATWitness struct {
-	Mappings       int
-	Outbound       uint64
-	Inbound        uint64
-	DroppedInbound uint64
-	PeakMappings   int
-	MappingHardCap int
-	MappingCapHit  bool
+	Mappings                 int
+	Outbound                 uint64
+	Inbound                  uint64
+	DroppedInbound           uint64
+	PeakMappings             int
+	MappingHardCap           int
+	MappingCapHit            bool
+	TUNRead                  uint64
+	TUNRejected              uint64
+	CandidateRead            uint64
+	CandidateForwarded       uint64
+	LastOrdinalRead          uint64
+	LastOrdinalForwarded     uint64
+	CandidateReadBySlot      [16]uint64
+	CandidateForwardedBySlot [16]uint64
+	Tail16Read               uint64
+	Tail16Forwarded          uint64
+	RunFailure               string
+	CandidateInbound         uint64
+	WinnerOutbound           uint64
+	WinnerInbound            uint64
+	WinnerMappingAgeMS       int64
 }
 
 type gateB2NATRouter struct {
@@ -185,12 +206,29 @@ type gateB2NATRouter struct {
 	readers sync.WaitGroup
 	close   sync.Once
 
-	outbound         atomic.Uint64
-	inbound          atomic.Uint64
-	droppedInbound   atomic.Uint64
-	candidateInbound atomic.Uint64
-	peakMappings     atomic.Int64
-	mappingCapHit    atomic.Bool
+	outbound                 atomic.Uint64
+	inbound                  atomic.Uint64
+	droppedInbound           atomic.Uint64
+	candidateInbound         atomic.Uint64
+	winnerOutbound           atomic.Uint64
+	winnerInbound            atomic.Uint64
+	winnerMappingAgeMS       atomic.Int64
+	peakMappings             atomic.Int64
+	mappingCapHit            atomic.Bool
+	tunRead                  atomic.Uint64
+	tunRejected              atomic.Uint64
+	candidateRead            atomic.Uint64
+	candidateForwarded       atomic.Uint64
+	lastOrdinalRead          atomic.Uint64
+	lastOrdinalForwarded     atomic.Uint64
+	candidateReadBySlot      [16]atomic.Uint64
+	candidateForwardedBySlot [16]atomic.Uint64
+	tail16Read               atomic.Uint64
+	tail16Forwarded          atomic.Uint64
+	runFailure               atomic.Pointer[string]
+	winnerObservation        chan [2]netip.AddrPort
+	observationDone          chan struct{}
+	observationFailed        atomic.Bool
 }
 
 func startGateB2NATRouter(t testing.TB, config gateB2NATConfig) *gateB2NATRouter {
@@ -252,6 +290,22 @@ func (router *gateB2NATRouter) run() error {
 	router.tun = tun
 	router.tunMu.Unlock()
 	router.ready <- nil
+	if router.config.gateB3AfterWinner != nil {
+		router.winnerObservation = make(chan [2]netip.AddrPort, 1)
+		router.observationDone = make(chan struct{})
+		go func() {
+			defer close(router.observationDone)
+			select {
+			case tuple := <-router.winnerObservation:
+				ctx, cancel := context.WithTimeout(router.ctx, time.Second)
+				defer cancel()
+				if router.config.gateB3AfterWinner(ctx, tuple[0], tuple[1]) != nil {
+					router.observationFailed.Store(true)
+				}
+			case <-router.ctx.Done():
+			}
+		}()
+	}
 
 	outbound := make(chan gateB2TUNPacket, router.config.packetQueueCapacity)
 	replies := make(chan gateB2MappedReply, router.config.packetQueueCapacity)
@@ -280,8 +334,14 @@ func (router *gateB2NATRouter) run() error {
 			runErr = router.ctx.Err()
 		}
 	}
+	failure := gateB2NATDrainClass(runErr)
+	router.runFailure.Store(&failure)
+	router.cancel()
 	router.closeDescriptors()
 	router.readers.Wait()
+	if router.observationDone != nil {
+		<-router.observationDone
+	}
 	if errors.Is(runErr, context.Canceled) || errors.Is(runErr, net.ErrClosed) || errors.Is(runErr, os.ErrClosed) {
 		return nil
 	}
@@ -289,6 +349,14 @@ func (router *gateB2NATRouter) run() error {
 }
 
 func (router *gateB2NATRouter) configureNamespace() error {
+	if router.config.reusePortsByTarget {
+		// The Go channel cannot recover packets already dropped by the
+		// kernel TUN ring. Hard16 bounds BOTH queues by the same one-endpoint
+		// maximum; this creates no additional endpoint emission allowance.
+		if err := configureGateB3TUNQueue(router.config.namespace, router.config.tunName, router.config.packetQueueCapacity); err != nil {
+			return err
+		}
+	}
 	commands := [][]string{
 		{"link", "set", "dev", router.config.tunName, "up"},
 		{"route", "replace", "table", gateB2TUNTable, "default", "dev", router.config.tunName},
@@ -307,6 +375,24 @@ func (router *gateB2NATRouter) configureNamespace() error {
 	_, err := runNamespaced(router.config.namespace, "iptables", nil,
 		"-w", "5", "-I", "INPUT", "1", "-i", "wan0", "-p", "udp", "-d", router.config.public.String(),
 		"-m", "conntrack", "--ctstate", "ESTABLISHED,RELATED", "-j", "ACCEPT")
+	if err != nil {
+		return err
+	}
+	if plan, ok := router.config.gateB3MappingPlan.(*gateB3OrderedEarlyMappingPlan); ok && router.config.gateB3MappingPlanLeft != plan.firstLeft {
+		// Split the already-default-denied peer UDP path into a counted chain.
+		// ESTABLISHED stays ahead of it; the verdict is identical to the
+		// immediately following original default DROP. This is not extra loss.
+		for _, args := range [][]string{
+			{"-w", "5", "-N", "WYM_INITIAL"},
+			{"-w", "5", "-A", "WYM_INITIAL", "-j", "DROP"},
+			{"-w", "5", "-I", "INPUT", "2", "-i", "wan0", "-p", "udp", "-s", router.config.peerPublic.String(),
+				"-d", router.config.public.String(), "-j", "WYM_INITIAL"},
+		} {
+			if _, err := runNamespaced(router.config.namespace, "iptables", nil, args...); err != nil {
+				return errors.New("mapping lifetime initial-denial counter installation failed")
+			}
+		}
+	}
 	return err
 }
 
@@ -359,8 +445,22 @@ func (router *gateB2NATRouter) readTUN(tun *os.File, packets chan<- gateB2TUNPac
 			return
 		}
 		packet, err := parseGateB2IPv4UDP(buffer[:n])
+		router.tunRead.Add(1)
 		if err != nil || packet.source.Addr() != router.config.private {
+			router.tunRejected.Add(1)
 			continue
+		}
+		if metadata, err := hardnatcontrol.InspectFrame(packet.payload); err == nil && metadata.Type == hardnatcontrol.FrameCandidate {
+			router.candidateRead.Add(1)
+			if metadata.SocketSlot < 16 {
+				router.candidateReadBySlot[metadata.SocketSlot].Add(1)
+			}
+			if metadata.Ordinal >= 16368 && metadata.Ordinal < 16384 {
+				router.tail16Read.Add(1)
+			}
+			if metadata.Ordinal < 16384 && metadata.Ordinal%1024 == 1023 {
+				router.lastOrdinalRead.Add(1)
+			}
 		}
 		select {
 		case packets <- packet:
@@ -386,6 +486,17 @@ func (router *gateB2NATRouter) forwardOutbound(packet gateB2TUNPacket, replies c
 			return err
 		}
 	}
+	if model := router.config.gateB3Lifetime; model != nil {
+		now := time.Since(model.started)
+		if metadata, err := hardnatcontrol.InspectFrame(packet.payload); err == nil && metadata.Type == hardnatcontrol.FrameWinner {
+			model.beforeWinner(mapping.public, packet.destination, time.Since(mapping.createdAt), mapping.lifetime.outbounds)
+		}
+		oldGeneration := mapping.lifetime.generation
+		mapping.lifetime = mapping.lifetime.outbound(now, model.idle, model.idle)
+		if mapping.lifetime.generation != oldGeneration {
+			clear(mapping.allowed)
+		}
+	}
 	mapping.allowed[packet.destination] = struct{}{}
 	if router.config.recordTargets != nil && packet.destination.Addr() == router.config.peerPublic {
 		router.config.recordTargets.record(packet.destination.Port())
@@ -398,6 +509,37 @@ func (router *gateB2NATRouter) forwardOutbound(packet gateB2TUNPacket, replies c
 		return err
 	}
 	router.outbound.Add(1)
+	if plan, ok := router.config.gateB3MappingPlan.(*gateB3OrderedEarlyMappingPlan); ok {
+		if metadata, err := hardnatcontrol.InspectFrame(packet.payload); err == nil && metadata.Type == hardnatcontrol.FrameCandidate && metadata.Ordinal == 0 {
+			plan.forwarded(router.config.gateB3MappingPlanLeft)
+		}
+	}
+	if metadata, inspectErr := hardnatcontrol.InspectFrame(packet.payload); inspectErr == nil && metadata.Type == hardnatcontrol.FrameCandidate {
+		if model := router.config.gateB3Lifetime; model != nil && metadata.Ordinal == 16383 {
+			model.inject("before_selection")
+		}
+		router.candidateForwarded.Add(1)
+		if metadata.SocketSlot < 16 {
+			router.candidateForwardedBySlot[metadata.SocketSlot].Add(1)
+		}
+		if metadata.Ordinal >= 16368 && metadata.Ordinal < 16384 {
+			router.tail16Forwarded.Add(1)
+		}
+		if metadata.Ordinal < 16384 && metadata.Ordinal%1024 == 1023 {
+			router.lastOrdinalForwarded.Add(1)
+		}
+	}
+	if metadata, inspectErr := hardnatcontrol.InspectFrame(packet.payload); inspectErr == nil && metadata.Type == hardnatcontrol.FrameWinner {
+		router.winnerOutbound.Add(1)
+		router.winnerMappingAgeMS.Store(time.Since(mapping.createdAt).Milliseconds())
+		if router.winnerObservation != nil {
+			select {
+			case router.winnerObservation <- [2]netip.AddrPort{mapping.public, packet.destination}:
+			default:
+				router.observationFailed.Store(true)
+			}
+		}
+	}
 	return nil
 }
 
@@ -444,7 +586,8 @@ func (router *gateB2NATRouter) newMapping(key gateB2NATKey, internal, target net
 	}
 	mapping := &gateB2NATMapping{
 		connection: connection, internal: internal, public: public,
-		allowed: make(map[netip.AddrPort]struct{}, 512),
+		allowed:   make(map[netip.AddrPort]struct{}, 512),
+		createdAt: time.Now(),
 	}
 	router.mappingsMu.Lock()
 	if reserved {
@@ -596,6 +739,10 @@ func (router *gateB2NATRouter) forwardInbound(tun *os.File, reply gateB2MappedRe
 	if reply.mapping == nil {
 		return errors.New("Gate B2 isolated NAT reply lacked a mapping")
 	}
+	if model := router.config.gateB3Lifetime; model != nil && (model.blocked.Load() || !reply.mapping.lifetime.permits(time.Since(model.started))) {
+		router.droppedInbound.Add(1)
+		return nil
+	}
 	if _, allowed := reply.mapping.allowed[reply.source]; !allowed {
 		router.droppedInbound.Add(1)
 		return nil
@@ -606,6 +753,9 @@ func (router *gateB2NATRouter) forwardInbound(tun *os.File, reply gateB2MappedRe
 			(router.config.dropEveryCandidateInbound > 0 && ordinal%router.config.dropEveryCandidateInbound == 0) {
 			router.droppedInbound.Add(1)
 			return nil
+		}
+		if model := router.config.gateB3Lifetime; model != nil {
+			model.track(reply.mapping.public, reply.source)
 		}
 	}
 	packet, err := buildGateB2IPv4UDP(reply.source, reply.mapping.internal, reply.payload)
@@ -621,6 +771,9 @@ func (router *gateB2NATRouter) forwardInbound(tun *os.File, reply gateB2MappedRe
 		return errors.New("Gate B2 isolated NAT short TUN write")
 	}
 	router.inbound.Add(1)
+	if metadata, err := hardnatcontrol.InspectFrame(reply.payload); err == nil && metadata.Type == hardnatcontrol.FrameWinner {
+		router.winnerInbound.Add(1)
+	}
 	return nil
 }
 
@@ -631,11 +784,26 @@ func (router *gateB2NATRouter) Witness() gateB2NATWitness {
 	router.mappingsMu.Lock()
 	mappings := len(router.all)
 	router.mappingsMu.Unlock()
-	return gateB2NATWitness{
+	runFailure := "running"
+	if failure := router.runFailure.Load(); failure != nil {
+		runFailure = *failure
+	}
+	witness := gateB2NATWitness{
 		Mappings: mappings, Outbound: router.outbound.Load(), Inbound: router.inbound.Load(),
 		DroppedInbound: router.droppedInbound.Load(), PeakMappings: int(router.peakMappings.Load()),
 		MappingHardCap: router.config.mappingHardCap, MappingCapHit: router.mappingCapHit.Load(),
+		CandidateInbound: router.candidateInbound.Load(), WinnerOutbound: router.winnerOutbound.Load(),
+		WinnerInbound: router.winnerInbound.Load(), WinnerMappingAgeMS: router.winnerMappingAgeMS.Load(),
+		TUNRead: router.tunRead.Load(), TUNRejected: router.tunRejected.Load(), CandidateRead: router.candidateRead.Load(),
+		CandidateForwarded: router.candidateForwarded.Load(), LastOrdinalRead: router.lastOrdinalRead.Load(),
+		LastOrdinalForwarded: router.lastOrdinalForwarded.Load(), RunFailure: runFailure,
+		Tail16Read: router.tail16Read.Load(), Tail16Forwarded: router.tail16Forwarded.Load(),
 	}
+	for slot := range 16 {
+		witness.CandidateReadBySlot[slot] = router.candidateReadBySlot[slot].Load()
+		witness.CandidateForwardedBySlot[slot] = router.candidateForwardedBySlot[slot].Load()
+	}
+	return witness
 }
 
 func (router *gateB2NATRouter) closeDescriptors() {

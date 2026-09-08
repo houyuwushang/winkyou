@@ -125,6 +125,9 @@ Linux [conntrack 文档](https://docs.kernel.org/networking/nf_conntrack-sysctl.
 | M-E 失效层 | 全部 30s；禁止隐式延寿 | 首个 reciprocal tuple 命中后不再刷新该 tuple；确认前见证其消失，唯一 winner 未交付，必须有界失败 |
 | M-X 注入层 | 独立受控驱逐/单侧变化 | 在 selection、winner、VERIFY 边界驱逐或改变状态；禁止换 tuple、第二 winner、重试或伪造成功 |
 
+按 #107 独立复审，随机 50% candidate-only loss 仅归 M-S（60s），不再由默认 30s job 混合验收
+成功、双 exhaustion 与 early-hit 失效；失效由 M-E（30s）确定性证明，普通 loss 谓词不变。
+
 60s 只是覆盖现有 attempt/排水期的隔离模型选择，不是要求用户配置路由器，也不代表确认了
 真实网络的寿命下界。M-E 把 replied 也设为 30s 是为了固定反例，必须区别于 #107 首次只读普通
 30s 的历史证据；没有执行过的配置不能写成实测。现有 `full_shape_tail_hit`（runner 默认 30s、
@@ -295,8 +298,16 @@ loopback carrier、live authorization、daemon、scheduler 或永久回归门禁
 - 维护者裁决人/日期：houyuwushang 委托独立复审人代填，2026-09-06。
 - 独立评审人/结论：Copilot 独立复审——接受草案文本（见上引评论）。
 - 接受的文档 exact SHA：复审文本为 `a1c96d44857d312cbcae6536817e3b80476fd2d4`；裁决填写为 PR #108 最终 head（合并记录以 merge commit 为准）。
-- M 实现授权范围与编号：**待维护者另行下达**（建议范围：#107 拆分 + §4.2 三层 fixture + §4.3 netns sysctl 权限，仅 `linux && natlab` test-only）。
+- M 实现授权范围与编号：**维护者于 2026-09-07 下达 #107 M 实现续令**，范围为 §4.2 三层 fixture、§4.3 namespace 设置/恢复与独立隔离证明，以及先行 harness 入队缺口修复；仅 `linux && natlab` test-only 与配套 docs/required CI，不授权 E 或现场。
+- M 实现 PR：[Draft #107](https://github.com/houyuwushang/winkyou/pull/107)；TUN 修复实测 SHA `6bc3c551adccb888810c19eadbea1150eeba686f`；M 完整矩阵实测 SHA `d4cd90a8bd6fb9c9c80b19bb3c80bddac2de1907`，35/35 CI、两份共 18/18 完整 OS campaign，通过本批最小 M-S/M-E/M-X 范围但尚待独立复审。初次 M 首跑失败与未闭合的 §7 项逐项保留于 [§11](../GATE-B3-HARD16-ISOLATED-EVIDENCE.md#11-107-m-实现与首跑记录2026-09-07draft)，不是 E 或现场授权。
 - E mini-spec 接受与实现授权：**待 mini-spec 提交并独立复审后另行裁决**。
+
+2026-09-08 复审收尾：依据 [#107 独立复审](https://github.com/houyuwushang/winkyou/pull/107#issuecomment-5568851125)
+及维护者续令，将随机 50% candidate-only loss 从默认 30s job 移出，仅保留已有 M-S（60s）入口。
+这是获准 M 实现内的 fixture 归属调整；M 实现已获复审接受，本次收尾仍须首跑 CI 与复审。
+普通 loss/expiry 谓词、M-S/M-E/M-X 逻辑、namespace 纪律、预算、golden 和 CI job 时限不变；
+默认 30s 的 tail、full exhaustion 与含 #106 负向变异的 loss terminal contract 原样保留。
+历史 RED 不删除，E 仍仅为研究方向，不因本次迁移或 #106 后续关闭而推进。
 
 合入本文档不自动关闭 #106、不使 #107 可合并，也不授权任何实现。
 恢复 #107 前至少需要 M 的实现续令、独立评审与两层 fixture 通过；E 还需要 D4 的 mini-spec、
