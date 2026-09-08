@@ -276,6 +276,8 @@ func TestLoopbackCarrierCrashBeforePromoteBurnsAndRestartEmitsZero(t *testing.T)
 }
 
 func TestLoopbackCarrierAbsentPeerExpiresCleanlyWithoutSafetyTrip(t *testing.T) {
+	startAbsenceCPUPressure(t)
+	fixtureStart := time.Now()
 	now := time.Now().UTC().Truncate(time.Second)
 	namespace := t.TempDir()
 	if err := governor.PrepareLoopbackCarrierTestNamespace(namespace, now); err != nil {
@@ -284,6 +286,13 @@ func TestLoopbackCarrierAbsentPeerExpiresCleanlyWithoutSafetyTrip(t *testing.T) 
 	machine, err := governor.AcquireLoopbackCarrierTestGovernor(namespace, "loopback-carrier-absent-peer")
 	if err != nil {
 		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		closeAbsentPeerGovernor(t, machine, namespace)
+	})
+	journalTiming, err := governor.ObserveCarrierAbsenceJournal(machine)
+	if err != nil {
+		t.Fatal("install absent-peer journal observer failed")
 	}
 	local := reserveLoopbackEndpoint(t)
 	absentPeer := reserveLoopbackEndpoint(t)
@@ -297,6 +306,14 @@ func TestLoopbackCarrierAbsentPeerExpiresCleanlyWithoutSafetyTrip(t *testing.T) 
 	start := time.Now()
 	_, connectErr := loopbackcarrier.Connect(ctx, machine, bundle, "loopback-carrier-absent-peer", nil)
 	elapsed := time.Since(start)
+	timing := journalTiming()
+	if timing.AdmissionAppended.IsZero() || timing.AdmissionSynced.IsZero() || timing.FinishAppended.IsZero() || timing.FinishSynced.IsZero() {
+		t.Fatal("absence_timing incomplete_journal_witness")
+	}
+	t.Logf("absence_timing fixture_ms=%d connect_ms=%d before_burn_append_ms=%d burn_sync_ms=%d admitted_to_finish_ms=%d finish_sync_ms=%d after_finish_ms=%d",
+		start.Sub(fixtureStart).Milliseconds(), elapsed.Milliseconds(), timing.AdmissionAppended.Sub(start).Milliseconds(),
+		timing.AdmissionSynced.Sub(timing.AdmissionAppended).Milliseconds(), timing.FinishSynced.Sub(timing.AdmissionAppended).Milliseconds(),
+		timing.FinishSynced.Sub(timing.FinishAppended).Milliseconds(), start.Add(elapsed).Sub(timing.FinishSynced).Milliseconds())
 	if connectErr == nil {
 		t.Fatal("absent peer unexpectedly succeeded")
 	}
