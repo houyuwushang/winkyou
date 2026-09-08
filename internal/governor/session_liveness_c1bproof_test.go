@@ -18,19 +18,52 @@ import (
 )
 
 type gateC1bLivenessCase struct {
-	rounds        int
-	hold          time.Duration
-	started       time.Time
-	identitySlot  int
-	lossDirection uint32
-	lossMask      atomic.Uint32
-	faultAt       atomic.Int64
-	drops         [2]atomic.Uint64
-	lastWrite     [2]atomic.Int64
-	fault         string
-	controls      [2]gatecorchestrator.LivenessMemoryProofControl
-	admission     gatecorchestrator.LivenessWitness
-	faultError    error
+	rounds         int
+	hold           time.Duration
+	started        time.Time
+	identitySlot   int
+	lossDirection  uint32
+	lossMask       atomic.Uint32
+	faultAt        atomic.Int64
+	drops          [2]atomic.Uint64
+	lastWrite      [2]atomic.Int64
+	fault          string
+	controls       [2]gatecorchestrator.LivenessMemoryProofControl
+	admission      gatecorchestrator.LivenessWitness
+	faultError     error
+	restart        bool
+	trafficSide    int // 1/2=one-way business, 3=WG control only, 4=garbage RX; 0=off
+	trafficBatches atomic.Uint64
+}
+
+type livenessRestartIOTrap struct{ calls atomic.Int64 }
+
+func (t *livenessRestartIOTrap) Open(context.Context) (probeio.Datagram, error) {
+	t.calls.Add(1)
+	return nil, errors.New("restart attempted socket")
+}
+func (t *livenessRestartIOTrap) Read([]byte) (int, error) {
+	t.calls.Add(1)
+	return 0, errors.New("restart attempted read")
+}
+func (t *livenessRestartIOTrap) Write([]byte) (int, error) {
+	t.calls.Add(1)
+	return 0, errors.New("restart attempted write")
+}
+func (t *livenessRestartIOTrap) SetDeadline(time.Time) error {
+	t.calls.Add(1)
+	return errors.New("restart adopted stream")
+}
+func (*livenessRestartIOTrap) Close() error { return nil }
+
+func TestSessionLivenessRestartRejectsSpentArtifactBeforeIO(t *testing.T) {
+	for _, profile := range gateC1bMemoryProfiles {
+		t.Run(profile.name, func(t *testing.T) {
+			profile.liveness = &gateC1bLivenessCase{rounds: 3, hold: time.Second, restart: true}
+			profile.candidateTime = max(profile.candidateTime, 500*time.Millisecond)
+			runGateC1bMemoryProductProfile(t, "liveness-restart-"+profile.name, profile)
+		})
+	}
 }
 
 func (p *gateC1bLivenessCase) isHardFault() bool {
@@ -74,10 +107,36 @@ type livenessLossDatagram struct {
 func (d *livenessLossDatagram) ReadFrom(ctx context.Context, b []byte) (int, netip.AddrPort, error) {
 	for {
 		n, source, err := d.Datagram.ReadFrom(ctx, b)
-		if err != nil || d.proof.lossMask.Load()&(1<<d.side) == 0 {
+		drop := d.proof.lossMask.Load()&(1<<d.side) != 0
+		if d.proof.trafficSide != 0 {
+			// Test-only loss fixture: its synthetic 44-byte business packet
+			// encrypts to 80 bytes; its ONLY 128-byte active data is WYCL.
+			// This is not a production classifier or accounting authority.
+			drop = drop && n == 128 && b[0] == 4
+		}
+		if err != nil || !drop {
 			return n, source, err
 		}
 		d.proof.drops[d.side].Add(1)
+	}
+}
+
+func TestSessionLivenessOneWayTrafficCannotReplaceProofRequired(t *testing.T) {
+	if os.Getenv("WINKYOU_LIVENESS_BLACKHOLE_REQUIRED") != "1" {
+		t.Skip("real persistent-timer counterexample requires its dedicated runner")
+	}
+	for side := 1; side <= 4; side++ {
+		t.Run(strconv.Itoa(side), func(t *testing.T) {
+			t.Parallel()
+			profile := gateC1bMemoryProfiles[0]
+			profile.liveness = &gateC1bLivenessCase{rounds: 3, hold: time.Second, lossDirection: 3, trafficSide: side, identitySlot: 10 + side}
+			profile.candidateTime = 500 * time.Millisecond
+			runGateC1bMemoryProductProfile(t, "liveness-one-way-"+strconv.Itoa(side), profile)
+			if side != 3 && profile.liveness.trafficBatches.Load() < 50 {
+				t.Fatal("continuous nonproof traffic not demonstrated")
+			}
+			t.Logf("nonproof_traffic mode=%d batches=%d lost_WYCL=%d/%d lease_renewed=false residue=0", side, profile.liveness.trafficBatches.Load(), profile.liveness.drops[0].Load(), profile.liveness.drops[1].Load())
+		})
 	}
 }
 func (d *livenessLossDatagram) WriteTo(ctx context.Context, b []byte, target netip.AddrPort) (int, error) {
@@ -217,6 +276,15 @@ func validateGateC1bLivenessOutcome(t *testing.T, profile gateC1bMemoryProfile, 
 	}
 	if actual != uint64(result.Witness.GateB.Emissions.UDPPacketsTotal+3+wg.ActiveWrites) {
 		t.Errorf("actual datagrams=%d inconsistent with disjoint establishment and active writes", actual)
+	}
+	if profile.liveness.trafficSide != 0 && lv.PongValidated != 0 {
+		t.Fatal("nonproof traffic renewed permit")
+	}
+	if profile.liveness.trafficSide == 3 && (wg.ActivePolicy.EmptyKeepalives == 0 || wg.ActivePolicy.HandshakeInitiations+wg.ActivePolicy.HandshakeResponses == 0) {
+		t.Fatal("both automatic keepalive and handshake traffic must be observed")
+	}
+	if profile.liveness.trafficSide == 4 && wg.ActiveReads < 50 {
+		t.Fatal("garbage did not reach raw receive boundary")
 	}
 	if wg.ActivePolicy.ControlAdmitted != wg.ActivePolicy.HandshakeInitiations+wg.ActivePolicy.HandshakeResponses+wg.ActivePolicy.CookieReplies+wg.ActivePolicy.EmptyKeepalives {
 		t.Fatal("automatic lane subtype accounting mismatch")

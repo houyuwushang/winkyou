@@ -159,6 +159,22 @@ func (p LivenessMemoryProofControl) ReportAfterClose() error {
 // interface while the control tap and foreground controller are running. The
 // fixture cannot select an address, allocate an interface or expose a raw handle.
 func (p LivenessMemoryProofControl) ExchangeBusiness(ctx context.Context, peer LivenessMemoryProofControl) error {
+	return p.transferBusiness(ctx, peer, true)
+}
+
+func (p LivenessMemoryProofControl) OneWayBusiness(ctx context.Context, peer LivenessMemoryProofControl) error {
+	return p.transferBusiness(ctx, peer, false)
+}
+
+// Valid public type/length, deliberately invalid authentication. It must reach
+// the existing receive boundary and be discarded by WG, never renew a lease.
+func (p LivenessMemoryProofControl) InjectSyntheticGarbage(ctx context.Context) error {
+	packet := make([]byte, 80)
+	binary.LittleEndian.PutUint32(packet, 4)
+	return p.controller.gate.WritePacket(ctx, packet)
+}
+
+func (p LivenessMemoryProofControl) transferBusiness(ctx context.Context, peer LivenessMemoryProofControl, bilateral bool) error {
 	done := make(chan struct{})
 	stop := context.AfterFunc(ctx, func() {
 		defer close(done)
@@ -170,8 +186,12 @@ func (p LivenessMemoryProofControl) ExchangeBusiness(ctx context.Context, peer L
 			<-done
 		}
 	}()
+	directions := [][2]*livenessController{{p.controller, peer.controller}}
+	if bilateral {
+		directions = append(directions, [2]*livenessController{peer.controller, p.controller})
+	}
 	for ordinal := range 3 {
-		for _, pair := range [][2]*livenessController{{p.controller, peer.controller}, {peer.controller, p.controller}} {
+		for _, pair := range directions {
 			packet := make([]byte, 44)
 			packet[0], packet[8], packet[9] = 0x45, 64, 17
 			binary.BigEndian.PutUint16(packet[2:4], uint16(len(packet)))

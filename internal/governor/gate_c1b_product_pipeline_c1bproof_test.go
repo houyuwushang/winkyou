@@ -460,6 +460,7 @@ func runGateC1bMemoryProductProfile(t *testing.T, label string, test gateC1bMemo
 	}
 	results := make(chan outcome, 2)
 	var livenessCancelTimer *time.Timer
+	var livenessRestartProofs [2]gatecorchestrator.MemoryProofOptions
 	livenessTimerDone := make(chan struct{})
 	scheduleLiveness := func(fn func()) *time.Timer {
 		return time.AfterFunc(test.liveness.hold, func() { defer close(livenessTimerDone); fn() })
@@ -537,6 +538,28 @@ func runGateC1bMemoryProductProfile(t *testing.T, label string, test gateC1bMemo
 									livenessCancelTimer = scheduleLiveness(func() {
 										test.liveness.faultAt.Store(time.Now().UnixNano())
 										test.liveness.lossMask.Store(test.liveness.lossDirection)
+										if test.liveness.trafficSide != 0 && test.liveness.trafficSide != 3 {
+											ticker := time.NewTicker(time.Second)
+											defer ticker.Stop()
+											from := test.liveness.trafficSide - 1
+											for {
+												var trafficErr error
+												if test.liveness.trafficSide == 4 {
+													trafficErr = errors.Join(test.liveness.controls[0].InjectSyntheticGarbage(initiatorCtx), test.liveness.controls[1].InjectSyntheticGarbage(initiatorCtx))
+												} else {
+													trafficErr = test.liveness.controls[from].OneWayBusiness(initiatorCtx, test.liveness.controls[1-from])
+												}
+												if trafficErr != nil {
+													return
+												}
+												test.liveness.trafficBatches.Add(1)
+												select {
+												case <-initiatorCtx.Done():
+													return
+												case <-ticker.C:
+												}
+											}
+										}
 									})
 								}
 							}
@@ -551,6 +574,7 @@ func runGateC1bMemoryProductProfile(t *testing.T, label string, test gateC1bMemo
 				proof.Random = nil
 				proof.LivenessArmed = func(control gatecorchestrator.LivenessMemoryProofControl) { test.liveness.controls[index] = control }
 				proof.ProbeFactory = &livenessLossFactory{Factory: proof.ProbeFactory, proof: test.liveness, side: index}
+				livenessRestartProofs[index] = proof
 			}
 			var result gatecorchestrator.Result
 			var runErr error
@@ -785,6 +809,50 @@ func runGateC1bMemoryProductProfile(t *testing.T, label string, test gateC1bMemo
 				t.Errorf("side %d cancellation rewrote or lost successful durable FINISH", index)
 			}
 		}
+	}
+	if test.liveness != nil && test.liveness.restart {
+		for index, machine := range machines {
+			if machine.Close() != nil {
+				t.Fatal("initial owner did not release before restart")
+			}
+			restarted, err := test.acquire(namespaces[index], "liveness-restart")
+			if err != nil {
+				t.Fatal("restart could not acquire the same owner namespace")
+			}
+			t.Cleanup(func() { _ = restarted.Close() })
+			ledger, err := governor.LoopbackCarrierTestLedger(restarted)
+			if err != nil {
+				t.Fatal("restart ledger unavailable")
+			}
+			if governor.SetCarrierTestLedgerTime(restarted, now) != nil {
+				t.Fatal("restart clock fixture failed")
+			}
+			artifact, err := gatecattempt.ParseArtifact([][]byte{set.Initiator, set.Responder}[index], now)
+			if err != nil {
+				t.Fatal("same artifact did not parse for replay proof")
+			}
+			t.Cleanup(artifact.Close)
+			proof := livenessRestartProofs[index]
+			proof.Machine, proof.Ledger, proof.Artifact = restarted, ledger, artifact
+			proof.Progress = func(gatecorchestrator.Progress) error { return nil }
+			proof.LivenessArmed = nil
+			trap := &livenessRestartIOTrap{}
+			proof.ProbeFactory, proof.Stream = trap, trap
+			replayCtx, stop := context.WithTimeout(context.Background(), time.Second)
+			replay, replayErr := gatecorchestrator.RunMemoryProof(replayCtx, proof)
+			stop()
+			artifact.Close()
+			if !errors.Is(replayErr, governor.ErrPairingCredentialUsed) || replay.DataPlaneReady || replay.Witness.SSH.Spawned || trap.calls.Load() != 0 {
+				t.Fatalf("same artifact restart was not a zero-I/O ledger rejection: %v", replayErr)
+			}
+			if ledger.Status().Sequence != 3 {
+				t.Fatal("replay mutated original FINISH")
+			}
+			if restarted.Close() != nil {
+				t.Fatal("restart owner residue")
+			}
+		}
+		t.Log("same_artifact_restart endpoints=2 credential_used=true emissions=0 sockets=0 FINISH=unchanged lock=free")
 	}
 	if test.cli {
 		if claimed, err := gatecstage.ClaimMemoryProof(namespaces[1], now); err == nil || claimed != nil {

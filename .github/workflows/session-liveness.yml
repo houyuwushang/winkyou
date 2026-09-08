@@ -34,6 +34,8 @@ jobs:
         run: go test -race -tags=c1bproof ./internal/governor -run '^TestSessionLivenessOwnerTripCasesAreDistinct$' -count=20 -timeout=8m
       - name: Real business remains bidirectional and is never stolen by the tap
         run: go test -race -tags=c1bproof ./internal/governor -run '^TestSessionLivenessBusinessCoexistsWithTap$' -count=20 -timeout=8m
+      - name: Same artifact after owner restart is rejected before all I/O
+        run: go test -race -tags=c1bproof ./internal/governor -run '^TestSessionLivenessRestartRejectsSpentArtifactBeforeIO$' -count=1 -timeout=2m
       - name: Independent byte-vector implementation
         run: python internal/v2/gatecorchestrator/testdata/liveness_reference.py
 
@@ -58,6 +60,8 @@ jobs:
         run: go test -race -tags=c1bproof ./internal/governor -run '^TestSessionLivenessMemoryIdle180Required$' -count=1 -v -timeout=6m
       - name: M2 and M3 - bilateral and both unilateral blackholes
         run: go test -race -tags=c1bproof ./internal/governor -run '^TestSessionLivenessMemoryBlackholesRequired$' -count=1 -v -timeout=4m
+      - name: Persistent-timer counterexample - continuous one-way business and WG control without PONG
+        run: go test -race -tags=c1bproof ./internal/governor -run '^TestSessionLivenessOneWayTrafficCannotReplaceProofRequired$' -count=1 -v -timeout=3m
 
   fresh100:
     name: Liveness 100 fresh lifecycles
