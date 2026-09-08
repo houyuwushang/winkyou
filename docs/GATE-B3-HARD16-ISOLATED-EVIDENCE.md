@@ -526,3 +526,32 @@ Linux required M job 另执行纯函数/expiry predicate `-race -count=20`。原
 tail 与普通 50% loss）、fresh natsim100、campaign restart1000、其余全仓/required gates 均通过。
 这是本批获授权的最小 M 证明，不是 §7 所有未来工作闭合：容量驱逐、其余 M-X/VERIFY 边界、
 更多重复寿命分布与 E2 仍未做。PR 保持 Draft 等独立复审，不自行合并、不关闭 #106、不推进现场。
+
+### 11.6 50% loss 场景的模型归属（2026-09-08，复审收尾）
+
+按 [#107 独立复审](https://github.com/houyuwushang/winkyou/pull/107#issuecomment-5568851125)
+及维护者续令，本次仅从 `TestLinuxGateB3Hard16Proof` 移除
+`fifty_percent_candidate_loss`；其它子测试、原 CI job 时限和全部断言保持原样。
+
+默认 30s 模型下，随机 candidate-only 丢包把**成功、双 exhaustion、early-hit 失效**三种
+已知路径混在一个随机结果中；普通 loss gate 必须拒绝 winner-positive/timeout 元组，
+不能把它放宽成“有界结束即通过”。迁移依据保留为
+[#105 首跑 RED](https://github.com/houyuwushang/winkyou/actions/runs/33987292922/job/101363121187)
+与 [#107 首跑 RED](https://github.com/houyuwushang/winkyou/actions/runs/33988801311/job/101367177233)：
+后者证明了 early-hit reverse flow 在 winner 前消失的机制；前者缺少相同 kernel 见证，
+仍不追溯认定其唯一根因。§10、§11.4 及 `TestLinuxGateB3HistoricalEarlyHitCounterexample` 全部保留。
+
+因此默认 30s job 不再把随机 50% loss 作为 required 断言。成功与无命中由已有
+`M_S_fifty_percent_candidate_loss`（60s）继续严格验收，`testGateB3FullShapeLifetime` 的
+失败分支仍调用原 `validGateB3FiftyPercentLossTerminal`；只允许严格成功或
+Gate B §22 原两个 no-winner 元组。失效由 M-E（30s）按已有独立因果与精确终局见证确定性证明，
+`validGateB3ExpiryPair` 不并入普通 loss 谓词，M-S/M-E/M-X 实现均不改。
+
+默认 30s 的 `full_shape_tail_hit`、`full_exhaustion`（`dropEvery=1`）与
+`loss_terminal_contract`（含 #106 元组负向变异），以及 cap、kill、fresh100 等其它入口原样保留。
+这里调整的是测试场景归属，不延长产品窗口、不改变生产能力；E 仍为研究方向，不因此推进。
+
+本次本地 Linux 交叉 vet/编译、host contract×3（0.530s）、architecture（13.429s）均通过；
+不是本地 netns 运行证明。新 head 的首次 CI 结果记录于
+[PR #107 描述](https://github.com/houyuwushang/winkyou/pull/107)。旧 Hard16 与 M
+required job 都须通过；不 rerun 求绿，失败保留。PR 继续 Draft，等待复审合并后才关闭 #106。

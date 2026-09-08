@@ -105,7 +105,6 @@ func TestLinuxGateB3Hard16Proof(t *testing.T) {
 	t.Run("conntrack_full", func(t *testing.T) { testGateB3FullShape(t, 0, gateB3ConntrackFaultCap) })
 	t.Run("full_shape_tail_hit", func(t *testing.T) { testGateB3FullShape(t, 0, gateB3ConntrackCap) })
 	t.Run("full_exhaustion", func(t *testing.T) { testGateB3FullShape(t, 1, gateB3ConntrackCap) })
-	t.Run("fifty_percent_candidate_loss", func(t *testing.T) { testGateB3FullShape(t, 2, gateB3ConntrackCap) })
 	t.Run("enobufs", testGateB3ENOBUFS)
 	t.Run("oob_eof_after_child_kill", testGateB3ChildKill)
 	t.Run("parent_kill", testGateB3ParentKill)
