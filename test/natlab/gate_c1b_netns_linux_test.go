@@ -93,6 +93,10 @@ func gateC1bSSHDPath(t *testing.T) string {
 }
 
 func testGateC1bProfile(t *testing.T, profile gateC1bProfile, loopbackSSH bool) {
+	testGateC1bProfileWithLiveness(t, profile, loopbackSSH, "")
+}
+
+func testGateC1bProfileWithLiveness(t *testing.T, profile gateC1bProfile, loopbackSSH bool, livenessCase string) {
 	armGateB3KernelReleaseMargin(t)
 	topology := newN2DTopology(t, n2dMappingEDM, n2dMappingEDM)
 	t.Cleanup(func() { cleanupGateC1bEndpointProcesses(t, topology) })
@@ -133,11 +137,16 @@ func testGateC1bProfile(t *testing.T, profile gateC1bProfile, loopbackSSH bool) 
 			t.Fatal("Gate C1b exact test SSH underlay setup failed")
 		}
 	}
-	configs := gateC1bFixture(t, topology, observer.topology, profile, loopbackSSH)
+	configs := gateC1bFixtureForFault(t, topology, observer.topology, profile, loopbackSSH, livenessCase)
 	server := startGateC1bHost(t, configs[1])
 	server.waitFile(t, configs[1].ReadyFile, 5*time.Second)
 	client := startGateC1bHost(t, configs[0])
-	client.waitFile(t, configs[0].ResultFile, gateC1bHostLimit)
+	var livenessFaultAt time.Time
+	releaseLivenessFault := func() {}
+	if livenessCase != "" {
+		livenessFaultAt, releaseLivenessFault = injectGateC1bLivenessFault(t, topology, configs, client)
+	}
+	client.waitFile(t, configs[0].ResultFile, gateC1bProofHostLimit(configs[0]))
 	var results [2]gateC1bProcessResult
 	if !readN1JSON(configs[0].ResultFile, &results[0]) {
 		t.Fatal("Gate C1b initiator result unavailable")
@@ -145,7 +154,7 @@ func testGateC1bProfile(t *testing.T, profile gateC1bProfile, loopbackSSH bool) 
 	// Never hide an already available client failure behind a secondary wait
 	// for a child which SSH may not have started. Only frozen classes/stages
 	// and counters are published; no raw SSH error or private fixture content.
-	if !results[0].OK {
+	if !results[0].OK && !gateC1bExpectedLivenessTimeout(configs[0], results[0]) {
 		got := results[0]
 		var peer gateC1bProcessResult
 		peerResult := readN1JSON(configs[1].ResultFile, &peer)
@@ -162,7 +171,7 @@ func testGateC1bProfile(t *testing.T, profile gateC1bProfile, loopbackSSH bool) 
 			t.Fatal("Gate C1b private result unavailable")
 		}
 		got := results[index]
-		if !got.OK || !got.Root || !reflect.DeepEqual(got.Stages, gatecorchestrator.ProductProgressSequence) {
+		if (!got.OK && !gateC1bExpectedLivenessTimeout(configs[index], got)) || !got.Root || !reflect.DeepEqual(got.Stages, gatecorchestrator.ProductProgressSequence) {
 			t.Fatalf("Gate C1b terminal rejected: side=%d class=%s stage=%s burned=%t finish=%t ready=%t stages=%v",
 				index, got.Class, got.Stage, got.Product.CredentialBurned, got.Product.FinishRecorded,
 				got.Product.DataPlaneReady, got.Stages)
@@ -180,9 +189,12 @@ func testGateC1bProfile(t *testing.T, profile gateC1bProfile, loopbackSSH bool) 
 			t.Fatal("Gate C1b handoff/challenge/echo witness rejected")
 		}
 		echo := got.Product.Witness.Echo
-		if index == 0 && (echo.RequestsWritten != 1 || echo.ResponsesRead != 1 || echo.CloseWritten != 1) ||
-			index == 1 && (echo.RequestsRead != 1 || echo.ResponsesWritten != 1 || echo.CloseRead != 1) {
+		if livenessCase == "" && (index == 0 && (echo.RequestsWritten != 1 || echo.ResponsesRead != 1 || echo.CloseWritten != 1) ||
+			index == 1 && (echo.RequestsRead != 1 || echo.ResponsesWritten != 1 || echo.CloseRead != 1)) {
 			t.Fatal("Gate C1b directional echo/CLOSE witness rejected")
+		}
+		if livenessCase != "" {
+			validateGateC1bKernelLiveness(t, configs[index], got, livenessFaultAt)
 		}
 		if configs[index].UseTUN && (!got.TUN.Used || !got.TUN.Closed || got.TUN.KernelReads == 0 || got.TUN.KernelWrites == 0 ||
 			got.TUN.KernelReads != got.TUN.InnerSends || got.TUN.KernelWrites != got.TUN.InnerReads || got.TUN.NonIPv4Reads != 0) {
@@ -192,6 +204,7 @@ func testGateC1bProfile(t *testing.T, profile gateC1bProfile, loopbackSSH bool) 
 	if !results[0].Product.Witness.SSH.Spawned || !results[0].Product.Witness.SSH.Exited || !results[0].Product.Witness.SSH.Drained || results[0].Product.Witness.SSH.Killed {
 		t.Fatal("Gate C1b real SSH child exit witness missing")
 	}
+	releaseLivenessFault()
 	client.wait(t)
 	server.stop(t)
 	for _, namespace := range []string{topology.clientA, topology.clientB} {
@@ -426,6 +439,14 @@ AllowUsers root
 		productConfig.GateC.Peers = []config.GateCPeerConfig{{Ref: "private-peer", PublicKey: private[1-index].PublicKey().String(),
 			AllowedIPs: []string{virtual[1-index] + "/32"}, LocalVirtualIP: virtual[index], PeerVirtualIP: virtual[1-index],
 			MemoryInterfaceName: "wink-c1b-proof", MemoryMTU: 1280, SessionCeiling: 8 * time.Second}}
+		if gateC1bLivenessEnabled(cfg) {
+			rounds := 3
+			if cfg.Fault == "liveness-blackhole-m2" {
+				rounds = 2
+			}
+			productConfig.GateC.Peers[0].SessionCeiling = 10 * time.Minute
+			productConfig.GateC.Peers[0].SessionLiveness = &config.SessionLivenessConfig{Mode: "challenge_v1", MissedRounds: rounds}
+		}
 		if fault == "wireguard-failure" && index == 0 {
 			wrongKey, err := tunnel.GeneratePrivateKey()
 			if err != nil {
@@ -508,7 +529,11 @@ func startGateC1bHost(t *testing.T, cfg gateC1bHostConfig) *gateC1bHostProcess {
 	if writeN1JSON(configPath, cfg) != nil {
 		t.Fatal("Gate C1b host metadata failed")
 	}
-	command := exec.Command("ip", "netns", "exec", cfg.HostNamespace, os.Args[0], "-test.run=^TestGateC1bHostProcess$", "-test.count=1", "-test.timeout=80s")
+	timeout := "80s"
+	if gateC1bLivenessEnabled(cfg) {
+		timeout = "330s"
+	}
+	command := exec.Command("ip", "netns", "exec", cfg.HostNamespace, os.Args[0], "-test.run=^TestGateC1bHostProcess$", "-test.count=1", "-test.timeout="+timeout)
 	command.Env = append(os.Environ(), gateC1bHostEnv+"=1", gateC1bHostConfigEnv+"="+configPath)
 	command.Stdout, command.Stderr = io.Discard, io.Discard
 	command.SysProcAttr = &syscall.SysProcAttr{Cloneflags: unix.CLONE_NEWNS, Pdeathsig: syscall.SIGKILL, Setpgid: true}

@@ -1,0 +1,136 @@
+name: Session Liveness
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  model-and-owner:
+    name: Liveness model and owner (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    env:
+      GORACE: halt_on_error=1
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Vet
+        run: go vet ./...
+      - name: Full affected-package race and stability matrix
+        run: go test -race -count=20 -timeout=15m ./internal/probeio ./internal/v2/gatecorchestrator ./pkg/config ./pkg/tunnel
+      - name: Architecture and mutation proofs
+        run: go test -race ./internal/architecture -run 'SessionLiveness|GateC1b' -count=20
+      - name: Same durable owner - normal rejection, control excess, admission bypass and loss of owner
+        run: go test -race -tags=c1bproof ./internal/governor -run '^TestSessionLivenessOwnerTripCasesAreDistinct$' -count=20 -timeout=8m
+      - name: Real business remains bidirectional and is never stolen by the tap
+        run: go test -race -tags=c1bproof ./internal/governor -run '^TestSessionLivenessBusinessCoexistsWithTap$' -count=20 -timeout=8m
+      - name: Independent byte-vector implementation
+        run: python internal/v2/gatecorchestrator/testdata/liveness_reference.py
+
+  real-wireguard:
+    name: Liveness real WireGuard (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 12
+    env:
+      GORACE: halt_on_error=1
+      WINKYOU_LIVENESS_IDLE_REQUIRED: '1'
+      WINKYOU_LIVENESS_BLACKHOLE_REQUIRED: '1'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Three profiles, 180 seconds idle and real rekey
+        run: go test -race -tags=c1bproof ./internal/governor -run '^TestSessionLivenessMemoryIdle180Required$' -count=1 -v -timeout=6m
+      - name: M2 and M3 - bilateral and both unilateral blackholes
+        run: go test -race -tags=c1bproof ./internal/governor -run '^TestSessionLivenessMemoryBlackholesRequired$' -count=1 -v -timeout=4m
+
+  fresh100:
+    name: Liveness 100 fresh lifecycles
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    env:
+      WINKYOU_LIVENESS_REPEAT_REQUIRED: '1'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - run: go test -tags=c1bproof ./internal/governor -run '^TestSessionLivenessMemoryFresh100Required$' -count=1 -v -timeout=10m
+
+  netns:
+    name: Liveness isolated OS (${{ matrix.case }})
+    strategy:
+      fail-fast: false
+      matrix:
+        case: [loopback-idle, tun-idle, blackhole-m2, blackhole-m3, loopback-blackhole-m2, loopback-blackhole-m3, pause, parent-kill, consumer-crash]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Verify tools without changing the host SSH service
+        shell: bash
+        run: |
+          test -x /usr/bin/ssh
+          test -d /usr/libexec
+          sudo apt-get update
+          sudo apt-get install -y iproute2 iptables conntrack
+          if test -x /usr/sbin/sshd; then
+            echo 'WINKYOU_C1B_SSHD_BINARY=/usr/sbin/sshd' >> "$GITHUB_ENV"
+          else
+            liveness_tools="$(mktemp -d "${RUNNER_TEMP}/liveness-sshd.XXXXXX")"
+            (cd "$liveness_tools"; apt-get download openssh-server; dpkg-deb --extract openssh-server_*.deb extracted)
+            test -x "$liveness_tools/extracted/usr/sbin/sshd"
+            echo "WINKYOU_C1B_SSHD_BINARY=$liveness_tools/extracted/usr/sbin/sshd" >> "$GITHUB_ENV"
+          fi
+          sudo modprobe tun || true
+          test -c /dev/net/tun
+      - name: Vet and build the exact race-enabled isolated binary
+        run: |
+          go vet -tags=natlab,c1bproof ./test/natlab ./internal/v2/gatecorchestrator ./pkg/tunnel
+          go test -race -c -tags=natlab,c1bproof -o "${RUNNER_TEMP}/liveness-netns.test" ./test/natlab
+      - name: Required private-netns real SSH, governed UDP, TUN and drain witness
+        shell: bash
+        run: |
+          sudo env \
+            WINKYOU_LIVENESS_NETNS_REQUIRED=1 \
+            WINKYOU_LIVENESS_NETNS_CASE='${{ matrix.case }}' \
+            WINKYOU_C1B_SSHD_BINARY="$WINKYOU_C1B_SSHD_BINARY" \
+            WINKYOU_GATE_B3_REQUIRED=1 \
+            WINKYOU_GATE_B3_DISPOSABLE_RUNNER=github-hosted \
+            GITHUB_ACTIONS=true RUNNER_ENVIRONMENT=github-hosted \
+            bash test/natlab/run_gate_b3_required_linux.sh \
+            env GORACE=halt_on_error=1 \
+            "${RUNNER_TEMP}/liveness-netns.test" \
+            -test.run '^TestLinuxSessionLivenessRequired$' -test.v -test.count=1 -test.timeout=6m
+
+  required:
+    name: Session Liveness Required
+    if: always()
+    needs: [model-and-owner, real-wireguard, fresh100, netns]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Fail for any missing, skipped or failed proof
+        env:
+          MODEL: ${{ needs.model-and-owner.result }}
+          WIREGUARD: ${{ needs.real-wireguard.result }}
+          FRESH: ${{ needs.fresh100.result }}
+          NETNS: ${{ needs.netns.result }}
+        run: test "$MODEL" = success && test "$WIREGUARD" = success && test "$FRESH" = success && test "$NETNS" = success
