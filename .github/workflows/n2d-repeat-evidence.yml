@@ -1,0 +1,36 @@
+name: N2d Repeat Diagnostics
+
+on:
+  pull_request:
+    paths:
+      - 'test/natlab/n2d_*'
+      - '.github/workflows/n2d-repeat-evidence.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  repeat-diagnostics:
+    name: N2d repeat timeline (3 rounds x 10, evidence)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Install isolated witness tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y iproute2 iptables conntrack
+      - name: Vet and build unchanged-budget race harness
+        run: |
+          go vet -tags=natlab ./test/natlab
+          go test -race -c -tags=natlab -o "${RUNNER_TEMP}/winkyou-n2d-repeat.test" ./test/natlab
+      - name: Reject the historical terminal signatures
+        run: '"${RUNNER_TEMP}/winkyou-n2d-repeat.test" -test.run "^TestN2DSuccessRejectsHistoricalTimeoutSignatures$" -test.count=20'
+      - name: First-pass thirty-repeat diagnosis (no rerun)
+        run: >-
+          sudo env WINKYOU_N2D_REQUIRED=1 WINKYOU_N2D_REPEAT_DIAGNOSTICS=1 GORACE=halt_on_error=1
+          "${RUNNER_TEMP}/winkyou-n2d-repeat.test" -test.v
+          -test.run '^TestLinuxN2DRepeatDiagnostics$' -test.count=1 -test.timeout=10m
