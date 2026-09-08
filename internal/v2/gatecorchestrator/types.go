@@ -73,6 +73,7 @@ type Failure struct {
 	ResourceClass    string         `json:"resource_class"`
 	Counts           map[string]int `json:"counts,omitempty"`
 	Cause            error          `json:"-"`
+	FinishRecorded   *bool          `json:"finish_recorded,omitempty"`
 }
 
 func (failure *Failure) Error() string {
@@ -108,6 +109,7 @@ type Witness struct {
 	Echo            EchoWitness                         `json:"echo"`
 	InterfaceClosed bool                                `json:"interface_closed"`
 	TunnelStopped   bool                                `json:"tunnel_stopped"`
+	Liveness        *LivenessWitness                    `json:"liveness,omitempty"`
 }
 
 type Result struct {
@@ -165,6 +167,7 @@ type trustedPeer struct {
 	interfaceName  string
 	mtu            int
 	sessionCeiling time.Duration
+	liveness       *livenessBudget
 }
 
 type conflictState struct {
@@ -189,6 +192,8 @@ type dependencies struct {
 	newInterface     func(string, int) (netif.MemoryTestInterface, error)
 	newTunnel        func(tunnel.Config) (tunnel.Tunnel, error)
 	activityInterval time.Duration
+	innerTapCapable  func() bool
+	newLivenessClock func() LivenessClock
 }
 
 var (

@@ -54,13 +54,17 @@ type gateC1bMemoryProfile struct {
 	slowFinish          bool
 	slowResponderFinish bool
 	cancelAfterFinish   bool
+	liveness            *gateC1bLivenessCase
 }
 
 // Test-only session configuration, not a product deadline or probe allowance.
 // ADR 19.10 gives ordinary/CLI/cancellation/fresh100 the same 10s session as
 // slow FINISH. The profile absolute/candidate windows and all I/O caps stay
 // unchanged; the production 5s validation floor is not a success SLA.
-func (gateC1bMemoryProfile) sessionCeiling() time.Duration {
+func (p gateC1bMemoryProfile) sessionCeiling() time.Duration {
+	if p.liveness != nil {
+		return 10 * time.Minute
+	}
 	return 10 * time.Second
 }
 
@@ -337,7 +341,7 @@ func runGateC1bMemoryProductProfile(t *testing.T, label string, test gateC1bMemo
 	}
 	virtual := [2]string{"10.88.0.1", "10.88.0.2"}
 	interfaceNames := [2]string{"wink-c1b-left", "wink-c1b-right"}
-	if test.slowResponderFinish {
+	if test.slowResponderFinish || test.liveness != nil {
 		// Parallel memory fixtures still pass real process-local ownership
 		// validation. Give each one distinct synthetic routes/interfaces;
 		// never bypass the product's collision guard.
@@ -376,6 +380,9 @@ func runGateC1bMemoryProductProfile(t *testing.T, label string, test gateC1bMemo
 			MemoryInterfaceName: interfaceNames[index], MemoryMTU: 1280,
 			SessionCeiling: test.sessionCeiling(),
 		}}
+		if test.liveness != nil {
+			cfg.GateC.Peers[0].SessionLiveness = &config.SessionLivenessConfig{Mode: "challenge_v1", MissedRounds: test.liveness.rounds}
+		}
 		if err := cfg.Validate(); err != nil {
 			t.Fatal(err)
 		}
@@ -429,7 +436,11 @@ func runGateC1bMemoryProductProfile(t *testing.T, label string, test gateC1bMemo
 	var readyMu sync.Mutex
 	initiatorCtx, cancelInitiator := context.WithCancel(context.Background())
 	defer cancelInitiator()
-	responderCtx, cancelResponder := context.WithTimeout(context.Background(), 30*time.Second)
+	proofTimeout := 30 * time.Second
+	if test.liveness != nil {
+		proofTimeout += test.liveness.hold + 70*time.Second
+	}
+	responderCtx, cancelResponder := context.WithTimeout(context.Background(), proofTimeout)
 	defer cancelResponder()
 	var finishCancelWitness func() int32
 	if test.cancelAfterFinish {
@@ -445,6 +456,12 @@ func runGateC1bMemoryProductProfile(t *testing.T, label string, test gateC1bMemo
 		stages []string
 	}
 	results := make(chan outcome, 2)
+	var livenessCancelTimer *time.Timer
+	defer func() {
+		if livenessCancelTimer != nil {
+			livenessCancelTimer.Stop()
+		}
+	}()
 	for index := range 2 {
 		index := index
 		go func() {
@@ -473,13 +490,21 @@ func runGateC1bMemoryProductProfile(t *testing.T, label string, test gateC1bMemo
 						readyMu.Lock()
 						ready++
 						if ready == 2 {
-							cancelInitiator()
+							if test.liveness == nil {
+								cancelInitiator()
+							} else {
+								test.liveness.started = time.Now()
+								livenessCancelTimer = time.AfterFunc(test.liveness.hold, cancelInitiator)
+							}
 						}
 						readyMu.Unlock()
 					}
 					return nil
 				},
 				StageRoot: namespaces[index],
+			}
+			if test.liveness != nil {
+				proof.Random = nil
 			}
 			var result gatecorchestrator.Result
 			var runErr error
@@ -512,13 +537,21 @@ func runGateC1bMemoryProductProfile(t *testing.T, label string, test gateC1bMemo
 		select {
 		case got := <-results:
 			outcomes = append(outcomes, got)
-		case <-time.After(35 * time.Second):
+		case <-time.After(proofTimeout + 5*time.Second):
 			t.Fatal("Gate C1b memory product pipeline exceeded its bound")
 		}
 	}
 	matchedFault := 0
 	var packetProofs [2]gateC1bPacketProof
 	for _, got := range outcomes {
+		if test.liveness != nil {
+			side := 0
+			if got.role == directattempt.RoleResponder {
+				side = 1
+			}
+			validateGateC1bLivenessOutcome(t, test, got.result, got.err, got.stages, nats[side].Snapshot().OutboundPackets)
+			continue
+		}
 		if test.cancelAfterFinish {
 			var failure *gatecorchestrator.Failure
 			if !errors.As(got.err, &failure) || failure.Retryable || !failure.CredentialBurned ||
@@ -642,7 +675,7 @@ func runGateC1bMemoryProductProfile(t *testing.T, label string, test gateC1bMemo
 	if finishCancelWitness != nil && finishCancelWitness() != 1 {
 		t.Error("post-fsync caller cancellation was not exactly once")
 	}
-	if test.fault == "" && !test.cancelAfterFinish {
+	if test.fault == "" && !test.cancelAfterFinish && test.liveness == nil {
 		if err := validateGateC1bPacketAccounting(test, packetProofs, delayProof); err != nil {
 			t.Error(err)
 		}

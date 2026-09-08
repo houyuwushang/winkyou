@@ -42,6 +42,9 @@ func defaultDependencies() dependencies {
 		inspectConflict:  defaultConflictInspector,
 		inspectMachine:   passiveMachinePreflight,
 		activityInterval: SessionActivityInterval,
+		// Only the fixed caller-owned-bind factories provide this capability.
+		innerTapCapable:  func() bool { return true },
+		newLivenessClock: func() LivenessClock { return systemLivenessClock{origin: time.Now()} },
 	}
 }
 
@@ -55,6 +58,9 @@ func runPrepared(ctx context.Context, input preparedInput, deps dependencies) (r
 	peer, err := resolveTrustedPeer(input)
 	if err != nil {
 		return Result{}, localFailure(ClassRequestInvalid, StagePreflight, false, profileOf(input), resourceOf(input), err, nil)
+	}
+	if peer.liveness != nil && (deps.innerTapCapable == nil || !deps.innerTapCapable() || deps.newLivenessClock == nil) {
+		return Result{}, livenessFailure(input, errLivenessUnavailable, false)
 	}
 	topology, err := observerTopology(input.request)
 	if err != nil {
@@ -255,14 +261,50 @@ func runPrepared(ctx context.Context, input preparedInput, deps dependencies) (r
 			"echo_responses_read":   echoWitness.ResponsesRead,
 		})
 	}
+	var liveness *livenessController
+	if peer.liveness != nil {
+		model, modelErr := newLivenessModel(echoBinding{Role: input.request.Role, Local: peer.localVirtual, Remote: peer.remoteVirtual,
+			AttemptID: binding.AttemptID, ContextDigest: binding.ContextDigest}, *peer.liveness, deps.newLivenessClock(), sessionDeadline)
+		if modelErr != nil {
+			return result, livenessFailure(input, modelErr, true)
+		}
+		reporter := &livenessReporter{machine: input.machine, attempt: binding.AttemptID, build: input.buildVersion}
+		gate, ok := handoff.Transport().(*probeio.WireGuardSessionGate)
+		if !ok {
+			reporter.close()
+			return result, livenessFailure(input, errLivenessUnavailable, true)
+		}
+		liveness, err = armLiveness(model, memoryInterface, tun, gate, deps.random, reporter.report, reporter.available)
+		if err != nil {
+			reporter.close()
+			return result, livenessFailure(input, err, true)
+		}
+		defer func() {
+			if drainErr := liveness.drain(); drainErr != nil {
+				runErr = sessionDrainFailure(input, drainErr)
+			}
+			reporter.close()
+			witness := liveness.model.snapshot()
+			result.Witness.Liveness = &witness
+			result.Witness.WireGuard = handoff.Witness().Transport
+			result.Witness.Handoff = handoff.Witness()
+		}()
+	}
 	result.DataPlaneReady = true
 	if err := sequence.emit(StageDataPlaneReady, true); err != nil {
 		return result, classifyLocalFailure(err, StageDataPlaneReady, true, input, nil)
 	}
 
-	sessionEnd, foregroundWitness, err := foregroundSession(ctx, sessionCtx, input.request.Role, memoryInterface, handoff,
-		echoBinding{Role: input.request.Role, Local: peer.localVirtual, Remote: peer.remoteVirtual,
-			AttemptID: binding.AttemptID, ContextDigest: binding.ContextDigest}, deps.random, deps.activityInterval)
+	var sessionEnd string
+	var foregroundWitness EchoWitness
+	if liveness != nil {
+		sessionEnd, err = liveness.run(ctx, sessionCtx)
+		foregroundWitness.CloseWritten, foregroundWitness.CloseRead = liveness.closeWrites, liveness.closeReads
+	} else {
+		sessionEnd, foregroundWitness, err = foregroundSession(ctx, sessionCtx, input.request.Role, memoryInterface, handoff,
+			echoBinding{Role: input.request.Role, Local: peer.localVirtual, Remote: peer.remoteVirtual,
+				AttemptID: binding.AttemptID, ContextDigest: binding.ContextDigest}, deps.random, deps.activityInterval)
+	}
 	mergeEchoWitness(&result.Witness.Echo, foregroundWitness)
 	result.SessionEnd = sessionEnd
 	result.Witness.WireGuard = handoff.Witness().Transport
@@ -271,6 +313,9 @@ func runPrepared(ctx context.Context, input preparedInput, deps dependencies) (r
 	if err != nil {
 		if errors.Is(err, ErrSessionDrain) {
 			return result, sessionDrainFailure(input, err)
+		}
+		if liveness != nil {
+			return result, livenessFailure(input, err, true)
 		}
 		return result, classifyLocalFailure(ErrPostHandoff, StageDataPlaneReady, true, input, nil)
 	}
