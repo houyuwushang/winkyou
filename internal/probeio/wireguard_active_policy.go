@@ -23,12 +23,12 @@ var (
 )
 
 // ActiveSessionPolicy can only narrow an already-detached session. The owner
-// supplies a local permit, elapsed clock and immutable session-bound reporter;
+// supplies a local permit, monotonic accounting clock and session-bound reporter;
 // no attempt, endpoint, socket, remote deadline or raw transport is accepted.
 type ActiveSessionPolicy struct {
 	Ceiling time.Duration
 	Permit  func() error
-	Elapsed func() time.Duration
+	Elapsed func() time.Duration // validated local monotonic elapsed, never RTC/origin-max
 	Report  func(SessionViolation) error
 }
 

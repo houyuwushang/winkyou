@@ -2,6 +2,8 @@ package gatecorchestrator
 
 import (
 	"errors"
+	"math"
+	"strconv"
 	"testing"
 	"time"
 )
@@ -11,7 +13,7 @@ import (
 func TestLivenessClockRevisionProofCannotOutliveEitherSendClock(t *testing.T) {
 	for _, rounds := range []int{2, 3} {
 		for _, convergence := range []string{"rollback", "gradual", "source-switch", "repeated"} {
-			t.Run(time.Duration(rounds).String()+"/"+convergence, func(t *testing.T) {
+			t.Run("M"+strconv.Itoa(rounds)+"/"+convergence, func(t *testing.T) {
 				m, clock := testLivenessModel(t, rounds)
 				clock.shift(20*time.Second, 22*time.Second)
 				issueLivenessPing(t, m)
@@ -56,6 +58,73 @@ func TestLivenessClockRevisionProofCannotOutliveEitherSendClock(t *testing.T) {
 	}
 }
 
+func TestLivenessClockRevisionQueuedIntentKeepsItsOriginalProof(t *testing.T) {
+	m, clock := testLivenessModel(t, 3)
+	clock.advance(60 * time.Second)
+	issueLivenessPing(t, m)
+	pong := replyLiveness(t, m)
+	clock.advance(4500 * time.Millisecond)
+	peer, _ := buildLivenessPacket(oppositeLivenessBinding(m.binding), livenessMessage{kind: livenessPing, sequence: 1})
+	e, err := m.receive(peer) // Original proof expires at 65s, write window at 65.5s.
+	if err != nil || e == nil {
+		t.Fatal("missing peer reply intent")
+	}
+	if _, err := m.receive(pong); err != nil {
+		t.Fatal(err)
+	} // New proof expires at 125s.
+	clock.advance(500 * time.Millisecond)
+	if m.permit() != nil {
+		t.Fatal("new matching proof did not renew the session")
+	}
+	if allowed, err := m.beginWrite(e); allowed || err != nil || m.snapshot().OutboundExpired != 1 {
+		t.Fatal("later proof extended a queued intent's original grant")
+	}
+}
+
+func TestLivenessClockRevisionUTCAgeCanExpireEarlierWithoutRevival(t *testing.T) {
+	m, clock := testLivenessModel(t, 3)
+	clock.shift(20*time.Second, 18*time.Second)
+	issueLivenessPing(t, m)
+	if _, err := m.receive(replyLiveness(t, m)); err != nil {
+		t.Fatal(err)
+	}
+	clock.shift(63*time.Second, 65*time.Second) // Mono proof age63s, UTC proof age65s.
+	if !errors.Is(m.permit(), errLivenessTimeout) {
+		t.Fatal("slower monotonic source extended the UTC event limit")
+	}
+	clock.shift(0, -2*time.Second)
+	if !errors.Is(m.permit(), errLivenessTimeout) {
+		t.Fatal("rollback revived an expired UTC event")
+	}
+}
+
+func TestLivenessClockRevisionAgeRejectsInvalidAndSaturatingSources(t *testing.T) {
+	m, _ := testLivenessModel(t, 3)
+	for _, sent := range []livenessInstant{
+		{}, {mono: -1, utc: m.clock.utc0}, {mono: 1, utc: m.clock.utc0},
+		{utc: m.clock.utc0.AddDate(-1000, 0, 0)},
+	} {
+		if _, err := m.clock.age(sent); !errors.Is(err, errLivenessClock) {
+			t.Fatal("invalid event source accepted")
+		}
+	}
+	// A valid arm origin near MaxInt64 must not overflow by adding a deadline.
+	clock := &fakeLivenessClock{mono: time.Duration(math.MaxInt64) - 2*time.Minute, utc: m.clock.utc0}
+	n, err := newLivenessModel(m.binding, m.budget, clock, clock.UTC().Add(m.budget.ceiling))
+	if err != nil {
+		t.Fatal(err)
+	}
+	clock.advance(20 * time.Second)
+	issueLivenessPing(t, n)
+	if _, err := n.receive(replyLiveness(t, n)); err != nil {
+		t.Fatal(err)
+	}
+	clock.advance(65 * time.Second)
+	if !errors.Is(n.permit(), errLivenessTimeout) {
+		t.Fatal("large monotonic origin changed event deadline")
+	}
+}
+
 func TestLivenessClockRevisionResponseWindowAndIntentExpireAtEquality(t *testing.T) {
 	for _, window := range []time.Duration{livenessWriteWindow, livenessResponseWindow} {
 		for _, age := range []time.Duration{window, window + time.Second} {
@@ -97,14 +166,14 @@ func TestLivenessClockRevisionAccountingClockDoesNotFollowRTC(t *testing.T) {
 	if err := m.permit(); err != nil {
 		t.Fatal(err)
 	}
-	if got := m.currentElapsed(); got != 20*time.Second {
+	if got := m.currentMonotonicElapsed(); got != 20*time.Second {
 		t.Fatalf("WG accounting source=%s, want monotonic 20s", got)
 	}
 	clock.shift(0, -2*time.Second)
 	if err := m.permit(); err != nil {
 		t.Fatal(err)
 	}
-	if got := m.currentElapsed(); got != 20*time.Second || m.snapshot().UTCRollbacks != 1 {
+	if got := m.currentMonotonicElapsed(); got != 20*time.Second || m.snapshot().UTCRollbacks != 1 {
 		t.Fatal("legal RTC rollback changed WG accounting or lost its witness")
 	}
 }

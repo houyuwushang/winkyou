@@ -27,10 +27,11 @@ func (f *livenessFaultInterface) InjectPacket([]byte) (int, error) {
 }
 
 func TestLivenessWorkersFailClosedAndJoinWithoutForegroundProgress(t *testing.T) {
-	for _, fault := range []string{"writer-error", "writer-stall", "foreground-stall", "ingress-flood"} {
+	for _, fault := range []string{"writer-error", "writer-stall", "writer-stall-rollback", "foreground-stall", "ingress-flood"} {
 		t.Run(fault, func(t *testing.T) {
 			m, clock := testLivenessModel(t, 3)
-			ni := &livenessFaultInterface{sessionTestInterface: newSessionTestInterface(), started: make(chan struct{}), stall: fault == "writer-stall"}
+			stall := fault == "writer-stall" || fault == "writer-stall-rollback"
+			ni := &livenessFaultInterface{sessionTestInterface: newSessionTestInterface(), started: make(chan struct{}), stall: stall}
 			var reports atomic.Int64
 			c := &livenessController{model: m, ni: ni, gate: &probeio.WireGuardSessionGate{},
 				stop: make(chan struct{}), writerDone: make(chan struct{}), watchdogDone: make(chan struct{}),
@@ -43,8 +44,11 @@ func TestLivenessWorkersFailClosedAndJoinWithoutForegroundProgress(t *testing.T)
 					t.Error(err)
 				}
 			})
-			if fault == "writer-error" || fault == "writer-stall" {
+			if fault == "writer-error" || stall {
 				clock.advance(20 * time.Second)
+				if fault == "writer-stall-rollback" {
+					clock.shift(0, 2*time.Second)
+				}
 				seq, err := m.preparePing()
 				if err != nil {
 					t.Fatal(err)
@@ -59,7 +63,10 @@ func TestLivenessWorkersFailClosedAndJoinWithoutForegroundProgress(t *testing.T)
 				case <-time.After(time.Second):
 					t.Fatal("writer not started")
 				}
-				if fault == "writer-stall" {
+				if fault == "writer-stall-rollback" {
+					clock.shift(0, -2*time.Second)
+				}
+				if stall {
 					clock.advance(1100 * time.Millisecond)
 				}
 			} else {
@@ -80,7 +87,7 @@ func TestLivenessWorkersFailClosedAndJoinWithoutForegroundProgress(t *testing.T)
 				t.Fatal(err)
 			}
 			wantReports := int64(0)
-			if fault == "writer-error" || fault == "writer-stall" {
+			if fault == "writer-error" || stall {
 				wantReports = 1
 			}
 			if reports.Load() != wantReports || !c.gate.Witness().Closed || !m.snapshot().Drained || len(c.inbound) != 0 || len(c.outbound) != 0 {

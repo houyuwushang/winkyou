@@ -129,15 +129,23 @@ func sessionLivenessViolations(root string) ([]string, error) {
 		required []string
 	}{
 		{"internal/v2/gatecorchestrator/liveness_model.go", []string{
-			"m.leaseUntil = min(m.absUntil, pending.sent+m.budget.lease)",
+			"m.proofSent = pending.sent", "m.eventAgeLocked(m.proofSent)", "m.eventAgeLocked(m.pending.sent)",
 			"message.sequence != pending.message.sequence || message.nonce != pending.message.nonce",
-			"m.elapsed >= e.until", "m.peerHigh = message.sequence", "if !m.admitLocked(livenessPong)",
+			"m.windowExpiredLocked(e.window)", "age >= livenessWriteWindow", "proofAge >= m.budget.lease",
+			"m.peerHigh = message.sequence", "if !m.admitLocked(livenessPong)",
 			"if !m.admitLocked(livenessPing)", "found < 0 || m.writing", "m.witness.AdmissionBypass++",
 			"m.nextSlot = (m.elapsed/livenessInterval + 1) * livenessInterval",
+			"return m.clock.instant().mono", "now := m.clock.instant().mono", "now-m.window[i] < livenessInterval",
+			"sent: m.clock.instant(), proofSent: m.proofSent",
+		}},
+		{"internal/v2/gatecorchestrator/liveness_clock.go", []string{
+			"now.mono-sent.mono, now.utc.Sub(sent.utc)", "return max(mono, utc), nil",
+			"!sent.utc.Add(utc).Equal(now.utc)", "m < c.lastMono", "utc < mono-livenessClockTolerance",
 		}},
 		{"internal/v2/gatecorchestrator/liveness_controller.go", []string{
 			"Permit: c.permit", "case <-c.stop:", "go c.writer()", "go c.watchdog()",
 			"c.model.beginWrite(e)", "c.ni.InjectPacket(e.packet)",
+			"Elapsed: model.currentMonotonicElapsed", "c.model.windowExpiredLocked(c.model.writeWindow)",
 		}},
 		{"internal/probeio/wireguard_active_policy.go", []string{
 			"!gate.finishRecorded || !gate.detached", "gate.activePolicy != nil", "p.policy.Permit()",
@@ -182,7 +190,7 @@ func sessionLivenessViolations(root string) ([]string, error) {
 					return true
 				}
 				for _, lhs := range assign.Lhs {
-					if sel, ok := lhs.(*ast.SelectorExpr); ok && sel.Sel.Name == "leaseUntil" && fn.Name.Name != "receive" {
+					if sel, ok := lhs.(*ast.SelectorExpr); ok && sel.Sel.Name == "proofSent" && fn.Name.Name != "receive" {
 						violations = append(violations, "only authenticated PONG may renew permit")
 					}
 				}
@@ -227,7 +235,13 @@ func TestSessionLivenessGateDetectsEarlyArmRawRenewalAndBypass(t *testing.T) {
 	for i, tc := range []struct{ file, old, replacement, want string }{
 		{"internal/v2/gatecorchestrator/orchestrator.go", "postOOBEcho(sessionCtx", "mutatedEcho(sessionCtx", "armed before FINISH"},
 		{"internal/probeio/wireguard_session_gate.go", "policy.beforeWrite(packet)", "nilPolicyCheck(packet)", "bypasses local permit"},
-		{"internal/v2/gatecorchestrator/liveness_model.go", "pending.sent+m.budget.lease", "m.elapsed+m.budget.lease", "missing enforcement"},
+		{"internal/v2/gatecorchestrator/liveness_model.go", "m.proofSent = pending.sent", "m.proofSent = m.clock.instant()", "missing enforcement"},
+		{"internal/v2/gatecorchestrator/liveness_model.go", "m.windowExpiredLocked(e.window)", "false, error(nil)", "missing enforcement"},
+		{"internal/v2/gatecorchestrator/liveness_model.go", "now := m.clock.instant().mono", "now := m.elapsed", "missing enforcement"},
+		{"internal/v2/gatecorchestrator/liveness_model.go", "return m.clock.instant().mono", "return m.elapsed", "missing enforcement"},
+		{"internal/v2/gatecorchestrator/liveness_controller.go", "Elapsed: model.currentMonotonicElapsed", "Elapsed: model.originMaxElapsed", "missing enforcement"},
+		{"internal/v2/gatecorchestrator/liveness_controller.go", "c.model.windowExpiredLocked(c.model.writeWindow)", "false, error(nil)", "missing enforcement"},
+		{"internal/v2/gatecorchestrator/liveness_clock.go", "now.mono-sent.mono, now.utc.Sub(sent.utc)", "now.mono, now.utc.Sub(c.utc0)", "missing enforcement"},
 		{"internal/v2/gatecorchestrator/liveness_model.go", "if !m.admitLocked(livenessPing)", "if false", "missing enforcement"},
 		{"internal/probeio/wireguard_active_policy.go", "p.used == len(p.window)", "false", "missing enforcement"},
 		{"internal/v2/gatecorchestrator/liveness_model.go", "func (m *livenessModel) receive(", "func (m *livenessModel) rawRX(", "only authenticated PONG"},

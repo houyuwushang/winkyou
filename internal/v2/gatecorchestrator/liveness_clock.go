@@ -30,11 +30,37 @@ type livenessClockGuard struct {
 	rollbacks       uint64
 }
 
+// Both coordinates are local. mono is relative to the immutable arm origin;
+// utc intentionally has no Go monotonic component. Never subtract origin-max
+// values to measure an event: a change of dominant source would extend it.
+type livenessInstant struct {
+	mono time.Duration
+	utc  time.Time
+}
+
+func (c *livenessClockGuard) instant() livenessInstant {
+	return livenessInstant{mono: c.lastMono - c.mono0, utc: c.lastUTC}
+}
+
+// age is valid only after read() has checked the fixed-origin clock contract.
+// UTC may move backwards; monotonic event age still bounds the permitted life.
+func (c *livenessClockGuard) age(sent livenessInstant) (time.Duration, error) {
+	now := c.instant()
+	if sent.mono < 0 || now.mono < sent.mono || sent.utc.IsZero() {
+		return 0, errLivenessClock
+	}
+	mono, utc := now.mono-sent.mono, now.utc.Sub(sent.utc)
+	if !sent.utc.Add(utc).Equal(now.utc) {
+		return 0, errLivenessClock
+	}
+	return max(mono, utc), nil
+}
+
 func newLivenessClock(clock LivenessClock) (livenessClockGuard, error) {
 	if clock == nil {
 		return livenessClockGuard{}, errLivenessUnavailable
 	}
-	m, u := clock.Mono(), clock.UTC()
+	m, u := clock.Mono(), clock.UTC().Round(0)
 	if m < 0 || u.IsZero() {
 		return livenessClockGuard{}, errLivenessClock
 	}
@@ -42,7 +68,7 @@ func newLivenessClock(clock LivenessClock) (livenessClockGuard, error) {
 }
 
 func (c *livenessClockGuard) read() (time.Duration, error) {
-	m, u := c.clock.Mono(), c.clock.UTC()
+	m, u := c.clock.Mono(), c.clock.UTC().Round(0)
 	if m < c.lastMono || m < c.mono0 || u.IsZero() {
 		return 0, errLivenessClock
 	}

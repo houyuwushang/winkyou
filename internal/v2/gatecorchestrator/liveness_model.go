@@ -32,32 +32,38 @@ type LivenessWitness struct {
 
 type pendingLiveness struct {
 	message livenessMessage
-	sent    time.Duration
+	sent    livenessInstant
 	valid   bool
 }
 type livenessEmission struct {
 	packet   []byte
-	until    time.Duration
+	window   livenessEmissionWindow
 	teardown bool
 }
 
+// A later PONG cannot extend an already-admitted write's original proof grant.
+type livenessEmissionWindow struct {
+	sent, proofSent livenessInstant
+}
+
 type livenessModel struct {
-	mu                                      sync.Mutex
-	clock                                   livenessClockGuard
-	budget                                  livenessBudget
-	binding                                 echoBinding
-	absUntil, leaseUntil, nextSlot, elapsed time.Duration
-	sequence, peerHigh                      uint64
-	pending                                 pendingLiveness
-	window                                  [4]time.Duration
-	windowUsed                              int
+	mu                          sync.Mutex
+	clock                       livenessClockGuard
+	budget                      livenessBudget
+	binding                     echoBinding
+	absUntil, nextSlot, elapsed time.Duration
+	proofSent                   livenessInstant
+	sequence, peerHigh          uint64
+	pending                     pendingLiveness
+	window                      [4]time.Duration
+	windowUsed                  int
 	// Two queued intents and at most one being written, no unbounded token map.
-	intents    [3]*livenessEmission
-	writing    bool
-	writeUntil time.Duration
-	closed     bool
-	terminal   error
-	witness    LivenessWitness
+	intents     [3]*livenessEmission
+	writing     bool
+	writeWindow livenessEmissionWindow
+	closed      bool
+	terminal    error
+	witness     LivenessWitness
 }
 
 func newLivenessModel(binding echoBinding, budget livenessBudget, clock LivenessClock, absolute time.Time) (*livenessModel, error) {
@@ -69,7 +75,7 @@ func newLivenessModel(binding echoBinding, budget livenessBudget, clock Liveness
 	if !validEchoBinding(binding) || remaining <= 0 || remaining > budget.ceiling || budget.pings == 0 {
 		return nil, errLivenessUnavailable
 	}
-	return &livenessModel{clock: guard, budget: budget, binding: binding, absUntil: remaining, leaseUntil: min(remaining, budget.lease), nextSlot: livenessInterval, witness: LivenessWitness{BindingVerified: true}}, nil
+	return &livenessModel{clock: guard, budget: budget, binding: binding, absUntil: remaining, proofSent: guard.instant(), nextSlot: livenessInterval, witness: LivenessWitness{BindingVerified: true}}, nil
 }
 
 func (m *livenessModel) checkLocked() error {
@@ -91,28 +97,60 @@ func (m *livenessModel) checkLocked() error {
 		m.terminal = context.DeadlineExceeded
 		return m.terminal
 	}
-	if now >= m.leaseUntil {
+	proofAge, err := m.eventAgeLocked(m.proofSent)
+	if err != nil {
+		return err
+	}
+	if proofAge >= m.budget.lease {
 		m.terminal = errLivenessTimeout
 		return m.terminal
 	}
-	if m.pending.valid && now >= m.pending.sent+livenessResponseWindow {
-		m.pending = pendingLiveness{}
-		m.witness.PendingExpired++
+	if m.pending.valid {
+		age, err := m.eventAgeLocked(m.pending.sent)
+		if err != nil {
+			return err
+		}
+		if age >= livenessResponseWindow {
+			m.pending = pendingLiveness{}
+			m.witness.PendingExpired++
+		}
 	}
 	return nil
 }
 func (m *livenessModel) permit() error { m.mu.Lock(); defer m.mu.Unlock(); return m.checkLocked() }
-func (m *livenessModel) currentElapsed() time.Duration {
+
+// Called after permit() by the active gate. It is a validated monotonic
+// accounting sample, not the potentially decreasing origin-max witness.
+func (m *livenessModel) currentMonotonicElapsed() time.Duration {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	return m.elapsed
+	return m.clock.instant().mono
+}
+
+func (m *livenessModel) eventAgeLocked(sent livenessInstant) (time.Duration, error) {
+	age, err := m.clock.age(sent)
+	if err != nil {
+		m.terminal = err
+	}
+	return age, err
+}
+
+// Caller has already refreshed/validated both clocks with checkLocked().
+func (m *livenessModel) windowExpiredLocked(window livenessEmissionWindow) (bool, error) {
+	age, err := m.eventAgeLocked(window.sent)
+	if err != nil {
+		return true, err
+	}
+	proofAge, err := m.eventAgeLocked(window.proofSent)
+	return age >= livenessWriteWindow || proofAge >= m.budget.lease || m.elapsed >= m.absUntil, err
 }
 
 // A rejected event is consumed, but does not trip, borrow or revoke the lease.
 func (m *livenessModel) admitLocked(kind livenessKind) bool {
+	now := m.clock.instant().mono
 	kept := 0
 	for i := 0; i < m.windowUsed; i++ {
-		if m.elapsed-m.window[i] < livenessInterval {
+		if now-m.window[i] < livenessInterval {
 			m.window[kept] = m.window[i]
 			kept++
 		}
@@ -130,7 +168,7 @@ func (m *livenessModel) admitLocked(kind livenessKind) bool {
 		}
 		return false
 	}
-	m.window[m.windowUsed] = m.elapsed
+	m.window[m.windowUsed] = now
 	m.windowUsed++
 	if kind == livenessPing {
 		w.PingAdmitted++
@@ -152,7 +190,11 @@ func (m *livenessModel) preparePing() (uint64, error) {
 		return 0, nil
 	}
 	m.nextSlot = (m.elapsed/livenessInterval + 1) * livenessInterval
-	if m.pending.valid || m.elapsed+livenessResponseWindow > min(m.absUntil, m.leaseUntil) {
+	proofAge, err := m.eventAgeLocked(m.proofSent)
+	if err != nil {
+		return 0, err
+	}
+	if m.pending.valid || livenessResponseWindow > min(m.absUntil-m.elapsed, m.budget.lease-proofAge) {
 		return 0, nil
 	}
 	if m.sequence == math.MaxUint64 || m.sequence >= m.budget.pings {
@@ -178,7 +220,7 @@ func (m *livenessModel) ping(sequence uint64, nonce [16]byte) (*livenessEmission
 	}
 	emission, err := m.intentLocked(message)
 	if emission != nil {
-		m.pending = pendingLiveness{message: message, sent: m.elapsed, valid: true}
+		m.pending = pendingLiveness{message: message, sent: m.clock.instant(), valid: true}
 	}
 	return emission, err
 }
@@ -200,7 +242,7 @@ func (m *livenessModel) receive(packet []byte) (*livenessEmission, error) {
 			m.witness.PongDropped++
 			return nil, nil
 		}
-		m.leaseUntil = min(m.absUntil, pending.sent+m.budget.lease)
+		m.proofSent = pending.sent
 		m.pending = pendingLiveness{}
 		m.witness.PongValidated++
 		return nil, nil
@@ -228,7 +270,7 @@ func (m *livenessModel) intentLocked(message livenessMessage) (*livenessEmission
 	}
 	for i, intent := range m.intents {
 		if intent == nil {
-			e := &livenessEmission{packet: packet, until: min(m.elapsed+livenessWriteWindow, m.absUntil, m.leaseUntil)}
+			e := &livenessEmission{packet: packet, window: livenessEmissionWindow{sent: m.clock.instant(), proofSent: m.proofSent}}
 			m.intents[i] = e
 			return e, nil
 		}
@@ -269,11 +311,15 @@ func (m *livenessModel) beginWrite(e *livenessEmission) (bool, error) {
 		return false, m.terminal
 	}
 	m.intents[found] = nil
-	if m.elapsed >= e.until {
+	expired, err := m.windowExpiredLocked(e.window)
+	if err != nil {
+		return false, err
+	}
+	if expired {
 		m.witness.OutboundExpired++
 		return false, nil
 	}
-	m.writing, m.writeUntil = true, e.until
+	m.writing, m.writeWindow = true, e.window
 	return true, nil
 }
 
@@ -281,6 +327,7 @@ func (m *livenessModel) endWrite(injected bool) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.writing = false
+	m.writeWindow = livenessEmissionWindow{}
 	if injected {
 		m.witness.InnerInjected++
 	}

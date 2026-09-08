@@ -111,7 +111,7 @@ func armLiveness(model *livenessModel, ni netif.MemoryTestInterface, tun tunnel.
 	if err := c.permit(); err != nil {
 		return nil, err
 	}
-	if err := gate.ArmActivePolicy(probeio.ActiveSessionPolicy{Ceiling: model.budget.ceiling, Permit: c.permit, Elapsed: model.currentElapsed, Report: c.hardViolation}); err != nil {
+	if err := gate.ArmActivePolicy(probeio.ActiveSessionPolicy{Ceiling: model.budget.ceiling, Permit: c.permit, Elapsed: model.currentMonotonicElapsed, Report: c.hardViolation}); err != nil {
 		return nil, errLivenessUnavailable
 	}
 	b := model.binding
@@ -265,8 +265,15 @@ func (c *livenessController) watchdog() {
 			return
 		}
 		c.model.mu.Lock()
-		stalled := c.model.writing && c.model.elapsed >= c.model.writeUntil
+		stalled, clockErr := false, error(nil)
+		if c.model.writing {
+			stalled, clockErr = c.model.windowExpiredLocked(c.model.writeWindow)
+		}
 		c.model.mu.Unlock()
+		if clockErr != nil {
+			c.end(clockErr)
+			return
+		}
 		if stalled {
 			_ = c.hardViolation(probeio.SessionWriterFailure)
 			return
@@ -378,8 +385,12 @@ func (c *livenessController) bestEffortClose(ticks <-chan time.Time) {
 		return
 	}
 	c.model.mu.Lock()
-	until := min(c.model.elapsed+livenessWriteWindow, c.model.absUntil, c.model.leaseUntil)
-	e := &livenessEmission{packet: packet, until: until, teardown: true}
+	if err := c.model.checkLocked(); err != nil {
+		c.model.mu.Unlock()
+		clear(packet)
+		return
+	}
+	e := &livenessEmission{packet: packet, window: livenessEmissionWindow{sent: c.model.clock.instant(), proofSent: c.model.proofSent}, teardown: true}
 	placed := false
 	for i, intent := range c.model.intents {
 		if intent == nil {
@@ -395,7 +406,13 @@ func (c *livenessController) bestEffortClose(ticks <-chan time.Time) {
 	before := c.gate.Witness().ActiveWrites
 	c.enqueue(e)
 	for {
-		if c.permit() != nil || c.model.currentElapsed() >= until {
+		if c.permit() != nil {
+			return
+		}
+		c.model.mu.Lock()
+		expired, err := c.model.windowExpiredLocked(e.window)
+		c.model.mu.Unlock()
+		if expired || err != nil {
 			return
 		}
 		if c.gate.Witness().ActiveWrites > before {

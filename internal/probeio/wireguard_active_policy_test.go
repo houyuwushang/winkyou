@@ -172,3 +172,42 @@ func TestActiveSessionPolicyRequiresFinishDetachAndOneOwner(t *testing.T) {
 		t.Fatal("nil policy changed legacy witness")
 	}
 }
+
+// The orchestrator separately mutation-proves that Elapsed supplies the
+// validated monotonic coordinate. This exercises the real per-write gate with
+// that contract, including an RTC adjustment that used to look like a cap.
+func TestActiveSessionMonotonicAccountingIsIndependentOfRTC(t *testing.T) {
+	gate, transport := activePolicyGate(t)
+	mono, utc := 20*time.Second, 22*time.Second
+	reports := 0
+	policy := ActiveSessionPolicy{Ceiling: time.Minute,
+		Permit: func() error {
+			if utc < mono-2*time.Second || utc > mono+2*time.Second {
+				return errors.New("synthetic clock invalid")
+			}
+			return nil
+		},
+		Elapsed: func() time.Duration { return mono },
+		Report:  func(SessionViolation) error { reports++; return nil },
+	}
+	if err := gate.ArmActivePolicy(policy); err != nil {
+		t.Fatal(err)
+	}
+	for i, rtc := range []time.Duration{22 * time.Second, 20 * time.Second, 19 * time.Second, 22 * time.Second} {
+		utc = rtc
+		if err := gate.WritePacket(context.Background(), activePacket(4, 32)); err != nil {
+			t.Fatalf("legal control %d after RTC adjustment: %v", i+1, err)
+		}
+	}
+	if reports != 0 || transport.writeCount() != 4 {
+		t.Fatal("RTC rollback caused a false hard report")
+	}
+	// UTC has advanced two seconds, but monotonic rolling 1s has NOT elapsed.
+	if err := gate.WritePacket(context.Background(), activePacket(4, 32)); !errors.Is(err, ErrSessionControlLimit) {
+		t.Fatal("RTC forward shift refreshed the one-second ledger")
+	}
+	w := gate.Witness().ActivePolicy
+	if reports != 1 || transport.writeCount() != 4 || w.ControlAdmitted != 4 || w.ControlRejected != 1 || !transport.isClosed() {
+		t.Fatal("true fifth control was not stopped and reported before write")
+	}
+}

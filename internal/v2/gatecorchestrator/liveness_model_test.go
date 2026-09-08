@@ -135,7 +135,7 @@ func TestLivenessPongRenewsFromSendNotReceiveAndNoOtherTrafficRenews(t *testing.
 	if _, err := m.receive(pong); err != nil {
 		t.Fatal(err)
 	}
-	if m.leaseUntil != 85*time.Second {
+	if m.proofSent.mono+m.budget.lease != 85*time.Second {
 		t.Fatal("receive time extended lease")
 	}
 	if _, err := m.receive(pong); err != nil {
@@ -150,7 +150,7 @@ func TestLivenessPongRenewsFromSendNotReceiveAndNoOtherTrafficRenews(t *testing.
 		if e != nil {
 			m.discard(e)
 		}
-		if m.leaseUntil != 85*time.Second {
+		if m.proofSent.mono+m.budget.lease != 85*time.Second {
 			t.Fatal("peer ping renewed local permit")
 		}
 	}
@@ -178,7 +178,7 @@ func TestLivenessLossToleranceThirdRoundAndMissingSlots(t *testing.T) {
 	if _, err := m.receive(replyLiveness(t, m)); err != nil {
 		t.Fatal(err)
 	}
-	if m.leaseUntil != 145*time.Second || m.snapshot().PongValidated != 2 {
+	if m.proofSent.mono+m.budget.lease != 145*time.Second || m.snapshot().PongValidated != 2 {
 		t.Fatal("third round did not preserve lease")
 	}
 	m, c = testLivenessModel(t, 3)
@@ -269,7 +269,7 @@ func TestLivenessStaleReorderedWrongNonceCannotRenew(t *testing.T) {
 	if _, err := m.receive(old); err != nil {
 		t.Fatal(err)
 	}
-	if m.snapshot().PongValidated != 0 || m.leaseUntil != 65*time.Second {
+	if m.snapshot().PongValidated != 0 || m.proofSent.mono+m.budget.lease != 65*time.Second {
 		t.Fatal("stale proof renewed lease")
 	}
 }
@@ -336,7 +336,6 @@ func TestLivenessClockFixedOriginsRollbackAndOverflow(t *testing.T) {
 func TestLivenessAbsoluteCeilingWinsAndNoSecondPending(t *testing.T) {
 	m, c := testLivenessModel(t, 3)
 	m.absUntil = 5 * time.Second
-	m.leaseUntil = 5 * time.Second
 	c.advance(5 * time.Second)
 	if !errors.Is(m.permit(), context.DeadlineExceeded) {
 		t.Fatal("short absolute ceiling extended")
