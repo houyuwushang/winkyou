@@ -36,6 +36,8 @@ func TestRelayWGGoTwoEnginesExchangeIPv4Packets(t *testing.T) {
 
 	alpha := newRelayWGGoTestEngine(t, "alpha", listener.Addr().String(), turnURL)
 	beta := newRelayWGGoTestEngine(t, "beta", listener.Addr().String(), turnURL)
+	stopTimeline := observeRelayTimeline(t, alpha, beta)
+	defer stopTimeline()
 
 	if err := alpha.Start(context.Background()); err != nil {
 		t.Fatalf("alpha.Start() error = %v", err)
@@ -50,6 +52,9 @@ func TestRelayWGGoTwoEnginesExchangeIPv4Packets(t *testing.T) {
 	t.Cleanup(func() {
 		_ = beta.Stop()
 	})
+	// Keep registration's separate 200ms fixture timeout outside the opt-in
+	// transport-stall pressure experiment. It has its own preserved RED sample.
+	startRelayCPUPressure(t)
 	t.Cleanup(func() {
 		if t.Failed() {
 			dumpRelayWGGoTestDiagnostics(t, relay.Addr().String(), alpha, beta)
