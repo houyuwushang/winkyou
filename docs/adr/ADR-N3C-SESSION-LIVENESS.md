@@ -367,3 +367,52 @@ daemon、scheduler、自动恢复、默认 `wink up` 或 stdio v1/v2 接线。�
 
 表格已闭合、Status 为 Accepted，因此 Gate C1 §16.8 的"C1c 前 inactivity 重裁决"前置门**在文本层面关闭**；
 但 §9 验收矛阵全部待实现/待实测，liveness 实现、C1c 与任何现场窗口仍各需维护者另行授权与独立复审。
+
+## 12. 实现期裁决：开工核对与暂停项（Draft，2026-09-08）
+
+维护者已授权在 `main=fde8dfa60b3c4708ca9a2b4fd783270a08c7d87f` 上实现
+memory/literal-loopback/required netns 证明，不授权 C1c 或现场 I/O。本节记录实现提示词的
+停止条件，不修改 §11 的 Accepted 状态，也不代表以下修订已经接受。**代码尚未开始。**
+
+### 12.1 正常 admission 拒绝与持久 trip 不能合并
+
+开工核对发现两条要求对同一输入给出不同终局：
+
+| 依据 | 正常 PING/PONG admission 已满，尚未调用 inner 注入 |
+| --- | --- |
+| 本 ADR §7.2（基线行 270–274） | 丢弃并计数，不答复，不借用另一类额度；正常限流不触发 trip。只有绕过 admission、本地硬违规等才 trip；WG 自动控制额度耗尽单独要求关闭并 trip。 |
+| 实现提示词 §2 第 5 项 | “任一账耗尽”均要求下一次 write 前关闭并持久 trip。 |
+
+例如本端 rolling 20s 已接纳四个合法控制事件，第五个新对端 PING 通过认证和格式检查，
+但其 PONG 尚未获 admission：按 §7.2 消费 peer sequence、丢弃该答复并记录计数；按提示词
+字面则立即关闭且持久 trip。两者不是同一个实现，不能在代码里默选一个再声称逐字满足。
+这是规范对照反例，不是已经执行的网络或压力测试。
+
+**最小修订提案 A（推荐，待维护者裁决）：** 将提示词 §2 第 5 项最后一句替换为：
+
+> PING/PONG 正常 admission 耗尽只拒绝该控制事件并计数，不关闭、不 trip；不得补发或借额。
+> 已拒绝后仍绕过 admission 发射、其它本地硬违规，或 WG 自动控制额度耗尽，才在下一次
+> write 前关闭并由仍持机器锁的同一 owner 持久 trip。已释放 AttemptLease 不参与回报。
+
+理由：保持已接受的 §7.2 两类计费政策；不增加任何报文、队列、socket、target、attempt 或恢复。
+证明方式：分别覆盖正常限流零注入且 latch clear、peer sequence 已消费且重放零答复、
+强行绕过 admission 零底层 write 且 latch 可重开核验、WG 自动控制超限零下一包且持久 trip。
+
+**备选 B（需要重新评审 §7.2，未推荐）：** 显式把正常 liveness admission 限流也改为终止
+session 并持久 trip，同时撤销 §7.2 的相反条款，承认合法 peer 事件可能触发额外本机持久
+拒绝服务。不得仅修改测试期望而保留现有 Accepted 文本。
+
+### 12.2 后续顺序与当前证据
+
+在 §12.1 裁决完成前暂停 config/tunnel/probeio/controller 接线。原要求的十项“选择、理由、
+证明方式”须在继续代码之前完整补齐；本节不是省略它们的许可。尤其 inner-tap、原 WYCE
+CLOSE 与普通业务包的恰好一次交付须在接口选择中一并说明，不能保留竞争性 reader 偷走
+业务包，也不能把新 WYCL 塞入旧 parser。
+
+当前仅有基线源码与规范核对；§9 所有 liveness 验收仍未执行。旧 C1b 行为、3s/三包、R1、
+Gate B/M、golden、workflow、默认 policy 和安全边界均未改变。Draft PR 不合并，不据此推进
+C1c；等待维护者/独立复审解决该停止项后，继续同一实现分支。
+
+| 待裁决项 | 维护者选择 / 独立复审 |
+| --- | --- |
+| §12.1 选择 A 或 B | |
