@@ -140,3 +140,26 @@ architecture 24.307s；全仓及 tagged vet 通过。完整矩阵结果以当前
 - 128-byte 丢包选择器只用于该固定合成测试（业务加密后 80 bytes），不是产品分类器，
   不参与生产计费；生产仍只在 inner admission 与公开 WG control type 两点计费。
 - required CI 加入上述重启和四路非 proof 流量测试，旧 job、预算、独立评审与隔离范围不变。
+
+## 8. 时钟修订后首轮 CI：关闭记账反例（保留 RED）
+
+`fdf4d573aeccde6379a5994b14fc3861e2c274d2` 的
+[Linux real-WG job](https://github.com/houyuwushang/winkyou/actions/runs/34206155815/job/101996000463)
+在 hard-16k 的精确分段记账断言失败：双端已完成 180004/180025ms、各 8 个 proof，
+实际 UDP=16423/16429，但其中一端的已完成 active I/O 快照少计。该 job 未运行后续黑洞，
+不能把 idle 的其它两类通过当作整个 job 通过；没有重跑此 job 求绿。
+
+确定性回归在底层成功收发之后、gate 记账之前关闭 gate，两个 liveness 子用例均 RED：
+实际成功 1 个 datagram、见证为 0。另两个 nil-policy 子用例保留原行为。
+修复仅作用于已启用 policy 的 active 完成记账：Close 不能撤回已经成功的 I/O；
+它仍禁止所有新写入。最终 handoff/WG 快照移至原 bounded tunnel Stop 之后，
+等待真实 WireGuard worker 退出，而不是只等新增的两个控制 worker。
+不增加等待窗口、不改变发送/接纳上限、不把失败写入计为成功，也不改变无 policy 的快照语义。
+单测四子用例及 snapshot-before-join 变异检测 `-race -count=20` 通过；
+真实长窗口和全矩阵仍须在修复 head 验证，原精确包数断言不放宽。
+
+同 head 的
+[Windows 旧 C1b job](https://github.com/houyuwushang/winkyou/actions/runs/34206155808/job/101996000726)
+另有 asymmetric 建立期 `attempt_expired` / `hard_nat_candidate_exhausted`：尚未 FINISH，
+无 liveness policy。此签名不等于 #97/#101/#111 的已登记签名；保留日志，不冒充允许透明重跑的
+既知失败，不混改 Gate B 或旧 fixture 的时序预算。

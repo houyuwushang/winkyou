@@ -305,7 +305,10 @@ func (gate *WireGuardSessionGate) WritePacket(ctx context.Context, packet []byte
 	done()
 	gate.mu.Lock()
 	gate.inFlight--
-	if err == nil && gate.state == WireGuardGateActive {
+	// With liveness armed, count a completed datagram even if Close won after
+	// the underlying write. Closing cannot retract a successful send. Keep the
+	// nil-policy witness behavior unchanged for the original C1b path.
+	if err == nil && (gate.state == WireGuardGateActive || policy != nil) {
 		gate.activeWrites++
 	}
 	gate.mu.Unlock()
@@ -414,7 +417,8 @@ func (gate *WireGuardSessionGate) ReadPacket(ctx context.Context, dst []byte) (i
 			return n, meta, gate.fail(ErrWireGuardGate)
 		}
 		gate.inbound = append(gate.inbound, messageType)
-	} else if gate.state == WireGuardGateActive {
+	} else if gate.state == WireGuardGateActive || gate.activePolicy != nil {
+		// The read entered in Active; a concurrent close cannot undo receipt.
 		gate.activeReads++
 	}
 	gate.mu.Unlock()

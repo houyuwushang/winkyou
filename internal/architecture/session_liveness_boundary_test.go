@@ -169,6 +169,9 @@ func sessionLivenessViolations(root string) ([]string, error) {
 		if !orderedLivenessText(string(data), "handoff.FinishAndDetach(sessionCtx)", "postOOBEcho(sessionCtx", "newLivenessModel(", "armLiveness(", "result.DataPlaneReady = true") {
 			violations = append(violations, "liveness armed before FINISH/echo")
 		}
+		if !orderedLivenessText(string(data), "var liveness *livenessController", "boundedTunnelStop(tun)", "if liveness != nil", "result.Witness.Handoff = handoff.Witness()", "result.Witness.WireGuard = result.Witness.Handoff.Transport", "tun.Start()") {
+			violations = append(violations, "liveness terminal witness precedes WireGuard worker join")
+		}
 	}
 	if data, err := os.ReadFile(filepath.Join(root, "internal/probeio/wireguard_session_gate.go")); err == nil {
 		source := string(data)
@@ -210,6 +213,24 @@ func orderedLivenessText(source string, fragments ...string) bool {
 		source = source[index+len(fragment):]
 	}
 	return true
+}
+
+func TestSessionLivenessGateRejectsSnapshotBeforeWorkerJoin(t *testing.T) {
+	root := t.TempDir()
+	writeArchitectureMutation(t, root, "internal/v2/gatecorchestrator/orchestrator.go", `package gatecorchestrator
+func f() {
+    var liveness *livenessController
+    if liveness != nil {
+        result.Witness.Handoff = handoff.Witness()
+        result.Witness.WireGuard = result.Witness.Handoff.Transport
+    }
+    boundedTunnelStop(tun)
+    tun.Start()
+}`)
+	got, err := sessionLivenessViolations(root)
+	if err != nil || !containsLineFragment(got, "witness precedes WireGuard worker join") {
+		t.Fatalf("early snapshot mutation missed: %v %v", got, err)
+	}
 }
 
 func TestSessionLivenessGateRejectsAuthorityAndLayerMutations(t *testing.T) {

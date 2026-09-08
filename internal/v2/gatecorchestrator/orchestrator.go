@@ -181,6 +181,7 @@ func runPrepared(ctx context.Context, input preparedInput, deps dependencies) (r
 	if err != nil || tun == nil {
 		return result, classifyLocalFailure(ErrWireGuardBinding, gateb.StageHandoff, true, input, nil)
 	}
+	var liveness *livenessController
 	tunnelStarted := false
 	defer func() {
 		if !tunnelStarted {
@@ -190,6 +191,14 @@ func runPrepared(ctx context.Context, input preparedInput, deps dependencies) (r
 			runErr = errors.Join(runErr, sessionDrainFailure(input, stopErr))
 		} else {
 			result.Witness.TunnelStopped = true
+		}
+		if liveness != nil {
+			// The liveness workers drain in their later-registered defer. The
+			// actual WireGuard workers join here in tun.Stop(), so only now is
+			// the successful active I/O count final. Closing a transport alone
+			// does not join a send that has already reached the underlying I/O.
+			result.Witness.Handoff = handoff.Witness()
+			result.Witness.WireGuard = result.Witness.Handoff.Transport
 		}
 	}()
 	if err := tun.Start(); err != nil {
@@ -261,7 +270,6 @@ func runPrepared(ctx context.Context, input preparedInput, deps dependencies) (r
 			"echo_responses_read":   echoWitness.ResponsesRead,
 		})
 	}
-	var liveness *livenessController
 	if peer.liveness != nil {
 		model, modelErr := newLivenessModel(echoBinding{Role: input.request.Role, Local: peer.localVirtual, Remote: peer.remoteVirtual,
 			AttemptID: binding.AttemptID, ContextDigest: binding.ContextDigest}, *peer.liveness, deps.newLivenessClock(), sessionDeadline)
@@ -286,8 +294,6 @@ func runPrepared(ctx context.Context, input preparedInput, deps dependencies) (r
 			reporter.close()
 			witness := liveness.model.snapshot()
 			result.Witness.Liveness = &witness
-			result.Witness.WireGuard = handoff.Witness().Transport
-			result.Witness.Handoff = handoff.Witness()
 		}()
 		if deps.livenessProofHook != nil {
 			deps.livenessProofHook(liveness)

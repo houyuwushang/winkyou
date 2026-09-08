@@ -275,7 +275,7 @@ func validateGateC1bLivenessOutcome(t *testing.T, profile gateC1bMemoryProfile, 
 		}
 	}
 	if actual != uint64(result.Witness.GateB.Emissions.UDPPacketsTotal+3+wg.ActiveWrites) {
-		t.Errorf("actual datagrams=%d inconsistent with disjoint establishment and active writes", actual)
+		t.Errorf("actual datagrams=%d inconsistent with disjoint establishment and active writes: gate_b=%d challenge=3 active=%d", actual, result.Witness.GateB.Emissions.UDPPacketsTotal, wg.ActiveWrites)
 	}
 	if profile.liveness.trafficSide != 0 && lv.PongValidated != 0 {
 		t.Fatal("nonproof traffic renewed permit")
