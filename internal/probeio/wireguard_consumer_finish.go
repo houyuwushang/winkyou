@@ -34,61 +34,75 @@ func (gate *WireGuardSessionGate) finishWithConfirmation(sessionCtx context.Cont
 	}
 	gate.finishMu.Lock()
 	defer gate.finishMu.Unlock()
+	fail := func(point string, cause error) error {
+		gate.recordCompletionFailure(point, cause, sessionCtx)
+		return gate.fail(cause)
+	}
 	deadline, bounded := sessionCtx.Deadline()
 	if !bounded || !deadline.After(time.Now()) || sessionCtx.Err() != nil {
+		gate.recordCompletionFailure("session_precondition", ErrWireGuardGateState, sessionCtx)
 		return ErrWireGuardGateState
 	}
 	gate.mu.Lock()
 	if gate.state != WireGuardGateChallengePassed || gate.inFlight != 0 || gate.completionCodec == nil ||
-		gate.challengeCtx == nil || gate.challengeCtx.Err() != nil || gate.attemptCtx.Err() != nil {
+		gate.attemptCtx.Err() != nil {
 		gate.mu.Unlock()
-		return gate.fail(ErrWireGuardGateState)
+		return fail("challenge_precondition", ErrWireGuardGateState)
 	}
 	gate.state = wireGuardGateFinishConfirming
 	codec := gate.completionCodec
-	opCtx, cancel := context.WithCancel(gate.challengeCtx) // original deadline; never restarted
+	// CompleteChallenge already admitted the frozen WG trace. R1 confirmation
+	// uses only the original absolute/caller and session bounds (ADR 19.9).
+	completionCtx, cancelCompletion := context.WithCancel(gate.attemptCtx)
 	gate.mu.Unlock()
-	stop := context.AfterFunc(sessionCtx, cancel)
-	defer func() { stop(); cancel(); _ = codec.Close() }()
+	stopCompletion := context.AfterFunc(sessionCtx, cancelCompletion)
+	defer func() { stopCompletion(); cancelCompletion(); _ = codec.Close() }()
 	gate.readMu.Lock()
 	defer gate.readMu.Unlock()
 	gate.writeMu.Lock()
 	defer gate.writeMu.Unlock()
 
+	if err := errors.Join(completionCtx.Err(), gate.attemptCtx.Err(), sessionCtx.Err()); err != nil {
+		return fail("before_confirmation", err)
+	}
 	if gate.role == WireGuardInitiator {
-		if err := gate.receiveCompletion(opCtx, codec); err != nil {
-			return gate.fail(err)
+		if err := gate.receiveCompletion(completionCtx, codec); err != nil {
+			return fail("receive_confirmation", err)
 		}
 	}
-	if opCtx.Err() != nil {
-		return gate.fail(opCtx.Err())
+	if err := errors.Join(completionCtx.Err(), gate.attemptCtx.Err(), sessionCtx.Err()); err != nil {
+		return fail("before_durable_finish", err)
 	}
 	if err := durableFinish(); err != nil {
+		gate.recordCompletionFailure("durable_finish", err, sessionCtx)
 		return gate.fail(errors.Join(ErrWireGuardGateState, err))
 	}
 	gate.mu.Lock()
 	gate.finishRecorded = true
 	gate.mu.Unlock()
-	if opCtx.Err() != nil {
-		return gate.fail(opCtx.Err())
+	if err := errors.Join(completionCtx.Err(), gate.attemptCtx.Err(), sessionCtx.Err()); err != nil {
+		return fail("after_durable_finish", err)
 	}
 	if gate.role == WireGuardResponder {
-		if err := gate.sendCompletion(opCtx, codec); err != nil {
-			return gate.fail(err)
+		if err := gate.sendCompletion(completionCtx, codec); err != nil {
+			return fail("send_confirmation", err)
 		}
 	}
-	if opCtx.Err() != nil {
-		return gate.fail(opCtx.Err())
+	if err := errors.Join(completionCtx.Err(), gate.attemptCtx.Err(), sessionCtx.Err()); err != nil {
+		return fail("before_detach", err)
 	}
 	if err := gate.lease.DetachAfterFinish(); err != nil {
-		return gate.fail(err)
+		return fail("detach", err)
 	}
 	activeCtx, activeStop := context.WithCancel(sessionCtx)
 	gate.mu.Lock()
-	if gate.state != wireGuardGateFinishConfirming || opCtx.Err() != nil {
+	// Check both parents synchronously too: child/AfterFunc cancellation
+	// propagation must not grant detach or activation while still pending.
+	completionErr := errors.Join(completionCtx.Err(), gate.attemptCtx.Err(), sessionCtx.Err())
+	if gate.state != wireGuardGateFinishConfirming || completionErr != nil {
 		gate.mu.Unlock()
 		activeStop()
-		return gate.fail(ErrWireGuardGateState)
+		return fail("activation", errors.Join(ErrWireGuardGateState, completionErr))
 	}
 	gate.state = WireGuardGateFinishDetached
 	gate.detached = true

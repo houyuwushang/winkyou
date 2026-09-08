@@ -142,6 +142,7 @@ go build -o bin/wink-rendezvous ./cmd/wink-rendezvous
 - N3b 显式 stdio v2 协议与实现证据：[`docs/STDIO-API-V2.md`](./docs/STDIO-API-V2.md)、[`docs/N3B-PRODUCT-ENTRY-EVIDENCE.md`](./docs/N3B-PRODUCT-ENTRY-EVIDENCE.md)
 - Accepted N3a 设计与空白现场授权模板：[`docs/adr/ADR-N3A-PRODUCT-ENTRY-LIVE-WINDOW.md`](./docs/adr/ADR-N3A-PRODUCT-ENTRY-LIVE-WINDOW.md)、[`docs/N3-LIVE-AUTHORIZATION-TEMPLATE.md`](./docs/N3-LIVE-AUTHORIZATION-TEMPLATE.md)
 - Draft Gate C1 SSH/OOB 与产品 handoff 设计（docs-only、无现场权限）：[`docs/adr/ADR-N3C-GATE-C1-SSH-PRODUCT-ASSEMBLY.md`](./docs/adr/ADR-N3C-GATE-C1-SSH-PRODUCT-ASSEMBLY.md)、[`docs/N3C-GATE-C-LIVE-AUTHORIZATION-TEMPLATE.md`](./docs/N3C-GATE-C-LIVE-AUTHORIZATION-TEMPLATE.md)
+- C1b 完成阶段修订（Draft，§19.9 生产改动已获复审接受；§19.10 对齐测试配置与 CI 分组，原 WG challenge 3s/三包上限不变，未合并）：[Issue #109](https://github.com/houyuwushang/winkyou/issues/109)、[Gate C1 ADR §19.10](./docs/adr/ADR-N3C-GATE-C1-SSH-PRODUCT-ASSEMBLY.md#1910-复审后的测试配置与执行器分组2026-09-07)、[红→绿与验收证据](./docs/GATE-C1B-PRODUCT-COMPOSITION-EVIDENCE.md#612-生产改动复审接受后的测试配置修订)
 - 自托管 quickstart：[`docs/SELFHOST-QUICKSTART.md`](./docs/SELFHOST-QUICKSTART.md)
 - 分层排障：[`docs/TROUBLESHOOTING.md`](./docs/TROUBLESHOOTING.md)
 - 事故记录：[`docs/INCIDENT-2026-07-22-SELF-BOOTSTRAP-UDP-STORM.md`](./docs/INCIDENT-2026-07-22-SELF-BOOTSTRAP-UDP-STORM.md)

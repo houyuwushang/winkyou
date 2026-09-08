@@ -38,19 +38,30 @@ import (
 )
 
 type gateC1bMemoryProfile struct {
-	name          string
-	profile       hardnatplan.Profile
-	resource      hardnatplan.ResourceClass
-	plannerRoles  [2]hardnatplan.Role
-	models        [2]natsim.Model
-	maxConns      int
-	maxMappings   int
-	queueCapacity int
-	candidateTime time.Duration
-	activeTime    time.Duration
-	acquire       func(string, string) (*governor.Governor, error)
-	cli           bool
-	fault         string
+	name                string
+	profile             hardnatplan.Profile
+	resource            hardnatplan.ResourceClass
+	plannerRoles        [2]hardnatplan.Role
+	models              [2]natsim.Model
+	maxConns            int
+	maxMappings         int
+	queueCapacity       int
+	candidateTime       time.Duration
+	activeTime          time.Duration
+	acquire             func(string, string) (*governor.Governor, error)
+	cli                 bool
+	fault               string
+	slowFinish          bool
+	slowResponderFinish bool
+	cancelAfterFinish   bool
+}
+
+// Test-only session configuration, not a product deadline or probe allowance.
+// ADR 19.10 gives ordinary/CLI/cancellation/fresh100 the same 10s session as
+// slow FINISH. The profile absolute/candidate windows and all I/O caps stay
+// unchanged; the production 5s validation floor is not a success SLA.
+func (gateC1bMemoryProfile) sessionCeiling() time.Duration {
+	return 10 * time.Second
 }
 
 var gateC1bMemoryProfiles = []gateC1bMemoryProfile{
@@ -97,11 +108,80 @@ var gateC1bMemoryProfiles = []gateC1bMemoryProfile{
 }
 
 func TestGateC1bMemoryProductPipelineReachesPostOOBEcho(t *testing.T) {
+	t.Run("packet_accounting_oracle", testGateC1bPacketAccountingOracle)
 	for _, test := range gateC1bMemoryProfiles {
 		t.Run(test.name, func(t *testing.T) {
 			runGateC1bMemoryProductProfile(t, test.name, test)
 		})
 	}
+}
+
+// Both CI platforms run this entry separately with -race -count=20, preserving
+// the three slow proofs without consuming the ordinary pipeline runner's time.
+func TestGateC1bMemorySlowDurableFinishReachesPostOOBEcho(t *testing.T) {
+	for _, test := range gateC1bMemoryProfiles {
+		test.slowFinish = true
+		// Consume the already frozen profile absolute envelope, not Hard16's
+		// compressed 6s timing fixture. All memory sessions are now 10s.
+		test.activeTime = 0
+		t.Run(test.name, func(t *testing.T) {
+			runGateC1bMemoryProductProfile(t, "slow-finish-"+test.name, test)
+		})
+	}
+}
+
+func TestGateC1bMemoryFixtureSessionWindows(t *testing.T) {
+	for _, base := range gateC1bMemoryProfiles {
+		for _, scenario := range []string{"ordinary", "cli", "cancel", "fresh100", "evidence-drift", "candidate-exhaustion", "slow-finish", "slow-responder-finish"} {
+			t.Run(base.name+"/"+scenario, func(t *testing.T) {
+				profile := base
+				want := 10 * time.Second
+				switch scenario {
+				case "cli", "fresh100":
+					profile.cli = true
+				case "cancel":
+					profile.cancelAfterFinish = true
+				case "evidence-drift", "candidate-exhaustion":
+					profile.cli, profile.fault = true, scenario
+				case "slow-finish":
+					profile.slowFinish = true
+				case "slow-responder-finish":
+					profile.slowResponderFinish = true
+				}
+				if got := profile.sessionCeiling(); got != want {
+					t.Fatalf("fixture session ceiling=%s, want %s", got, want)
+				}
+				if (profile.slowFinish || profile.slowResponderFinish) && profile.sessionCeiling() <= 3*time.Second+3500*time.Millisecond {
+					t.Fatal("slow fixture leaves no completion margin after the challenge and injected delay")
+				}
+				if base.sessionCeiling() != 10*time.Second || profile.activeTime != base.activeTime || profile.candidateTime != base.candidateTime {
+					t.Fatal("session configuration changed the base fixture or its attempt timing")
+				}
+			})
+		}
+	}
+}
+
+// Independent governors, journals and in-memory networks permit parallel
+// profiles. Never combine this fault with the initiator's FINISH delay.
+func TestGateC1bMemorySlowResponderDurableFinishReachesPostOOBEcho(t *testing.T) {
+	for _, test := range gateC1bMemoryProfiles {
+		test.slowResponderFinish = true
+		test.activeTime = 0
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			runGateC1bMemoryProductProfile(t, "slow-responder-finish-"+test.name, test)
+		})
+	}
+}
+
+// Kept as a separate required race-20 step so this new regression does not
+// consume the existing three-profile pipeline runner's 12-minute envelope.
+// The same fixture, fault, attempt/session deadlines and assertions are used.
+func TestGateC1bMemoryCancellationAfterDurableFinish(t *testing.T) {
+	profile := gateC1bMemoryProfiles[0]
+	profile.cancelAfterFinish = true
+	runGateC1bMemoryProductProfile(t, "cancel-after-finish", profile)
 }
 
 func TestGateC1bMemoryProductPipelineFresh100(t *testing.T) {
@@ -177,7 +257,6 @@ func runGateC1bMemoryProductProfile(t *testing.T, label string, test gateC1bMemo
 			t.Fatal(err)
 		}
 	}
-
 	network, err := natsim.NewNetwork(natsim.Config{
 		MaxPacketConns: test.maxConns, MaxMappings: test.maxMappings,
 		QueueCapacity: test.queueCapacity, MaxDatagram: 2048,
@@ -203,6 +282,22 @@ func runGateC1bMemoryProductProfile(t *testing.T, label string, test gateC1bMemo
 			PublicAddr: public[index], Model: test.models[index], Changes: changes})
 		if err != nil {
 			t.Fatal(err)
+		}
+	}
+	var finishDelayWitness func() governor.C1bFinishDelayProof
+	if test.slowFinish && test.slowResponderFinish {
+		t.Fatal("FINISH delay fixtures must be independent")
+	}
+	if test.slowFinish || test.slowResponderFinish {
+		side := 0
+		if test.slowResponderFinish {
+			side = 1
+		}
+		finishDelayWitness, err = governor.DelayC1bSuccessFinishForProof(machines[side], func() [2]uint64 {
+			return [2]uint64{nats[0].Snapshot().OutboundPackets, nats[1].Snapshot().OutboundPackets}
+		})
+		if err != nil {
+			t.Fatal("install test-only durable FINISH delay failed")
 		}
 	}
 	topology := hardnatobserve.Topology{Primary: netip.MustParseAddrPort("203.0.113.10:3478"),
@@ -241,6 +336,18 @@ func runGateC1bMemoryProductProfile(t *testing.T, label string, test gateC1bMemo
 		}
 	}
 	virtual := [2]string{"10.88.0.1", "10.88.0.2"}
+	interfaceNames := [2]string{"wink-c1b-left", "wink-c1b-right"}
+	if test.slowResponderFinish {
+		// Parallel memory fixtures still pass real process-local ownership
+		// validation. Give each one distinct synthetic routes/interfaces;
+		// never bypass the product's collision guard.
+		for index, profile := range gateC1bMemoryProfiles {
+			if profile.name == test.name {
+				virtual = [2]string{"198.51.100." + strconv.Itoa(61+index*4), "198.51.100." + strconv.Itoa(62+index*4)}
+				interfaceNames = [2]string{"wc1b-l-" + strconv.Itoa(index), "wc1b-r-" + strconv.Itoa(index)}
+			}
+		}
+	}
 	configs := [2]*config.Config{}
 	requests := [2]gatecrequest.Request{}
 	identity := filepath.Join(t.TempDir(), "identity")
@@ -266,8 +373,8 @@ func runGateC1bMemoryProductProfile(t *testing.T, label string, test gateC1bMemo
 		cfg.GateC.Peers = []config.GateCPeerConfig{{
 			Ref: []string{"right", "left"}[index], PublicKey: private[1-index].PublicKey().String(),
 			AllowedIPs: []string{virtual[1-index] + "/32"}, LocalVirtualIP: virtual[index], PeerVirtualIP: virtual[1-index],
-			MemoryInterfaceName: []string{"wink-c1b-left", "wink-c1b-right"}[index], MemoryMTU: 1280,
-			SessionCeiling: 5 * time.Second,
+			MemoryInterfaceName: interfaceNames[index], MemoryMTU: 1280,
+			SessionCeiling: test.sessionCeiling(),
 		}}
 		if err := cfg.Validate(); err != nil {
 			t.Fatal(err)
@@ -280,6 +387,9 @@ func runGateC1bMemoryProductProfile(t *testing.T, label string, test gateC1bMemo
 			ObserverSet: gatecrequest.ObserverSet{Primary: observerEndpoints[0], AlternatePort: observerEndpoints[1],
 				AlternateAddress: observerEndpoints[2], AlternateAddressPort: observerEndpoints[3]},
 		}
+	}
+	if test.slowFinish || test.slowResponderFinish {
+		t.Logf("C1b slow fixture session witness: endpoints=2 session_ms=%d", test.sessionCeiling().Milliseconds())
 	}
 	requests[0].SSH = &gatecrequest.SSHConfig{Endpoint: sshEndpoint, User: "c1btest", IdentityFile: identity, KnownHostsFile: knownHosts}
 	var configPaths, requestPaths [2]string
@@ -321,6 +431,13 @@ func runGateC1bMemoryProductProfile(t *testing.T, label string, test gateC1bMemo
 	defer cancelInitiator()
 	responderCtx, cancelResponder := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancelResponder()
+	var finishCancelWitness func() int32
+	if test.cancelAfterFinish {
+		finishCancelWitness, err = governor.CancelC1bAfterDurableFinishForProof(machines[0], cancelInitiator)
+		if err != nil {
+			t.Fatal("install test-only durable FINISH cancellation failed")
+		}
+	}
 	type outcome struct {
 		role   directattempt.Role
 		result gatecorchestrator.Result
@@ -400,7 +517,44 @@ func runGateC1bMemoryProductProfile(t *testing.T, label string, test gateC1bMemo
 		}
 	}
 	matchedFault := 0
+	var packetProofs [2]gateC1bPacketProof
 	for _, got := range outcomes {
+		if test.cancelAfterFinish {
+			var failure *gatecorchestrator.Failure
+			if !errors.As(got.err, &failure) || failure.Retryable || !failure.CredentialBurned ||
+				got.result.DataPlaneReady || !got.result.FinishRecorded {
+				t.Errorf("%s post-FINISH cancellation lost terminal/durability", got.role)
+				continue
+			}
+			wg, handoff := got.result.Witness.WireGuard, got.result.Witness.Handoff
+			side := 0
+			if got.role == directattempt.RoleResponder {
+				side = 1
+			}
+			if side == 0 && (!wg.PeerFinishConfirmed || wg.AttemptDetached || wg.State != "closed") {
+				t.Error("cancelled initiator activated or lost authenticated FINISHED")
+			}
+			if side == 0 {
+				failure := wg.CompletionFailure
+				if failure == nil || failure.Point != "after_durable_finish" || failure.Attempt.State != "canceled" || failure.Session.State != "active" {
+					t.Errorf("caller cancellation source was lost: %+v", failure)
+				} else {
+					t.Logf("C1b cancellation source: %+v", *failure)
+				}
+			}
+			if !wg.FinishRecorded || !handoff.FinishRecorded || !handoff.AttemptReleased || !handoff.OOBDrained ||
+				len(wg.Outbound)+wg.ReadinessWrites+wg.CompletionWrites != 3 ||
+				len(wg.Inbound)+wg.ReadinessReads+wg.CompletionReads != 3 || wg.ActiveWrites != 0 || wg.ActiveReads != 0 ||
+				handoff.Carrier.FramesRead != 8 || handoff.Carrier.FramesWritten != 8 {
+				t.Errorf("%s cancelled completion lost ownership/3-packet/drain boundary", got.role)
+			}
+			if nats[side].Snapshot().OutboundPackets != uint64(got.result.Witness.GateB.Emissions.UDPPacketsTotal+3) {
+				t.Errorf("%s cancelled completion emitted outside establishment", got.role)
+			}
+			t.Logf("C1b cancelled FINISH role=%s class=%s finish=%t detached=%t attempt_released=%t carrier_drained=%t active=0/0",
+				got.role, failure.Class, wg.FinishRecorded, wg.AttemptDetached, handoff.AttemptReleased, handoff.OOBDrained)
+			continue
+		}
 		if test.fault != "" {
 			var failure *gatecorchestrator.Failure
 			if !errors.As(got.err, &failure) || failure.Retryable || !failure.CredentialBurned || got.result.DataPlaneReady {
@@ -431,6 +585,9 @@ func runGateC1bMemoryProductProfile(t *testing.T, label string, test gateC1bMemo
 			continue
 		}
 		if got.err != nil {
+			if failure := got.result.Witness.WireGuard.CompletionFailure; failure != nil {
+				t.Logf("C1b completion failure role=%s: %+v", got.role, *failure)
+			}
 			var failure *gatecorchestrator.Failure
 			var cause error
 			if errors.As(got.err, &failure) {
@@ -450,6 +607,44 @@ func runGateC1bMemoryProductProfile(t *testing.T, label string, test gateC1bMemo
 		if !wg.ConsumerReady || wg.ReadinessWrites != 1 || wg.ReadinessReads != 1 ||
 			len(wg.Outbound)+wg.ReadinessWrites+wg.CompletionWrites != 3 || len(wg.Inbound)+wg.ReadinessReads+wg.CompletionReads != 3 {
 			t.Errorf("%s shared challenge allowance violated: %+v", got.role, wg)
+		}
+		endpointIndex := 0
+		if got.role == directattempt.RoleResponder {
+			endpointIndex = 1
+		}
+		emissions := got.result.Witness.GateB.Emissions
+		packetProofs[endpointIndex] = gateC1bPacketProof{
+			emissions: emissions, establishment: len(wg.Outbound) + wg.ReadinessWrites + wg.CompletionWrites,
+			active: wg.ActiveWrites, actualUDP: nats[endpointIndex].Snapshot().OutboundPackets,
+		}
+		t.Logf("C1b packet components: profile=%s slow_finish=%t role=%s evidence=%d candidates=%d winner=%d active_writes=%d UDP=%d",
+			test.name, test.slowFinish, got.role, emissions.EvidencePackets, emissions.CandidatePackets,
+			emissions.WinnerPackets, wg.ActiveWrites, nats[endpointIndex].Snapshot().OutboundPackets)
+		if test.slowFinish || test.slowResponderFinish {
+			if !wg.FinishRecorded || !wg.AttemptDetached || (endpointIndex == 0 && !wg.PeerFinishConfirmed) ||
+				!got.result.Witness.Handoff.OOBDrained || !got.result.Witness.Handoff.AttemptReleased ||
+				got.result.Witness.Handoff.Carrier.FramesRead != 8 || got.result.Witness.Handoff.Carrier.FramesWritten != 8 {
+				t.Errorf("%s slow FINISH lost authenticated completion/ownership: %+v", got.role, got.result.Witness.Handoff)
+			}
+			actualPackets := nats[endpointIndex].Snapshot().OutboundPackets
+			t.Logf("C1b slow FINISH profile=%s role=%s data_plane_ready=%t finish=%t peer_confirmed=%t detached=%t completion_w=%d completion_r=%d UDP=%d carrier=8/8 challenge=3/3 echo_drained=%t",
+				test.name, got.role, got.result.DataPlaneReady, wg.FinishRecorded, wg.PeerFinishConfirmed,
+				wg.AttemptDetached, wg.CompletionWrites, wg.CompletionReads, actualPackets, got.result.Witness.Echo.Drained)
+		}
+	}
+	var delayProof *governor.C1bFinishDelayProof
+	if finishDelayWitness != nil {
+		proof := finishDelayWitness()
+		delayProof = &proof
+		t.Logf("C1b slow FINISH durable witness: calls=%d post_fsync_delay_ms=%d UDP_before=%v UDP_after=%v",
+			proof.Calls, proof.Waited.Milliseconds(), proof.Before, proof.After)
+	}
+	if finishCancelWitness != nil && finishCancelWitness() != 1 {
+		t.Error("post-fsync caller cancellation was not exactly once")
+	}
+	if test.fault == "" && !test.cancelAfterFinish {
+		if err := validateGateC1bPacketAccounting(test, packetProofs, delayProof); err != nil {
+			t.Error(err)
 		}
 	}
 	if test.fault != "" && matchedFault == 0 {
@@ -479,6 +674,14 @@ func runGateC1bMemoryProductProfile(t *testing.T, label string, test gateC1bMemo
 			status, err := governor.InspectLoopbackCarrierTestLedger(namespaces[index], now)
 			if err != nil || status.Sequence != 3 || status.TwentyFourHourAdmissions != 1 {
 				t.Fatalf("fault durable burn/FINISH witness=%+v error=%v", status, err)
+			}
+		}
+		if test.cancelAfterFinish {
+			status, inspectErr := governor.InspectLoopbackCarrierTestLedger(namespaces[index], now)
+			unfinished, _, occupancyErr := governor.InspectLoopbackCarrierTestOccupancy(namespaces[index], now)
+			if inspectErr != nil || occupancyErr != nil || status.Sequence != 3 || status.Records != 3 ||
+				status.TwentyFourHourAdmissions != 1 || status.ConsecutiveFailures != 0 || unfinished != 0 {
+				t.Errorf("side %d cancellation rewrote or lost successful durable FINISH", index)
 			}
 		}
 	}

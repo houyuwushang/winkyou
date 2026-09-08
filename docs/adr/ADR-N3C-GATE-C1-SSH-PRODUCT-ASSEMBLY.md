@@ -1125,6 +1125,7 @@ process/conntrack/lock 全部证明。另需核实 SSH 的 2s graceful drain 与
 - **时间：** READY/ACK、WireGuard handshake、完成确认共用 BeginChallenge 起算的原 ≤3s
   deadline，并受所选 profile 的原 absolute envelope/caller context 限制；取消 binder 子
   context 仅为读取权交接，不重启或取消原 challenge deadline。2s 仍仅用于 drain。
+  已完成最后一个认证 datagram 后的本地完成阶段，按 §19.5 的窄范围时间边界修订执行。
 - **精确计费：** initiator outbound=READY+initiation+keepalive（3），inbound=ACK+response+
   FINISHED（3）；responder 为相反方向（3/3）。FINISHED 即使在本地 FINISH 后发送，仍计入
   capped establishment counter，不能计作无限 active data。witness 单列 completion reads/
@@ -1137,3 +1138,254 @@ process/conntrack/lock 全部证明。另需核实 SSH 的 2s graceful drain 与
   零 OOB close”回归，FINISH 错误/确认静默/提前 EOF/跨域/replay/超额矩阵及双端 journal；
   再跑三 profile race×20、100 fresh、真实 SSH 与 required netns。§19.1 原红色诊断作为缺陷
   证据保留在文档，测试替换成上述双端通过/拒绝断言，不把故意失败当作通过证据。
+
+### 19.5 完成阶段时间边界修订（2026-09-06，Issue #109）
+
+维护者授权按 [Issue #109](https://github.com/houyuwushang/winkyou/issues/109) 的修复提示词实现
+本节窄范围修订。§19.4 保留为原裁决记录；本修订、实现与证据仍通过同一个 Draft PR 接受独立
+复审，不授权 liveness、映射寿命模型、C1c 或现场 I/O，也不关闭尚未合入修复的 #109。
+
+**历史两阶段时间边界（以下表格及 FINISHED 的 3s 约束由 §19.9 取代）：**
+
+| 阶段 | 必须完成的操作 | 时间权威 |
+| --- | --- | --- |
+| challenge | READY/ACK、WG initiation/response/keepalive，以及 responder 写 FINISHED、initiator 读并认证 FINISHED | `BeginChallenge` 起算原 ≤3s，且受 profile absolute envelope / caller context 约束 |
+| completion | initiator 已认证 FINISHED 后的本地 durable FINISH、双方 `DetachAfterFinish` 与进入 active | 原 `attemptCtx` absolute envelope、caller context 与独立 session ceiling；不再受 3s challenge 窗口约束 |
+
+- 每一个 outer datagram 仍必须在原 3s 窗口内进入底层 I/O。3s 到期仍未完成 3/3 trace 或
+  未收/发 FINISHED，仍为原 challenge failure；不重启、延长或替换 `challengeCtx` timer。
+- completion 仅在本侧三入/三出额度全部消费之后进入，不再有任何 outer datagram。第四个
+  pre-FINISH datagram 仍在底层 I/O 前拒绝；不新增 OOB frame、socket、target、probe packet
+  或 retry，不使用 Gate B 预算 headroom。
+- responder 顺序仍为本地 trace → bounded reader drain → durable FINISH → FINISHED 写 →
+  detach/active。**本段时间裁决由 §19.9 取代。** 原要求 responder 的 durable FINISH **仍在 3s 窗口内**：若落盘拖到 FINISHED
+  无法在原窗口写出，仍失败并关闭 transport；已写 FINISH 不撤销、不重复。只有成功写出
+  FINISHED 后的本地 detach/active 使用 completion 边界。
+- initiator 顺序仍为本地 trace → bounded reader drain → 读并认证 FINISHED → durable
+  FINISH → detach/active → OOB drain。收到未认证或仅缓冲的 frame 不能进入 completion。
+  本修订解除的是“认证 FINISHED 后”的本地 3s 检查，不提前 FINISH，不移动 OOB EOF 阈值。
+- completion context 从原 `gate.attemptCtx` 派生，并传播 `sessionCtx` 的取消；每个新增
+  `context.AfterFunc` 必须在 defer 中 stop。caller/absolute/session 取消在 FINISH 或 detach
+  期间发生时仍不激活 session，错误路径关闭 transport。不得另起无界 worker 隐藏慢落盘。
+
+**理由与不变量：**
+
+原 Blocker 3 的 3s 窗口用于排除 `RekeyTimeout=5s` 重传并限定 pre-FINISH 挑战。datagram
+硬计数与 message-type 校验仍在 I/O 前强制，不能因完成阶段改变而使重传、cookie reply、
+重复 type 或第四包合法。initiator 在第三个 inbound FINISHED 认证后已无剩余额度；此后的
+本地 fsync 不产生报文。继续让旧 3s 窗口裁决它，会出现 journal 已记录成功而本地 session
+被判死的分裂。原“此理由不适用于 responder”的判断由 §19.9 取代；第三个 datagram 的
+数量约束不等于必须使用 challenge 的时间边界。
+
+`WireGuardChallengePackets=3`、`WireGuardChallengeTimeout=3s`、原 3/3 trace golden、nonce
+8/9/10、AD、40-byte frame、FINISH-before-detach、已写 FINISH 不撤销不重复全部不变。
+responder 的 FINISH 不代表 initiator 成功；post-OOB echo 仍必需。`TransportLease`、Gate B
+product handoff、orchestrator 顺序、binder drain/read ownership 和已有错误类保持不变。
+
+**必过证据（实现 PR 回填，不预先视为通过）：**
+
+1. initiator 在认证 FINISHED 后延迟本地 FINISH 至 `BeginChallenge+3.2s`，仍在 ≥6s 的
+   absolute envelope 内：先红后绿，最终 active、FINISH/detach/peer confirmation 为 true，
+   fake transport 恰好读三次、写三次，无第四包。
+2. 慢 FINISH 跨 absolute envelope 或 FINISH 回调内取消 session：已写 FINISH 为 true，
+   但不 detach、不 active，transport 关闭且无额外报文。
+3. 按 §19.9 裁决性替换：responder FINISH 至 `BeginChallenge+3.5s`、initiator 等待 FINISHED
+   超过 3s，在原 absolute/session 内均须完成认证与 active，精确三入/三出；跨 absolute 或
+   session 取消仍关闭、不激活。慢 detach 超过 3s 但未过 absolute/session 仍可 active。
+4. 原 readiness/FINISHED/lease-failure 回归与 packet-type trace golden 原样通过；仅
+   `c1bproof` 内存用例注入 initiator durable FINISH 延迟 3.5s，三 profile 双端仍到
+   `data_plane_ready`；内存按 §19.6 的分项计费和完成阶段零新增报文验收。OS/netns 原表
+   predictive 50/49、asymmetric 82/530、hard-16K 16403/16401 及其 required 断言不变。
+5. 本地及 CI 保留首次失败与红→绿输出，覆盖 Windows/Linux、race×20、architecture/mutation、
+   全仓和 required 管线；不以 rerun 或断言放宽抹去反例。
+
+原始 [Windows required red job](https://github.com/houyuwushang/winkyou/actions/runs/33992470623/job/101377022894)
+永久保留：initiator FINISH/PeerFinishConfirmed=true、AttemptDetached=false、gate=closed；
+responder 已 detach/active，但 post-OOB echo 失败。两侧 3/3 trace、carrier 8/8、burn 无退款、
+无 trip 的见证不能冒充完整 session 成功。
+
+裁决前执行记录：第 4 项曾因验收口径无法闭合。原数字来自 C1b 证据 §4.1 的 **OS/netns**
+场景；当前内存 fixture 的候选数量及 winner role 不同，无延迟对照与慢 FINISH 得到相同的
+另一组总计。具体计数、首次红输出及父 context 取消传播回归见
+[C1b 证据 §6](../GATE-C1B-PRODUCT-COMPOSITION-EVIDENCE.md#6-issue-109-完成阶段修复与未闭合验收2026-09-06)。
+原要求和失败断言保留于提交 `0b7800b`，不抹去历史。后续按维护者接受的 §19.6 修订验收，
+不调候选调度，不据此宣布 #109 关闭。
+
+### 19.6 内存与 OS 验收分列（2026-09-06，维护者已接受）
+
+维护者在看到 §19.5 首轮反例后，明确同意：内存按自身场景的分项计费与“慢 FINISH 不新增
+报文”验收，同时保持 netns 原表和断言不变。本节只修订测试口径，不改变产品、协议、资源
+上限、候选调度、winner 选择、3s/3 包、原 absolute/session ceiling 或任何现场权限。
+
+1. **分项独立核算。** 每侧底层 natsim `OutboundPackets` 必须严格等于本次实际 evidence +
+   candidate + winner + establishment + active writes；不能再把 OS 场景的固定总数当作内存
+   常量，也不能只判断“小于某个宽松总数”。evidence 固定 13，candidate 受已有 profile/role
+   上限约束；asymmetric target-set 和 Hard16 仍完成原完整 schedule；成功双方合计恰好一个
+   winner。Gate B 的分项和、其总计及原 attempt 预算独立交叉检查。
+2. **完成阶段零发射。** 仅在 c1bproof 测试 hook 的真实 initiator FINISH append+fsync 后，
+   于原 3.5s 等待前后读取双侧底层发包快照；两个计数都必须逐项不变。计数只读，不开 socket、
+   不发包、不驱动重试、不改变时钟或暂停发包线程来制造零值。等待完成后的全程计数仍须满足
+   第 1 项。新增一个未归类报文或任一侧等待期间计数改变，负向测试都必须拒绝。
+3. **数据面与终局不变。** 每端 establishment 仍严格 3 入/3 出；post-OOB 仍是 initiator
+   一个 echo request 加一个 CLOSE、responder 一个 echo reply。双端 ready、FINISH、detach、
+   carrier 8/8、单次凭据与落盘、排水、零残留及无意外 safety trip 的断言全部保留。
+4. **OS 证据不变。** C1b 证据 §4.1 与 `test/natlab` 的原表、iptables 实测及 required CI
+   原样保留；不能用内存模型通过代替 OS 证明，不能因本节授权改 NAT 模型、调度或超时。
+5. **交付不变。** 独立复审、全部 required 验证、Draft/未合并与原 red 链接保留；本节没有
+   授权混修 #97/#101/#106/#107、liveness/M/C1c 或手动 rerun 求绿。
+
+### 19.7 已落盘 FINISH 后失败清理与取消见证（2026-09-07，维护者已授权）
+
+本节原 5s 慢 FINISH fixture 冻结已由 §19.8 的维护者授权修订；其它不变量保留。
+
+维护者针对证据 §6.5 的新反例，仅授权在同一 Draft PR 中补充取消来源见证，并修复已成功
+落盘 FINISH 后错误清理仍不释放的路径。§19.5–19.6 的时间、报文、所有权与复审边界不变。
+
+- 清理可使用本 runtime 已有的 successful durable `finishRecorded` 见证；它不是远端声明、
+  缓冲 FINISHED 或本地 trace。未 burn 的 preflight 仍可释放；已 burn 但 FINISH 失败、缺失或
+  不确定时不得借本修订释放。不能重写 FINISH、退款、忽略落盘错误或无条件释放。
+- 在错误路径中，已 FINISH 只授权原有 transport/drain/controller/attempt/peer 清理，不授权
+  active、成功终局、第二次 Promote、重试或恢复。仍先关闭/排水 transport，再释放原 lease。
+- 完成阶段失败见证在本地 `gate.fail`/清理取消 context **之前**采集，记录固定失败点、有限
+  错误类别、attempt/session/challenge 的取消状态及相对剩余毫秒。不得保存原始 error 文本、
+  context、身份、endpoint、PID 或 key；返回副本。见证不参与授权、计时或错误分类裁决，成功
+  路径不新增 JSON 字段，旧 wire/schema/错误类/golden 不变。
+- 确定性回归分别覆盖已成功 FINISH 后 caller/session 取消与清理、未成功 FINISH 不释放、
+  重复清理无重复落盘；真实 journal/同一 governor 的组合证明不能由布尔单测代替。保留旧
+  59/60 与 governor residue 的首次反例，新的通过不抹去旧失败。
+- 不改变任何预算、3s/3 包、5s fixture session ceiling、profile absolute envelope、调度或
+  drain；不据此认定此前失败一定来自某个 timer。若见证定位到本次授权之外的缺口，报告后
+  再裁决，不顺手修其它模块或推进 C1c/现场。
+
+### 19.8 慢 FINISH 测试窗口与验证分组（2026-09-07，维护者已授权）
+
+维护者接受修正慢落盘测试的 session 时间配置，并明确建立连接前可以付出较长等待，
+优先保证连接建立后的可用性与稳定性。本次仅落实 #109 的测试与验证修订，不改变产品
+会话生命周期、探测预算或现场权限；后续长期连接可用性仍由其独立设计与验收证明。
+
+1. **测试配置与产品上限分离。** 三个 `slowFinish` profile 的双端 fixture session ceiling
+   本轮设为 10s：容纳原最多 3s 的挑战、成功 FINISH append+fsync 后原 3.5s 注入，以及
+   本地完成余量。普通、CLI、取消与 fresh100 fixture 本轮仍为 5s；原 Hard16 快速 fixture
+   和慢场景使用的 profile absolute envelope 均不变。10s 是测试配置，不是新增协议常量、
+   产品默认或对无限等待的许可。范围内必要的测试配置/runner 分组调整须记录原因和验证，
+   不再把每个实现参数单独升格为维护者裁决。
+2. **不以更多发包换取通过。** 原 3s/3 包、40-byte FINISHED、nonce/AD、PPS、socket/target、
+   candidate/winner、单 attempt、无 retry/fallback、FINISH-before-release 和 drain 全部不变。
+   session/caller/absolute 真正取消或到期仍须关闭、不激活、无额外 I/O；慢 fixture 的双方
+   ready、post-OOB echo、精确计费及零残留断言原样保留，不改成允许超时失败。
+3. **完整执行慢回归。** 将三个慢 FINISH 场景从普通管线子测试移为独立 `GateC1b` 顶层入口，
+   Linux/Windows 原 required job 显式执行 `-race -count=20`；原普通/CLI/ownership、取消、
+   drift/exhaustion、fresh100 步骤仍必跑。不减次数、不 skip、不重试求绿；runner 分组只分摊
+   测试耗时，不改变产品调度。增加纯测试配置回归，守住慢场景 10s 与其它场景 5s 的分离。
+   本轮 10s/5s 的测试配置快照后来由 §19.10 统一为 10s；不是产品时间边界变更。
+4. **保留反例与审查。** `1cadf84` 的 Windows 首跑 session 到期与本地 runner 超时分别记录，
+   不能混称同一原因；此前红记录、§4.1 OS 表和 required netns 原断言不变。新测试通过只
+   证明本次有界完成与排水，不冒充长期在线或真实网络成功。继续同一 Draft PR，独立复审
+   前不合并、不关闭 #109；不混修其它 issue，不推进 liveness/M/C1c 或现场 I/O。
+
+### 19.9 R1 确认交换的时间边界（2026-09-07，维护者接受独立复审裁决）
+
+维护者接受 [独立复审裁决](https://github.com/houyuwushang/winkyou/pull/110#issuecomment-5565715193)，
+授权在同一 Draft PR #110 实现本节；仍须独立复审，不合并、不关闭 #109、不授权现场。
+裁决依据是 [C1b 证据 §6.10](../GATE-C1B-PRODUCT-COMPOSITION-EVIDENCE.md#610-完整-race20-的不同挑战阶段反例10s-fixture-首跑)，
+不是把 CI 通过解释为旧时间模型正确。
+
+| 阶段 | 操作 | 时间权威 |
+| --- | --- | --- |
+| challenge | READY/ACK、WG initiation/response/空 keepalive，`CompleteChallenge` 与原 reader drain | `BeginChallenge` 起原 ≤3s，且受 absolute envelope / caller 约束；不变 |
+| completion | responder durable FINISH → FINISHED 写；initiator FINISHED 读并认证 → durable FINISH；双方 detach → active | 原 `attemptCtx`（profile absolute envelope）+ caller context + session ceiling；不再受 3s 约束 |
+
+计数不因重新划界而改变：FINISHED 仍是 R→I 的第三个 datagram，完整 capped establishment
+trace 仍为每侧三入/三出。其余握手报文完成时 I 已三出/两入、R 已两出/三入（若 FINISHED
+早到则可按原规则缓冲），不能误称进入 completion 就已经消费了尚未收发的 FINISHED。
+进入条件仍为 `challenge_passed`、零在途 I/O、有效 codec 和未过期 attempt；缓冲不授予认证。
+
+**技术依据。** 原 Blocker 3 的 3s 用于排除 wireguard-go `RekeyTimeout=5s` 重传，限定
+pre-FINISH 的 WireGuard 挑战。仓库锁定的 `f333402bd9cb` 实现中，initiator 收 response、
+responder 收首个 data 后调用 `timersHandshakeComplete` 停止重传 timer；`Keepalive=0`，
+`timersDataSent` 不对空 keepalive 触发，按时间 rekey 为 120s。固定 trace 完成后，在本次
+有界 completion、无用户数据的前提下，WireGuard 不再自发产生报文，与 FINISHED 何时收发
+无关。FINISHED 仍由原 cap 限定仅一次，移入 absolute envelope 不增加第四包。
+
+**取代关系。** §19.4“时间”中完成确认共用 ≤3s、§17.2 共用时间上限中涉及 FINISHED 的
+表述，以及 §19.5 表格和四条旧划界说明，均由本节取代。§19.5 第 3 项回归为裁决性替换，
+不是删去反例或放宽计数。`challengeCtx` 不续期、不重启，不参与已通过 challenge 后的
+completion 判定；completion 使用原 attempt 的子 context 并传播 session/caller 取消，
+所有取消回调仍须 stop，失败见证仍在关闭前采集。
+
+**不变量。**
+
+- `WireGuardChallengeTimeout=3s`、`WireGuardChallengePackets=3`、原 trace golden 不变。
+- nonce 8/9/10、AD、40-byte frame、原第四包 I/O 前拒绝和 capped establishment 计费不变。
+- FINISH-before-detach、已写 FINISH 不撤销/不重复、responder FINISH 不代表双方成功不变。
+- `TransportLease`、`ProductHandoff`、orchestrator 顺序、OOB/SSH carrier 不变。
+- Gate B/A/C1a 的 golden、预算及 OS 证据 §4.1、required netns 代码不变。
+- 不加 retry、重传、调参 sleep；不混修其它 issue，不用 rerun 抹去首次失败。
+
+**残余限制。** 完成阶段仍受 profile absolute envelope 约束；Hard16 的 45s envelope 在
+challenge 后通常只余数秒。fsync 跨过它仍 fail-closed，已写 FINISH 不撤销且不激活。
+“journal 成功而 session 关闭”在 envelope 边界仍可能出现，这是冻结预算的固有边界，
+本裁决不延长它，也不承诺所有磁盘延迟下必成功。
+
+**必过证据。** responder FINISH 至 challenge 起点 +3.5s、initiator 等 FINISHED 超过 3s
+须先红后绿；两侧分别跨 absolute/session 的负向、第四包与全部原 golden 仍必过。
+`c1bproof` 分别注入 initiator/responder 3.5s 慢 FINISH，三 profile 双端 ready、FINISH、
+detach、post-OOB echo、carrier 8/8 和残留检查不变。按 §19.6 精确分项核算、等待期间双方
+计数不增长；responder 注入点在 FINISHED 写之前，其等待快照恰少该侧一包，最终仍是 3/3，
+不能把等待快照误算成已经写出 FINISHED。慢 fixture 10s、其它 fixture 5s 保持分离
+（该测试配置快照由 §19.10 取代；本节的生产规则不变）。
+验证命令与首次红→绿写入证据 §6.11；未实测项不得预先标绿。
+
+### 19.10 复审后的测试配置与执行器分组（2026-09-07）
+
+[独立复审](https://github.com/houyuwushang/winkyou/pull/110#issuecomment-5568851539)
+接受 §19.9 生产改动，并明确以下调整属于 §19.8 已授权的测试配置/分组。维护者续令继续
+处理 #110；仍为同一 Draft PR，不合并、不关闭 #109。本节不作新的协议或现场裁决。
+
+1. **统一内存 fixture session 为 10s。** 普通、CLI、显式取消、drift/exhaustion、fresh100
+   与 I/R 慢 FINISH 的三个 profile、双端均使用 10s。旧 5s 是测试选择，不是必须满足的
+   成功 SLA；§6.11 的普通场景已实测在 session 边界失败、attempt 当时仍有效。不能据此
+   把未经分段测量的延迟确定归因于 fsync。原 5s 配置和反例保留为历史证据，配置回归
+   改为守住统一的 10s；profile absolute/candidate 时间和生产默认/校验地板不变。
+2. **分开执行真实墙钟 completion 回归。** 原 consumer 步骤保留 3m、race、20 轮；
+   completion/迟 confirmation/detach 跨 challenge 边界测试转入独立 12m 步骤，仍 race、
+   20 轮。该时限只限测试进程，不改变 3s 挑战、3.5s 注入或任何产品 deadline。保留原
+   Linux/Windows required job 的 25m 上限、其它步骤与所有测试；增加分组覆盖与负向
+   回归，证明两组无遗漏、无重复。`Confirmation` 与 `DetachAfterChallengeDeadline`
+   不都包含 `Completion`，选择器须覆盖实际名称，不能仅按一个关键字推断完整性。
+3. **继续守住真实失败边界。** session/caller/absolute 取消仍不激活、FINISH 不撤销；
+   原 3s/三包、nonce/AD/40-byte、计费、无 retry/fallback、FINISH-before-detach、原
+   golden、OS §4.1 与 required netns 均不变。新增本轮生产代码不在该处置范围内。
+4. **分离已有债务。** loopback absence 15s 反例已登记为
+   [#111](https://github.com/houyuwushang/winkyou/issues/111)，N2d `expired/verify` 是
+   [#101 的第二签名](https://github.com/houyuwushang/winkyou/issues/101#issuecomment-5568859853)。
+   不在 #110 修改这两个路径或其断言，不把独立通过覆盖失败。复审允许的 N2d 单次透明
+   rerun 仅限已登记签名且同 SHA 同 job 存在通过证据，若实际使用必须单独记录；它不是
+   无限重跑许可，更不能证明该缺陷已修复。无残留证据的失败不得补称零残留。
+
+本轮测试命令、原 28/33 RED、选择器覆盖证明和实际结果追加到 C1b 证据 §6.12；通过前
+不预填绿灯，不推进 C1c/现场。原 §6.1–6.11 保留，不以测试参数更新删除历史。
+
+### 19.11 responder 慢回归独立执行（2026-09-08，维护者已授权）
+
+维护者在收到 `ee4a986` 首跑 31/33 及窄范围分组建议后明确继续，授权仅为 responder
+慢 FINISH 增加独立 Linux/Windows required job。原实施提示词“不新增 job”及 §19.10
+第 2 项保留其它步骤的限制，仅在这一个测试入口的迁移上由本节取代；不授权改求解器。
+
+1. 原 memory job 仍为 25m。initiator 慢 FINISH 和 fixture 配置检查保留原步骤、10m
+   runner、race×20；ordinary/CLI/ownership、consumer/completion、取消、drift/exhaustion
+   和 fresh100 仍必跑。仅将 responder 慢 FINISH 入口迁到独立两平台 job。
+2. 独立 job 为 required、15m、无条件执行、无失败容忍或重试，矩阵 fail-fast=false。
+   精确执行原 responder 顶层入口，`-race -parallel=1 -count=20 -timeout=10m`，保留
+   三个 profile。`-parallel=1` 只限制 Go 测试框架中不同 profile 的并发，不改一对端点
+   内部 goroutine、协议、时钟或调度。verbose 输出保留每个子场景的实际完成与见证。
+3. fixture/body、predictive 100ms / asymmetric 250ms / hard-16k 2s candidate 窗口、
+   原 absolute、session 10s、3500ms 注入、3s/三包、nonce/AD、预算、计费/排水及
+   成功断言均不变；不以干净失败替代成功，不增加候选、重试、fallback 或现场能力。
+4. 新覆盖门禁须拒绝漏角色、重复执行、缺平台、去除串行约束、减少次数、过滤子场景、
+   条件/advisory/依赖失败跳过；原 39 个 consumer 入口的分区守门仍通过。
+5. `ee4a986` 七个 Windows 反例全在 candidates 阶段，慢注入 calls=0；并发争用只是
+   待验证解释。保留首次失败及逐例计数。隔离后仍有反例即停止并报告，不通过增加
+   窗口或包数求绿。通过仅证明此测试调度下的有界完成，不是长期在线或现场证明。
+
+证据见 C1b 记录 §6.13 与 PR #110。保持 Draft/未合并，#109 不关闭；不推进 C1c/现场。
