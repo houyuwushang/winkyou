@@ -137,10 +137,11 @@ headroom。同一 transport、同一 peer/attempt/generation/path/consumer/owner
    `t0+n*K` 槽最多发一次新的 PING（n 从 1 开始），不得靠收包重排发送槽。
 2. PING 取得一个全新 128-bit `crypto/rand` nonce 与递增 sequence；只保留 **一个**本端 pending
    请求。发送时间 `s` 在控制包被有界出站路径接纳时记录，应答必须在本地处理时满足
-   `now < s+R`；入队时间不等于已验证时间。PING/PONG 的本地出站期限均至多 1s，且不得晚于
+   `age(now,s) < R`（双时钟事件年龄见 §5.1）；入队时间不等于已验证时间。PING/PONG 的本地出站期限均至多 1s，且不得晚于
    原 session/许可期限；发送失败、超时或排队过期不补发。同一次 PING 的 nonce 不因失败重用。
 3. 只有当前 peer/attempt/context/role、sequence、nonce 全匹配的 PONG，才可一次性续许可到
-   `min(absolute, s+L)`。使用 **请求发送时刻**，不使用答复收到时刻，不能靠延迟回复延寿。
+   `min(absolute, s+L)`，其中 `s+L` 表示两种本地发送时刻各自的 L 期限，任一到期即撤销。
+   使用 **请求发送时刻**，不使用答复收到时刻，不能靠延迟回复延寿。
 4. PING、业务包、empty keepalive、握手、raw RX/TX、上次握手成功或本地写成功都不续许可。
    对方 PING 只允许一个对应 PONG，不证明本端 PING 已到达对方。
 5. R 到期销毁 pending；后续槽使用新 nonce/sequence。没有同一请求重传、ACK 的 ACK、离线
@@ -164,17 +165,28 @@ headroom。同一 transport、同一 peer/attempt/generation/path/consumer/owner
 时间判定不信任 peer timestamp。实现须使用可注入本地时钟，并在写强制点同时检查原绝对
 期限与 elapsed 许可。不能假设所有平台的 Go monotonic clock 都包含系统睡眠时间。
 
-提案为保守检测：arm 时固定本地 `(mono0, UTC0)`；每次判定用
-`elapsed=max(monoNow-mono0, UTCNow-UTC0)`。所有槽、答复窗及续许可统一按此 elapsed 计算；
-原 absolute deadline 仍保留，并以 arm 时的剩余时间再约束 elapsed，不能重新起算绝对寿命。
+**时钟修订 A（维护者于 2026-09-08 接受，裁决记录见 §12.4）：** arm 时固定本地
+`(mono0, UTC0)`；`elapsed=max(monoNow-mono0, UTCNow-UTC0)` 只用于固定发送槽、原 absolute
+剩余量约束和 elapsed witness，不用于两个事件之间的时间差。原 absolute deadline 仍保留，
+并以 arm 时的剩余时间再约束 elapsed，不能重新起算绝对寿命。
+
+每个已接纳 PING、write intent 和最近有效 proof 保存本地双时钟发送时刻
+`s=(monoSend, UTCSend)`；事件年龄为 `age(now,s)=max(monoNow-monoSend, UTCNow-UTCSend)`。
+R 答复窗、1s 出站窗、L 许可均按各自事件年龄判定，相等即拒绝；首次许可的 s 是 arm 时刻，
+续许可的 s 只能取 matching PONG 所绑定的 PING 发送时刻。出站 intent 同时保留接纳时的
+proof 起点，后来的续许可不能延长已接纳 intent 的原许可期限。不得用两个 origin-max
+相减，也不得把 elapsed 钳到历史最大值来代替事件年龄。
+
+rolling 20s liveness 计费和 rolling 1s WG 控制计费只使用本地 monotonic 时间；UTC 调整既
+不能刷新额度，也不能被误判成 WG cap 违规。每次 write 仍先经过双时钟许可及 absolute 检查。
 以**固定起点**计算的两种 elapsed 差值绝对值超过 2s、单调时钟相对上次读数倒退或任一
 时钟溢出，在下一次 I/O 前以 `session_liveness_clock_invalid` 终局。不重置起点来吃掉多次短
 挂起，不校准/延长既有许可；小幅前跳最多提前退出，不用较慢时钟延寿。
 
-**裁决（2026-09-06）：UTC 相对上次读数倒退本身不终局，只记入 witness。** 理由：`max()` 已
-保证任何回拨都不能延长许可（回拨只会让 UTC 项变小、由单调项兜底），因此 NTP step 或手动
-校时的小幅回拨没有安全后果，将其判为终局只损失可用性。单调时钟倒退、任一溢出与 >2s
-发散仍按上文终局；回拨若同时造成 >2s 发散，仍由发散规则终局。
+**裁决（2026-09-06，2026-09-08 修正证明）：UTC 相对上次读数倒退本身不终局，只记入 witness。**
+原“origin-max 已保证任意回拨不延寿”的论证不成立：两个 max 的差不等于两个差的 max。
+改按上述事件年龄后，monotonic 事件年龄提供不延寿下界，保留小幅校时的可用性；不增加窗口。
+单调时钟倒退、任一溢出与 >2s 发散仍按上文终局；回拨若同时造成 >2s 发散，仍由发散规则终局。
 
 支持平台必须用系统 suspend/resume 证据验证，不能只用缩短 ticker 的单测替代。本地校时也
 可能保守终止，这是待接受的可用性代价。机器完全不被调度期间无法保证清理在物理 2s 内
@@ -421,7 +433,7 @@ session 并持久 trip，同时撤销 §7.2 的相反条款，承认合法 peer 
 | 1. 通用 inner tap | `InnerTuple{Src,Dst netip.Addr; Proto uint8; SrcPort,DstPort uint16}`、`InnerTap.Deliver([]byte) bool` 与可选 `InnerTapRegistrar.SetInnerTap([]InnerTuple, InnerTap) error`。单次注册、至多两个 exact tuple，由同一 session 所有者同时注册 WYCL 与原 WYCE tuple；只在 Start 后、memory-only 或三标签隔离 TUN 构造的 tunnel 上开放，Stop 清除。匹配即消费，回调返回 false 也不回落到 TUN。 | 两个 tuple 不是端口范围或两个注册者；WYCE CLOSE 必须仍可达，而新路径不能竞争读取业务 `ReceivePacket`。tunnel 不解析 magic、身份、policy 或 liveness；回调只做有界复制/非阻塞入队，旧 WYCE parser 原样。 | 解密/AllowedIPs 后且 `ni.Write` 前分流；匹配控制零 TUN 写，非匹配业务恰好一次；单注册/未 Start/Stop/普通 constructor 拒绝；唯一注册调用点门禁。 |
 | 2. controller | 状态仅在 `gatecorchestrator`；一个 pending、一个 peer high-water、入/出队各至多 2、包至多 92 bytes；foreground 调用栈负责状态推进，新增 writer/watchdog worker 合计至多 2、显式 timer 至多 2。Stop 撤销许可、关闭受控 transport/interface、等待 worker。 | 不使用业务接收 worker，不按事件派生 goroutine；独立 watchdog 不依赖 writer 可返回。 | fake clock、队列满、阻塞注入、取消、半关闭、100 fresh runs 与 goroutine/队列排水 witness。 |
 | 3. 写强制点 | `WireGuardSessionGate` 可选 post-FINISH policy，包含 `func() error` 本地许可检查及自动控制账；active 每次 write（包括 caller 使用 Background）都检查。未配置时原路径不变。policy 只能单次安装在 active 且 FINISH/detach 已见证的 gate。 | 拒绝仅靠后台 timer 或 raw RX 推断活性；写回调不接收 peer deadline/endpoint。 | 到期第一 write 零底层发送；callback/关闭竞态；独立 watchdog 在无 write 时排水；原 challenge/R1 golden 不变。 |
-| 4. 时钟 | 可注入 `Clock{Mono() time.Duration; UTC() time.Time}`；arm 固定双起点与原 absolute 剩余量；统一 `elapsed=max(mono delta, UTC delta)`。单调倒退、溢出或固定起点发散 >2s 终局，UTC 相对上次读数回拨只计数。 | 不重设起点掩盖多次小挂起，不用较慢时钟延寿；本地时钟不由远端输入。 | fake clock 覆盖 2s 边界/累计短暂停/UTC 回拨/溢出；真实 SIGSTOP/SIGCONT ≥3s 另证 OS 调度暂停，明确不冒充系统 suspend。 |
+| 4. 时钟 | 可注入 `Clock{Mono() time.Duration; UTC() time.Time}`；arm 固定双起点与原 absolute 剩余量。按 §12.4 时钟修订 A，origin-max 只用于槽/absolute/witness，R/1s/L 用双时钟发送起点的事件年龄，rolling 账只用 monotonic。单调倒退、溢出或固定起点发散 >2s 终局，UTC 回拨本身只计数。 | 不重设起点，不用两个 max 相减拉长事件窗口；校时不刷新账本或伪造 cap 违规。 | 三项原始反例永久回归，覆盖主导源切换/渐进收敛/多次回拨/相等边界/溢出；真实 SIGSTOP/SIGCONT ≥3s 另证 OS 调度暂停，不冒充系统 suspend。 |
 | 5. 分账与持久报告 | SSH/socket 前 checked ceil 冻结 N、N+1、2N+1；滚动 20s 四事件，已 admission 永不退款。正常拒绝按 §12.1 A。WG types 1/2/3 严格 148/92/64 bytes、type 4 empty=32 bytes，滚动 1s 四包、总量 `4*ceil(T/1s)`，扣账先于 write。session 绑定、不可改 reason/target 的窄报告闭包持有同一 live governor；只报告枚举硬违规，结束即撤销，不调用已释放 AttemptLease.Trip。 | 加密后无法按包长区分 WYCL/业务，所以 inner 点与 WG 点分别强制；正常限流与本地违规不能混为持久 DoS。 | admission clear / WG excess trip / bypass trip 三类独立负向与计数；同一 owner、FINISH 后持久 latch 重开核验、owner 不可用 fail-closed。 |
 | 6. 替换旧计时 | policy 分支独立于旧 `foregroundSession`，不运行旧 responder ticker/业务 reader。两端只因本地许可、有效原 CLOSE、absolute ceiling 或稳定错误终止。 | 防止健康空闲在 15s 被旧规则杀死；缺 policy 原函数不改。 | 有 policy 双端真实空闲 ≥180s；无 policy 原 5s×3 与 CLOSE 测试原样；业务黑洞不续许可。 |
 | 7. trusted config | `GateCPeerConfig.SessionLiveness *SessionLivenessConfig`：仅 `mode`、`missed_rounds`，缺省 M=3，整数仅 2/3；文件原始值严格校验，禁止未知成员、弱类型转换与 env 覆盖。预检冻结预算及 trusted tunnel factory 的 tap capability，缺能力在 SSH/socket 前 `unavailable`；创建后再断言实际 registrar。 | 可选接口不破坏已有 fake tunnel；生产 factory 的能力声明由内部代码固定，不是外部授权开关。C1c 必填仍留后门裁决。 | YAML 未知/非整数/null/越界/env 注入拒绝或无效；旧配置序列化不变；missing capability 零 SSH/UDP；实际不匹配关闭。 |
@@ -435,3 +447,24 @@ session 并持久 trip，同时撤销 §7.2 的相反条款，承认合法 peer 
 controller → composition → gates/CI/evidence 小步实施。docs-first 提交时 §9 全部待执行；
 随后实现与逐次实测状态见 [liveness 证据](../GATE-C-LIVENESS-EVIDENCE.md)，不以实现提交取代复审。
 不合并、不自动推进 C1c/E/现场；旧建立协议、预算与默认路径不变。
+
+### 12.4 时钟修订 A：事件年龄与滚动计费分离
+
+维护者于 2026-09-08 在实现续令中接受
+[停止报告的时钟修订 A](https://github.com/houyuwushang/winkyou/pull/112#issuecomment-5581624144)。
+此裁决与 §12.1 的 admission 方案 A 是两件事；§7.2 原文保持不变。先修订本节及 §5/§5.1/
+§12.2 第 4 项，再修实现；不把实现自查当成独立复审通过。
+
+原反例均在固定起点 `(0,0)`、合法 `mono/UTC=(20s,22s)` 接纳后回拨到 `(20s,20s)`：
+65s proof 在 monotonic 年龄 65s 仍可写，1s intent 在年龄 2s 仍可写，WG 两次合法请求却因
+origin-max 从 22s 变为 20s 触发 cap。已有 54/54 CI 未覆盖这些反例，不能抹去停止报告。
+
+选择与理由：保留固定起点漂移检查；事件窗口保存双发送时刻并取 source-relative 年龄的 max；
+两类滚动账只用 monotonic。拒绝仅 high-water 钳位或删除 WG backstep 判断的局部改法，
+也不采纳“将合法小回拨改为立即终局”的备选 B。所有 K/R/M/L、1s write、2s drain、预算、
+wire 格式、worker/队列上限及原 absolute 起点不变；不会为校时新增请求、补发或重试。
+
+证明方式：把原三反例、源主导切换、UTC 缓慢追平、多次小回拨、事件相等到期、过期后不复活、
+rolling 20s/1s 不因 RTC 变化提前刷新加入永久回归；architecture mutation 检查事件续许可
+只能来自已认证 pending-send、出站期限不可绕过以及 WG 计费注入的 monotonic 来源。
+随后重跑现有 fake-clock/race、真实 WG 空闲/黑洞/重启与 required OS 矩阵，逐次保存结果。
