@@ -23,11 +23,11 @@ jobs:
       - name: Run go vet ./...
         run: go vet ./...
 
-      - name: Run go test ./...
-        run: go test ./... -count=1
+      - name: Run full suite except separately required relay proof
+        run: go test ./... -count=1 -skip '^TestRelayWGGoTwoEnginesExchangeIPv4Packets$'
 
       - name: Run core race tests
-        run: go test -race ./pkg/session ./pkg/client ./pkg/solver/... -count=1
+        run: go test -race ./pkg/session ./pkg/client ./pkg/solver/... -count=1 -skip '^TestRelayWGGoTwoEnginesExchangeIPv4Packets$'
 
       - name: Run N2c governed-adapter race tests
         run: >-
@@ -64,8 +64,8 @@ jobs:
         with:
           go-version-file: go.mod
 
-      - name: Run go test ./...
-        run: go test ./... -count=1
+      - name: Run full suite except separately required relay proof
+        run: go test ./... -count=1 -skip '^TestRelayWGGoTwoEnginesExchangeIPv4Packets$'
 
   loopback-connect-proof:
     name: Loopback Connect Proof (${{ matrix.os }})
@@ -614,4 +614,26 @@ jobs:
           go-version-file: go.mod
 
       - name: Run relay wggo smoke
-        run: go test ./pkg/client -run TestRelayWGGoTwoEnginesExchangeIPv4Packets -count=3
+        run: go test ./pkg/client -run '^TestRelayWGGoTwoEnginesExchangeIPv4Packets$' -count=3
+
+      - name: Preserve migrated full-suite relay repetition
+        run: go test ./pkg/client -run '^TestRelayWGGoTwoEnginesExchangeIPv4Packets$' -count=1
+
+      - name: Preserve migrated core-race relay repetition
+        run: go test -race ./pkg/client -run '^TestRelayWGGoTwoEnginesExchangeIPv4Packets$' -count=1
+
+  relay-isolated-windows:
+    name: Relay Functional (Windows, required)
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Preserve migrated full-suite relay repetition
+        run: go test ./pkg/client -run '^TestRelayWGGoTwoEnginesExchangeIPv4Packets$' -count=1

@@ -1,10 +1,12 @@
 # #97 relay 启动停滞阶段证据
 
-Status: Draft，已复现并细化定位，**尚未宣称修复**。基线 `fde8dfa`；production delta=0。
+Status: Draft，已复现并细化定位，已实现测试执行分区，等待完整验收与独立复审。
+基线 `fde8dfa`；production delta=0；不宣称修复任意负载下的产品选路行为。
 
 ## 本批做了什么
 
-只在既有真实 loopback relay 测试添加只读阶段采样和 opt-in CPU helper；不改变
+在既有真实 loopback relay 测试添加只读阶段采样和 opt-in CPU helper，并将该用例
+迁入独立 required CI 分区；不改变
 30s transport 断言、capability 2s、RunTimeout 25s、2/4/8/10s 退避、#94 ready/route
 两道防线或生产代码。快照使用原锁，退出 join observer；日志仅固定测试 side、相对时间、
 阶段、是否收到 capability、策略/协商/重试/binding 标志，无 endpoint/key/PID/path。
@@ -50,15 +52,30 @@ Status: Draft，已复现并细化定位，**尚未宣称修复**。基线 `fde8
 
 为了不让注册200ms的另一个失败淹没目标，第二个诊断配置将**人工压力的启动点**移到
 两端 Start 返回之后（生产调用顺序与默认测试完全不变）。这只是区分注册与 transport
-负载的实验变量，不是 timeout 修复；第一份 RED 不删。该配置的重复结果以 PR 首跑记录为准。
+负载的实验变量，不是 timeout 修复；第一份 RED 不删。该配置在56个 busy workers、
+GOMAXPROCS=28 下 **50/50 PASS，671.104s**；无人工压力的 focused race **20/20 PASS，
+254.989s**。后者部分时间与其他宿主验证重叠，不冒充独占机器的性能基准。
 
-## 最小后续选择（待复审，不在本 PR 自行实现）
+## 已实现的独立 CI 分区
 
-- 若目标是固定功能回归与全仓 CPU 争用分离：可按任务允许的独立 job 分区，保持每平台
-  原执行次数/原 race 覆盖，并增加 omission/count mutation gate。必须补完50压力+100无压力
-  的实测；不能把“隔离后通过”升级为任意主机负载下可用。
-- 若要求负载下已到达 capability 后仍能可靠共同选路：需单独审查生产侧 late-capability/
-  attempt 归属和双边选择同步的最小变更。不得在此擅自增加重试、扩预算或改变 fallback。
+任务明确允许独立 CI 分区。全仓普通测试（Linux/Windows）与 Linux core race 只以完整、
+锚定的测试名排除本用例；排除的执行全部迁移，不减少次数。现有 Linux relay job 保留
+原3次 smoke，追加迁入的普通1次和 race1次；新 Windows required job 承接普通1次。
+这些步骤没有条件执行、advisory 或 continue-on-error。其他 Gate A/B/C job 不变。
 
-当前证据不足以安全选择上述修复路线，未增加 sleep、未减 count、未改 required、未 rerun
-掩盖失败。只读 observer 与压力 worker 均在返回/Fatal 时退出；完整验收仍未闭合。
+| 平台 / 覆盖 | 分区前 | 分区后 |
+| --- | --- | --- |
+| Linux 普通 | full suite 1 + smoke 3 | 独立 relay job 1 + 3 |
+| Linux race | core race 1 | 独立 relay job 1 |
+| Windows 普通 | full suite 1 | 独立 Windows relay job 1 |
+
+`internal/architecture/relay_ci_partition_test.go` 检查平台、命令、精确排除、次数和强制执行；
+变异自检覆盖遗漏 Windows、减少 smoke、丢失 race、扩大 skip、全仓重复执行和降级可选。
+分区及既有 C1b 分区门禁20轮通过，相关 vet 与 `git diff --check` 通过。100次无人工压力
+重复及最终 CI 结果记录于 PR，不把尚未结束的检查标绿。
+
+分区证明的是固定功能回归与全仓包级争用分离，不是任意主机负载下的可靠性保证。
+若要求负载下已到达 capability 后仍能可靠共同选路，需要单独审查生产侧 late-capability、
+attempt 归属和双边选择同步；本 PR 不增加重试、扩预算或改变 fallback。
+未增加 sleep、未减 count、未降级 required、未 rerun 掩盖失败。只读 observer 与压力 worker
+均在返回/Fatal 时退出；完整验收仍待最终结果与独立复审。
