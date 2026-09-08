@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"sync"
 	"testing"
 	"time"
 
@@ -31,13 +32,32 @@ func TestLinuxN2DEndToEndProof(t *testing.T) {
 }
 
 func testN2DEIMSuccess(t *testing.T) {
-	for iteration := 0; iteration < n2dSuccessRepetitions; iteration++ {
+	runN2DEIMSuccess(t, n2dSuccessRepetitions, false)
+}
+
+func runN2DEIMSuccess(t *testing.T, repetitions int, diagnostics bool) {
+	var previousPorts [2]uint16
+	for iteration := 0; iteration < repetitions; iteration++ {
 		t.Run(fmt.Sprintf("repeat_%d", iteration+1), func(t *testing.T) {
 			topology := newN2DTopology(t, n2dMappingEIM, n2dMappingEIM)
 			servers := startN2DServers(t, topology)
 			artifacts := buildN2DArtifacts(t, fmt.Sprintf("eim-success-%d", iteration), time.Now())
 			initiator := newN2DEndpointProcess(t, topology, servers, artifacts, directattempt.RoleInitiator, n2dActionAttempt, "", "", "")
 			responder := newN2DEndpointProcess(t, topology, servers, artifacts, directattempt.RoleResponder, n2dActionAttempt, "", "", "")
+			stopObserver := func() {}
+			if diagnostics {
+				stopObserver = observeN2DRepeat(t, topology, servers, initiator, responder, &previousPorts)
+			}
+			var cleanupOnce sync.Once
+			cleanup := func() {
+				cleanupOnce.Do(func() {
+					initiator.stop()
+					responder.stop()
+					stopObserver()
+					assertN2DNoResidue(t, topology, servers)
+				})
+			}
+			t.Cleanup(cleanup)
 
 			initiator.start(t)
 			responder.start(t)
@@ -66,7 +86,7 @@ func testN2DEIMSuccess(t *testing.T) {
 					carrierStats.Accepted, carrierStats.Active, carrierStats.SlotARead, carrierStats.SlotAWritten,
 					carrierStats.SlotBRead, carrierStats.SlotBWritten)
 			}
-			assertN2DNoResidue(t, topology, servers)
+			cleanup()
 		})
 	}
 }
@@ -283,6 +303,11 @@ func requireN2DEnvironment(t *testing.T) {
 
 func assertN2DSuccessResult(t testing.TB, result n2dEndpointResult, role directattempt.Role) {
 	t.Helper()
+	if !n2dSuccessTerminalContract(result, role) {
+		t.Fatalf("N2d success terminal contract rejected %s/%s direct:%d control:%d tcp:%d/%d",
+			result.Terminal, result.ErrorClass, result.DirectPackets, result.ControlFrames,
+			result.CarrierFramesRead, result.CarrierFramesWritten)
+	}
 	assertN2DCommonResult(t, result, n2dTerminalSuccess, "", true, false)
 	wantDirect, wantControl := 1, 3
 	wantFramesRead, wantFramesWritten := 7, 6

@@ -116,9 +116,13 @@ type n2dEndpointResult struct {
 }
 
 type n2dEvent struct {
-	Stage string `json:"stage"`
-	Port  uint16 `json:"port,omitempty"`
+	Stage               string `json:"stage"`
+	Port                uint16 `json:"port,omitempty"`
+	ElapsedMicroseconds int64  `json:"elapsed_microseconds"`
 }
+
+// Test-process monotonic origin, not a product clock or deadline override.
+var n2dEventOrigin = time.Now()
 
 type n2dArtifactPair struct {
 	Initiator    []byte
@@ -907,7 +911,9 @@ func n2dEmit(config n2dEndpointConfig, stage string, port uint16) error {
 	if !validN2DStage(stage) {
 		return errors.New("invalid stage")
 	}
-	return writeN1JSON(filepath.Join(config.EventDir, stage+".json"), n2dEvent{Stage: stage, Port: port})
+	return writeN1JSON(filepath.Join(config.EventDir, stage+".json"), n2dEvent{
+		Stage: stage, Port: port, ElapsedMicroseconds: time.Since(n2dEventOrigin).Microseconds(),
+	})
 }
 
 func validN2DStage(stage string) bool {
