@@ -504,6 +504,7 @@ type netifDevice struct {
 	}
 	events    chan wgtun.Event
 	closeOnce sync.Once
+	innerTap  innerTapSlot
 }
 
 func newNetifDevice(ni interface {
@@ -546,6 +547,12 @@ func (d *netifDevice) Write(bufs [][]byte, offset int) (int, error) {
 			continue
 		}
 		packet := buf[offset:]
+		// WireGuard has already authenticated, decrypted and checked AllowedIPs.
+		// Exact control tuples are consumed once; all other traffic is untouched.
+		if d.innerTap.consume(packet) {
+			written++
+			continue
+		}
 		if _, err := d.ni.Write(packet); err != nil {
 			return written, err
 		}
@@ -564,6 +571,7 @@ func (d *netifDevice) Events() <-chan wgtun.Event { return d.events }
 func (d *netifDevice) Close() error {
 	var err error
 	d.closeOnce.Do(func() {
+		d.innerTap.close()
 		err = d.ni.Close()
 		close(d.events)
 	})
