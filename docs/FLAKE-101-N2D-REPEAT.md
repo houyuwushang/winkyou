@@ -39,7 +39,25 @@ required 成功断言显式调用纯 terminal/计数谓词；以下不能被接�
 
 - Windows 本地 Linux/natlab 交叉编译及 `go vet -tags=natlab ./test/natlab` 通过；这不是 netns 实测。
 - 本地 architecture 与无 natlab tag 的测试通过。
-- CI 30 次时序与首次结果：待采集后回填，不把诊断准备当作 30/30。
+- CI 首跑 [3 轮 × 10 次](https://github.com/houyuwushang/winkyou/actions/runs/34186787809/job/101936639086)，实测 SHA `fcb33e7ac613649f213a709edbba0e09adf8ff49`：**30/30 通过，无 rerun**；同 job 的负向 contract ×20 与 Linux tagged vet/race build 通过。
 - production delta=0。尚无证据支持端口/teardown 修复；若证实生产竞态，停止并给最小提案，等待维护者裁决。
 
 不放宽任何 deadline/断言，不更改 Gate A/B/C，不关闭 issue，不合并本 Draft。
+
+### 首次采样明细
+
+| 指标 | 结果 |
+| --- | --- |
+| 每轮初始 conntrack / TIME_WAIT | 30/30 为 0 / 0 |
+| 与相邻重复相同的 UDP 端口 | 0/30（每个 10 次 round 内比较；round 首次无前样本） |
+| STUN / direct / UDP / control / written TCP | 30/30 精确为 1/1、2/1、3/2、4/3、7/6 |
+| terminal packet stable / socket / process / active connection / conntrack after cleanup | 30/30 true / 0 / 0 / 0 / 0 |
+| I punch_sent，child monotonic | 103,991–693,632 μs |
+| R punch_sent，child monotonic | 114,117–703,328 μs |
+| I VERIFY，child monotonic | 145,170–919,510 μs |
+| R VERIFY，child monotonic | 135,131–909,023 μs |
+
+这里的 VERIFY 是 child 启动后的相对时间，不是两个进程可直接相减的同步时钟。
+本批未命中 A/B；因此没有因果证据证明“RCU 释放慢”“TCP TIME_WAIT”或“重试不足”。
+**本 PR 交付诊断、Fatal 排水和永久负例，不宣称已修复 #101 根因，也不凭 30/30 自动关闭 issue。**
+若需要继续定位，应保留本首跑样本，采集下一次真实 A/B 的同级阶段/入站见证，而不是扩大时限或先添加等待。
