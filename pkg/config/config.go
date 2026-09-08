@@ -116,6 +116,14 @@ type GateCPeerConfig struct {
 	MemoryInterfaceName string        `mapstructure:"memory_interface_name" yaml:"memory_interface_name"`
 	MemoryMTU           int           `mapstructure:"memory_mtu" yaml:"memory_mtu"`
 	SessionCeiling      time.Duration `mapstructure:"session_ceiling" yaml:"session_ceiling"`
+	// File-only: Load validates the original YAML without weak coercion or env.
+	SessionLiveness *SessionLivenessConfig `mapstructure:"-" yaml:"session_liveness,omitempty" json:"session_liveness,omitempty"`
+}
+
+// SessionLivenessConfig is local policy, never a negotiated peer capability.
+type SessionLivenessConfig struct {
+	Mode         string `yaml:"mode" json:"mode"`
+	MissedRounds int    `yaml:"missed_rounds" json:"missed_rounds"`
 }
 
 // AutonomousMeshConfig describes the coordinator-independent graph runtime.
