@@ -368,11 +368,12 @@ daemon、scheduler、自动恢复、默认 `wink up` 或 stdio v1/v2 接线。�
 表格已闭合、Status 为 Accepted，因此 Gate C1 §16.8 的"C1c 前 inactivity 重裁决"前置门**在文本层面关闭**；
 但 §9 验收矛阵全部待实现/待实测，liveness 实现、C1c 与任何现场窗口仍各需维护者另行授权与独立复审。
 
-## 12. 实现期裁决：开工核对与暂停项（Draft，2026-09-08）
+## 12. 实现期裁决与接口冻结（2026-09-08）
 
 维护者已授权在 `main=fde8dfa60b3c4708ca9a2b4fd783270a08c7d87f` 上实现
 memory/literal-loopback/required netns 证明，不授权 C1c 或现场 I/O。本节记录实现提示词的
-停止条件，不修改 §11 的 Accepted 状态，也不代表以下修订已经接受。**代码尚未开始。**
+停止项及其维护者裁决，不修改 §11 的 Accepted 状态。以下接口选择先于代码落盘；测试结果
+另记证据文档，不把设计选择写成已经通过的实测。
 
 ### 12.1 正常 admission 拒绝与持久 trip 不能合并
 
@@ -388,7 +389,7 @@ memory/literal-loopback/required netns 证明，不授权 C1c 或现场 I/O。�
 字面则立即关闭且持久 trip。两者不是同一个实现，不能在代码里默选一个再声称逐字满足。
 这是规范对照反例，不是已经执行的网络或压力测试。
 
-**最小修订提案 A（推荐，待维护者裁决）：** 将提示词 §2 第 5 项最后一句替换为：
+**方案 A（维护者已裁决）：** 将提示词 §2 第 5 项最后一句替换为：
 
 > PING/PONG 正常 admission 耗尽只拒绝该控制事件并计数，不关闭、不 trip；不得补发或借额。
 > 已拒绝后仍绕过 admission 发射、其它本地硬违规，或 WG 自动控制额度耗尽，才在下一次
@@ -398,21 +399,38 @@ memory/literal-loopback/required netns 证明，不授权 C1c 或现场 I/O。�
 证明方式：分别覆盖正常限流零注入且 latch clear、peer sequence 已消费且重放零答复、
 强行绕过 admission 零底层 write 且 latch 可重开核验、WG 自动控制超限零下一包且持久 trip。
 
-**备选 B（需要重新评审 §7.2，未推荐）：** 显式把正常 liveness admission 限流也改为终止
+**备选 B（未采纳）：** 显式把正常 liveness admission 限流也改为终止
 session 并持久 trip，同时撤销 §7.2 的相反条款，承认合法 peer 事件可能触发额外本机持久
 拒绝服务。不得仅修改测试期望而保留现有 Accepted 文本。
 
-### 12.2 后续顺序与当前证据
+依据 [PR #112 维护者裁决](https://github.com/houyuwushang/winkyou/pull/112#issuecomment-5579897333)，
+保留 §7.2 原文（裁决基线行 270–277），实现不修改其三个层次：
 
-在 §12.1 裁决完成前暂停 config/tunnel/probeio/controller 接线。原要求的十项“选择、理由、
-证明方式”须在继续代码之前完整补齐；本节不是省略它们的许可。尤其 inner-tap、原 WYCE
-CLOSE 与普通业务包的恰好一次交付须在接口选择中一并说明，不能保留竞争性 reader 偷走
-业务包，也不能把新 WYCL 塞入旧 parser。
+1. 正常 admission 拒绝只增加 `LivenessAdmissionRejected` 及 ping/pong 分项计数，不关闭、
+   不 trip、不补发；PONG 不借 PING 额度，被拒 PONG 不改变本地许可。
+2. WG 自动控制 lane 超限在下一次 write 前关闭并持久 trip。
+3. 绕过 admission、本地硬上限、writer/drain 硬违规通过同一仍持锁 owner 持久 trip。
 
-当前仅有基线源码与规范核对；§9 所有 liveness 验收仍未执行。旧 C1b 行为、3s/三包、R1、
-Gate B/M、golden、workflow、默认 policy 和安全边界均未改变。Draft PR 不合并，不据此推进
-C1c；等待维护者/独立复审解决该停止项后，继续同一实现分支。
+`session_liveness_budget_exceeded` 仅表示 admission 绕过或 WG lane 超限；正常 M 轮未收到
+有效 PONG 自然以 `session_liveness_timeout` 结束，不 trip。方案 B 不进入实现。
 
-| 待裁决项 | 维护者选择 / 独立复审 |
-| --- | --- |
-| §12.1 选择 A 或 B | |
+### 12.2 十项实现选择（先于代码）
+
+| 项 | 选择 | 理由 | 证明方式 |
+| --- | --- | --- | --- |
+| 1. 通用 inner tap | `InnerTuple{Src,Dst netip.Addr; Proto uint8; SrcPort,DstPort uint16}`、`InnerTap.Deliver([]byte) bool` 与可选 `InnerTapRegistrar.SetInnerTap([]InnerTuple, InnerTap) error`。单次注册、至多两个 exact tuple，由同一 session 所有者同时注册 WYCL 与原 WYCE tuple；只在 Start 后、memory-only 或三标签隔离 TUN 构造的 tunnel 上开放，Stop 清除。匹配即消费，回调返回 false 也不回落到 TUN。 | 两个 tuple 不是端口范围或两个注册者；WYCE CLOSE 必须仍可达，而新路径不能竞争读取业务 `ReceivePacket`。tunnel 不解析 magic、身份、policy 或 liveness；回调只做有界复制/非阻塞入队，旧 WYCE parser 原样。 | 解密/AllowedIPs 后且 `ni.Write` 前分流；匹配控制零 TUN 写，非匹配业务恰好一次；单注册/未 Start/Stop/普通 constructor 拒绝；唯一注册调用点门禁。 |
+| 2. controller | 状态仅在 `gatecorchestrator`；一个 pending、一个 peer high-water、入/出队各至多 2、包至多 92 bytes；foreground 调用栈负责状态推进，新增 writer/watchdog worker 合计至多 2、显式 timer 至多 2。Stop 撤销许可、关闭受控 transport/interface、等待 worker。 | 不使用业务接收 worker，不按事件派生 goroutine；独立 watchdog 不依赖 writer 可返回。 | fake clock、队列满、阻塞注入、取消、半关闭、100 fresh runs 与 goroutine/队列排水 witness。 |
+| 3. 写强制点 | `WireGuardSessionGate` 可选 post-FINISH policy，包含 `func() error` 本地许可检查及自动控制账；active 每次 write（包括 caller 使用 Background）都检查。未配置时原路径不变。policy 只能单次安装在 active 且 FINISH/detach 已见证的 gate。 | 拒绝仅靠后台 timer 或 raw RX 推断活性；写回调不接收 peer deadline/endpoint。 | 到期第一 write 零底层发送；callback/关闭竞态；独立 watchdog 在无 write 时排水；原 challenge/R1 golden 不变。 |
+| 4. 时钟 | 可注入 `Clock{Mono() time.Duration; UTC() time.Time}`；arm 固定双起点与原 absolute 剩余量；统一 `elapsed=max(mono delta, UTC delta)`。单调倒退、溢出或固定起点发散 >2s 终局，UTC 相对上次读数回拨只计数。 | 不重设起点掩盖多次小挂起，不用较慢时钟延寿；本地时钟不由远端输入。 | fake clock 覆盖 2s 边界/累计短暂停/UTC 回拨/溢出；真实 SIGSTOP/SIGCONT ≥3s 另证 OS 调度暂停，明确不冒充系统 suspend。 |
+| 5. 分账与持久报告 | SSH/socket 前 checked ceil 冻结 N、N+1、2N+1；滚动 20s 四事件，已 admission 永不退款。正常拒绝按 §12.1 A。WG types 1/2/3 严格 148/92/64 bytes、type 4 empty=32 bytes，滚动 1s 四包、总量 `4*ceil(T/1s)`，扣账先于 write。session 绑定、不可改 reason/target 的窄报告闭包持有同一 live governor；只报告枚举硬违规，结束即撤销，不调用已释放 AttemptLease.Trip。 | 加密后无法按包长区分 WYCL/业务，所以 inner 点与 WG 点分别强制；正常限流与本地违规不能混为持久 DoS。 | admission clear / WG excess trip / bypass trip 三类独立负向与计数；同一 owner、FINISH 后持久 latch 重开核验、owner 不可用 fail-closed。 |
+| 6. 替换旧计时 | policy 分支独立于旧 `foregroundSession`，不运行旧 responder ticker/业务 reader。两端只因本地许可、有效原 CLOSE、absolute ceiling 或稳定错误终止。 | 防止健康空闲在 15s 被旧规则杀死；缺 policy 原函数不改。 | 有 policy 双端真实空闲 ≥180s；无 policy 原 5s×3 与 CLOSE 测试原样；业务黑洞不续许可。 |
+| 7. trusted config | `GateCPeerConfig.SessionLiveness *SessionLivenessConfig`：仅 `mode`、`missed_rounds`，缺省 M=3，整数仅 2/3；文件原始值严格校验，禁止未知成员、弱类型转换与 env 覆盖。预检冻结预算及 trusted tunnel factory 的 tap capability，缺能力在 SSH/socket 前 `unavailable`；创建后再断言实际 registrar。 | 可选接口不破坏已有 fake tunnel；生产 factory 的能力声明由内部代码固定，不是外部授权开关。C1c 必填仍留后门裁决。 | YAML 未知/非整数/null/越界/env 注入拒绝或无效；旧配置序列化不变；missing capability 零 SSH/UDP；实际不匹配关闭。 |
+| 8. 错误与 witness | 五个 `session_liveness_*` class 按 §8；沿用 terminal stage、retryable=false，运行期 burned/finish=true；仅新错误加 `finish_recorded`，旧 JSON 不变。新增可选 witness 只含计数、elapsed、绑定成功布尔和 drained，不含 nonce/seq/digest/地址。 | 运行期错误不伪装 preflight；不泄漏对端身份或挑战材料。 | 五类 JSON golden、隐私扫描、preflight/runtime 负向及旧 golden 原样。 |
+| 9. SessionEnd/CLOSE | 新 `SessionEnd="liveness_timeout"` 区别旧 `inactivity_ceiling`；原 WYCE CLOSE 只在仍有效许可内 best-effort 发送，不恢复已过期 session。 | CLOSE 不构成租约续期或新 protocol negotiation。 | expiry 与 CLOSE 同刻、有效/无效 CLOSE、writer cancel 竞态与零过期发送。 |
+| 10. CI 证据 | 新独立 required liveness jobs：fake-clock/codec/controller race×20；三 profile 真 WG 无业务 ≥180s（含 rekey）；loopback SSH 与隔离 netns TUN idle/blackhole；SIGSTOP/SIGCONT OS 近似与资源残留见证。旧 required jobs 保留。 | 长测试独立，不能吞进旧短 timeout 或以 skip/advisory 冒充完成；无本地 Linux 权限明确记未执行，由 required CI 提供实测。 | `WINKYOU_*_REQUIRED=1` 防静默 skip；M=2 的 45/47s 与 M=3 的 65/67s；stdout/artifact 零私密材料；首跑失败留证不调大上限。 |
+
+### 12.3 执行状态
+
+§12.1 停止项已由维护者关闭；继续同一 Draft #112，按 docs → config → tap → gate →
+controller → composition → gates/CI/evidence 小步实施。§9 验收在此提交仍全部待执行。
+不合并、不自动推进 C1c/E/现场；旧建立协议、预算与默认路径不变。
