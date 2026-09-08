@@ -768,3 +768,34 @@ candidate/absolute 时间，成功仍要求 ready/echo/FINISH/排水，不能以
 完整 C1b 重复矩阵、全仓结果与每个最终 SHA 的 CI 在 [PR #110](https://github.com/houyuwushang/winkyou/pull/110)
 描述中逐项记录；上述定向结果不能代替它们。保留全部首次失败，不提前宣称全绿，原
 §6.1–6.11 内容保持。
+
+### 6.13 responder 慢回归隔离：前置候选反例与验证范围
+
+`ee4a98684c27acbead48561d599b467bbd9978e0` 的
+[PR 首跑](https://github.com/houyuwushang/winkyou/actions/runs/34139732505) 与
+[push 首跑](https://github.com/houyuwushang/winkyou/actions/runs/34139728807)
+最终 31/33，均 attempt=1，无 rerun。四个 consumer/completion 步骤已通过，completion
+实际 191–196s。两个 Linux memory job 全部通过，包括各自 fresh100（111573ms /
+114338ms、residue=0）；Windows 后续 cancel/drift/fresh100 被前置失败跳过，不计通过。
+
+| Windows 首跑反例 | 失败子场景 | candidate I/R（winner 全为 0） |
+| --- | --- | --- |
+| [PR job](https://github.com/houyuwushang/winkyou/actions/runs/34139732505/job/101798772965) | responder slow / hard-16k 两次 | 16384/14934、15175/15518 |
+| [push job](https://github.com/houyuwushang/winkyou/actions/runs/34139728807/job/101798761174) | responder slow / hard-16k 四次、predictive 一次 | 16229/16384、15292/16384、16122/16384、15305/15113；32/32 |
+
+两个慢步骤实际 511.998s / 507.083s，非 10m runner timeout。七次反例全在
+`candidates → terminal`，`hard_nat_candidate_exhausted` 或对端 `oob_stream_closed`；
+慢注入 calls=0、delay=0，尚未进入 FINISHED completion。十四份失败端点见证均为
+Gate B terminal FINISH=true、safety clear、carrier drained=true；随后原 natsim/governor
+残留门未报错，但不能以该干净失败替代成功。
+
+同 head 本地完整 C1b race×20 PASS 971.918s：普通/CLI 各 60/60、I/R 慢 FINISH 120/120、
+配置 480/480；120 次真实 post-fsync 等待 3500–3502ms，双方 UDP 快照均不增长。
+全仓一次 PASS（88 包，governor 232.886s）。这些通过不覆盖远端反例，也不证明 #111
+loopback absence 的原 15s 问题已修复。
+
+维护者随后授权 [ADR §19.11](./adr/ADR-N3C-GATE-C1-SSH-PRODUCT-ASSEMBLY.md#1911-responder-慢回归独立执行2026-09-08维护者已授权)
+的唯一新 job：隔离 responder 测试 profile，并保留全部原 fixture、窗口和断言。
+predictive 32/32 仍未选出 winner，因此不能把所有反例直接归因于 Hard16 未发完；
+并行争用解释仍须新矩阵验证。本节先记录范围与 RED，后续确切命令、实测结果和最终
+head CI 写入 PR #110，未完成的项目不提前标绿；不重跑覆盖，不混修 Gate B。

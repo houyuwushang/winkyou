@@ -1365,3 +1365,27 @@ detach、post-OOB echo、carrier 8/8 和残留检查不变。按 §19.6 精确�
 
 本轮测试命令、原 28/33 RED、选择器覆盖证明和实际结果追加到 C1b 证据 §6.12；通过前
 不预填绿灯，不推进 C1c/现场。原 §6.1–6.11 保留，不以测试参数更新删除历史。
+
+### 19.11 responder 慢回归独立执行（2026-09-08，维护者已授权）
+
+维护者在收到 `ee4a986` 首跑 31/33 及窄范围分组建议后明确继续，授权仅为 responder
+慢 FINISH 增加独立 Linux/Windows required job。原实施提示词“不新增 job”及 §19.10
+第 2 项保留其它步骤的限制，仅在这一个测试入口的迁移上由本节取代；不授权改求解器。
+
+1. 原 memory job 仍为 25m。initiator 慢 FINISH 和 fixture 配置检查保留原步骤、10m
+   runner、race×20；ordinary/CLI/ownership、consumer/completion、取消、drift/exhaustion
+   和 fresh100 仍必跑。仅将 responder 慢 FINISH 入口迁到独立两平台 job。
+2. 独立 job 为 required、15m、无条件执行、无失败容忍或重试，矩阵 fail-fast=false。
+   精确执行原 responder 顶层入口，`-race -parallel=1 -count=20 -timeout=10m`，保留
+   三个 profile。`-parallel=1` 只限制 Go 测试框架中不同 profile 的并发，不改一对端点
+   内部 goroutine、协议、时钟或调度。verbose 输出保留每个子场景的实际完成与见证。
+3. fixture/body、predictive 100ms / asymmetric 250ms / hard-16k 2s candidate 窗口、
+   原 absolute、session 10s、3500ms 注入、3s/三包、nonce/AD、预算、计费/排水及
+   成功断言均不变；不以干净失败替代成功，不增加候选、重试、fallback 或现场能力。
+4. 新覆盖门禁须拒绝漏角色、重复执行、缺平台、去除串行约束、减少次数、过滤子场景、
+   条件/advisory/依赖失败跳过；原 39 个 consumer 入口的分区守门仍通过。
+5. `ee4a986` 七个 Windows 反例全在 candidates 阶段，慢注入 calls=0；并发争用只是
+   待验证解释。保留首次失败及逐例计数。隔离后仍有反例即停止并报告，不通过增加
+   窗口或包数求绿。通过仅证明此测试调度下的有界完成，不是长期在线或现场证明。
+
+证据见 C1b 记录 §6.13 与 PR #110。保持 Draft/未合并，#109 不关闭；不推进 C1c/现场。
