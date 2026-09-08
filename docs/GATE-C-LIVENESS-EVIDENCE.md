@@ -163,3 +163,33 @@ architecture 24.307s；全仓及 tagged vet 通过。完整矩阵结果以当前
 另有 asymmetric 建立期 `attempt_expired` / `hard_nat_candidate_exhausted`：尚未 FINISH，
 无 liveness policy。此签名不等于 #97/#101/#111 的已登记签名；保留日志，不冒充允许透明重跑的
 既知失败，不混改 Gate B 或旧 fixture 的时序预算。
+
+## 9. 非 proof 测试的取证修正
+
+`2f0684d` 的 [Windows real-WG job](https://github.com/houyuwushang/winkyou/actions/runs/34208056242/job/102002182598)
+已通过三 profile idle 和六路黑洞，但新增 nonproof 场景有两种 RED，均保留：
+两个并行场景在建立阶段候选耗尽，未进入 liveness；control-only 场景错误要求每端分别
+出现 empty keepalive 和 handshake。固定版本 WireGuard 的 `timersAnyAuthenticatedPacketSent`
+会撤销本端 keepalive timer，不保证每端都发送所有控制子类型。
+
+- 四个独立 nonproof 场景改为串行，不再竞争各自 500ms 的测试专属候选窗口；窗口本身、
+  Gate B 生产预算、两端真实并发和每场景 65s 无 proof 终局均不改，不重试。
+  该 CI step 的测试运行器上限从 3min 改为 6min，仅容纳四个串行窗口；整个 job 仍 12min。
+- 两端仍分别断言 0 matching PONG、相同稳定 timeout、FINISH/排水/精确 UDP 总数；
+  自动控制改由底层成功 `WriteTo` 独立计数，要求这一对 session 实际发出两种子类型。
+  不能用接纳计数、业务/128-byte WYCL、失败写入、短写或 fault 之前的握手凑数。
+  这是修正错误的逐端对称假设，不把任意原始流量当作续租证明，不注入额外控制报文。
+  新十项计数分类/阶段/方向/失败写入测试 race×20 通过。
+- 仅本 PR 新增的 nonproof 测试、CI 调度和见证改变，旧测试期望值、WireGuard 版本及
+  Keepalive=0 不动。修正后的实际长窗口结果以当前 PR 验证记录为准。
+
+同 head 的 push CI 另有旧 Gate B3 M-X `before_winner` 独立 conntrack 观察器失败
+（`reverse-flow command unavailable`）；同 head PR-event 对应 job 通过，失败 run 的
+restoration/readback、namespace handles 和 socket/process/conntrack/lock/veth 均归零。
+保留[失败 job](https://github.com/houyuwushang/winkyou/actions/runs/34208051866/job/102002168881)，
+不按 #97/#101/#111 的例外重跑、不混修它。
+
+本地全量 architecture race×20 首次运行器上限设为 10min，603.377s 返回测试总超时；
+当时当前 Gate A 静态扫描单项仅运行 0s，堆栈在 AST 扫描，未报门禁断言失败。
+保留原日志，完整包以更长的**测试运行器**上限再次验证；不修改任何产品 deadline，
+此前已通过的 focused liveness/mutation race×20 不冒充完整包通过。

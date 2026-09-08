@@ -4,6 +4,7 @@ package governor_test
 
 import (
 	"context"
+	"encoding/binary"
 	"errors"
 	"net/netip"
 	"os"
@@ -34,6 +35,8 @@ type gateC1bLivenessCase struct {
 	restart        bool
 	trafficSide    int // 1/2=one-way business, 3=WG control only, 4=garbage RX; 0=off
 	trafficBatches atomic.Uint64
+	controlPackets [2]atomic.Uint64 // successful post-fault WG handshake writes
+	emptyPackets   [2]atomic.Uint64 // successful post-fault WG empty keepalive writes
 }
 
 type livenessRestartIOTrap struct{ calls atomic.Int64 }
@@ -127,13 +130,26 @@ func TestSessionLivenessOneWayTrafficCannotReplaceProofRequired(t *testing.T) {
 	}
 	for side := 1; side <= 4; side++ {
 		t.Run(strconv.Itoa(side), func(t *testing.T) {
-			t.Parallel()
+			// These are four independent long-window counterexamples, not a
+			// concurrent candidate-search load test. Keep their original 500ms
+			// fixture search budget, but do not contend four setups on a runner.
 			profile := gateC1bMemoryProfiles[0]
 			profile.liveness = &gateC1bLivenessCase{rounds: 3, hold: time.Second, lossDirection: 3, trafficSide: side, identitySlot: 10 + side}
 			profile.candidateTime = 500 * time.Millisecond
 			runGateC1bMemoryProductProfile(t, "liveness-one-way-"+strconv.Itoa(side), profile)
 			if side != 3 && profile.liveness.trafficBatches.Load() < 50 {
 				t.Fatal("continuous nonproof traffic not demonstrated")
+			}
+			if side == 3 {
+				p := profile.liveness
+				// WG's authenticated send cancels its local keepalive timer. It
+				// need not send every automatic subtype on BOTH endpoints. Require
+				// both kinds actually on the wire in this pair, while the outcome
+				// oracle above still requires BOTH permits to expire with 0 PONGs.
+				if p.controlPackets[0].Load()+p.controlPackets[1].Load() == 0 || p.emptyPackets[0].Load()+p.emptyPackets[1].Load() == 0 {
+					t.Fatal("pair did not actually emit both handshake and empty keepalive without proof")
+				}
+				t.Logf("nonproof_control_actual handshake=%d/%d empty=%d/%d both_permits_expired=true", p.controlPackets[0].Load(), p.controlPackets[1].Load(), p.emptyPackets[0].Load(), p.emptyPackets[1].Load())
 			}
 			t.Logf("nonproof_traffic mode=%d batches=%d lost_WYCL=%d/%d lease_renewed=false residue=0", side, profile.liveness.trafficBatches.Load(), profile.liveness.drops[0].Load(), profile.liveness.drops[1].Load())
 		})
@@ -144,7 +160,30 @@ func (d *livenessLossDatagram) WriteTo(ctx context.Context, b []byte, target net
 	if n > 0 {
 		d.proof.lastWrite[d.side].Store(time.Now().UnixNano())
 	}
+	if err == nil && n == len(b) {
+		d.proof.recordCompletedAutomatic(d.side, b)
+	}
 	return n, err
+}
+
+func (p *gateC1bLivenessCase) recordCompletedAutomatic(side int, packet []byte) {
+	if p.trafficSide != 3 || p.faultAt.Load() == 0 || len(packet) < 4 {
+		return
+	}
+	switch binary.LittleEndian.Uint32(packet[:4]) {
+	case 1:
+		if len(packet) == 148 {
+			p.controlPackets[side].Add(1)
+		}
+	case 2:
+		if len(packet) == 92 {
+			p.controlPackets[side].Add(1)
+		}
+	case 4:
+		if len(packet) == 32 {
+			p.emptyPackets[side].Add(1)
+		}
+	}
 }
 
 func TestSessionLivenessMemoryFreshComposition(t *testing.T) {
@@ -279,9 +318,6 @@ func validateGateC1bLivenessOutcome(t *testing.T, profile gateC1bMemoryProfile, 
 	}
 	if profile.liveness.trafficSide != 0 && lv.PongValidated != 0 {
 		t.Fatal("nonproof traffic renewed permit")
-	}
-	if profile.liveness.trafficSide == 3 && (wg.ActivePolicy.EmptyKeepalives == 0 || wg.ActivePolicy.HandshakeInitiations+wg.ActivePolicy.HandshakeResponses == 0) {
-		t.Fatal("both automatic keepalive and handshake traffic must be observed")
 	}
 	if profile.liveness.trafficSide == 4 && wg.ActiveReads < 50 {
 		t.Fatal("garbage did not reach raw receive boundary")

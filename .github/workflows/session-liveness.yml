@@ -61,7 +61,8 @@ jobs:
       - name: M2 and M3 - bilateral and both unilateral blackholes
         run: go test -race -tags=c1bproof ./internal/governor -run '^TestSessionLivenessMemoryBlackholesRequired$' -count=1 -v -timeout=4m
       - name: Persistent-timer counterexample - continuous one-way business and WG control without PONG
-        run: go test -race -tags=c1bproof ./internal/governor -run '^TestSessionLivenessOneWayTrafficCannotReplaceProofRequired$' -count=1 -v -timeout=3m
+        # Four serial 65s proofs; no change to any session/search/drain bound.
+        run: go test -race -tags=c1bproof ./internal/governor -run '^TestSessionLivenessOneWayTrafficCannotReplaceProofRequired$' -count=1 -v -timeout=6m
 
   fresh100:
     name: Liveness 100 fresh lifecycles
