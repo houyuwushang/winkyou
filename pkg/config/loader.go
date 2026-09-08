@@ -35,6 +35,9 @@ func Load(path string) (*Config, error) {
 	if err := v.Unmarshal(&cfg); err != nil {
 		return nil, err
 	}
+	if err := loadFileSessionLiveness(v.ConfigFileUsed(), &cfg); err != nil {
+		return nil, err
+	}
 
 	if cfg.Node.Name == "" {
 		cfg.Node.Name = hostnameOr("wink-node")

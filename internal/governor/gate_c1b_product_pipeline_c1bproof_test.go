@@ -54,13 +54,17 @@ type gateC1bMemoryProfile struct {
 	slowFinish          bool
 	slowResponderFinish bool
 	cancelAfterFinish   bool
+	liveness            *gateC1bLivenessCase
 }
 
 // Test-only session configuration, not a product deadline or probe allowance.
 // ADR 19.10 gives ordinary/CLI/cancellation/fresh100 the same 10s session as
 // slow FINISH. The profile absolute/candidate windows and all I/O caps stay
 // unchanged; the production 5s validation floor is not a success SLA.
-func (gateC1bMemoryProfile) sessionCeiling() time.Duration {
+func (p gateC1bMemoryProfile) sessionCeiling() time.Duration {
+	if p.liveness != nil {
+		return 10 * time.Minute
+	}
 	return 10 * time.Second
 }
 
@@ -337,12 +341,15 @@ func runGateC1bMemoryProductProfile(t *testing.T, label string, test gateC1bMemo
 	}
 	virtual := [2]string{"10.88.0.1", "10.88.0.2"}
 	interfaceNames := [2]string{"wink-c1b-left", "wink-c1b-right"}
-	if test.slowResponderFinish {
+	if test.slowResponderFinish || test.liveness != nil {
 		// Parallel memory fixtures still pass real process-local ownership
 		// validation. Give each one distinct synthetic routes/interfaces;
 		// never bypass the product's collision guard.
 		for index, profile := range gateC1bMemoryProfiles {
 			if profile.name == test.name {
+				if test.liveness != nil {
+					index += test.liveness.identitySlot * 3
+				}
 				virtual = [2]string{"198.51.100." + strconv.Itoa(61+index*4), "198.51.100." + strconv.Itoa(62+index*4)}
 				interfaceNames = [2]string{"wc1b-l-" + strconv.Itoa(index), "wc1b-r-" + strconv.Itoa(index)}
 			}
@@ -376,6 +383,9 @@ func runGateC1bMemoryProductProfile(t *testing.T, label string, test gateC1bMemo
 			MemoryInterfaceName: interfaceNames[index], MemoryMTU: 1280,
 			SessionCeiling: test.sessionCeiling(),
 		}}
+		if test.liveness != nil {
+			cfg.GateC.Peers[0].SessionLiveness = &config.SessionLivenessConfig{Mode: "challenge_v1", MissedRounds: test.liveness.rounds}
+		}
 		if err := cfg.Validate(); err != nil {
 			t.Fatal(err)
 		}
@@ -429,7 +439,11 @@ func runGateC1bMemoryProductProfile(t *testing.T, label string, test gateC1bMemo
 	var readyMu sync.Mutex
 	initiatorCtx, cancelInitiator := context.WithCancel(context.Background())
 	defer cancelInitiator()
-	responderCtx, cancelResponder := context.WithTimeout(context.Background(), 30*time.Second)
+	proofTimeout := 30 * time.Second
+	if test.liveness != nil {
+		proofTimeout += test.liveness.hold + 70*time.Second
+	}
+	responderCtx, cancelResponder := context.WithTimeout(context.Background(), proofTimeout)
 	defer cancelResponder()
 	var finishCancelWitness func() int32
 	if test.cancelAfterFinish {
@@ -445,6 +459,28 @@ func runGateC1bMemoryProductProfile(t *testing.T, label string, test gateC1bMemo
 		stages []string
 	}
 	results := make(chan outcome, 2)
+	var livenessCancelTimer *time.Timer
+	var livenessRestartProofs [2]gatecorchestrator.MemoryProofOptions
+	livenessTimerDone := make(chan struct{})
+	scheduleLiveness := func(fn func()) *time.Timer {
+		return time.AfterFunc(test.liveness.hold, func() { defer close(livenessTimerDone); fn() })
+	}
+	var joinTimerOnce sync.Once
+	joinLivenessTimer := func() {
+		joinTimerOnce.Do(func() {
+			readyMu.Lock()
+			timer := livenessCancelTimer
+			readyMu.Unlock()
+			if timer != nil && !timer.Stop() {
+				select {
+				case <-livenessTimerDone:
+				case <-time.After(2 * time.Second):
+					t.Error("liveness proof timer did not join")
+				}
+			}
+		})
+	}
+	defer joinLivenessTimer()
 	for index := range 2 {
 		index := index
 		go func() {
@@ -473,13 +509,72 @@ func runGateC1bMemoryProductProfile(t *testing.T, label string, test gateC1bMemo
 						readyMu.Lock()
 						ready++
 						if ready == 2 {
-							cancelInitiator()
+							if test.liveness == nil {
+								cancelInitiator()
+							} else {
+								test.liveness.started = time.Now()
+								if test.liveness.fault != "" {
+									livenessCancelTimer = scheduleLiveness(func() {
+										switch test.liveness.fault {
+										case "business":
+											businessCtx, stop := context.WithTimeout(initiatorCtx, 5*time.Second)
+											test.liveness.faultError = test.liveness.controls[0].ExchangeBusiness(businessCtx, test.liveness.controls[1])
+											stop()
+											cancelInitiator()
+										case "normal-admission":
+											test.liveness.admission, test.liveness.faultError = test.liveness.controls[0].RejectNormalAdmission()
+											cancelInitiator()
+										case "automatic-control":
+											test.liveness.faultError = test.liveness.controls[0].ExceedAutomaticControl(initiatorCtx)
+										case "bypass-admission":
+											test.liveness.controls[0].BypassAdmission()
+										case "owner-unavailable":
+											test.liveness.faultError = machines[0].Close()
+										}
+									})
+								} else if test.liveness.lossDirection == 0 {
+									livenessCancelTimer = scheduleLiveness(cancelInitiator)
+								} else {
+									livenessCancelTimer = scheduleLiveness(func() {
+										test.liveness.faultAt.Store(time.Now().UnixNano())
+										test.liveness.lossMask.Store(test.liveness.lossDirection)
+										if test.liveness.trafficSide != 0 && test.liveness.trafficSide != 3 {
+											ticker := time.NewTicker(time.Second)
+											defer ticker.Stop()
+											from := test.liveness.trafficSide - 1
+											for {
+												var trafficErr error
+												if test.liveness.trafficSide == 4 {
+													trafficErr = errors.Join(test.liveness.controls[0].InjectSyntheticGarbage(initiatorCtx), test.liveness.controls[1].InjectSyntheticGarbage(initiatorCtx))
+												} else {
+													trafficErr = test.liveness.controls[from].OneWayBusiness(initiatorCtx, test.liveness.controls[1-from])
+												}
+												if trafficErr != nil {
+													return
+												}
+												test.liveness.trafficBatches.Add(1)
+												select {
+												case <-initiatorCtx.Done():
+													return
+												case <-ticker.C:
+												}
+											}
+										}
+									})
+								}
+							}
 						}
 						readyMu.Unlock()
 					}
 					return nil
 				},
 				StageRoot: namespaces[index],
+			}
+			if test.liveness != nil {
+				proof.Random = nil
+				proof.LivenessArmed = func(control gatecorchestrator.LivenessMemoryProofControl) { test.liveness.controls[index] = control }
+				proof.ProbeFactory = &livenessLossFactory{Factory: proof.ProbeFactory, proof: test.liveness, side: index}
+				livenessRestartProofs[index] = proof
 			}
 			var result gatecorchestrator.Result
 			var runErr error
@@ -512,13 +607,25 @@ func runGateC1bMemoryProductProfile(t *testing.T, label string, test gateC1bMemo
 		select {
 		case got := <-results:
 			outcomes = append(outcomes, got)
-		case <-time.After(35 * time.Second):
+			if test.liveness != nil && test.liveness.isHardFault() && got.role == directattempt.RoleInitiator {
+				cancelResponder()
+			}
+		case <-time.After(proofTimeout + 5*time.Second):
 			t.Fatal("Gate C1b memory product pipeline exceeded its bound")
 		}
 	}
 	matchedFault := 0
+	joinLivenessTimer()
 	var packetProofs [2]gateC1bPacketProof
 	for _, got := range outcomes {
+		if test.liveness != nil {
+			side := 0
+			if got.role == directattempt.RoleResponder {
+				side = 1
+			}
+			validateGateC1bLivenessOutcome(t, test, got.result, got.err, got.stages, nats[side].Snapshot().OutboundPackets, side)
+			continue
+		}
 		if test.cancelAfterFinish {
 			var failure *gatecorchestrator.Failure
 			if !errors.As(got.err, &failure) || failure.Retryable || !failure.CredentialBurned ||
@@ -642,7 +749,7 @@ func runGateC1bMemoryProductProfile(t *testing.T, label string, test gateC1bMemo
 	if finishCancelWitness != nil && finishCancelWitness() != 1 {
 		t.Error("post-fsync caller cancellation was not exactly once")
 	}
-	if test.fault == "" && !test.cancelAfterFinish {
+	if test.fault == "" && !test.cancelAfterFinish && test.liveness == nil {
 		if err := validateGateC1bPacketAccounting(test, packetProofs, delayProof); err != nil {
 			t.Error(err)
 		}
@@ -666,9 +773,27 @@ func runGateC1bMemoryProductProfile(t *testing.T, label string, test gateC1bMemo
 	}
 	for index, machine := range machines {
 		snapshot := machine.Snapshot()
+		wantTrip := test.liveness != nil && index == 0 && (test.liveness.fault == "automatic-control" || test.liveness.fault == "bypass-admission")
 		if snapshot.ActivePeers != 0 || snapshot.ActiveAttempts != 0 || snapshot.HeavyweightAttempts != 0 ||
-			snapshot.Reserved != (governor.Resources{}) || snapshot.SafetyTrip.BlocksActiveWork {
+			snapshot.Reserved != (governor.Resources{}) || snapshot.SafetyTrip.BlocksActiveWork != wantTrip {
 			t.Fatalf("%s side %d governor residue=%+v", label, index, snapshot)
+		}
+		if wantTrip {
+			if snapshot.SafetyTrip.State != governor.SafetyTripTripped || snapshot.SafetyTrip.Record.Reason != governor.SafetyTripHardLimit {
+				t.Fatal("wrong persistent trip category")
+			}
+			if err := machine.Close(); err != nil {
+				t.Fatal("trip owner close failed")
+			}
+			reopened, err := test.acquire(namespaces[index], "liveness-reopen")
+			if reopened != nil {
+				_ = reopened.Close()
+				t.Fatal("tripped owner reopened")
+			}
+			if !errors.Is(err, governor.ErrSafetyTripped) {
+				t.Fatal("durable trip absent on reopen")
+			}
+			t.Logf("liveness fault=%s owner=original attempt=detached persistent_trip=true reopen=blocked residue=0", test.liveness.fault)
 		}
 		if test.fault != "" {
 			status, err := governor.InspectLoopbackCarrierTestLedger(namespaces[index], now)
@@ -684,6 +809,50 @@ func runGateC1bMemoryProductProfile(t *testing.T, label string, test gateC1bMemo
 				t.Errorf("side %d cancellation rewrote or lost successful durable FINISH", index)
 			}
 		}
+	}
+	if test.liveness != nil && test.liveness.restart {
+		for index, machine := range machines {
+			if machine.Close() != nil {
+				t.Fatal("initial owner did not release before restart")
+			}
+			restarted, err := test.acquire(namespaces[index], "liveness-restart")
+			if err != nil {
+				t.Fatal("restart could not acquire the same owner namespace")
+			}
+			t.Cleanup(func() { _ = restarted.Close() })
+			ledger, err := governor.LoopbackCarrierTestLedger(restarted)
+			if err != nil {
+				t.Fatal("restart ledger unavailable")
+			}
+			if governor.SetCarrierTestLedgerTime(restarted, now) != nil {
+				t.Fatal("restart clock fixture failed")
+			}
+			artifact, err := gatecattempt.ParseArtifact([][]byte{set.Initiator, set.Responder}[index], now)
+			if err != nil {
+				t.Fatal("same artifact did not parse for replay proof")
+			}
+			t.Cleanup(artifact.Close)
+			proof := livenessRestartProofs[index]
+			proof.Machine, proof.Ledger, proof.Artifact = restarted, ledger, artifact
+			proof.Progress = func(gatecorchestrator.Progress) error { return nil }
+			proof.LivenessArmed = nil
+			trap := &livenessRestartIOTrap{}
+			proof.ProbeFactory, proof.Stream = trap, trap
+			replayCtx, stop := context.WithTimeout(context.Background(), time.Second)
+			replay, replayErr := gatecorchestrator.RunMemoryProof(replayCtx, proof)
+			stop()
+			artifact.Close()
+			if !errors.Is(replayErr, governor.ErrPairingCredentialUsed) || replay.DataPlaneReady || replay.Witness.SSH.Spawned || trap.calls.Load() != 0 {
+				t.Fatalf("same artifact restart was not a zero-I/O ledger rejection: %v", replayErr)
+			}
+			if ledger.Status().Sequence != 3 {
+				t.Fatal("replay mutated original FINISH")
+			}
+			if restarted.Close() != nil {
+				t.Fatal("restart owner residue")
+			}
+		}
+		t.Log("same_artifact_restart endpoints=2 credential_used=true emissions=0 sockets=0 FINISH=unchanged lock=free")
 	}
 	if test.cli {
 		if claimed, err := gatecstage.ClaimMemoryProof(namespaces[1], now); err == nil || claimed != nil {

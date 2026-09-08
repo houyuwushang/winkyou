@@ -83,11 +83,20 @@ func resolveTrustedPeer(input preparedInput) (trustedPeer, error) {
 		}
 		allowed = append(allowed, prefix)
 	}
+	var liveness *livenessBudget
+	if selected.SessionLiveness != nil {
+		budget, err := freezeLivenessBudget(selected.SessionCeiling, selected.SessionLiveness.MissedRounds)
+		if err != nil {
+			return trustedPeer{}, err
+		}
+		liveness = &budget
+	}
 	return trustedPeer{
 		ref: selected.Ref, privateKey: privateKey, publicKey: publicKey, allowedIPs: allowed,
 		localVirtual: localVirtual.Unmap(), remoteVirtual: remoteVirtual.Unmap(),
 		interfaceName: selected.MemoryInterfaceName, mtu: selected.MemoryMTU,
 		sessionCeiling: selected.SessionCeiling,
+		liveness:       liveness,
 	}, nil
 }
 

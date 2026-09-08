@@ -209,6 +209,10 @@ func validateGateC(privateKey string, gate GateCConfig) error {
 	seenInterfaces := make(map[string]struct{}, len(gate.Peers))
 	for index, peer := range gate.Peers {
 		prefix := fmt.Sprintf("gate_c.peers[%d]", index)
+		if peer.SessionLiveness != nil && (peer.SessionLiveness.Mode != "challenge_v1" ||
+			(peer.SessionLiveness.MissedRounds != 2 && peer.SessionLiveness.MissedRounds != 3)) {
+			return fmt.Errorf("%s.session_liveness requires challenge_v1 and missed_rounds 2 or 3", prefix)
+		}
 		if !safeGateCName(peer.Ref, 256) || !safeGateCInterfaceName(peer.MemoryInterfaceName) ||
 			!canonicalWireGuardKey(peer.PublicKey) ||
 			peer.MemoryMTU < 1280 || peer.MemoryMTU > 9000 ||

@@ -1,0 +1,8 @@
+[
+  {"class":"session_liveness_timeout","stage":"terminal","credential_burned":true,"retryable":false,"profile":"","resource_class":"","finish_recorded":true},
+  {"class":"session_liveness_protocol_invalid","stage":"terminal","credential_burned":true,"retryable":false,"profile":"","resource_class":"","finish_recorded":true},
+  {"class":"session_liveness_clock_invalid","stage":"terminal","credential_burned":true,"retryable":false,"profile":"","resource_class":"","finish_recorded":true},
+  {"class":"session_liveness_budget_exceeded","stage":"terminal","credential_burned":true,"retryable":false,"profile":"","resource_class":"","finish_recorded":true},
+  {"class":"session_liveness_unavailable","stage":"terminal","credential_burned":true,"retryable":false,"profile":"","resource_class":"","finish_recorded":true},
+  {"class":"session_liveness_unavailable","stage":"preflight","credential_burned":false,"retryable":false,"profile":"","resource_class":"","finish_recorded":false}
+]

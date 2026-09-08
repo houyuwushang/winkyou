@@ -73,6 +73,7 @@ type Failure struct {
 	ResourceClass    string         `json:"resource_class"`
 	Counts           map[string]int `json:"counts,omitempty"`
 	Cause            error          `json:"-"`
+	FinishRecorded   *bool          `json:"finish_recorded,omitempty"`
 }
 
 func (failure *Failure) Error() string {
@@ -108,6 +109,7 @@ type Witness struct {
 	Echo            EchoWitness                         `json:"echo"`
 	InterfaceClosed bool                                `json:"interface_closed"`
 	TunnelStopped   bool                                `json:"tunnel_stopped"`
+	Liveness        *LivenessWitness                    `json:"liveness,omitempty"`
 }
 
 type Result struct {
@@ -165,6 +167,7 @@ type trustedPeer struct {
 	interfaceName  string
 	mtu            int
 	sessionCeiling time.Duration
+	liveness       *livenessBudget
 }
 
 type conflictState struct {
@@ -175,20 +178,23 @@ type conflictState struct {
 }
 
 type dependencies struct {
-	now              func() time.Time
-	artifactNow      func() time.Time
-	random           io.Reader
-	newSSHAuthority  func(netip.AddrPort) (sshassembly.SSHEndpointAuthority, error)
-	configureGateB   func(*gateb.Config)
-	inspectConflict  func(context.Context, preparedInput, trustedPeer) (conflictState, error)
-	inspectMachine   func() error
-	openSSH          func(context.Context, sshassembly.Config) (sshProductStream, error)
-	claimPending     func(time.Time) (*gatecstage.Claimed, error)
-	acquireMachine   func(hardnatplan.Profile, hardnatplan.ResourceClass, string) (*governor.Governor, *governor.PairingAdmissionLedger, error)
-	newChildStream   func(io.Reader, io.Writer, time.Time) (oobcarrier.BoundedStream, error)
-	newInterface     func(string, int) (netif.MemoryTestInterface, error)
-	newTunnel        func(tunnel.Config) (tunnel.Tunnel, error)
-	activityInterval time.Duration
+	now               func() time.Time
+	artifactNow       func() time.Time
+	random            io.Reader
+	newSSHAuthority   func(netip.AddrPort) (sshassembly.SSHEndpointAuthority, error)
+	configureGateB    func(*gateb.Config)
+	inspectConflict   func(context.Context, preparedInput, trustedPeer) (conflictState, error)
+	inspectMachine    func() error
+	openSSH           func(context.Context, sshassembly.Config) (sshProductStream, error)
+	claimPending      func(time.Time) (*gatecstage.Claimed, error)
+	acquireMachine    func(hardnatplan.Profile, hardnatplan.ResourceClass, string) (*governor.Governor, *governor.PairingAdmissionLedger, error)
+	newChildStream    func(io.Reader, io.Writer, time.Time) (oobcarrier.BoundedStream, error)
+	newInterface      func(string, int) (netif.MemoryTestInterface, error)
+	newTunnel         func(tunnel.Config) (tunnel.Tunnel, error)
+	activityInterval  time.Duration
+	innerTapCapable   func() bool
+	newLivenessClock  func() LivenessClock
+	livenessProofHook func(*livenessController)
 }
 
 var (

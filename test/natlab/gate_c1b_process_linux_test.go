@@ -125,7 +125,7 @@ func init() {
 	if writeN1JSON(cfg.ResultFile, result) != nil {
 		os.Exit(97)
 	}
-	if !result.OK {
+	if !result.OK && !gateC1bExpectedLivenessTimeout(cfg, result) {
 		os.Exit(98)
 	}
 	os.Exit(0)
@@ -175,7 +175,7 @@ func TestGateC1bHostProcess(t *testing.T) {
 	if writeN1JSON(cfg.ResultFile, result) != nil {
 		t.Fatal("Gate C1b result write failed")
 	}
-	if !result.OK {
+	if !result.OK && !gateC1bExpectedLivenessTimeout(cfg, result) {
 		t.Error("Gate C1b product pipeline failed")
 	}
 }
@@ -265,7 +265,7 @@ func runGateC1bPrivateSSHD(t *testing.T, cfg gateC1bHostConfig) {
 			t.Error("Gate C1b isolated sshd did not drain")
 		}
 	}()
-	deadline := time.Now().Add(gateC1bHostLimit)
+	deadline := time.Now().Add(gateC1bProofHostLimit(cfg))
 	ready := false
 	for time.Now().Before(deadline) {
 		if !ready {
@@ -386,8 +386,14 @@ func runGateC1bCLI(cfg gateC1bHostConfig, args []string) gateC1bProcessResult {
 	result := gateC1bProcessResult{Root: os.Getuid() == 0 && os.Geteuid() == 0}
 	parent, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	ctx, cancel := context.WithTimeout(parent, gateC1bHostLimit-2*time.Second)
+	ctx, cancel := context.WithTimeout(parent, gateC1bProofHostLimit(cfg)-2*time.Second)
 	defer cancel()
+	var livenessTimer *time.Timer
+	defer func() {
+		if livenessTimer != nil {
+			livenessTimer.Stop()
+		}
+	}()
 	proof := gatecorchestrator.NATLabProofOptions{Namespace: cfg.Namespace, Side: cfg.Side,
 		SSHSide: cfg.SSHSide, Observers: cfg.Observers}
 	var kernelInterface *gateC1bKernelInterface
@@ -432,7 +438,24 @@ func runGateC1bCLI(cfg gateC1bHostConfig, args []string) gateC1bProcessResult {
 		if progress.Stage == gatecorchestrator.StageDataPlaneReady && !cfg.Server {
 			// Stop only after one completed post-OOB echo; this is the CLI's
 			// normal caller cancellation path, not an attempt retry.
-			cancel()
+			if gateC1bLivenessEnabled(cfg) {
+				switch cfg.Fault {
+				case "liveness-idle":
+					livenessTimer = time.AfterFunc(180*time.Second, cancel)
+				case "liveness-pause":
+					livenessTimer = time.AfterFunc(35*time.Second, cancel)
+				}
+			} else {
+				cancel()
+			}
+		}
+		if cfg.Server && cfg.Fault == "liveness-consumer-crash" && progress.Stage == gatecorchestrator.StageDataPlaneReady {
+			// Only the independently owned endpoint process. The host waits for
+			// the post-FINISH marker; no product kill hook or timer is introduced.
+			livenessTimer = time.AfterFunc(3*time.Second, func() {
+				_ = os.WriteFile(cfg.StageFile+".fault", []byte(cfg.Fault), 0o600)
+				_ = syscall.Kill(os.Getpid(), syscall.SIGKILL)
+			})
 		}
 		return nil
 	}

@@ -65,6 +65,7 @@ type WireGuardSessionGateWitness struct {
 	ActiveReads         int
 	Closed              bool
 	CompletionFailure   *WireGuardCompletionFailure `json:",omitempty"`
+	ActivePolicy        *ActiveSessionWitness       `json:",omitempty"`
 }
 
 // WireGuardSessionGate is the only production consumer wrapper accepted by a
@@ -111,6 +112,7 @@ type WireGuardSessionGate struct {
 	peerFinishConfirmed bool
 	completionFailure   *WireGuardCompletionFailure
 	activeReady         chan struct{}
+	activePolicy        *activeSessionPolicy
 
 	closeOnce sync.Once
 	closeErr  error
@@ -283,22 +285,37 @@ func (gate *WireGuardSessionGate) WritePacket(ctx context.Context, packet []byte
 		gate.mu.Unlock()
 		return ErrWireGuardGateState
 	}
+	policy := gate.activePolicy
 	gate.inFlight++
 	gate.mu.Unlock()
+	if policy != nil {
+		if err := policy.beforeWrite(packet); err != nil {
+			gate.finishOperation()
+			_ = gate.Close()
+			return err
+		}
+	}
 	opCtx, done, err := gate.operationContext(ctx, state)
 	if err != nil {
 		gate.finishOperation()
 		return gate.fail(err)
 	}
 	err = gate.transport.WritePacket(opCtx, packet)
+	writerFailed := err != nil && opCtx.Err() == nil
 	done()
 	gate.mu.Lock()
 	gate.inFlight--
-	if err == nil && gate.state == WireGuardGateActive {
+	// With liveness armed, count a completed datagram even if Close won after
+	// the underlying write. Closing cannot retract a successful send. Keep the
+	// nil-policy witness behavior unchanged for the original C1b path.
+	if err == nil && (gate.state == WireGuardGateActive || policy != nil) {
 		gate.activeWrites++
 	}
 	gate.mu.Unlock()
 	if err != nil {
+		if policy != nil && writerFailed {
+			err = errors.Join(err, policy.writerFailed())
+		}
 		return gate.fail(err)
 	}
 	return nil
@@ -400,7 +417,8 @@ func (gate *WireGuardSessionGate) ReadPacket(ctx context.Context, dst []byte) (i
 			return n, meta, gate.fail(ErrWireGuardGate)
 		}
 		gate.inbound = append(gate.inbound, messageType)
-	} else if gate.state == WireGuardGateActive {
+	} else if gate.state == WireGuardGateActive || gate.activePolicy != nil {
+		// The read entered in Active; a concurrent close cannot undo receipt.
 		gate.activeReads++
 	}
 	gate.mu.Unlock()
@@ -477,6 +495,7 @@ func (gate *WireGuardSessionGate) Witness() WireGuardSessionGateWitness {
 		AttemptDetached: gate.detached, ActiveWrites: gate.activeWrites, ActiveReads: gate.activeReads,
 		Closed:            gate.state == WireGuardGateClosed,
 		CompletionFailure: completionFailure,
+		ActivePolicy:      gate.activePolicy.snapshot(),
 	}
 }
 

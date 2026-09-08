@@ -19,13 +19,15 @@ import (
 const gateC1bInnerPort = 32112
 
 type gateC1bTUNWitness struct {
-	Used         bool   `json:"used"`
-	Closed       bool   `json:"closed"`
-	KernelReads  uint64 `json:"kernel_reads"`
-	KernelWrites uint64 `json:"kernel_writes"`
-	InnerSends   uint64 `json:"inner_sends"`
-	InnerReads   uint64 `json:"inner_reads"`
-	NonIPv4Reads uint64 `json:"non_ipv4_reads"`
+	Used          bool   `json:"used"`
+	Closed        bool   `json:"closed"`
+	KernelReads   uint64 `json:"kernel_reads"`
+	KernelWrites  uint64 `json:"kernel_writes"`
+	InnerSends    uint64 `json:"inner_sends"`
+	InnerReads    uint64 `json:"inner_reads"`
+	NonIPv4Reads  uint64 `json:"non_ipv4_reads"`
+	ControlReads  uint64 `json:"control_reads,omitempty"`
+	ControlQueued int    `json:"control_queued,omitempty"`
 }
 
 // The only inner listener is a harness-owned, fixed TEST-NET UDP socket. Its
@@ -46,6 +48,9 @@ type gateC1bKernelInterface struct {
 	innerSends   atomic.Uint64
 	innerReads   atomic.Uint64
 	nonIPv4Reads atomic.Uint64
+	controlQueue chan []byte
+	controlReads atomic.Uint64
+	controlMu    sync.Mutex
 }
 
 func newGateC1bKernelInterface(cfg gateC1bHostConfig, name string, mtu int) (*gateC1bKernelInterface, error) {
@@ -63,6 +68,9 @@ func newGateC1bKernelInterface(cfg gateC1bHostConfig, name string, mtu int) (*ga
 	}
 	instance := &gateC1bKernelInterface{name: name, mtu: mtu, tun: tun,
 		local: netip.AddrPortFrom(local, gateC1bInnerPort), remote: netip.AddrPortFrom(remote, gateC1bInnerPort)}
+	if gateC1bLivenessEnabled(cfg) {
+		instance.controlQueue = make(chan []byte, 2)
+	}
 	// This fixture proves exactly the fixed IPv4 echo/CLOSE, not IPv6 address
 	// discovery. Disable it on this newly created, still-down TUN only. The
 	// namespace and fixed interface checks above precede this namespace-local
@@ -112,6 +120,9 @@ func (*gateC1bKernelInterface) AddRoute(*net.IPNet, net.IP) error {
 func (*gateC1bKernelInterface) RemoveRoute(*net.IPNet) error { return netif.ErrNotImplemented }
 
 func (instance *gateC1bKernelInterface) Read(buffer []byte) (int, error) {
+	if instance.controlQueue != nil {
+		return instance.readWithLiveness(buffer)
+	}
 	n, err := instance.tun.Read(buffer)
 	if n > 0 {
 		instance.kernelReads.Add(1)
@@ -131,6 +142,9 @@ func (instance *gateC1bKernelInterface) Write(buffer []byte) (int, error) {
 }
 
 func (instance *gateC1bKernelInterface) InjectPacket(buffer []byte) (int, error) {
+	if instance.controlQueue != nil && len(buffer) == 92 {
+		return instance.injectLiveness(buffer)
+	}
 	packet, err := parseGateB2IPv4UDP(buffer)
 	if err != nil || packet.source != instance.local || packet.destination != instance.remote || len(packet.payload) != 48 {
 		return 0, errors.New("isolated inner injection rejected")
@@ -168,18 +182,30 @@ func (instance *gateC1bKernelInterface) ReceivePacket(buffer []byte) (int, error
 
 func (instance *gateC1bKernelInterface) Close() error {
 	instance.closeOnce.Do(func() {
+		instance.controlMu.Lock()
+		defer instance.controlMu.Unlock()
+		instance.closed.Store(true)
 		if instance.inner != nil {
 			_ = instance.inner.Close()
 		}
 		_ = instance.tun.Close() // Non-persistent TUN removal also removes its routes/address.
-		instance.closed.Store(true)
+		if instance.controlQueue != nil {
+			for {
+				select {
+				case b := <-instance.controlQueue:
+					clear(b)
+				default:
+					return
+				}
+			}
+		}
 	})
 	return nil
 }
 
 func (instance *gateC1bKernelInterface) witness() gateC1bTUNWitness {
 	return gateC1bTUNWitness{Used: true, Closed: instance.closed.Load(), KernelReads: instance.kernelReads.Load(),
-		KernelWrites: instance.kernelWrites.Load(), InnerSends: instance.innerSends.Load(), InnerReads: instance.innerReads.Load(), NonIPv4Reads: instance.nonIPv4Reads.Load()}
+		KernelWrites: instance.kernelWrites.Load(), InnerSends: instance.innerSends.Load(), InnerReads: instance.innerReads.Load(), NonIPv4Reads: instance.nonIPv4Reads.Load(), ControlReads: instance.controlReads.Load(), ControlQueued: len(instance.controlQueue)}
 }
 
 var _ netif.MemoryTestInterface = (*gateC1bKernelInterface)(nil)
