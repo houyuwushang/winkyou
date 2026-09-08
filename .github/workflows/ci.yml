@@ -421,7 +421,7 @@ jobs:
       - name: Repeat slow durable FINISH with bounded test-session headroom
         run: >-
           go test -race -tags=c1bproof ./internal/governor
-          -run '^TestGateC1bMemory(Slow(Responder)?DurableFinishReachesPostOOBEcho|FixtureSessionWindows)$'
+          -run '^TestGateC1bMemory(SlowDurableFinishReachesPostOOBEcho|FixtureSessionWindows)$'
           -count=20 -timeout=10m
 
       - name: Repeat cancellation after successful durable FINISH
@@ -443,6 +443,36 @@ jobs:
           go test -tags=c1bproof ./internal/governor
           -run '^TestGateC1bMemoryProductPipelineFresh100$'
           -v -count=1 -timeout=9m
+
+  # ADR 19.11: isolate test-profile contention without changing any attempt
+  # window, injected FINISH delay, packet allowance, or in-pair concurrency.
+  gate-c1b-responder-slow:
+    name: Gate C1b Responder Slow FINISH (${{ matrix.os }}, required)
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    env:
+      GORACE: halt_on_error=1
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Prove the complete consumer and slow FINISH partitions
+        run: go test ./internal/architecture -run 'GateC1b.*CIPartition' -count=1
+
+      - name: Repeat isolated responder slow FINISH without cross-profile concurrency
+        run: >-
+          go test -race -tags=c1bproof ./internal/governor
+          -run '^TestGateC1bMemorySlowResponderDurableFinishReachesPostOOBEcho$'
+          -parallel=1 -count=20 -timeout=10m -v
 
   gate-c1b-netns-product-proof:
     name: Gate C1b Product Pipeline Netns Proof (required)

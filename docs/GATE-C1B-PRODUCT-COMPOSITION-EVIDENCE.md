@@ -799,3 +799,16 @@ loopback absence 的原 15s 问题已修复。
 predictive 32/32 仍未选出 winner，因此不能把所有反例直接归因于 Hard16 未发完；
 并行争用解释仍须新矩阵验证。本节先记录范围与 RED，后续确切命令、实测结果和最终
 head CI 写入 PR #110，未完成的项目不提前标绿；不重跑覆盖，不混修 Gate B。
+
+本轮独立入口的首次本地验证（同一原 fixture，额外 `-json` 仅用于统计）：
+
+| 验证 | 结果 |
+| --- | --- |
+| 新分组守门，旧 workflow → 新 workflow | RED 0.826s → GREEN 0.191s |
+| 全部 architecture / 分区守门 race×20 | PASS，4.757s / 6.475s；新增 16 类负向变异均拒绝 |
+| `go vet ./...` | PASS |
+| responder 三 profile，`-race -parallel=1 -count=20 -timeout=10m` | PASS 372.823s，60/60，无 skip / assertion / race 失败 |
+| 实际等待与双侧见证 | 60 次 3500–3501ms，UDP 快照均不增长；120 份 endpoint ready/FINISH/detach、3/3 challenge 与 echo drain 均通过，原残留门未报错 |
+
+本地串行通过支持继续验证隔离方案，不证明并发争用是全部反例的唯一根因。完整全仓
+结果及 Linux/Windows 新旧 required job 的最终状态仍以 PR 所列确切 head 为准。
