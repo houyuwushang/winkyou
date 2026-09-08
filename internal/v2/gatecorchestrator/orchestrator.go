@@ -289,6 +289,9 @@ func runPrepared(ctx context.Context, input preparedInput, deps dependencies) (r
 			result.Witness.WireGuard = handoff.Witness().Transport
 			result.Witness.Handoff = handoff.Witness()
 		}()
+		if deps.livenessProofHook != nil {
+			deps.livenessProofHook(liveness)
+		}
 	}
 	result.DataPlaneReady = true
 	if err := sequence.emit(StageDataPlaneReady, true); err != nil {

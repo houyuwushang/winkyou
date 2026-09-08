@@ -33,12 +33,16 @@ type ActiveSessionPolicy struct {
 }
 
 type ActiveSessionWitness struct {
-	PermitChecks    uint64
-	ControlAdmitted uint64
-	ControlRejected uint64
-	InvalidPackets  uint64
-	WriterFailures  uint64
-	ControlLimit    uint64
+	PermitChecks         uint64
+	ControlAdmitted      uint64
+	ControlRejected      uint64
+	InvalidPackets       uint64
+	WriterFailures       uint64
+	ControlLimit         uint64
+	HandshakeInitiations uint64
+	HandshakeResponses   uint64
+	CookieReplies        uint64
+	EmptyKeepalives      uint64
 }
 
 type activeSessionPolicy struct {
@@ -133,6 +137,16 @@ func (p *activeSessionPolicy) beforeWrite(packet []byte) error {
 	p.window[p.used] = now
 	p.used++
 	p.witness.ControlAdmitted++
+	switch typ {
+	case WireGuardHandshakeInitiation:
+		p.witness.HandshakeInitiations++
+	case WireGuardHandshakeResponse:
+		p.witness.HandshakeResponses++
+	case WireGuardCookieReply:
+		p.witness.CookieReplies++
+	case WireGuardTransportData:
+		p.witness.EmptyKeepalives++
+	}
 	p.mu.Unlock()
 	return nil
 }

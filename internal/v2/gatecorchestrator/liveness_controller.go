@@ -92,6 +92,7 @@ type livenessController struct {
 	reportViolation          func(probeio.SessionViolation) error
 	ownerAvailable           func() error
 	inboundDrops             atomic.Uint64
+	ingress                  sync.Mutex // TryLock in Deliver: never blocks the decrypt path
 	stop                     chan struct{}
 	writerDone, watchdogDone chan struct{}
 	stopOnce                 sync.Once
@@ -130,6 +131,11 @@ func armLiveness(model *livenessModel, ni netif.MemoryTestInterface, tun tunnel.
 // Deliver is called on WireGuard's decrypted ingress, not on a competing TUN
 // reader. Oversize is represented as an invalid event without copying bytes.
 func (c *livenessController) Deliver(packet []byte) bool {
+	if !c.ingress.TryLock() {
+		c.inboundDrops.Add(1)
+		return false
+	}
+	defer c.ingress.Unlock()
 	select {
 	case <-c.stop:
 		return false
@@ -332,7 +338,11 @@ func (c *livenessController) run(ctx, session context.Context) (string, error) {
 			e, err := c.model.ping(sequence, nonce)
 			clear(nonce[:])
 			if err != nil {
-				c.end(err)
+				if errors.Is(err, errLivenessBudget) {
+					err = c.hardViolation(probeio.SessionAdmissionBypass)
+				} else {
+					c.end(err)
+				}
 				return livenessEnd(err)
 			}
 			c.enqueue(e)
@@ -412,6 +422,10 @@ func (c *livenessController) drain() error {
 			return ErrSessionDrain
 		}
 	}
+	// Join any callback which passed the stop check before revocation. New
+	// callbacks drop without blocking, and cannot enqueue after this drain.
+	c.ingress.Lock()
+	defer c.ingress.Unlock()
 	for {
 		select {
 		case <-c.inbound:
