@@ -65,6 +65,7 @@ type WireGuardSessionGateWitness struct {
 	ActiveReads         int
 	Closed              bool
 	CompletionFailure   *WireGuardCompletionFailure `json:",omitempty"`
+	ActivePolicy        *ActiveSessionWitness       `json:",omitempty"`
 }
 
 // WireGuardSessionGate is the only production consumer wrapper accepted by a
@@ -111,6 +112,7 @@ type WireGuardSessionGate struct {
 	peerFinishConfirmed bool
 	completionFailure   *WireGuardCompletionFailure
 	activeReady         chan struct{}
+	activePolicy        *activeSessionPolicy
 
 	closeOnce sync.Once
 	closeErr  error
@@ -283,14 +285,23 @@ func (gate *WireGuardSessionGate) WritePacket(ctx context.Context, packet []byte
 		gate.mu.Unlock()
 		return ErrWireGuardGateState
 	}
+	policy := gate.activePolicy
 	gate.inFlight++
 	gate.mu.Unlock()
+	if policy != nil {
+		if err := policy.beforeWrite(packet); err != nil {
+			gate.finishOperation()
+			_ = gate.Close()
+			return err
+		}
+	}
 	opCtx, done, err := gate.operationContext(ctx, state)
 	if err != nil {
 		gate.finishOperation()
 		return gate.fail(err)
 	}
 	err = gate.transport.WritePacket(opCtx, packet)
+	writerFailed := err != nil && opCtx.Err() == nil
 	done()
 	gate.mu.Lock()
 	gate.inFlight--
@@ -299,6 +310,9 @@ func (gate *WireGuardSessionGate) WritePacket(ctx context.Context, packet []byte
 	}
 	gate.mu.Unlock()
 	if err != nil {
+		if policy != nil && writerFailed {
+			err = errors.Join(err, policy.writerFailed())
+		}
 		return gate.fail(err)
 	}
 	return nil
@@ -477,6 +491,7 @@ func (gate *WireGuardSessionGate) Witness() WireGuardSessionGateWitness {
 		AttemptDetached: gate.detached, ActiveWrites: gate.activeWrites, ActiveReads: gate.activeReads,
 		Closed:            gate.state == WireGuardGateClosed,
 		CompletionFailure: completionFailure,
+		ActivePolicy:      gate.activePolicy.snapshot(),
 	}
 }
 
