@@ -432,5 +432,6 @@ session 并持久 trip，同时撤销 §7.2 的相反条款，承认合法 peer 
 ### 12.3 执行状态
 
 §12.1 停止项已由维护者关闭；继续同一 Draft #112，按 docs → config → tap → gate →
-controller → composition → gates/CI/evidence 小步实施。§9 验收在此提交仍全部待执行。
+controller → composition → gates/CI/evidence 小步实施。docs-first 提交时 §9 全部待执行；
+随后实现与逐次实测状态见 [liveness 证据](../GATE-C-LIVENESS-EVIDENCE.md)，不以实现提交取代复审。
 不合并、不自动推进 C1c/E/现场；旧建立协议、预算与默认路径不变。
