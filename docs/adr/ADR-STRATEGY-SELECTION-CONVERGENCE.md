@@ -276,3 +276,96 @@ deadline 类仍支持 errors.Is(context.DeadlineExceeded)，取消保留 context
 5. 三个取消/绑定及两个Start库单测补显式非空capability消息，原断言/时限不变；
    四个产品implicit-fallback测试的期望按已接受的兼容性决策改为拒绝；#94就绪夹具只更新
    有效capability的版本/epoch字段。真实relay夹具未注入capability、未修改预算或30s断言。
+
+## 10. 实现验证与首次压力反例（2026-09-09）
+
+实现提交 `5efdcc8`，独立于#111测试修正。保留Draft，未达到完整验收，不授权合并。
+
+### 10.1 已完成的确定性与本地回归
+
+- 原RED提交 `541a459`：4/8/16s迟到capability均触发旧implicit选择，与对端relay不同。
+  首次RED与后续自测失败日志均保留在仓库外；不以最后一次通过覆盖第一次失败。
+- Go1.23.1（与go.mod/CI一致）：`go vet ./...` PASS；沿用#116精确分区的全仓测试
+  88个有测试包PASS（session36.497s、client2.263s、governor97.801s、architecture14.795s）。
+  分区命令仍为 `go test ./... -count=1 -skip '^TestRelayWGGoTwoEnginesExchangeIPv4Packets$'`；
+  独立relay矩阵见下，不把skip当成覆盖完成。
+- `go test -race ./pkg/session ./pkg/client -count=20 -skip '^TestRelayWGGoTwoEnginesExchangeIPv4Packets$'`
+  PASS：session725.652s、client12.599s；首轮实际2s/4/8/16s迟到测试也包含在20轮内。
+- `go test ./internal/architecture -count=20` PASS257.195s，包含新旧门禁与变异自检。
+  #94 route/readiness及原2s函数的规范化AST另与main基线独立对照一致。
+- §9.4合成字节golden经Python独立JSON重编码/SHA核对通过。SHA承诺不提供新的
+  密码学消息认证，不将它称为AEAD或独立网络实现的互操作验证。
+
+### 10.2 压力50批次：首例失败即停，0/1，未达标
+
+Go1.23.1、GOMAXPROCS=28，复用#116的56 CPU worker，仍在两个engine Start后才施压；
+不与其他本地重测试并行。执行：
+
+```text
+WINKYOU_FLAKE_97_CPU_STRESS=1
+go test ./pkg/client -run '^TestRelayWGGoTwoEnginesExchangeIPv4Packets$' -count=50 -failfast -v -timeout=45m
+```
+
+首个用例在原30s transport断言失败，总测试39.03s；余下49次未执行。45m仅为整批测试
+进程上限，不变更单例或产品时限。结束见证为observer_workers=0、cpu workers_remaining=0；
+不能扩写成未测的所有OS资源清零。
+
+50ms尽力采样观察到：1,975/2,005ms双方selecting；2,150ms side2只收到proposal；
+2,457ms side2失败、side1已有confirm；2,462ms side1选relay_only，2,500ms也失败。
+后续原退避/runner重建仍未取得transport。样本未出现原来的implicit legacy与relay冲突，
+**但安全拒绝不等于可用性通过**。采样不是精确Start/deadline见证，不能据此断言
+每个后续失败的原因，也不能未经裁决将2s窗口加长或重跑同批求绿。
+
+无人工压力100与独立relay race20的结果须另行记录，不能与本次失败合并成成功率声明。
+若后续修复需要改确认窗口、既有传输/退避或消息可靠性语义，须遵守§6/§7先行裁决；
+本提交不提出隐式放宽，也不将压力门视作advisory。
+
+### 10.3 无人工压力100：100/100通过
+
+同一Go1.23.1与GOMAXPROCS=28，关闭可选CPU helper，无其他本地重测试并行；
+仅有轻量源码/日志核对与远端CI查询，不声称操作系统完全无其他工作。
+
+```text
+go test ./pkg/client -run '^TestRelayWGGoTwoEnginesExchangeIPv4Packets$' -count=100 -failfast -v -timeout=60m
+```
+
+100/100 PASS，共713.694s，单次最长7.42s；100次observer_workers=0。
+每次均执行既有双向WireGuard数据、runtime状态与计数增长断言；原30s transport门及
+其他既有分阶段时限不变。该结果不覆盖或抵销§10.2压力反例。
+
+### 10.4 独立relay race与只读归因采样
+
+- 同版本、同GOMAXPROCS，未开CPU helper的独立relay `-race -count=20 -failfast`
+  20/20 PASS，共149.717s，单次最长12.56s，20次observer退出；未报告数据竞争。
+  与§10.1分区后的受影响包race组合，独立relay没有被遗漏。
+- 源码线索：状态hook同步调用runtime快照写入，后者有Sync/replace；这些操作占用
+  已有的绝对窗口。但源码调用关系本身不能证明它导致了§10.2的失败。
+- 使用仓库外临时overlay，只给两个已有文件插入计时；移除插入须恢复原文本，
+  物理源码不写入，不换clock、不去除Sync、不改变context/消息/原断言，vet保持开启。
+  只记录固定state/type、role布尔值、稳定错误类、相对耗时，无身份、地址或路径。
+- 首次单例诊断PASS（测试11.34s），runtime写入最大95,316µs；随后一组预定上限20、
+  fail-fast的采样20/20 PASS167.352s，选择错误0。runtime写入最大603,443µs，
+  capability/selecting hook最大42,349µs，capability/proposal/confirm发送调用最大1,489µs。
+  发送调用返回不证明远端投递已完成；新增日志也可能改变调度，不作为无扰动因果证明。
+  20次observer与CPU worker退出；不推导未测的完整OS残留。
+- 诊断未捕获原失败，故准确根因仍未闭合。不把21个带观察器的成功例与正式压力批次
+  拼成验收，不重跑原批求绿，不凭猜测改变2s、25s、30s或退避/持久化语义。
+
+### 10.5 实现head首次CI与剩余门
+
+`5efdcc8` 的56项检查全部结束：52 SUCCESS、3 FAILURE、1 CANCELLED，非全绿。
+独立relay两系统、全仓分区与本次架构门均通过；以下是未改v2/liveness路径的真实失败，
+不在本PR混修，也不使用本地通过来抵销：
+
+- [Mapping Lifetime（PR事件）](https://github.com/houyuwushang/winkyou/actions/runs/34313241432/job/102344047329)：
+  M_E_initiator_winner_unmeasured_contract的独立observer排水报告reverse-flow command unavailable。
+- [Mapping Lifetime（push事件）](https://github.com/houyuwushang/winkyou/actions/runs/34313238299/job/102344037718)：
+  M_S_tail双方hard_nat_candidate_exhausted、candidate入站1/1、winner0/0；成功断言失败，
+  teardown报告socket/process/conntrack/lock/veth残留0。未据此推定所有历史M失败同源。
+- [Windows real WireGuard](https://github.com/houyuwushang/winkyou/actions/runs/34313241248/job/102344046719)：
+  annotation为既有12分钟作业上限。此轮三个测试步骤日志均PASS，末尾作业仍被标为CANCELLED，
+  不能将job改报成功；[required聚合](https://github.com/houyuwushang/winkyou/actions/runs/34313241248/job/102347876853)因此失败。
+
+本次证据提交不改实现。压力门与上述CI门尚未闭合，ADR方向裁决不等于实现验收。
+后续必须保留首轮RED，独立审查原窗口下的进度与重建问题；没有证据支持自行放宽或
+将失败标为advisory。本PR保持Draft，不合并、不关闭#97，不据此进入任何v2或现场Gate。
