@@ -3,11 +3,15 @@
 package natlab
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
+
+	"golang.org/x/sys/unix"
 
 	"winkyou/internal/governor"
 	"winkyou/internal/v2/directconnect/gateb"
@@ -30,6 +34,11 @@ func testGateC1bFault(t *testing.T, fault string) {
 	server := startGateC1bHost(t, configs[1])
 	server.waitFile(t, configs[1].ReadyFile, 5*time.Second)
 	client := startGateC1bHost(t, configs[0])
+	var signalAt time.Time
+	var signalToExit time.Duration
+	if gateC1bResponderSignalFault(fault) {
+		signalAt = signalGateC1bResponder(t, fault, topology, configs)
+	}
 	if fault == "parent-kill" {
 		deadline := time.NewTimer(10 * time.Second)
 		defer deadline.Stop()
@@ -77,6 +86,9 @@ func testGateC1bFault(t *testing.T, fault string) {
 	for {
 		processes, err := runCommand("ip", "netns", "pids", topology.clientB)
 		if err == nil && len(strings.Fields(processes)) == 0 {
+			if !signalAt.IsZero() {
+				signalToExit = time.Since(signalAt)
+			}
 			break
 		}
 		if time.Now().After(deadline) {
@@ -97,6 +109,13 @@ func testGateC1bFault(t *testing.T, fault string) {
 		t.Fatal("fault peer incorrectly succeeded")
 	}
 	var sequences [2]uint64
+	// Preserve a useful RED witness even when a missing FINISH is fatal below.
+	defer func() {
+		if !signalAt.IsZero() {
+			t.Logf("Gate C1b signal fault=%s class=%s peer_class=%s peer_result=%t ledger_sequence=%d/%d wall_ms=%d signal_to_exit_ms=%d retry=0",
+				fault, initiator.Class, peer.Class, hasPeer, sequences[0], sequences[1], time.Since(started).Milliseconds(), signalToExit.Milliseconds())
+		}
+	}()
 	for index, cfg := range configs {
 		namespace := filepath.Join(cfg.MachineBase, "winkyou-safety-v2")
 		status := inspectGateALedger(t, namespace)
@@ -121,6 +140,10 @@ func testGateC1bFault(t *testing.T, fault string) {
 			t.Fatalf("fault did not preserve durable FINISH before release: side=%d sequence=%d admissions=%d", index, status.Sequence, status.TwentyFourHourAdmissions)
 		}
 	}
+	if gateC1bResponderSignalFault(fault) && (!hasPeer || peer.Class != gateb.ClassAttemptExpired ||
+		!peer.Product.Witness.GateB.CredentialBurned || !peer.Product.Witness.GateB.FinishRecorded) {
+		t.Fatal("responder signal did not enter caller-cancel cleanup with durable FINISH")
+	}
 	if fault == "pre-finish-eof" && (counts.InitiatorTotal != 0 || counts.ResponderTotal != 0) {
 		t.Fatal("pre-presence EOF emitted UDP")
 	}
@@ -129,4 +152,82 @@ func testGateC1bFault(t *testing.T, fault string) {
 	// No success-only ledger assumptions here: failure/crash journal assertions
 	// above are distinct; the same external zero-residue proof still applies.
 	assertGateB2NoResidue(t, topology, observer, left, right)
+}
+
+func gateC1bResponderSignalFault(fault string) bool {
+	return fault == "responder-sighup" || fault == "responder-sigterm"
+}
+
+// Only the one wink image in the already validated endpoint namespace may be
+// signalled. Pin it by pidfd before checking identity, so a recycled PID cannot
+// address sshd, a host process or another test. Never publish PIDs or paths.
+func signalGateC1bResponder(t *testing.T, fault string, topology *n2dTopology, configs [2]gateC1bHostConfig) time.Time {
+	t.Helper()
+	deadline := time.NewTimer(10 * time.Second)
+	defer deadline.Stop()
+	poll := time.NewTicker(5 * time.Millisecond)
+	defer poll.Stop()
+	for {
+		left, _ := os.ReadFile(configs[0].StageFile)
+		right, _ := os.ReadFile(configs[1].StageFile)
+		if string(left) == gateb.StageCandidates && string(right) == gateb.StageCandidates {
+			break
+		}
+		select {
+		case <-deadline.C:
+			t.Fatal("bilateral post-burn signal boundary unavailable")
+		case <-poll.C:
+		}
+	}
+	expected, err := os.Stat("/var/run/netns/" + topology.clientB)
+	if err != nil || !safeNamePattern.MatchString(topology.clientB) {
+		t.Fatal("signal target namespace unavailable")
+	}
+	expectedBinary, err := os.Stat(filepath.Join(configs[1].InstallBase, "winkyou", "wink"))
+	if err != nil {
+		t.Fatal("owned responder image unavailable")
+	}
+	processes, err := runCommand("ip", "netns", "pids", topology.clientB)
+	if err != nil {
+		t.Fatal("signal target inventory failed")
+	}
+	var descriptors []int
+	defer func() {
+		for _, descriptor := range descriptors {
+			_ = unix.Close(descriptor)
+		}
+	}()
+	for _, text := range strings.Fields(processes) {
+		pid, err := strconv.Atoi(text)
+		if err != nil || pid <= 1 {
+			t.Fatal("signal target inventory invalid")
+		}
+		descriptor, err := unix.PidfdOpen(pid, 0)
+		if err != nil {
+			t.Fatal("signal target could not be pinned")
+		}
+		descriptors = append(descriptors, descriptor)
+		executable, exeErr := os.Stat(fmt.Sprintf("/proc/%d/exe", pid))
+		current, nsErr := os.Stat(fmt.Sprintf("/proc/%d/ns/net", pid))
+		if exeErr != nil || nsErr != nil || !os.SameFile(current, expected) || !os.SameFile(executable, expectedBinary) {
+			t.Fatal("signal target is not the isolated responder wink image")
+		}
+	}
+	if len(descriptors) != 1 {
+		t.Fatal("signal target must be exactly one responder child, never sshd")
+	}
+	signal := unix.SIGHUP
+	if fault == "responder-sigterm" {
+		signal = unix.SIGTERM
+	}
+	started := time.Now()
+	if err := unix.PidfdSendSignal(descriptors[0], signal, nil, 0); err != nil {
+		t.Fatal("owned responder signal delivery failed")
+	}
+	for _, cfg := range configs {
+		if err := os.WriteFile(cfg.StopFile+".signal", []byte("release"), 0o600); err != nil {
+			t.Fatal("signal fence release failed")
+		}
+	}
+	return started
 }

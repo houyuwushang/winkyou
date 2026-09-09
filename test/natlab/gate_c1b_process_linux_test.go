@@ -385,6 +385,12 @@ func TestGateC1bSSHDiagnosticsAreBoundedAndRedacted(t *testing.T) {
 func runGateC1bCLI(cfg gateC1bHostConfig, args []string) gateC1bProcessResult {
 	result := gateC1bProcessResult{Root: os.Getuid() == 0 && os.Geteuid() == 0}
 	parent, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	if gateC1bResponderSignalFault(cfg.Fault) {
+		// This regression must exercise the CLI's own signal subscription.
+		// The host harness's SIGTERM handler would otherwise mask the bug.
+		stop()
+		parent = context.Background()
+	}
 	defer stop()
 	ctx, cancel := context.WithTimeout(parent, gateC1bProofHostLimit(cfg)-2*time.Second)
 	defer cancel()
@@ -408,6 +414,28 @@ func runGateC1bCLI(cfg gateC1bHostConfig, args []string) gateC1bProcessResult {
 		result.Stages = append(result.Stages, progress.Stage)
 		if err := os.WriteFile(cfg.StageFile, []byte(progress.Stage), 0o600); err != nil {
 			return errors.New("private stage witness failed")
+		}
+		if gateC1bResponderSignalFault(cfg.Fault) && progress.Stage == gateb.StageCandidates {
+			// Both real endpoints hold after authenticated FIRE but before any
+			// candidate emission. Only the external harness releases this fence,
+			// after signalling the exact responder wink process. No signal is
+			// caught here and no product context, window or budget is replaced.
+			deadline := time.NewTimer(2 * time.Second)
+			defer deadline.Stop()
+			poll := time.NewTicker(5 * time.Millisecond)
+			defer poll.Stop()
+			for {
+				if _, err := os.Stat(cfg.StopFile + ".signal"); err == nil {
+					return nil
+				}
+				select {
+				case <-ctx.Done():
+					return ctx.Err()
+				case <-deadline.C:
+					return errors.New("synthetic signal barrier expired")
+				case <-poll.C:
+				}
+			}
 		}
 		if cfg.Server && cfg.Fault == "pre-finish-eof" && progress.Stage == gateb.StageOOBAdopt {
 			_ = os.Stdout.Close()
