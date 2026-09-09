@@ -115,20 +115,34 @@ func (s *Session) resolveStrategyCandidates(ctx context.Context) ([]StrategyCand
 	if ordered, ok := s.cfg.Resolver.(OrderedStrategyResolver); ok {
 		candidates, err := ordered.ResolveAll(s.buildResolveInput(remoteCapability))
 		if err != nil {
+			if s.agreement != nil {
+				return nil, s.stopSelection(selectionFailure("selection_conflict"))
+			}
 			return nil, err
 		}
-		return validateStrategyCandidates(candidates)
+		validated, err := validateStrategyCandidates(candidates)
+		if err != nil {
+			return nil, err
+		}
+		return s.agreeCandidates(ctx, validated, true)
 	}
 
 	strategy, selection, err := s.cfg.Resolver.Resolve(remoteCapability, s.cfg.Initiator)
 	if err != nil {
+		if s.agreement != nil {
+			return nil, s.stopSelection(selectionFailure("selection_conflict"))
+		}
 		return nil, err
 	}
-	return validateStrategyCandidates([]StrategyCandidate{{
+	validated, err := validateStrategyCandidates([]StrategyCandidate{{
 		Name:      selection.StrategyName,
 		Strategy:  strategy,
 		Selection: selection,
 	}})
+	if err != nil {
+		return nil, err
+	}
+	return s.agreeCandidates(ctx, validated, true)
 }
 
 func (s *Session) buildResolveInput(remoteCapability rproto.Capability) ResolveInput {

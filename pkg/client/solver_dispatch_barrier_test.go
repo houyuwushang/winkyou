@@ -34,7 +34,11 @@ func TestHandlePeerSolverMessageWaitsForEngineReadiness(t *testing.T) {
 		ToNode:    "node-local",
 		MsgType:   rproto.MsgTypeCapability,
 		Seq:       1,
-		Payload:   rproto.MustPayload(rproto.Capability{Strategies: []string{"relay_only"}}),
+		Payload: rproto.MustPayload(map[string]any{
+			"strategies": []string{"relay_only"}, "features": []string{},
+			"selection_version": "winkyou.legacy-selection/1",
+			"selection_epoch":   "00112233445566778899aabbccddeeff",
+		}),
 	}
 	payload, err := rproto.MarshalEnvelope(capability)
 	if err != nil {

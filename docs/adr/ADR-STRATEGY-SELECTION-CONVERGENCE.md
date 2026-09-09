@@ -187,7 +187,7 @@ routeStrategyMessage 原子判定/入队。这两项解决消息启动就绪与 
   mutation 必须捕获 timeout→nil、implicit legacy/order 重新启用、确认门绕过、
   旧轮次接纳、破坏 #94 ready/route 与 #116 分区；v2 Gate 回归原样通过。
 
-## 8. 本轮请求裁决
+## 8. 首个设计提交时的裁决请求（历史记录，后续见§9）
 
 - 是否接受推荐 S3（含 S1 前置），及移除新 runtime 的旧 peer 静默兼容回退。
 - 是否接受 §5 的“无冲突承诺 + 局部有界终局”，而非不可能由有限不可靠消息证明的
@@ -259,3 +259,20 @@ deadline 类仍支持 errors.Is(context.DeadlineExceeded)，取消保留 context
 
 §8 的方向裁决已经完成。以上是该方向的显式实现细化，不代表测试已通过或 PR 可合并；
 后续提交逐项登记 RED、实现、矩阵、首次失败和实测成本，不以 CI 重跑替代修复。
+
+### 9.4 实现边界的补充说明
+
+1. `NewConverging` 要求正的既有 RunTimeout；不修改产品提供的值。可用 transport仍归
+   数据面所有者；关闭 executor 的见证用独立集合记录，不能用清空指针代替。
+2. 有效 proposal 已导致对方发出有效 confirm 后，随后注入的冲突副本/重复洪泛可使接收方
+   终止，而另一侧已持有有效确认。负面测试要求接收侧零执行、发送侧至多执行既有相同承诺；
+   校验其digest确实等于对方已发的confirm，不把“合法前缀之后出错”误写成原子双边零启动。
+3. 永久测试须兼容 go.mod / CI 的 Go1.23.1。首个RED曾用本机Go1.26虚拟时钟复现；
+   随后发现 testing/synctest 不属于最低版本，最终测试改为实际2s计时与4/8/16s延迟的
+   纯内存投递、显式终局channel、独立用例并行。无sleep、生产clock seam、工具链升级或CI覆盖减少。
+4. 字节golden：capability162、proposal406、confirm461、joint1150 bytes（合成样例），
+   joint SHA-256为 `082326e4b522b5b55161914b849619749b48125f3f94c667c5dff3d4cd22f071`。
+   Python独立核对JSON字节重编码与SHA；这不是两个独立网络实现的互操作宣称。
+5. 三个取消/绑定及两个Start库单测补显式非空capability消息，原断言/时限不变；
+   四个产品implicit-fallback测试的期望按已接受的兼容性决策改为拒绝；#94就绪夹具只更新
+   有效capability的版本/epoch字段。真实relay夹具未注入capability、未修改预算或30s断言。

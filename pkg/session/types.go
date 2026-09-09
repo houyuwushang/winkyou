@@ -111,6 +111,8 @@ type Snapshot struct {
 	RemoteCapability        rproto.Capability
 	SelectedStrategy        string
 	SelectionNegotiated     bool
+	SelectionDigest         string
+	SelectionOrdinal        uint64
 	CapabilityExchangeAt    time.Time
 	LastPathCommit          PathCommitSnapshot
 	LastPathCommitAt        time.Time
