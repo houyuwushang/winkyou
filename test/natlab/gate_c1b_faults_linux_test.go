@@ -35,7 +35,7 @@ func testGateC1bFault(t *testing.T, fault string) {
 	server.waitFile(t, configs[1].ReadyFile, 5*time.Second)
 	client := startGateC1bHost(t, configs[0])
 	var signalAt time.Time
-	var signalToExit time.Duration
+	var signalToNamespaceEmpty time.Duration
 	if gateC1bResponderSignalFault(fault) {
 		signalAt = signalGateC1bResponder(t, fault, topology, configs)
 	}
@@ -87,7 +87,9 @@ func testGateC1bFault(t *testing.T, fault string) {
 		processes, err := runCommand("ip", "netns", "pids", topology.clientB)
 		if err == nil && len(strings.Fields(processes)) == 0 {
 			if !signalAt.IsZero() {
-				signalToExit = time.Since(signalAt)
+				// This poll follows the initiator wait. It is namespace-empty
+				// observation latency, NOT the responder's independent exit time.
+				signalToNamespaceEmpty = time.Since(signalAt)
 			}
 			break
 		}
@@ -112,8 +114,8 @@ func testGateC1bFault(t *testing.T, fault string) {
 	// Preserve a useful RED witness even when a missing FINISH is fatal below.
 	defer func() {
 		if !signalAt.IsZero() {
-			t.Logf("Gate C1b signal fault=%s class=%s peer_class=%s peer_result=%t ledger_sequence=%d/%d wall_ms=%d signal_to_exit_ms=%d retry=0",
-				fault, initiator.Class, peer.Class, hasPeer, sequences[0], sequences[1], time.Since(started).Milliseconds(), signalToExit.Milliseconds())
+			t.Logf("Gate C1b signal fault=%s class=%s peer_class=%s peer_result=%t ledger_sequence=%d/%d wall_ms=%d signal_to_namespace_empty_ms=%d retry=0",
+				fault, initiator.Class, peer.Class, hasPeer, sequences[0], sequences[1], time.Since(started).Milliseconds(), signalToNamespaceEmpty.Milliseconds())
 		}
 	}()
 	for index, cfg := range configs {

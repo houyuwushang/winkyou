@@ -6,36 +6,35 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
-	"strconv"
 	"strings"
 	"testing"
 	"time"
-
-	"golang.org/x/sys/unix"
 )
 
 const inheritedPipeDiagnosticEnv = "WINKYOU_PR127_INHERITED_PIPE_DIAGNOSTIC"
 
 type inheritedPipeDiagnostic struct {
-	ReadSyscallObserved bool  `json:"read_syscall_observed"`
-	NativeDeadline      bool  `json:"native_deadline"`
-	CloseReturned       bool  `json:"close_returned"`
-	DrainError          bool  `json:"drain_error"`
-	Closed              bool  `json:"closed"`
-	Drained             bool  `json:"drained"`
-	ReadJoined          bool  `json:"read_joined"`
-	CloseMillis         int64 `json:"close_ms"`
+	ReadInFlight     bool  `json:"read_in_flight"`
+	PollWaitObserved bool  `json:"poll_wait_observed"`
+	NativeDeadline   bool  `json:"native_deadline"`
+	OriginalClosed   bool  `json:"original_closed"`
+	CloseReturned    bool  `json:"close_returned"`
+	DrainError       bool  `json:"drain_error"`
+	Closed           bool  `json:"closed"`
+	Drained          bool  `json:"drained"`
+	ReadJoined       bool  `json:"read_joined"`
+	CloseMillis      int64 `json:"close_ms"`
 }
 
-// This is a diagnostic RED regression, not approval of a missing drain. It
-// exercises the production Stream with an inherited blocking stdin rather
-// than net.Pipe. No socket, SSH, governor, artifact or peer material exists.
+// The original RED is retained in history. Pollable adoption moves the read
+// from blocking read(0) into Go's poller on the sole adopted descriptor. Prove
+// that actual OS wait, not merely goroutine scheduling before Read, then keep
+// every original close/drain/join assertion with the peer write end still open.
 func TestInheritedStdinReadMustDrainWithoutPeerEOF(t *testing.T) {
 	directory := t.TempDir()
 	executable, err := os.Executable()
@@ -100,11 +99,11 @@ func TestInheritedStdinReadMustDrainWithoutPeerEOF(t *testing.T) {
 	if err != nil || string(joined) != "joined" {
 		t.Fatal("diagnostic reader join was not witnessed")
 	}
-	t.Logf("inherited stdin: read_syscall=%t native_deadline=%t close_returned=%t drain_error=%t closed=%t drained=%t read_joined_before_peer_eof=%t close_ms=%d reader_joined_after_peer_eof=true child_exited=true sockets=0",
-		beforeEOF.ReadSyscallObserved, beforeEOF.NativeDeadline, beforeEOF.CloseReturned,
+	t.Logf("inherited stdin: read_in_flight=%t poll_wait=%t original_native_deadline=%t original_closed=%t close_returned=%t drain_error=%t closed=%t drained=%t read_joined_before_peer_eof=%t close_ms=%d reader_joined_after_peer_eof=true child_exited=true sockets=0",
+		beforeEOF.ReadInFlight, beforeEOF.PollWaitObserved, beforeEOF.NativeDeadline, beforeEOF.OriginalClosed, beforeEOF.CloseReturned,
 		beforeEOF.DrainError, beforeEOF.Closed, beforeEOF.Drained, beforeEOF.ReadJoined, beforeEOF.CloseMillis)
-	if !beforeEOF.ReadSyscallObserved {
-		t.Fatal("inherited blocking read precondition was not observed")
+	if beforeEOF.NativeDeadline || !beforeEOF.OriginalClosed || !beforeEOF.ReadInFlight || !beforeEOF.PollWaitObserved {
+		t.Fatal("inherited blocking pipe was not exclusively adopted into an observed poller read")
 	}
 	if !beforeEOF.CloseReturned || beforeEOF.DrainError || !beforeEOF.Closed || !beforeEOF.Drained || !beforeEOF.ReadJoined {
 		t.Fatal("accepted inherited stdin did not interrupt and drain its read without peer EOF")
@@ -122,43 +121,29 @@ func TestInheritedStdinDiagnosticHelper(t *testing.T) {
 	if err != nil {
 		t.Fatal("diagnostic stream rejected")
 	}
-	thread := make(chan int, 1)
+	_, originalErr := os.Stdin.Stat()
 	readDone := make(chan struct{})
 	go func() {
-		runtime.LockOSThread()
-		defer runtime.UnlockOSThread()
-		thread <- unix.Gettid()
 		_, _ = stream.Read(make([]byte, 1))
 		close(readDone)
 	}()
-	tid := <-thread
-	observed := false
-	deadline := time.Now().Add(time.Second)
-	for time.Now().Before(deadline) {
-		payload, readErr := os.ReadFile(fmt.Sprintf("/proc/self/task/%d/syscall", tid))
-		fields := strings.Fields(string(payload))
-		if readErr == nil && len(fields) >= 2 {
-			number, numberErr := strconv.ParseUint(fields[0], 0, 64)
-			descriptor, descriptorErr := strconv.ParseUint(fields[1], 0, 64)
-			if numberErr == nil && descriptorErr == nil && number == unix.SYS_READ && descriptor == 0 {
-				observed = true
-				break
-			}
-		}
-		time.Sleep(time.Millisecond) // Bounded passive syscall observation only.
-	}
+	observed := observePipePollWait("(*Stream).Read")
+	stream.mu.Lock()
+	inFlight := stream.ops == 1
+	stream.mu.Unlock()
 	started := time.Now()
 	closeErr := stream.Close()
 	witness := stream.Witness()
 	report := inheritedPipeDiagnostic{
-		ReadSyscallObserved: observed, NativeDeadline: nativeDeadline, CloseReturned: true,
+		ReadInFlight: inFlight, PollWaitObserved: observed, NativeDeadline: nativeDeadline,
+		OriginalClosed: errors.Is(originalErr, os.ErrClosed), CloseReturned: true,
 		DrainError: errors.Is(closeErr, ErrDrain), Closed: witness.Closed, Drained: witness.Drained,
 		CloseMillis: time.Since(started).Milliseconds(),
 	}
 	select {
 	case <-readDone:
 		report.ReadJoined = true
-	default:
+	case <-time.After(time.Second):
 	}
 	payload, err := json.Marshal(report)
 	if err != nil || os.WriteFile(filepath.Join(directory, "before-eof.json"), payload, 0o600) != nil {
@@ -172,6 +157,25 @@ func TestInheritedStdinDiagnosticHelper(t *testing.T) {
 	if os.WriteFile(filepath.Join(directory, "reader-joined"), []byte("joined"), 0o600) != nil {
 		t.Fatal("diagnostic join result write failed")
 	}
+}
+
+// Inspect only whether this exact operation is asleep in the OS poller. Never
+// log stack text (which includes private paths). No sleeps gate production I/O.
+func observePipePollWait(operation string) bool {
+	buffer := make([]byte, 64<<10)
+	defer clear(buffer)
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		n := runtime.Stack(buffer, true)
+		for _, stack := range strings.Split(string(buffer[:n]), "\n\n") {
+			if strings.Contains(stack, "[IO wait]") && strings.Contains(stack, "internal/poll.runtime_pollWait(") &&
+				strings.Contains(stack, "winkyou/internal/v2/gatecchildstream."+operation+"(") {
+				return true
+			}
+		}
+		time.Sleep(time.Millisecond)
+	}
+	return false
 }
 
 func mustDiagnosticPipe(t *testing.T) (*os.File, *os.File) {

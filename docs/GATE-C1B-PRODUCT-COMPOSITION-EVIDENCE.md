@@ -198,6 +198,37 @@ root wrapper/orchestrator `-race -count=20` 通过（1.259s / 2.345s）；Linux
 新增 diff 的私有路径/设备代号扫描为 0；已有 v1/v2/N3b/Gate A/B golden 没有修改。
 这段保留暂停前快照；后续 R1 与 required OS 证据见 §2.1/§4，不覆盖历史失败记录。
 
+### 4.3 Issue #121：继承管道的第二个阻断与修复范围（2026-09-09）
+
+信号注册修复 `f9d231b` 后，真实 SSH/netns 仍出现 ledger=3/3、responder 无结构化终局。
+诊断提交 `1d3c344` 的 Linux [push 首跑](https://github.com/houyuwushang/winkyou/actions/runs/34327308921/job/102387425497)
+与 [PR 首跑](https://github.com/houyuwushang/winkyou/actions/runs/34327312903/job/102387437512)
+均实测：继承 stdin 的 `read(0)` 在 `Close` 返回后仍阻塞；2000ms 时 `ErrDrain`、
+`Closed=true/Drained=false`，只有测试随后提供 peer EOF 才退出。上层 carrier 丢弃 Close 错误，
+又无界等待 in-flight operations；因此有 FINISH 不代表命令已返回或物理排水已完成。
+这不是 `reader.Close()` 本身必然阻塞的证据，也没有证明最终退出信号的种类。
+
+本次修复只覆盖这条链路：
+
+- Unix 收养前确认文件是 pipe，用一个临时 CLOEXEC duplicate 建立可取消的 poller owner，
+  关闭旧 wrapper 后才交付；失败关闭全部已收养 owner。不打开路径/socket/第二 stream。
+  Windows 保留原 timer → pipe Close（CancelIoEx）路径，不要求其不支持的 native file deadline；
+  普通文件与不支持的平台 fail-closed。
+- `SetDeadline(now)` 必须能取消当前 I/O；absolute 上限仍不可提高。关闭及 operations join
+  共用原 2s drain，不用遗留 waiter goroutine 换取表面上的及时返回。
+- carrier 传播 Close/排水错误；失败不能 `Complete` governor witness 或声称 `Drained=true`。
+  原 governor 持锁、持久 cancellation trip 与 FINISH-before-release 契约不变。
+- 继承 stdin 回归改为观察收养后的真实 OS poller wait，再在 peer EOF **之前**断言 read 已退出；
+  原 RED commit 与全部 close/drain/终局断言保留。另测 unread pipe 的阻塞 write、立即 deadline、
+  partial adoption descriptor 数量和 failed drain witness。architecture 只准许精确文件中的
+  pipe duplicate/nonblocking/close 操作，socket/exec/旁路 owner 仍由 mutation 拒绝。
+- netns 原 `signal_to_exit_ms` 等待 initiator 后才观察 responder，现改名为
+  `signal_to_namespace_empty_ms`，不冒充独立的 responder 退出耗时；被动 pidfd 采样单列。
+
+本节记录修复机制，不预先宣称 required Linux/Windows CI、真实 SSH/netns 或独立评审通过。
+不修改 orchestrator/Gate B、预算、窗口、重试、旧 parent-kill/class/ledger/residue 断言；
+阶段 2/3 继续冻结。新 SHA 的验收结果在 PR #127 逐项记录。
+
 ## 5. 验收映射与剩余门
 
 | ADR §10.2 | 证据入口 |
