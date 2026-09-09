@@ -1,8 +1,9 @@
 # ADR：legacy session 策略选择的确定性收敛
 
-Status: **Draft，设计评审输入；未授权实施本设计**（2026-09-09）。
+Status: **维护者接受 S3（含 S1 前置），授权实施；实现 PR 仍为 Draft，待独立复审**（2026-09-09）。
 基线 `main = 214ff2d`。Refs #97；不关闭 issue。
-本提交只写设计。首个设计 commit 推送后停下，等待维护者与独立复审确认。
+首个设计 commit 已按要求停下；维护者随后明确接受。§9 在代码前具体化本次实现契约，
+不扩大网络、时限或重试权限。
 
 ## 1. 问题与证据
 
@@ -72,7 +73,7 @@ waitForRemoteCapability
 若维护者希望先交付 S1，需明确把验收收窄为“消除缺失 capability 的 implicit fallback”，
 并把非空能力分歧与双边确认保留为后续项，不能沿用本 ADR 的完整收敛声明。
 
-## 4. 推荐方案的协议轮廓（待批准，不是已实现协议）
+## 4. 已接受方案的协议轮廓（实现证据另行登记）
 
 ### 4.1 输入冻结与兼容性
 
@@ -196,3 +197,65 @@ routeStrategyMessage 原子判定/入队。这两项解决消息启动就绪与 
 
 本设计 commit 不修改 baseline 原文或任何实现，不激活兼容性变化。
 等待确认后再增加红回归、实现与测量；不凭本 Draft 进入其他 Gate 或现场。
+
+## 9. S3 实现契约（2026-09-09，代码前记录）
+
+### 9.1 组装与兼容边界
+
+唯一产品构造点 `client.newPeerRunner` 改用 `session.NewConverging`，无配置开关。
+公共 `session.New`/resolver 的既有独立库兼容接口不删除，但仓库生产代码不得使用它们
+绕过确认；架构扫描与变异测试守住构造点和消息投递。两类 session 都拒绝缺失或空 capability。
+旧的单侧策略契约测试不伪装成双边证明；新增双端协议测试与真实 relay 验收才证明 S3。
+
+产品以信令通知的 peer 身份调用 `HandleMessageFrom`，再核对 envelope 的节点对/方向；
+不把新字段当成密码学认证，也不扩大既有 coordinator/peercontrol 的信任保证。
+`selection_version=winkyou.legacy-selection/1` 与每 runner 的 crypto/rand 16-byte epoch
+放在 session 边界的 capability DTO，不进入 solver domain。epoch 编码为32位小写 hex，
+首次接受后不可替换。重复相同 capability 不重置 deadline；不支持版本的旧 peer 明确失败。
+
+### 9.2 有界交换与规范编码
+
+增加两个 envelope 类型 `selection_proposal` / `selection_confirm`，不复用 PathCommit。
+每方向每 ordinal 恰一份 proposal、一份 confirm；不重传、不反复提案。
+proposal 绑定 version、sender/receiver epoch、十进制字符串 ordinal（uint64，0起，溢出拒绝）、
+双方 capability digest、previous digest、previous_closed=true 与本地许可的有序 strategy 列表。
+confirm 绑定同轮 header、共同首选 strategy 与双方独立重算的 joint digest。
+
+编译期上限：外层选择/capability envelope 8192 bytes、payload 4096 bytes；
+strategy 最多8个、feature 最多32个、每 token 64 ASCII bytes；节点 ID 各128 bytes、
+SessionID 512 bytes。列表不得重复，空 strategy 列表拒绝。未知字段、重复 JSON key、
+非法/超长 hex、非规范 ordinal、方向/epoch/previous digest 不符均失败，不回显输入。
+每轮只保存两种远端消息及同样的本地承诺；最多当前与下一 ordinal 两槽。
+同内容重复幂等，但每槽接收计数上限16，超限失败；已完成 ordinal 的迟到副本丢弃，
+不能复活或改变承诺。终局清空缓存，后续消息不触发 executor。
+
+digest 使用 SHA-256；输入是固定字段顺序的 Go JSON 规范编码（ASCII token、紧凑、无空白、
+数组保持声明顺序），带 `winkyou.legacy-selection/1` 标签。先按 initiator/responder 角色
+排列节点、epoch、规范 capability 和双方 proposal，再编码共同交集顺序、ordinal 与 previous digest。
+capability 的 strategy/feature 以既有 Normalize 排序；proposal 的候选顺序不能排序。
+不声称采用 RFC8785；字节级 golden 单独冻结。capability/offer 均在本轮冻结，
+只传两份列表的交集，由 initiator 顺序决定；不把候选未许可项重新插回 fallback。
+
+### 9.3 时限、切换与失败
+
+首轮绝对 deadline 在 Start 首次发送 capability **之前**建立：发送、能力接收、proposal、
+confirm 共用原 capability 2s（测试配置只能缩短）。没有额外2s确认窗口。
+后续 ordinal 的 proposal 起点同时是首个 plan/并发 plan group 的执行预算起点：
+确认有 min(2s, 既有执行预算) 子上限，首个 plan/group 的 RunTimeout 按实际确认耗时扣除；
+整个 candidate-loop 的既有 TimeBudget 同样扣除。多个 plan 的原总预算与后续 plan 窗口不扩大。
+执行门再次检查本轮确认、选中 name、deadline 与本地终局，不能只依赖 resolver 的 Negotiated。
+
+下一 ordinal 必须见证前一 executor 关闭返回；cleanup timeout/error 使选择永久失败，
+不得因旧代码已清空 executor 指针而当作排水完成。没有独立 executor 的 strategy，
+需要 Strategy.Close 的真实完成；若它仍持有可用 transport，则不能伪造关闭见证来切换。
+选择失败保留已绑定的 healthy path；丢失确认不引入第二套自动重试。
+初次失败由既有 OnError/退避处理。已 bound 的 runner 若选择层终局，仅停止后续改善选择，
+保留数据面，直至既有机制更换 runner；不因迟到的选择消息直接调用拆链错误路径。
+
+错误类别为 capability_missing、selection_unsupported、selection_invalid、selection_conflict、
+selection_timeout、selection_closed、selection_previous_active；错误文本不附 peer/epoch/原文。
+deadline 类仍支持 errors.Is(context.DeadlineExceeded)，取消保留 context.Canceled。
+快照只增 selection ordinal/digest；这些不是 v2 schema，也不修改 PathCommit 字义。
+
+§8 的方向裁决已经完成。以上是该方向的显式实现细化，不代表测试已通过或 PR 可合并；
+后续提交逐项登记 RED、实现、矩阵、首次失败和实测成本，不以 CI 重跑替代修复。
