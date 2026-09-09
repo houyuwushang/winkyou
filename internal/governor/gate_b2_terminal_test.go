@@ -4,6 +4,7 @@ import (
 	"errors"
 	"net"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -15,6 +16,71 @@ type gateB2DiagnosticStream struct {
 	net.Conn
 	closed chan struct{}
 	once   sync.Once
+}
+
+type gateB2SlowCloseStream struct {
+	net.Conn
+	once    sync.Once
+	entered chan struct{}
+	release <-chan struct{}
+}
+
+func (stream *gateB2SlowCloseStream) Close() error {
+	stream.once.Do(func() {
+		_ = stream.Conn.Close()
+		close(stream.entered)
+		<-stream.release
+	})
+	return nil
+}
+
+func TestGateB2FIREFreshnessTerminalWaitsForCarrierDrainWitness(t *testing.T) {
+	var leftMachine *governor.Governor
+	var terminal atomic.Bool
+	type observation struct{ entered, terminal, released bool }
+	proof := make(chan observation, 1)
+	outcomes := runGateB2SafetyRegression(t, "active_envelope_at_candidates", gateB2SafetyTestHooks{
+		streams: func(left, _ *governor.Governor, a, b net.Conn) (net.Conn, net.Conn) {
+			leftMachine = left
+			entered, release := make(chan struct{}), make(chan struct{})
+			var once sync.Once
+			unblock := func() { once.Do(func() { close(release) }) }
+			t.Cleanup(unblock)
+			go func() {
+				defer unblock()
+				timer := time.NewTimer(2*time.Second + 100*time.Millisecond)
+				defer timer.Stop()
+				got := observation{}
+				select {
+				case <-entered:
+					got.entered, got.terminal = true, terminal.Load()
+					select {
+					case <-governor.GateB2AttemptDoneForDiagnostic(left):
+						got.released = true
+					default:
+					}
+				case <-timer.C:
+				}
+				proof <- got
+			}()
+			return &gateB2SlowCloseStream{Conn: a, entered: entered, release: release}, b
+		},
+		progress: func(machine *governor.Governor, stage string) {
+			if machine == leftMachine && stage == gateb.StageTerminal {
+				terminal.Store(true)
+			}
+		},
+	})
+	got := <-proof
+	if !got.entered || got.terminal || got.released || !terminal.Load() {
+		t.Fatalf("runtime terminal did not wait for actual Close/drain: %+v terminal_after=%t", got, terminal.Load())
+	}
+	for _, outcome := range outcomes {
+		if !outcome.result.FinishRecorded || !outcome.result.CarrierWitness.Drained ||
+			outcome.result.Emissions.CandidatePackets != 0 || outcome.result.SafetyTrip.BlocksActiveWork {
+			t.Fatal("slow drain changed the fail-closed terminal")
+		}
+	}
 }
 
 func (stream *gateB2DiagnosticStream) Close() error {

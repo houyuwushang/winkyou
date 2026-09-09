@@ -1,6 +1,6 @@
 # #118：等待排水不足以覆盖的持久终局所有权缺口
 
-Status: **维护者已授权最小生产所有权修复（2026-09-09），实现与独立复审尚未完成**。基线 `214ff2d`。
+Status: **维护者已授权最小生产所有权修复（2026-09-09）；实现与 Windows 本地验证完成，CI 与独立复审待完成**。基线 `214ff2d`。
 
 ## 续行裁决与实现边界
 
@@ -31,7 +31,10 @@ Commit 的 post-burn 失败与 token consume 的失败遵守相同规则。
 
 ## 确定性对照（2026-09-09）
 
-新增显式 `flake118diagnostic` 标签下的 **预期 RED** 诊断；默认测试不包含它。
+首轮暂停时新增显式 `flake118diagnostic` 标签下的 **预期 RED** 诊断，当时默认测试不包含它。
+授权后的红回归提交 `33fe74c` 已将其转为无标签永久测试
+`TestGateB2FIREFreshnessBurnCrossesActiveEnvelope`；下面命令是保留的历史执行记录，
+不是当前分支的验证命令。
 复用原 active-envelope 夹具、真实 governor/journal、纯内存 NAT 与 `net.Pipe`。
 只在现有 BURN `afterSync` 测试 hook 上等待 carrier 的真实 Close 信号：
 原 500ms active timer 触发关闭后释放 hook，模拟 BURN 返回时 active envelope 已过期。
@@ -80,3 +83,40 @@ durable terminal 见证，由 runtime 验证后释放；FINISH 写失败仍保�
 - production delta=0，未改产品时限/预算、#115 或其他 Gate。
 - 首轮曾暂停提交/发布与后续 #111、#97 工作，请求 #118 范围裁决；
   不声明 #118 已修复，不使用 `Closes #118`，不创建虚假的全绿交付。
+
+## 授权后实现与验证
+
+生产改动只落在 `internal/governor/pairing_gate.go` 与
+`internal/v2/directconnect/gateb/connect.go`。私有错误见证由成功 FINISH 的失败路径产生，
+`PairingTerminalRecordedForAttempt` 只验证原 lease 实例，不执行 I/O、释放或授予发送权限。
+Gate B 保留原 cleanup，只把得到证明的 FINISH 状态带入 cleanup。
+架构测试精确限制唯一生产消费者，并对六条非法路径、三个见证符号执行 18 个变异对照。
+既有永久门禁、loopback carrier 及其预算、#115、工作流未修改。
+
+负面测试覆盖：FINISH sync 失败、FINISH 未完成、普通/仿造错误文本、nil/零 lease、
+另一 namespace 中同名同成本 lease。成功见证本身不释放 attempt。
+慢 Close 由通道屏障控制，证明 terminal 与 attempt 释放均等待真实 carrier 排水；没有新增 sleep。
+
+Windows / Go 1.26.5 实测：
+
+| 验证 | 结果 |
+| --- | --- |
+| 修复前重放确定性 RED | FAIL，3.111s；与首轮相同的 FINISH 已落盘但 attempt 未释放反例 |
+| FIRE freshness 与 FINISH witness 全矩阵 `-race -count=20` | PASS，123.198s；6 个顶层测试各 20 次 |
+| 修复后 BURN 越过 active envelope | 双端 `finish=true`、`carrier_drained=true`、candidate=0、safety clear；实际 attempt Done 已关闭，peer/attempt/reservation 均为零 |
+| durable journal 只读复检 | unfinished=0、packets=0；不将 journal 计数用作运行时释放依据 |
+| `go test ./internal/architecture -count=1` | PASS，含精确消费者与变异门禁 |
+| `go vet ./...` | PASS |
+| `go test ./... -count=1 -json`，Windows 首跑、无 skip | PASS，88 个包；governor 278.025s、client 52.427s，包含既有 relay 用例 |
+| `go test -race ./internal/v2/oobcarrier -count=20` | PASS；EOF-first 与 deadline-first 均保持独立准确断言 |
+| `git diff --check`、新增内容隐私检查 | PASS；不提交原始本机日志或身份信息 |
+
+矩阵命令：
+
+```powershell
+go test -race ./internal/governor -run '^Test(GateB2FIREFreshness|PairingTerminalWitness)' -count=20 -timeout=8m -json
+```
+
+#120 选择原提示词方案 (a)：在调用前让 EOF 已可读，保留 EOF-first 的准确错误类；
+另以调用前 deadline 已过期证明相反因果。两种情形分别断言 EOF/deadline/Closed/Drained，
+不使用“任意错误都通过”的断言，也不改生产 carrier。

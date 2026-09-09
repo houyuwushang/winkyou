@@ -83,7 +83,7 @@ func (gate *PairingAdmissionGate) Commit(ctx context.Context, attempt *AttemptLe
 	failAfterCommit := func(primary error) (*CommittedAttempt, error) {
 		reason := pairingTerminalReasonForGateError(primary)
 		finishErr := ledger.Finish(receipt, reason)
-		return nil, errors.Join(ErrPairingAdmissionRejected, primary, finishErr)
+		return nil, pairingFailureAfterFinish(attempt, errors.Join(ErrPairingAdmissionRejected, primary), finishErr)
 	}
 
 	if err := runPairingGateHook(gate.hooks.afterDurableAdmission); err != nil {
@@ -252,16 +252,48 @@ func (committed *CommittedAttempt) ConsumeForCarrier(ctx context.Context) (*Comm
 		done := committed.finished
 		committed.mu.Unlock()
 		<-done
-		return nil, errors.Join(ErrCommittedAttemptInvalid, committed.terminalErr)
+		return nil, pairingFailureAfterFinish(committed.attempt, ErrCommittedAttemptInvalid, committed.terminalErr)
 	}
 	committed.consumed = true
 	committed.mu.Unlock()
 
 	if err := committed.validate(ctx); err != nil {
 		finishErr := committed.finish(pairingTerminalReasonForGateError(err))
-		return nil, errors.Join(ErrCommittedAttemptInvalid, err, finishErr)
+		return nil, pairingFailureAfterFinish(committed.attempt, errors.Join(ErrCommittedAttemptInvalid, err), finishErr)
 	}
 	return &CommittedCarrierAuthorization{committed: committed}, nil
+}
+
+// durablePairingTerminalError is constructed only after FINISH succeeded.
+// It attests to one exact lease instance, not an ID, a journal count, or a
+// caller-supplied flag. The original failure text and error chain are retained.
+type durablePairingTerminalError struct {
+	cause   error
+	attempt *AttemptLease
+}
+
+func (failure *durablePairingTerminalError) Error() string { return failure.cause.Error() }
+func (failure *durablePairingTerminalError) Unwrap() error { return failure.cause }
+
+func pairingFailureAfterFinish(attempt *AttemptLease, cause, finishErr error) error {
+	err := errors.Join(cause, finishErr)
+	if finishErr != nil || attempt == nil || err == nil {
+		return err
+	}
+	return &durablePairingTerminalError{cause: err, attempt: attempt}
+}
+
+// PairingTerminalRecordedForAttempt verifies the governor's private durable
+// terminal witness on a failed Commit/ConsumeForCarrier. It performs no I/O,
+// grants no emission authority, and never closes a lease. Callers may finish
+// their existing cleanup only for the exact attempt that FINISH recorded.
+// A failed/incomplete FINISH and ordinary or foreign errors cannot attest.
+func PairingTerminalRecordedForAttempt(err error, attempt *AttemptLease) bool {
+	if err == nil || attempt == nil {
+		return false
+	}
+	var terminal *durablePairingTerminalError
+	return errors.As(err, &terminal) && terminal != nil && terminal.attempt == attempt
 }
 
 func (committed *CommittedAttempt) validate(ctx context.Context) error {

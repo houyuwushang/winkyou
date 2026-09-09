@@ -346,11 +346,16 @@ func (runtime *runtime) execute(ctx context.Context, product bool) error {
 	committed, err := governor.NewPairingAdmissionGate().Commit(context.WithoutCancel(ctx), runtime.attempt, runtime.request)
 	if err != nil {
 		runtime.burned = runtime.config.Ledger.Status().Sequence > before
+		runtime.finishRecorded = governor.PairingTerminalRecordedForAttempt(err, runtime.attempt)
 		return runtime.classify(StageBurned, err)
 	}
 	runtime.burned = true
 	runtime.authorization, err = committed.ConsumeForCarrier(ctx)
 	if err != nil {
+		// Rejected consumption can finish durably without returning a carrier
+		// authorization. Preserve that exact-lease witness for cleanup; merely
+		// seeing an error or a burned credential is never release authority.
+		runtime.finishRecorded = governor.PairingTerminalRecordedForAttempt(err, runtime.attempt)
 		return runtime.classify(StageBurned, err)
 	}
 	if err := runtime.emit(StageBurned); err != nil {
