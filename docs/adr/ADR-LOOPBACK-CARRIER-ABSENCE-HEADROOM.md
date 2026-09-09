@@ -41,7 +41,7 @@ Connect 15,039.3481ms、BURN append→FINISH sync 14,631ms；夹具1,212ms在计
 
 真实 governor、OS owner、durable ledger 与字面 loopback UDP 原样运行；BURN/FINISH/latch
 观察使用既有 test hooks，返回结果不变。所有 observer 只记录时间到内存，不在路径上写日志。
-记录 AcquireAttempt、nominal deadline/cancel observation、FINISH append/sync、probeio workers
+记录 AcquireAttempt、nominal deadline/read return、FINISH append/sync、probeio workers
 停止、timer stop、controller.Close 返回、Connect 返回；返后重新取得 owner 并复检持久 trip。
 只输出合成 sample 序号、单调差值、clear/latch 布尔；原始本机日志不进入仓库。
 
@@ -67,10 +67,32 @@ Gosched，退出 join。50个独立样本全部完成，682.135s；没有同时�
 一个已计费 admission + 一个失败 FINISH，peer/attempt/reservation=0，loopback 端口可重新绑定，
 人工压力 worker 返回后为零。每个 interval 的原始单调纳秒保存在仓库外。
 
+### 4.1 修正读取见证后的无人工压力与 race
+
+无人工 CPU 压力100个独立样本全部完成，1,365.923s，100/100 clear、零 latch。
+不与另一份全仓/压力任务并跑；采样期间有一次0.765s的观察器静态负面对照编译，
+不能把“无人工压力”扩大解释成操作系统绝无其他工作。
+
+| 指标 | p95 | 最大值 |
+| --- | ---: | ---: |
+| AcquireAttempt→probeio timer stop | 14,162.1575ms | 14,496.1624ms |
+| probeio startedAt→timer stop | 14,124.2007ms | 14,467.3687ms |
+| nominal deadline→Read 返回 | 0.9101ms | 15.6309ms |
+| FINISH append→sync | 1,122.9385ms | 1,465.8334ms |
+| FINISH sync→controller.Close 返回 | 1.4950ms | 94.7321ms |
+| Connect 墙钟（只记录） | 14,162.1575ms | 14,496.1624ms |
+
+随后外层与真实 governor 临时二进制均启用 race，`-count=20`、每轮一个独立样本，
+377.831s，20/20 clear、零 latch；AcquireAttempt→stop最大14,475.8196ms，
+probeio startedAt→stop最大14,429.9201ms。所有样本都核对 FINISH、持久 clear、
+资源清空与端口可重新绑定，不只核对错误字符串。三个批次合计170个完整样本，
+不把首次无压力运行的5 PASS + 1观察器 RED混进这三个完整批次。
+
 ## 5. 本批采用的分支与剩余边界
 
 采用提示词的“未观察到 latch”分支：**不改生产代码**，不把2s改成3s，不改15s、3包/3PPS。
-理由是这50个样本没有证据支持生产时限修正，而非声称任意负载下绝不可能 latch。
+理由是压力50、无人工压力100及race20都没有观察到支持生产时限修正的 latch，
+而非声称任意负载下绝不可能 latch。
 FINISH写入失败/普通过期/资源清理的语义均不改。
 
 只在新增的 loopback 见证测试中断言两个起点→timer stop均 `<15s`、FINISH-before-stop、
@@ -102,9 +124,24 @@ OS deadline先返回、ctx.Err仍nil。原日志未走到最终错误打印，�
 这是 test-only 见证修正，不改生产时钟/错误归因；旧 RED 留存。
 压力表来自旧名 presence_cancel_observed 的50个完整样本，不能和缺点样本混为全绿。
 
-修正见证后的无人工压力100、真实见证 race×20、全仓、vet、architecture 尚待完成。
+修正见证后的无人工压力100、真实见证 race×20均已通过，详见§4.1；
 无压力运行在新 shell 不设置 CPU_STRESS，RUNS=100；race 设置
 WINKYOU_ABSENCE_WITNESS_RACE=1、RUNS=1，并用 `go test -race ... -count=20`，
 使外层与临时 governor 测试二进制都启用 race。
+
+测试实现 `bf6ce58` 的本地完整验证：
+
+- `go vet ./...`：PASS。
+- `go test ./... -count=1 -skip '^TestRelayWGGoTwoEnginesExchangeIPv4Packets$' -json`：
+  PASS，88个有测试包、11个无测试包；governor 322.201s，client 29.890s。
+- `go test ./pkg/client -run '^TestRelayWGGoTwoEnginesExchangeIPv4Packets$' -count=1 -v`：
+  PASS，14.011s。沿用 #116 已有分区，保留原测试与时限，不减少其平台/次数。
+- `go test ./internal/architecture -count=1 -v`：PASS，11.020s，包含既有变异检查。
+- `git diff --check`、新增文件隐私扫描、本文3个相对文件链接：PASS。
+
+同一 `bf6ce58` 的首轮远端CI是52 SUCCESS / 3 FAILURE / 1 CANCELLED，**不是全绿**：
+两平台 real WireGuard liveness失败、Windows model/owner达到既有20min作业上限，
+下游required聚合门失败。链接与脱敏见证见本PR描述。未修改这些路径或重跑刷绿，
+不能拿本地PASS抵消远端RED。本次后续提交只补齐测量表和证据，生产代码仍为零改动。
 
 保持 Draft，不合并，不以本次采样自动关闭 #111；#115 的复跑/合并顺序由维护者后续办理。
