@@ -1,0 +1,110 @@
+# ADR：loopback 缺席路径的生命周期见证与 FINISH/drain 余量
+
+Status: **Draft，测量证据；未修改生产余量**（2026-09-09）。Refs #111。
+基线 `214ff2d`；#115 分支及其测试文件均未修改。
+
+## 1. 问题与禁止推断
+
+[#115](https://github.com/houyuwushang/winkyou/pull/115)保留的 RED 是
+Connect 15,039.3481ms、BURN append→FINISH sync 14,631ms；夹具1,212ms在计时区间外。
+旧断言 Fatal 早于 persistent trip 复检，因而当时是否 latch **仍未知**。
+新实验不能把这个未知值倒填为 clear，不能删旧 RED，也不能把 journal 下界冒充完整生命周期。
+
+约束仍为 [取消排水契约](../CANCELLATION-DRAIN-CONTRACT.md)、
+[配对重启安全契约](../PAIRING-RESTART-SAFETY-CONTRACT.md)及
+[Gate A ADR](ADR-N3C-OOB-DIRECT-HANDOFF.md)。Gate A 的13s/2s、8/7包、5PPS
+不是 loopback carrier 的包预算；本任务的 loopback 仍为15s、3包、3PPS、2s余量。
+
+## 2. 起点必须区分
+
+源码 `internal/v2/loopbackcarrier/carrier.go` 与 `internal/probeio/probeio.go` 显示：
+
+1. AcquireAttempt 先登记实际 lease；之后才执行 durable BURN / Consume。
+2. admittedCarrier.run 在这些操作之后创建13s context。
+3. probeio.New 再建立 startedAt；发送侧 duration 检查基于这个时刻。
+4. watchLifecycle 创建独立15s timer；实际 armed 时刻还可能稍晚。
+5. 缺席 ReceiveReply 返回后写 FINISH，controller.Close 触发停止/排水，再返回 Connect。
+
+因此提示词括号中的“AcquireAttempt→probeio 停止就是 tripwire 看到的区间”不准确。
+本报告同时记录 owner 与 controller 两个起点，既不偷换起点，也不借此扩大15s。
+对本批样本，两段均严格小于15s；这不自行裁决全部产品 duration 的统一起算语义。
+
+13s nominal deadline 与 `presence_read_return` 也分开：后者是 ReceiveReply 返回的观察
+时间，包括 reader 调度/排水延迟，不能声称精确捕获 Go runtime 关闭 context channel
+的那个 CPU 指令。返回的错误类别另行核对。所有差值保留 Go monotonic 部分。
+
+## 3. 只读测量方法
+
+首个提交 `7294b4e` 只有三个 loopback 测试/模板文件。使用 Go test overlay，在临时测试
+二进制中对真实源码插入时间记录；移除全部插入后必须恢复原源码字节（仅CRLF归一化）。
+不复制实现逻辑、不替换 clock/timer/fsync、不新增生产 hook/API，不编辑或覆盖 #115 的文件。
+
+真实 governor、OS owner、durable ledger 与字面 loopback UDP 原样运行；BURN/FINISH/latch
+观察使用既有 test hooks，返回结果不变。所有 observer 只记录时间到内存，不在路径上写日志。
+记录 AcquireAttempt、nominal deadline/cancel observation、FINISH append/sync、probeio workers
+停止、timer stop、controller.Close 返回、Connect 返回；返后重新取得 owner 并复检持久 trip。
+只输出合成 sample 序号、单调差值、clear/latch 布尔；原始本机日志不进入仓库。
+
+这是一份**被只读观测的真实实现**实验，有少量观察开销；不是原历史 RED 的无扰动追踪。
+每个样本新临时 namespace，不重置生产 ledger，不复用 credential，不增加真实探测权限。
+
+## 4. Windows 压力首轮实测
+
+Go1.26.5、28 logical CPUs、GOMAXPROCS=28、56 busy goroutines；每65,536次整数运算
+Gosched，退出 join。50个独立样本全部完成，682.135s；没有同时启动另一份本地 Go 压力/
+全仓任务。相比 #115 历史复合压力，负载组成不同，不能互相抵消 RED。
+
+| 指标 | p95 | 最大值 |
+| --- | ---: | ---: |
+| AcquireAttempt→probeio timer stop | 13,870.5531ms | 14,215.8496ms |
+| probeio startedAt→timer stop | 13,816.4597ms | 14,175.7123ms |
+| nominal deadline→cancel observation | 19.3022ms | 58.9942ms |
+| FINISH append→sync | 803.7522ms | 1,169.2784ms |
+| FINISH sync→controller.Close 返回 | 5.5056ms | 12.0237ms |
+| Connect 墙钟（只记录） | 13,870.5531ms | 14,215.8496ms |
+
+50/50：persistent latch hook=未触发，内存/重新打开 namespace 后均 clear；
+一个已计费 admission + 一个失败 FINISH，peer/attempt/reservation=0，loopback 端口可重新绑定，
+人工压力 worker 返回后为零。每个 interval 的原始单调纳秒保存在仓库外。
+
+## 5. 本批采用的分支与剩余边界
+
+采用提示词的“未观察到 latch”分支：**不改生产代码**，不把2s改成3s，不改15s、3包/3PPS。
+理由是这50个样本没有证据支持生产时限修正，而非声称任意负载下绝不可能 latch。
+FINISH写入失败/普通过期/资源清理的语义均不改。
+
+只在新增的 loopback 见证测试中断言两个起点→timer stop均 `<15s`、FINISH-before-stop、
+排水/返回顺序与持久 clear；Connect 总墙钟只记录。负面对照包含缺点、FINISH晚于停止、
+恰好15s/超过15s拒绝，以及模拟16s返回但真实生命周期未超限可以通过。
+不通过宽化阈值或“任意错误都过”修测试。
+
+原 `internal/governor/loopbackcarrier_integration_test.go` 的墙钟断言也属于 #115 修改过的
+文件。按本任务“不改 #115 的测试文件”限制，本 PR **未替换它**；它的替换仍需维护者
+明确在 #115 后续办理或允许本 PR 修改该文件。新增见证不等于已消除那个旧断言的 flake。
+这与“在本 PR 原地替换旧断言”的要求不能同时逐字兑现，必须在交付中保留这个差异。
+
+## 6. 验证命令与状态
+
+使用当前 shell 设置下列 opt-in 变量（不提交机器值或路径）：
+
+```powershell
+$env:WINKYOU_ABSENCE_WITNESS='1'
+$env:WINKYOU_ABSENCE_WITNESS_RUNS='50'
+$env:WINKYOU_FLAKE_111_CPU_STRESS='1'
+$env:GOMAXPROCS=[string][Environment]::ProcessorCount
+go test ./internal/v2/loopbackcarrier -run '^TestAbsenceLifecycleWitness$' -count=1 -v -timeout=35m
+```
+
+压力50已通过。首轮无人工压力100在第6次因**观察器缺点**停止：5 PASS + 1 RED，
+85.980s。旧观察器只有 ctx.Err()!=nil 才记录；已有 probeio.contextErrorForIO 明确允许
+OS deadline先返回、ctx.Err仍nil。原日志未走到最终错误打印，不能逆推那个样本的完整
+产品状态。现在对 Read 返回无条件记录，并单独核对真实错误类；补旧条件的负面对照。
+这是 test-only 见证修正，不改生产时钟/错误归因；旧 RED 留存。
+压力表来自旧名 presence_cancel_observed 的50个完整样本，不能和缺点样本混为全绿。
+
+修正见证后的无人工压力100、真实见证 race×20、全仓、vet、architecture 尚待完成。
+无压力运行在新 shell 不设置 CPU_STRESS，RUNS=100；race 设置
+WINKYOU_ABSENCE_WITNESS_RACE=1、RUNS=1，并用 `go test -race ... -count=20`，
+使外层与临时 governor 测试二进制都启用 race。
+
+保持 Draft，不合并，不以本次采样自动关闭 #111；#115 的复跑/合并顺序由维护者后续办理。

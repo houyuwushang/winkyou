@@ -4,6 +4,9 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -35,7 +38,7 @@ var absenceInsertions = map[string][]absenceInsertion{
 		{"\tcost := AttemptCost()\n", "\tabsenceObserveForTest(\"attempt_acquire_begin\", time.Now())\n"},
 		{"\tctx, cancelRun := context.WithTimeout(ctx, AttemptDuration-terminalDrainMargin)\n", "\tabsenceDeadlineForTest, _ := ctx.Deadline()\n\tabsenceObserveForTest(\"presence_deadline\", absenceDeadlineForTest)\n"},
 		{"\t\t\terr = errors.Join(err, controller.Close())\n", "\t\t\tabsenceObserveForTest(\"controller_close_return\", time.Now())\n"},
-		{"\t\treturn verify(packet)\n\t})\n", "\tif ctx.Err() != nil { absenceObserveForTest(\"presence_cancel_observed\", time.Now()) }\n"},
+		{"\t\treturn verify(packet)\n\t})\n", "\tabsenceObserveForTest(\"presence_read_return\", time.Now())\n"},
 	},
 }
 
@@ -89,6 +92,52 @@ func TestAbsenceWitnessOverlayIsInsertionOnly(t *testing.T) {
 	for relative := range absenceInsertions {
 		absenceOverlay(t, relative, absenceSource(t, root, relative))
 	}
+}
+
+func TestAbsenceWitnessIncludesSocketDeadlineBeforeContextCancellation(t *testing.T) {
+	// probeio.contextErrorForIO already attributes the OS deadline correctly
+	// even when ctx.Err() is not set yet. Observe ReadFrom's return regardless
+	// of that scheduling order; the worker separately checks the actual error.
+	insertions := absenceInsertions["internal/v2/loopbackcarrier/carrier.go"]
+	read := insertions[len(insertions)-1].suffix
+	if !unconditionalAbsenceReadObservation(read) {
+		t.Fatal("read-return witness must be unconditional")
+	}
+	for _, mutation := range []string{
+		"if ctx.Err() != nil { " + strings.TrimSpace(read) + " }",
+		"return; " + strings.TrimSpace(read),
+		strings.ReplaceAll(read, "presence_read_return", "different_point"),
+		"",
+	} {
+		if unconditionalAbsenceReadObservation(mutation) {
+			t.Fatal("conditional/missing/misdirected observer mutation escaped")
+		}
+	}
+}
+
+func unconditionalAbsenceReadObservation(source string) bool {
+	parsed, err := parser.ParseFile(token.NewFileSet(), "observer.go", "package witness; func observe() {\n"+source+"\n}", 0)
+	if err != nil || len(parsed.Decls) != 1 {
+		return false
+	}
+	body := parsed.Decls[0].(*ast.FuncDecl).Body.List
+	if len(body) != 1 {
+		return false
+	}
+	statement, ok := body[0].(*ast.ExprStmt)
+	if !ok {
+		return false
+	}
+	call, ok := statement.X.(*ast.CallExpr)
+	if !ok || len(call.Args) != 2 {
+		return false
+	}
+	name, ok := call.Fun.(*ast.Ident)
+	if !ok || name.Name != "absenceObserveForTest" {
+		return false
+	}
+	point, ok := call.Args[0].(*ast.BasicLit)
+	return ok && point.Kind == token.STRING && point.Value == `"presence_read_return"`
 }
 
 func TestAbsenceLifecycleWitness(t *testing.T) {
