@@ -21,7 +21,8 @@ import (
 // in a disposable test binary. There is no production hook, exported runtime
 // API, fake clock, changed timer, or replacement fsync. Removing the listed
 // insertions must recover the original source byte-for-byte (after CRLF
-// normalization). The existing #115 test files are not edited or overlaid.
+// normalization). The default governor absence regression also invokes this
+// witness; its source is never changed by the overlay.
 type absenceInsertion struct{ anchor, suffix string }
 
 var absenceInsertions = map[string][]absenceInsertion{
@@ -92,6 +93,51 @@ func TestAbsenceWitnessOverlayIsInsertionOnly(t *testing.T) {
 	for relative := range absenceInsertions {
 		absenceOverlay(t, relative, absenceSource(t, root, relative))
 	}
+}
+
+func TestAbsenceDefaultRegressionRequiresObservedLifecycle(t *testing.T) {
+	root := absenceRoot(t)
+	source := absenceSource(t, root, "internal/governor/loopbackcarrier_integration_test.go")
+	if !defaultAbsenceUsesObservedLifecycle(source) {
+		t.Fatal("default absence regression must require the real lifecycle witness, not Connect wall time")
+	}
+	for _, mutation := range []string{
+		strings.Replace(source, "runObservedAbsenceLifecycle(t)", "t.Skip(\"disabled\")", 1),
+		strings.Replace(source, "runObservedAbsenceLifecycle(t)", "", 1),
+		strings.Replace(source, "runObservedAbsenceLifecycle(t)", "if false { runObservedAbsenceLifecycle(t) }", 1),
+	} {
+		if defaultAbsenceUsesObservedLifecycle(mutation) {
+			t.Fatal("disabled/default-regression mutation escaped")
+		}
+	}
+}
+
+func defaultAbsenceUsesObservedLifecycle(source string) bool {
+	parsed, err := parser.ParseFile(token.NewFileSet(), "regression_test.go", source, 0)
+	if err != nil {
+		return false
+	}
+	for _, declaration := range parsed.Decls {
+		function, ok := declaration.(*ast.FuncDecl)
+		if !ok || function.Name.Name != "TestLoopbackCarrierAbsentPeerExpiresCleanlyWithoutSafetyTrip" {
+			continue
+		}
+		if function.Body == nil || len(function.Body.List) != 1 {
+			return false
+		}
+		statement, ok := function.Body.List[0].(*ast.ExprStmt)
+		if !ok {
+			return false
+		}
+		call, ok := statement.X.(*ast.CallExpr)
+		if !ok || len(call.Args) != 1 {
+			return false
+		}
+		name, ok := call.Fun.(*ast.Ident)
+		argument, argumentOK := call.Args[0].(*ast.Ident)
+		return ok && name.Name == "runObservedAbsenceLifecycle" && argumentOK && argument.Name == "t"
+	}
+	return false
 }
 
 func TestAbsenceWitnessIncludesSocketDeadlineBeforeContextCancellation(t *testing.T) {
