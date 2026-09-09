@@ -424,6 +424,14 @@ Ctrl-C 是唯一普通停止入口；它取消 session、关闭 WireGuard transp
 退出。process crash 由现有 durable ledger 在重启时拒绝同 credential 继续发送。不存在
 “恢复上一次 direct attempt”或“重新 attach pending slot”。
 
+2026-09-09，Issue #121 澄清：Unix 的 `SIGHUP` / `SIGTERM` 与 Ctrl-C 同等处置，
+三者都映射为 caller cancel，走既有 fail-closed 清理路径：已 burn 的 attempt 先写
+durable `FINISH(cancelled)`，再释放 attempt/peer；关闭 transport/tunnel/interface，
+排空 child/UDP 后退出。已 FINISH 的 session 不重写历史 FINISH。此澄清不是新增普通停止
+能力，而是保证 responder 在对端崩溃、sshd 断连送 SIGHUP 时仍履行 OOB ADR §15.3 的
+FINISH-before-release 不变量；不增加重试、重连或 re-arm。`SIGKILL` 无法捕获，仍由
+durable BURN 与重启拒绝兜底，不能将其伪造为正常 FINISH。Windows 保持 Ctrl-C 语义。
+
 ### 6.2 固定顺序
 
 Gate C orchestrator 不复制 Gate B 协议，按以下顺序组合：

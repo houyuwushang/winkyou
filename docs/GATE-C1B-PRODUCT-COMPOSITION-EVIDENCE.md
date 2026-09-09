@@ -174,6 +174,13 @@ interface 是真实、非 persistent TUN，KernelReads=InnerSends、KernelWrites
 | post-burn child SIGKILL | 0/0 | 3/2 | 1747 |
 | consumer FINISH 后 SIGKILL | 49/48 | 3/3 | 6214 |
 
+Issue #121（2026-09-09）补注：上表是 #104 当时的历史实测。`post-burn parent SIGKILL`
+的 responder sequence=3 是该次 sshd 断连竞态中 EOF 先被处理的结果，不是保证；SIGHUP
+先到而仅注册 SIGINT 时，child 会直接退出并停在 BURN（sequence=2）。修复必须让
+SIGHUP/SIGTERM 进入 caller cancel → durable FINISH → release，保留 parent-kill 的
+responder sequence=3 原断言，并增加直接向 responder child 发信号的永久回归；不得把
+旧 2/3 实测当作该缺口已闭合的证据。SIGKILL 一侧的 sequence=2 仍是正确崩溃见证。
+
 wall 包含固定测试启动；writer error 在原 20s active + drain 内结束，不宣称即时检测。
 sequence=2 是已 durable burn、未 FINISH 的崩溃见证，不伪造正常 FINISH；正常失败保持 sequence=3，
 无退款、无第二 attempt。SIGKILL 不能写进程内 result，故用磁盘 journal、私有固定 marker 与 OS
