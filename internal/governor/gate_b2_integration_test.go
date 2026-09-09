@@ -391,6 +391,7 @@ type gateB2SafetyOutcome struct {
 type gateB2SafetyTestHooks struct {
 	streams       func(*governor.Governor, *governor.Governor, net.Conn, net.Conn) (net.Conn, net.Conn)
 	beforeResidue func([]gateB2SafetyOutcome, *governor.Governor, *governor.Governor)
+	progress      func(*governor.Governor, string)
 }
 
 func runGateB2SafetyRegression(t testing.TB, mode string, hooks ...gateB2SafetyTestHooks) []gateB2SafetyOutcome {
@@ -463,8 +464,13 @@ func runGateB2SafetyRegression(t testing.TB, mode string, hooks ...gateB2SafetyT
 	var readySides atomic.Int32
 	readyBarrier := make(chan struct{})
 	var closeStreams sync.Once
-	progress := func(clock *gateB2ManualClock) gateb.ProgressReporter {
+	progress := func(machine *governor.Governor, clock *gateB2ManualClock) gateb.ProgressReporter {
 		return func(stage string, _ bool) error {
+			for _, hook := range hooks {
+				if hook.progress != nil {
+					hook.progress(machine, stage)
+				}
+			}
 			if mode == "stale_at_fire" && stage == gateb.StageReady {
 				if readySides.Add(1) == 2 {
 					leftClock.Advance(6 * time.Second)
@@ -509,7 +515,7 @@ func runGateB2SafetyRegression(t testing.TB, mode string, hooks ...gateB2SafetyT
 		}
 		result, runErr := gateb.Run(context.Background(), gateb.Config{
 			Machine: machine, Ledger: ledger, Artifact: artifact, Stream: stream, ObserverTopology: topology,
-			BuildVersion: "gate-b2-safety", ProbeFactory: factory, Progress: progress(clock),
+			BuildVersion: "gate-b2-safety", ProbeFactory: factory, Progress: progress(machine, clock),
 			Harness: &gateb.HarnessHooks{
 				NoiseRandom: bytes.NewReader(bytes.Repeat([]byte{randomByte}, 64)), ObservationRandom: gateB2ObservationRandom(randomByte),
 				Now: clock.Now, NewTimer: clock.NewTimer, Wait: clock.Wait, ActiveEnvelope: activeEnvelope,
