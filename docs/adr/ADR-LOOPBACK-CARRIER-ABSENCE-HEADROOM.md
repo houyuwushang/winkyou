@@ -181,3 +181,22 @@ FINISH sync最大1,412.0603ms；sync→drain最大1.5514ms。
 （governor236.172s、client18.934s），独立 relay PASS10.599s，architecture/mutation
 PASS9.552s。未修改工作流、原预算、#115分支或其他flake。最终远端检查另在PR描述登记，
 历史首轮RED不删除，未自动关闭#111。
+
+### 7.2 最低工具链 CI 复现与修正
+
+`ec105d3` 的首次 CI 暴露本地验证遗漏：仓库与 CI 使用 Go1.23.1，先前本机默认是1.26.5。
+1.23.1 的 vet 子进程不能打开 overlay 新增、物理路径不存在的两个测试文件，默认入口在
+约2–3s构建阶段失败，并未运行到13s缺席场景；不能归为持久 trip 或用重跑消除。
+同版本本地已复现 `vet: open ...: file not found`。
+
+`cb8f2bd` 改为向两个**已存在的测试文件的临时overlay**追加import/见证声明，原文件不落写。
+删除两处插入仍须恢复原测试字节；三个生产文件的可逆只读插入也保持不变。
+未关闭vet、未升级go.mod/CI、未改timer或fsync；父级增加只含固定阶段的失败诊断。
+
+Go1.23.1：默认入口普通1次PASS20.680s；父/worker真实race×20 PASS437.878s，
+20/20 clear、无latch、资源清空。AcquireAttempt→stop最大13,030.2842ms，
+probeio→stop最大13,026.5639ms，FINISH sync最大24.2431ms。这里是工具链兼容验证，
+采样中有其他小型测试编译，不作不同工具链的独占性能比较。
+同一实现 `go vet ./...` PASS；原全仓分区88个有测试包PASS（governor139.194s、
+client2.689s、architecture17.233s）；独立relay PASS7.709s。旧RED仍保留，
+新head远端结果单独记录，不把本地PASS写成CI全绿。
