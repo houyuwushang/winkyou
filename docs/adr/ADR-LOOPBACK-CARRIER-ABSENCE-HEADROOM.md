@@ -162,3 +162,22 @@ WINKYOU_ABSENCE_WITNESS_RACE=1、RUNS=1，并用 `go test -race ... -count=20`�
 也不引入生产observer/API或任何额外网络权限。后续复审#115时须明确处理重叠的测试接线，
 不能把此PR的合入当作已复跑/合并#115。接线后的验证结果另行追加，不冒用旧170样本
 证明尚未完成的新入口测试。
+
+### 7.1 默认入口接线的实际验证
+
+`0faab17` 先提交永久 RED：AST 门禁要求默认测试实际委托 `runObservedAbsenceLifecycle(t)`，
+空函数、skip、条件绕过均不能通过。旧实现实测 RED（0.439s），日志保留。
+`10a5f14` 完成接线；生产代码仍零改动。父级还拒绝空/重复报告、缺项、latch、
+错误类型不符、恰好15s与超过15s；合法生命周期但16s Connect返回的合成对照可以通过。
+
+新入口普通1次 PASS（18.222s，含编译/启动）；父级与真实 governor worker 均启用 race，
+默认缺席测试及报告负面测试 `-race -count=20` PASS（455.491s）。20个实际缺席样本均
+clear、无 latch、FINISH与资源/端口清空通过。AcquireAttempt→stop 最大14,450.3317ms
+（p95 14,297.5540ms）；probeio→stop 最大14,413.3655ms（p95 14,251.9250ms）；
+FINISH sync最大1,412.0603ms；sync→drain最大1.5514ms。
+这是新默认入口的独立20次证据；§4的压力50/无压力100保持原批次，不冒充本次重新测量。
+
+同一 `10a5f14`：`go vet ./...` PASS；全仓沿用§6的 #116精确分区，88个有测试包通过
+（governor236.172s、client18.934s），独立 relay PASS10.599s，architecture/mutation
+PASS9.552s。未修改工作流、原预算、#115分支或其他flake。最终远端检查另在PR描述登记，
+历史首轮RED不删除，未自动关闭#111。
