@@ -69,13 +69,14 @@ type gateC1bHostConfig struct {
 }
 
 type gateC1bProcessResult struct {
-	OK      bool                     `json:"ok"`
-	Root    bool                     `json:"root"`
-	Class   string                   `json:"class,omitempty"`
-	Stage   string                   `json:"stage,omitempty"`
-	Stages  []string                 `json:"stages"`
-	Product gatecorchestrator.Result `json:"product"`
-	TUN     gateC1bTUNWitness        `json:"tun"`
+	OK        bool                     `json:"ok"`
+	Root      bool                     `json:"root"`
+	Class     string                   `json:"class,omitempty"`
+	Stage     string                   `json:"stage,omitempty"`
+	Stages    []string                 `json:"stages"`
+	Product   gatecorchestrator.Result `json:"product"`
+	TUN       gateC1bTUNWitness        `json:"tun"`
+	PipeFault gateC1bPeerFaultWitness  `json:"pipe_fault"`
 }
 
 // A copy of the race-enabled test binary supplies the two exact installed
@@ -356,6 +357,9 @@ func (counter *gateC1bSSHDCounters) Write(data []byte) (int, error) {
 }
 
 func TestGateC1bSSHDiagnosticsAreBoundedAndRedacted(t *testing.T) {
+	if !t.Run("peer-pipe-witness-mutations", testGateC1bPipeFaultWitnessRejectsNoopInjection) {
+		t.FailNow()
+	}
 	counter := &gateC1bSSHDCounters{}
 	for _, chunk := range []string{"Authentication refused: bad owner", "ship or modes for directory /synthetic/private\n",
 		"Accepted publickey for synthetic from 192.0.2.12 port 1234 ssh2: synthetic-key\n"} {
@@ -382,8 +386,8 @@ func TestGateC1bSSHDiagnosticsAreBoundedAndRedacted(t *testing.T) {
 	clear(counter.pending)
 }
 
-func runGateC1bCLI(cfg gateC1bHostConfig, args []string) gateC1bProcessResult {
-	result := gateC1bProcessResult{Root: os.Getuid() == 0 && os.Geteuid() == 0}
+func runGateC1bCLI(cfg gateC1bHostConfig, args []string) (result gateC1bProcessResult) {
+	result = gateC1bProcessResult{Root: os.Getuid() == 0 && os.Geteuid() == 0}
 	parent, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	if gateC1bResponderSignalFault(cfg.Fault) {
 		// This regression must exercise the CLI's own signal subscription.
@@ -402,6 +406,26 @@ func runGateC1bCLI(cfg gateC1bHostConfig, args []string) gateC1bProcessResult {
 	}()
 	proof := gatecorchestrator.NATLabProofOptions{Namespace: cfg.Namespace, Side: cfg.Side,
 		SSHSide: cfg.SSHSide, Observers: cfg.Observers}
+	var input io.Reader = os.Stdin
+	var output io.Writer = os.Stdout
+	var pipeFault *gateC1bPeerFault
+	if cfg.Server && (cfg.Fault == "pre-finish-eof" || cfg.Fault == "writer-error") {
+		deadline, _ := ctx.Deadline()
+		var err error
+		pipeFault, input, output, err = newGateC1bPeerFault(cfg.Fault, deadline)
+		if err != nil {
+			result.Class = "harness_pipe_fault_setup_failed"
+			return result
+		}
+		proof.ObserveChildIO = pipeFault.observe
+		defer func() {
+			var err error
+			result.PipeFault, err = pipeFault.close()
+			if err != nil {
+				result.OK, result.Class = false, "harness_pipe_fault_drain_failed"
+			}
+		}()
+	}
 	var kernelInterface *gateC1bKernelInterface
 	if cfg.UseTUN {
 		proof.NewInterface = func(name string, mtu int) (netif.MemoryTestInterface, error) {
@@ -437,11 +461,9 @@ func runGateC1bCLI(cfg gateC1bHostConfig, args []string) gateC1bProcessResult {
 				}
 			}
 		}
-		if cfg.Server && cfg.Fault == "pre-finish-eof" && progress.Stage == gateb.StageOOBAdopt {
-			_ = os.Stdout.Close()
-		}
-		if cfg.Server && cfg.Fault == "writer-error" && progress.Stage == gateb.StagePrepare {
-			_ = os.Stdout.Close()
+		if pipeFault != nil && ((cfg.Fault == "pre-finish-eof" && progress.Stage == gateb.StageOOBAdopt) ||
+			(cfg.Fault == "writer-error" && progress.Stage == gateb.StagePrepare)) {
+			return pipeFault.inject(ctx)
 		}
 		if !cfg.Server && cfg.Fault == "parent-cancel" && progress.Stage == gateb.StagePrepare {
 			cancel()
@@ -488,7 +510,7 @@ func runGateC1bCLI(cfg gateC1bHostConfig, args []string) gateC1bProcessResult {
 		return nil
 	}
 	var err error
-	result.Product, err = winkcmd.ExecuteGateCNATLabProof(ctx, args, os.Stdin, os.Stdout, os.Stderr, proof)
+	result.Product, err = winkcmd.ExecuteGateCNATLabProof(ctx, args, input, output, os.Stderr, proof)
 	if kernelInterface != nil {
 		result.TUN = kernelInterface.witness()
 	}

@@ -229,6 +229,23 @@ root wrapper/orchestrator `-race -count=20` 通过（1.259s / 2.345s）；Linux
 不修改 orchestrator/Gate B、预算、窗口、重试、旧 parent-kill/class/ledger/residue 断言；
 阶段 2/3 继续冻结。新 SHA 的验收结果在 PR #127 逐项记录。
 
+第二轮复审接受生产修复，仅收紧测试见证并同步
+[Gate A ADR §20 排水契约](./adr/ADR-N3C-OOB-DIRECT-HANDOFF.md#20-继承管道与-carrier-排水契约注记2026-09-09)：
+
+- 诊断 parent 收到 child exit 时先读取最终 `before-eof.json`，再检查 `reader-joined`；
+  不新增 sleep，不把已经落盘但尚未轮询到的报告误判为缺失，原断言全部保留。
+- 原 `os.Stdout.Close()` 注入在新 ownership transfer 后只命中已毒化的旧 alias，不能证明
+  EOF 或 writer error。仅两个 fault fixture 在 child stdio 边界增加一条 harness-owned 真 pipe：
+  presence 前关闭输入的 write peer；PREPARE 后关闭输出的 read peer。writer fixture 先将
+  已接受的有界 opaque prefix 转发给原 SSH stdout，再关闭 read peer，强制下一次真实 Write
+  得到 EPIPE；不靠 SIGPIPE、预设错误或任意非空 class 通过。
+- 精确 `linux && natlab && c1bproof` result tap 只观察真实 Read/Write 返回的计数和错误，
+  不返回 payload/descriptor/stream authority。断言 child EOF/EPIPE、peer 已关闭、prefix
+  精确转发、carrier/forwarder 已排空及原 ledger/packet/residue；缺任一见证的变异必须失败。
+  六个正常 SSH/netns profile 和其他故障仍使用原始继承管道，生产路径和上限不变。
+- required CI 必须实际通过 `responder-sighup`、`responder-sigterm`、`parent-kill`；先前
+  在首个 fault 停止的运行不算这三项证据。旧失败不覆盖，最终 SHA 与实测另记 PR。
+
 ## 5. 验收映射与剩余门
 
 | ADR §10.2 | 证据入口 |

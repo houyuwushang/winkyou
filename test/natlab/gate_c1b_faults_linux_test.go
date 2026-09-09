@@ -110,6 +110,16 @@ func testGateC1bFault(t *testing.T, fault string) {
 	if hasPeer && (peer.OK || peer.Product.DataPlaneReady) {
 		t.Fatal("fault peer incorrectly succeeded")
 	}
+	if fault == "pre-finish-eof" || fault == "writer-error" {
+		t.Logf("Gate C1b pipe fault=%s peer_closed=%t child_eof=%t child_epipe=%t written=%d forwarded=%d prefix_forwarded=%t forwarder_drained=%t carrier_eof=%t carrier_drained=%t",
+			fault, peer.PipeFault.PeerClosed, peer.PipeFault.EOF, peer.PipeFault.EPIPE,
+			peer.PipeFault.Written, peer.PipeFault.Forwarded, peer.PipeFault.PrefixForwarded,
+			peer.PipeFault.ForwarderDrained, peer.Product.Witness.GateB.CarrierWitness.EOF,
+			peer.Product.Witness.GateB.CarrierWitness.Drained)
+		if !hasPeer || !validGateC1bPeerFault(fault, peer) {
+			t.Fatal("child did not witness the injected peer EOF/EPIPE and bounded drain")
+		}
+	}
 	var sequences [2]uint64
 	// Preserve a useful RED witness even when a missing FINISH is fatal below.
 	defer func() {

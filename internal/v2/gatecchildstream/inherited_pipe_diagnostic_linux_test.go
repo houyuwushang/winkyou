@@ -55,6 +55,7 @@ func TestInheritedStdinReadMustDrainWithoutPeerEOF(t *testing.T) {
 	done := make(chan error, 1)
 	go func() { done <- command.Wait() }()
 	waited := false
+	var exitErr error
 	defer func() {
 		_ = peer.Close()
 		if !waited {
@@ -65,39 +66,51 @@ func TestInheritedStdinReadMustDrainWithoutPeerEOF(t *testing.T) {
 	_ = input.Close()
 
 	var beforeEOF inheritedPipeDiagnostic
+	readReport := func() bool {
+		payload, readErr := os.ReadFile(filepath.Join(directory, "before-eof.json"))
+		return readErr == nil && json.Unmarshal(payload, &beforeEOF) == nil
+	}
 	ticker := time.NewTicker(5 * time.Millisecond)
 	defer ticker.Stop()
 	waiting := true
 	for waiting {
-		payload, readErr := os.ReadFile(filepath.Join(directory, "before-eof.json"))
-		if readErr == nil && json.Unmarshal(payload, &beforeEOF) == nil {
+		if readReport() {
 			waiting = false
 			break
 		}
 		select {
 		case <-ctx.Done():
 			t.Fatal("diagnostic child did not publish bounded close result")
-		case <-done:
+		case exitErr = <-done:
 			waited = true
-			t.Fatal("diagnostic child exited before close result")
+			// A drained helper can publish and exit before the next poll. Exit
+			// is a reason to read its final files, not to discard their witness.
+			if !readReport() {
+				t.Fatalf("diagnostic child exited without close result: exit_success=%t", exitErr == nil)
+			}
+			waiting = false
 		case <-ticker.C:
 		}
 	}
 	// EOF is supplied only AFTER the production Close result is captured.
 	// Releasing this owned pipe also makes a failing regression leave no reader.
 	_ = peer.Close()
-	select {
-	case err := <-done:
-		waited = true
-		if err != nil {
-			t.Fatal("diagnostic child did not join after peer EOF")
+	if !waited {
+		select {
+		case exitErr = <-done:
+			waited = true
+		case <-ctx.Done():
+			t.Fatal("diagnostic child exceeded external cleanup deadline")
 		}
-	case <-ctx.Done():
-		t.Fatal("diagnostic child exceeded external cleanup deadline")
 	}
+	// Wait establishes that the final reader-joined file can now be read even
+	// if both it and the child exit preceded the parent's first observation.
 	joined, err := os.ReadFile(filepath.Join(directory, "reader-joined"))
 	if err != nil || string(joined) != "joined" {
 		t.Fatal("diagnostic reader join was not witnessed")
+	}
+	if exitErr != nil {
+		t.Fatal("diagnostic child reported unsuccessful exit")
 	}
 	t.Logf("inherited stdin: read_in_flight=%t poll_wait=%t original_native_deadline=%t original_closed=%t close_returned=%t drain_error=%t closed=%t drained=%t read_joined_before_peer_eof=%t close_ms=%d reader_joined_after_peer_eof=true child_exited=true sockets=0",
 		beforeEOF.ReadInFlight, beforeEOF.PollWaitObserved, beforeEOF.NativeDeadline, beforeEOF.OriginalClosed, beforeEOF.CloseReturned,
