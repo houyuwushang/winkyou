@@ -73,7 +73,7 @@ func TestLinuxGateC1bProductProof(t *testing.T) {
 			}
 		}
 	}
-	for _, fault := range []string{"pre-finish-eof", "parent-cancel", "writer-error", "wireguard-failure", "parent-kill", "child-kill", "consumer-crash"} {
+	for _, fault := range []string{"pre-finish-eof", "parent-cancel", "writer-error", "wireguard-failure", "responder-sighup", "responder-sigterm", "parent-kill", "child-kill", "consumer-crash"} {
 		if !t.Run("fault/"+fault, func(t *testing.T) { testGateC1bFault(t, fault) }) {
 			t.FailNow()
 		}
