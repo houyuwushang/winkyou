@@ -95,6 +95,80 @@ func TestAbsenceWitnessOverlayIsInsertionOnly(t *testing.T) {
 	}
 }
 
+var absenceTemplateTargets = map[string]string{
+	"worker": "internal/governor/loopbackcarrier_integration_test.go",
+	"export": "internal/governor/loopbackcarrier_export_test.go",
+}
+
+// Go 1.23's vet subprocess requires every overlay target to exist physically.
+// Append helpers/imports to an existing test file's overlay instead of creating
+// virtual new filenames. Never write the source checkout or disable vet.
+func appendAbsenceTestTemplate(t *testing.T, original, template string) string {
+	t.Helper()
+	fset := token.NewFileSet()
+	sourceFile, err := parser.ParseFile(fset, "existing_test.go", original, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	templateFile, err := parser.ParseFile(fset, "template_test.go", template, 0)
+	if err != nil || sourceFile.Name.Name != templateFile.Name.Name {
+		t.Fatal("absence template package mismatch")
+	}
+	imports := make(map[string]string)
+	for _, spec := range sourceFile.Imports {
+		name := ""
+		if spec.Name != nil {
+			name = spec.Name.Name
+		}
+		imports[spec.Path.Value] = name
+	}
+	var extra []string
+	for _, spec := range templateFile.Imports {
+		name := ""
+		if spec.Name != nil {
+			name = spec.Name.Name
+		}
+		if current, exists := imports[spec.Path.Value]; exists {
+			if current != name {
+				t.Fatal("absence template import alias mismatch")
+			}
+			continue
+		}
+		extra = append(extra, "\t"+name+" "+spec.Path.Value+"\n")
+	}
+	importInsertion := ""
+	if len(extra) != 0 {
+		importInsertion = "\nimport (\n" + strings.Join(extra, "") + ")\n"
+	}
+	packageEnd := fset.Position(sourceFile.Name.End()).Offset
+	templateStart := fset.Position(templateFile.Name.End()).Offset
+	for _, declaration := range templateFile.Decls {
+		if general, ok := declaration.(*ast.GenDecl); ok && general.Tok == token.IMPORT {
+			templateStart = fset.Position(general.End()).Offset
+		}
+	}
+	suffix := "\n" + template[templateStart:]
+	modified := original[:packageEnd] + importInsertion + original[packageEnd:] + suffix
+	// Removing precisely our two insertions recovers all prior test bytes too.
+	recovered := modified[:packageEnd] + modified[packageEnd+len(importInsertion):len(modified)-len(suffix)]
+	if recovered != original {
+		t.Fatal("absence helper changed existing test bytes")
+	}
+	if _, err := parser.ParseFile(token.NewFileSet(), "combined_test.go", modified, 0); err != nil {
+		t.Fatal("absence combined test syntax invalid")
+	}
+	return modified
+}
+
+func TestAbsenceWitnessTemplateAppendIsInsertionOnly(t *testing.T) {
+	root := absenceRoot(t)
+	for name, target := range absenceTemplateTargets {
+		original := absenceSource(t, root, target) // also requires physical target
+		template := absenceSource(t, root, "internal/v2/loopbackcarrier/testdata/absence_"+name+"_test.go.txt")
+		appendAbsenceTestTemplate(t, original, template)
+	}
+}
+
 func TestAbsenceDefaultRegressionRequiresObservedLifecycle(t *testing.T) {
 	root := absenceRoot(t)
 	source := absenceSource(t, root, "internal/governor/loopbackcarrier_integration_test.go")
@@ -190,6 +264,11 @@ func TestAbsenceLifecycleWitness(t *testing.T) {
 	if os.Getenv("WINKYOU_ABSENCE_WITNESS") != "1" {
 		t.Skip("opt-in real-loopback lifecycle measurement, no production instrumentation")
 	}
+	defer func() {
+		if t.Failed() {
+			t.Log("ABSENCE_FAILURE stage=observer_or_worker")
+		}
+	}()
 	count := 1
 	if value := os.Getenv("WINKYOU_ABSENCE_WITNESS_RUNS"); value != "" {
 		parsed, err := strconv.Atoi(value)
@@ -210,9 +289,9 @@ func TestAbsenceLifecycleWitness(t *testing.T) {
 	for relative := range absenceInsertions {
 		writeOverlay(relative, absenceOverlay(t, relative, absenceSource(t, root, relative)))
 	}
-	for _, name := range []string{"worker", "export"} {
+	for name, target := range absenceTemplateTargets {
 		content := absenceSource(t, root, "internal/v2/loopbackcarrier/testdata/absence_"+name+"_test.go.txt")
-		writeOverlay("internal/governor/loopback_absence_witness_"+name+"_test.go", content)
+		writeOverlay(target, appendAbsenceTestTemplate(t, absenceSource(t, root, target), content))
 	}
 	mapping, err := json.Marshal(struct{ Replace map[string]string }{replace})
 	if err != nil {
@@ -236,6 +315,7 @@ func TestAbsenceLifecycleWitness(t *testing.T) {
 	build := exec.CommandContext(buildContext, "go", args...)
 	build.Dir = root
 	if output, err := build.CombinedOutput(); err != nil {
+		t.Log("ABSENCE_FAILURE stage=build")
 		t.Fatalf("witness build: %v\n%s", err, output)
 	}
 	deadline := time.Duration(count)*35*time.Second + time.Minute
