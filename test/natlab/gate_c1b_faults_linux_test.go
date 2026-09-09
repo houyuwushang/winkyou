@@ -192,6 +192,7 @@ func signalGateC1bResponder(t *testing.T, fault string, topology *n2dTopology, c
 		t.Fatal("signal target inventory failed")
 	}
 	var descriptors []int
+	var targetPID int
 	defer func() {
 		for _, descriptor := range descriptors {
 			_ = unix.Close(descriptor)
@@ -207,6 +208,7 @@ func signalGateC1bResponder(t *testing.T, fault string, topology *n2dTopology, c
 			t.Fatal("signal target could not be pinned")
 		}
 		descriptors = append(descriptors, descriptor)
+		targetPID = pid
 		executable, exeErr := os.Stat(fmt.Sprintf("/proc/%d/exe", pid))
 		current, nsErr := os.Stat(fmt.Sprintf("/proc/%d/ns/net", pid))
 		if exeErr != nil || nsErr != nil || !os.SameFile(current, expected) || !os.SameFile(executable, expectedBinary) {
@@ -229,5 +231,9 @@ func signalGateC1bResponder(t *testing.T, fault string, topology *n2dTopology, c
 			t.Fatal("signal fence release failed")
 		}
 	}
+	// Transfer the already pinned diagnostic handle, never the authority to
+	// signal again. The observer is passive and cannot delay candidate release.
+	observeGateC1bSignalPipes(t, descriptors[0], targetPID, expected, expectedBinary, configs[1], started)
+	descriptors = nil
 	return started
 }
