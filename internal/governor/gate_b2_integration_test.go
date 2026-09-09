@@ -388,7 +388,12 @@ type gateB2SafetyOutcome struct {
 	err    error
 }
 
-func runGateB2SafetyRegression(t testing.TB, mode string) []gateB2SafetyOutcome {
+type gateB2SafetyTestHooks struct {
+	streams       func(*governor.Governor, *governor.Governor, net.Conn, net.Conn) (net.Conn, net.Conn)
+	beforeResidue func([]gateB2SafetyOutcome, *governor.Governor, *governor.Governor)
+}
+
+func runGateB2SafetyRegression(t testing.TB, mode string, hooks ...gateB2SafetyTestHooks) []gateB2SafetyOutcome {
 	t.Helper()
 	namespaceNow := time.Now().UTC().Truncate(time.Second)
 	artifactNow := time.Unix(2_000_100_000, 0).UTC()
@@ -447,6 +452,11 @@ func runGateB2SafetyRegression(t testing.TB, mode string) []gateB2SafetyOutcome 
 	defer set.Close()
 	leftStream, rightStream := net.Pipe()
 	leftClock, rightClock := newGateB2ManualClock(artifactNow), newGateB2ManualClock(artifactNow)
+	for _, hook := range hooks {
+		if hook.streams != nil {
+			leftStream, rightStream = hook.streams(leftMachine, rightMachine, leftStream, rightStream)
+		}
+	}
 	results := make(chan gateB2SafetyOutcome, 2)
 	var candidateSides atomic.Int32
 	candidateBarrier := make(chan struct{})
@@ -523,6 +533,11 @@ func runGateB2SafetyRegression(t testing.TB, mode string) []gateB2SafetyOutcome 
 			outcomes = append(outcomes, outcome)
 		case <-terminalTimer.C:
 			t.Fatal("Gate B2 safety regression exceeded bounded terminal window")
+		}
+	}
+	for _, hook := range hooks {
+		if hook.beforeResidue != nil {
+			hook.beforeResidue(outcomes, leftMachine, rightMachine)
 		}
 	}
 	for label, machine := range map[string]*governor.Governor{"left": leftMachine, "right": rightMachine} {
