@@ -1,6 +1,9 @@
 package governor
 
 import (
+	"context"
+	"os"
+	"runtime/trace"
 	"sync"
 	"time"
 )
@@ -38,6 +41,11 @@ func ObserveCarrierAbsenceJournal(machine *Governor) (func() CarrierAbsenceJourn
 		switch record.Type {
 		case pairingRecordBurnAndAdmit:
 			timing.AdmissionAppended = at
+			// Annotate this already-existing test observer, never production.
+			// Only fixed labels enter the opt-in trace; no record payload does.
+			if os.Getenv("WINKYOU_FLAKE_111_CPU_STRESS") == "1" && trace.IsEnabled() {
+				trace.Log(context.Background(), "absence_journal", "burn_appended")
+			}
 		case pairingRecordFinish:
 			timing.FinishAppended = at
 		}

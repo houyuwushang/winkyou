@@ -280,10 +280,15 @@ func TestLoopbackCarrierAbsentPeerExpiresCleanlyWithoutSafetyTrip(t *testing.T) 
 	fixtureStart := time.Now()
 	now := time.Now().UTC().Truncate(time.Second)
 	namespace := t.TempDir()
+	prepareTraceDone := absenceTraceRegion("absence_prepare_namespace")
 	if err := governor.PrepareLoopbackCarrierTestNamespace(namespace, now); err != nil {
+		prepareTraceDone()
 		t.Fatal("absence namespace preparation failed")
 	}
+	prepareTraceDone()
+	acquireTraceDone := absenceTraceRegion("absence_acquire_governor")
 	machine, err := governor.AcquireLoopbackCarrierTestGovernor(namespace, "loopback-carrier-absent-peer")
+	acquireTraceDone()
 	if err != nil {
 		t.Fatal("absence governor acquisition failed")
 	}
@@ -307,8 +312,10 @@ func TestLoopbackCarrierAbsentPeerExpiresCleanlyWithoutSafetyTrip(t *testing.T) 
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 	start := time.Now()
+	connectTraceDone := absenceTraceRegion("absence_connect")
 	_, connectErr := loopbackcarrier.Connect(ctx, machine, bundle, "loopback-carrier-absent-peer", nil)
 	returned := time.Now()
+	connectTraceDone()
 	observed := absentPeerObservation{
 		ConnectErr: connectErr, Started: start, Returned: returned, Journal: journalTiming(),
 		CallerErr: ctx.Err(),
