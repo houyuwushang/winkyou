@@ -46,8 +46,6 @@ type gateC1bMemoryProfile struct {
 	maxConns            int
 	maxMappings         int
 	queueCapacity       int
-	candidateTime       time.Duration
-	activeTime          time.Duration
 	acquire             func(string, string) (*governor.Governor, error)
 	cli                 bool
 	fault               string
@@ -60,8 +58,8 @@ type gateC1bMemoryProfile struct {
 
 // Test-only session configuration, not a product deadline or probe allowance.
 // ADR 19.10 gives ordinary/CLI/cancellation/fresh100 the same 10s session as
-// slow FINISH. The profile absolute/candidate windows and all I/O caps stay
-// unchanged; the production 5s validation floor is not a success SLA.
+// slow FINISH. Attempt timing comes only from memoryFixtureWindows; all
+// production windows/I/O caps stay unchanged. The 5s floor is not a success SLA.
 func (p gateC1bMemoryProfile) sessionCeiling() time.Duration {
 	if p.liveness != nil {
 		return 10 * time.Minute
@@ -79,7 +77,7 @@ var gateC1bMemoryProfiles = []gateC1bMemoryProfile{
 			{Mapping: natsim.MappingEndpointDependent, Allocation: natsim.PortIncrement,
 				Filtering: natsim.FilterAddressPortDependent, PortMin: 40000, PortMax: 45000},
 		},
-		maxConns: 32, maxMappings: 256, queueCapacity: 4096, candidateTime: 100 * time.Millisecond,
+		maxConns: 32, maxMappings: 256, queueCapacity: 4096,
 		acquire: governor.AcquireManualTraversalTestGovernor,
 	},
 	{
@@ -91,7 +89,7 @@ var gateC1bMemoryProfiles = []gateC1bMemoryProfile{
 			{Mapping: natsim.MappingEndpointIndependent, Allocation: natsim.PortIncrement,
 				Filtering: natsim.FilterAddressPortDependent, PortMin: 46000, PortMax: 65535},
 		},
-		maxConns: 300, maxMappings: 4096, queueCapacity: 4096, candidateTime: 250 * time.Millisecond,
+		maxConns: 300, maxMappings: 4096, queueCapacity: 4096,
 		acquire: governor.AcquireManualTraversalTestGovernor,
 	},
 	{
@@ -107,7 +105,6 @@ var gateC1bMemoryProfiles = []gateC1bMemoryProfile{
 				PortMin: hardnatplan.DynamicPortMin, PortMax: hardnatplan.DynamicPortMax, RandomSeed: 4},
 		},
 		maxConns: 40, maxMappings: 40_000, queueCapacity: 16_398,
-		candidateTime: 2 * time.Second, activeTime: 6 * time.Second,
 		acquire: governor.AcquireHardNATCampaignTestGovernor,
 	},
 }
@@ -126,9 +123,6 @@ func TestGateC1bMemoryProductPipelineReachesPostOOBEcho(t *testing.T) {
 func TestGateC1bMemorySlowDurableFinishReachesPostOOBEcho(t *testing.T) {
 	for _, test := range gateC1bMemoryProfiles {
 		test.slowFinish = true
-		// Consume the already frozen profile absolute envelope, not Hard16's
-		// compressed 6s timing fixture. All memory sessions are now 10s.
-		test.activeTime = 0
 		t.Run(test.name, func(t *testing.T) {
 			runGateC1bMemoryProductProfile(t, "slow-finish-"+test.name, test)
 		})
@@ -136,6 +130,7 @@ func TestGateC1bMemorySlowDurableFinishReachesPostOOBEcho(t *testing.T) {
 }
 
 func TestGateC1bMemoryFixtureSessionWindows(t *testing.T) {
+	t.Run("attempt-window-source", testGateC1bMemoryFixtureWindowSource)
 	for _, base := range gateC1bMemoryProfiles {
 		for _, scenario := range []string{"ordinary", "cli", "cancel", "fresh100", "evidence-drift", "candidate-exhaustion", "slow-finish", "slow-responder-finish"} {
 			t.Run(base.name+"/"+scenario, func(t *testing.T) {
@@ -159,7 +154,7 @@ func TestGateC1bMemoryFixtureSessionWindows(t *testing.T) {
 				if (profile.slowFinish || profile.slowResponderFinish) && profile.sessionCeiling() <= 3*time.Second+3500*time.Millisecond {
 					t.Fatal("slow fixture leaves no completion margin after the challenge and injected delay")
 				}
-				if base.sessionCeiling() != 10*time.Second || profile.activeTime != base.activeTime || profile.candidateTime != base.candidateTime {
+				if base.sessionCeiling() != 10*time.Second || memoryFixtureWindows(profile.profile) != memoryFixtureWindows(base.profile) {
 					t.Fatal("session configuration changed the base fixture or its attempt timing")
 				}
 			})
@@ -172,7 +167,6 @@ func TestGateC1bMemoryFixtureSessionWindows(t *testing.T) {
 func TestGateC1bMemorySlowResponderDurableFinishReachesPostOOBEcho(t *testing.T) {
 	for _, test := range gateC1bMemoryProfiles {
 		test.slowResponderFinish = true
-		test.activeTime = 0
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 			runGateC1bMemoryProductProfile(t, "slow-responder-finish-"+test.name, test)
@@ -197,9 +191,6 @@ func TestGateC1bMemoryProductPipelineFresh100(t *testing.T) {
 	for iteration := range 100 {
 		test := gateC1bMemoryProfiles[iteration%len(gateC1bMemoryProfiles)]
 		test.cli = true
-		if test.candidateTime < 500*time.Millisecond {
-			test.candidateTime = 500 * time.Millisecond
-		}
 		label := test.name + "-fresh-" + strconv.Itoa(iteration)
 		if !t.Run(label, func(t *testing.T) { runGateC1bMemoryProductProfile(t, label, test) }) {
 			t.FailNow()
@@ -211,12 +202,6 @@ func TestGateC1bMemoryProductPipelineFresh100(t *testing.T) {
 func TestGateC1bMemoryCLIAndClaimedChildPipeline(t *testing.T) {
 	for _, profile := range gateC1bMemoryProfiles {
 		profile.cli = true
-		// The real CLI/slot/process accounting adds scheduler work. Keep this
-		// proof below the frozen production window without compressing it to
-		// 100ms (one Windows race run exhausted before a sender was scheduled).
-		if profile.candidateTime < 500*time.Millisecond {
-			profile.candidateTime = 500 * time.Millisecond
-		}
 		t.Run(profile.name, func(t *testing.T) { runGateC1bMemoryProductProfile(t, "cli-"+profile.name, profile) })
 	}
 }
@@ -226,7 +211,6 @@ func TestGateC1bMemoryCLIEvidenceDriftAndExhaustionAreOneShot(t *testing.T) {
 		t.Run(fault, func(t *testing.T) {
 			profile := gateC1bMemoryProfiles[0]
 			profile.cli, profile.fault = true, fault
-			profile.candidateTime = 500 * time.Millisecond
 			runGateC1bMemoryProductProfile(t, fault, profile)
 		})
 	}
@@ -234,6 +218,7 @@ func TestGateC1bMemoryCLIEvidenceDriftAndExhaustionAreOneShot(t *testing.T) {
 
 func runGateC1bMemoryProductProfile(t *testing.T, label string, test gateC1bMemoryProfile) {
 	t.Helper()
+	windows := memoryFixtureWindows(test.profile)
 	// The protocol key includes the validity window. Freeze it so the
 	// conditional birthday profiles exercise a reproducible successful
 	// schedule instead of turning this composition proof into a probability
@@ -501,7 +486,7 @@ func runGateC1bMemoryProductProfile(t *testing.T, label string, test gateC1bMemo
 				Harness: &gateb.HarnessHooks{NoiseRandom: bytes.NewReader(bytes.Repeat([]byte{byte(40 + index)}, 4096)),
 					ObservationRandom: gateB2ObservationRandom(byte(70 + index)), Now: clocks[index].Now,
 					NewTimer: clocks[index].NewTimer, Wait: clocks[index].Wait,
-					ActiveEnvelope: test.activeTime, CandidateWindow: test.candidateTime},
+					ActiveEnvelope: windows.activeTime, CandidateWindow: windows.candidateTime},
 				BuildVersion: "gate-c1b-memory-product", Random: bytes.NewReader(bytes.Repeat([]byte{byte(90 + index)}, 64)),
 				InactiveEvery: 100 * time.Millisecond,
 				Progress: func(progress gatecorchestrator.Progress) error {
@@ -619,6 +604,18 @@ func runGateC1bMemoryProductProfile(t *testing.T, label string, test gateC1bMemo
 			}
 		case <-time.After(proofTimeout + 5*time.Second):
 			t.Fatal("Gate C1b memory product pipeline exceeded its bound")
+		}
+	}
+	if test.liveness != nil {
+		var unready []error
+		for _, got := range outcomes {
+			if err := gateC1bLivenessReadyPrecondition(got.result, got.err, test.liveness.started); err != nil {
+				t.Logf("liveness precondition role=%s: %v", got.role, err)
+				unready = append(unready, err)
+			}
+		}
+		if len(unready) != 0 {
+			t.Fatal(errors.Join(unready...))
 		}
 	}
 	matchedFault := 0

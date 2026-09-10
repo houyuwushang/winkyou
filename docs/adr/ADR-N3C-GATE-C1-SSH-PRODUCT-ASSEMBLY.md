@@ -1291,6 +1291,12 @@ responder 已 detach/active，但 post-OOB echo 失败。两侧 3/3 trace、carr
    证明本次有界完成与排水，不冒充长期在线或真实网络成功。继续同一 Draft PR，独立复审
    前不合并、不关闭 #109；不混修其它 issue，不推进 liveness/M/C1c 或现场 I/O。
 
+2026-09-10，维护者授权 #119 将所有 C1b/liveness **memory fixture 窗口来源单一化**为
+`memoryFixtureWindows(profile)`，按 Windows race + 双 busy worker 实测保留余量；仅取代
+§19.10–19.11 对旧 memory candidate/active 数值不变的限制，生产上限、session、计费、
+成功/排水断言及 OS/netns 不变，首次反例和新窗口见
+[C1b 证据 §7](../GATE-C1B-PRODUCT-COMPOSITION-EVIDENCE.md#7-issue-119-内存-fixture-窗口单一化2026-09-10)。
+
 ### 19.9 R1 确认交换的时间边界（2026-09-07，维护者接受独立复审裁决）
 
 维护者接受 [独立复审裁决](https://github.com/houyuwushang/winkyou/pull/110#issuecomment-5565715193)，

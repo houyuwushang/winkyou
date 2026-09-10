@@ -867,3 +867,76 @@ head CI 写入 PR #110，未完成的项目不提前标绿；不重跑覆盖，�
 
 本地串行通过支持继续验证隔离方案，不证明并发争用是全部反例的唯一根因。完整全仓
 结果及 Linux/Windows 新旧 required job 的最终状态仍以 PR 所列确切 head 为准。
+
+## 7. Issue #119 内存 fixture 窗口单一化（2026-09-10）
+
+### 7.1 范围与首次反例
+
+本次基于 `295b1b5`，只修内存测试的时序配置与未 arm 的 liveness 诊断。main 的
+[Windows 慢 responder 首次失败](https://github.com/houyuwushang/winkyou/actions/runs/34358182445/job/102488102199)
+及 [Windows liveness 首次失败](https://github.com/houyuwushang/winkyou/actions/runs/34358182407/job/102488101063)
+保留；维护者对 main 的 rerun 不构成本次修复证据。
+
+`64f9fff` 先加入只读阶段计时和同进程两个 busy goroutine，未改变旧 fixture 窗口。
+Windows、Go 1.23.1、`-race`、`GOMAXPROCS=2` 的首次压力执行在第一轮停止：
+predictive 成功（candidate→winner 291/290ms，ready=true/true，candidate 32/32）；
+asymmetric 失败（candidate 128/512，winner=0/0，ready=false/false，墙钟 3009ms），
+双端为 `attempt_expired` / `hard_nat_candidate_exhausted`。Hard16 未执行，不能记作通过。
+两个压力 worker 实际运行且均完成 join。失败端点没有 ready，不补称完整残留门通过。
+
+这一反例已经发完 asymmetric 的两侧 candidate，仍未形成成功终局；与 §6.13 一样，
+不能把 #119 的所有反例都归结为“未发完包”。候选窗口还需容纳调度、交付和 winner
+互认。首次 RED 原日志保存在仓库外；公开记录仅含合成 profile、稳定错误类、计数和时长。
+
+### 7.2 单一策略及压力实测
+
+`gateC1bMemoryProfile` 不再携带可被各入口覆盖的时间字段；普通、CLI、取消、fresh100、
+I/R 慢 FINISH 和所有 liveness 场景共用 runner 内唯一的 `memoryFixtureWindows(profile)`。
+配置回归验证下界、低于生产上限、唯一 hook 消费点，以及 pipeline/liveness 局部覆盖
+的负向变异。未知 profile 不继承默认值。
+
+| profile | memory candidate / active | 生产 candidate / active（不变） | 压力成功轮数 | candidate→winner p95 / max | preflight→ready p95 / max | 整轮 max |
+| --- | --- | --- | --- | --- | --- | --- |
+| predictive | 1s / 10s | 5s / 20s | 20/20 | 330 / 332ms | 1642 / 1679ms | 1978ms |
+| asymmetric | 1.5s / 10s | 5s / 20s | 20/20 | 782 / 826ms | 3545 / 3624ms | 3893ms |
+| hard-16k | 4s / 12s | 38s / 45s | 20/20 | 1769 / 1841ms | 3509 / 3553ms | 3823ms |
+
+压力条件与首次 RED 相同：Windows Go 1.23.1、`-race`、`GOMAXPROCS=2`、同进程两个
+持续 busy goroutine；不是额外 sleep 或延迟发送。每轮依次执行三 profile 的实际 CLI
+内存组合；共 60 个成功配对 / 120 个 ready 端点，20 次双 worker join 均通过。
+p95 用每 profile 的 40 个端点样本排序后第 38 个值（nearest rank），不丢弃慢样本。
+`preflight→ready` 从 orchestrator preflight 起算，**不是 attempt active 时间**；首份
+计时日志曾将此字段命名为 `active_to_ready_ms`，现改为准确的 `preflight_to_ready_ms`，
+起止点和测量值未改。candidate→winner 同样包含 winner 互认，不冒称纯发送耗时。
+
+predictive candidate 实际 I 为 31–32、R 为 32；既有协议可在选出 winner 后停止剩余
+发送。asymmetric 为 128/512，Hard16 为 16384/16384，后两者均完成原完整 schedule。
+所有成功仍通过原独立分项计费、双端 ready、3/3 challenge、FINISH/detach、carrier 8/8、
+post-OOB echo、natsim/governor 零残留与无意外 trip 断言，不用“干净耗尽”替代成功。
+
+这些是 memory fixture 的实测余量，不是生产 SLA，也不证明任意机器负载下都不会超时。
+10s 普通 session、10min liveness session、3500ms 慢 FINISH 注入、3s/三包、PPS/包数、
+golden、生产常量与 natlab/OS 路径均不变；没有 retry、fallback 或现场 I/O。
+
+### 7.3 未 arm 诊断与验证口径
+
+共用 helper 收齐双端终局后，先检查两侧 `DataPlaneReady` 和非零 ready 时间；未建立
+成功时立即报告 `liveness_not_armed` 及原 Gate B class/stage，先于所有 idle/post-fault
+时间运算。blackhole 另要求 fault 时间非零。负向对照覆盖 candidate exhausted、attempt
+expired、OOB closed 与零时间戳，避免将建立失败伪装成几十万小时的 liveness 超时；
+正常 ready、时间戳、计数和残留断言不放宽。
+
+本地压力命令（旧窗口首次 RED 与新窗口首次 20/20 分别留档，不 rerun 求绿）：
+
+```text
+GOMAXPROCS=2 WINKYOU_FLAKE_119_STRESS=1
+go test -race -tags=c1bproof ./internal/governor -run '^TestGateC1bMemoryFixtureStressSchedules$' -count=20 -failfast -timeout=15m -json
+```
+
+完整本地验证使用原要求的 `GateC1b|SessionLiveness`、race×20、40m，在默认与
+`GOMAXPROCS=2` 各执行一次；这两组不启用额外 busy worker。180s idle、长 blackhole、
+nonproof 与 fresh100 的既有 opt-in gate 由 CI 显式启用，不将默认 skip 算成通过。
+Linux 交叉 vet 使用 `CGO_ENABLED=0 GOOS=linux`。确切 SHA、每条验证结果与两平台
+required job 的**逐步骤墙钟耗时**回填本次 Draft PR 描述，未完成项目不预先标绿。
+若 runner 容量不足，先保留首次 RED，再按授权独立记录执行器分组；不减少次数或
+靠重跑掩盖反例。#119 合入且 main push-run 绿之前，批次阶段 2/3 继续冻结。
