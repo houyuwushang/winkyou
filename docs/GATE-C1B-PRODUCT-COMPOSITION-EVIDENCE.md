@@ -940,3 +940,22 @@ Linux 交叉 vet 使用 `CGO_ENABLED=0 GOOS=linux`。确切 SHA、每条验证�
 required job 的**逐步骤墙钟耗时**回填本次 Draft PR 描述，未完成项目不预先标绿。
 若 runner 容量不足，先保留首次 RED，再按授权独立记录执行器分组；不减少次数或
 靠重跑掩盖反例。#119 合入且 main push-run 绿之前，批次阶段 2/3 继续冻结。
+
+### 7.4 首跑 netns 反例与追加只读终局诊断
+
+`1fbe87b` 的 [push 首跑 consumer-crash](https://github.com/houyuwushang/winkyou/actions/runs/34420908516/job/102695894445)
+在 13.31s 报 `intended endpoint crash was not witnessed`。原断言先于终局结果、ledger
+与完整残留门的输出，因此不能据此确认失败原因，也不能补称该失败用例零残留。
+同 SHA 的 [独立 PR 触发](https://github.com/houyuwushang/winkyou/actions/runs/34420913554/job/102695910859)
+该用例通过（7.65s，UDP 49/48、ledger sequence 3/3），不是 rerun，也不覆盖首次 RED。
+
+维护者随后仅授权补充这一用例的终局诊断。harness 在返回或 Fatal 时、既有 cleanup
+之前，分别读取两端已有的 result、最后 stage 和 crash marker；不加等待、重试、故障
+注入或生产回调，不改原断言、生产时序与预算。snapshot 明确标为 **non-atomic**，只
+投影固定 class/stage、布尔值、计数和已有 WireGuard completion context 见证。未知文本
+替换为 `unrecognized`；文件缺失、半写入、超限与不可读分别标记，结果不可用时为
+`null`，不把默认零值作为排水证据。result 读取上限 64KiB，stage/marker 各 128 bytes。
+
+脱敏与边界负向用例可在 Windows 无 socket 运行，也由现有 Linux required diagnostics
+入口执行。本增补只改善反例可观测性；后续 CI 即使不再复现，也不构成根因已修复的
+证明。其他 Mapping Lifetime 失败与 Windows job 容量问题分别记录，不混入本诊断改动。

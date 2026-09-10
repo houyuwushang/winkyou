@@ -31,6 +31,16 @@ func testGateC1bFault(t *testing.T, fault string) {
 		t.Fatal("fault packet counter setup failed")
 	}
 	configs := gateC1bFixtureForFault(t, topology, observer.topology, gateC1bProfiles[0], true, fault)
+	if fault == "consumer-crash" {
+		// Run even on Fatal, before cleanup removes the private witnesses. This
+		// is a non-atomic, read-only snapshot, not an extra wait or drain proof.
+		defer func() {
+			for side, cfg := range configs {
+				t.Logf("Gate C1b consumer-crash terminal snapshot side=%d non_atomic=true %s",
+					side, gateC1bCrashTerminalSnapshot(cfg.ResultFile, cfg.StageFile))
+			}
+		}()
+	}
 	server := startGateC1bHost(t, configs[1])
 	server.waitFile(t, configs[1].ReadyFile, 5*time.Second)
 	client := startGateC1bHost(t, configs[0])
