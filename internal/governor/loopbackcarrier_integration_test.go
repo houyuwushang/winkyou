@@ -13,7 +13,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -277,102 +276,79 @@ func TestLoopbackCarrierCrashBeforePromoteBurnsAndRestartEmitsZero(t *testing.T)
 }
 
 func TestLoopbackCarrierAbsentPeerExpiresCleanlyWithoutSafetyTrip(t *testing.T) {
-	runObservedAbsenceLifecycle(t)
-}
-
-// Run the same real implementation with read-only source observations in a
-// disposable test binary. This adds no production hook or alternate clock.
-// The worker retains the exact error, ledger, persistent-trip and drain checks
-// and measures AcquireAttempt/probeio-start to the actual lifecycle stop.
-func runObservedAbsenceLifecycle(t *testing.T) {
-	t.Helper()
-	root, err := filepath.Abs(filepath.Join("..", ".."))
+	startAbsenceCPUPressure(t)
+	fixtureStart := time.Now()
+	now := time.Now().UTC().Truncate(time.Second)
+	namespace := t.TempDir()
+	if err := governor.PrepareLoopbackCarrierTestNamespace(namespace, now); err != nil {
+		t.Fatal("absence namespace preparation failed")
+	}
+	machine, err := governor.AcquireLoopbackCarrierTestGovernor(namespace, "loopback-carrier-absent-peer")
 	if err != nil {
-		t.Fatal("resolve absence witness source root")
+		t.Fatal("absence governor acquisition failed")
 	}
-	args := []string{"test", "./internal/v2/loopbackcarrier", "-run=^TestAbsenceLifecycleWitness$", "-count=1", "-v", "-timeout=3m"}
-	race := "0"
-	if governor.LoopbackCarrierSubprocessRaceEnabled() {
-		args = append(args, "-race")
-		race = "1"
+	t.Cleanup(func() { closeAbsentPeerGovernor(t, machine, namespace) })
+	journalTiming, err := governor.ObserveCarrierAbsenceJournal(machine)
+	if err != nil {
+		t.Fatal("absence journal observer installation failed")
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
+	local := reserveLoopbackEndpoint(t)
+	absentPeer := reserveLoopbackEndpoint(t)
+	bundle, unusedBundle := processBundles(t, local, absentPeer, absentPeer, local, repeatedKey(81), now)
+	clear(unusedBundle)
+	defer clear(bundle)
+
+	// This is the unchanged caller guard, not a substitute probe deadline.
+	// Exact internal origins and timer stop remain an opt-in overlay proof.
+	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
 	defer cancel()
-	command := exec.CommandContext(ctx, "go", args...)
-	command.Dir = root
-	command.WaitDelay = 2 * time.Second
-	command.Env = append(os.Environ(), "WINKYOU_ABSENCE_WITNESS=1", "WINKYOU_ABSENCE_WITNESS_RUNS=1", "WINKYOU_ABSENCE_WITNESS_RACE="+race)
-	output, runErr := command.CombinedOutput()
-	// Only the bounded, identity-free measurement records are public diagnostics.
-	for _, line := range strings.Split(string(output), "\n") {
-		if offset := strings.Index(line, "ABSENCE_"); offset >= 0 {
-			t.Log(strings.TrimSpace(line[offset:]))
-		}
+	start := time.Now()
+	_, connectErr := loopbackcarrier.Connect(ctx, machine, bundle, "loopback-carrier-absent-peer", nil)
+	returned := time.Now()
+	observed := absentPeerObservation{
+		ConnectErr: connectErr, Started: start, Returned: returned, Journal: journalTiming(),
 	}
-	if runErr != nil {
-		t.Fatalf("observed absence subprocess failed (error type %T); no lifecycle proof", runErr)
-	}
-	if err := validateAbsenceRegressionOutput(string(output)); err != nil {
-		t.Fatal(err)
-	}
-}
+	observed.Memory = machine.Snapshot()
 
-func validateAbsenceRegressionOutput(output string) error {
-	if strings.Count(output, "ABSENCE_POSTCHECK deadline_error=true safety_clear=true peers=0 attempts=0") != 1 ||
-		strings.Count(output, "measurement_requested=1 persistent_trip_samples=0") != 1 {
-		return errors.New("absence regression missing exact error/durable completion witness")
+	// Collect every independent postcondition before asserting. In particular,
+	// an unexpected error or journal observation cannot skip the durable trip
+	// readback as the historical wall-clock Fatal did.
+	observed.CloseErr = machine.Close()
+	reopened, reopenErr := governor.AcquireLoopbackCarrierTestGovernor(namespace, "loopback-carrier-absent-peer-verify")
+	observed.ReopenErr = reopenErr
+	if reopenErr == nil {
+		t.Cleanup(func() { closeAbsentPeerGovernor(t, reopened, namespace) })
+		observed.Persisted = reopened.Snapshot().SafetyTrip
+		observed.PersistedChecked = true
+		observed.ReopenedCloseErr = reopened.Close()
+	} else {
+		var trip *governor.SafetyTripError
+		if errors.As(reopenErr, &trip) {
+			observed.Persisted = trip.Status
+			observed.PersistedChecked = true
+		}
 	}
-	samples := 0
-	for _, line := range strings.Split(output, "\n") {
-		const marker = "ABSENCE_MEASUREMENT "
-		offset := strings.Index(line, marker)
-		if offset < 0 {
-			continue
-		}
-		var report struct {
-			Sample        int              `json:"sample"`
-			SafetyClear   bool             `json:"safety_clear"`
-			LatchObserved bool             `json:"latch_observed"`
-			Times         map[string]int64 `json:"monotonic_ns"`
-		}
-		if err := json.Unmarshal([]byte(line[offset+len(marker):]), &report); err != nil || report.Sample != 1 || !report.SafetyClear || report.LatchObserved {
-			return errors.New("absence regression invalid or unsafe measurement")
-		}
-		for _, span := range []string{"attempt_to_timer_stop_ns", "probeio_to_timer_stop_ns"} {
-			elapsed, exists := report.Times[span]
-			if !exists || elapsed <= 0 || elapsed >= int64(loopbackcarrier.AttemptDuration) {
-				return errors.New("absence resource lifecycle is not strictly inside the unchanged admission duration")
-			}
-		}
-		samples++
-	}
-	if samples != 1 {
-		return errors.New("absence regression requires exactly one completed observed lifecycle")
-	}
-	return nil
-}
+	observed.Ledger, observed.LedgerErr = governor.InspectLoopbackCarrierTestLedger(namespace, time.Now())
+	observed.UnfinishedAdmissions, observed.UnfinishedPackets, observed.OccupancyErr = governor.InspectLoopbackCarrierTestOccupancy(namespace, time.Now())
+	observed.PortRebound = t.Run("port-rebind", func(t *testing.T) { assertReusable(t, local) })
+	observed.Collected = true
 
-func TestAbsentPeerLifecycleOutputCannotSkipOrHideTrip(t *testing.T) {
-	const valid = "ABSENCE_POSTCHECK deadline_error=true safety_clear=true peers=0 attempts=0\n" +
-		"measurement_requested=1 persistent_trip_samples=0\n" +
-		`ABSENCE_MEASUREMENT {"sample":1,"safety_clear":true,"latch_observed":false,"monotonic_ns":{"attempt_to_timer_stop_ns":14000000000,"probeio_to_timer_stop_ns":13000000000,"connect_return":16000000000}}` + "\n"
-	if err := validateAbsenceRegressionOutput(valid); err != nil {
-		t.Fatal(err)
-	}
-	for _, invalid := range []string{
-		"", "--- SKIP: TestAbsenceLifecycleWitness\nPASS\n", valid + valid,
-		strings.ReplaceAll(valid, "deadline_error=true", "deadline_error=false"),
-		strings.ReplaceAll(valid, `"safety_clear":true`, `"safety_clear":false`),
-		strings.ReplaceAll(valid, `"latch_observed":false`, `"latch_observed":true`),
-		strings.ReplaceAll(valid, "persistent_trip_samples=0", "persistent_trip_samples=1"),
-		strings.ReplaceAll(valid, "14000000000", "15000000000"),
-		strings.ReplaceAll(valid, "13000000000", "15000000001"),
-		strings.ReplaceAll(valid, "probeio_to_timer_stop_ns", "missing_span"),
-	} {
-		if validateAbsenceRegressionOutput(invalid) == nil {
-			t.Fatal("missing, duplicate, unsafe or over-budget lifecycle witness accepted")
-		}
-	}
+	// Only durations, booleans and counts are published. The journal interval
+	// is a LOWER bound, never an attempt-start or timer-stop measurement.
+	timing := observed.Journal
+	t.Logf("ABSENCE_IN_PROCESS fixture_ns=%d connect_ns=%d journal_lower_bound_ns=%d burn_sync_ns=%d finish_sync_ns=%d after_finish_ns=%d",
+		start.Sub(fixtureStart).Nanoseconds(), returned.Sub(start).Nanoseconds(),
+		timing.FinishSynced.Sub(timing.AdmissionAppended).Nanoseconds(),
+		timing.AdmissionSynced.Sub(timing.AdmissionAppended).Nanoseconds(),
+		timing.FinishSynced.Sub(timing.FinishAppended).Nanoseconds(), returned.Sub(timing.FinishSynced).Nanoseconds())
+	t.Logf("ABSENCE_POSTCHECK deadline_error=%t memory_clear=%t persisted_checked=%t persisted_clear=%t peers=%d attempts=%d heavyweight=%d reserved_zero=%t sequence=%d records=%d admissions=%d failures=%d unfinished_admissions=%d unfinished_packets=%d port_rebound=%t",
+		errors.Is(connectErr, context.DeadlineExceeded), observed.Memory.SafetyTrip.State == governor.SafetyTripClear,
+		observed.PersistedChecked, observed.Persisted.State == governor.SafetyTripClear,
+		observed.Memory.ActivePeers, observed.Memory.ActiveAttempts, observed.Memory.HeavyweightAttempts,
+		observed.Memory.Reserved == (governor.Resources{}), observed.Ledger.Sequence, observed.Ledger.Records,
+		observed.Ledger.OneHourAdmissions, observed.Ledger.ConsecutiveFailures,
+		observed.UnfinishedAdmissions, observed.UnfinishedPackets, observed.PortRebound)
+	requireAbsentPeerObservation(t, observed)
 }
 
 func reserveLoopbackEndpoint(t *testing.T) netip.AddrPort {

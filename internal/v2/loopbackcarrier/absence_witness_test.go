@@ -175,6 +175,14 @@ func TestAbsenceDefaultRegressionRequiresInProcessWitness(t *testing.T) {
 	if !defaultAbsenceUsesInProcessWitness(source) {
 		t.Fatal("default absence regression must collect real in-process terminal, journal and drain witnesses without a subprocess or elapsed-time gate")
 	}
+	// Mutate only this default function, not another integration test which
+	// happens to use the same ledger helper in the shared source file.
+	start := strings.Index(source, "func TestLoopbackCarrierAbsentPeerExpiresCleanlyWithoutSafetyTrip(")
+	end := strings.Index(source[start:], "\nfunc ") + start
+	if end <= start {
+		t.Fatal("default absence source extent unavailable")
+	}
+	defaultSource := source[start:end]
 	for _, mutation := range []struct{ before, after string }{
 		{"requireAbsentPeerObservation(t, observed)", "t.Skip(\"disabled\")"},
 		{"requireAbsentPeerObservation(t, observed)", ""},
@@ -187,9 +195,9 @@ func TestAbsenceDefaultRegressionRequiresInProcessWitness(t *testing.T) {
 		{"requireAbsentPeerObservation(t, observed)", "exec.Command(\"go\", \"test\"); requireAbsentPeerObservation(t, observed)"},
 		{"requireAbsentPeerObservation(t, observed)", "if time.Since(start) >= loopbackcarrier.AttemptDuration { t.Fatal(\"wall clock\") }; requireAbsentPeerObservation(t, observed)"},
 	} {
-		changed := strings.Replace(source, mutation.before, mutation.after, 1)
-		if changed == source || defaultAbsenceUsesInProcessWitness(changed) {
-			t.Fatal("disabled, subprocess, wall-clock or missing-witness mutation escaped")
+		changed := strings.Replace(defaultSource, mutation.before, mutation.after, 1)
+		if changed == defaultSource || defaultAbsenceUsesInProcessWitness(source[:start]+changed+source[end:]) {
+			t.Fatalf("disabled, subprocess, wall-clock or missing-witness mutation escaped: %s", mutation.before)
 		}
 	}
 }
