@@ -6,15 +6,18 @@ import (
 	"context"
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"net/netip"
 	"os"
 	"reflect"
 	"strconv"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"winkyou/internal/probeio"
+	"winkyou/internal/v2/directconnect/gateb"
 	"winkyou/internal/v2/gatecorchestrator"
 )
 
@@ -63,7 +66,6 @@ func TestSessionLivenessRestartRejectsSpentArtifactBeforeIO(t *testing.T) {
 	for _, profile := range gateC1bMemoryProfiles {
 		t.Run(profile.name, func(t *testing.T) {
 			profile.liveness = &gateC1bLivenessCase{rounds: 3, hold: time.Second, restart: true}
-			profile.candidateTime = max(profile.candidateTime, 500*time.Millisecond)
 			runGateC1bMemoryProductProfile(t, "liveness-restart-"+profile.name, profile)
 		})
 	}
@@ -77,7 +79,6 @@ func TestSessionLivenessBusinessCoexistsWithTap(t *testing.T) {
 	for _, profile := range gateC1bMemoryProfiles {
 		t.Run(profile.name, func(t *testing.T) {
 			profile.liveness = &gateC1bLivenessCase{rounds: 3, hold: time.Second, fault: "business"}
-			profile.candidateTime = max(profile.candidateTime, 500*time.Millisecond)
 			runGateC1bMemoryProductProfile(t, "liveness-business-"+profile.name, profile)
 			if profile.liveness.faultError != nil {
 				t.Fatal("ordinary business delivery failed", profile.liveness.faultError)
@@ -131,11 +132,10 @@ func TestSessionLivenessOneWayTrafficCannotReplaceProofRequired(t *testing.T) {
 	for side := 1; side <= 4; side++ {
 		t.Run(strconv.Itoa(side), func(t *testing.T) {
 			// These are four independent long-window counterexamples, not a
-			// concurrent candidate-search load test. Keep their original 500ms
-			// fixture search budget, but do not contend four setups on a runner.
+			// concurrent candidate-search load test. Use the same shared fixture
+			// windows, without contending four setups on a runner.
 			profile := gateC1bMemoryProfiles[0]
 			profile.liveness = &gateC1bLivenessCase{rounds: 3, hold: time.Second, lossDirection: 3, trafficSide: side, identitySlot: 10 + side}
-			profile.candidateTime = 500 * time.Millisecond
 			runGateC1bMemoryProductProfile(t, "liveness-one-way-"+strconv.Itoa(side), profile)
 			if side != 3 && profile.liveness.trafficBatches.Load() < 50 {
 				t.Fatal("continuous nonproof traffic not demonstrated")
@@ -190,7 +190,6 @@ func TestSessionLivenessMemoryFreshComposition(t *testing.T) {
 	for _, profile := range gateC1bMemoryProfiles {
 		t.Run(profile.name, func(t *testing.T) {
 			profile.liveness = &gateC1bLivenessCase{rounds: 3, hold: time.Second}
-			profile.candidateTime = max(profile.candidateTime, 500*time.Millisecond)
 			runGateC1bMemoryProductProfile(t, "liveness-fresh-"+profile.name, profile)
 		})
 	}
@@ -201,7 +200,6 @@ func TestSessionLivenessOwnerTripCasesAreDistinct(t *testing.T) {
 		t.Run(fault, func(t *testing.T) {
 			profile := gateC1bMemoryProfiles[0]
 			profile.liveness = &gateC1bLivenessCase{rounds: 3, hold: time.Second, fault: fault}
-			profile.candidateTime = 500 * time.Millisecond
 			runGateC1bMemoryProductProfile(t, "liveness-owner-"+fault, profile)
 			if fault == "normal-admission" && (profile.liveness.faultError != nil || profile.liveness.admission.LivenessAdmissionRejected != 1 || profile.liveness.admission.PongAdmissionRejected != 1) {
 				t.Fatal("normal admission did not retain clear usable session")
@@ -221,7 +219,6 @@ func TestSessionLivenessMemoryIdle180Required(t *testing.T) {
 		t.Run(profile.name, func(t *testing.T) {
 			t.Parallel()
 			profile.liveness = &gateC1bLivenessCase{rounds: 3, hold: 180 * time.Second}
-			profile.candidateTime = max(profile.candidateTime, 500*time.Millisecond)
 			runGateC1bMemoryProductProfile(t, "liveness-idle-"+profile.name, profile)
 		})
 	}
@@ -234,7 +231,6 @@ func TestSessionLivenessMemoryFresh100Required(t *testing.T) {
 	for iteration := range 100 {
 		profile := gateC1bMemoryProfiles[iteration%len(gateC1bMemoryProfiles)]
 		profile.liveness = &gateC1bLivenessCase{rounds: 3, hold: 10 * time.Millisecond}
-		profile.candidateTime = max(profile.candidateTime, 500*time.Millisecond)
 		if !t.Run(strconv.Itoa(iteration), func(t *testing.T) {
 			runGateC1bMemoryProductProfile(t, "liveness-fresh100-"+strconv.Itoa(iteration), profile)
 		}) {
@@ -255,8 +251,10 @@ func TestSessionLivenessMemoryBlackholesRequired(t *testing.T) {
 				t.Parallel()
 				profile := gateC1bMemoryProfiles[0]
 				profile.liveness = &gateC1bLivenessCase{rounds: rounds, hold: 25 * time.Second, lossDirection: direction, identitySlot: 1 + ri*3 + di}
-				profile.candidateTime = 500 * time.Millisecond
 				runGateC1bMemoryProductProfile(t, "liveness-blackhole-"+name, profile)
+				if profile.liveness.faultAt.Load() == 0 {
+					t.Fatal("liveness fault was not armed; no post-fault time arithmetic is valid")
+				}
 				limit := time.Duration(rounds)*20*time.Second + 5*time.Second
 				var actualWrite [2]int64
 				for side := range 2 {
@@ -327,4 +325,38 @@ func validateGateC1bLivenessOutcome(t *testing.T, profile gateC1bMemoryProfile, 
 	}
 	t.Logf("liveness profile=%s elapsed_ms=%d ping=%d pong=%d proof=%d admission_rejected=%d control=%d rekey_init_response=%d/%d empty=%d active_udp=%d total_udp=%d FINISH=true detached=true carrier=8/8 challenge=3/3 drained=true",
 		profile.name, lv.ElapsedNS.Milliseconds(), lv.PingAdmitted, lv.PongAdmitted, lv.PongValidated, lv.LivenessAdmissionRejected, wg.ActivePolicy.ControlAdmitted, wg.ActivePolicy.HandshakeInitiations, wg.ActivePolicy.HandshakeResponses, wg.ActivePolicy.EmptyKeepalives, wg.ActiveWrites, actual)
+}
+
+// This precondition runs for BOTH returned endpoints before any liveness
+// duration assertion. Gate B failure is not a liveness timeout, and a zero
+// ready timestamp must never become a decades-long "post-fault" duration.
+func gateC1bLivenessReadyPrecondition(result gatecorchestrator.Result, terminal error, started time.Time) error {
+	if result.DataPlaneReady && !started.IsZero() {
+		return nil
+	}
+	class, stage := "missing_ready_witness", "unknown"
+	var failure *gatecorchestrator.Failure
+	if errors.As(terminal, &failure) {
+		class, stage = failure.Class, failure.Stage
+	}
+	return fmt.Errorf("liveness_not_armed: gate_b_class=%s stage=%s data_plane_ready=%t ready_time_present=%t",
+		class, stage, result.DataPlaneReady, !started.IsZero())
+}
+
+func TestSessionLivenessUnarmedPreconditionRejectsZeroTimestamp(t *testing.T) {
+	for _, class := range []string{gateb.ClassCandidateExhausted, gateb.ClassAttemptExpired, gateb.ClassOOBStreamClosed} {
+		terminal := &gatecorchestrator.Failure{Class: class, Stage: gateb.StageCandidates}
+		err := gateC1bLivenessReadyPrecondition(gatecorchestrator.Result{}, terminal, time.Time{})
+		if err == nil || !strings.Contains(err.Error(), "liveness_not_armed") || !strings.Contains(err.Error(), class) ||
+			strings.Contains(err.Error(), "post-fault emission") || strings.Contains(err.Error(), "exceeds") {
+			t.Fatalf("unarmed session lost its Gate B class: %v", err)
+		}
+	}
+	ready := gatecorchestrator.Result{DataPlaneReady: true}
+	if gateC1bLivenessReadyPrecondition(ready, nil, time.Time{}) == nil {
+		t.Fatal("ready result without a bilateral ready timestamp was accepted")
+	}
+	if err := gateC1bLivenessReadyPrecondition(ready, nil, time.Now()); err != nil {
+		t.Fatal("armed control rejected", err)
+	}
 }

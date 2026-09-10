@@ -424,6 +424,14 @@ Ctrl-C 是唯一普通停止入口；它取消 session、关闭 WireGuard transp
 退出。process crash 由现有 durable ledger 在重启时拒绝同 credential 继续发送。不存在
 “恢复上一次 direct attempt”或“重新 attach pending slot”。
 
+2026-09-09，Issue #121 澄清：Unix 的 `SIGHUP` / `SIGTERM` 与 Ctrl-C 同等处置，
+三者都映射为 caller cancel，走既有 fail-closed 清理路径：已 burn 的 attempt 先写
+durable `FINISH(cancelled)`，再释放 attempt/peer；关闭 transport/tunnel/interface，
+排空 child/UDP 后退出。已 FINISH 的 session 不重写历史 FINISH。此澄清不是新增普通停止
+能力，而是保证 responder 在对端崩溃、sshd 断连送 SIGHUP 时仍履行 OOB ADR §15.3 的
+FINISH-before-release 不变量；不增加重试、重连或 re-arm。`SIGKILL` 无法捕获，仍由
+durable BURN 与重启拒绝兜底，不能将其伪造为正常 FINISH。Windows 保持 Ctrl-C 语义。
+
 ### 6.2 固定顺序
 
 Gate C orchestrator 不复制 Gate B 协议，按以下顺序组合：
@@ -1282,6 +1290,12 @@ responder 已 detach/active，但 post-OOB echo 失败。两侧 3/3 trace、carr
    不能混称同一原因；此前红记录、§4.1 OS 表和 required netns 原断言不变。新测试通过只
    证明本次有界完成与排水，不冒充长期在线或真实网络成功。继续同一 Draft PR，独立复审
    前不合并、不关闭 #109；不混修其它 issue，不推进 liveness/M/C1c 或现场 I/O。
+
+2026-09-10，维护者授权 #119 将所有 C1b/liveness **memory fixture 窗口来源单一化**为
+`memoryFixtureWindows(profile)`，按 Windows race + 双 busy worker 实测保留余量；仅取代
+§19.10–19.11 对旧 memory candidate/active 数值不变的限制，生产上限、session、计费、
+成功/排水断言及 OS/netns 不变，首次反例和新窗口见
+[C1b 证据 §7](../GATE-C1B-PRODUCT-COMPOSITION-EVIDENCE.md#7-issue-119-内存-fixture-窗口单一化2026-09-10)。
 
 ### 19.9 R1 确认交换的时间边界（2026-09-07，维护者接受独立复审裁决）
 

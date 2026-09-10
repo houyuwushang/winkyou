@@ -174,6 +174,13 @@ interface 是真实、非 persistent TUN，KernelReads=InnerSends、KernelWrites
 | post-burn child SIGKILL | 0/0 | 3/2 | 1747 |
 | consumer FINISH 后 SIGKILL | 49/48 | 3/3 | 6214 |
 
+Issue #121（2026-09-09）补注：上表是 #104 当时的历史实测。`post-burn parent SIGKILL`
+的 responder sequence=3 是该次 sshd 断连竞态中 EOF 先被处理的结果，不是保证；SIGHUP
+先到而仅注册 SIGINT 时，child 会直接退出并停在 BURN（sequence=2）。修复必须让
+SIGHUP/SIGTERM 进入 caller cancel → durable FINISH → release，保留 parent-kill 的
+responder sequence=3 原断言，并增加直接向 responder child 发信号的永久回归；不得把
+旧 2/3 实测当作该缺口已闭合的证据。SIGKILL 一侧的 sequence=2 仍是正确崩溃见证。
+
 wall 包含固定测试启动；writer error 在原 20s active + drain 内结束，不宣称即时检测。
 sequence=2 是已 durable burn、未 FINISH 的崩溃见证，不伪造正常 FINISH；正常失败保持 sequence=3，
 无退款、无第二 attempt。SIGKILL 不能写进程内 result，故用磁盘 journal、私有固定 marker 与 OS
@@ -190,6 +197,54 @@ root wrapper/orchestrator `-race -count=20` 通过（1.259s / 2.345s）；Linux
 `-tags=natlab,c1bproof` 交叉 vet 通过。`git diff --check` 干净，相对链接检查为 0 broken，
 新增 diff 的私有路径/设备代号扫描为 0；已有 v1/v2/N3b/Gate A/B golden 没有修改。
 这段保留暂停前快照；后续 R1 与 required OS 证据见 §2.1/§4，不覆盖历史失败记录。
+
+### 4.3 Issue #121：继承管道的第二个阻断与修复范围（2026-09-09）
+
+信号注册修复 `f9d231b` 后，真实 SSH/netns 仍出现 ledger=3/3、responder 无结构化终局。
+诊断提交 `1d3c344` 的 Linux [push 首跑](https://github.com/houyuwushang/winkyou/actions/runs/34327308921/job/102387425497)
+与 [PR 首跑](https://github.com/houyuwushang/winkyou/actions/runs/34327312903/job/102387437512)
+均实测：继承 stdin 的 `read(0)` 在 `Close` 返回后仍阻塞；2000ms 时 `ErrDrain`、
+`Closed=true/Drained=false`，只有测试随后提供 peer EOF 才退出。上层 carrier 丢弃 Close 错误，
+又无界等待 in-flight operations；因此有 FINISH 不代表命令已返回或物理排水已完成。
+这不是 `reader.Close()` 本身必然阻塞的证据，也没有证明最终退出信号的种类。
+
+本次修复只覆盖这条链路：
+
+- Unix 收养前确认文件是 pipe，用一个临时 CLOEXEC duplicate 建立可取消的 poller owner，
+  关闭旧 wrapper 后才交付；失败关闭全部已收养 owner。不打开路径/socket/第二 stream。
+  Windows 保留原 timer → pipe Close（CancelIoEx）路径，不要求其不支持的 native file deadline；
+  普通文件与不支持的平台 fail-closed。
+- `SetDeadline(now)` 必须能取消当前 I/O；absolute 上限仍不可提高。关闭及 operations join
+  共用原 2s drain，不用遗留 waiter goroutine 换取表面上的及时返回。
+- carrier 传播 Close/排水错误；失败不能 `Complete` governor witness 或声称 `Drained=true`。
+  原 governor 持锁、持久 cancellation trip 与 FINISH-before-release 契约不变。
+- 继承 stdin 回归改为观察收养后的真实 OS poller wait，再在 peer EOF **之前**断言 read 已退出；
+  原 RED commit 与全部 close/drain/终局断言保留。另测 unread pipe 的阻塞 write、立即 deadline、
+  partial adoption descriptor 数量和 failed drain witness。architecture 只准许精确文件中的
+  pipe duplicate/nonblocking/close 操作，socket/exec/旁路 owner 仍由 mutation 拒绝。
+- netns 原 `signal_to_exit_ms` 等待 initiator 后才观察 responder，现改名为
+  `signal_to_namespace_empty_ms`，不冒充独立的 responder 退出耗时；被动 pidfd 采样单列。
+
+本节记录修复机制，不预先宣称 required Linux/Windows CI、真实 SSH/netns 或独立评审通过。
+不修改 orchestrator/Gate B、预算、窗口、重试、旧 parent-kill/class/ledger/residue 断言；
+阶段 2/3 继续冻结。新 SHA 的验收结果在 PR #127 逐项记录。
+
+第二轮复审接受生产修复，仅收紧测试见证并同步
+[Gate A ADR §20 排水契约](./adr/ADR-N3C-OOB-DIRECT-HANDOFF.md#20-继承管道与-carrier-排水契约注记2026-09-09)：
+
+- 诊断 parent 收到 child exit 时先读取最终 `before-eof.json`，再检查 `reader-joined`；
+  不新增 sleep，不把已经落盘但尚未轮询到的报告误判为缺失，原断言全部保留。
+- 原 `os.Stdout.Close()` 注入在新 ownership transfer 后只命中已毒化的旧 alias，不能证明
+  EOF 或 writer error。仅两个 fault fixture 在 child stdio 边界增加一条 harness-owned 真 pipe：
+  presence 前关闭输入的 write peer；PREPARE 后关闭输出的 read peer。writer fixture 先将
+  已接受的有界 opaque prefix 转发给原 SSH stdout，再关闭 read peer，强制下一次真实 Write
+  得到 EPIPE；不靠 SIGPIPE、预设错误或任意非空 class 通过。
+- 精确 `linux && natlab && c1bproof` result tap 只观察真实 Read/Write 返回的计数和错误，
+  不返回 payload/descriptor/stream authority。断言 child EOF/EPIPE、peer 已关闭、prefix
+  精确转发、carrier/forwarder 已排空及原 ledger/packet/residue；缺任一见证的变异必须失败。
+  六个正常 SSH/netns profile 和其他故障仍使用原始继承管道，生产路径和上限不变。
+- required CI 必须实际通过 `responder-sighup`、`responder-sigterm`、`parent-kill`；先前
+  在首个 fault 停止的运行不算这三项证据。旧失败不覆盖，最终 SHA 与实测另记 PR。
 
 ## 5. 验收映射与剩余门
 
@@ -812,3 +867,95 @@ head CI 写入 PR #110，未完成的项目不提前标绿；不重跑覆盖，�
 
 本地串行通过支持继续验证隔离方案，不证明并发争用是全部反例的唯一根因。完整全仓
 结果及 Linux/Windows 新旧 required job 的最终状态仍以 PR 所列确切 head 为准。
+
+## 7. Issue #119 内存 fixture 窗口单一化（2026-09-10）
+
+### 7.1 范围与首次反例
+
+本次基于 `295b1b5`，只修内存测试的时序配置与未 arm 的 liveness 诊断。main 的
+[Windows 慢 responder 首次失败](https://github.com/houyuwushang/winkyou/actions/runs/34358182445/job/102488102199)
+及 [Windows liveness 首次失败](https://github.com/houyuwushang/winkyou/actions/runs/34358182407/job/102488101063)
+保留；维护者对 main 的 rerun 不构成本次修复证据。
+
+`64f9fff` 先加入只读阶段计时和同进程两个 busy goroutine，未改变旧 fixture 窗口。
+Windows、Go 1.23.1、`-race`、`GOMAXPROCS=2` 的首次压力执行在第一轮停止：
+predictive 成功（candidate→winner 291/290ms，ready=true/true，candidate 32/32）；
+asymmetric 失败（candidate 128/512，winner=0/0，ready=false/false，墙钟 3009ms），
+双端为 `attempt_expired` / `hard_nat_candidate_exhausted`。Hard16 未执行，不能记作通过。
+两个压力 worker 实际运行且均完成 join。失败端点没有 ready，不补称完整残留门通过。
+
+这一反例已经发完 asymmetric 的两侧 candidate，仍未形成成功终局；与 §6.13 一样，
+不能把 #119 的所有反例都归结为“未发完包”。候选窗口还需容纳调度、交付和 winner
+互认。首次 RED 原日志保存在仓库外；公开记录仅含合成 profile、稳定错误类、计数和时长。
+
+### 7.2 单一策略及压力实测
+
+`gateC1bMemoryProfile` 不再携带可被各入口覆盖的时间字段；普通、CLI、取消、fresh100、
+I/R 慢 FINISH 和所有 liveness 场景共用 runner 内唯一的 `memoryFixtureWindows(profile)`。
+配置回归验证下界、低于生产上限、唯一 hook 消费点，以及 pipeline/liveness 局部覆盖
+的负向变异。未知 profile 不继承默认值。
+
+| profile | memory candidate / active | 生产 candidate / active（不变） | 压力成功轮数 | candidate→winner p95 / max | preflight→ready p95 / max | 整轮 max |
+| --- | --- | --- | --- | --- | --- | --- |
+| predictive | 1s / 10s | 5s / 20s | 20/20 | 330 / 332ms | 1642 / 1679ms | 1978ms |
+| asymmetric | 1.5s / 10s | 5s / 20s | 20/20 | 782 / 826ms | 3545 / 3624ms | 3893ms |
+| hard-16k | 4s / 12s | 38s / 45s | 20/20 | 1769 / 1841ms | 3509 / 3553ms | 3823ms |
+
+压力条件与首次 RED 相同：Windows Go 1.23.1、`-race`、`GOMAXPROCS=2`、同进程两个
+持续 busy goroutine；不是额外 sleep 或延迟发送。每轮依次执行三 profile 的实际 CLI
+内存组合；共 60 个成功配对 / 120 个 ready 端点，20 次双 worker join 均通过。
+p95 用每 profile 的 40 个端点样本排序后第 38 个值（nearest rank），不丢弃慢样本。
+`preflight→ready` 从 orchestrator preflight 起算，**不是 attempt active 时间**；首份
+计时日志曾将此字段命名为 `active_to_ready_ms`，现改为准确的 `preflight_to_ready_ms`，
+起止点和测量值未改。candidate→winner 同样包含 winner 互认，不冒称纯发送耗时。
+
+predictive candidate 实际 I 为 31–32、R 为 32；既有协议可在选出 winner 后停止剩余
+发送。asymmetric 为 128/512，Hard16 为 16384/16384，后两者均完成原完整 schedule。
+所有成功仍通过原独立分项计费、双端 ready、3/3 challenge、FINISH/detach、carrier 8/8、
+post-OOB echo、natsim/governor 零残留与无意外 trip 断言，不用“干净耗尽”替代成功。
+
+这些是 memory fixture 的实测余量，不是生产 SLA，也不证明任意机器负载下都不会超时。
+10s 普通 session、10min liveness session、3500ms 慢 FINISH 注入、3s/三包、PPS/包数、
+golden、生产常量与 natlab/OS 路径均不变；没有 retry、fallback 或现场 I/O。
+
+### 7.3 未 arm 诊断与验证口径
+
+共用 helper 收齐双端终局后，先检查两侧 `DataPlaneReady` 和非零 ready 时间；未建立
+成功时立即报告 `liveness_not_armed` 及原 Gate B class/stage，先于所有 idle/post-fault
+时间运算。blackhole 另要求 fault 时间非零。负向对照覆盖 candidate exhausted、attempt
+expired、OOB closed 与零时间戳，避免将建立失败伪装成几十万小时的 liveness 超时；
+正常 ready、时间戳、计数和残留断言不放宽。
+
+本地压力命令（旧窗口首次 RED 与新窗口首次 20/20 分别留档，不 rerun 求绿）：
+
+```text
+GOMAXPROCS=2 WINKYOU_FLAKE_119_STRESS=1
+go test -race -tags=c1bproof ./internal/governor -run '^TestGateC1bMemoryFixtureStressSchedules$' -count=20 -failfast -timeout=15m -json
+```
+
+完整本地验证使用原要求的 `GateC1b|SessionLiveness`、race×20、40m，在默认与
+`GOMAXPROCS=2` 各执行一次；这两组不启用额外 busy worker。180s idle、长 blackhole、
+nonproof 与 fresh100 的既有 opt-in gate 由 CI 显式启用，不将默认 skip 算成通过。
+Linux 交叉 vet 使用 `CGO_ENABLED=0 GOOS=linux`。确切 SHA、每条验证结果与两平台
+required job 的**逐步骤墙钟耗时**回填本次 Draft PR 描述，未完成项目不预先标绿。
+若 runner 容量不足，先保留首次 RED，再按授权独立记录执行器分组；不减少次数或
+靠重跑掩盖反例。#119 合入且 main push-run 绿之前，批次阶段 2/3 继续冻结。
+
+### 7.4 首跑 netns 反例与追加只读终局诊断
+
+`1fbe87b` 的 [push 首跑 consumer-crash](https://github.com/houyuwushang/winkyou/actions/runs/34420908516/job/102695894445)
+在 13.31s 报 `intended endpoint crash was not witnessed`。原断言先于终局结果、ledger
+与完整残留门的输出，因此不能据此确认失败原因，也不能补称该失败用例零残留。
+同 SHA 的 [独立 PR 触发](https://github.com/houyuwushang/winkyou/actions/runs/34420913554/job/102695910859)
+该用例通过（7.65s，UDP 49/48、ledger sequence 3/3），不是 rerun，也不覆盖首次 RED。
+
+维护者随后仅授权补充这一用例的终局诊断。harness 在返回或 Fatal 时、既有 cleanup
+之前，分别读取两端已有的 result、最后 stage 和 crash marker；不加等待、重试、故障
+注入或生产回调，不改原断言、生产时序与预算。snapshot 明确标为 **non-atomic**，只
+投影固定 class/stage、布尔值、计数和已有 WireGuard completion context 见证。未知文本
+替换为 `unrecognized`；文件缺失、半写入、超限与不可读分别标记，结果不可用时为
+`null`，不把默认零值作为排水证据。result 读取上限 64KiB，stage/marker 各 128 bytes。
+
+脱敏与边界负向用例可在 Windows 无 socket 运行，也由现有 Linux required diagnostics
+入口执行。本增补只改善反例可观测性；后续 CI 即使不再复现，也不构成根因已修复的
+证明。其他 Mapping Lifetime 失败与 Windows job 容量问题分别记录，不混入本诊断改动。

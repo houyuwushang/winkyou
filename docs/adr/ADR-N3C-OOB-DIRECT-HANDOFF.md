@@ -522,3 +522,25 @@ product entry、WireGuard consumer 与 separately issued live windows 只在
 [`ADR-N3C-GATE-C1-SSH-PRODUCT-ASSEMBLY.md`](./ADR-N3C-GATE-C1-SSH-PRODUCT-ASSEMBLY.md)
 提出 Draft 设计。该 Draft、Issue、PR、CI 或合并均不授权实现或现场 I/O；仍须按 Gate C1a、
 C1b、C1c、C2 分别评审和签发。
+
+## 20. 继承管道与 carrier 排水契约注记（2026-09-09）
+
+依据 [PR #127 第二轮复审](https://github.com/houyuwushang/winkyou/pull/127#issuecomment-5599520233)，
+本节记录已接受的管道收养/排水修复所落实的不变量，不增加能力、预算或产品错误类：
+
+- `BoundedStream.Close` 必须解除并等待在途 Read/Write；调用方交入的 stream 必须满足
+  这一契约。对物理 Close 或 join 失败，carrier 传播内部 `ErrCarrierDrain`（同时保留
+  `ErrCarrierTransport` 归因），不得忽略错误后继续无界等待。
+- 沿用原有 **2s drain 上限**。carrier 在首次关闭时固定绝对排水 deadline；后续 operations
+  与 reader join 共用其剩余额度，不能每层重新获得 2s，也不能留下 detached waiter。
+  `SetDeadline(now)` 用于解除当前 I/O；这不延长 active envelope 或准许再次发包。
+- `Closed` 表示逻辑终止；`Drained` 必须证明物理 I/O 已退出。强制关闭/撤销句柄或排水
+  procedure 返回本身不等于物理排空。Close/join 失败不能置 `Drained=true`，不能将 governor
+  `DrainHandle` 标记 `Complete`；仍走既有持锁与持久 cancellation-timeout fail-closed 路径。
+- 普通 EOF/cancel 在物理排水成功时仍是干净终局；物理排水失败不能伪装成普通终局。
+  §16 的 durable FINISH-before-attempt-release 顺序不变，FINISH 已落盘也不代替进程/I/O
+  退出见证。不能宣称可强制修复任意违反 `BoundedStream` 契约的第三方 Close 实现。
+
+继承 stdin 的原始 RED、真实 poller/read/write 见证、peer 侧 EOF/EPIPE 注入与后续 CI
+结果见 [Gate C1b evidence §4.3](../GATE-C1B-PRODUCT-COMPOSITION-EVIDENCE.md#43-issue-121继承管道的第二个阻断与修复范围2026-09-09)。
+本注记不授权现场 I/O、后续阶段或预算变更。
