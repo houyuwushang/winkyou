@@ -200,3 +200,62 @@ probeio→stop最大13,026.5639ms，FINISH sync最大24.2431ms。这里是工具
 同一实现 `go vet ./...` PASS；原全仓分区88个有测试包PASS（governor139.194s、
 client2.689s、architecture17.233s）；独立relay PASS7.709s。旧RED仍保留，
 新head远端结果单独记录，不把本地PASS写成CI全绿。
+
+## 8. 默认接线裁决 A 与 #115 合流（2026-09-10）
+
+Refs #111 #115。维护者在 #123 复审选择 A，随后明确同意本节的证据分层修订。
+§1–§7 及所有历史 RED 原文保留；**本节取代 §7 的默认 overlay 接线规则**，
+不追溯改变旧批次结论，也不修改生产实现、15s / 2s / 3 包 / 3PPS。
+
+### 8.1 约束核对与本次裁决
+
+默认缺席测试属于 `governor_test`。Go 1.23.1 与本机 Go 1.26.5 的独立零网络
+编译对照均证实：依赖包的 `*_export_test.go` 不会暴露给这个测试包；仅包自身的
+external test 能访问该包的测试导出。实际 `probeio` 也没有保存 timer stop 时间，
+`loopbackcarrier.Connect` 内部的 controller 不会交给调用者。单加测试 getter 无法
+使这些时间点变成默认测试可读，不能据此偷偷添加生产 hook、clock、unsafe/linkname，
+或仍在默认路径编译 overlay。
+
+维护者因此批准：**生产 delta=0；默认测试在进程内验证终局、账本与排水；精确
+双起点计时继续由显式 opt-in overlay 证明。** 这是一项明确的验收口径调整，
+不是声称默认测试仍然测得内部 timer stop。journal 区间始终只是生命周期下界。
+
+| 证据 | 默认进程内回归 | opt-in `TestAbsenceLifecycleWitness` |
+| --- | --- | --- |
+| 真实 carrier / governor / durable journal / loopback UDP | 保留 | 保留 |
+| 精确 `DeadlineExceeded`、一个 admission + 一个失败 FINISH | 保留 | 保留 |
+| 重开 owner 后 safety clear、资源归零、端口可重绑 | 保留 | 保留 |
+| journal append/sync 顺序与只读时间点 | 保留；仅诊断，不代替起点 | 保留 |
+| AcquireAttempt / probeio startedAt → timer stop 严格 `<15s` | 不声称有此见证 | 原精确断言与边界负例保留 |
+| Connect 总墙钟 | 只记录 | 只记录 |
+| `go test -overlay` / 额外编译 | 无 | 仅显式启用时存在 |
+
+默认入口去掉 shell-out 和 stdout 文本验收。原因包括工具链/编译耦合、§7.2 已有
+Go 1.23 vet RED，以及每次全仓多一轮编译。opt-in 路径继续使用原来的可逆只读
+插入和同一真实实现，不复制算法、不替换 fsync；未启用时明确 skip。
+
+### 8.2 实现与回归要求
+
+等价迁入 #115 的 `closeAbsentPeerGovernor`（提前注册 `t.Cleanup`）、
+`ObserveCarrierAbsenceJournal`（仅 governor 测试二进制可见）和 opt-in
+`startAbsenceCPUPressure`，不修改 #115 分支。
+
+默认场景在断言之前先收集返回错误、journal 顺序、内存资源、关闭/重开 owner、
+持久 ledger / unfinished occupancy 与端口重绑结果。不能因早期断言 Fatal 跳过
+持久安全复检；失败仍由同一进程的结构化断言拒绝。负面对照分别破坏错误类、
+见证完整性/顺序、admission/FINISH、safety clear 与资源排水；合法但较晚的 Connect
+返回不得重新触发旧的墙钟门。静态接线门另拒绝 skip、空实现、条件绕过、恢复
+shell-out 或把墙钟重新当作内部资源时长。
+
+新默认入口必须重新完成 focused race×20、人工 CPU 压力至少50（fail-fast）、
+无人工压力至少100、Go1.23.1与本机工具链各一次；另跑全仓 #116 分区、独立 relay、
+vet / architecture 和 opt-in 精确见证。§4 / §7 的旧数字不冒充这批新结果。
+本节实现与验证完成后在 PR 描述登记当前 SHA、首次 RED（如有）和实际通过数；
+是否关闭 #111 仍留给独立复审，保持 Draft，不合并，不启动阶段3或现场操作。
+
+### 8.3 本轮首次回归
+
+先加入新的默认进程内接线门，再运行 Go1.23.1：
+`go test ./internal/v2/loopbackcarrier -run '^TestAbsenceDefaultRegressionRequiresInProcessWitness$' -count=1`
+在旧的默认 shell-out 实现上按预期 RED（0.527s）。它拒绝的是旧接线，不是生产 trip；
+本轮后续 GREEN 与压力/无压力结果另行登记，不删除这个先红证据。

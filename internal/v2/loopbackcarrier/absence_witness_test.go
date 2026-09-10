@@ -21,8 +21,8 @@ import (
 // in a disposable test binary. There is no production hook, exported runtime
 // API, fake clock, changed timer, or replacement fsync. Removing the listed
 // insertions must recover the original source byte-for-byte (after CRLF
-// normalization). The default governor absence regression also invokes this
-// witness; its source is never changed by the overlay.
+// normalization). Precise dual-origin timing remains opt-in; the default
+// governor regression checks terminal/journal/drain in its own test process.
 type absenceInsertion struct{ anchor, suffix string }
 
 var absenceInsertions = map[string][]absenceInsertion{
@@ -169,24 +169,32 @@ func TestAbsenceWitnessTemplateAppendIsInsertionOnly(t *testing.T) {
 	}
 }
 
-func TestAbsenceDefaultRegressionRequiresObservedLifecycle(t *testing.T) {
+func TestAbsenceDefaultRegressionRequiresInProcessWitness(t *testing.T) {
 	root := absenceRoot(t)
 	source := absenceSource(t, root, "internal/governor/loopbackcarrier_integration_test.go")
-	if !defaultAbsenceUsesObservedLifecycle(source) {
-		t.Fatal("default absence regression must require the real lifecycle witness, not Connect wall time")
+	if !defaultAbsenceUsesInProcessWitness(source) {
+		t.Fatal("default absence regression must collect real in-process terminal, journal and drain witnesses without a subprocess or elapsed-time gate")
 	}
-	for _, mutation := range []string{
-		strings.Replace(source, "runObservedAbsenceLifecycle(t)", "t.Skip(\"disabled\")", 1),
-		strings.Replace(source, "runObservedAbsenceLifecycle(t)", "", 1),
-		strings.Replace(source, "runObservedAbsenceLifecycle(t)", "if false { runObservedAbsenceLifecycle(t) }", 1),
+	for _, mutation := range []struct{ before, after string }{
+		{"requireAbsentPeerObservation(t, observed)", "t.Skip(\"disabled\")"},
+		{"requireAbsentPeerObservation(t, observed)", ""},
+		{"requireAbsentPeerObservation(t, observed)", "if false { requireAbsentPeerObservation(t, observed) }"},
+		{"requireAbsentPeerObservation(t, observed)", "return; requireAbsentPeerObservation(t, observed)"},
+		{"loopbackcarrier.Connect(ctx, machine, bundle, \"loopback-carrier-absent-peer\", nil)", "fakeConnect()"},
+		{"governor.ObserveCarrierAbsenceJournal(machine)", "fakeJournal()"},
+		{"governor.InspectLoopbackCarrierTestLedger(namespace, time.Now())", "fakeLedger()"},
+		{"governor.InspectLoopbackCarrierTestOccupancy(namespace, time.Now())", "fakeOccupancy()"},
+		{"requireAbsentPeerObservation(t, observed)", "exec.Command(\"go\", \"test\"); requireAbsentPeerObservation(t, observed)"},
+		{"requireAbsentPeerObservation(t, observed)", "if time.Since(start) >= loopbackcarrier.AttemptDuration { t.Fatal(\"wall clock\") }; requireAbsentPeerObservation(t, observed)"},
 	} {
-		if defaultAbsenceUsesObservedLifecycle(mutation) {
-			t.Fatal("disabled/default-regression mutation escaped")
+		changed := strings.Replace(source, mutation.before, mutation.after, 1)
+		if changed == source || defaultAbsenceUsesInProcessWitness(changed) {
+			t.Fatal("disabled, subprocess, wall-clock or missing-witness mutation escaped")
 		}
 	}
 }
 
-func defaultAbsenceUsesObservedLifecycle(source string) bool {
+func defaultAbsenceUsesInProcessWitness(source string) bool {
 	parsed, err := parser.ParseFile(token.NewFileSet(), "regression_test.go", source, 0)
 	if err != nil {
 		return false
@@ -196,22 +204,66 @@ func defaultAbsenceUsesObservedLifecycle(source string) bool {
 		if !ok || function.Name.Name != "TestLoopbackCarrierAbsentPeerExpiresCleanlyWithoutSafetyTrip" {
 			continue
 		}
-		if function.Body == nil || len(function.Body.List) != 1 {
+		if function.Body == nil {
 			return false
 		}
-		statement, ok := function.Body.List[0].(*ast.ExprStmt)
-		if !ok {
-			return false
+		required := map[string]int{
+			"startAbsenceCPUPressure": 0, "governor.ObserveCarrierAbsenceJournal": 0,
+			"loopbackcarrier.Connect": 0, "governor.InspectLoopbackCarrierTestLedger": 0,
+			"governor.InspectLoopbackCarrierTestOccupancy": 0, "requireAbsentPeerObservation": 0,
 		}
-		call, ok := statement.X.(*ast.CallExpr)
-		if !ok || len(call.Args) != 1 {
-			return false
+		for _, statement := range function.Body.List {
+			var expressions []ast.Expr
+			switch statement := statement.(type) {
+			case *ast.ExprStmt:
+				expressions = []ast.Expr{statement.X}
+			case *ast.AssignStmt:
+				expressions = statement.Rhs
+			}
+			for _, expression := range expressions {
+				if call, ok := expression.(*ast.CallExpr); ok {
+					required[absenceCallName(call.Fun)]++
+				}
+			}
 		}
-		name, ok := call.Fun.(*ast.Ident)
-		argument, argumentOK := call.Args[0].(*ast.Ident)
-		return ok && name.Name == "runObservedAbsenceLifecycle" && argumentOK && argument.Name == "t"
+		for _, name := range []string{"startAbsenceCPUPressure", "governor.ObserveCarrierAbsenceJournal", "loopbackcarrier.Connect",
+			"governor.InspectLoopbackCarrierTestLedger", "governor.InspectLoopbackCarrierTestOccupancy", "requireAbsentPeerObservation"} {
+			if required[name] != 1 {
+				return false
+			}
+		}
+		forbidden := false
+		ast.Inspect(function.Body, func(node ast.Node) bool {
+			switch node := node.(type) {
+			case *ast.ReturnStmt, *ast.GoStmt:
+				forbidden = true
+			case *ast.CallExpr:
+				name := absenceCallName(node.Fun)
+				if name == "t.Skip" || name == "t.SkipNow" || name == "t.Skipf" || strings.HasPrefix(name, "exec.") || name == "runObservedAbsenceLifecycle" {
+					forbidden = true
+				}
+			case *ast.SelectorExpr:
+				if node.Sel.Name == "AttemptDuration" {
+					forbidden = true
+				}
+			}
+			return true
+		})
+		return !forbidden
 	}
 	return false
+}
+
+func absenceCallName(expression ast.Expr) string {
+	switch expression := expression.(type) {
+	case *ast.Ident:
+		return expression.Name
+	case *ast.SelectorExpr:
+		if owner, ok := expression.X.(*ast.Ident); ok {
+			return owner.Name + "." + expression.Sel.Name
+		}
+	}
+	return ""
 }
 
 func TestAbsenceWitnessIncludesSocketDeadlineBeforeContextCancellation(t *testing.T) {
