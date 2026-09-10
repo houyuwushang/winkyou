@@ -55,6 +55,7 @@ type gateC1bMemoryProfile struct {
 	slowResponderFinish bool
 	cancelAfterFinish   bool
 	liveness            *gateC1bLivenessCase
+	timing              *gateC1bMemoryTimingWitness
 }
 
 // Test-only session configuration, not a product deadline or probe allowance.
@@ -504,6 +505,9 @@ func runGateC1bMemoryProductProfile(t *testing.T, label string, test gateC1bMemo
 				BuildVersion: "gate-c1b-memory-product", Random: bytes.NewReader(bytes.Repeat([]byte{byte(90 + index)}, 64)),
 				InactiveEvery: 100 * time.Millisecond,
 				Progress: func(progress gatecorchestrator.Progress) error {
+					if test.timing != nil {
+						test.timing.stage(index, progress.Stage)
+					}
 					stages = append(stages, progress.Stage)
 					if progress.Stage == gatecorchestrator.StageDataPlaneReady {
 						readyMu.Lock()
@@ -597,6 +601,9 @@ func runGateC1bMemoryProductProfile(t *testing.T, label string, test gateC1bMemo
 				}
 			} else {
 				result, runErr = gatecorchestrator.RunMemoryProof([]context.Context{initiatorCtx, responderCtx}[index], proof)
+			}
+			if test.timing != nil {
+				test.timing.finish(index, result)
 			}
 			results <- outcome{role: role, result: result, err: runErr, stages: stages}
 		}()
