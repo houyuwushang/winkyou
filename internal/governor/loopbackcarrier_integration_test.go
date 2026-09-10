@@ -298,16 +298,22 @@ func TestLoopbackCarrierAbsentPeerExpiresCleanlyWithoutSafetyTrip(t *testing.T) 
 	clear(unusedBundle)
 	defer clear(bundle)
 
-	// This is the unchanged caller guard, not a substitute probe deadline.
-	// Exact internal origins and timer stop remain an opt-in overlay proof.
-	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
+	// The literal 60s caller context is only a hang guard, deliberately far
+	// beyond the carrier's 15s tripwire plus 2s drain. Before this guard fires,
+	// DeadlineExceeded must come from the carrier's own deadline: the caller
+	// AcquireAttempt ctx watcher cannot stop the 15s timer ahead of the product.
+	// Reject an expired caller guard separately; journal reason alone cannot
+	// distinguish the two deadlines. Exact timer-stop timing stays opt-in.
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 	start := time.Now()
 	_, connectErr := loopbackcarrier.Connect(ctx, machine, bundle, "loopback-carrier-absent-peer", nil)
 	returned := time.Now()
 	observed := absentPeerObservation{
 		ConnectErr: connectErr, Started: start, Returned: returned, Journal: journalTiming(),
+		CallerErr: ctx.Err(),
 	}
+	observed.CallerDeadline, _ = ctx.Deadline()
 	observed.Memory = machine.Snapshot()
 
 	// Collect every independent postcondition before asserting. In particular,
@@ -348,6 +354,8 @@ func TestLoopbackCarrierAbsentPeerExpiresCleanlyWithoutSafetyTrip(t *testing.T) 
 		observed.Memory.Reserved == (governor.Resources{}), observed.Ledger.Sequence, observed.Ledger.Records,
 		observed.Ledger.OneHourAdmissions, observed.Ledger.ConsecutiveFailures,
 		observed.UnfinishedAdmissions, observed.UnfinishedPackets, observed.PortRebound)
+	t.Logf("ABSENCE_TERMINAL finish_reason=%s caller_clear=%t returned_before_caller_deadline=%t",
+		timing.FinishReason, observed.CallerErr == nil, returned.Before(observed.CallerDeadline))
 	requireAbsentPeerObservation(t, observed)
 }
 

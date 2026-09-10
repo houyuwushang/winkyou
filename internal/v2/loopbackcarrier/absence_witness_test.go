@@ -194,6 +194,10 @@ func TestAbsenceDefaultRegressionRequiresInProcessWitness(t *testing.T) {
 		{"governor.InspectLoopbackCarrierTestOccupancy(namespace, time.Now())", "fakeOccupancy()"},
 		{"requireAbsentPeerObservation(t, observed)", "exec.Command(\"go\", \"test\"); requireAbsentPeerObservation(t, observed)"},
 		{"requireAbsentPeerObservation(t, observed)", "if time.Since(start) >= loopbackcarrier.AttemptDuration { t.Fatal(\"wall clock\") }; requireAbsentPeerObservation(t, observed)"},
+		{"context.WithTimeout(context.Background(), 60*time.Second)", "context.WithTimeout(context.Background(), 25*time.Second)"},
+		{"context.WithTimeout(context.Background(), 60*time.Second)", "context.WithTimeout(context.Background(), loopbackcarrier.AttemptDuration*4)"},
+		{"context.WithTimeout(context.Background(), 60*time.Second)", "context.WithTimeout(context.Background(), callerGuard)"},
+		{"context.WithTimeout(context.Background(), 60*time.Second)", "context.WithCancel(context.Background())"},
 	} {
 		changed := strings.Replace(defaultSource, mutation.before, mutation.after, 1)
 		if changed == defaultSource || defaultAbsenceUsesInProcessWitness(source[:start]+changed+source[end:]) {
@@ -220,6 +224,7 @@ func defaultAbsenceUsesInProcessWitness(source string) bool {
 			"loopbackcarrier.Connect": 0, "governor.InspectLoopbackCarrierTestLedger": 0,
 			"governor.InspectLoopbackCarrierTestOccupancy": 0, "requireAbsentPeerObservation": 0,
 		}
+		literalCallerGuard := false
 		for _, statement := range function.Body.List {
 			var expressions []ast.Expr
 			switch statement := statement.(type) {
@@ -231,6 +236,14 @@ func defaultAbsenceUsesInProcessWitness(source string) bool {
 			for _, expression := range expressions {
 				if call, ok := expression.(*ast.CallExpr); ok {
 					required[absenceCallName(call.Fun)]++
+					if absenceCallName(call.Fun) == "context.WithTimeout" && len(call.Args) == 2 {
+						background, backgroundOK := call.Args[0].(*ast.CallExpr)
+						duration, durationOK := call.Args[1].(*ast.BinaryExpr)
+						if backgroundOK && absenceCallName(background.Fun) == "context.Background" && len(background.Args) == 0 && durationOK && duration.Op == token.MUL {
+							value, literal := duration.X.(*ast.BasicLit)
+							literalCallerGuard = literal && value.Kind == token.INT && value.Value == "60" && absenceCallName(duration.Y) == "time.Second"
+						}
+					}
 				}
 			}
 		}
@@ -257,7 +270,7 @@ func defaultAbsenceUsesInProcessWitness(source string) bool {
 			}
 			return true
 		})
-		return !forbidden
+		return !forbidden && literalCallerGuard && required["context.WithTimeout"] == 1
 	}
 	return false
 }

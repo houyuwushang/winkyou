@@ -13,6 +13,7 @@ type CarrierAbsenceJournalTiming struct {
 	AdmissionSynced   time.Time
 	FinishAppended    time.Time
 	FinishSynced      time.Time
+	FinishReason      PairingTerminalReason
 }
 
 // ObserveCarrierAbsenceJournal only reads real monotonic time at the existing
@@ -51,6 +52,7 @@ func ObserveCarrierAbsenceJournal(machine *Governor) (func() CarrierAbsenceJourn
 			timing.AdmissionSynced = at
 		case pairingRecordFinish:
 			timing.FinishSynced = at
+			timing.FinishReason = record.Reason
 		}
 		return nil
 	}

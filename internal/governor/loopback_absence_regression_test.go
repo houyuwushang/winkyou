@@ -16,6 +16,8 @@ import (
 // prove order inside Connect; their interval is not its resource lifetime.
 type absentPeerObservation struct {
 	ConnectErr, CloseErr, ReopenErr, ReopenedCloseErr error
+	CallerErr                                         error
+	CallerDeadline                                    time.Time
 	LedgerErr, OccupancyErr                           error
 	Started, Returned                                 time.Time
 	Journal                                           governor.CarrierAbsenceJournalTiming
@@ -42,6 +44,9 @@ func absentPeerObservationViolations(observed absentPeerObservation) []string {
 	}
 	reject(!observed.Collected, "collection_incomplete")
 	reject(!errors.Is(observed.ConnectErr, context.DeadlineExceeded), "wrong_terminal")
+	reject(observed.CallerErr != nil || observed.CallerDeadline.IsZero() ||
+		!observed.Returned.Before(observed.CallerDeadline), "caller_guard_not_independent")
+	reject(observed.Journal.FinishReason != governor.PairingTerminalExpired, "wrong_finish_reason")
 	ordered := []time.Time{
 		observed.Started, observed.Journal.AdmissionAppended, observed.Journal.AdmissionSynced,
 		observed.Journal.FinishAppended, observed.Journal.FinishSynced, observed.Returned,
@@ -79,9 +84,11 @@ func TestAbsentPeerObservationRejectsMissingUnsafeOrUndrainedWitness(t *testing.
 	base := time.Now()
 	valid := absentPeerObservation{
 		ConnectErr: context.DeadlineExceeded, Started: base, Returned: base.Add(13 * time.Second),
+		CallerDeadline: base.Add(60 * time.Second),
 		Journal: governor.CarrierAbsenceJournalTiming{
 			AdmissionAppended: base.Add(time.Millisecond), AdmissionSynced: base.Add(2 * time.Millisecond),
 			FinishAppended: base.Add(12 * time.Second), FinishSynced: base.Add(12*time.Second + time.Millisecond),
+			FinishReason: governor.PairingTerminalExpired,
 		},
 		Memory:    governor.Snapshot{SafetyTrip: governor.SafetyTripStatus{State: governor.SafetyTripClear}},
 		Persisted: governor.SafetyTripStatus{State: governor.SafetyTripClear},
@@ -116,6 +123,13 @@ func TestAbsentPeerObservationRejectsMissingUnsafeOrUndrainedWitness(t *testing.
 		{"success", "wrong_terminal", func(o *absentPeerObservation) { o.ConnectErr = nil }},
 		{"canceled", "wrong_terminal", func(o *absentPeerObservation) { o.ConnectErr = context.Canceled }},
 		{"text-only-deadline", "wrong_terminal", func(o *absentPeerObservation) { o.ConnectErr = errors.New(context.DeadlineExceeded.Error()) }},
+		{"caller-expired", "caller_guard_not_independent", func(o *absentPeerObservation) { o.CallerErr = context.DeadlineExceeded }},
+		{"caller-cancelled", "caller_guard_not_independent", func(o *absentPeerObservation) { o.CallerErr = context.Canceled }},
+		{"caller-deadline-missing", "caller_guard_not_independent", func(o *absentPeerObservation) { o.CallerDeadline = time.Time{} }},
+		{"caller-deadline-reached", "caller_guard_not_independent", func(o *absentPeerObservation) { o.Returned = o.CallerDeadline }},
+		{"finish-reason-missing", "wrong_finish_reason", func(o *absentPeerObservation) { o.Journal.FinishReason = "" }},
+		{"finish-cancelled", "wrong_finish_reason", func(o *absentPeerObservation) { o.Journal.FinishReason = governor.PairingTerminalCancelled }},
+		{"finish-carrier-error", "wrong_finish_reason", func(o *absentPeerObservation) { o.Journal.FinishReason = governor.PairingTerminalCarrierError }},
 		{"missing-burn", "journal_witness_missing", func(o *absentPeerObservation) { o.Journal.AdmissionAppended = time.Time{} }},
 		{"missing-burn-sync", "journal_witness_missing", func(o *absentPeerObservation) { o.Journal.AdmissionSynced = time.Time{} }},
 		{"missing-finish", "journal_witness_missing", func(o *absentPeerObservation) { o.Journal.FinishAppended = time.Time{} }},
