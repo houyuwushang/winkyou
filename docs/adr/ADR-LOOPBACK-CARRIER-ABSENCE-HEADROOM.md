@@ -339,11 +339,183 @@ PASS24.184s；真实parent/worker均race。该独立样本AcquireAttempt→timer
 | 13 | 16,868.7260 | 16,502.8135 | 0.0000 |
 | 37 | 25,027.9820 | 15,000.9601 | 1.8687 |
 
-三次持久安全复检及计费/排水均通过，故按本次明确裁决的默认验收口径PASS。
-但这些样本**没有内部timer-stop见证，不能声称双起点严格小于15s**；尤其journal
+三次持久安全复检及计费/排水均通过，旧默认断言报告PASS；复审确认这不构成产品余量证明。
+这些样本**没有内部timer-stop见证，不能声称双起点严格小于15s**；尤其journal
 区间较长不能被隐去，也不等于probeio startedAt→timer stop。具体延迟位置、调度与
 内部timer先后仍未确定，不把猜测写成根因。将这些实测限制一并交给独立复审；本轮
 不新增生产观测hook、不调整预算或余量，也不以正常opt-in单样本抵销它们。
+
+#### 8.5.1 复审 must-fix：25s caller 的竞争终止者（2026-09-10）
+
+依据 [复审意见](https://github.com/houyuwushang/winkyou/pull/123#issuecomment-5618712598)。
+§8.4 的全部170个默认样本都使用25s caller context。`AcquireAttempt` 的独立
+ctx watcher 可以先关闭 lease，从而停止 probeio 的15s timer。`DeadlineExceeded`
+本身甚至 FINISH reason=`expired` 都不能区分13s carrier deadline与25s caller deadline。
+**25s 批次中 caller deadline 是可能的终止者，故该批次不能证明产品余量。**
+旧批次保留为历史终局/账本/排水记录，不抵销 #111，也不计入本轮60s验收数。
+
+以下为旧压力批次中全部 Connect≥15s 样本的原始测量行，按样本8、13、37排列。
+只去掉 Go 测试文件/行号前缀；六个原始纳秒字段未取整、未重算或省略：
+
+```text
+ABSENCE_IN_PROCESS fixture_ns=10030357700 connect_ns=26086930000 journal_lower_bound_ns=13040875800 burn_sync_ns=13487400 finish_sync_ns=13748600 after_finish_ns=3020248500
+ABSENCE_IN_PROCESS fixture_ns=420042300 connect_ns=16868726000 journal_lower_bound_ns=16502813500 burn_sync_ns=1892800 finish_sync_ns=21826300 after_finish_ns=0
+ABSENCE_IN_PROCESS fixture_ns=10061696600 connect_ns=25027982000 journal_lower_bound_ns=15000960100 burn_sync_ns=14270900 finish_sync_ns=13441300 after_finish_ns=1868700
+```
+
+用 `pre_BURN = connect_ns - journal_lower_bound_ns - after_finish_ns` 得到
+8/13/37分别为10,025.8057 / 365.9125 / 10,025.1532ms。这里的 BURN 边界是
+**append后、sync前的既有hook**，不是 AcquireAttempt 或 probeio 的起点。
+
+复审样本37推导（相对 Connect 开始；caller context稍早创建，故以下25s仅是近似）：
+
+- BURN append在10.0251532s，FINISH synced在25.0261133s，Connect返回在25.0279820s。
+- 设 `X = BURN append → carrier run/probeio起点`，包含 BURN fsync、提交后的
+  校验/Consume等未分段区间。`burn_sync_ns=14270900` 只测得其中14.2709ms，
+  **不能把 X 等同于 burn_sync_ns**；run与probeio起点另有微小差值 ε。
+- carrier run deadline约为23.0251532s+X；probeio tripwire约为25.0251532s+X+ε；
+  产品正常 lease.Close不早于25.0261133s（必须先完成持久FINISH）。
+- caller watcher约在25.000s已经可以关闭lease，比tripwire早约25.1532ms+X+ε。
+  因而“clear且返回expired”与caller抢先停止timer完全相容，不能证明产品自行清理有余量。
+  样本13的较长journal区间也不能单凭短BURN fsync解释；未观测区间不能猜成fsync或调度。
+
+本轮默认ctx固定为独立的 `60*time.Second` 字面量；静态门拒绝25s、从生产
+`AttemptDuration` 派生或使用未冻结变量的替代。它只是防挂死兜底，远大于15s+2s；
+另断言返回时caller未取消且尚未到其deadline，避免60s兜底再次被算作产品超时。
+既有journal afterSync观察同时记录真实FINISH的`record.Reason`，要求
+`PairingTerminalExpired`；Cancelled/CarrierError/缺失reason均由负向变异拒绝。
+这些改动只在测试中，生产/配置/工作流delta=0。
+
+#### 8.5.2 60s caller 的重新测量（实现 `144fed3`）
+
+本轮只运行现有 literal-loopback 夹具，不并行另一组重测试。固定Go1.23.1、
+GOMAXPROCS=28；压力组沿用28核×2=56个worker、每次yield前65,536次计算，
+`-race -failfast` 不变。runner watchdog与每次60s caller兜底、生产15s/2s不是同一上限。
+
+```powershell
+$env:GOTOOLCHAIN = 'go1.23.1'
+$env:GOMAXPROCS = '28'
+$env:WINKYOU_FLAKE_111_CPU_STRESS = '1'
+go test -race ./internal/governor -run '^TestLoopbackCarrierAbsentPeerExpiresCleanlyWithoutSafetyTrip$' -count=50 -failfast -timeout=55m -json
+```
+
+首跑压力50/50 PASS704.416s，50次FINISH reason=`expired`、caller未到期、
+内存/持久safety clear，100次owner锁清理成功，50组压力worker全部join。
+Connect最大13,996.5556ms、journal下界最大13,539.6647ms、BURN sync最大40.4039ms、
+FINISH sync最大54.3295ms、FINISH sync后最大16.3399ms；fixture最大659.6698ms，
+pre-BURN最大452.3781ms。Connect≥15s样本为0，因此本批没有相应原始异常行。
+本批没有复现 #111 RED，也没有复现旧约10,025ms间隙；这不关闭旧反例或证明其根因。
+
+压力组完全退出后，同一实现、同一工具链/GOMAXPROCS，仅关闭人工压力：
+
+```powershell
+$env:WINKYOU_FLAKE_111_CPU_STRESS = '0'
+go test -race ./internal/governor -run '^TestLoopbackCarrierAbsentPeerExpiresCleanlyWithoutSafetyTrip$' -count=100 -failfast -timeout=40m -json
+```
+
+首跑100/100 PASS1,306.388s；100次expired/caller未到期/内存与持久clear，
+200次owner锁清理成功，人工压力worker启动数0。Connect最大13,030.2753ms，
+journal下界最大13,026.4015ms，BURN sync最大7.0231ms，FINISH sync最大13.4289ms，
+FINISH sync后最大2.1802ms；fixture最大54.7556ms、pre-BURN最大5.7594ms。
+Connect≥15s样本及生产RED均为0。上述两个批次没有启用runtime trace或overlay；
+trace定位与精确内部计时不得借用这些数字冒充已完成。
+
+之后独立运行focused回归：
+
+```powershell
+go test -race ./internal/governor ./internal/v2/loopbackcarrier -run '^Test(LoopbackCarrierAbsentPeerExpiresCleanlyWithoutSafetyTrip|AbsentPeer|Absence)' -count=20 -failfast -timeout=25m -json
+```
+
+首跑PASS：governor265.010s、loopbackcarrier3.575s，7个非opt-in顶层入口各20/20。
+44类结构化负例（含FINISH Cancelled/CarrierError与caller兜底失效）各20/20；
+14种源码变异均拒绝，Fatal-safe cleanup与原overlay可逆性门均通过。
+默认缺席20/20 expired/caller未到期/内存与持久clear，40次owner清理成功；
+Connect最大13,026.3276ms、journal下界最大13,019.6473ms、BURN sync最大5.7745ms、
+FINISH sync最大7.9588ms、FINISH sync后最大4.2258ms，fixture最大23.0072ms、
+pre-BURN最大10.1762ms；Connect≥15s与生产RED均0。
+20次未启用opt-in的skip不算精确计时执行。本轮170个默认新样本与§8.4旧170个严格分开。
+
+#### 8.5.3 仅测试侧 runtime trace 定位
+
+额外诊断不计入上述170个未插桩验收样本。以相同Go1.23.1、GOMAXPROCS28、
+56个CPU worker、`-race -failfast` 分组采样，每组10次，最多5组；所有文件留在仓库外。
+测试函数标记namespace准备、已导出的governor获取步骤与Connect；既有journal
+afterAppend observer仅增加固定 `burn_appended` trace标记，不新增生产hook/clock/延迟。
+
+```powershell
+$env:WINKYOU_FLAKE_111_CPU_STRESS = '1'
+go test -race ./internal/governor -run '^TestLoopbackCarrierAbsentPeerExpiresCleanlyWithoutSafetyTrip$' -count=10 -failfast -timeout=12m -trace='<PRIVATE_TRACE_FILE>' -json
+go tool trace -d=1 '<PRIVATE_TRACE_FILE>'
+```
+
+原始trace含运行时源码路径，禁止作为公开artifact上传。只导出固定阶段、纳秒区间与
+函数名，按测试goroutine重建Running/Runnable/Syscall状态，检查状态连续及区间闭合。
+首个全量文本展开因吞吐过低主动停止；原始trace未丢失，改为仓库外原生流式解码。
+解析器用独立PowerShell解析器及纯合成10s syscall输入交叉验证，合成结果不是产品证据。
+
+前两组（`5b235cd`）的可见最长pre-BURN分别约377ms与382ms，较长syscall位于
+`Commit → Admit → readValidatedPairingLedgerSnapshot → os.Open → CreateFile`：
+组1样本4为370,041,056ns，组1样本2为358,870,049ns，组2样本8为366,317,944ns。
+这些是新样本的函数级观察，**不能当作旧样本8/37的10,025ms根因**；也不据此归咎于
+磁盘、杀毒、文件系统过滤器或调度。`GetConsoleMode`另有短记录，不是这三条最长调用。
+
+组1样本6还暴露测试标记边界限制：原始pre-BURN=714,853,100ns，而标记内区间仅
+7,758,665ns，标记启动开销落在旧stopwatch内，不能把差额认作产品Connect耗时。
+`aad8149`将trace region开始移到stopwatch之前；前两组保留原貌，从第三组使用修正边界。
+上述170个未插桩样本使用`144fed3`，没有这个标记开销。
+
+五组采样及解码全部完成；全部50次expired/caller未到期/内存与持久clear、
+100次owner锁清理、50组压力worker join均通过，无生产RED。首跑记录如下；
+表中runner秒数采用JSON package pass事件，第二组包输出行159.617s与该事件159.618s
+相差1ms，二者不混用：
+
+| trace组 | 实现 | 通过数 | package pass秒 | 最大Connect ms | 最大原始pre-BURN ms |
+| --- | --- | ---: | ---: | ---: | ---: |
+| 1 | `5b235cd` | 10/10 | 149.213 | 13,880.0386 | 714.8531（含标记启动开销） |
+| 2 | `5b235cd` | 10/10 | 159.618 | 14,119.8715 | 381.6808（同一旧标记边界） |
+| 3 | `aad8149` | 10/10 | 147.310 | 13,878.9572 | 441.7146 |
+| 4 | `aad8149` | 10/10 | 154.410 | 17,004.1671 | 3,941.9277 |
+| 5 | `aad8149` | 10/10 | 170.145 | 14,390.6380 | 362.1128 |
+
+第四组样本4是50个诊断样本中唯一的Connect≥15s记录，六字段原始行如下：
+
+```text
+ABSENCE_IN_PROCESS fixture_ns=387327500 connect_ns=17004167100 journal_lower_bound_ns=13061239800 burn_sync_ns=10513900 finish_sync_ns=20109100 after_finish_ns=999600
+```
+
+它的pre-BURN=3,941.9277ms，FINISH=`expired`，caller未到期，内存/持久safety clear，
+账本与排水通过。Connect超过15s并不等于probeio从其自身起点超时；但仍须完整保留，
+不可用该样本PASS替代内部timer-stop见证或旧10s间隙定位。
+
+对应trace标记内pre-BURN为3,944,139,951ns（标记在stopwatch之前），其中
+Runnable共3,902,573,914ns，最长连续Runnable区间3,902,309,382ns；Syscall共
+35,334,940ns、Running共6,157,592ns、Waiting共73,505ns。这是测试goroutine
+已可运行但尚未再次获调度的区间，**不是3.9s fsync或3.9s文件打开**。
+不能把唤醒方的`gcBgMarkWorker`栈当作产品调用栈或据此指定旧样本根因。
+另第三组样本4的438,384,292ns、第五组样本3的356,313,963ns确在上述
+journal读取的`CreateFile`调用内；它们与长Runnable区间是不同观测。
+
+第四组完整时序复核：该长Runnable之前的Waiting为73,505ns，但该转换没有产品调用栈；
+其唤醒事件附带的是另一个goroutine的`gcBgMarkWorker`栈。逐段纳秒相加严格等于
+3,944,139,951ns，状态区间本身成立；**不能从缺失的目标调用栈补造“卡在某个产品步骤”**。
+
+#### 8.5.4 按复审停止条件暂停：旧10,025ms间隙未定位
+
+**第5项仍未闭合。** 旧样本8/37只有六个聚合时间字段，没有runtime trace；
+50个额外trace样本没有复现约10,025ms的pre-BURN间隙。新样本同时显示较短文件打开
+延迟与一次3.902s Runnable等待，不能把任何一种观察倒推为旧两例的同源根因。
+目前许可的测试侧采样不足以指定旧间隙落在哪一步，也不能断言加生产hook就必然能定位。
+
+遵守本次任务的停止条款：不新增生产hook，不猜根因，不改15s/2s/包数/PPS/limits，
+不扩大采样到现场或主机配置。本轮170个未插桩新样本与50个trace样本都没有出现
+`memory_safety_not_clear` / `persistent_safety_not_clear`；这只是本轮未复现，
+**#111仍未关闭，不能把生产缺陷改写成已修复。** 所有原始日志和trace在仓库外完整保留。
+
+当前仅完成第1–4项及第5项的有界取证，**不进入第6项**：本轮最终全仓vet、
+architecture、#116全仓分区、独立relay race×20尚未执行，不能借用下面§8.6的旧SHA结果。
+改动只保存在#123原分支本地；未推送、没有本轮CI首跑，rerun=0，PR仍Draft且未合并。
+后续需维护者裁决是否接受“旧间隙暂未定位”的证据缺口，或另行规定有界测试侧取证方案；
+这不是自行放宽must-fix。#124/阶段3与其他PR保持未触碰。
 
 ### 8.6 本轮全仓与交付核对
 
