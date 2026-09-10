@@ -90,14 +90,20 @@ func (model *gateB3NATLifetime) inject(point string) {
 }
 
 func (model *gateB3NATLifetime) observe() {
-	defer close(model.done)
 	ticker := time.NewTicker(250 * time.Millisecond)
 	defer ticker.Stop()
+	model.observeTicks(ticker.C, readGateB3LifetimeFlow)
+}
+
+// The injectable runner/ticks are test-only seams: the real observer keeps
+// its existing 250ms cadence and one-second query deadline.
+func (model *gateB3NATLifetime) observeTicks(ticks <-chan time.Time, read func(context.Context, string, gateB3LifetimeTuple) (bool, error)) {
+	defer close(model.done)
 	for {
 		select {
 		case <-model.ctx.Done():
 			return
-		case <-ticker.C:
+		case <-ticks:
 		}
 		model.mu.Lock()
 		keys := make([]gateB3LifetimeTuple, 0, len(model.flows))
@@ -107,7 +113,7 @@ func (model *gateB3NATLifetime) observe() {
 		model.mu.Unlock()
 		for _, key := range keys {
 			ctx, cancel := context.WithTimeout(model.ctx, time.Second)
-			present, err := readGateB3LifetimeFlow(ctx, model.peerNS, key)
+			present, err := read(ctx, model.peerNS, key)
 			cancel()
 			if model.ctx.Err() != nil {
 				return
@@ -133,6 +139,10 @@ func (model *gateB3NATLifetime) observe() {
 }
 
 func readGateB3LifetimeFlow(ctx context.Context, namespace string, tuple gateB3LifetimeTuple) (bool, error) {
+	return readGateB3LifetimeFlowWithRunner(ctx, namespace, tuple, (*exec.Cmd).CombinedOutput)
+}
+
+func readGateB3LifetimeFlowWithRunner(ctx context.Context, namespace string, tuple gateB3LifetimeTuple, run func(*exec.Cmd) ([]byte, error)) (bool, error) {
 	// Exact-key GET does not dump/walk the changing 32K table. A failed or
 	// interrupted query is never an absence witness; only the CLI's explicit
 	// conntrack ENOENT diagnostic is accepted as a completed negative lookup.
@@ -141,7 +151,7 @@ func readGateB3LifetimeFlow(ctx context.Context, namespace string, tuple gateB3L
 		"--sport", strconv.Itoa(int(tuple[1].Port())), "--dport", strconv.Itoa(int(tuple[0].Port())))
 	command.WaitDelay = 100 * time.Millisecond
 	command.Env = append(os.Environ(), "LC_ALL=C")
-	output, err := command.CombinedOutput()
+	output, err := run(command)
 	if err != nil {
 		var exitError *exec.ExitError
 		if errors.As(err, &exitError) {
@@ -165,6 +175,18 @@ func readGateB3LifetimeFlow(ctx context.Context, namespace string, tuple gateB3L
 		return false, errors.New("mapping lifetime tuple was not unique")
 	}
 	return flows == 1, nil
+}
+
+func validGateB3StableObservation(flow gateB3LifetimeFlow, age, idle time.Duration, refresh uint64, sentAt time.Time) bool {
+	return flow.present && !flow.presentAt.IsZero() && flow.goneAt.IsZero() &&
+		refresh == 1 && age < idle && sentAt.Sub(flow.sampledAt) <= 1500*time.Millisecond
+}
+
+// This is only the observation part of M-E's existing causal conjunction.
+// Packet/frame/age/refresh/injection conditions remain at the netns call site.
+func validGateB3ExpiryObservation(flow gateB3LifetimeFlow, sentAt time.Time) bool {
+	return !flow.presentAt.IsZero() && !flow.goneAt.IsZero() && flow.presentAt.Before(flow.goneAt) &&
+		flow.goneAt.Before(sentAt) && !flow.present && sentAt.Sub(flow.sampledAt) <= 1500*time.Millisecond
 }
 
 func (model *gateB3NATLifetime) close() error {

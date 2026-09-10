@@ -195,8 +195,7 @@ func assertGateB3LifetimeStable(t *testing.T, cfg gateB3LifetimeCase, left, righ
 		if failed {
 			t.Error("mapping lifetime independent observer failed")
 		}
-		if cfg.layer == "M-S" && endpoint.WinnerPackets == 1 && (!flow.present || flow.presentAt.IsZero() || !flow.goneAt.IsZero() ||
-			refresh != 1 || age >= model.idle || sentAt.Sub(flow.sampledAt) > 1500*time.Millisecond) {
+		if cfg.layer == "M-S" && endpoint.WinnerPackets == 1 && !validGateB3StableObservation(flow, age, model.idle, refresh, sentAt) {
 			t.Error("mapping lifetime stable winner lacked unchanged live reverse-flow evidence")
 		}
 		t.Logf("mapping lifetime endpoint: layer=%s role=%s class=%s stage=%s evidence=%d candidates=%d winner=%d udp=%d frames=%d/%d bytes=%d/%d mapping_age_ms=%d reverse_seen=%t reverse_gone=%t reverse_present_before_winner=%t samples=%d prewinner_tuple_outbounds=%d local_deadline=%t",
