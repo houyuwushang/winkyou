@@ -18,6 +18,12 @@ import (
 
 type gateB3LifetimeTuple [2]netip.AddrPort // local public, peer public; never logged
 
+// Eight consecutive failed queries, not an elapsed-time budget. With fast
+// failures this is eight 250ms ticks; slow commands still take up to 1s each.
+const gateB3LifetimeMaxConsecutiveErrors = 8
+
+var errGateB3LifetimeCommandUnavailable = errors.New("mapping lifetime reverse-flow command unavailable")
+
 type gateB3LifetimeFlow struct {
 	presentAt time.Time
 	goneAt    time.Time
@@ -44,6 +50,11 @@ type gateB3NATLifetime struct {
 	point    string
 	blocked  atomic.Bool
 	injected atomic.Uint64
+	// Observer-wide counters include all tracked tuples through drain. Winner
+	// samples remain the immutable successful-query count taken before send.
+	samplesTimedOut   int
+	samplesErrored    int
+	consecutiveErrors int
 }
 
 func newGateB3NATLifetime(peerNS string, seconds int) *gateB3NATLifetime {
@@ -68,8 +79,9 @@ func (model *gateB3NATLifetime) track(local, peer netip.AddrPort) {
 }
 
 // Only immutable cached evidence is read on the forwarder path. No subprocess,
-// kernel query or waiting is permitted here. A missing pre-send sample FAILS
-// the fixture; an after-send observation cannot fill in that evidence later.
+// kernel query or waiting is permitted here. M-S labels missing pre-send
+// samples as unsampled; M-E still requires positive THEN explicit negative
+// evidence. An after-send observation cannot fill in either snapshot later.
 func (model *gateB3NATLifetime) beforeWinner(local, peer netip.AddrPort, age time.Duration, refresh uint64) {
 	model.inject("before_winner")
 	model.mu.Lock()
@@ -118,24 +130,47 @@ func (model *gateB3NATLifetime) observeTicks(ticks <-chan time.Time, read func(c
 			if model.ctx.Err() != nil {
 				return
 			}
-			model.mu.Lock()
-			if err != nil {
-				model.failure = err
-				model.mu.Unlock()
+			if !model.recordSample(key, present, err, time.Now()) {
 				return
 			}
-			flow := model.flows[key]
-			flow.present, flow.sampledAt, flow.samples = present, time.Now(), flow.samples+1
-			if present && flow.presentAt.IsZero() {
-				flow.presentAt = flow.sampledAt
+			if err != nil {
+				break // sampling interruption: resume on the next normal tick
 			}
-			if !present && !flow.presentAt.IsZero() && flow.goneAt.IsZero() {
-				flow.goneAt = flow.sampledAt
-			}
-			model.flows[key] = flow
-			model.mu.Unlock()
 		}
 	}
+}
+
+func (model *gateB3NATLifetime) recordSample(key gateB3LifetimeTuple, present bool, err error, now time.Time) bool {
+	model.mu.Lock()
+	defer model.mu.Unlock()
+	switch {
+	case errors.Is(err, errGateB3LifetimeCommandUnavailable):
+		model.failure = errGateB3LifetimeCommandUnavailable
+		return false
+	case errors.Is(err, context.DeadlineExceeded), errors.Is(err, context.Canceled):
+		model.samplesTimedOut++
+		model.consecutiveErrors = 0
+		return true // no change to present/goneAt/sampledAt/samples
+	case err != nil:
+		model.samplesErrored++
+		model.consecutiveErrors++
+		if model.consecutiveErrors >= gateB3LifetimeMaxConsecutiveErrors {
+			model.failure = err
+			return false
+		}
+		return true
+	}
+	model.consecutiveErrors = 0
+	flow := model.flows[key]
+	flow.present, flow.sampledAt, flow.samples = present, now, flow.samples+1
+	if present && flow.presentAt.IsZero() {
+		flow.presentAt = flow.sampledAt
+	}
+	if !present && !flow.presentAt.IsZero() && flow.goneAt.IsZero() {
+		flow.goneAt = flow.sampledAt
+	}
+	model.flows[key] = flow
+	return true
 }
 
 func readGateB3LifetimeFlow(ctx context.Context, namespace string, tuple gateB3LifetimeTuple) (bool, error) {
@@ -152,8 +187,24 @@ func readGateB3LifetimeFlowWithRunner(ctx context.Context, namespace string, tup
 	command.WaitDelay = 100 * time.Millisecond
 	command.Env = append(os.Environ(), "LC_ALL=C")
 	output, err := run(command)
+	if errors.Is(err, exec.ErrNotFound) {
+		return false, errGateB3LifetimeCommandUnavailable
+	}
+	// CommandContext can return an ExitError after killing a timed-out child,
+	// or a context error before Start. Neither is a completed negative query.
+	if ctx.Err() != nil {
+		return false, ctx.Err()
+	}
+	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+		return false, err
+	}
 	if err != nil {
-		var exitError *exec.ExitError
+		// *exec.ExitError supplies ExitCode; the fake runner can model the same
+		// exit status without spawning a child or needing a Linux namespace.
+		var exitError interface {
+			error
+			ExitCode() int
+		}
 		if errors.As(err, &exitError) {
 			message := strings.ToLower(strings.TrimSpace(string(output)))
 			if exitError.ExitCode() == 1 && strings.HasPrefix(message, "conntrack v") &&
@@ -161,9 +212,9 @@ func readGateB3LifetimeFlowWithRunner(ctx context.Context, namespace string, tup
 				!strings.Contains(message, "\nudp ") {
 				return false, nil
 			}
-			return false, fmt.Errorf("mapping lifetime reverse-flow read failed: exit=%d deadline=%t", exitError.ExitCode(), errors.Is(ctx.Err(), context.DeadlineExceeded))
+			return false, fmt.Errorf("mapping lifetime reverse-flow read failed: exit=%d", exitError.ExitCode())
 		}
-		return false, errors.New("mapping lifetime reverse-flow command unavailable")
+		return false, errors.New("mapping lifetime reverse-flow read failed")
 	}
 	flows := 0
 	for _, line := range strings.Split(string(output), "\n") {
@@ -178,6 +229,13 @@ func readGateB3LifetimeFlowWithRunner(ctx context.Context, namespace string, tup
 }
 
 func validGateB3StableObservation(flow gateB3LifetimeFlow, age, idle time.Duration, refresh uint64, sentAt time.Time) bool {
+	if flow.samples == 0 {
+		// No claim about kernel presence. The independent mapping-age and
+		// exactly-one-prewinner-outbound requirements still apply, as do all
+		// packet/terminal/teardown checks in the enclosing netns fixture.
+		return flow.presentAt.IsZero() && flow.goneAt.IsZero() && flow.sampledAt.IsZero() && !flow.present &&
+			!sentAt.IsZero() && refresh == 1 && age >= 0 && age < idle
+	}
 	return flow.present && !flow.presentAt.IsZero() && flow.goneAt.IsZero() &&
 		refresh == 1 && age < idle && sentAt.Sub(flow.sampledAt) <= 1500*time.Millisecond
 }

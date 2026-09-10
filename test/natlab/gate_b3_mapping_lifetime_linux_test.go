@@ -191,17 +191,20 @@ func assertGateB3LifetimeStable(t *testing.T, cfg gateB3LifetimeCase, left, righ
 		model := []*gateB3NATLifetime{leftModel, rightModel}[side]
 		model.mu.Lock()
 		flow, age, refresh, sentAt, failed := model.winner, model.age, model.refresh, model.sentAt, model.failure != nil
+		timedOut, errored := model.samplesTimedOut, model.samplesErrored
 		model.mu.Unlock()
+		unsampled := endpoint.WinnerPackets == 1 && flow.samples == 0
 		if failed {
 			t.Error("mapping lifetime independent observer failed")
 		}
 		if cfg.layer == "M-S" && endpoint.WinnerPackets == 1 && !validGateB3StableObservation(flow, age, model.idle, refresh, sentAt) {
 			t.Error("mapping lifetime stable winner lacked unchanged live reverse-flow evidence")
 		}
-		t.Logf("mapping lifetime endpoint: layer=%s role=%s class=%s stage=%s evidence=%d candidates=%d winner=%d udp=%d frames=%d/%d bytes=%d/%d mapping_age_ms=%d reverse_seen=%t reverse_gone=%t reverse_present_before_winner=%t samples=%d prewinner_tuple_outbounds=%d local_deadline=%t",
+		t.Logf("mapping lifetime endpoint: layer=%s role=%s class=%s stage=%s evidence=%d candidates=%d winner=%d udp=%d frames=%d/%d bytes=%d/%d mapping_age_ms=%d reverse_seen=%t reverse_gone=%t reverse_present_before_winner=%t samples=%d samples_timed_out=%d samples_errored=%d observer_unsampled=%t prewinner_tuple_outbounds=%d local_deadline=%t",
 			cfg.layer, endpoint.Role, endpoint.ErrorClass, endpoint.ErrorStage, endpoint.EvidencePackets, endpoint.CandidatePackets,
 			endpoint.WinnerPackets, endpoint.UDPPackets, endpoint.CarrierFramesRead, endpoint.CarrierFramesWrite,
-			endpoint.CarrierBytesRead, endpoint.CarrierBytesWrite, age.Milliseconds(), !flow.presentAt.IsZero(), !flow.goneAt.IsZero(), flow.present, flow.samples, refresh, endpoint.LocalDeadline)
+			endpoint.CarrierBytesRead, endpoint.CarrierBytesWrite, age.Milliseconds(), !flow.presentAt.IsZero(), !flow.goneAt.IsZero(), flow.present, flow.samples,
+			timedOut, errored, unsampled, refresh, endpoint.LocalDeadline)
 	}
 }
 
