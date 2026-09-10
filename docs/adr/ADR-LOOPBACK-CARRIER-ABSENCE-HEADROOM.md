@@ -259,3 +259,106 @@ vet / architecture 和 opt-in 精确见证。§4 / §7 的旧数字不冒充这�
 `go test ./internal/v2/loopbackcarrier -run '^TestAbsenceDefaultRegressionRequiresInProcessWitness$' -count=1`
 在旧的默认 shell-out 实现上按预期 RED（0.527s）。它拒绝的是旧接线，不是生产 trip；
 本轮后续 GREEN 与压力/无压力结果另行登记，不删除这个先红证据。
+
+首次 GREEN 验证还出现一项见证测试自身的 RED（0.100s）：源码变异替换误命中同文件
+另一个测试的 ledger 调用。替换范围改为默认缺席函数自身，并拒绝未实际替换的变异；
+没有修改生产。修正后静态套件0.352s、结构化负例0.398s通过。
+
+### 8.4 新默认入口实测（实现 `336ea4d`）
+
+全部 socket 来自原 literal-loopback 夹具。默认进程内路径不编译 overlay，压力组与
+无人工压力组串行，不并行运行另一组重测试；只进行轻量日志/源码/PR元数据核对。
+
+| 验证 | 本轮结果 |
+| --- | --- |
+| Go1.23.1 默认入口 + Fatal cleanup 负例，`-count=1` | PASS13.322s；实际默认13.04s |
+| Go1.26.5 默认入口，`-count=1` | PASS14.508s；实际默认14.16s |
+| Go1.23.1 focused race×20 | governor266.602s、source2.875s；7个非opt-in入口各20/20 |
+| Go1.23.1 默认入口 CPU压力 + race×50，fail-fast | PASS917.019s；50/50 |
+| Go1.23.1 默认入口无人工压力 + race×100，fail-fast | PASS1,303.921s；100/100 |
+
+focused命令：
+
+```powershell
+$env:GOTOOLCHAIN = 'go1.23.1'
+go test -race ./internal/governor ./internal/v2/loopbackcarrier -run '^Test(LoopbackCarrierAbsentPeerExpiresCleanlyWithoutSafetyTrip|AbsentPeer|Absence)' -count=20 -failfast -timeout=12m -json
+```
+
+37类结构化负例每类20/20；源码接线的10种变异、原插入恢复与读取归因门各20/20。
+未显式启用时的20次opt-in skip不冒充精确观测执行。默认20个样本持久clear，40次
+owner清理成功；Connect最大13,019.7082ms（只诊断），FINISH sync最大12.2631ms。
+
+压力命令：
+
+```powershell
+$env:GOTOOLCHAIN = 'go1.23.1'
+$env:WINKYOU_FLAKE_111_CPU_STRESS = '1'
+go test -race ./internal/governor -run '^TestLoopbackCarrierAbsentPeerExpiresCleanlyWithoutSafetyTrip$' -count=50 -failfast -timeout=25m -json
+```
+
+实际28核、GOMAXPROCS28、56个busy worker；50组全部join、100次owner清理成功。
+50个样本均精确DeadlineExceeded、内存/重开持久safety clear、一次admission与失败FINISH、
+账本sequence/records均3、未完成占用/资源归零、端口可重绑；未观测到持久trip。
+fixture最大10,061.6966ms、FINISH sync最大26.6684ms。压力返回时间的例外见下一节，
+本表PASS只代表§8.1裁决后的默认终局/账本/排水门，不代表全部内部计时达标。
+
+无人工压力命令（在压力组完全退出后执行）：
+
+```powershell
+$env:GOTOOLCHAIN = 'go1.23.1'
+$env:WINKYOU_FLAKE_111_CPU_STRESS = '0'
+go test -race ./internal/governor -run '^TestLoopbackCarrierAbsentPeerExpiresCleanlyWithoutSafetyTrip$' -count=100 -failfast -timeout=40m -json
+```
+
+100/100精确错误/持久clear/计费与失败FINISH/排水通过，200次owner清理成功，
+人工压力worker启动数0。Connect最大13,018.3405ms、journal区间最大13,013.9079ms、
+FINISH sync最大8.4089ms，fixture最大20.4325ms；这些仍是各自观测区间，
+不写成100次内部timer-stop观测。三个默认批次共170个新样本，不含§4/§7的旧批次。
+
+另单独显式执行原精确观测：
+
+```powershell
+$env:GOTOOLCHAIN = 'go1.23.1'
+$env:WINKYOU_ABSENCE_WITNESS = '1'
+$env:WINKYOU_ABSENCE_WITNESS_RUNS = '1'
+$env:WINKYOU_ABSENCE_WITNESS_RACE = '1'
+go test -race ./internal/v2/loopbackcarrier -run '^TestAbsenceLifecycleWitness$' -count=1 -v -timeout=5m
+```
+
+PASS24.184s；真实parent/worker均race。该独立样本AcquireAttempt→timer stop
+13,007.9391ms、probeio startedAt→timer stop13,003.7547ms，均严格小于15s；
+持久clear、latch观察为false。此单样本不替代压力组或历史任何一次RED。
+
+### 8.5 压力计时异常与证据边界
+
+压力50样本中有3次Connect返回达到/超过15s，全部保留：
+
+| 样本 | Connect总墙钟ms | journal观测区间ms | FINISH sync→Connect返回ms |
+| --- | ---: | ---: | ---: |
+| 8 | 26,086.9300 | 13,040.8758 | 3,020.2485 |
+| 13 | 16,868.7260 | 16,502.8135 | 0.0000 |
+| 37 | 25,027.9820 | 15,000.9601 | 1.8687 |
+
+三次持久安全复检及计费/排水均通过，故按本次明确裁决的默认验收口径PASS。
+但这些样本**没有内部timer-stop见证，不能声称双起点严格小于15s**；尤其journal
+区间较长不能被隐去，也不等于probeio startedAt→timer stop。具体延迟位置、调度与
+内部timer先后仍未确定，不把猜测写成根因。将这些实测限制一并交给独立复审；本轮
+不新增生产观测hook、不调整预算或余量，也不以正常opt-in单样本抵销它们。
+
+### 8.6 本轮全仓与交付核对
+
+Go1.23.1，无人工压力，在上述三组重复测试结束后执行：
+
+- `go vet ./...`：PASS。
+- `go test ./internal/architecture -count=1 -v`：PASS9.376s，含现有变异门。
+- `go test ./... -count=1 -skip '^TestRelayWGGoTwoEnginesExchangeIPv4Packets$' -json`：
+  按#116原分区，88个有测试包PASS、11个无测试包、0FAIL；governor95.553s、
+  architecture11.671s、client1.170s。
+- `go test -race ./pkg/client -run '^TestRelayWGGoTwoEnginesExchangeIPv4Packets$' -count=1 -v`：
+  实际独立relay1/1 PASS7.36s，package9.386s，observer worker归零。
+- §1–§7原文前缀一致、三个相对链接有效、`git diff --check`与新增内容隐私扫描通过。
+  原#115三个辅助文件等价迁入，原精确worker/template字节不变；生产/配置/工作流delta=0。
+- 已运行的相关测试进程归零，原停用任务仍Disabled；无现场网络或主机配置操作。
+
+本轮提交仅追加到#123原分支，保留RED与旧提交历史。远端首跑CI结果在PR描述单列，
+本地PASS不写成远端全绿。保持Draft、不合并；阶段2推送后停下等复审，阶段3不启动。
