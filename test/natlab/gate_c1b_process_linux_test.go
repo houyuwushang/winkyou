@@ -357,6 +357,12 @@ func (counter *gateC1bSSHDCounters) Write(data []byte) (int, error) {
 }
 
 func TestGateC1bSSHDiagnosticsAreBoundedAndRedacted(t *testing.T) {
+	if !t.Run("responder-wait-contract", TestGateC1bResponderWaitContract) {
+		t.FailNow()
+	}
+	if !t.Run("responder-wait-real-fatal-contract", TestGateC1bResponderWaitFatalContract) {
+		t.FailNow()
+	}
 	if !t.Run("crash-terminal-snapshot", TestGateC1bCrashTerminalDiagnostics) {
 		t.FailNow()
 	}

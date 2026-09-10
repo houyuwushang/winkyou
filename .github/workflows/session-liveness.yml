@@ -40,12 +40,8 @@ jobs:
         run: python internal/v2/gatecorchestrator/testdata/liveness_reference.py
 
   real-wireguard:
-    name: Liveness real WireGuard (${{ matrix.os }})
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, windows-latest]
-    runs-on: ${{ matrix.os }}
+    name: Liveness real WireGuard (ubuntu-latest)
+    runs-on: ubuntu-latest
     timeout-minutes: 12
     env:
       GORACE: halt_on_error=1
@@ -63,6 +59,43 @@ jobs:
       - name: Persistent-timer counterexample - continuous one-way business and WG control without PONG
         # Four serial 65s proofs; no change to any session/search/drain bound.
         run: go test -race -tags=c1bproof ./internal/governor -run '^TestSessionLivenessOneWayTrafficCannotReplaceProofRequired$' -count=1 -v -timeout=6m
+
+  real-wireguard-windows:
+    name: Liveness real WireGuard (windows-latest, ${{ matrix.case }})
+    strategy:
+      fail-fast: false
+      matrix:
+        # Issue #126: completed step wall clocks are 232s / 162s / 275s.
+        # Measured setup/post: 57s / 6s. Fresh legs also reserve the measured
+        # 45s first-test compile/start cost already included in idle's 232s.
+        # ceil(1.25 * (step + 57 + 6 + cold-start-if-needed) / 60): 7 / 6 / 8.
+        # Sources and unchanged proof counts: docs/GATE-C-LIVENESS-EVIDENCE.md §10.
+        include:
+          - case: idle
+            test: TestSessionLivenessMemoryIdle180Required
+            test_timeout: 6m
+            timeout_minutes: 7
+          - case: blackholes
+            test: TestSessionLivenessMemoryBlackholesRequired
+            test_timeout: 4m
+            timeout_minutes: 6
+          - case: nonproof
+            test: TestSessionLivenessOneWayTrafficCannotReplaceProofRequired
+            test_timeout: 6m
+            timeout_minutes: 8
+    runs-on: windows-latest
+    timeout-minutes: ${{ matrix.timeout_minutes }}
+    env:
+      GORACE: halt_on_error=1
+      WINKYOU_LIVENESS_IDLE_REQUIRED: '1'
+      WINKYOU_LIVENESS_BLACKHOLE_REQUIRED: '1'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Required real WireGuard proof (${{ matrix.case }})
+        run: go test -race -tags=c1bproof ./internal/governor -run '^${{ matrix.test }}$' -count=1 -v -timeout=${{ matrix.test_timeout }}
 
   fresh100:
     name: Liveness 100 fresh lifecycles
@@ -129,13 +162,14 @@ jobs:
   required:
     name: Session Liveness Required
     if: always()
-    needs: [model-and-owner, real-wireguard, fresh100, netns]
+    needs: [model-and-owner, real-wireguard, real-wireguard-windows, fresh100, netns]
     runs-on: ubuntu-latest
     steps:
       - name: Fail for any missing, skipped or failed proof
         env:
           MODEL: ${{ needs.model-and-owner.result }}
           WIREGUARD: ${{ needs.real-wireguard.result }}
+          WINDOWS_WIREGUARD: ${{ needs.real-wireguard-windows.result }}
           FRESH: ${{ needs.fresh100.result }}
           NETNS: ${{ needs.netns.result }}
-        run: test "$MODEL" = success && test "$WIREGUARD" = success && test "$FRESH" = success && test "$NETNS" = success
+        run: test "$MODEL" = success && test "$WIREGUARD" = success && test "$WINDOWS_WIREGUARD" = success && test "$FRESH" = success && test "$NETNS" = success
