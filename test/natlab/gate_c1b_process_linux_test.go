@@ -357,6 +357,9 @@ func (counter *gateC1bSSHDCounters) Write(data []byte) (int, error) {
 }
 
 func TestGateC1bSSHDiagnosticsAreBoundedAndRedacted(t *testing.T) {
+	if !t.Run("crash-terminal-snapshot", TestGateC1bCrashTerminalDiagnostics) {
+		t.FailNow()
+	}
 	if !t.Run("peer-pipe-witness-mutations", testGateC1bPipeFaultWitnessRejectsNoopInjection) {
 		t.FailNow()
 	}
