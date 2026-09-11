@@ -135,8 +135,13 @@ func (s *Session) beginSelectionPass() error {
 // Both first-round subwindows consume the existing first execution allowance.
 // A nonpositive remainder intentionally yields an already-expired deadline.
 func firstSelectionConfirmDeadline(passStart, receivedAt time.Time, window, runTimeout time.Duration) time.Time {
-	remaining := passStart.Add(runTimeout).Sub(receivedAt)
-	return receivedAt.Add(min(window, defaultCapabilityWaitTimeout, remaining))
+	// Control exchange cannot start before this pass, even if capability arrived early.
+	anchor := receivedAt
+	if anchor.Before(passStart) {
+		anchor = passStart
+	}
+	remaining := passStart.Add(runTimeout).Sub(anchor)
+	return anchor.Add(min(window, defaultCapabilityWaitTimeout, remaining))
 }
 
 func (s *Session) selectionCapabilityContext(ctx context.Context) (context.Context, context.CancelFunc) {

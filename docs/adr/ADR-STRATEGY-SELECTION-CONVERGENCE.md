@@ -640,3 +640,21 @@ side0 bound、执行1次；side1 failed、`selection_timeout`、零执行，完�
 worker=0、queued=6，无重发；这是窗口削短的协议反例，不是夹具启动或编译失败。
 同版`TestSelectionFirstConfirmDeadlineBounds`首跑只有received_before_start子例RED，
 其余7个边界PASS。旧1900ms不能满足新2000ms期望；不把这次预期RED混入实现后验收。
+
+### 11.9 R-a.1最小实现与首轮小范围验证
+
+生产只改firstSelectionConfirmDeadline：anchor先取receivedAt，早于passStart则取
+passStart；剩余预算与返回deadline都使用anchor。beginSelectionPass与
+receiveSelectionCapability两个调用点逐字不变，其他生产逻辑不变。
+原20种变异保留，其中4s扩大窗口变异仅随局部变量改名调整匹配文本；新增第21种
+“提前收到时不提升锚点到passStart”变异，仍保留alias构造点绕过检查。
+纯时间表增补提前接收时的小window及不足2s剩余预算，共10个边界。
+
+Go1.23.1/GOMAXPROCS=28，小范围首跑PASS：session11.304s、architecture3.800s。
+新红回归转GREEN：capability提前300,061,300ns，双侧bound、各执行一次、同digest，
+执行deadline仍为各自passStart+25s，worker=0/queued=6；21种源码变异均被拒，
+10个纯时间边界全通过。原1.9s+0.6s正向、迟到/缺确认负向及预算/later ordinal用例
+同批通过。另对新回归及纯时间边界做单轮race smoke通过，无数据竞争报告。
+
+以上只是实现检查，不充当压力/无压力/整包race×20验收；后续采用全新独立首跑，
+每步失败先完整读取证据再判定停止条件，不自动启动下一批或重跑求绿。

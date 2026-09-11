@@ -24,6 +24,8 @@ func TestSelectionFirstConfirmDeadlineBounds(t *testing.T) {
 		{"exhausted", 1900 * time.Millisecond, 2 * time.Second, 1900 * time.Millisecond, 1900 * time.Millisecond},
 		{"already_expired", 1900 * time.Millisecond, 2 * time.Second, time.Second, time.Second},
 		{"received_before_start", -100 * time.Millisecond, 2 * time.Second, 25 * time.Second, 2000 * time.Millisecond},
+		{"received_before_start_small_window", -100 * time.Millisecond, 50 * time.Millisecond, 25 * time.Second, 50 * time.Millisecond},
+		{"received_before_start_remaining_budget", -100 * time.Millisecond, 2 * time.Second, time.Second, time.Second},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			received := start.Add(tc.received)

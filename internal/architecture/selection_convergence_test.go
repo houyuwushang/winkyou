@@ -146,7 +146,7 @@ func selectionBoundaryViolations(sources map[string]string) []string {
 	// charged to the existing first plan/group and candidate-loop allowance.
 	require("pkg/session/selection_agreement.go", "beginSelectionPass", "a.capabilityDeadline = a.passStart.Add(window)")
 	require("pkg/session/selection_agreement.go", "selectionCapabilityContext", "deadline := a.capabilityDeadline")
-	require("pkg/session/selection_agreement.go", "firstSelectionConfirmDeadline", "remaining := passStart.Add(runTimeout).Sub(receivedAt)", "return receivedAt.Add(min(window, defaultCapabilityWaitTimeout, remaining))")
+	require("pkg/session/selection_agreement.go", "firstSelectionConfirmDeadline", "anchor := receivedAt", "if anchor.Before(passStart) {\n\t\tanchor = passStart\n\t}", "remaining := passStart.Add(runTimeout).Sub(anchor)", "return anchor.Add(min(window, defaultCapabilityWaitTimeout, remaining))")
 	require("pkg/session/selection_agreement.go", "receiveSelectionCapability", "if a.remote == nil {", "receivedAt := time.Now()", "!receivedAt.Before(a.capabilityDeadline)", "a.capabilityReceivedAt = receivedAt", "a.confirmDeadline = firstSelectionConfirmDeadline(")
 	require("pkg/session/selection_agreement.go", "agreeCandidates", "if ordinal == 0 {\n\t\tstart, deadline = a.passStart, a.confirmDeadline\n\t}", "budgetStart := start", "budgetStart: budgetStart")
 	if strings.Contains(selectionFunction(sources["pkg/session/selection_agreement.go"], "agreeCandidates"), "budgetStart = time.Time{}") {
@@ -195,7 +195,7 @@ func TestSelectionConvergenceDetectsBypassMutations(t *testing.T) {
 		{"pkg/session/selection_agreement.go", "binding.ToEpoch != a.local.Epoch", "false"},
 		{"pkg/session/selection_agreement.go", "len(a.activeExecutors) != 0", "false"},
 		{"pkg/session/selection_agreement.go", "start, deadline = a.passStart, a.confirmDeadline", "start, deadline = a.passStart, a.capabilityDeadline"},
-		{"pkg/session/selection_agreement.go", "return receivedAt.Add(min(window, defaultCapabilityWaitTimeout, remaining))", "return receivedAt.Add(min(4*time.Second, remaining))"},
+		{"pkg/session/selection_agreement.go", "return anchor.Add(min(window, defaultCapabilityWaitTimeout, remaining))", "return anchor.Add(min(4*time.Second, remaining))"},
 		{"pkg/session/selection_agreement.go", "budgetStart := start", "budgetStart := time.Time{}"},
 		{"pkg/session/selection_agreement.go", "return context.WithDeadline(ctx, start.Add(timeout))", "return context.WithTimeout(ctx, timeout)"},
 		{"pkg/session/selection_agreement.go", "budget.TimeBudget -= time.Since(start)", "budget.TimeBudget -= 0"},
@@ -204,6 +204,7 @@ func TestSelectionConvergenceDetectsBypassMutations(t *testing.T) {
 		{"pkg/session/planning.go", "s.subtractSelectionTime(s.candidateExecutionBudget(len(plans)))", "s.candidateExecutionBudget(len(plans))"},
 		{"pkg/session/planning.go", "s.selectionExecutionContext(execCtx, s.candidateGroupExecutionTimeout(len(entries)))", "context.WithTimeout(execCtx, s.candidateGroupExecutionTimeout(len(entries)))"},
 		{"pkg/session/selection.go", "func (s *Session) routeStrategyMessage(msg solver.Message) strategyMessageTarget {\n\ts.strategyMu.Lock()", "func (s *Session) routeStrategyMessage(msg solver.Message) strategyMessageTarget {\n\ts.strategyMu.RLock()"},
+		{"pkg/session/selection_agreement.go", "if anchor.Before(passStart)", "if false"},
 	}
 	for index, mutation := range mutations {
 		t.Run(fmt.Sprint(index), func(t *testing.T) {
