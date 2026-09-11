@@ -175,7 +175,7 @@ routeStrategyMessage 原子判定/入队。这两项解决消息启动就绪与 
 不向 solver domain 注入 wire DTO，不改 `pkg/solver/strategy/*` 或 v2 Gate。
 若实现必须改 coordinator 传输、策略协议、既有绑定存活语义或扩大截止时间，停下另行裁决。
 
-## 7. 验收计划（均尚未执行）
+## 7. 验收计划（实测与未闭合项见§10/§11）
 
 - R-a“confirm 子窗口单独计时”：纯内存投递 capability 在1.9s到达、proposal/confirm
   往返再需0.6s，旧共享2s实现必须 selection_timeout，修复后双方一致 executing。
@@ -447,4 +447,100 @@ capability_missing且零执行；缺少confirm时双侧selection_timeout且零�
   的独立探索也通过，最终用1s检验小于2s的分支，避免给新测试引入不必要的极短调度窗。
   这些小范围结果不冒充以下完整压力/无压力/整包矩阵验收。
 
-正式矩阵尚待执行；源代码冻结后逐批首跑记录，不重跑原压力RED或混合不同实现统计。
+### 11.4 R-a 首次正式压力批次：36 PASS，第37例 RED
+
+实现固定为`c55d42b`，Go1.23.1、GOMAXPROCS=28、CPU helper=56 worker，
+每worker每轮65,536次整数运算后Gosched；未并行其他重测试。命令与首跑结果：
+
+```text
+WINKYOU_FLAKE_97_CPU_STRESS=1
+go test ./pkg/client -run '^TestRelayWGGoTwoEnginesExchangeIPv4Packets$' -count=50 -failfast -timeout=45m -json
+```
+
+36例PASS，第37例FAIL后停止，未执行第38–50例；package385.510s，命令墙钟391.549s。
+失败单例31.28s，断言仍为原30s等待relay transport；成功单例最长31.15s是包含
+建立、数据验证和cleanup的整个测试耗时，不能当作单一connect时延。
+37例均有`observer_workers=0`及`cpu_stress workers_remaining=0`。
+本批为**RED，未满足压力≥50通过门**；不与无压力或此前§10统计合并、不rerun求绿。
+
+原始JSONL完整保存在仓库外；SHA-256为
+`011f4a3bf3e88aa122675c909f70a10eb03d5084db4c15723a8c8eab50fc55b0`。
+下面是第37例的**全部状态变化采样行**及两个退出见证，只去掉测试源文件行号；
+原始失败诊断中的运行实例、地址、公钥和进程信息不进入公共记录：
+
+```text
+relay_timeline side=1 elapsed_ms=0 sessions=0 []
+relay_timeline side=2 elapsed_ms=0 sessions=0 []
+cpu_stress cores=28 gomaxprocs=28 workers=56 iterations_per_yield=65536
+relay_timeline side=2 elapsed_ms=250 sessions=1 [state=capability_exchange strategy= negotiated=false capability=false envelope= path_commit=false connecting=true bound=false retry_pending=false retry_ms=0]
+relay_timeline side=1 elapsed_ms=358 sessions=1 [state=new strategy= negotiated=false capability=true envelope=capability path_commit=false connecting=true bound=false retry_pending=false retry_ms=0]
+relay_timeline side=1 elapsed_ms=601 sessions=1 [state=capability_exchange strategy= negotiated=false capability=true envelope=capability path_commit=false connecting=true bound=false retry_pending=false retry_ms=0]
+relay_timeline side=1 elapsed_ms=650 sessions=1 [state=selecting strategy= negotiated=false capability=true envelope=capability path_commit=false connecting=true bound=false retry_pending=false retry_ms=0]
+relay_timeline side=2 elapsed_ms=915 sessions=1 [state=capability_exchange strategy= negotiated=false capability=false envelope=selection_proposal path_commit=false connecting=true bound=false retry_pending=false retry_ms=0]
+relay_timeline side=2 elapsed_ms=1052 sessions=1 [state=selecting strategy= negotiated=false capability=true envelope=capability path_commit=false connecting=true bound=false retry_pending=false retry_ms=0]
+relay_timeline side=1 elapsed_ms=2409 sessions=1 [state=failed strategy= negotiated=false capability=true envelope=capability path_commit=false connecting=false bound=false retry_pending=true retry_ms=2000]
+relay_timeline side=1 elapsed_ms=2551 sessions=0 []
+relay_timeline side=1 elapsed_ms=2604 sessions=1 [state=new strategy= negotiated=false capability=false envelope=selection_proposal path_commit=false connecting=false bound=false retry_pending=false retry_ms=0]
+relay_timeline side=1 elapsed_ms=2652 sessions=1 [state=failed strategy= negotiated=false capability=false envelope=selection_confirm path_commit=false connecting=false bound=false retry_pending=true retry_ms=2000]
+relay_timeline side=2 elapsed_ms=2701 sessions=1 [state=selecting strategy= negotiated=false capability=true envelope=capability path_commit=false connecting=false bound=false retry_pending=false retry_ms=0]
+relay_timeline side=2 elapsed_ms=2750 sessions=1 [state=failed strategy= negotiated=false capability=true envelope=capability path_commit=false connecting=false bound=false retry_pending=false retry_ms=0]
+relay_timeline side=2 elapsed_ms=2804 sessions=1 [state=failed strategy= negotiated=false capability=true envelope=capability path_commit=false connecting=false bound=false retry_pending=true retry_ms=2000]
+relay_timeline side=2 elapsed_ms=2905 sessions=0 []
+relay_timeline side=2 elapsed_ms=3430 sessions=1 [state=capability_exchange strategy= negotiated=false capability=false envelope= path_commit=false connecting=true bound=false retry_pending=false retry_ms=0]
+relay_timeline side=1 elapsed_ms=4651 sessions=0 []
+relay_timeline side=1 elapsed_ms=4952 sessions=1 [state=selecting strategy= negotiated=false capability=true envelope=capability path_commit=false connecting=true bound=false retry_pending=false retry_ms=0]
+relay_timeline side=2 elapsed_ms=5105 sessions=1 [state=selecting strategy= negotiated=false capability=true envelope=selection_proposal path_commit=false connecting=true bound=false retry_pending=false retry_ms=0]
+relay_timeline side=1 elapsed_ms=6897 sessions=1 [state=probing strategy=relay_only negotiated=true capability=true envelope=selection_proposal path_commit=false connecting=true bound=false retry_pending=false retry_ms=0]
+relay_timeline side=2 elapsed_ms=7058 sessions=1 [state=failed strategy= negotiated=false capability=true envelope=selection_proposal path_commit=false connecting=false bound=false retry_pending=false retry_ms=0]
+relay_timeline side=2 elapsed_ms=7104 sessions=1 [state=failed strategy= negotiated=false capability=true envelope=selection_proposal path_commit=false connecting=false bound=false retry_pending=true retry_ms=2000]
+relay_timeline side=1 elapsed_ms=8039 sessions=1 [state=executing strategy=relay_only negotiated=true capability=true envelope=selection_proposal path_commit=false connecting=true bound=false retry_pending=false retry_ms=0]
+relay_timeline side=2 elapsed_ms=8100 sessions=0 []
+relay_timeline side=2 elapsed_ms=8702 sessions=1 [state=capability_exchange strategy= negotiated=false capability=false envelope=observation path_commit=false connecting=true bound=false retry_pending=false retry_ms=0]
+relay_timeline side=2 elapsed_ms=14901 sessions=1 [state=capability_exchange strategy= negotiated=false capability=false envelope=probe_script path_commit=false connecting=true bound=false retry_pending=false retry_ms=0]
+relay_timeline side=2 elapsed_ms=15705 sessions=1 [state=capability_exchange strategy= negotiated=false capability=false envelope=observation path_commit=false connecting=true bound=false retry_pending=false retry_ms=0]
+relay_timeline side=2 elapsed_ms=16051 sessions=1 [state=capability_exchange strategy= negotiated=false capability=false envelope=observation path_commit=false connecting=true bound=false retry_pending=true retry_ms=2000]
+relay_timeline side=2 elapsed_ms=16951 sessions=1 [state=failed strategy= negotiated=false capability=false envelope=observation path_commit=false connecting=false bound=false retry_pending=true retry_ms=2000]
+relay_timeline side=1 elapsed_ms=17285 sessions=1 [state=executing strategy=relay_only negotiated=true capability=true envelope=capability path_commit=false connecting=false bound=false retry_pending=false retry_ms=0]
+relay_timeline side=1 elapsed_ms=17655 sessions=1 [state=failed strategy=relay_only negotiated=true capability=true envelope=capability path_commit=false connecting=false bound=false retry_pending=false retry_ms=0]
+relay_timeline side=2 elapsed_ms=18051 sessions=0 []
+relay_timeline side=2 elapsed_ms=18250 sessions=1 [state=capability_exchange strategy= negotiated=false capability=false envelope= path_commit=false connecting=true bound=false retry_pending=false retry_ms=0]
+relay_timeline side=1 elapsed_ms=18651 sessions=0 []
+relay_timeline side=2 elapsed_ms=19154 sessions=1 [state=capability_exchange strategy= negotiated=false capability=false envelope=observation path_commit=false connecting=true bound=false retry_pending=false retry_ms=0]
+relay_timeline side=1 elapsed_ms=20338 sessions=1 [state=capability_exchange strategy= negotiated=false capability=false envelope=observation path_commit=false connecting=true bound=false retry_pending=false retry_ms=0]
+relay_timeline side=2 elapsed_ms=21601 sessions=1 [state=failed strategy= negotiated=false capability=false envelope=observation path_commit=false connecting=false bound=false retry_pending=false retry_ms=0]
+relay_timeline side=2 elapsed_ms=21700 sessions=0 []
+relay_timeline side=2 elapsed_ms=21929 sessions=1 [state=new strategy= negotiated=false capability=false envelope=observation path_commit=false connecting=true bound=false retry_pending=false retry_ms=0]
+relay_timeline side=2 elapsed_ms=21954 sessions=1 [state=capability_exchange strategy= negotiated=false capability=false envelope=observation path_commit=false connecting=true bound=false retry_pending=false retry_ms=0]
+relay_timeline side=1 elapsed_ms=22351 sessions=1 [state=failed strategy= negotiated=false capability=false envelope=observation path_commit=false connecting=false bound=false retry_pending=false retry_ms=0]
+relay_timeline side=1 elapsed_ms=22504 sessions=0 []
+relay_timeline side=1 elapsed_ms=23900 sessions=1 [state=capability_exchange strategy= negotiated=false capability=false envelope=observation path_commit=false connecting=true bound=false retry_pending=false retry_ms=0]
+relay_timeline side=2 elapsed_ms=23951 sessions=1 [state=failed strategy= negotiated=false capability=false envelope=observation path_commit=false connecting=false bound=false retry_pending=false retry_ms=0]
+relay_timeline observer_workers=0
+cpu_stress workers_remaining=0
+--- FAIL: TestRelayWGGoTwoEnginesExchangeIPv4Packets (31.28s)
+```
+
+最终断言：`timed out waiting for relay transport`。双方诊断均无tunnel peer，
+没有已提交path，数据计数0。以上证明本helper与observer已join，**不声称未测的全部
+OS socket/fd资源都为零**。
+
+证据所能支持的结论：
+
+- 初轮side1在358ms已见capability（此时state=new），650ms selecting，2,409ms
+  failed；对端proposal/confirm分别在后续重建观察中于2,604/2,652ms出现。side2
+  1,052ms selecting、2,750ms failed。采样不能给出精确的协议接收/发送时间或错误类。
+- 后续4,952/5,105ms双方selecting；6,897ms side1已协商relay_only进入probing，
+  7,058ms side2 failed，8,039ms side1 executing；观察到了单侧执行而对侧已失败的
+  状态组合，不能宣称压力下可用性收敛已经修复。
+- 8,702–16,951ms side2经历下一轮capability_exchange/failed；17,655ms side1
+  也failed。其后继续按原runner机制重建，直到30s transport断言失败。未修改退避规则。
+- 50ms尽力采样只在状态快照变化时输出，快照跨多个锁；它既不保证准确的包投递次序，
+  也不记录每次内部deadline/终止类。因此**不能把本例归因为R-a计时错误、消息丢失、
+  存储Sync或调度中的某一项**，更不能仅凭这些日志改窗口/持久化/重试语义。
+- R-a精确纯内存反例已由§11.2 RED转为§11.3 GREEN，但本次正式压力门仍未闭合。
+  后续独立验证只提供其各自范围的证据，不抵销本例；若需超出R-a的语义修复，须另行
+  复审裁决。本PR继续Draft，不合并、不关闭#97，不把压力门降为advisory。
+
+### 11.5 其余独立验证与首跑CI
+
+尚待首跑完成；保留§11.4 RED，未重跑压力批次。
