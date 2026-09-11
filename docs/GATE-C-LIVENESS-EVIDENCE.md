@@ -257,7 +257,11 @@ required diagnostics 入口执行，也可在 Windows 单独运行。
 | blackholes | (162 + 57 + 6 + 45) × 1.25 | 337.50s | **6** |
 | nonproof | (275 + 57 + 6 + 45) × 1.25 | 478.75s | **8** |
 
-Linux 保留原单 job、12min、三个命令；Windows matrix 恰好三 leg，`fail-fast=false`，
+Linux 保留原单 job、三个命令；其 job 上限按同一规则重算：#128 `e8b7a8e`、#129
+`a99e3f6`（两次 attempt）、main `a84c3a8`、#123 `9c0610d`（两次 attempt）与
+`1a9c468` 的 Linux job 总墙钟均为 628–631s，原 12min 仅余 1.14×，
+ceil(631 × 1.25 / 60) = **14**（复审补记，同一 PR 内保持规则一致）。Windows matrix
+恰好三 leg，`fail-fast=false`，
 原 6m/4m/6m test runner 上限、`-race -count=1`、三 profile、六 blackholes、四 nonproof
 及每场景 180s/65s 全部不变。idle profile 本来就并发，故实测 job 不等于 3×180s
 相加；不以错误的串行假设计算。`Session Liveness Required` 同时依赖 Linux 与整个

@@ -78,7 +78,7 @@ func livenessCIContractViolations(payload []byte) []string {
 			linuxCommands = append(linuxCommands, step.Run)
 		}
 	}
-	if linux.RunsOn != "ubuntu-latest" || linux.TimeoutMinutes != "12" || !reflect.DeepEqual(linuxCommands, []string{
+	if linux.RunsOn != "ubuntu-latest" || linux.TimeoutMinutes != "14" || !reflect.DeepEqual(linuxCommands, []string{
 		prefix + "TestSessionLivenessMemoryIdle180Required" + suffix + "6m",
 		prefix + "TestSessionLivenessMemoryBlackholesRequired" + suffix + "4m",
 		prefix + "TestSessionLivenessOneWayTrafficCannotReplaceProofRequired" + suffix + "6m",

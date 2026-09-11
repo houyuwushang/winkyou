@@ -42,7 +42,9 @@ jobs:
   real-wireguard:
     name: Liveness real WireGuard (ubuntu-latest)
     runs-on: ubuntu-latest
-    timeout-minutes: 12
+    # Same ceiling rule as the Windows legs below: measured whole-job wall
+    # clock 628-631s over six runs (#128-#131), ceil(1.25 * 631 / 60) = 14.
+    timeout-minutes: 14
     env:
       GORACE: halt_on_error=1
       WINKYOU_LIVENESS_IDLE_REQUIRED: '1'
