@@ -142,6 +142,21 @@ func selectionBoundaryViolations(sources map[string]string) []string {
 	require("pkg/session/selection_agreement.go", "enterSelection", "!round.confirmed", "round.entered", "round.strategy != strategy.Name()", "!time.Now().Before(round.deadline)")
 	require("pkg/session/selection_agreement.go", "agreeCandidates", "jointSelection(s.cfg", "selectionHash(joint)", "received.selectionBinding != expected", "received.Digest != digest", "s.requirePreviousSelectionClosed()")
 	require("pkg/session/selection_agreement.go", "receiveSelectionControl", "binding.ToEpoch != a.local.Epoch", "binding.FromEpoch != a.remote.Epoch")
+	// R-a splits the first pass into two bounded windows; both must still be
+	// charged to the existing first plan/group and candidate-loop allowance.
+	require("pkg/session/selection_agreement.go", "beginSelectionPass", "a.capabilityDeadline = a.passStart.Add(window)")
+	require("pkg/session/selection_agreement.go", "selectionCapabilityContext", "deadline := a.capabilityDeadline")
+	require("pkg/session/selection_agreement.go", "firstSelectionConfirmDeadline", "remaining := passStart.Add(runTimeout).Sub(receivedAt)", "return receivedAt.Add(min(window, defaultCapabilityWaitTimeout, remaining))")
+	require("pkg/session/selection_agreement.go", "receiveSelectionCapability", "if a.remote == nil {", "receivedAt := time.Now()", "!receivedAt.Before(a.capabilityDeadline)", "a.capabilityReceivedAt = receivedAt", "a.confirmDeadline = firstSelectionConfirmDeadline(")
+	require("pkg/session/selection_agreement.go", "agreeCandidates", "if ordinal == 0 {\n\t\tstart, deadline = a.passStart, a.confirmDeadline\n\t}", "budgetStart := start", "budgetStart: budgetStart")
+	if strings.Contains(selectionFunction(sources["pkg/session/selection_agreement.go"], "agreeCandidates"), "budgetStart = time.Time{}") {
+		violations = append(violations, "first selection cannot discard its execution-budget origin")
+	}
+	require("pkg/session/selection_agreement.go", "selectionExecutionContext", "start = a.current.budgetStart", "return context.WithDeadline(ctx, start.Add(timeout))")
+	require("pkg/session/selection_agreement.go", "subtractSelectionTime", "budget.TimeBudget -= time.Since(start)")
+	require("pkg/session/planning.go", "executeStrategyOutcomes", "s.subtractSelectionTime(s.candidateExecutionBudget(len(plans)))")
+	require("pkg/session/planning.go", "executeCandidate", "s.selectionExecutionContext(execCtx, s.executionTimeout())")
+	require("pkg/session/planning.go", "executeCandidateGroup", "s.selectionExecutionContext(execCtx, s.candidateGroupExecutionTimeout(len(entries)))")
 	wait := selectionFunction(sources["pkg/session/envelope.go"], "waitForRemoteCapability")
 	if strings.Contains(wait, "return s.remoteCapability(), nil") {
 		violations = append(violations, "capability wait may not guess from a snapshot on failure")
@@ -179,6 +194,15 @@ func TestSelectionConvergenceDetectsBypassMutations(t *testing.T) {
 		{"pkg/session/planning.go", "s.closeSelectionExecutor(executor)", "s.runCleanup(executor.Close)"},
 		{"pkg/session/selection_agreement.go", "binding.ToEpoch != a.local.Epoch", "false"},
 		{"pkg/session/selection_agreement.go", "len(a.activeExecutors) != 0", "false"},
+		{"pkg/session/selection_agreement.go", "start, deadline = a.passStart, a.confirmDeadline", "start, deadline = a.passStart, a.capabilityDeadline"},
+		{"pkg/session/selection_agreement.go", "return receivedAt.Add(min(window, defaultCapabilityWaitTimeout, remaining))", "return receivedAt.Add(min(4*time.Second, remaining))"},
+		{"pkg/session/selection_agreement.go", "budgetStart := start", "budgetStart := time.Time{}"},
+		{"pkg/session/selection_agreement.go", "return context.WithDeadline(ctx, start.Add(timeout))", "return context.WithTimeout(ctx, timeout)"},
+		{"pkg/session/selection_agreement.go", "budget.TimeBudget -= time.Since(start)", "budget.TimeBudget -= 0"},
+		{"pkg/session/selection_agreement.go", "receivedAt := time.Now()", "receivedAt := at"},
+		{"pkg/session/selection_agreement.go", "!receivedAt.Before(a.capabilityDeadline)", "false"},
+		{"pkg/session/planning.go", "s.subtractSelectionTime(s.candidateExecutionBudget(len(plans)))", "s.candidateExecutionBudget(len(plans))"},
+		{"pkg/session/planning.go", "s.selectionExecutionContext(execCtx, s.candidateGroupExecutionTimeout(len(entries)))", "context.WithTimeout(execCtx, s.candidateGroupExecutionTimeout(len(entries)))"},
 		{"pkg/session/selection.go", "func (s *Session) routeStrategyMessage(msg solver.Message) strategyMessageTarget {\n\ts.strategyMu.Lock()", "func (s *Session) routeStrategyMessage(msg solver.Message) strategyMessageTarget {\n\ts.strategyMu.RLock()"},
 	}
 	for index, mutation := range mutations {

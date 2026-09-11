@@ -32,22 +32,24 @@ type selectionRound struct {
 	budgetStart time.Time
 }
 type selectionAgreement struct {
-	mu              sync.Mutex
-	changed         chan struct{}
-	ctx             context.Context
-	cancel          context.CancelFunc
-	local           selectionCapability
-	remote          *selectionCapability
-	current         *selectionRound
-	future          selectionInbox
-	err             error
-	passStart       time.Time
-	passDeadline    time.Time
-	cleanupErr      error
-	strategyClosed  bool
-	previous        solver.Strategy
-	activeExecutors map[solver.PlanExecutor]struct{}
-	budgetUsed      bool // executeMu owns use of the first plan/group allowance
+	mu                   sync.Mutex
+	changed              chan struct{}
+	ctx                  context.Context
+	cancel               context.CancelFunc
+	local                selectionCapability
+	remote               *selectionCapability
+	current              *selectionRound
+	future               selectionInbox
+	err                  error
+	passStart            time.Time
+	capabilityDeadline   time.Time
+	capabilityReceivedAt time.Time
+	confirmDeadline      time.Time
+	cleanupErr           error
+	strategyClosed       bool
+	previous             solver.Strategy
+	activeExecutors      map[solver.PlanExecutor]struct{}
+	budgetUsed           bool // executeMu owns use of the first plan/group allowance
 }
 
 // NewConverging is the only permitted product constructor. New retains the
@@ -122,16 +124,28 @@ func (s *Session) beginSelectionPass() error {
 		return a.err
 	}
 	a.passStart = time.Now()
-	a.passDeadline = a.passStart.Add(min(s.capabilityWaitTimeout(), defaultCapabilityWaitTimeout))
+	window := min(s.capabilityWaitTimeout(), defaultCapabilityWaitTimeout)
+	a.capabilityDeadline = a.passStart.Add(window)
+	if a.current == nil && !a.capabilityReceivedAt.IsZero() {
+		a.confirmDeadline = firstSelectionConfirmDeadline(a.passStart, a.capabilityReceivedAt, window, s.executionTimeout())
+	}
 	return nil
 }
+
+// Both first-round subwindows consume the existing first execution allowance.
+// A nonpositive remainder intentionally yields an already-expired deadline.
+func firstSelectionConfirmDeadline(passStart, receivedAt time.Time, window, runTimeout time.Duration) time.Time {
+	remaining := passStart.Add(runTimeout).Sub(receivedAt)
+	return receivedAt.Add(min(window, defaultCapabilityWaitTimeout, remaining))
+}
+
 func (s *Session) selectionCapabilityContext(ctx context.Context) (context.Context, context.CancelFunc) {
 	if s.agreement == nil {
 		return s.operationContext(ctx)
 	}
 	a := s.agreement
 	a.mu.Lock()
-	deadline := a.passDeadline
+	deadline := a.capabilityDeadline
 	a.mu.Unlock()
 	return context.WithDeadline(ctx, deadline)
 }
@@ -144,11 +158,19 @@ func (s *Session) waitForSelectionCapability(ctx context.Context) (rproto.Capabi
 		a.mu.Lock()
 		err := a.err
 		remote := a.remote
+		waitErr := waitCtx.Err()
+		firstRound := a.current == nil
 		a.mu.Unlock()
 		if err != nil {
 			return rproto.Capability{}, err
 		}
-		if waitCtx.Err() != nil {
+		if ctx.Err() != nil {
+			return rproto.Capability{}, s.stopSelection(ctx.Err())
+		}
+		// An accepted first capability was validated against the immutable
+		// capability deadline while holding a.mu. A delayed waiter must not
+		// turn that timely receipt into capability_missing at the old deadline.
+		if waitErr != nil && (remote == nil || !firstRound) {
 			if ctx.Err() != nil {
 				return rproto.Capability{}, s.stopSelection(ctx.Err())
 			}
@@ -159,10 +181,7 @@ func (s *Session) waitForSelectionCapability(ctx context.Context) (rproto.Capabi
 		}
 		select {
 		case <-waitCtx.Done():
-			if ctx.Err() != nil {
-				return rproto.Capability{}, s.stopSelection(ctx.Err())
-			}
-			return rproto.Capability{}, s.stopSelection(selectionDeadline("capability_missing"))
+			// Re-read receipt and expiry in one critical section before deciding.
 		case <-a.changed:
 		}
 	}
@@ -200,6 +219,22 @@ func (s *Session) receiveSelectionCapability(payload []byte, at time.Time) error
 		err := a.stopLocked(selectionFailure("selection_conflict"))
 		a.mu.Unlock()
 		return err
+	}
+	if a.remote == nil {
+		// at belongs only to the existing diagnostic snapshot. Never trust a
+		// sender/carrier timestamp to extend either local protocol window.
+		receivedAt := time.Now()
+		if !a.capabilityDeadline.IsZero() && !receivedAt.Before(a.capabilityDeadline) {
+			err := a.stopLocked(selectionDeadline("capability_missing"))
+			a.mu.Unlock()
+			s.setRemoteCapability(capability.domainWire(), at)
+			return err
+		}
+		a.capabilityReceivedAt = receivedAt
+		if !a.passStart.IsZero() {
+			window := min(s.capabilityWaitTimeout(), defaultCapabilityWaitTimeout)
+			a.confirmDeadline = firstSelectionConfirmDeadline(a.passStart, receivedAt, window, s.executionTimeout())
+		}
 	}
 	a.remote = &capability
 	a.wake()
@@ -343,13 +378,16 @@ func (s *Session) agreeCandidates(ctx context.Context, candidates []StrategyCand
 	}
 	deadline := start.Add(min(s.capabilityWaitTimeout(), defaultCapabilityWaitTimeout))
 	if newPass {
-		start, deadline = a.passStart, a.passDeadline
+		start, deadline = a.passStart, a.capabilityDeadline
+	}
+	if ordinal == 0 {
+		start, deadline = a.passStart, a.confirmDeadline
 	}
 	budgetStart := start
-	if ordinal == 0 {
-		budgetStart = time.Time{}
-	} else if timeout := s.executionTimeout(); timeout > 0 && start.Add(timeout).Before(deadline) {
-		deadline = start.Add(timeout)
+	if ordinal != 0 {
+		if timeout := s.executionTimeout(); timeout > 0 && start.Add(timeout).Before(deadline) {
+			deadline = start.Add(timeout)
+		}
 	}
 	round := &selectionRound{ordinal: ordinal, local: proposal, remote: a.future, deadline: deadline, budgetStart: budgetStart}
 	a.current, a.future, a.budgetUsed = round, selectionInbox{}, false

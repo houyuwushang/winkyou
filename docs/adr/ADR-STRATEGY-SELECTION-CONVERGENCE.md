@@ -422,3 +422,29 @@ go test ./pkg/session -run '^TestSelectionConfirmWindowStartsAtCapabilityReceipt
 另一次旧实现负向对照首跑2/2 PASS4.180s：capability约2.1003334s才到，双侧
 capability_missing且零执行；缺少confirm时双侧selection_timeout且零执行。
 投递/终局逐侧记录，worker全部join。后续GREEN须使用同一正向测试，且保留这些首跑日志。
+
+### 11.3 R-a 实现与确定性边界检查
+
+- `passDeadline`拆为capabilityDeadline / confirmDeadline；首次有效capability接收时，
+  在agreement锁内冻结本地capabilityReceivedAt。传入的ReceivedAt仍只供原诊断使用，
+  不能为确认窗续期或把迟到能力伪装成及时。相同重复不重新计时。
+- 已及时接收能力但waiter稍后才获调度时，不因旧能力ctx到期而误报缺失；父取消与本地
+  终局仍优先。尚未收到有效能力且越过原2s时仍capability_missing，不进入策略。
+- ordinal0的budgetStart固定为passStart；复用既有selectionExecutionContext与
+  subtractSelectionTime扣除两段实际耗时。后续ordinal的起点、min(2s,执行预算)、
+  首个group原合计窗口、后续plan窗口均不改，不在solver策略内部增添时间规则。
+- 同一个红回归在修复后首跑GREEN：能力约1.9008934s、proposal约2.2013432s、
+  confirm约2.5020089s，双侧bound、各执行一次relay_only、同一非空joint digest，
+  每侧恰一proposal/confirm，执行deadline仍等于passStart+25s，delivery worker=0。
+  正向2.51s、能力迟到负向2.10s、缺confirm负向3.90s，三项共PASS9.222s。
+- 纯时间计算覆盖8个边界，包括受限剩余额度、已耗尽、短测试窗口、超2s输入及Start前
+  已收到能力；重复/自报时间、迟到回填、已接收但waiter迟到、父取消、first plan/group
+  与TimeBudget同步扣除分别验证。首跑session0.733s、architecture6.899s，均PASS。
+- architecture新增R-a接线断言及9种变异，与原implicit fallback/#94保护合计20种源码
+  变异均拒绝，另保留别名构造点逃逸检查。wire golden与#94冻结函数、#116分区原样保留。
+- 初步focused race（一次）session45.368s/client2.463s PASS；后续ordinal25s/1s两种
+  既有执行额度各race×20 PASS，package2.230s；scoped vet PASS。此前50ms缩小额度
+  的独立探索也通过，最终用1s检验小于2s的分支，避免给新测试引入不必要的极短调度窗。
+  这些小范围结果不冒充以下完整压力/无压力/整包矩阵验收。
+
+正式矩阵尚待执行；源代码冻结后逐批首跑记录，不重跑原压力RED或混合不同实现统计。

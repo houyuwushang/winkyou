@@ -101,7 +101,7 @@ func TestSelectionCapabilitySendSharesDeadlineAndCancellationClass(t *testing.T)
 	if err := s.beginSelectionPass(); err != nil {
 		t.Fatal(err)
 	}
-	deadline := s.agreement.passDeadline
+	deadline := s.agreement.capabilityDeadline
 	ctx, cancel := s.selectionCapabilityContext(context.Background())
 	defer cancel()
 	got, _ := ctx.Deadline()
