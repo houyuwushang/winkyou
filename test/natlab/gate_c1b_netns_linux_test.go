@@ -165,7 +165,36 @@ func testGateC1bProfileWithLiveness(t *testing.T, profile gateC1bProfile, loopba
 			got.Class, got.Stage, got.Product.CredentialBurned, got.Product.FinishRecorded, got.Product.DataPlaneReady,
 			got.Stages, got.Product.Witness.SSH)
 	}
-	server.waitFile(t, configs[1].ResultFile, 5*time.Second)
+	gateC1bWaitResponderResult(gateC1bLivenessEnabled(configs[1]), func(limit time.Duration) {
+		server.waitFile(t, configs[1].ResultFile, limit)
+	}, func() {
+		// A missing result is not a fabricated zero-residue result. Snapshot the
+		// existing private witnesses before any teardown; only fixed labels and
+		// counts can leave the fixture. The failed wait remains RED regardless
+		// of whether its independent cleanup witnesses subsequently pass.
+		for side, cfg := range configs {
+			t.Logf("Gate C1b responder-wait terminal snapshot side=%d non_atomic=true %s",
+				side, gateC1bCrashTerminalSnapshot(cfg.ResultFile, cfg.StageFile))
+		}
+		defer func() {
+			for _, release := range removeSSHPolicy {
+				release()
+			}
+			t.Log("Gate C1b responder-wait failure: running original independent residue gate")
+			governorDirs := []string{filepath.Join(configs[0].MachineBase, "winkyou-safety-v2"), filepath.Join(configs[1].MachineBase, "winkyou-safety-v2")}
+			if profile.profile == hardnatplan.ProfileHardBirthday {
+				assertGateB3NoResidue(t, topology, observer, left, right, false, false, governorDirs...)
+			} else {
+				assertGateB2NoResidue(t, topology, observer, left, right, governorDirs...)
+			}
+		}()
+		releaseLivenessFault()
+		// A host wait may itself fail; independent subtests prevent that Fatal
+		// from skipping the other host or the deferred external residue gate.
+		t.Run("responder-wait-initiator-drain", client.wait)
+		t.Run("responder-wait-sshd-drain", server.stop)
+		assertGateC1bNoKernelInterfaceResidue(t, topology)
+	})
 	for index := range results {
 		if !readN1JSON(configs[index].ResultFile, &results[index]) {
 			t.Fatal("Gate C1b private result unavailable")
@@ -207,13 +236,7 @@ func testGateC1bProfileWithLiveness(t *testing.T, profile gateC1bProfile, loopba
 	releaseLivenessFault()
 	client.wait(t)
 	server.stop(t)
-	for _, namespace := range []string{topology.clientA, topology.clientB} {
-		links, linkErr := runNamespaced(namespace, "ip", nil, "-o", "link", "show")
-		routes, routeErr := runNamespaced(namespace, "ip", nil, "-o", "route", "show", "table", "all")
-		if linkErr != nil || routeErr != nil || strings.Contains(links, "wink-c1b-proof") || strings.Contains(routes, "wink-c1b-proof") {
-			t.Fatal("Gate C1b kernel interface/route residue")
-		}
-	}
+	assertGateC1bNoKernelInterfaceResidue(t, topology)
 	counts := requireGateB2PacketCounts(t, topology)
 	for index, actual := range []uint64{counts.InitiatorTotal, counts.ResponderTotal} {
 		got := results[index].Product.Witness
@@ -240,6 +263,17 @@ func testGateC1bProfileWithLiveness(t *testing.T, profile gateC1bProfile, loopba
 		assertGateB3NoResidue(t, topology, observer, left, right, false, false, governorDirs...)
 	} else {
 		assertGateB2NoResidue(t, topology, observer, left, right, governorDirs...)
+	}
+}
+
+func assertGateC1bNoKernelInterfaceResidue(t *testing.T, topology *n2dTopology) {
+	t.Helper()
+	for _, namespace := range []string{topology.clientA, topology.clientB} {
+		links, linkErr := runNamespaced(namespace, "ip", nil, "-o", "link", "show")
+		routes, routeErr := runNamespaced(namespace, "ip", nil, "-o", "route", "show", "table", "all")
+		if linkErr != nil || routeErr != nil || strings.Contains(links, "wink-c1b-proof") || strings.Contains(routes, "wink-c1b-proof") {
+			t.Fatal("Gate C1b kernel interface/route residue")
+		}
 	}
 }
 

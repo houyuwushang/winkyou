@@ -88,7 +88,9 @@ const gateC1bDiagnosticClasses = `hard_nat_profile_unsupported hard_nat_evidence
 	oob_presence_timeout oob_stream_closed oob_protocol_violation attempt_expired resource_budget_exceeded transport_lease_unavailable
 	transport_handoff_failed data_plane_challenge_failed drain_failed gate_c_request_invalid peer_address_not_authorized
 	ssh_profile_invalid ssh_host_identity_rejected ssh_transport_unavailable ssh_child_terminated ssh_budget_exceeded
-	wireguard_binding_failed post_handoff_validation_failed session_drain_failed harness_setup_rejected
+	wireguard_binding_failed post_handoff_validation_failed session_drain_failed session_liveness_timeout
+	session_liveness_protocol_invalid session_liveness_budget_exceeded session_liveness_clock_invalid
+	session_liveness_unavailable harness_setup_rejected
 	harness_pipe_fault_setup_failed harness_pipe_fault_drain_failed`
 
 const gateC1bDiagnosticGateStates = `standby challenge_capped challenge_drain challenge_passed finish_confirming finish_detached active closed`
@@ -168,6 +170,11 @@ func TestGateC1bCrashTerminalDiagnostics(t *testing.T) {
 	write(stageFile, "finish_recorded")
 	write(stageFile+".fault", "consumer-crash")
 	check(`"LastStage":"finish_recorded"`, `"MarkerMatches":true`)
+	for _, class := range []string{"session_liveness_timeout", "session_liveness_protocol_invalid",
+		"session_liveness_clock_invalid", "session_liveness_budget_exceeded", "session_liveness_unavailable"} {
+		write(resultFile, `{"OK":false,"Class":"`+class+`","Stage":"terminal","Product":{}}`)
+		check(`"ResultState":"ok"`, `"Class":"`+class+`"`, `"Stage":"terminal"`)
+	}
 
 	// Every text-bearing projected field is hostile, including nested contexts;
 	// unknown result fields, identity fields and the marker are never echoed.
