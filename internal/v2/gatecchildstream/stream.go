@@ -3,6 +3,7 @@ package gatecchildstream
 import (
 	"errors"
 	"io"
+	"os"
 	"sync"
 	"time"
 
@@ -38,7 +39,8 @@ type Stream struct {
 	mu               sync.Mutex
 	readMu           sync.Mutex
 	writeMu          sync.Mutex
-	ops              sync.WaitGroup
+	ops              int
+	opsDrained       chan struct{}
 	absoluteDeadline time.Time
 	deadline         time.Time
 	deadlineTimer    *time.Timer
@@ -55,9 +57,27 @@ func New(input io.Reader, output io.Writer, absoluteDeadline time.Time) (*Stream
 	if !readOK || !writeOK || reader == nil || writer == nil || absoluteDeadline.IsZero() || !absoluteDeadline.After(time.Now()) {
 		return nil, ErrInvalidStream
 	}
+	// Ownership is exclusive from here, including failed/partial adoption. An
+	// inherited os.File is not necessarily registered with Go's poller: merely
+	// implementing Close does not make its blocking pipe read cancellable.
+	var err error
+	if file, ok := reader.(*os.File); ok {
+		reader, err = adoptPipe(file, absoluteDeadline)
+		if err != nil {
+			_ = writer.Close()
+			return nil, ErrInvalidStream
+		}
+	}
+	if file, ok := writer.(*os.File); ok {
+		writer, err = adoptPipe(file, absoluteDeadline)
+		if err != nil {
+			_ = reader.Close()
+			return nil, ErrInvalidStream
+		}
+	}
 	stream := &Stream{
 		reader: reader, writer: writer, absoluteDeadline: absoluteDeadline, deadline: absoluteDeadline,
-		closed: make(chan struct{}),
+		closed: make(chan struct{}), opsDrained: make(chan struct{}),
 	}
 	if err := stream.SetDeadline(absoluteDeadline); err != nil {
 		_ = stream.Close()
@@ -75,7 +95,7 @@ func (stream *Stream) Read(buffer []byte) (int, error) {
 	if !stream.beginOperation() {
 		return 0, ErrClosed
 	}
-	defer stream.ops.Done()
+	defer stream.endOperation()
 	stream.mu.Lock()
 	remaining := oobcarrier.MaxApplicationBytes - stream.witness.BytesRead
 	stream.mu.Unlock()
@@ -111,7 +131,7 @@ func (stream *Stream) Write(payload []byte) (int, error) {
 	if !stream.beginOperation() {
 		return 0, ErrClosed
 	}
-	defer stream.ops.Done()
+	defer stream.endOperation()
 	stream.mu.Lock()
 	if stream.witness.BytesWritten+len(payload) > oobcarrier.MaxApplicationBytes {
 		stream.mu.Unlock()
@@ -137,11 +157,25 @@ func (stream *Stream) SetDeadline(deadline time.Time) error {
 		return ErrInvalidStream
 	}
 	stream.mu.Lock()
-	if stream.closing || deadline.After(stream.absoluteDeadline) || !deadline.After(time.Now()) {
+	if stream.closing || deadline.After(stream.absoluteDeadline) {
 		stream.mu.Unlock()
 		return ErrDeadline
 	}
 	stream.deadline = deadline
+	// Expired deadlines are cancellation, not invalid input. In particular the
+	// carrier uses SetDeadline(now) to interrupt an in-flight operation.
+	if file, ok := stream.reader.(*os.File); ok {
+		if err := setPipeReadDeadline(file, deadline); err != nil {
+			stream.mu.Unlock()
+			return ErrDeadline
+		}
+	}
+	if file, ok := stream.writer.(*os.File); ok {
+		if err := setPipeWriteDeadline(file, deadline); err != nil {
+			stream.mu.Unlock()
+			return ErrDeadline
+		}
+	}
 	if stream.deadlineTimer != nil {
 		stream.deadlineTimer.Stop()
 	}
@@ -164,30 +198,33 @@ func (stream *Stream) Close() error {
 		return nil
 	}
 	stream.closeOnce.Do(func() {
+		timer := time.NewTimer(DrainTimeout)
+		defer timer.Stop()
 		stream.mu.Lock()
 		stream.closing = true
+		if stream.ops == 0 {
+			close(stream.opsDrained)
+		}
 		if stream.deadlineTimer != nil {
 			stream.deadlineTimer.Stop()
 		}
 		stream.mu.Unlock()
 		readErr := stream.reader.Close()
 		writeErr := stream.writer.Close()
-		drained := make(chan struct{})
-		go func() {
-			stream.ops.Wait()
-			close(drained)
-		}()
-		timer := time.NewTimer(DrainTimeout)
-		defer timer.Stop()
+		// No detached WaitGroup waiter: a broken injected Close must not create
+		// an additional abandoned worker just to observe its failure to drain.
 		select {
-		case <-drained:
+		case <-stream.opsDrained:
 			stream.mu.Lock()
-			stream.witness.Drained = true
+			stream.witness.Drained = readErr == nil && writeErr == nil
 			stream.closeErr = errors.Join(readErr, writeErr)
+			if stream.closeErr != nil {
+				stream.closeErr = errors.Join(ErrDrain, stream.closeErr)
+			}
 			stream.mu.Unlock()
 		case <-timer.C:
 			stream.mu.Lock()
-			stream.closeErr = ErrDrain
+			stream.closeErr = errors.Join(ErrDrain, readErr, writeErr)
 			stream.mu.Unlock()
 		}
 		stream.mu.Lock()
@@ -216,8 +253,17 @@ func (stream *Stream) beginOperation() bool {
 	if stream.closing {
 		return false
 	}
-	stream.ops.Add(1)
+	stream.ops++
 	return true
+}
+
+func (stream *Stream) endOperation() {
+	stream.mu.Lock()
+	defer stream.mu.Unlock()
+	stream.ops--
+	if stream.closing && stream.ops == 0 {
+		close(stream.opsDrained)
+	}
 }
 
 func deadlineExpired(deadline time.Time, err error) bool {

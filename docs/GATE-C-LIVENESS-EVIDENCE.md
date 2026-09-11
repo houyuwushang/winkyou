@@ -193,3 +193,82 @@ restoration/readback、namespace handles 和 socket/process/conntrack/lock/veth 
 当时当前 Gate A 静态扫描单项仅运行 0s，堆栈在 AST 扫描，未报门禁断言失败。
 保留原日志，完整包以更长的**测试运行器**上限再次验证；不修改任何产品 deadline，
 此前已通过的 focused liveness/mutation race×20 不冒充完整包通过。
+
+## 10. Issue #130 / #126：结果见证等待与 Windows 执行器分组
+
+本节仅修改 test harness / CI 调度，基线为 #129 merge `a84c3a8`。产品的 session、
+carrier、SSH、admission、probe 预算与退出上限一律不变；不授权现场 I/O，也不新增
+重试。首次失败保留，不用随后 main 的成功覆盖原 RED。
+
+### 10.1 #130：只给 liveness 结果文件保留完整排水余量
+
+[首次 loopback-idle RED](https://github.com/houyuwushang/winkyou/actions/runs/34435437500/job/102739414986)
+在约 190.02s 报 responder 结果文件 5s 等待超时。原 Fatal 先于残留门，因此该 run
+**没有完整残留证据**；只能确认 harness 等待失败，不能事后宣称产品排水正常。
+
+`livenessResponderResultLimit` 由当前编译期常量直接组成：
+
+| 项 | 来源 | 时间 |
+| --- | --- | --- |
+| session 排水 | `gatecorchestrator.SessionDrainTimeout` | 2s |
+| OOB carrier 排水 | `oobcarrier.DrainTimeout` | 2s |
+| SSH child 退出 | `sshassembly.DrainTimeout` | 2s |
+| sshd 回收 / 结果文件发布的测试执行器余量 | `livenessResponderResultMargin` | 4s |
+| responder 结果文件等待 | 上述总和 | **10s** |
+
+这不是“产品允许再活跃 10s”：它只在 initiator 已有结果后等待 responder 的既有
+私有文件，且只对 `gateC1bLivenessEnabled(cfg)` 生效；普通 C1b 仍为原 5s。不修改
+任何产品定时器，也不重复等待。常量回归同时钉住三个 2s 来源与 5s/10s 分流。
+
+等待 Fatal 时，test-only guard 仍在 fixture cleanup 之前执行：先一次性读取两端
+已有 stage/result 的脱敏、non-atomic snapshot；分别检查 initiator/sshd host 退出；
+执行原 kernel interface/route 和 packet/socket/process/conntrack/namespace/veth/
+governor residue gate。原错误始终保持 RED；缺失或半写文件为显式 missing/invalid，
+不拿默认零值冒充资源归零。日志只允许固定 stage/class、布尔值与计数。额外等待
+失败也不能越过已注册的外部残留门；deterministic `runtime.Goexit` 注入证明 Fatal
+等价路径确实执行 guard，不需要真实 sleep 或网络。
+
+另以当前 test binary 的零网络 expected-failure 子进程实际调用 `testing.Fatal`：
+分别覆盖 host drain 成功、两个 host drain 均 Fatal。两路必须保留原 RED、退出码 1，
+并按“原错误 → 双端诊断 → 两个 host drain → residue gate → fixture cleanup”顺序
+各出现一次；不会把 expected failure 子进程算成产品成功。该证明由既有 C1b Linux
+required diagnostics 入口执行，也可在 Windows 单独运行。
+
+### 10.2 #126：三个 Windows proof 分开，按实测预算执行器
+
+历史步骤墙钟以 GitHub job 的已完成 step 时间戳计，不是产品 session 时间，也不把
+未完成 step 当成功测量：
+
+| 独立首跑来源 | idle（三 profile） | blackholes（六路） | nonproof（四路串行） | job 结果 |
+| --- | --- | --- | --- | --- |
+| [#128 `e8b7a8e`](https://github.com/houyuwushang/winkyou/actions/runs/34426311509/job/102712189174) | 222s | 158s | 275s | 成功，704s |
+| [#129 `a99e3f6`](https://github.com/houyuwushang/winkyou/actions/runs/34435437500/job/102739414907) | 232s | 162s | **取消，不计入基准** | 12m06s 超出 job 上限 |
+| [main `a84c3a8`](https://github.com/houyuwushang/winkyou/actions/runs/34452059100/job/102789800452) | 230s | 160s | 271s | 成功，707s |
+
+采用已完成步骤的较慢实测 232/162/275s。#129 的 job 开始到首测试 step 为 57s，
+最后 proof step 到 job 结束为 6s，作为每个独立 job 的 setup/post 开销。其首个
+`go test` 命令到首个 `=== RUN` 为 44.36s，向上取整 45s：idle 的 232s 已含该项，
+不重复加；原来热缓存后的 blackholes/nonproof 拆为新 job 后各额外预留这一实测
+编译/启动成本。然后统一加 25%，最后向上取整分钟：
+
+| Windows leg | 算式（秒） | ×1.25 后 | `timeout-minutes` |
+| --- | --- | --- | --- |
+| idle | (232 + 57 + 6) × 1.25 | 368.75s | **7** |
+| blackholes | (162 + 57 + 6 + 45) × 1.25 | 337.50s | **6** |
+| nonproof | (275 + 57 + 6 + 45) × 1.25 | 478.75s | **8** |
+
+Linux 保留原单 job、三个命令；其 job 上限按同一规则重算：#128 `e8b7a8e`、#129
+`a99e3f6`（两次 attempt）、main `a84c3a8`、#123 `9c0610d`（两次 attempt）与
+`1a9c468` 的 Linux job 总墙钟均为 628–631s，原 12min 仅余 1.14×，
+ceil(631 × 1.25 / 60) = **14**（复审补记，同一 PR 内保持规则一致）。Windows matrix
+恰好三 leg，`fail-fast=false`，
+原 6m/4m/6m test runner 上限、`-race -count=1`、三 profile、六 blackholes、四 nonproof
+及每场景 180s/65s 全部不变。idle profile 本来就并发，故实测 job 不等于 3×180s
+相加；不以错误的串行假设计算。`Session Liveness Required` 同时依赖 Linux 与整个
+Windows matrix，任何失败、取消或跳过仍阻断。新增 YAML 契约和负向变异覆盖漏
+proof、required flag、次数、test runner 时间、遗漏依赖及忽略失败。
+
+本机 Windows 只能运行无网络 helper / 契约与交叉 vet；不能把 Linux 编译当作 OS
+实测。当前修复 head 的两份 Mapping Lifetime、全 Session Liveness 和 C1b required
+首跑结果逐项记录在 Draft PR，未完成前不标绿。只有 #125/#118/#120 精确签名各允许
+一次透明 rerun，原 run 必须保留并说明；其它 RED 停下报告，不顺手修复。

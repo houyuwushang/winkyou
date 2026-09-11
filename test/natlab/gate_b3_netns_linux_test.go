@@ -299,8 +299,7 @@ func testGateB3FullShapeLifetime(t *testing.T, dropEvery uint64, conntrackCap in
 		winnerModel.mu.Lock()
 		flow, sentAt, age, refresh := winnerModel.winner, winnerModel.sentAt, winnerModel.age, winnerModel.refresh
 		winnerModel.mu.Unlock()
-		if lifetime.layer == "M-E" && (flow.presentAt.IsZero() || flow.goneAt.IsZero() || !flow.presentAt.Before(flow.goneAt) ||
-			!flow.goneAt.Before(sentAt) || flow.present || sentAt.Sub(flow.sampledAt) > 1500*time.Millisecond ||
+		if lifetime.layer == "M-E" && (!validGateB3ExpiryObservation(flow, sentAt) ||
 			age < 30*time.Second || refresh != 1 || winnerWitness.WinnerOutbound != 1 || peerWitness.WinnerInbound != 0 ||
 			leftConfig.dropAllCandidateInbound || rightConfig.dropAllCandidateInbound || dropEvery != 0) {
 			t.Error("mapping lifetime expiry causal witness incomplete or another fault was injected")

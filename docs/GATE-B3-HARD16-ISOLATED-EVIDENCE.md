@@ -555,3 +555,52 @@ Gate B §22 原两个 no-winner 元组。失效由 M-E（30s）按已有独立�
 不是本地 netns 运行证明。新 head 的首次 CI 结果记录于
 [PR #107 描述](https://github.com/houyuwushang/winkyou/pull/107)。旧 Hard16 与 M
 required job 都须通过；不 rerun 求绿，失败保留。PR 继续 Draft，等待复审合并后才关闭 #106。
+
+### 11.7 #117：查询失败与未采样不是流消失（2026-09-10，Draft）
+
+基线为 #128 merge `44f03f3f8361e847eebd697b53a2c31f15c9b5f1`。只改 test-only observer、
+其契约测试及原断言调用处；生产代码、协议、资源预算、namespace 设置与工作流均零改动。
+§11.2 的“winner 前缓存缺失即失败”是当时规则；本节仅按维护者对 #117 的裁决修订 M-S
+没有成功采样的处置，M-E/M-X 的失效/注入证明及普通 loss terminal 集合不变。
+
+原 [#117 首次失败](https://github.com/houyuwushang/winkyou/actions/runs/34208051866/job/102002168881)
+与 [#128 再现](https://github.com/houyuwushang/winkyou/actions/runs/34426311488/job/102712189308)
+保留。旧实现将非 `ExitError` 一律归为命令不存在，任何一次查询错误都永久退出观察循环。
+fake runner 可确定性证明这个机制；历史日志没有保留当时的原始 context，不能据此断言每次
+`command unavailable` 都唯一由 deadline 引起。`samples=0` 本身也不能区分尚未查询和查询未成功。
+
+先红后绿的本地提交为 `42f272d`（只有 test seam/原判断等价提取/红回归）：
+
+| 确定性向量 | 修复前首次结果 | 修复后 |
+| --- | --- | --- |
+| fake runner 等待原 1s query deadline，再给下一 tick 正样本 | RED：观察循环提前终止 | timeout=1、error=0、成功样本=1，继续采样且不产生 GONE |
+| 真正 `exec.ErrNotFound` | PASS：立即致命 | 仍 `command unavailable`，停止并排水 |
+| tail winner 在首个读数前，age=1000ms、tuple outbound=1 | RED：M-S 拒绝 `samples=0` | 标记未采样；原精确 age/outbound 及外层包/终局/残留检查仍必须成立 |
+| M-E 只有正样本，没有第二次显式负样本 | PASS：拒绝 | 仍拒绝；超时不能填入 GONE |
+| context 已取消且 runner 返回 `ExitError` | RED：未识别中断 | 计采样中断，不视为负样本 |
+
+查询结果先区分真正缺命令与 context 中断（包括 kill 后的 `ExitError`），然后才解析现有
+`exit=1` + 工具明确 ENOENT 的负样本；错误、超时、部分/歧义输出均不改写上次的
+`present/presentAt/goneAt/sampledAt/samples`。普通查询错误按连续 **8 次**才使 observer
+失败，成功读数或采样中断打断该连续序列。8 是次数，不是严格 2s 的墙钟保证：250ms tick、
+1s query timeout、100ms command WaitDelay、2s observer drain 均未修改。失败后在正常下一
+tick 再采样，不在转发路径查询、不加等待队列，也不增加任何 endpoint 发射或重试。
+
+witness 新增 `samples_timed_out`、`samples_errored`（本侧 observer 截至 drain 的所有 tuple
+累计查询计数）和 `observer_unsampled`（本端有 winner 且其发送前冻结的 `samples=0`）。
+原 `samples` 仍只计 winner tuple 发送前完成的成功查询，包括明确负样本；发送后新读数不能
+回填快照。未采样不是 `reverse_present_before_winner=true`：日志诚实保留 false，只在 M-S
+不因缺成功读数单独失败；已采样的负面/过旧/曾消失证据仍拒绝。age 必须有效且小于 idle，
+prewinner tuple outbound 必须恰为 1，外层精确 UDP/候选/winner 计数及零残留门没有绕过。
+M-E 仍逐项要求 PRESENT→GONE→winner，缺任一步即失败，不以 age 或 timeout 代替。
+
+本地 Go 1.23.1 验证：Linux `CGO_ENABLED=0 go vet -tags=natlab ./test/natlab` 通过；
+host `go test ./test/natlab -run 'Contract|Lifetime' -count=3` 通过（0.284s）；
+architecture/mutation 通过（9.499s）。另显式传入 observer 两个 `_linux_test.go` 文件，
+在 Windows 执行**同一份 fake-runner 测试**，`-race -count=20` 通过（29.831s）；
+没有启动命令子进程/socket，不将该结果称为 Linux netns 运行证明。
+
+required Mapping Lifetime job 的既有 `^TestGateB3Lifetime` 选择器会执行新增契约 race×20，
+随后执行原完整 M-S/M-E/M-X OS 矩阵。新 head 的首次 CI 结果另行填入 PR 描述；当前尚未
+取得本修复的 Linux OS 结果。不 rerun #117 求绿；仅在获准的 #119/#126 精确签名命中时各可
+透明 rerun 一次并保留失败。PR 保持 Draft，不自行合并；阶段 2/3 按原 main 绿与复审停点继续。
