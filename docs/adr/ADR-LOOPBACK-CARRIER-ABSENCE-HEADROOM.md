@@ -517,7 +517,18 @@ architecture、#116全仓分区、独立relay race×20尚未执行，不能借�
 后续需维护者裁决是否接受“旧间隙暂未定位”的证据缺口，或另行规定有界测试侧取证方案；
 这不是自行放宽must-fix。#124/阶段3与其他PR保持未触碰。
 
-### 8.6 本轮全仓与交付核对
+#### 8.5.5 维护者裁决：保留定位缺口后继续验证（2026-09-11）
+
+维护者在收到§8.5.4停止报告后，明确允许保留“旧间隙未定位”的结论，
+继续第6项验证与推送。§8.5.4保留为当时的停止记录；本裁决只解除该继续工作前置，
+不把定位项记为已完成，也不认定旧反例的根因或生产余量已经获得证明。
+
+继续范围仍仅为#123原分支的测试与ADR：执行全仓vet、architecture、#116全仓分区
+及独立relay race×20，记录首跑结果后推送并停下等复审。#111保持未关闭；不增加生产
+hook、不调整15s/2s/limits、不触碰#124或阶段3，不进行现场网络或主机配置操作。
+PR保持Draft、不合并；远端CI首跑单列，rerun仍禁止。本次验证见§8.7，不能借用§8.6。
+
+### 8.6 旧提交9c0610d的全仓与交付核对（历史记录）
 
 Go1.23.1，无人工压力，在上述三组重复测试结束后执行：
 
@@ -534,3 +545,43 @@ Go1.23.1，无人工压力，在上述三组重复测试结束后执行：
 
 本轮提交仅追加到#123原分支，保留RED与旧提交历史。远端首跑CI结果在PR描述单列，
 本地PASS不写成远端全绿。保持Draft、不合并；阶段2推送后停下等复审，阶段3不启动。
+
+### 8.7 裁决后第6项的最终本地验证（2026-09-11）
+
+按§8.5.5继续，不再扩大定位采样。以下均为本次首跑，测试代码与`aad8149`一致，
+后续仅追加ADR。固定Go1.23.1、GOMAXPROCS=28；关闭人工压力与精确overlay，
+各组重测试串行执行，原始日志在仓库外独立保存，不覆盖§8.5或§8.6的旧批次。
+
+```powershell
+$env:GOTOOLCHAIN = 'go1.23.1'
+$env:GOMAXPROCS = '28'
+$env:WINKYOU_FLAKE_111_CPU_STRESS = '0'
+$env:WINKYOU_ABSENCE_WITNESS = '0'
+go test -race ./internal/governor ./internal/v2/loopbackcarrier -run '^Test(LoopbackCarrierAbsentPeerExpiresCleanlyWithoutSafetyTrip|AbsentPeer|Absence)' -count=20 -failfast -timeout=25m -json
+go vet ./...
+go test ./internal/architecture -count=1 -json
+go test ./... -count=1 -skip '^TestRelayWGGoTwoEnginesExchangeIPv4Packets$' -json
+go test -race ./pkg/client -run '^TestRelayWGGoTwoEnginesExchangeIPv4Packets$' -count=20 -failfast -timeout=15m -json
+```
+
+- 最终测试代码focused race×20 PASS：governor266.097s、loopbackcarrier3.569s，
+  7个非opt-in顶层入口各20/20；44类结构化变异各20/20，14种源码变异每轮均拒绝。
+  20次真实缺席均为FINISH=`expired`、caller未到期、内存与重开持久safety clear；
+  40次owner清理通过，人工压力worker启动数0。未启用的opt-in仍不算精确内部计时证明。
+- 这20次Connect最大13,016.7417ms、journal下界最大13,012.2418ms，BURN sync最大
+  2.2633ms、FINISH sync最大6.8305ms、FINISH sync后最大4.5259ms；fixture最大
+  26.6667ms、pre-BURN最大5.0869ms。Connect≥15s及生产RED均0。
+  这些是独立的最终重验证样本，不重复计入§8.5.2的170次或§8.5.3的50次。
+- `go vet ./...` PASS；独立architecture PASS10.886s，含既有变异门。
+- #116全仓分区：88个有测试包PASS、11个无测试包、0FAIL；governor110.990s、
+  architecture14.227s、client1.389s。该次默认缺席Connect13,016.0436ms，
+  FINISH=`expired`、caller未到期、两级safety clear、资源/账本占用归零、端口可重绑。
+- 独立relay race×20：20/20 PASS，package153.430s，单次最大7.660s；
+  20次`observer_workers=0`见证，未遗漏全仓唯一精确排除的用例。
+- 10个PR文件均为测试/ADR；生产/配置/工作流delta=0，原精确worker/template、
+  压力helper及ADR§1–§7均未改。相对链接3/3有效、`git diff --check`及新增内容
+  隐私扫描PASS；相关测试/产品进程检查为0，原停用任务仍Disabled。
+
+本地首跑全部通过不等于远端CI全绿，也不关闭#111或补造旧间隙根因。
+提交与推送仅沿用#123原分支，保持Draft；本head远端CI首跑在PR描述独立记录，
+不manual rerun、不合并。推送后停止实现并等待复审，#124/阶段3继续冻结。
