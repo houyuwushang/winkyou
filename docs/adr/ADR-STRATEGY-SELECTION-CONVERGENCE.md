@@ -1,6 +1,6 @@
 # ADR：legacy session 策略选择的确定性收敛
 
-Status: **维护者接受 S3（含 S1 前置），阶段3按 R-a 裁决收尾；实现 PR 仍为 Draft，待独立复审**（2026-09-11）。
+Status: **维护者接受 S3（含 S1 前置），阶段3按 R-a.1 澄清裁决收尾；实现 PR 仍为 Draft，待独立复审**（2026-09-11）。
 原设计基线 `main = 214ff2d`；阶段3基线 `main = b53f8c8`。Refs #97；不关闭 issue。
 首个设计 commit 已按要求停下；维护者随后明确接受。§9 在代码前具体化本次实现契约，
 不扩大网络、时限或重试权限。
@@ -109,8 +109,9 @@ waitForRemoteCapability
 - 后续 strategy 切换也要经过同一门；不能只确认第一策略，再各自走不同的 fallback。
   任何下一 ordinal 的确认，都以前一 executor 取消/关闭完成为前置。关闭无见证则整轮
   失败，不允许新旧不同策略并发。策略内部多个 plan 的原路由规则不重写。
-- 首轮按 R-a 显式拆为两段：capability 窗口仍为2s，从 Start 首次发送前起算；
-  confirm 子窗口不超过2s，从本地首次收到有效远端 capability 起算，两段之和不超过4s。
+- 首轮按 R-a.1 显式拆为两段：capability 窗口仍为2s，从 Start 首次发送前起算；
+  confirm 子窗口不超过2s，从 max(passStart, 本地首次收到有效远端 capability) 起算，
+  从 passStart 起两段之和不超过4s；提前接收不能削短 pass 开始后的确认子窗口。
   proposal/confirm 共享后一子窗口；重复 capability 不重置起点，接收方的本地时间才是依据。
   首轮选择的实际耗时从既有首个 candidate 的 RunTimeout（relay fixture为25s）扣除，
   首个 plan/并发 group 与 candidate-loop 的 TimeBudget 同步扣除，不增加总 session 预算。
@@ -246,9 +247,11 @@ capability 的 strategy/feature 以既有 Normalize 排序；proposal 的候选�
 
 ### 9.3 时限、切换与失败
 
-R-a 首轮 capabilityDeadline 在 Start 首次发送 capability **之前**建立：passStart+2s，
-测试配置只能缩短。confirmDeadline 独立于该能力截止点，从本地首次收到有效远端
-capability 的 capabilityReceivedAt 起算，为该时刻加 min(2s, 剩余首个 RunTimeout)。
+R-a.1 首轮 capabilityDeadline 在 Start 首次发送 capability **之前**建立：passStart+2s，
+测试配置只能缩短。confirmDeadline 独立于该能力截止点，从
+max(passStart, 本地首次收到有效远端 capability 的 capabilityReceivedAt) 起算。
+令该锚点为 anchor，confirmDeadline = anchor + min(window, 2s, passStart+RunTimeout-anchor)。
+提前接收不得削短 pass 开始后的确认窗口；剩余执行预算仍从 passStart 计算。
 重复 capability、远端自报的接收/发送时间或消息积压均不能延长本地冻结的子窗口。
 capability 与 confirm 两段之和不超过4s；首个 plan/group 的绝对执行截止点仍是
 passStart+其既有执行预算（单plan为原RunTimeout，group沿用原合计预算），
@@ -599,3 +602,30 @@ go test ./... -count=1 -skip '^TestRelayWGGoTwoEnginesExchangeIPv4Packets$' -jso
 #118/#120终态签名；本地启动RED没有被登记成未经证实的既有CI问题。
 R-a的确定性修复不等于#97完整验收，保持Draft、不合并；超出本次R-a的后续处理待独立
 复审裁决。未改冻结时限/预算/重试，不触碰#111待决项，没有现场I/O或主机配置操作。
+
+### 11.7 R-a.1：提前接收的确认锚点澄清（实现前单独提交）
+
+按[PR #124复审及R-a.1裁决](https://github.com/houyuwushang/winkyou/pull/124#issuecomment-5631286704)
+继续原分支，基于已推送的`90131ce`。旧实现忠实于R-a字面规定，但proposal/confirm的
+往返不可能早于本地pass开始；对端capability先到时，以收到时刻起算会削短这个往返窗口。
+因此锚点澄清为max(passStart, capabilityReceivedAt)，由同一纯函数供提前/正常接收
+两个调用点使用。锚点不晚于passStart+2s仍由capability deadline保证，总界不超过4s；
+2s capability、25s RunTimeout、30s测试死线、退避及消息数字均不变。
+
+本节先于代码单独提交。新增纯内存红回归：先启动对端，使其capability在本地Start前
+至少300ms实际到达；每程控制投递950ms，proposal/confirm往返1.9s。旧模型应在提前
+收到capability的一侧selection_timeout，新模型须双侧executing、同digest且原25s
+执行截止点不变。纯时间边界received_before_start改为passStart+2000ms，不变量为
+deadline≤max(start, received)+2s且deadline≤start+budget；新增早到仍用旧锚点的变异。
+
+原§10/§11.1–§11.6首次证据保留；复审已将旧relay race启动RED登记为#136，不在本PR
+修改200ms夹具。旧head CI的#118/#133登记见复审评论，不rerun求绿。
+本轮生产变动后重新开展独立首跑，不能与旧批次合并计数：Go1.23.1、GOMAXPROCS=28、
+原56 worker压力≥50（fail-fast且完整时间线）、无压力≥100、relay race×20、
+session/client race×20、architecture×20、全仓#116分区与vet。
+
+强制停止条件：压力再失败且时间线显示单向投递>1s，保留完整时间线后停下等维护者
+裁决门政策，不自行改压力强度、窗口、退避或预算；relay race首例命中#136
+（alpha.Start DeadlineExceeded、<0.5s且无协议消息）则登记该issue并停下。
+CI首跑单列，命中#118/#133/#132/#134/#135只登记，不混修或rerun。
+保持原Draft，不合并、不关闭#97，不触碰#111、现场I/O或主机配置。
