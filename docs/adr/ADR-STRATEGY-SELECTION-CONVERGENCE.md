@@ -745,3 +745,161 @@ session/client整包race×20、architecture×20、全仓分区或vet；不引用
 的旧生产head PASS充当本轮结果。小范围GREEN与单轮race smoke见§11.9，范围不混淆。
 没有rerun；本轮提交尚未推送，未触发新head CI，也未推进PR描述的验收更新。
 保持原Draft、不合并；等待维护者裁决压力门政策，或另行授权下一步的观察/设计。
+
+### 11.11 维护者授权的测试侧定位：同步状态落盘阻塞控制路径
+
+2026-09-11，维护者明确选择保留验收门及产品预算，并授权继续测试侧定位。
+本节不是放宽裁决，也不是新的验收PASS。基于本地`a8ae9f5`，本轮生产、配置、
+工作流delta均为0；不提交、不推送、不合并，不推进其余验收或现场。
+§11.10首跑原件及其SHA-256重新核对一致；历史记录不覆盖。
+
+#### 11.11.1 方法与范围
+
+- 保留原relay测试、56 worker、GOMAXPROCS=28、Go1.23.1、200ms coordinator
+  timeout、2s选择子窗口、25s执行预算、30s transport等待及退避数值。
+- 私有Go overlay仅替换`_test.go`：在既有test coordinator增加gRPC server
+  interceptor；在engine启动前安装测试logger和已有peer-change回调；双方Start
+  完成后用转发型`CoordinatorClient`包装器记录SendSignal，并追加OnSignal/
+  OnPeerUpdate观察回调。不替换任何生产文件、不新增生产hook、不改报文内容。
+- 同一报文以实际payload的内部哈希关联，只输出本次样本的数字frame编号、
+  side、类型和本地单调相对时间；不输出payload/epoch/密钥/实例标识。
+  追加的OnSignal在产品handler之后，因此其时间是**产品信令回调返回**，
+  不是网卡收包或`receiveSelectionControl`精确接收时间。启动早期尚未安装
+  的客户端观察点不可追认；server观察点从开始即存在。
+- 观察事件先存内存，原测试清理后输出；容量16,384，溢出则证据不完整并失败。
+  第二个独立诊断增加`runtime/trace`，不注入丢包/延迟、不改变时钟。
+  原始测试失败输出和trace均私存仓库外，不作为CI artifact公开。
+
+#### 11.11.2 新样本实际结果
+
+| 诊断 | 结果 | 见证 |
+|---|---|---|
+| 消息/日志观察，原压力profile，最多50、fail-fast | 第1例FAIL，30.54s；余49未执行 | 243 events，overflow=0；observer及56 workers join |
+| 独立单例压力+runtime trace | FAIL，34.34s | 126 events，overflow=0；observer及56 workers join；trace正常关闭 |
+| 三个独立因果测试，无网络/无压力 | PASS，package0.290s | 写锁阻塞、offline清理对照、terminal对象替换 |
+| 同三个因果测试`-race -count=20` | PASS，package2.300s | 3个顶层测试各20次；两个健康性子例各20次；无race报告 |
+| `go vet ./pkg/client` | PASS | 本轮诊断范围，不冒充全仓vet |
+| `go test ./internal/architecture -run '^TestSelectionConvergence' -count=1` | PASS，2.321s | 既有选择边界及变异；非architecture×20验收 |
+
+两个动态诊断都没有重现历史第41例的“首轮双边选择成功后bound→消失”完整序列；
+它们在更早阶段已失败。观察器和trace有运行成本，**不得据此估计现场失败率、
+声称原50次压力更差，或取代原首跑**。诊断失败按原30s断言收场；34.34s含
+调度延迟及测试清理，不表示把产品等待改成34s。
+
+独立trace样本中同一条capability（frame 3）：
+
+```text
+client_send_begin/end        707.914ms
+server_receive/send_end      729.774ms
+engine_signal_callback_end 10760.488ms
+server_send_end -> callback_end = 10030.714ms
+```
+
+后续proposal（frame 4）在749.320ms完成server send，11215.378ms才观察到
+客户端产品回调返回，间隔10466.058ms。这是同帧、同进程单调时钟下的**传输与
+产品回调合计时间**，仍不得标成纯网络单向时延。
+
+#### 11.11.3 已证实的阻塞链
+
+trace记录并关联到了具体goroutine自身的栈，而非把唤醒者或GC goroutine的栈
+当成阻塞者。Go trace跨generation的同状态重述不结束等待：初版辅助分析按
+重述切片，所得4.179s等只是片段；复核后合并连续同状态得到下表，原文件均保留。
+
+| 实际栈/状态 | 连续区间 | 时长 |
+|---|---|---:|
+| `receiveSignals → dispatchSignal → handleSignal → persistState → WriteRuntimeState → atomicWriteRuntimeFile → replaceRuntimeStateFile → MoveFileEx`，Syscall | trace原点后747.716–10754.801ms | 10007.085ms |
+| `startStateLoop → persistState → WriteRuntimeState → ... → MoveFileEx`，Syscall | 23734.976–33764.458ms | 10029.482ms |
+| `heartbeatLoop → sendHeartbeat → dispatchPeer → handlePeerUpdate → upsertPeer → persistState → WriteRuntimeState → RWMutex.Lock`，Waiting | 22671.125–33764.949ms | 11093.824ms |
+| `Session.run → fail → OnError → handlePeerSessionError → persistState → WriteRuntimeState → RWMutex.Lock`，Waiting | 2711.974–15197.016ms | 12485.042ms |
+
+trace与观察器各有自己的起始点，不能混用两种原点相减；各自的duration不受此影响。
+Syscall见证定位到`MoveFileEx`调用路径，不足以区分文件系统、过滤驱动、存储设备
+或OS调度等更下层原因，本轮不作这类归因。
+
+源码对应关系：
+
+1. [`WriteRuntimeState`](../../pkg/client/runtime.go)持包级`runtimeStateIOMu`
+   完成整个原子写入，包括Sync和replace。即使两个engine的状态文件不同，仍共用
+   这一把锁。Windows replace使用`MOVEFILE_WRITE_THROUGH`；外层2s重试截止仅在
+   **单次系统调用返回后**检查，不能截断一个尚未返回的10s系统调用。
+2. [`handleSignal`](../../pkg/client/peer_manager.go)在解码/启动solver处理前同步
+   `persistState`；[`dispatchSignal`](../../pkg/coordinator/client/grpc.go)串行调用
+   handler。因此一个状态文件写入可同时拖住当前capability及后续已发出的proposal。
+3. heartbeat成功后在同一goroutine里同步`GetPeer → dispatchPeer → handlePeerUpdate`，
+   后者也同步持久化。状态锁等待期间，heartbeat loop不能发送下一次心跳。
+   选择状态/失败hook同样同步落盘，连错误通知及`schedulePeerRetry`都可能被拖住。
+4. 实际trace样本side 2最后一次早期成功heartbeat为2631.220ms，下一次到
+   15251.193ms才成功，间隔12619.973ms，超过原fixture的5s lease。
+   在12534.898ms，GetPeer已返回`online=false`；12589.853ms客户端观察到
+   disconnected/stale。offline信息确实进入产品回调，不是推测丢失心跳。
+5. `handlePeerUpdate`对没有WG握手/in-band健康证据的peer执行`cleanupPeer`。
+   单纯bound不足以保留会话。独立fake对照中，bound无握手→会话移除且RemovePeer=1；
+   有握手及计数→保留且RemovePeer=0。这证明历史bound也存在可走的清理路径，
+   **但未唯一证明历史第41例实际走了这条路径**。
+6. 移除后的信令/peer update可再次`ensurePeerSession`。其terminal分支没有等待
+   node级退避，只替换对象；独立构造级测试确认`retryPending=true`的terminal对象
+   可立即被新对象取代，retryDelay归零。该测试用nil runner表征Closed，不声称
+   重现完整Failed执行。新旧epoch控制帧冲突的`selection_conflict`也在首个动态
+   诊断中出现；这不构成放宽epoch验证的理由。
+
+因此，本轮已定位一个**可复现的产品控制路径与展示用状态落盘同步耦合**问题：
+普通状态写入变慢→信令/心跳/状态hook排队→选择截止与coordinator lease先到期→
+清理/重建→旧新会话冲突。两个engine同进程共锁放大了本夹具的影响；不把这种
+跨engine共锁特性推广为两台设备共享一把锁，但每个实际进程仍有同步回调依赖。
+
+#### 11.11.4 未闭合项与下一步边界
+
+- 历史§11.10第41例无上述trace/逐帧见证，原2250ms仍只属跨端快照间隔；
+  不能把新样本替换为旧样本的唯一根因。S3不对称确认及重建语义也未因此解决。
+- 未查明Windows该系统调用为何约10s；未检查或修改主机服务、防护软件、磁盘配置。
+- 建议另行设计/评审：将**普通展示用runtime快照**与信令、心跳、选路回调解耦，
+  采用有界合并写入/明确关闭排水，并评估按实例隔离序列化。不能禁用持久化换取PASS。
+  governor安全ledger、durable burn/FINISH不属于展示快照，必须保留原安全同步契约。
+- 现有2s/25s/30s、5s测试lease、重试政策和压力门均不改变；本PR生产修复范围
+  未扩展。未跑其余正式验收、未推送、未产生新CI，不把诊断因果测试的PASS算作
+  产品已修好。
+
+私有原始证据摘要（全部SHA-256）：
+
+```text
+pressure-observed-first.jsonl       1df6e2e2acbc15711d208b216b7de000ce51def3d86c3edd36f6049933c58e83
+pressure-trace-first.jsonl          a4294144ef0b909bc7da21516d294676b5f610c62811ca552db9ea51aab61198
+pressure-trace-first.out            139e345e30500d48359a1446fe4da0103c2a6b77f203ab989c65f93f15c4a8e0
+trace-intervals-status-joined.jsonl  25946e5b2f593004dccc60c8c4ac598102ae3402fca082af05eaa17e38b3c7d5
+causal-tests-first.jsonl            a9bef8bbb19b0fe81a3cdf4f67baf3fe8f365e026aa83b90b787c30430dfdfb7
+causal-tests-race20-first.jsonl      c3f5c5b028116df4d1c51bdc4ac17cbb0b40bb7a5c2d03d82fa0fee30d2b5d49
+```
+
+### 11.12 状态快照解耦实现授权与边界（代码前记录）
+
+2026-09-11，维护者在阅读§11.11结论后明确授权按该方向修复。本节扩展的仅是
+普通runtime展示快照与控制回调的耦合；不扩展S3协议、预算、重试、现场权限。
+保持原Draft分支，独立复审前不合并；实现细节及新证据待复审，不自称已获专家批准。
+
+1. 每个legacy engine最多一个后台snapshot worker，最多一个合并的待处理通知。
+   `persistState`只标记待写，不采集快照、不编解码、不等待文件I/O，不为每个事件
+   创建goroutine。worker取最新内存快照并复用原原子写入；既有5s周期刷新保留。
+   不新增失败重试定时器；只有后续事件/原周期可以请求下一份快照。
+2. 文件读、写、删除、instance条件删除仍对同一状态文件互斥；将包级全文件I/O锁
+   改为按绝对Clean路径（Windows大小写归一）引用计数管理的锁。条目无引用即释放；
+   不持全局注册表锁做I/O。词法归一不是符号链接/junction等所有物理别名的身份认证，
+   不能替代CLI既有跨进程owner锁。`WriteRuntimeState`等同步API与原子替换保证保留。
+3. Stop/启动失败先关闭通知入口，丢弃尚未执行的展示快照；已开始写入必须返回后，
+   由同一worker删除状态文件，再发布done。删除不能抢在最后一次写入前，以免文件复活。
+   网络资源按既有流程关闭；展示worker不拥有网络能力。成功Stop必须有writer join
+   和删除见证，不能以“发出取消请求”冒充已排空。
+4. 单次展示writer排水等待上限为2s，**不是连接/probe/ledger预算**。不可中断的OS
+   文件调用超时仍在途时，Stop返回稳定`runtime_snapshot_drain_pending`，保留该writer
+   引用并阻止同一engine重新Start，未完成时再次Stop仍只等待原worker，绝不另起worker
+   或提前删除。OS调用返回后原worker继续清理。此分支承认仍有最多一个文件worker，
+   不声称goroutine零残留、不触发安全trip、不把文件I/O等待变成新的联网许可。
+5. 失败日志保留原错误可观测性；异步快照是best-effort展示，不是会话状态的权威输入。
+   此改动不删除展示文件功能，不改其JSON schema，也不放宽同文件一致性/权限。
+   governor ledger、burn/FINISH、session/probe lease及其同步/排水契约完全不动。
+6. 回归先红后绿：持有状态文件锁时信令、heartbeat/peer回调与session状态hook仍可
+   返回；不同文件不互堵；同文件继续互斥；事件风暴只保留一个pending；最终快照新鲜；
+   write/remove错误可见；close前后通知竞态、最后写入先于删除、超时不重启不复活；
+   源码门禁及变异拒绝同步落盘回流、无界goroutine/队列、忽略排水和全文件共锁。
+7. 原压力及后续验收仍使用原fixture、Go1.23.1和原数字。新生产head需要新首跑，
+   不覆盖§11.10/§11.11 RED；若再次出现此前停止签名，保留证据并停下，不改数字求绿。
+   #136及其他隔离签名不混修，实际完整通过前不推送验收结论。
