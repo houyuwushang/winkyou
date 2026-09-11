@@ -251,7 +251,8 @@ R-a 首轮 capabilityDeadline 在 Start 首次发送 capability **之前**建立
 capability 的 capabilityReceivedAt 起算，为该时刻加 min(2s, 剩余首个 RunTimeout)。
 重复 capability、远端自报的接收/发送时间或消息积压均不能延长本地冻结的子窗口。
 capability 与 confirm 两段之和不超过4s；首个 plan/group 的绝对执行截止点仍是
-passStart+原RunTimeout，实际选择耗时同时从 candidate-loop 的 TimeBudget 扣除。
+passStart+其既有执行预算（单plan为原RunTimeout，group沿用原合计预算），
+实际选择耗时同时从 candidate-loop 的 TimeBudget 扣除。
 能力缺失使用 capabilityDeadline；proposal/confirm 使用 confirmDeadline；超时不退款、不续窗。
 后续 ordinal 的 proposal 起点同时是首个 plan/并发 plan group 的执行预算起点：
 确认有 min(2s, 既有执行预算) 子上限，首个 plan/group 的 RunTimeout 按实际确认耗时扣除；
@@ -403,3 +404,21 @@ go test ./pkg/client -run '^TestRelayWGGoTwoEnginesExchangeIPv4Packets$' -count=
 独立relay race×20、session/client race×20、#116全仓分区、architecture×20与全仓vet。
 首次RED单列；命中已登记的CI签名时在对应issue记录并停止，不rerun或混修。
 保持原Draft PR、不合并、Refs #97；是否关闭issue由维护者在独立复审后决定。
+
+### 11.2 R-a 红回归（旧共享窗口实现，原始结果保留）
+
+设计提交`acc5eee`之后，仅添加纯内存延迟投递测试，未修改生产。Go1.23.1、
+GOMAXPROCS=28，首跑命令：
+
+```text
+go test ./pkg/session -run '^TestSelectionConfirmWindowStartsAtCapabilityReceipt$' -count=1 -failfast -timeout=30s -json
+```
+
+预期RED命中：单测2.01s、package2.552s；两侧capability均在1,900,457,000ns收到，
+双侧`state=failed class=selection_timeout executions=0`。两份proposal已入延迟队列，
+但共享2s窗口先终止；cleanup见证`workers=0 queued=4`。这是精确错误类的旧模型反例，
+不是编译失败，也不以“任意错误”当作成功复现。
+
+另一次旧实现负向对照首跑2/2 PASS4.180s：capability约2.1003334s才到，双侧
+capability_missing且零执行；缺少confirm时双侧selection_timeout且零执行。
+投递/终局逐侧记录，worker全部join。后续GREEN须使用同一正向测试，且保留这些首跑日志。
