@@ -276,53 +276,94 @@ func TestLoopbackCarrierCrashBeforePromoteBurnsAndRestartEmitsZero(t *testing.T)
 }
 
 func TestLoopbackCarrierAbsentPeerExpiresCleanlyWithoutSafetyTrip(t *testing.T) {
+	startAbsenceCPUPressure(t)
+	fixtureStart := time.Now()
 	now := time.Now().UTC().Truncate(time.Second)
 	namespace := t.TempDir()
+	prepareTraceDone := absenceTraceRegion("absence_prepare_namespace")
 	if err := governor.PrepareLoopbackCarrierTestNamespace(namespace, now); err != nil {
-		t.Fatal(err)
+		prepareTraceDone()
+		t.Fatal("absence namespace preparation failed")
 	}
+	prepareTraceDone()
+	acquireTraceDone := absenceTraceRegion("absence_acquire_governor")
 	machine, err := governor.AcquireLoopbackCarrierTestGovernor(namespace, "loopback-carrier-absent-peer")
+	acquireTraceDone()
 	if err != nil {
-		t.Fatal(err)
+		t.Fatal("absence governor acquisition failed")
+	}
+	t.Cleanup(func() { closeAbsentPeerGovernor(t, machine, namespace) })
+	journalTiming, err := governor.ObserveCarrierAbsenceJournal(machine)
+	if err != nil {
+		t.Fatal("absence journal observer installation failed")
 	}
 	local := reserveLoopbackEndpoint(t)
 	absentPeer := reserveLoopbackEndpoint(t)
-	bundle, _ := processBundles(t, local, absentPeer, absentPeer, local, repeatedKey(81), now)
+	bundle, unusedBundle := processBundles(t, local, absentPeer, absentPeer, local, repeatedKey(81), now)
+	clear(unusedBundle)
+	defer clear(bundle)
 
-	// The caller deadline is deliberately longer than the 15-second attempt
-	// duration budget. The carrier must self-cancel, append FINISH, and drain
-	// before probeio's duration tripwire latches the persistent safety trip.
-	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
+	// The literal 60s caller context is only a hang guard, deliberately far
+	// beyond the carrier's 15s tripwire plus 2s drain. Before this guard fires,
+	// DeadlineExceeded must come from the carrier's own deadline: the caller
+	// AcquireAttempt ctx watcher cannot stop the 15s timer ahead of the product.
+	// Reject an expired caller guard separately; journal reason alone cannot
+	// distinguish the two deadlines. Exact timer-stop timing stays opt-in.
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
+	connectTraceDone := absenceTraceRegion("absence_connect")
 	start := time.Now()
 	_, connectErr := loopbackcarrier.Connect(ctx, machine, bundle, "loopback-carrier-absent-peer", nil)
-	elapsed := time.Since(start)
-	if connectErr == nil {
-		t.Fatal("absent peer unexpectedly succeeded")
+	returned := time.Now()
+	connectTraceDone()
+	observed := absentPeerObservation{
+		ConnectErr: connectErr, Started: start, Returned: returned, Journal: journalTiming(),
+		CallerErr: ctx.Err(),
 	}
-	if !errors.Is(connectErr, context.DeadlineExceeded) {
-		t.Fatalf("absent peer error = %v, want context.DeadlineExceeded", connectErr)
-	}
-	if elapsed >= loopbackcarrier.AttemptDuration {
-		t.Fatalf("carrier ran %v, not strictly inside the %v attempt budget", elapsed, loopbackcarrier.AttemptDuration)
-	}
-	if err := machine.Close(); err != nil {
-		t.Fatalf("close governor after absent-peer expiry: %v", err)
-	}
+	observed.CallerDeadline, _ = ctx.Deadline()
+	observed.Memory = machine.Snapshot()
 
-	reacquired, err := governor.AcquireLoopbackCarrierTestGovernor(namespace, "loopback-carrier-absent-peer-verify")
-	if err != nil {
-		t.Fatalf("absent-peer expiry latched the machine namespace: %v", err)
+	// Collect every independent postcondition before asserting. In particular,
+	// an unexpected error or journal observation cannot skip the durable trip
+	// readback as the historical wall-clock Fatal did.
+	observed.CloseErr = machine.Close()
+	reopened, reopenErr := governor.AcquireLoopbackCarrierTestGovernor(namespace, "loopback-carrier-absent-peer-verify")
+	observed.ReopenErr = reopenErr
+	if reopenErr == nil {
+		t.Cleanup(func() { closeAbsentPeerGovernor(t, reopened, namespace) })
+		observed.Persisted = reopened.Snapshot().SafetyTrip
+		observed.PersistedChecked = true
+		observed.ReopenedCloseErr = reopened.Close()
+	} else {
+		var trip *governor.SafetyTripError
+		if errors.As(reopenErr, &trip) {
+			observed.Persisted = trip.Status
+			observed.PersistedChecked = true
+		}
 	}
-	defer reacquired.Close()
-	if trip := reacquired.Snapshot().SafetyTrip; trip.State != governor.SafetyTripClear {
-		t.Fatalf("safety trip after absent-peer expiry = %+v, want clear", trip)
-	}
-	status, err := governor.InspectLoopbackCarrierTestLedger(namespace, time.Now())
-	if err != nil || status.OneHourAdmissions != 1 || status.ConsecutiveFailures != 1 {
-		t.Fatalf("absent-peer ledger = %+v/%v, want one charged admission and one recorded failure", status, err)
-	}
-	assertReusable(t, local)
+	observed.Ledger, observed.LedgerErr = governor.InspectLoopbackCarrierTestLedger(namespace, time.Now())
+	observed.UnfinishedAdmissions, observed.UnfinishedPackets, observed.OccupancyErr = governor.InspectLoopbackCarrierTestOccupancy(namespace, time.Now())
+	observed.PortRebound = t.Run("port-rebind", func(t *testing.T) { assertReusable(t, local) })
+	observed.Collected = true
+
+	// Only durations, booleans and counts are published. The journal interval
+	// is a LOWER bound, never an attempt-start or timer-stop measurement.
+	timing := observed.Journal
+	t.Logf("ABSENCE_IN_PROCESS fixture_ns=%d connect_ns=%d journal_lower_bound_ns=%d burn_sync_ns=%d finish_sync_ns=%d after_finish_ns=%d",
+		start.Sub(fixtureStart).Nanoseconds(), returned.Sub(start).Nanoseconds(),
+		timing.FinishSynced.Sub(timing.AdmissionAppended).Nanoseconds(),
+		timing.AdmissionSynced.Sub(timing.AdmissionAppended).Nanoseconds(),
+		timing.FinishSynced.Sub(timing.FinishAppended).Nanoseconds(), returned.Sub(timing.FinishSynced).Nanoseconds())
+	t.Logf("ABSENCE_POSTCHECK deadline_error=%t memory_clear=%t persisted_checked=%t persisted_clear=%t peers=%d attempts=%d heavyweight=%d reserved_zero=%t sequence=%d records=%d admissions=%d failures=%d unfinished_admissions=%d unfinished_packets=%d port_rebound=%t",
+		errors.Is(connectErr, context.DeadlineExceeded), observed.Memory.SafetyTrip.State == governor.SafetyTripClear,
+		observed.PersistedChecked, observed.Persisted.State == governor.SafetyTripClear,
+		observed.Memory.ActivePeers, observed.Memory.ActiveAttempts, observed.Memory.HeavyweightAttempts,
+		observed.Memory.Reserved == (governor.Resources{}), observed.Ledger.Sequence, observed.Ledger.Records,
+		observed.Ledger.OneHourAdmissions, observed.Ledger.ConsecutiveFailures,
+		observed.UnfinishedAdmissions, observed.UnfinishedPackets, observed.PortRebound)
+	t.Logf("ABSENCE_TERMINAL finish_reason=%s caller_clear=%t returned_before_caller_deadline=%t",
+		timing.FinishReason, observed.CallerErr == nil, returned.Before(observed.CallerDeadline))
+	requireAbsentPeerObservation(t, observed)
 }
 
 func reserveLoopbackEndpoint(t *testing.T) netip.AddrPort {
