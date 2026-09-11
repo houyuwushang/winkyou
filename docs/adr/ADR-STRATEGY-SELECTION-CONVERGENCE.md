@@ -541,6 +541,61 @@ OS socket/fd资源都为零**。
   后续独立验证只提供其各自范围的证据，不抵销本例；若需超出R-a的语义修复，须另行
   复审裁决。本PR继续Draft，不合并、不关闭#97，不把压力门降为advisory。
 
-### 11.5 其余独立验证与首跑CI
+### 11.5 无人工压力100通过；独立relay race首跑另有启动RED
 
-尚待首跑完成；保留§11.4 RED，未重跑压力批次。
+同一Go1.23.1/GOMAXPROCS=28，关闭CPU helper，所有批次串行；没有修改生产代码。
+仅文档证据提交追加到`49920c8`，被测生产仍为`c55d42b`：
+
+```text
+go test ./pkg/client -run '^TestRelayWGGoTwoEnginesExchangeIPv4Packets$' -count=100 -failfast -timeout=60m -json
+go test -race ./pkg/client -run '^TestRelayWGGoTwoEnginesExchangeIPv4Packets$' -count=20 -failfast -timeout=25m -json
+```
+
+- 无人工压力：**100/100 PASS**，package725.224s、命令墙钟729.343s；单例最长7.61s，
+  observer退出100/100。保持原双向数据、runtime计数及各阶段等待断言。
+- 独立relay race：**0 PASS / 第1例FAIL**，剩余19例未执行；package1.274s、命令
+  墙钟7.658s，失败单例0.29s。失败发生在第一个engine的Start，尚未进入策略交换：
+
+```text
+relay_timeline side=1 elapsed_ms=0 sessions=0 []
+relay_timeline side=2 elapsed_ms=0 sessions=0 []
+alpha.Start() error = rpc error: code = DeadlineExceeded desc = context deadline exceeded
+relay_timeline observer_workers=0
+--- FAIL: TestRelayWGGoTwoEnginesExchangeIPv4Packets (0.29s)
+```
+
+这是该例全部状态采样与失败/observer见证。日志没有data-race报告，不能将
+`-race`命令失败写成“发现数据竞争”；同样没有证据将它与§11.4的选择压力失败合并归因。
+夹具原有coordinator timeout=200ms，**本PR不修改它，也不据此断言启动失败根因**。
+不增加被跳过的测试、不重跑该批求绿；独立relay race×20门尚未通过。
+
+### 11.6 其余独立验证与首跑CI
+
+仍使用Go1.23.1/GOMAXPROCS=28，CPU helper关闭，逐批首跑且未并行其他重测试：
+
+```text
+go test -race ./pkg/session ./pkg/client -count=20 -skip '^TestRelayWGGoTwoEnginesExchangeIPv4Packets$' -failfast -timeout=35m -json
+go vet ./...
+go test ./internal/architecture -count=20 -failfast -timeout=20m -json
+go test ./... -count=1 -skip '^TestRelayWGGoTwoEnginesExchangeIPv4Packets$' -json
+```
+
+- session/client整包race×20 PASS：session898.248s、client14.637s；session的120个、
+  client的105个顶层测试均恰20轮通过，未报告数据竞争。新的R-a正向及两个负向也各20轮。
+  relay只按#116原规则精确隔离，未丢失其独立首跑RED（§11.5），不写成所有race均绿。
+- 全仓vet PASS，命令墙钟14.736s。
+- architecture×20 PASS，package191.092s、命令墙钟193.470s，105个顶层门禁各20轮；
+  含R-a窗口/预算及原implicit fallback、#94构造点和源码变异自检。
+- #116全仓分区PASS：88个有测试包通过、11个包无测试文件，0失败；命令墙钟130.782s。
+  governor119.696s、session45.301s、architecture14.724s；未增加skip规则。
+- `git diff --check`、增量隐私扫描与2个相对文档链接检查PASS。§10与`9de27ec`逐节
+  文本核对未变，真实relay夹具/压力helper/wire golden相对该head未变；配置、工作流、
+  solver、governor、probeio、v2相对main `b53f8c8`的delta为0。
+- 本轮生产代码为`c55d42b`，其后仅追加文档证据；所有本地测试进程已经结束。
+  最终证据head的CI尚未触发，推送后在[PR #124](https://github.com/houyuwushang/winkyou/pull/124)
+  单列该head首跑状态，不拿§10旧head结果替代，不manual rerun。
+
+§11.4与§11.5的两个RED均保留，不由后续独立结果抵销。两个失败均不能套用本轮列出的
+#118/#120终态签名；本地启动RED没有被登记成未经证实的既有CI问题。
+R-a的确定性修复不等于#97完整验收，保持Draft、不合并；超出本次R-a的后续处理待独立
+复审裁决。未改冻结时限/预算/重试，不触碰#111待决项，没有现场I/O或主机配置操作。
