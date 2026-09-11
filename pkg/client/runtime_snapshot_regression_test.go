@@ -33,9 +33,12 @@ func TestRuntimeSnapshotIOCannotBlockControlCallbacks(t *testing.T) {
 	for _, test := range callbacks {
 		t.Run(test.name, func(t *testing.T) {
 			e := &engine{cfg: config.Default(), log: logger.Nop(), started: true, statePath: filepath.Join(t.TempDir(), "snapshot.yaml"), status: EngineStatus{NodeID: "synthetic-local"}, peers: map[string]*PeerStatus{"synthetic-peer": {NodeID: "synthetic-peer"}}}
-			runtimeStateIOMu.Lock()
+			release, err := lockRuntimeFile(e.statePath, false)
+			if err != nil {
+				t.Fatal(err)
+			}
 			var unlockOnce sync.Once
-			unlock := func() { unlockOnce.Do(runtimeStateIOMu.Unlock) }
+			unlock := func() { unlockOnce.Do(release) }
 			done := make(chan struct{})
 			t.Cleanup(func() {
 				unlock()

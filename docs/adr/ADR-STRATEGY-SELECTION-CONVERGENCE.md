@@ -903,3 +903,32 @@ causal-tests-race20-first.jsonl      c3f5c5b028116df4d1c51bdc4ac17cbb0b40bb7a5c2
 7. 原压力及后续验收仍使用原fixture、Go1.23.1和原数字。新生产head需要新首跑，
    不覆盖§11.10/§11.11 RED；若再次出现此前停止签名，保留证据并停下，不改数字求绿。
    #136及其他隔离签名不混修，实际完整通过前不推送验收结论。
+
+### 11.13 实现期回归与首轮竞态证据（不是完整验收）
+
+1. 先提交§11.12，再提交三条阻塞回归。旧同步实现下，持有runtime文件I/O锁，
+   signal、heartbeat peer update、selection state三个callback都超过固定1s测试
+   防挂死guard：**3/3 RED**，case共3.02s、package3.514s。此guard不是协议窗口。
+   原日志`control-callback-red-first.jsonl` SHA-256：
+   `c591f9543527d62df3ff70295ec88bff01226f3fa512d3c1338e609b213374d8`。
+2. 引入单worker、单pending通知、按文件锁后，以上三条GREEN；锁注入从旧全局锁
+   机械替换为同一文件的锁，回调必须在持锁期间返回这一oracle不变。§11.11的旧
+   “同步回调确实阻塞”诊断源文件与日志另行保留为历史材料，不纳入新的GREEN oracle。
+   首轮普通focused测试14项全部PASS（package2.812s），涵盖原状态文件启停与atomic
+   round-trip、独立路径不互堵、4,097通知合并为2次write、一个worker、关闭丢弃pending、
+   remove错误、2s pending排水阻止restart、启动失败与write错误可观测。
+3. 首次开发期focused `-race -count=20 -failfast` **RED，不覆盖**：11轮14项均PASS，
+   第12轮`TestEngineStartPersistsRuntimeStateAndStopRemovesIt`出现race，package26.867s。
+   新后台`engine.snapshot → syncTunnelPeerStateLocked`读取`tun`，与`Start`原无锁
+   `e.tun = tun`发布并发。不是旧隔离flake，不归因于协调器/预算；修复为持同一`e.mu`
+   发布`tun`，在正式新首跑前补测。原日志` snapshot-focused-race20-first.jsonl`
+   （文件名无前置空格）SHA-256：
+   `e300085dbba06257e06444bd75333ca2d416310ff9558ea1575308a2ad3e7e41`。
+4. Stop的短生命周期所有权以`TryLock`取得：并发或status回调重入Stop立即返回
+   `runtime_snapshot_drain_pending`，不排队、不自锁。当前Stop返回pending后，再次调用
+   仍等待同一writer；原worker删除完成后才可解除stopping。删除本身失败则保留错误与
+   writer引用，禁止restart，不自动重试删除。空statePath不创建展示worker/文件。
+5. runtime展示写入原JSON schema、Sync/原子替换、文件权限、5s tick均未变；仅启动时
+   tunnel发布补锁，不改连接/选择/探测数字。新增源码门禁覆盖9个小型并发原语、
+   legacy engine同步I/O入口、单constructor、Start/Stop顺序及22条违规变异；原
+   SelectionConvergence门禁与21条变异另行保留。完整新压力/全仓/CI结果仍待记录。

@@ -41,6 +41,10 @@ type engine struct {
 
 	mu             sync.RWMutex
 	started        bool
+	stopping       bool
+	snapshotWriter *runtimeSnapshotWriter
+	stopMu         sync.Mutex // joins repeated Stop calls, including pending disk drain
+	stopErr        error      // protected by stopMu; ordinary observation cleanup error
 	status         EngineStatus
 	peers          map[string]*PeerStatus
 	statusHandlers []func(status *EngineStatus)
@@ -113,6 +117,10 @@ func (e *engine) Start(ctx context.Context) (err error) {
 		e.mu.Unlock()
 		return ErrEngineAlreadyStarted
 	}
+	if e.stopping || e.snapshotWriter != nil {
+		e.mu.Unlock()
+		return ErrRuntimeSnapshotDrainPending
+	}
 	e.started = true
 	e.mu.Unlock()
 
@@ -123,13 +131,13 @@ func (e *engine) Start(ctx context.Context) (err error) {
 		if !cleanup {
 			return
 		}
-		e.cleanupResources()
-		e.mu.Lock()
-		e.started = false
-		e.mu.Unlock()
-		e.setState(EngineStateStopped, errorString(err))
-		e.logCleanupError("remove runtime state", RemoveRuntimeState(e.statePath), logger.String("path", e.statePath))
-		e.logCleanupError("remove observation state", e.removeObservationState())
+		// Startup failures use the same seal/write/remove/join ordering as Stop.
+		// Never delete a snapshot while its worker can still publish it later.
+		stopErr := e.Stop()
+		err = errors.Join(err, stopErr)
+		if stopErr == nil {
+			e.setState(EngineStateStopped, errorString(err))
+		}
 	}()
 
 	if strings.TrimSpace(e.cfg.Coordinator.URL) == "" {
@@ -202,7 +210,11 @@ func (e *engine) Start(ctx context.Context) (err error) {
 	if err != nil {
 		return err
 	}
+	// The presentation worker may already be capturing Starting/Connecting.
+	// Publish under the same mutex used by snapshot's tunnel-stat reads.
+	e.mu.Lock()
 	e.tun = tun
+	e.mu.Unlock()
 	if err := e.tun.Start(); err != nil {
 		return err
 	}
@@ -307,12 +319,25 @@ func (e *engine) probeRunner() *probelab.Runner {
 }
 
 func (e *engine) Stop() error {
+	// A concurrent (or status-callback reentrant) Stop must not queue behind
+	// an uninterruptible file operation or deadlock its own lifecycle owner.
+	if !e.stopMu.TryLock() {
+		return ErrRuntimeSnapshotDrainPending
+	}
+	defer e.stopMu.Unlock()
+
 	e.mu.Lock()
-	if !e.started {
+	if !e.started && !e.stopping {
 		e.mu.Unlock()
 		return nil
 	}
+	wasStarted := e.started
 	e.started = false
+	e.stopping = true
+	writer := e.runtimeSnapshotWriterLocked()
+	if writer != nil {
+		writer.seal()
+	}
 	runCancel := e.runCancel
 	coord := e.coord
 	pingConn := e.pingConn
@@ -321,29 +346,40 @@ func (e *engine) Stop() error {
 	e.inbandConn = nil
 	e.mu.Unlock()
 
-	e.setState(EngineStateStopping, "")
-
-	if runCancel != nil {
-		runCancel()
+	if wasStarted {
+		e.setState(EngineStateStopping, "")
+		if runCancel != nil {
+			runCancel()
+		}
+		if coord != nil {
+			coord.StopHeartbeat()
+		}
+		if pingConn != nil {
+			e.logCleanupError("close ping responder", pingConn.Close())
+		}
+		if inbandConn != nil {
+			e.logCleanupError("close in-band peer control", inbandConn.Close())
+		}
+		e.wg.Wait()
+		e.cleanupResources()
+		e.stopErr = e.removeObservationState()
 	}
-	if coord != nil {
-		coord.StopHeartbeat()
+	if writer != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), runtimeSnapshotDrainTimeout)
+		defer cancel()
+		if err := writer.wait(ctx); err != nil {
+			// Keep the writer AND stopping flag: a second Stop joins this same
+			// worker, and Start cannot race late writes or failed removal.
+			e.setState(EngineStateStopping, errorString(err))
+			return errors.Join(err, e.stopErr)
+		}
 	}
-	if pingConn != nil {
-		e.logCleanupError("close ping responder", pingConn.Close())
-	}
-	if inbandConn != nil {
-		e.logCleanupError("close in-band peer control", inbandConn.Close())
-	}
-
-	e.wg.Wait()
-	e.cleanupResources()
-
 	e.setState(EngineStateStopped, "")
-	if err := RemoveRuntimeState(e.statePath); err != nil {
-		return err
-	}
-	return e.removeObservationState()
+	e.mu.Lock()
+	e.snapshotWriter = nil
+	e.stopping = false
+	e.mu.Unlock()
+	return e.stopErr
 }
 
 func (e *engine) Status() *EngineStatus {
@@ -629,17 +665,29 @@ func (e *engine) cloneStatusLocked() *EngineStatus {
 }
 
 func (e *engine) persistState() {
-	e.mu.RLock()
-	started := e.started
-	statePath := e.statePath
-	e.mu.RUnlock()
-	if !started || strings.TrimSpace(statePath) == "" {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if !e.started || e.stopping {
 		return
 	}
-	status, peers := e.snapshot()
-	if err := WriteRuntimeState(e.statePath, newRuntimeStateSnapshot(status, peers)); err != nil {
-		e.log.Warn("failed to persist runtime state", logger.Error(err), logger.String("path", e.statePath))
+	if writer := e.runtimeSnapshotWriterLocked(); writer != nil {
+		writer.request()
 	}
+}
+
+// Called under e.mu; constructing the worker does not capture a snapshot or
+// perform I/O. Every callback only coalesces a notification to this one owner.
+func (e *engine) runtimeSnapshotWriterLocked() *runtimeSnapshotWriter {
+	if e.snapshotWriter == nil && strings.TrimSpace(e.statePath) != "" {
+		path := e.statePath
+		e.snapshotWriter = newRuntimeSnapshotWriter(func() {
+			status, peers := e.snapshot()
+			if err := WriteRuntimeState(path, newRuntimeStateSnapshot(status, peers)); err != nil {
+				e.log.Warn("failed to persist runtime state", logger.Error(err), logger.String("path", path))
+			}
+		}, func() error { return RemoveRuntimeState(path) })
+	}
+	return e.snapshotWriter
 }
 
 func (e *engine) snapshot() (*EngineStatus, []*PeerStatus) {
