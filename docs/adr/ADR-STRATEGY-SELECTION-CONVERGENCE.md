@@ -1,7 +1,7 @@
 # ADR：legacy session 策略选择的确定性收敛
 
-Status: **维护者接受 S3（含 S1 前置），授权实施；实现 PR 仍为 Draft，待独立复审**（2026-09-09）。
-基线 `main = 214ff2d`。Refs #97；不关闭 issue。
+Status: **维护者接受 S3（含 S1 前置），阶段3按 R-a 裁决收尾；实现 PR 仍为 Draft，待独立复审**（2026-09-11）。
+原设计基线 `main = 214ff2d`；阶段3基线 `main = b53f8c8`。Refs #97；不关闭 issue。
 首个设计 commit 已按要求停下；维护者随后明确接受。§9 在代码前具体化本次实现契约，
 不扩大网络、时限或重试权限。
 
@@ -109,9 +109,12 @@ waitForRemoteCapability
 - 后续 strategy 切换也要经过同一门；不能只确认第一策略，再各自走不同的 fallback。
   任何下一 ordinal 的确认，都以前一 executor 取消/关闭完成为前置。关闭无见证则整轮
   失败，不允许新旧不同策略并发。策略内部多个 plan 的原路由规则不重写。
-- 第一轮确认消耗原 capability 2s 窗口，不能在 2s 后悄悄再开一个 2s。
-  后续策略确认拟从该 candidate 既有 RunTimeout 扣除，并受同样 2s 子上限限制；
-  不增加 25s 数字或候选数量。确认/执行共享绝对 deadline 的起算调整须显式评审。
+- 首轮按 R-a 显式拆为两段：capability 窗口仍为2s，从 Start 首次发送前起算；
+  confirm 子窗口不超过2s，从本地首次收到有效远端 capability 起算，两段之和不超过4s。
+  proposal/confirm 共享后一子窗口；重复 capability 不重置起点，接收方的本地时间才是依据。
+  首轮选择的实际耗时从既有首个 candidate 的 RunTimeout（relay fixture为25s）扣除，
+  首个 plan/并发 group 与 candidate-loop 的 TimeBudget 同步扣除，不增加总 session 预算。
+  后续 ordinal 仍采用 min(2s, 剩余执行预算)，不改候选数量、后续 plan 或退避数字。
 - 超时进入不可逆的本地终局，清理本轮队列/活动 executor，再交给现有 OnError/退避。
   双方退避时刻可以不同；不增加第二套 retry，不用无限 ACK/重发弥补丢包。
 - 已健康绑定的数据面不因选择消息丢失而拆除。受保护路径改善失败继续遵守 baseline
@@ -174,6 +177,11 @@ routeStrategyMessage 原子判定/入队。这两项解决消息启动就绪与 
 
 ## 7. 验收计划（均尚未执行）
 
+- R-a“confirm 子窗口单独计时”：纯内存投递 capability 在1.9s到达、proposal/confirm
+  往返再需0.6s，旧共享2s实现必须 selection_timeout，修复后双方一致 executing。
+  capability 2.1s才到必须 capability_missing；confirm 子窗口内未闭合必须 selection_timeout。
+  核对两个本地起点、首个 plan/group 的 RunTimeout 与 TimeBudget 实际扣减，重复能力不续期。
+  mutation 必须拒绝合回单一2s、子窗口超过2s、未扣RunTimeout与 implicit fallback复活。
 - 先红后绿：双端确定性 transport/时钟调度，重放 side 2 capability 延迟4、8、16s及
   #116 的阶段关系。基线必须出现缺能力下 implicit 执行/分歧；新实现同轮选择一致，
   或准确的有界失败，不能用“任何错误都过”代替状态断言。
@@ -238,8 +246,13 @@ capability 的 strategy/feature 以既有 Normalize 排序；proposal 的候选�
 
 ### 9.3 时限、切换与失败
 
-首轮绝对 deadline 在 Start 首次发送 capability **之前**建立：发送、能力接收、proposal、
-confirm 共用原 capability 2s（测试配置只能缩短）。没有额外2s确认窗口。
+R-a 首轮 capabilityDeadline 在 Start 首次发送 capability **之前**建立：passStart+2s，
+测试配置只能缩短。confirmDeadline 独立于该能力截止点，从本地首次收到有效远端
+capability 的 capabilityReceivedAt 起算，为该时刻加 min(2s, 剩余首个 RunTimeout)。
+重复 capability、远端自报的接收/发送时间或消息积压均不能延长本地冻结的子窗口。
+capability 与 confirm 两段之和不超过4s；首个 plan/group 的绝对执行截止点仍是
+passStart+原RunTimeout，实际选择耗时同时从 candidate-loop 的 TimeBudget 扣除。
+能力缺失使用 capabilityDeadline；proposal/confirm 使用 confirmDeadline；超时不退款、不续窗。
 后续 ordinal 的 proposal 起点同时是首个 plan/并发 plan group 的执行预算起点：
 确认有 min(2s, 既有执行预算) 子上限，首个 plan/group 的 RunTimeout 按实际确认耗时扣除；
 整个 candidate-loop 的既有 TimeBudget 同样扣除。多个 plan 的原总预算与后续 plan 窗口不扩大。
@@ -369,3 +382,24 @@ go test ./pkg/client -run '^TestRelayWGGoTwoEnginesExchangeIPv4Packets$' -count=
 本次证据提交不改实现。压力门与上述CI门尚未闭合，ADR方向裁决不等于实现验收。
 后续必须保留首轮RED，独立审查原窗口下的进度与重建问题；没有证据支持自行放宽或
 将失败标为advisory。本PR保持Draft，不合并、不关闭#97，不据此进入任何v2或现场Gate。
+
+## 11. 阶段3：R-a 裁决与重新验收（2026-09-11）
+
+### 11.1 裁决来源与边界（实现前单独提交）
+
+维护者在[PR #124 R-a 裁决](https://github.com/houyuwushang/winkyou/pull/124#issuecomment-5596740481)
+明确接受能力2s与确认最多2s的拆分，并要求从原执行额度扣除；
+[独立复审](https://github.com/houyuwushang/winkyou/pull/124#issuecomment-5596542546)
+指出旧共享窗口下的压力失败是设计后果，不能靠重复诊断或恢复 implicit fallback规避。
+阶段3提示词已明确解冻，基线为#123合入后的`b53f8c8`；其4个push workflow首跑均成功。
+本分支先merge main，不rebase/squash；本节在红回归与实现之前独立提交。
+
+§4.3/§9.3及§7按上述裁决修订；§10全部原文与首次压力0/1 RED保留，不追溯改判。
+本次只调整首轮选择窗口的语义与预算扣除，capability2s、RunTimeout25s、测试30s、
+消息上限及2/4/8/10s退避数字不变；后续ordinal规则不变。整体session原预算不增加，
+不新增消息、自动重试、配置开关或网络权限，不触碰#111待裁决的O1/O2/O3。
+
+重新验收使用Go1.23.1：压力至少50（既有56 worker、fail-fast、完整时间线）、无压力至少100、
+独立relay race×20、session/client race×20、#116全仓分区、architecture×20与全仓vet。
+首次RED单列；命中已登记的CI签名时在对应issue记录并停止，不rerun或混修。
+保持原Draft PR、不合并、Refs #97；是否关闭issue由维护者在独立复审后决定。
