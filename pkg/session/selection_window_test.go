@@ -202,3 +202,54 @@ func TestSelectionMissingConfirmFailsWithinOwnWindow(t *testing.T) {
 		}
 	}
 }
+
+func TestSelectionEarlyCapabilityDoesNotShortenConfirmWindow(t *testing.T) {
+	p, link := newSelectionWindowPair(t, 0, 950*time.Millisecond, false)
+	if err := p.sessions[0].Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-link.capDone[1]:
+	case <-time.After(time.Second):
+		t.Fatal("pre-Start capability was not delivered")
+	}
+	// Inject the requested 300ms difference between real capability receipt and
+	// the other local Start. Do not backdate timestamps or add a production hook.
+	startDelay := time.NewTimer(300 * time.Millisecond)
+	defer startDelay.Stop()
+	<-startDelay.C
+	if err := p.sessions[1].Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	p.wait(t)
+	link.witness(t)
+	a := p.sessions[1].agreement
+	a.mu.Lock()
+	lead := a.passStart.Sub(a.capabilityReceivedAt)
+	a.mu.Unlock()
+	t.Logf("SELECTION_PRESTART_CAPABILITY side=1 lead_ns=%d control_round_trip_ns=%d", lead.Nanoseconds(), (1900 * time.Millisecond).Nanoseconds())
+	if lead < 300*time.Millisecond {
+		t.Fatal("fixture did not deliver capability before the requested local Start")
+	}
+	for side, s := range p.sessions {
+		if s.State() != StateBound || p.count(side, "relay_only") != 1 {
+			t.Fatalf("side=%d state=%s terminal=%v: pre-Start capability must leave a full confirmation window", side, s.State(), s.selectionTerminalError())
+		}
+		link.mu.Lock()
+		executing, deadline := link.executing[side], link.execUntil[side]
+		link.mu.Unlock()
+		s.agreement.mu.Lock()
+		start := s.agreement.passStart
+		s.agreement.mu.Unlock()
+		if !executing || !deadline.Equal(start.Add(25*time.Second)) {
+			t.Fatal("early capability changed first execution's original 25s deadline")
+		}
+		if p.countMessages(side, selectionProposalType) != 1 || p.countMessages(side, selectionConfirmType) != 1 {
+			t.Fatal("early capability caused a control retransmission or omission")
+		}
+	}
+	left, right := p.sessions[0].Snapshot(), p.sessions[1].Snapshot()
+	if left.SelectionDigest == "" || left.SelectionDigest != right.SelectionDigest || left.SelectionOrdinal != 0 || right.SelectionOrdinal != 0 {
+		t.Fatal("early capability changed the bilateral first-round commitment")
+	}
+}

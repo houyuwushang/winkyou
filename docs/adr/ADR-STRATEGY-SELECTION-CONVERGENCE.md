@@ -629,3 +629,14 @@ session/client race×20、architecture×20、全仓#116分区与vet。
 （alpha.Start DeadlineExceeded、<0.5s且无协议消息）则登记该issue并停下。
 CI首跑单列，命中#118/#133/#132/#134/#135只登记，不混修或rerun。
 保持原Draft，不合并、不关闭#97，不触碰#111、现场I/O或主机配置。
+
+### 11.8 R-a.1红回归（原R-a生产实现，首次结果保留）
+
+设计提交`3a8f3c9`后，仅添加/更新纯内存测试；Go1.23.1、GOMAXPROCS=28。
+`TestSelectionEarlyCapabilityDoesNotShortenConfirmWindow`首跑按预期RED：
+测试2.22s、package2.922s；side1实际收到capability比其Start早300,926,000ns，
+其proposal/confirm分别在本地pass之后951,743,300ns/1,901,327,000ns投递。
+side0 bound、执行1次；side1 failed、`selection_timeout`、零执行，完整双侧日志留存。
+worker=0、queued=6，无重发；这是窗口削短的协议反例，不是夹具启动或编译失败。
+同版`TestSelectionFirstConfirmDeadlineBounds`首跑只有received_before_start子例RED，
+其余7个边界PASS。旧1900ms不能满足新2000ms期望；不把这次预期RED混入实现后验收。

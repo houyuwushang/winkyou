@@ -23,12 +23,16 @@ func TestSelectionFirstConfirmDeadlineBounds(t *testing.T) {
 		{"remaining_budget", 1900 * time.Millisecond, 2 * time.Second, 2100 * time.Millisecond, 2100 * time.Millisecond},
 		{"exhausted", 1900 * time.Millisecond, 2 * time.Second, 1900 * time.Millisecond, 1900 * time.Millisecond},
 		{"already_expired", 1900 * time.Millisecond, 2 * time.Second, time.Second, time.Second},
-		{"received_before_start", -100 * time.Millisecond, 2 * time.Second, 25 * time.Second, 1900 * time.Millisecond},
+		{"received_before_start", -100 * time.Millisecond, 2 * time.Second, 25 * time.Second, 2000 * time.Millisecond},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			received := start.Add(tc.received)
+			anchor := received
+			if anchor.Before(start) {
+				anchor = start
+			}
 			got := firstSelectionConfirmDeadline(start, received, tc.window, tc.budget)
-			if !got.Equal(start.Add(tc.end)) || got.After(start.Add(tc.budget)) || got.After(received.Add(2*time.Second)) {
+			if !got.Equal(start.Add(tc.end)) || got.After(start.Add(tc.budget)) || got.After(anchor.Add(2*time.Second)) {
 				t.Fatal("confirmation window extended the local subwindow or original budget")
 			}
 		})
