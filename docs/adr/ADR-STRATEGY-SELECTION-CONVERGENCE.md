@@ -921,8 +921,7 @@ causal-tests-race20-first.jsonl      c3f5c5b028116df4d1c51bdc4ac17cbb0b40bb7a5c2
    第12轮`TestEngineStartPersistsRuntimeStateAndStopRemovesIt`出现race，package26.867s。
    新后台`engine.snapshot → syncTunnelPeerStateLocked`读取`tun`，与`Start`原无锁
    `e.tun = tun`发布并发。不是旧隔离flake，不归因于协调器/预算；修复为持同一`e.mu`
-   发布`tun`，在正式新首跑前补测。原日志` snapshot-focused-race20-first.jsonl`
-   （文件名无前置空格）SHA-256：
+   发布`tun`，在正式新首跑前补测。原日志`snapshot-focused-race20-first.jsonl` SHA-256：
    `e300085dbba06257e06444bd75333ca2d416310ff9558ea1575308a2ad3e7e41`。
 4. Stop的短生命周期所有权以`TryLock`取得：并发或status回调重入Stop立即返回
    `runtime_snapshot_drain_pending`，不排队、不自锁。当前Stop返回pending后，再次调用
@@ -932,3 +931,64 @@ causal-tests-race20-first.jsonl      c3f5c5b028116df4d1c51bdc4ac17cbb0b40bb7a5c2
    tunnel发布补锁，不改连接/选择/探测数字。新增源码门禁覆盖9个小型并发原语、
    legacy engine同步I/O入口、单constructor、Start/Stop顺序及22条违规变异；原
    SelectionConvergence门禁与21条变异另行保留。完整新压力/全仓/CI结果仍待记录。
+
+### 11.14 状态快照解耦后新首跑仍RED，停止后续验收
+
+测试生产head：`38c08994e5be059db15dc0a0f63deffce7885ec9`。此后本节提交只记证据。
+Go1.23.1/windows-amd64，原GOMAXPROCS=28，原56个CPU worker，每轮65,536次迭代后
+yield；原fixture/选路窗口/25s RunTimeout/30s transport断言/2/4/8/10s退避未改。
+无test overlay；#111压力关闭。本批不是§11.10或§11.11的rerun替代品。
+
+| 新批次 | 实测结果 | 边界 |
+| --- | --- | --- |
+| 发布锁修正后的focused race×20 | **15项各20轮PASS**，package53.248s | 包含原文件启停、同文件原子读写及新增writer/隔离/排水/重入；不替代全包race |
+| pressure50 first | **2 PASS，第3例FAIL**；47例未运行；package84.323s，命令91.439s | fail-fast；两例PASS为22.31s、24.98s；失败36.45s包含原断言等待和cleanup，不是把30s断言改为36.45s |
+| 无压力100、独立relay race20、session/client race20、architecture20、全仓#116分区、全仓vet | **全部未开始** | 脚本在pressure非零退出即停；未借旧批次PASS填空 |
+| CI | **未推送、未新触发、未rerun** | 保持原Draft；不宣告门禁闭合 |
+
+新focused PASS原日志`snapshot-publication-fixed-race20-first.jsonl` SHA-256：
+`0001f80c680ca73a369b3cc6d0b307b33a9462bf620d77b099c029210569a18b`。
+新pressure首跑原日志`pressure50-first.jsonl` SHA-256：
+`b7f81f937581a306f9668d87e74313c01001dd3710eadd1008b28052656f6ad9`。
+两者与前述RED、诊断源文件分开留在仓库外，不公开含fixture实例数据的原日志。
+
+第3例的完整脱敏状态时间线及退出见证如下（仅去掉Go文件/行号日志前缀）：
+
+```text
+relay_timeline side=1 elapsed_ms=0 sessions=0 []
+relay_timeline side=2 elapsed_ms=0 sessions=0 []
+cpu_stress cores=28 gomaxprocs=28 workers=56 iterations_per_yield=65536
+relay_timeline side=2 elapsed_ms=200 sessions=1 [state=capability_exchange strategy= negotiated=false capability=false envelope= path_commit=false connecting=true bound=false retry_pending=false retry_ms=0]
+relay_timeline side=1 elapsed_ms=484 sessions=1 [state=selecting strategy= negotiated=false capability=true envelope=capability path_commit=false connecting=true bound=false retry_pending=false retry_ms=0]
+relay_timeline side=2 elapsed_ms=484 sessions=1 [state=capability_exchange strategy= negotiated=false capability=false envelope=selection_proposal path_commit=false connecting=true bound=false retry_pending=false retry_ms=0]
+relay_timeline side=2 elapsed_ms=500 sessions=1 [state=selecting strategy= negotiated=false capability=true envelope=capability path_commit=false connecting=true bound=false retry_pending=false retry_ms=0]
+relay_timeline side=1 elapsed_ms=884 sessions=1 [state=selecting strategy= negotiated=false capability=true envelope=selection_proposal path_commit=false connecting=true bound=false retry_pending=false retry_ms=0]
+relay_timeline side=1 elapsed_ms=1051 sessions=1 [state=probing strategy=relay_only negotiated=true capability=true envelope=selection_proposal path_commit=false connecting=true bound=false retry_pending=false retry_ms=0]
+relay_timeline side=2 elapsed_ms=1051 sessions=1 [state=selecting strategy= negotiated=false capability=true envelope=probe_script path_commit=false connecting=true bound=false retry_pending=false retry_ms=0]
+relay_timeline side=1 elapsed_ms=1100 sessions=1 [state=probing strategy=relay_only negotiated=true capability=true envelope=observation path_commit=false connecting=true bound=false retry_pending=false retry_ms=0]
+relay_timeline side=2 elapsed_ms=1100 sessions=1 [state=selecting strategy= negotiated=false capability=true envelope=observation path_commit=false connecting=true bound=false retry_pending=false retry_ms=0]
+relay_timeline side=2 elapsed_ms=1518 sessions=1 [state=executing strategy=relay_only negotiated=true capability=true envelope=observation path_commit=false connecting=true bound=false retry_pending=false retry_ms=0]
+relay_timeline side=1 elapsed_ms=3405 sessions=1 [state=planning strategy=relay_only negotiated=true capability=true envelope=observation path_commit=false connecting=true bound=false retry_pending=false retry_ms=0]
+relay_timeline side=1 elapsed_ms=3451 sessions=1 [state=executing strategy=relay_only negotiated=true capability=true envelope=observation path_commit=false connecting=true bound=false retry_pending=false retry_ms=0]
+relay_timeline side=1 elapsed_ms=6220 sessions=1 [state=executing strategy=relay_only negotiated=true capability=true envelope=probe_result path_commit=false connecting=true bound=false retry_pending=false retry_ms=0]
+relay_timeline side=1 elapsed_ms=6250 sessions=1 [state=executing strategy=relay_only negotiated=true capability=true envelope=observation path_commit=false connecting=true bound=false retry_pending=false retry_ms=0]
+relay_timeline side=1 elapsed_ms=27850 sessions=1 [state=failed strategy=relay_only negotiated=true capability=true envelope=observation path_commit=false connecting=false bound=false retry_pending=true retry_ms=2000]
+relay_timeline side=1 elapsed_ms=29350 sessions=0 []
+relay_timeline side=1 elapsed_ms=29600 sessions=1 [state=capability_exchange strategy= negotiated=false capability=false envelope=observation path_commit=false connecting=true bound=false retry_pending=false retry_ms=0]
+relay_timeline side=2 elapsed_ms=29600 sessions=1 [state=executing strategy=relay_only negotiated=true capability=true envelope=capability path_commit=false connecting=false bound=false retry_pending=true retry_ms=2000]
+relay_timeline observer_workers=0
+cpu_stress workers_remaining=0
+```
+
+失败断言仍为原`timed out waiting for relay transport`。双方已完成initial selection并
+进入executing，但未在原transport等待内形成bound；不是#136的pre-protocol Start失败。
+两侧首次executing快照相差`3451−1518=1933ms`，side1从6250ms到27850ms未见状态
+变化。**这不是同一frame的send/receive观测，不能据此断言“单向网络投递1.933s”或
+把21.6s静默归因于文件系统/GC/某executor。**本次没有runtime/trace，不能证明新的
+压力失败仍由MoveFileEx造成，也不能声称§11.11的真实OS阻塞原因已查清。
+
+按既定“失败先停并保留完整时间线”的保守边界停止，不改任何数字、不继续批次或推送。
+确证的是：新单元/race矩阵内普通snapshot I/O已不再同步占用控制回调；**完整relay
+压力问题尚未闭合**。若继续定位，需要单独的测试侧精确frame/执行阶段观测，不能拿
+状态快照差冒充真实单向投递测量。三例各有observer join与CPU workers=0，共3+3份
+见证；本轮测试进程已退出。安全ledger、配置、工作流、#111与现场权限均未变。
