@@ -233,6 +233,11 @@ func (c *livenessController) writer() {
 			want := len(e.packet)
 			n, err := c.ni.InjectPacket(e.packet)
 			c.model.endWrite(err == nil && n == want && !e.teardown)
+			if err == nil && n == want && e.teardown {
+				c.model.mu.Lock()
+				c.model.witness.CloseInnerInjected++
+				c.model.mu.Unlock()
+			}
 			clear(e.packet)
 			if err != nil || n != want {
 				select {
@@ -301,10 +306,12 @@ func (c *livenessController) run(ctx, session context.Context) (string, error) {
 		case <-ctx.Done():
 			c.bestEffortClose(timer.C)
 			c.end(nil)
-			if c.closeWrites != 0 {
-				return "authenticated_close_sent", nil
-			}
-			return "canceled", nil
+			// Do not mask a writer/owner/clock failure during best effort. A
+			// successful inner enqueue is not proof of an outer CLOSE write.
+			c.model.mu.Lock()
+			err := c.model.terminal
+			c.model.mu.Unlock()
+			return livenessEnd(err)
 		case event := <-c.inbound:
 			if err := c.permit(); err != nil {
 				c.end(err)
@@ -371,6 +378,10 @@ func livenessEnd(err error) (string, error) {
 }
 
 // Original WYCE only; one best-effort teardown event, never a liveness renewal.
+// The original admission-relative 1s window gives asynchronous WG a bounded
+// opportunity to send. Neither unrelated ActiveWrites nor InjectPacket success
+// identifies this CLOSE's outer completion, so neither may end that window or
+// increment Echo.CloseWritten. Permit/revocation/absolute expiry still wins.
 func (c *livenessController) bestEffortClose(ticks <-chan time.Time) {
 	if c.permit() != nil {
 		return
@@ -395,15 +406,16 @@ func (c *livenessController) bestEffortClose(ticks <-chan time.Time) {
 	for i, intent := range c.model.intents {
 		if intent == nil {
 			c.model.intents[i] = e
+			c.model.witness.CloseAdmitted++
 			placed = true
 			break
 		}
 	}
 	c.model.mu.Unlock()
 	if !placed {
+		clear(packet)
 		return
 	}
-	before := c.gate.Witness().ActiveWrites
 	c.enqueue(e)
 	for {
 		if c.permit() != nil {
@@ -411,12 +423,14 @@ func (c *livenessController) bestEffortClose(ticks <-chan time.Time) {
 		}
 		c.model.mu.Lock()
 		expired, err := c.model.windowExpiredLocked(e.window)
+		writing := c.model.writing
 		c.model.mu.Unlock()
 		if expired || err != nil {
-			return
-		}
-		if c.gate.Witness().ActiveWrites > before {
-			c.closeWrites++
+			// Do not let the foreground cancellation beat the watchdog and
+			// disguise a stalled inner writer as a clean best-effort miss.
+			if expired && err == nil && writing {
+				_ = c.hardViolation(probeio.SessionWriterFailure)
+			}
 			return
 		}
 		select {

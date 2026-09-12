@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -18,10 +19,15 @@ type closeTestInterface struct {
 	entered chan struct{}
 	err     error
 	short   bool
+	stall   bool
 }
 
 func (f *closeTestInterface) InjectPacket(packet []byte) (int, error) {
 	close(f.entered)
+	if f.stall {
+		<-f.closed
+		return 0, io.ErrClosedPipe
+	}
 	if f.err != nil {
 		return 0, f.err
 	}
@@ -32,21 +38,22 @@ func (f *closeTestInterface) InjectPacket(packet []byte) (int, error) {
 }
 
 func TestLivenessCloseInnerReceiptIsNotOuterSend(t *testing.T) {
-	for _, mode := range []string{"injected", "writer-error", "short-write"} {
+	for _, mode := range []string{"injected", "writer-error", "short-write", "writer-stall"} {
 		t.Run(mode, func(t *testing.T) {
 			m, clock := testLivenessModel(t, 3)
-			ni := &closeTestInterface{sessionTestInterface: newSessionTestInterface(), entered: make(chan struct{}), short: mode == "short-write"}
+			ni := &closeTestInterface{sessionTestInterface: newSessionTestInterface(), entered: make(chan struct{}), short: mode == "short-write", stall: mode == "writer-stall"}
 			if mode == "writer-error" {
 				ni.err = io.ErrClosedPipe
 			}
 			var reports atomic.Int64
+			var reportOnce sync.Once // mirrors the durable owner's idempotent trip
 			c := &livenessController{model: m, ni: ni, gate: &probeio.WireGuardSessionGate{},
 				random: bytes.NewReader(make([]byte, 8)), ownerAvailable: func() error { return nil },
 				reportViolation: func(v probeio.SessionViolation) error {
 					if v != probeio.SessionWriterFailure {
 						t.Errorf("unexpected violation: %v", v)
 					}
-					reports.Add(1)
+					reportOnce.Do(func() { reports.Add(1) })
 					return nil
 				},
 				stop: make(chan struct{}), writerDone: make(chan struct{}), watchdogDone: make(chan struct{}),
@@ -94,6 +101,9 @@ func TestLivenessCloseInnerReceiptIsNotOuterSend(t *testing.T) {
 				}
 				clock.advance(time.Second)
 			}
+			if mode == "writer-stall" {
+				clock.advance(time.Second)
+			}
 			var got outcome
 			select {
 			case got = <-done:
@@ -132,6 +142,22 @@ func TestLivenessCloseInnerReceiptIsNotOuterSend(t *testing.T) {
 			}
 			if receipt.Admitted != 1 || receipt.Injected != want || m.snapshot().InnerInjected != 0 || !m.snapshot().Drained {
 				t.Errorf("CLOSE receipt or separate liveness accounting: %+v witness=%+v", receipt, m.snapshot())
+			}
+		})
+	}
+}
+
+func TestLivenessCloseExpiredPermitNeverAdmits(t *testing.T) {
+	for _, elapsed := range []time.Duration{65 * time.Second, 10 * time.Minute} {
+		t.Run(elapsed.String(), func(t *testing.T) {
+			m, clock := testLivenessModel(t, 3)
+			clock.advance(elapsed)
+			c := &livenessController{model: m, random: bytes.NewReader(make([]byte, 8)), ownerAvailable: func() error { return nil }}
+			// No gate, writer or interface exists. Accessing any I/O panics;
+			// an expired permit must return before constructing the intent.
+			c.bestEffortClose(nil)
+			if m.snapshot().CloseAdmitted != 0 || m.snapshot().CloseInnerInjected != 0 || c.closeWrites != 0 {
+				t.Fatal("expired CLOSE acquired an emission receipt")
 			}
 		})
 	}

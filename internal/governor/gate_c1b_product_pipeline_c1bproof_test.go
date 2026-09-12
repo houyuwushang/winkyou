@@ -34,6 +34,7 @@ import (
 	"winkyou/internal/v2/pairgen"
 	"winkyou/internal/v2/sshassembly"
 	"winkyou/pkg/config"
+	"winkyou/pkg/netif"
 	"winkyou/pkg/tunnel"
 )
 
@@ -451,6 +452,11 @@ func runGateC1bMemoryProductProfile(t *testing.T, label string, test gateC1bMemo
 	scheduleLiveness := func(fn func()) *time.Timer {
 		return time.AfterFunc(test.liveness.hold, func() { defer close(livenessTimerDone); fn() })
 	}
+	stopHealthyLiveness := func() {
+		test.liveness.captureHealth()
+		cancelInitiator()
+		cancelResponder()
+	}
 	var joinTimerOnce sync.Once
 	joinLivenessTimer := func() {
 		joinTimerOnce.Do(func() {
@@ -509,10 +515,10 @@ func runGateC1bMemoryProductProfile(t *testing.T, label string, test gateC1bMemo
 											businessCtx, stop := context.WithTimeout(initiatorCtx, 5*time.Second)
 											test.liveness.faultError = test.liveness.controls[0].ExchangeBusiness(businessCtx, test.liveness.controls[1])
 											stop()
-											cancelInitiator()
+											stopHealthyLiveness()
 										case "normal-admission":
 											test.liveness.admission, test.liveness.faultError = test.liveness.controls[0].RejectNormalAdmission()
-											cancelInitiator()
+											stopHealthyLiveness()
 										case "automatic-control":
 											test.liveness.faultError = test.liveness.controls[0].ExceedAutomaticControl(initiatorCtx)
 										case "bypass-admission":
@@ -522,7 +528,15 @@ func runGateC1bMemoryProductProfile(t *testing.T, label string, test gateC1bMemo
 										}
 									})
 								} else if test.liveness.lossDirection == 0 {
-									livenessCancelTimer = scheduleLiveness(cancelInitiator)
+									livenessCancelTimer = scheduleLiveness(func() {
+										if test.liveness.closeMode == "" {
+											stopHealthyLiveness()
+										} else {
+											test.liveness.captureHealth()
+											test.liveness.faultAt.Store(time.Now().UnixNano())
+											cancelInitiator() // dedicated delivery/loss proof, not idle health
+										}
+									})
 								} else {
 									livenessCancelTimer = scheduleLiveness(func() {
 										test.liveness.faultAt.Store(time.Now().UnixNano())
@@ -562,6 +576,11 @@ func runGateC1bMemoryProductProfile(t *testing.T, label string, test gateC1bMemo
 			if test.liveness != nil {
 				proof.Random = nil
 				proof.LivenessArmed = func(control gatecorchestrator.LivenessMemoryProofControl) { test.liveness.controls[index] = control }
+				if test.liveness.closeMode == "interleaved" && index == 0 {
+					proof.WrapMemoryInterface = func(ni netif.MemoryTestInterface) netif.MemoryTestInterface {
+						return &closeInterleavingInterface{MemoryTestInterface: ni, proof: test.liveness, closed: make(chan struct{})}
+					}
+				}
 				proof.ProbeFactory = &livenessLossFactory{Factory: proof.ProbeFactory, proof: test.liveness, side: index}
 				livenessRestartProofs[index] = proof
 			}
