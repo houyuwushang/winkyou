@@ -611,7 +611,7 @@ func (router *gateB2NATRouter) newMapping(key gateB2NATKey, internal, target net
 	}
 	mapping := &gateB2NATMapping{
 		connection: connection, internal: internal, public: public,
-		allowed:   make(map[netip.AddrPort]struct{}, 512),
+		allowed:   newGateB2AllowedSources(),
 		createdAt: time.Now(),
 	}
 	router.mappingsMu.Lock()

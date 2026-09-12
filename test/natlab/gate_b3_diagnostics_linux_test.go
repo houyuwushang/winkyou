@@ -3,12 +3,19 @@
 package natlab
 
 import (
+	"runtime"
 	"testing"
 	"time"
 )
 
 func logGateB3RouterPair(t testing.TB, pair ...*gateB2NATRouter) {
 	t.Helper()
+	// Process-wide, point-in-time measurements, not a per-attempt peak and
+	// not proof that memory/GC caused a timeout. No forced GC or new worker.
+	var memory runtime.MemStats
+	runtime.ReadMemStats(&memory)
+	t.Logf("GATE_B3_NAT_MEMORY heap_alloc=%d heap_inuse=%d stack_inuse=%d total_alloc=%d num_gc=%d pause_total_ns=%d goroutines=%d",
+		memory.HeapAlloc, memory.HeapInuse, memory.StackInuse, memory.TotalAlloc, memory.NumGC, memory.PauseTotalNs, runtime.NumGoroutine())
 	for side, router := range pair {
 		if router == nil {
 			t.Logf("GATE_B3_NAT_DIAGNOSTIC side=%d available=false", side)

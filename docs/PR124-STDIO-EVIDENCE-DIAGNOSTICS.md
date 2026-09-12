@@ -73,3 +73,40 @@ Windows 的交叉 vet 不冒充实际执行；失败原文留仓库外，公开�
 | 独立 relay race×20 | `38b7fca11188e91bbec9af337c1c2c54749f5c06c976cb596a7d27e79ceccb61` |
 
 新 head 的 CI 首跑仍待执行；不得据此声称两个历史 CI 根因均已解决。
+
+## 后续首跑：NAT 转发积压与稀疏存储修复
+
+`f073ecb` 的 [Mapping Lifetime 推送侧首跑](https://github.com/houyuwushang/winkyou/actions/runs/34710914297/job/103599434035)
+在 `M_X_single_side_filter_before_winner` 失败（67.26s，整包 440.26s），原日志
+SHA-256 为 `ad73f6167c72aa2f37e361e6ce80bc92e0014df6e752ff4da1eba0bcb1b12dc4`。
+该失败不被同 head 的 PR 侧 PASS 或后续批次覆盖。
+
+- 两侧 `CandidateRead=16384`，所有 slot/tail 已读；TUN 丢包计数为 0。
+  超时见证为 `got=12499 want=16397`，两路 router 仍在转发、未记录运行错误。
+- 首包 mapping barrier/deny 协调约 13ms 完成，不能把此次积压归因于旧的首包等待故障。
+  后续 `context_canceled` 在失败清理时才出现，不冒充最初根因。
+- 失败路径独立完成七项清理：发包计数不再增长、socket=0、process=0、
+  conntrack `58786 → 0`、namespace/veth 与原配置恢复均成功。`ledger_acceptance=false`、
+  `scenario_pass=false` 保留，清理通过不等于场景通过。
+
+源码确认一项独立的无效分配：每条 APDM 映射仅对应一个目标，却为 `allowed` 预留 512 个目标。
+改为按需增长的空 map；EIM 仍可增长，不增加目标上限，不改变过滤、过期 `clear`、mapping/端口分配、
+每映射 UDP socket 或报文缓冲区。新增真实构造点检查、恢复 512 hint 的变异拒绝、
+1024 个纯值目标的增长/所有权/清空测试，两个 required Gate B3 矩阵均调用这些回归。
+
+Windows / Go 1.23.1，固定 1000 次、单目标、零 socket 的 `-benchmem` 首跑：
+
+| 构造表达式 | B/op | allocs/op |
+| --- | ---: | ---: |
+| 原 `make(map[netip.AddrPort]struct{}, 512)` | 41042 | 3 |
+| 实际新构造器 `newGateB2AllowedSources()` | 336 | 2 |
+
+这是本地分配量测量；按双端 32768 条 candidate mapping 推算可避免约 1.24 GiB 分配，
+**不是原 CI 的 RSS/GC 测量，也不能单凭它认定原超时的唯一原因**。保留原 RED，并在 router
+诊断中加入进程级时点 `heap_alloc/heap_inuse/stack_inuse/total_alloc/num_gc/pause_total_ns/goroutines`，
+不强制 GC、不启新 worker，不把时点数值宣称为每 attempt 峰值。
+
+验证首跑：`go vet ./...`、全仓 #116 分区（88 个测试包）、架构门禁（8.522s）与 Linux tagged vet 均 PASS；
+独立 relay race×20 为 20/20 PASS（143.243s），20 次 observer join；natlab 原生纯测试 race×20
+PASS（3.847s），新存储回归单独 race×20 PASS（1.589s）。没有修改生产代码、工作流、47s envelope、
+router witness 等待界、目标/包/PPS 预算或任何现场配置；Linux OS 组合效果等待新提交的首跑 CI。
