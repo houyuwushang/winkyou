@@ -22,7 +22,8 @@ endpoint A netns -> NAT A netns -> public netns <- NAT B netns <- endpoint B net
 
 - 每个 endpoint 是独立子进程，并使用独立临时 machine governor namespace；
 - 所有接口地址仅来自 RFC 5737 的 TEST-NET-1/2/3；测试结果与日志不记录 endpoint；
-- NAT 通过 netfilter 提供三档：显式 1:1、端口保持的 EIM 参考档；仅端口保持 SNAT、
+- NAT 提供三档：EIM/EIF 单 endpoint 参考档由 `tc nat` 执行无状态 1:1 IPv4 转换，
+  只改地址与校验和、不分配/改写端口；TCP 仍走原 SNAT。仅 SNAT、
   保留 conntrack address+port-dependent 过滤的 **port-restricted 档**（盲发同时开洞
   语义所针对的代表场景）；以及随机端口加同样过滤的 EDM 档。两个 NAT 网关像消费级
   路由器一样丢弃发往自身 WAN 地址的未经请求 UDP——否则过早到达的对端开洞报文会被
@@ -30,6 +31,10 @@ endpoint A netns -> NAT A netns -> public netns <- NAT B netns <- endpoint B net
   netem 建模 5ms 传播时延：真实部署中 FIRE 控制路径必然跨 rendezvous（毫秒级），而
   SYN 出站紧随本端 FIRE 写出（微秒级），零时延实验室会反转该物理顺序，使被过滤的
   盲发 SYN_ACK 在无重传的冻结语义下无从恢复；时延建模只还原物理顺序，不改协议；
+- EIM 参考档不再用 UDP DNAT/SNAT 组合充当严格保端口保证：conntrack 遇 tuple 冲突
+  可隐式改写源端口。每个成功 N2d/N3b 用例额外核对两个 NAT 的 ingress/egress 转换
+  action 计数与原 endpoint UDP 计数完全相等；缺失统计或 action drop 直接失败。
+  改动与首跑证据见 [PR124 诊断记录](./PR124-STDIO-EVIDENCE-DIAGNOSTICS.md)。
 - public namespace 内运行现有 `internal/stunserver` 与 N2c 的两方、有界、不透明帧
   test server；两者均由 harness 创建和销毁；
 - 本地 UDP 仍是 wildcard + ephemeral bind。endpoint 只经 `ProbeSocket.LocalAddr` 取得

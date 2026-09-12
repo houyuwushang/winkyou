@@ -23,6 +23,7 @@ func TestLinuxN2DEndToEndProof(t *testing.T) {
 
 	t.Run("n3b_diagnostic_contract", testN3BDiagnosticRequiredContracts)
 	t.Run("n2d_failure_cause_contract", TestN2DCauseWitnessTypedErrorsAndPrivacy)
+	t.Run("eim_mapping_contract", TestN2DEIMMappingContract)
 	t.Run("eim_eim_success_exact_witness", testN2DEIMSuccess)
 	t.Run("n3b_stdio_v2_eim_eim_product_entry", testN3BStdioV2EIMSuccess)
 	t.Run("port_restricted_blind_open_success", testN2DPortRestrictedSuccess)
@@ -71,6 +72,7 @@ func runN2DEIMSuccess(t *testing.T, repetitions int, diagnostics bool) {
 			assertN2DSuccessResult(t, initiatorResult, directattempt.RoleInitiator)
 			assertN2DSuccessResult(t, responderResult, directattempt.RoleResponder)
 			assertN2DPacketResultMatch(t, counts, initiatorResult, responderResult)
+			assertN2DEIMTranslationCounts(t, topology, counts)
 			if counts.InitiatorDirect != 2 || counts.ResponderDirect != 1 {
 				t.Fatalf("N2d direct witness = %d/%d, want exact 2/1", counts.InitiatorDirect, counts.ResponderDirect)
 			}

@@ -54,6 +54,7 @@ func runN3BStdioV2EIMSuccess(t *testing.T) {
 	assertN2DSuccessResult(t, responderResult, directattempt.RoleResponder)
 	counts := requireN2DPacketCounts(t, topology)
 	assertN2DPacketResultMatch(t, counts, initiatorResult, responderResult)
+	assertN2DEIMTranslationCounts(t, topology, counts)
 	if counts.InitiatorDirect != 2 || counts.ResponderDirect != 1 || counts.InitiatorTotal > 5 || counts.ResponderTotal > 4 {
 		t.Fatalf("N3b stdio v2 UDP witness exceeded the frozen N2 envelope: %+v", counts)
 	}

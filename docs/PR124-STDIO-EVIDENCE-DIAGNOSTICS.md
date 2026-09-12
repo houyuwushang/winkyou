@@ -1,7 +1,8 @@
 # PR #124：stdio 与 fresh-evidence 首跑故障见证
 
 2026-09-13，维护者授权继续定位、修复并验证；沿用原 Draft PR，不自行合并。
-此切片只修复测试诊断信息丢失，不改产品协议、配置、工作流或资源/时间上限。
+最初切片修复测试诊断信息丢失；后续测试夹具修复与每次首跑分节追加。
+不改产品协议、配置、工作流或资源/时间上限。
 
 ## 原始 RED（不被后续 PASS 覆盖）
 
@@ -305,3 +306,79 @@ READY 阻塞的历史触发根因仍待新首跑见证，不据此自我批准�
 | 最终三 profile race×20 | `cd66d5c3f63bf0120fc8f7a74fbeb2f06fdbba49f4867bb0e07e299353c9d0b1` |
 | 最终 slow-FINISH asymmetric race×20 | `f1de86f5ede61296e2c5fbeec14f20306bdee14a8cfcc538c1e32e47ce308648` |
 | pinned 私有 stack 诊断 | `eca1bd8c1936dbc9c3cb35ccac5e1f54e5e55bd207b7278b791eb284df3537c0` |
+
+## `5e7ef63` 首跑：取得原始拒绝类与计划阶段时间线
+
+本节记录原始失败，不以另一 job 的 PASS 覆盖，也没有 rerun。
+该 head 首跑最终为 **55 PASS / 3 FAIL / 1 CANCELLED（共 59）**：两项实际失败、
+一项派生 liveness 汇总失败，另一个 Windows C1b job 达到平台 25 分钟上限。
+
+- [N3b 推送侧](https://github.com/houyuwushang/winkyou/actions/runs/34717142097/job/103616311427)：
+  第 18 个 fresh 用例失败（0.69s，之前 17 PASS）；responder 原因明确为
+  `unregistered_target`、`context=active`、`network_timeout=false`，进度止于 `punch_sent`。
+  initiator 已经 `punch`，随后 `verification_failed@verify`。这不是 1.5s 超时。
+  STUN `1/1`、direct `2/1`；socket/process/server active 全部零、packet stable、
+  conntrack `7 → 0`、namespace/veth 无残留。此历史 N3b 样本没有保存实际 source
+  端口关系，不能把“已观察到端口改写”写成事实。
+- 同 job 的预期 EDM 负向用例确实取得 `peer_address_different_port`；它证明新见证
+  能区分错误来源，但不是上述 EIM/N3b 样本的端点证据。
+- [PR 侧 N2d/N3b](https://github.com/houyuwushang/winkyou/actions/runs/34717145431/job/103616325454)
+  的 3 + 20 次 fresh 正向均 PASS；[独立 N2d repeat](https://github.com/houyuwushang/winkyou/actions/runs/34717145371/job/103616321219)
+  30/30 PASS。它们没有覆盖或消除原 RED。
+- [Windows model](https://github.com/houyuwushang/winkyou/actions/runs/34717145358/job/103616319642)：
+  asymmetric 10.48s，两端 `attempt_expired@ready`、零 candidate、liveness 未 armed。
+  新见证定位到 `freezeAndExchangePlan` 区间：side 0 的 fresh/plan 为
+  `799326300 / 10429994700 ns`（差 `9630668400 ns`）；side 1 为
+  `556282800 / 10193603900 ns`（差 `9637321100 ns`）。所有 stream Read/Write 均已结束；
+  最后的 write 在约 7.22s / 8.56s 执行，read 在约 10.16s 以 EOF/deadline 结束。
+  这是计划构造/交换阶段的实测定位，不是 FINISH 慢写，也不能单凭它进一步归因调度器。
+- [Windows C1b PR 侧](https://github.com/houyuwushang/winkyou/actions/runs/34717145431/job/103616325434)
+  check annotation 明确为 `maximum execution time of 25m0s`。取消时 fresh-81 正在
+  observation，两端报 `context canceled`，不能记为 Fresh100 通过，也不能无证据地把
+  平台取消另判为一次 250ms 回复超时。原始日志 SHA-256：
+  `b5e1129ebffb8b2db5295f90de67770c99bf6bc4b31e4667ec004f727edb48a8`。
+
+| 原始 HTTP UTF-8 日志 | SHA-256 |
+| --- | --- |
+| N3b typed RED | `1474a1b83b391f50cce138838015a09899868a45a358b59a36bde77db0c48221` |
+| N2d/N3b PR PASS | `f16c67c0f6d8d53181e4a9159ed83d2068ec33dd589da6a8a3c4a8d79b27f479` |
+| N2d repeat 30/30 PASS | `d55f3b8b6c8ffc0b3518e1a9c89fd257480be4bf35095bf23cf91ed1cb49affc` |
+| Windows plan-stage RED | `cbb19ff73142ab84ea53c9c514eb0703fabb33cfae5e17fa76d0bf2e91a33aaf` |
+
+### EIM 参考模型修正（不是放宽生产源校验）
+
+旧参考档的 UDP DNAT/SNAT 只倾向保留端口，并非严格保证。Netfilter 文档明确说明
+tuple 冲突时允许隐式改写源端口；这与用例要求的 EIM/EIF 单 endpoint 参考模型不同。
+这证明一项独立模型缺陷；不把旧样本归为某个未核实的 kernel 版本或特定内核 bug。
+[Netfilter NAT 行为说明](https://www.netfilter.org/documentation/HOWTO/NAT-HOWTO-6.html)
+
+- 仅 `linux && natlab` 的 EIM/EIF 档改用 `tc nat`：WAN ingress 改目的 IP、egress
+  改源 IP，IPv4/UDP/固定 `/32` 拓扑白名单；校验和由 action 修正，端口不改写。
+  不再建立 UDP conntrack NAT 映射。TCP、restricted/EDM 规则和原 5ms netem 均不变。
+  [iproute2 nat action 规范](https://man7.org/linux/man-pages/man8/tc-nat.8.html)
+- 配置只作用于本 fixture 已创建的两个 NAT namespace。未知 mode/地址组合返回空计划；
+  配置失败直接结束，不 fallback 到旧规则。endpoint socket 仍为 governed wildcard/ephemeral。
+- 新契约逐项固定生成命令；恢复 UDP SNAT、缺少一个方向、反转方向或改 UDP port 均被
+  变异测试拒绝。原测试成功/失败类、预算、次数与协议顺序没有调整。
+- N2d/N3b 每个成功样本新增独立 tc action 报文计数，逐端核对 ingress = 本端 STUN +
+  对端 direct、egress = 本端 UDP total；统计缺失/歧义/溢出/drop 不是零值。
+  原 probeio 来源校验与双向 VERIFY 仍是必须条件，失败路径也输出脱敏计数。
+- 本机 Windows 无 Linux netns 权限；纯函数 race×20 已通过（1.450s），不冒充 OS 执行。
+  修正后的真实 TC 转换、计数与 teardown 必须由新 head required CI 首跑证明。
+
+本次 EIM 修正的本地首跑（显式 Go 1.23.1）：
+
+| 范围 | 结果 |
+| --- | --- |
+| 新 EIM 纯契约 / 隐私 / 变异 race×20 | PASS，1.450s；仅仓库外纯函数 overlay，Linux 源文件标签不变。 |
+| 原生 natlab 纯测试 race×20 | PASS，3.858s。 |
+| 全仓 #116 分区 | PASS，88 个测试包 + 11 无测试包，governor 122.470s。 |
+| 独立 relay race×20 | PASS，20/20，141.473s，observer join 20 次。 |
+| vet / architecture + mutation / Linux tagged cross-vet、完整交叉链接 | PASS；架构 8.728s。交叉链接不冒充真实 Linux 执行。 |
+
+| 本地封存捕获文本（UTF-16LE） | SHA-256 |
+| --- | --- |
+| EIM contract | `a9018abd709c62de1419a98988110b21d6909f56e4140e4baa1a517fbc2c1bc7` |
+| native natlab | `60a3806819b602d987dd73755fa802581bc12cb19c185a34ff4eab414eb279fa` |
+| full | `afc49fe16ea20d8f9256410ab6ce9df06603b4d7020def52537a3f918a80ce6d` |
+| relay | `38622a6ee07b17b95e303d752940e11b9dadd1a84818a92ffede47811e0236c2` |

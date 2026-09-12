@@ -71,6 +71,8 @@ func n3bFailedCaseDiagnostics(t testing.TB, topology *n2dTopology, servers *n2dS
 	sockets, socketErr := topology.socketCount()
 	processes, processErr := topology.processCount()
 	t.Logf("N3B_FAILURE_OS sockets=%d sockets_valid=%t processes=%d processes_valid=%t", sockets, socketErr == nil, processes, processErr == nil)
+	translations, translationErr := topology.eimTranslationCounts()
+	t.Logf("N3B_FAILURE_TRANSLATION ingress_egress=%v valid=%t", translations, translationErr == nil)
 	ctBefore, ctAfter, ctErr := topology.flushConntrack()
 	t.Logf("N3B_FAILURE_CONNTRACK before=%d after=%d valid=%t", ctBefore, ctAfter, ctErr == nil)
 	cleanupErr := topology.cleanup()
