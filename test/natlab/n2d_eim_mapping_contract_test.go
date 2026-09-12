@@ -19,6 +19,11 @@ func TestN2DEIMMappingContract(t *testing.T) {
 				t.Fatal("documented disposable model rejected")
 			}
 			prefix := "*nat\n:PREROUTING ACCEPT [0:0]\n:INPUT ACCEPT [0:0]\n:OUTPUT ACCEPT [0:0]\n:POSTROUTING ACCEPT [0:0]\n"
+			if mode == n2dMappingEIM {
+				prefix = "*raw\n:PREROUTING ACCEPT [0:0]\n:OUTPUT ACCEPT [0:0]\n" +
+					"-A PREROUTING -i lan0 -p udp -s " + privateAddress + "/32 -j NOTRACK\n" +
+					"-A PREROUTING -i wan0 -p udp -d " + privateAddress + "/32 -j NOTRACK\nCOMMIT\n" + prefix
+			}
 			suffix := "-A POSTROUTING -s " + privateAddress + "/32 -o wan0 -p tcp -j SNAT --to-source " + publicAddress + "\nCOMMIT\n"
 			udp := ""
 			if mode != n2dMappingEIM {
@@ -54,6 +59,11 @@ func TestN2DEIMMappingContract(t *testing.T) {
 			old.Script = prefix + "-A POSTROUTING -p udp -j SNAT --to-source " + publicAddress + "\n" + suffix
 			if check(old) {
 				t.Fatal("implicit source-port remapping reaccepted")
+			}
+			tracked := plan
+			tracked.Script = strings.ReplaceAll(tracked.Script, "-j NOTRACK", "-j ACCEPT")
+			if check(tracked) {
+				t.Fatal("UDP null-NAT binding path reaccepted")
 			}
 			for index := range plan.TrafficControl {
 				mutated, _ := n2dNATPlanFor(mode, publicAddress, privateAddress)
@@ -95,6 +105,20 @@ func TestN2DEIMMappingContract(t *testing.T) {
 }
 
 func testN2DEIMCounterParser(t *testing.T) {
+	for _, sample := range []struct {
+		text string
+		want bool
+	}{
+		{"conntrack v1.4.7 (conntrack-tools): 0 flow entries have been shown.\n", true},
+		{"", false}, {"SYNTHETIC_PRIVATE", false},
+		{"1 flow entries have been shown.", false},
+		{"udp src=SYNTHETIC_PRIVATE\n0 flow entries have been shown.", false},
+		{"0 flow entries have been shown.\n0 flow entries have been shown.", false},
+	} {
+		if n2dNoTrackedUDP(sample.text) != sample.want {
+			t.Fatal("conntrack unavailable/ambiguous/nonzero treated as zero")
+		}
+	}
 	for _, test := range []struct {
 		text  string
 		count uint64

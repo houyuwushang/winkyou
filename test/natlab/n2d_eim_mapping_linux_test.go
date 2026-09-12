@@ -52,10 +52,25 @@ func n2dNATPlanFor(mode n2dMappingMode, publicAddress, privateAddress string) (n
 		"-A POSTROUTING -s "+privateAddress+"/32 -o wan0 -p tcp -j SNAT --to-source "+publicAddress,
 		"COMMIT", "")
 	plan.Script = strings.Join(lines, "\n")
+	if mode == n2dMappingEIM {
+		// A TCP NAT table also installs netfilter's null-NAT binding path
+		// for tracked UDP. That path can still allocate per-protocol parts.
+		// Bypass it ONLY for this stateless reference's transit UDP. tc WAN
+		// ingress has already changed the destination before raw PREROUTING.
+		plan.Script = "*raw\n:PREROUTING ACCEPT [0:0]\n:OUTPUT ACCEPT [0:0]\n" +
+			"-A PREROUTING -i lan0 -p udp -s " + privateAddress + "/32 -j NOTRACK\n" +
+			"-A PREROUTING -i wan0 -p udp -d " + privateAddress + "/32 -j NOTRACK\nCOMMIT\n" + plan.Script
+	}
 	return plan, nil
 }
 
 var n2dTCActionStats = regexp.MustCompile(`(?m)^\s*Sent [0-9]+ bytes ([0-9]+) pkt \(dropped ([0-9]+),`)
+var n2dConntrackListStats = regexp.MustCompile(`\b([0-9]+) flow entries have been shown\.`)
+
+func n2dNoTrackedUDP(output string) bool {
+	matches := n2dConntrackListStats.FindAllStringSubmatch(output, -1)
+	return len(matches) == 1 && matches[0][1] == "0" && !strings.Contains(output, "src=")
+}
 
 // The entire tc output is private/transient. An absent or ambiguous statistic
 // is unavailable evidence, not zero. Each direction owns exactly one action.
@@ -77,6 +92,10 @@ func (topology *n2dTopology) eimTranslationCounts() ([2][2]uint64, error) {
 		return counts, errors.New("N2d translation witness requires EIM pair")
 	}
 	for side, namespace := range []string{topology.natA, topology.natB} {
+		tracked, err := runNamespaced(namespace, "conntrack", nil, "-L", "-p", "udp")
+		if err != nil || !n2dNoTrackedUDP(tracked) {
+			return counts, errors.New("N2d EIM UDP conntrack bypass witness failed")
+		}
 		for direction, hook := range []string{"ingress", "egress"} {
 			output, err := runNamespaced(namespace, "tc", nil, "-s", "filter", "show", "dev", "wan0", hook)
 			if err != nil {
@@ -101,5 +120,5 @@ func assertN2DEIMTranslationCounts(t testing.TB, topology *n2dTopology, packets 
 	if err != nil || counts != want {
 		t.Fatalf("N2d EIM IP-only translation witness valid=%t got=%v want=%v", err == nil, counts, want)
 	}
-	t.Logf("N2D_EIM_TRANSLATION ip_only=true ingress_egress=%v exact=true", counts)
+	t.Logf("N2D_EIM_TRANSLATION ip_only=true udp_conntrack=0 ingress_egress=%v exact=true", counts)
 }

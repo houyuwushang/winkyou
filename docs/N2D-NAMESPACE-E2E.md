@@ -1,6 +1,6 @@
 # N2d namespace/NAT-lab 双进程组合证明
 
-- 状态：**已合入 main；必跑 Linux CI 已通过；证据仍为 test-only，独立评审记录与 N3 授权另行闭合**
+- 状态：**基础证明已合入 main；EIM 参考模型修订与验证见 [PR124 证据](./PR124-STDIO-EVIDENCE-DIAGNOSTICS.md)；仍为 test-only，不代表新增现场授权**
 - 权限来源：[`ADR-NON-LOOPBACK-CONNECT-TEST-BOUNDARY.md`](./adr/ADR-NON-LOOPBACK-CONNECT-TEST-BOUNDARY.md) §6、§9 第 5 步
 - 构建约束：`linux && natlab`
 - 产品入口：**无**
@@ -32,7 +32,9 @@ endpoint A netns -> NAT A netns -> public netns <- NAT B netns <- endpoint B net
   SYN 出站紧随本端 FIRE 写出（微秒级），零时延实验室会反转该物理顺序，使被过滤的
   盲发 SYN_ACK 在无重传的冻结语义下无从恢复；时延建模只还原物理顺序，不改协议；
 - EIM 参考档不再用 UDP DNAT/SNAT 组合充当严格保端口保证：conntrack 遇 tuple 冲突
-  可隐式改写源端口。每个成功 N2d/N3b 用例额外核对两个 NAT 的 ingress/egress 转换
+  可隐式改写源端口。该档 transit UDP 显式 NOTRACK，避免 TCP NAT table 的 null-binding
+  路径仍参与端口选择；只作用于两个 disposable NAT 内部的精确接口/地址匹配。
+  每个成功 N2d/N3b 用例额外核对两个 NAT 的 UDP conntrack 为零及 ingress/egress 转换
   action 计数与原 endpoint UDP 计数完全相等；缺失统计或 action drop 直接失败。
   改动与首跑证据见 [PR124 诊断记录](./PR124-STDIO-EVIDENCE-DIAGNOSTICS.md)。
 - public namespace 内运行现有 `internal/stunserver` 与 N2c 的两方、有界、不透明帧
