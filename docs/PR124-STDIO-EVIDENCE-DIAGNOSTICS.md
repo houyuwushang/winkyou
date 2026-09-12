@@ -56,7 +56,7 @@ Windows 的交叉 vet 不冒充实际执行；失败原文留仓库外，公开�
 本页 SHA-256 对应封存的首跑文本文件；PowerShell `Tee-Object` 捕获文件为带 BOM 的
 UTF-16LE，不是 GitHub 下载压缩包或 UTF-8 HTTP 响应的字节哈希。内容与批次不被后续 PASS 覆盖。
 
-本地 Go 1.23.1 / Windows，未加人工压力：
+本地 Windows，未加人工压力（旧批次未留存 `go version`；执行版本勘误见文末）：
 
 | 命令/范围 | 首跑结果 |
 | --- | --- |
@@ -96,7 +96,7 @@ SHA-256 为 `ad73f6167c72aa2f37e361e6ce80bc92e0014df6e752ff4da1eba0bcb1b12dc4`�
 每映射 UDP socket 或报文缓冲区。新增真实构造点检查、恢复 512 hint 的变异拒绝、
 1024 个纯值目标的增长/所有权/清空测试，两个 required Gate B3 矩阵均调用这些回归。
 
-Windows / Go 1.23.1，固定 1000 次、单目标、零 socket 的 `-benchmem` 首跑：
+Windows，固定 1000 次、单目标、零 socket 的 `-benchmem` 首跑（旧批次未留存执行版本）：
 
 | 构造表达式 | B/op | allocs/op |
 | --- | ---: | ---: |
@@ -150,7 +150,7 @@ error/endpoint 的字符串方法。若 cleanup 另附 cancellation，优先保�
 13 条证据均完成，不能归入旧的 hard-16k 证据不足。日志 SHA-256：
 `2af733f0fd8348de40e7eb12668236bc04e8bf4e049e7b5dcb104a6a87062872`。
 
-零网络本地对照（Windows / Go 1.23.1，`GOMAXPROCS=4`、4 个并行 fresh fixture、race、
+零网络本地对照（Windows，`GOMAXPROCS=4`、4 个并行 fresh fixture、race、
 每组失败即停，无额外 CPU worker）：
 
 - 初批第 4 组失败；双方真实 source/target 配对的反向交集为 32，不是预测窗口不相交。
@@ -201,7 +201,7 @@ error/endpoint 的字符串方法。若 cleanup 另附 cancellation，优先保�
 | 范围 | 结果 |
 | --- | --- |
 | C1b 共用时钟、构造点变异、阶段时点存储，`-race -count=20` | PASS，14.265s。 |
-| N3b typed cause、首因、隐私、接线变异，`-race -count=20` | PASS，solverstdio 1.904s / natlab 1.722s。仓库外 overlay 仅移除 build tag；四份函数体与实际源码一致。Go 1.23 的 virtual-file vet 限制仅使该 overlay 使用 `-vet=off`，不关闭仓库或 CI vet。 |
+| N3b typed cause、首因、隐私、接线变异，`-race -count=20` | PASS，solverstdio 1.904s / natlab 1.722s。仓库外 overlay 仅移除 build tag；四份函数体与实际源码一致。该 virtual-file overlay 的 vet 报虚拟文件不存在，故仅该诊断命令使用 `-vet=off`，不关闭仓库或 CI vet；不将此错误归因于某个未实测的 Go 版本。 |
 | 最终 C1b clock 的 25×4 fresh 预条件对照 | PASS，100/100，83.749s；GOMAXPROCS=4，未启动额外 CPU worker。 |
 | `TestSessionLivenessBusinessCoexistsWithTap`，`-race -count=20` | PASS，285.958s；三 profile 共 60/60，原双向业务与所有权断言不变。 |
 | `go vet ./...`、`go test ./internal/architecture -count=1` | PASS；架构 8.404s，未扩大包准入。 |
@@ -223,3 +223,85 @@ M3 60001ms，均在原 47s/67s 上限内、原 residue=0 断言通过。收窄�
 
 stdio 与 Windows READY 的历史原因仍未闭合；新 head 首跑与后续诊断继续记录在 PR 描述，
 不能以单次绿灯替代上述归因边界。
+
+## d0e1f84 首跑续查：保留原始失败原因，不再只报超时大类
+
+本轮仍未 rerun。两组 N3b required 首跑各 20 次 fresh 成功（共 40），但
+[N2d 固定 3×10 诊断](https://github.com/houyuwushang/winkyou/actions/runs/34715130679/job/103610906520)
+在第 3 轮第 9 个样本失败，整批为 29/30。该诊断原本按固定矩阵继续采样，
+不是失败后的重跑；失败本身保留为 RED。
+
+initiator 的 `punch_sent=107776us`、`terminal=127987us`：仅相隔 20211us，
+明显不是耗尽 1500ms punch 窗口。responder 为 `punch_sent=118000us`、
+`terminal=1618982us`。上述时间是各 child 内部的单调偏移，不能互当跨进程时钟。
+STUN 为 `1/1`、direct 为 `1/1`、control 为 `3/2`；终局 socket/process/
+server-active 均为 0，conntrack `8→0`。成功门禁照常拒绝该样本。
+
+已确认的信息丢失发生在测试 harness：`expire` 和 `protocolFailure` 用 `_ = cause`
+丢弃底层原因，统一保留 `punch_timeout` 等上层类。当前修订只在原 FINISH 前保存
+typed cause；原 class、terminal、FINISH reason、预算、收发与成功断言不变。
+失败的 `ReceiveReply` 另记源与 peer 的关系枚举（未观测/匹配/同地址异端口/异地址），
+不记录实际地址或端口。输出处再次白名单过滤，poison 和断线变异测试进入原 required
+矩阵。没有证据前，不宣称 ICMP、NAT 改端口或上下文取消就是历史根因。
+
+[Windows C1b 首跑](https://github.com/houyuwushang/winkyou/actions/runs/34715128858/job/103610901547)
+还在 `SlowDurableFinish/asymmetric` 失败：双方完成 `plan_committed` 后未到 `ready`，
+candidate=0、FINISH 延迟注入 calls=0，safety 仍 clear。这不是 FINISH 延迟注入已触发的失败。
+原 phase witness 仅在 liveness 分支启用，现移到所有 C1b 入口共用的无条件位置，
+用 mutation 防止重新藏入 liveness 条件分支；不增加生产 hook 或时间余量。
+同一测试侧 observer 对原 `net.Pipe` 透明计数 Read/Write 的开始、完成、字节数、最后时间与
+白名单错误，不保存 buffer，不改返回值/deadline/Close。由此可区分“尚未开始 READY 写入”
+与“已进入流读写但未完成”；该计数不等价于协议接受，且不能改变失败结果。
+
+独立零网络对照：asymmetric 正常条件（GOMAXPROCS=4、4 并行、race）100/100 PASS，
+126.974s；随后 GOMAXPROCS=2、2 个实跑 CPU worker、4 并行的独立加压诊断在第二组失败。
+其失败是 candidate exhaustion/OOB closed，并非历史 READY expiry：`fresh_evidence`
+约 1.85–2.03s、`plan_committed` 约 5.20–5.28s、`candidates` 约 5.50s；已发 `141/525`，
+3 个 reciprocal pair，但 chooser adapter reads=0。16 槽、每槽 2MiB 的私有 stack ring
+均未截断、sampler 已退出；采样本身会改变调度，不能把此结果冒充 CI 的同根复现。
+未据此改动 100ms/2ms 测试压缩等待、窗口、候选或生产时序。
+
+### 执行版本勘误
+
+旧记录把 `go.mod` 的最低版本 1.23.1 写成了本地执行版本，证据不足，现撤回该标注；
+不修改旧封存日志或结果。当前实查本机默认是 `go1.26.5 windows/amd64`，上述两个
+CI 日志明确是 Go 1.23.1。后续复现显式使用进程级 `GOTOOLCHAIN=go1.23.1` 并记录
+`go version`，不更改 CI、全局环境或主机配置。旧 overlay vet 的确切失败是虚拟文件
+不存在，不能以此推断某一 Go 版本特有的缺陷。
+
+| 原始新首跑/诊断文件（仓库外封存） | SHA-256 |
+| --- | --- |
+| N2d repeat RED，原始 HTTP 字节 | `e975852694c720a2afdc094487a7fcf72a4c010d55bdb592ed6787137358e8f2` |
+| Windows C1b RED，原始 HTTP 字节 | `8f7693d0982fcbf93862de4d1c7f46807f02582f9355ad11bb8f4aa71f8710c3` |
+| push N3b 20 PASS，原始 HTTP 字节 | `5a64b281e2618040f6da979da6c5a302d112cbed580c50bc7a845436121be90d` |
+| PR N3b 20 PASS，原始 HTTP 字节 | `cea43d4c01a96c049f6070d69dd37c4fcc78e63cd837cfa4966585551101e253` |
+| 本地 asymmetric 正常诊断，UTF-16LE 捕获文本 | `4b6e1143f3ad88a135226bc75cab4a6825606db48c0543e208d23e8476738759` |
+| 本地 asymmetric 加压 RED，UTF-16LE 捕获文本 | `4356a5899c17224a0e26c6b76a65d04690abe44c1aecbe3982883c407e978e58` |
+
+### 本轮验证与未闭合项
+
+d0e1f84 首跑最终为 **57/59 PASS、上述 2 项 RED**，没有 rerun；不是全绿。
+以下本地验证均显式固定 Go 1.23.1，保留独立首跑文件：
+
+| 验证 | 实测结果 |
+| --- | --- |
+| N2d 同源码纯 observer、隐私与断线变异，race×20 | PASS，1.470s；Windows 仅通过仓库外 overlay 执行纯函数，真实源码保持 `linux && natlab`。 |
+| 最终 C1b phase/透明 stream/clock/common-entry gate，race×20 | PASS，13.181s；原 bytes、错误、deadline、Close 透传，unknown error 只记 `other`。 |
+| 最终 C1b 三 profile 原始连接入口，race×20 | PASS，60/60，99.461s；原 packet accounting oracle、交接与排水断言不变。 |
+| 最终 slow-FINISH asymmetric 原始入口，race×20 | PASS，20/20，109.945s；每次原 3500ms 注入恰好 1 次，等待期间 UDP `144/529` 不增长。 |
+| 全仓 `go test ./... -count=1 -skip '^TestRelayWGGoTwoEnginesExchangeIPv4Packets$'` | PASS，88 个测试包 + 11 个无测试包；governor 120.641s。之后仅调整 c1bproof 标签下 observer，并由上两行覆盖。 |
+| 独立 `go test -race ./pkg/client -run '^TestRelayWGGoTwoEnginesExchangeIPv4Packets$' -count=20 -failfast` | PASS，20/20，142.221s；此前一次本地 runner 误写不存在的 package 路径而未执行测试，保留为命令错误，不归为产品 RED。 |
+| `go vet ./...`、tagged vet、architecture + mutation | PASS；最终架构 8.346s。真实非回环验证仍仅由 required CI 隔离 netns 执行。 |
+
+另有同 Go 1.23.1、无人工压力的 20 个 fresh slow-FINISH/asymmetric 私有 stack 诊断：
+20/20 PASS、110.979s，未产生失败 stack 文件。此诊断和上表 PASS 不能排除历史间歇失败。
+本轮修复的是“底层 cause 丢弃”和“非 liveness 入口无阶段见证”；N2d 提前终止与 Windows
+READY 阻塞的历史触发根因仍待新首跑见证，不据此自我批准、不合并、不扩大权限。
+
+| 本轮封存文件（UTF-16LE 捕获文本） | SHA-256 |
+| --- | --- |
+| pinned full suite | `50ca92c288078ffb697efcb0641d7b8388d24ef15635beed38c8812c5dc81347` |
+| pinned relay race×20 | `45a3b4e24afe5bf2a8706436611ae487cd64ad3068803a8eb396816dd5f54be6` |
+| 最终三 profile race×20 | `cd66d5c3f63bf0120fc8f7a74fbeb2f06fdbba49f4867bb0e07e299353c9d0b1` |
+| 最终 slow-FINISH asymmetric race×20 | `f1de86f5ede61296e2c5fbeec14f20306bdee14a8cfcc538c1e32e47ce308648` |
+| pinned 私有 stack 诊断 | `eca1bd8c1936dbc9c3cb35ccac5e1f54e5e55bd207b7278b791eb284df3537c0` |

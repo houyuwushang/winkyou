@@ -220,15 +220,15 @@ func TestGateC1bMemoryCLIEvidenceDriftAndExhaustionAreOneShot(t *testing.T) {
 func runGateC1bMemoryProductProfile(t *testing.T, label string, test gateC1bMemoryProfile) {
 	t.Helper()
 	windows := memoryFixtureWindows(test.profile)
-	var phases *gateC1bMemoryPhaseWitness
-	if test.liveness != nil {
-		phases = newGateC1bMemoryPhaseWitness()
-		defer func() {
-			if t.Failed() {
-				phases.report(t)
-			}
-		}()
-	}
+	// All entries share the same establishment pipeline, including the slow
+	// FINISH regressions. Retain its prefix even when failure precedes FINISH
+	// or liveness arming; a liveness-only observer missed that distinction.
+	phases := newGateC1bMemoryPhaseWitness()
+	defer func() {
+		if t.Failed() {
+			phases.report(t)
+		}
+	}()
 	// The protocol key includes the validity window. Freeze it so the
 	// conditional birthday profiles exercise a reproducible successful
 	// schedule instead of turning this composition proof into a probability
@@ -436,7 +436,8 @@ func runGateC1bMemoryProductProfile(t *testing.T, label string, test gateC1bMemo
 		}
 	}
 
-	leftStream, rightStream := net.Pipe()
+	leftPipe, rightPipe := net.Pipe()
+	leftStream, rightStream := phases.observeStream(leftPipe, 0), phases.observeStream(rightPipe, 1)
 	defer leftStream.Close()
 	defer rightStream.Close()
 	clocks := [2]*gateC1bMemoryClock{memoryFixtureClock(now), memoryFixtureClock(now)}

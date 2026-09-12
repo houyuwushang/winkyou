@@ -82,6 +82,8 @@ type n2dEndpointConfig struct {
 }
 
 type n2dEndpointResult struct {
+	FailureCause         n2dCauseWitness     `json:"failure_cause"`
+	PunchReceiveSource   string              `json:"punch_receive_source,omitempty"`
 	StdioDiagnostic      *n3bStdioDiagnostic `json:"stdio_diagnostic,omitempty"`
 	OK                   bool                `json:"ok"`
 	Role                 string              `json:"role"`
@@ -621,7 +623,7 @@ func (runtime *n2dEndpointRuntime) punch(ctx context.Context, config n2dEndpoint
 	buffer := make([]byte, directattempt.MaxFrameBytes)
 	defer clear(buffer)
 	if role == directattempt.RoleInitiator {
-		_, _, err := socket.ReceiveReply(punchContext, buffer, func(packet []byte, from netip.AddrPort) error {
+		_, source, err := socket.ReceiveReply(punchContext, buffer, func(packet []byte, from netip.AddrPort) error {
 			if from != peer {
 				return directattempt.ErrInvalidFrame
 			}
@@ -632,6 +634,7 @@ func (runtime *n2dEndpointRuntime) punch(ctx context.Context, config n2dEndpoint
 			return nil
 		})
 		if err != nil {
+			runtime.result.PunchReceiveSource = n2dSourceRelation(source, peer)
 			return err
 		}
 		ack, err := runtime.protocol.Seal(directattempt.FrameACK, nil)
@@ -649,7 +652,7 @@ func (runtime *n2dEndpointRuntime) punch(ctx context.Context, config n2dEndpoint
 
 	for received := 0; received < 2; received++ {
 		complete := false
-		_, _, err := socket.ReceiveReply(punchContext, buffer, func(packet []byte, from netip.AddrPort) error {
+		_, source, err := socket.ReceiveReply(punchContext, buffer, func(packet []byte, from netip.AddrPort) error {
 			if from != peer {
 				return directattempt.ErrInvalidFrame
 			}
@@ -667,6 +670,7 @@ func (runtime *n2dEndpointRuntime) punch(ctx context.Context, config n2dEndpoint
 			return nil
 		})
 		if err != nil {
+			runtime.result.PunchReceiveSource = n2dSourceRelation(source, peer)
 			return err
 		}
 		if complete {
@@ -681,7 +685,7 @@ func (runtime *n2dEndpointRuntime) expire(config n2dEndpointConfig, class string
 	runtime.result.Terminal = n2dTerminalExpired
 	runtime.result.ErrorClass = class
 	_ = n2dEmit(config, n2dStageTerminal, 0)
-	_ = cause
+	runtime.result.FailureCause = n2dObserveCause(cause)
 	return runtime.result, runtime.finish(governor.PairingTerminalExpired)
 }
 
@@ -690,7 +694,7 @@ func (runtime *n2dEndpointRuntime) protocolFailure(config n2dEndpointConfig, cla
 	runtime.result.Terminal = n2dTerminalExpired
 	runtime.result.ErrorClass = class
 	_ = n2dEmit(config, n2dStageTerminal, 0)
-	_ = cause
+	runtime.result.FailureCause = n2dObserveCause(cause)
 	return runtime.result, runtime.finish(governor.PairingTerminalProtocolError)
 }
 
