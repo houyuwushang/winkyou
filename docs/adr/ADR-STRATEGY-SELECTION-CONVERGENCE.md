@@ -1207,3 +1207,16 @@ observer退出各按实际口径报告，不冒充未做的全系统socket/connt
 
 后续只允许提交信息清理、证据交付和本head的远端**首次**CI观察；CI不借用旧head结果，
 不rerun、不混修其他flake。保持原Draft PR，等待独立复审，不合并、不进入现场或下一阶段。
+
+### 11.19 提交信息清理见证
+
+按既定要求，仅重写提交信息、tree未变：`main..HEAD`的23个提交中删除15个旧协作者
+尾注。逐项比对23个tree、parent映射与顺序、merge结构、author/committer及时间、
+除指定尾注外的message，全部一致；`git log --format=%T main..HEAD`前后23行逐行相同。
+其余102个ref与main不变，并保留清理前的本地backup ref；主工作区未改动。
+
+清理前证据head `c734b1a8f80ceb27ed98fb932ed011cc88ad4c29`变为
+`07aba2752f639dc58e0820dde7fe6398e9aa1574`；§11.18受测生产提交内容等价地映射为
+`3ffa69a60d3677f56b7d53edf1c7468c9dd510e8`。本节为清理验证完成后另加的docs-only
+注记，不把该文档增量误称为message-only。之后以明确旧远端head的force-with-lease
+更新原分支；不改其他分支、不合并，远端CI首跑单独记在PR交付说明。
