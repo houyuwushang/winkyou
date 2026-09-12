@@ -992,3 +992,129 @@ cpu_stress workers_remaining=0
 压力问题尚未闭合**。若继续定位，需要单独的测试侧精确frame/执行阶段观测，不能拿
 状态快照差冒充真实单向投递测量。三例各有observer join与CPU workers=0，共3+3份
 见证；本轮测试进程已退出。安全ledger、配置、工作流、#111与现场权限均未变。
+
+### 11.15 执行阶段定位：未复现原RED，确认独立的同步观测阻塞隐患
+
+2026-09-11，维护者明确授权继续“定位”。本轮以`a8d05bd`为基线，**诊断而非修复**：
+生产/配置/工作流delta为0；不改预算、重试、fixture或§11.14的RED结论，不推送、
+不合并、不继续被暂停的正式验收。新增内容仅为test-only诊断与本节证据。
+
+#### 11.15.1 两种观测手段，全部未复现
+
+原`TestRelayWGGoTwoEnginesExchangeIPv4Packets`的实现、断言和CPU helper原样执行。
+Go1.23.1、GOMAXPROCS=28、原56 worker / 65,536 iterations/yield；#111压力关闭。
+各批都是单独留存的诊断样本，不用其PASS替代§11.14的首跑RED：
+
+| 批次 | 仪器与上限 | 实测 |
+| --- | --- | --- |
+| unmodified-trace first | 零源码改动，原测试`-trace -count=5 -failfast` | 5/5 PASS，package39.594s，单例最大8.03s；5份observer/CPU join |
+| per-case trace first | test-only wrapper直接调用原测试，每例独立O_EXCL trace；最多30、fail-fast | 30/30 PASS，package239.512s，单例最大8.71s；30份trace close及observer/CPU join |
+| stack sampling first | 不启用runtime/trace；test-only wrapper直接调用原测试，每500ms采一次runtime.Stack；最多30、fail-fast | 30/30 PASS，package236.954s，单例最大8.07s；458份栈样本、30份sampler/observer/CPU join；overflow=0、truncated=false |
+
+栈采样固定2MiB缓冲、最多256个样本/例，仅保留相关包的调用栈；最长单次采样
+11.5494ms。完整trace会增加调度开销，低频采样也有观测开销，**65例未复现不等于
+原问题消失**。采样结束，不继续无限增加次数或改变CPU负载来追求特定结果。
+
+首批trace解析沿用跨generation同状态拼接，避免把一次等待拆短；26,334,910个状态
+事件、527个相关goroutine、5,014个≥5ms非Running区间。成功样本中：
+
+- executor等待result/error/context的最长区间为2,344.296ms，其余同类约2.2–2.3s；
+- `ObservationStore.appendToFile → CreateFile`最长121.797ms，调用链来自
+  `Session.handleProbeScript → emitObservation → reportObservation`；另有
+  `executeStrategyOutcomes → emitObservation`的104.315ms同类调用；
+- 普通runtime快照worker中的`CreateFile`最长125.844ms；没有在这批成功样本中
+  重现原10s级文件停顿。
+
+这些都是**成功样本的对照事实**，不能定位第3例的21.6s状态静默。本轮没有取得
+失败样本的同一frame send/receive配对记录，不报告单向投递延迟；`receiveSignals`
+在select中等待后续消息也不能直接当作网络延迟。原RED的唯一根因仍未闭合。
+
+#### 11.15.2 零网络因果实验确证的机制（不是原RED重放）
+
+源码中存在以下独立链路，且与已经解耦的UI runtime快照不是同一条路径：
+
+```text
+legacyice.executor.Execute
+  → report(candidate_started, context.Background())
+  → Session.reportObservation
+  → 同步 ObservationSink.Record
+  → ObservationStore.appendToFile（MkdirAll/OpenFile/Write/Close）
+  → 才发送 observation envelope、继续创建 agent/发送 offer
+```
+
+1. `TestExecutorDiagnosticObservationIgnoresRunCancellation`使用纯内存阻塞
+   SessionIO，真实调用executor.Execute；不创建网络agent，factory只记录调用并返回
+   原ctx错误。确证：进入candidate_started上报后，取消run ctx，而report ctx的
+   `Done()==nil`、`Err()==nil`；解除上报阻塞之前factory调用为0，解除之后才把已经
+   cancelled的原ctx传入factory并返回。packets=0、诊断调用已join。
+2. `TestSessionDiagnosticObservationSinkBlocksBeforeEnvelopeSend`真实调用
+   reportObservation，注入纯内存阻塞ObservationSink。确证内存观察已同步更新为1条，
+   sender调用仍为0；取消ctx不能中断Record；释放sink并返回合成错误之后，原调用才
+   返回该错误，sender仍为0。packets=0、诊断调用已join。
+
+两项因果实验各一次PASS（session0.647s、legacyice0.536s），独立`-race -count=20`
+**各20/20 PASS**（session1.855s、legacyice1.885s）。它们是现状刻画，不是为未来
+修复冻结“应当忽略取消”的正向契约；注入的是合成阻塞，未注入任何真实磁盘错误。
+
+因此可以确认：**普通observation的同步持久化仍能阻塞协议推进，且当前取消不能
+打断这一段**。不能确认：这个机制触发了§11.14的那次失败、磁盘/杀毒/操作系统
+导致了原停顿、或ICE/信令侧不存在别的原因。没有据此扩大生产改动范围。
+
+若另行授权修复，应保留内存证据的同步可见性，把普通观测文件写入的所有权、容量、
+错误与排水单独设计清楚，并复核执行context的传递；不能将该建议扩展到governor
+ledger/burn/FINISH异步化，也不能靠加大连接窗口掩盖等待。原RED仍须保留。
+
+#### 11.15.3 留存与边界
+
+原日志/trace/栈含测试进程信息，仅在仓库外保留，不上传原始artifact。主要SHA-256：
+
+| 证据文件 | SHA-256 |
+| --- | --- |
+| unmodified-trace-first.jsonl | `4033b3912dfb68c8b35abed042beb8aca27acf88493ec7b3b5d23e730f3d68bb` |
+| unmodified-trace-first.out | `ada96b1c145699880df7ebf0adabf3244d5422de4a81db44a13f36f4b1f64595` |
+| unmodified-trace-intervals.jsonl | `0e03a53966c1bdea2303a9843a4e6cf2e75c1c482d703edc0c78f5e06c965e15` |
+| per-case-pressure-first.jsonl | `ae6851f269843e19bb836955221ee81a0654386f7c1171c9e5562b6c7bb5243f` |
+| stack-pressure-first.jsonl | `08b611be52537feda86dacb296f94a93983594884ae46793529db77561874ff2` |
+| causal-diagnostics-first.jsonl | `f6224bec0af133115f2b7233afc3e469181d1fe7e13149a759148db304d3cef1` |
+| causal-diagnostics-race20-first.jsonl | `f8f2a5c8a9c1e845ed813b87a9753799b50d4a8a3b1ce0d5951e5c86c1c299af` |
+
+scoped vet（client/session/legacyice）PASS；RuntimeSnapshot与SelectionConvergence
+architecture+mutation各一次PASS（package2.571s）。这不是正式全仓vet或architecture20。
+未运行后续无压力100、独立relay race20、全仓分区或CI。所有诊断进程已退出；上述
+采样器/observer/CPU worker具有明确join见证，但不据此声称逐一证明了全部生产
+goroutine的排水。仅回环与内存测试，WinkYou-A继续Disabled，无现场/主机配置变更。
+
+### 11.16 普通 observation 持久化解耦（实现前契约）
+
+2026-09-12，维护者授权继续修复§11.15确认的独立阻塞隐患。目标仅为legacy client的
+普通JSONL观测文件：文件系统停顿不得阻止内存证据更新或随后发送observation envelope。
+这不裁定§11.14历史RED的唯一根因，也不改变任何连接窗口、fixture、重试或验收顺序。
+
+- 保留`NewObservationStore`同步接口及JSONL格式；client显式选择新的有界异步模式。
+  Record在返回前更新原1000条内存历史，输入与List/Recent返回值均深拷贝map。
+  session自身100条历史、solver决策与证据语义不变，不把governor ledger/burn/FINISH
+  等安全写入接到该worker。通用自定义ObservationSink仍须自行满足调用方时限；本次
+  不修改legacyice的report context或SessionIO协议，旧合成阻塞测试只作为诊断对照。
+- 每个engine最多一个ordinary observation writer、一个FIFO，最多128条待写JSONL；
+  每条最多16KiB（含换行），因此排队payload≤2MiB，另有至多一条16KiB在途记录。
+  这不是整个进程/内存历史的字节上限。生产者只做内存更新、编码与非阻塞入队，不做
+  文件I/O、不等待writer、不为每条记录创建goroutine。worker串行复用原JSONL写法。
+- 队列满/单条超限/编码或写入失败只损失**普通磁盘副本**，不撤销内存证据、不阻断
+  envelope、不触发求解重试。分别记录累计计数，提供只读见证；Stop报告聚合计数，
+  不记录payload/path或底层文件错误文本。每条记录只尝试写一次，没有自动重试。
+  异步Record成功表示内存可见，不表示磁盘durable；该差别明确且可检查。
+- Stop先seal入队，丢弃并计数未开始的待写记录（该临时历史原本即在Stop删除），再
+  完成当前唯一在途写，最后由同一worker执行原清理函数。晚到的Record被拒绝；
+  write完成前不能remove。等待上限2s只是普通文件排水见证，不改变协议/安全时限。
+  文件系统调用不能保证可取消：超时必须返回`observation_persistence_drain_pending`，
+  保留writer/停止状态并禁止该engine重新Start；后续Stop只join原worker。
+  remove失败保持不可重启，不自动重试清理。不得用伪造drained掩盖尚在途的OS调用。
+- 原同步constructor不会新增worker。异步constructor无路径时只保留内存；startup
+  load仍为显式同步读取、发生在放行peer dispatch之前，不在运行期Record回调执行。
+  初始化失败和正常Stop共用同一所有权清理，不能遗留可重新创建文件的旧producer。
+
+先保留旧诊断源码和日志，再建立阻塞写入、深拷贝、容量、错误、并发seal、排水和
+engine生命周期的回归；architecture/mutation守住异步接线与排水顺序。开发期RED与
+修复后PASS分开记录。新正式验收依旧按压力50 fail-fast→无压力100→独立relay race20
+→session/client race20→architecture20→#116全仓分区→vet串行执行；停止条件原样有效。
+尚未推送、改历史或声称验收完成；PR保持Draft，等待独立复审，不合并或推进其他阶段。
