@@ -293,7 +293,16 @@ func runGateC1bMemoryProductProfile(t *testing.T, label string, test gateC1bMemo
 	}
 	topology := hardnatobserve.Topology{Primary: netip.MustParseAddrPort("203.0.113.10:3478"),
 		Other: netip.MustParseAddrPort("203.0.113.11:3479")}
-	responders := startNATSimRFC5780Responders(t, network, topology)
+	var evidenceDiagnostic *gateB2EvidenceDiagnostic
+	if test.liveness != nil {
+		evidenceDiagnostic = newGateB2EvidenceDiagnostic()
+		defer func() {
+			if t.Failed() {
+				evidenceDiagnostic.log(t)
+			}
+		}()
+	}
+	responders := startNATSimRFC5780Responders(t, network, topology, evidenceDiagnostic)
 
 	set, err := gatecattempt.EncodeArtifactSet(gatecattempt.ArtifactMaterial{
 		CredentialID: gateB2OpaqueID("c1b-product-credential"), AttemptID: gateB2OpaqueID("c1b-product-attempt"),
@@ -485,7 +494,7 @@ func runGateC1bMemoryProductProfile(t *testing.T, label string, test gateC1bMemo
 			proof := gatecorchestrator.MemoryProofOptions{
 				Request: requests[index], Artifact: artifacts[index], Config: configs[index], Machine: machines[index],
 				Ledger: ledgers[index], SSHAuthority: authority, Stream: []net.Conn{leftStream, rightStream}[index],
-				ProbeFactory: &natSimProbeFactory{network: network, nat: nats[index],
+				ProbeFactory: &natSimProbeFactory{network: network, nat: nats[index], evidence: evidenceDiagnostic,
 					localAddress: []netip.Addr{netip.MustParseAddr("192.0.2.10"), netip.MustParseAddr("192.0.2.20")}[index],
 					basePort:     []uint16{30000, 31000}[index], plannerRole: test.plannerRoles[index],
 					witness: newCandidateWitness()},
@@ -630,6 +639,11 @@ func runGateC1bMemoryProductProfile(t *testing.T, label string, test gateC1bMemo
 		for _, got := range outcomes {
 			if err := gateC1bLivenessReadyPrecondition(got.result, got.err, test.liveness.started); err != nil {
 				t.Logf("liveness precondition role=%s: %v", got.role, err)
+				t.Logf("EVIDENCE_FAILURE role=%s required_reply_absent=%t evidence_insufficient=%t observation_failed=%t invalid_evidence=%t deadline=%t canceled=%t outbound=%d/%d",
+					got.role, errors.Is(got.err, hardnatobserve.ErrRequiredReplyAbsent), errors.Is(got.err, hardnatplan.ErrEvidenceInsufficient),
+					errors.Is(got.err, hardnatobserve.ErrObservationFailed), errors.Is(got.err, hardnatplan.ErrInvalidEvidence),
+					errors.Is(got.err, context.DeadlineExceeded), errors.Is(got.err, context.Canceled),
+					nats[0].Snapshot().OutboundPackets, nats[1].Snapshot().OutboundPackets)
 				unready = append(unready, err)
 			}
 		}

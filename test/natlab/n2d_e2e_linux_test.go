@@ -21,6 +21,7 @@ const n2dSuccessRepetitions = 3
 func TestLinuxN2DEndToEndProof(t *testing.T) {
 	requireN2DEnvironment(t)
 
+	t.Run("n3b_diagnostic_contract", testN3BDiagnosticRequiredContracts)
 	t.Run("eim_eim_success_exact_witness", testN2DEIMSuccess)
 	t.Run("n3b_stdio_v2_eim_eim_product_entry", testN3BStdioV2EIMSuccess)
 	t.Run("port_restricted_blind_open_success", testN2DPortRestrictedSuccess)
