@@ -1159,3 +1159,51 @@ SHA-256=`249269e661d6ea3fb80e56548b57404c6066b5bf40f6a17c78edd9682809a248`。
 
 下一项是冻结代码后按原profile开始全新压力50首跑；尚未把任何旧诊断65PASS或
 开发race20计入该批次。原§11.10/§11.14的RED、停止条件和未闭合根因全部保留。
+
+### 11.18 observation 解耦后的正式首跑（全部本地门通过）
+
+受测生产提交`ea7eb649ff7061bc8d88ab6e9c8d41f5cb1e1a7f`；Go1.23.1、GOMAXPROCS=28，
+逐批串行、fail-fast、独立新日志，未使用overlay、trace或额外栈采样。只有首批开启
+原56 worker / 65,536 iterations/yield的#97压力；#111压力关闭。全程仅内存与回环。
+
+| 门 | 首跑实测 | 见证/限制 |
+| --- | --- | --- |
+| 原relay压力≥50 | 50/50 PASS，package389.530s、wall395.014s、最长8.25s | 50 observer join、50 CPU join |
+| 原relay无压力≥100 | 100/100 PASS，package694.997s、wall699.163s、最长7.21s | 100 observer join，无压力worker |
+| 独立relay race20 | 20/20 PASS，package142.243s、wall147.780s、最长7.13s | 20 observer join，无race报告；未复现#136首例签名 |
+| session/client race20 | PASS：session940.625s、client94.164s；wall947.111s | 122/121项非opt-in顶层测试各20次；只按#116精确隔离上行已独立验证的relay测试 |
+| architecture20 | 109项顶层门禁各20次PASS；package173.842s、wall176.284s | 原门禁保留，新observation21种变异每轮均拒绝 |
+| 全仓#116分区 | 88个有测试包PASS、11个无测试包，0失败；wall136.885s | 独立relay覆盖如上，不扩大skip |
+| 全仓vet | PASS，exit=0、wall7.679s | 命令无stdout，由串行runner退出见证记录 |
+
+精确命令如下；每行日志独立，后续无压力，任何失败会在下一行前停止：
+
+```text
+go test ./pkg/client -run '^TestRelayWGGoTwoEnginesExchangeIPv4Packets$' -count=50 -failfast -timeout=45m -json
+go test ./pkg/client -run '^TestRelayWGGoTwoEnginesExchangeIPv4Packets$' -count=100 -failfast -timeout=60m -json
+go test -race ./pkg/client -run '^TestRelayWGGoTwoEnginesExchangeIPv4Packets$' -count=20 -failfast -timeout=25m -json
+go test -race ./pkg/session ./pkg/client -count=20 -skip '^TestRelayWGGoTwoEnginesExchangeIPv4Packets$' -failfast -timeout=35m -json
+go test ./internal/architecture -count=20 -failfast -timeout=20m -json
+go test ./... -count=1 -skip '^TestRelayWGGoTwoEnginesExchangeIPv4Packets$' -json
+go vet ./...
+```
+
+原始JSONL仅留仓库外。SHA-256：
+
+| 文件 | SHA-256 |
+| --- | --- |
+| pressure50-first.jsonl | `881853bfecc0993ba397e9569f6ed93a8cbbcddf6b3ca9a4bcf04cedbcb7b217` |
+| idle100-first.jsonl | `5a98722e1efd02a588ed288a266cdb64e2b52e2200dab89d42234649ffeb18e1` |
+| relay-race20-first.jsonl | `fa05d11cc4981f292ba47821f046de71f3a12d27e148675e8fb889bab0d30b7e` |
+| session-client-race20-first.jsonl | `99212f406a12f923377f2bd033feba9b234e849c38c6592536d6c2019fa1b027` |
+| architecture20-first.jsonl | `eabd4e037a48e7fa3d83bd35f1c4ed7fda0cdb85ed25af10a8ae0457279fab30` |
+| full-116-first.jsonl | `67387b5488ac061b2d02bde509a9fe6e2c5ef29c9a4fee8f56bf2a853eaddb4c` |
+
+这是**新受测代码的本地验收通过**，不是改写旧RED、历史故障唯一根因证明、现场
+可用性保证或独立评审放行。§11.10/§11.14及#111未定位间隙的证据边界不变。
+原测试、fixture、连接窗口、退避、wire golden、安全ledger及网络权限全部保持。
+上述验证的所有本地test/go进程已经退出；普通writer的合成所有权见证与170份relay
+observer退出各按实际口径报告，不冒充未做的全系统socket/conntrack普查。
+
+后续只允许提交信息清理、证据交付和本head的远端**首次**CI观察；CI不借用旧head结果，
+不rerun、不混修其他flake。保持原Draft PR，等待独立复审，不合并、不进入现场或下一阶段。
