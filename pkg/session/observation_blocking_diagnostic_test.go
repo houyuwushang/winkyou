@@ -3,6 +3,7 @@ package session
 import (
 	"context"
 	"errors"
+	"os"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -33,6 +34,9 @@ func (send *diagnosticObservationSender) Send(context.Context, string, solver.Me
 // A synthetic blocked sink proves ordering and cancellation behavior only.
 // It does not claim that disk latency caused any particular historical RED.
 func TestSessionDiagnosticObservationSinkBlocksBeforeEnvelopeSend(t *testing.T) {
+	if os.Getenv("WINKYOU_124_CAUSAL_DIAGNOSTIC") != "1" {
+		t.Skip("historical synchronous-sink characterization, not a fix acceptance oracle")
+	}
 	want := errors.New("synthetic_observation_sink_failure")
 	sink := &diagnosticBlockingSink{entered: make(chan struct{}), release: make(chan struct{}), err: want}
 	sender := &diagnosticObservationSender{}

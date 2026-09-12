@@ -1118,3 +1118,44 @@ engine生命周期的回归；architecture/mutation守住异步接线与排水�
 修复后PASS分开记录。新正式验收依旧按压力50 fail-fast→无压力100→独立relay race20
 →session/client race20→architecture20→#116全仓分区→vet串行执行；停止条件原样有效。
 尚未推送、改历史或声称验收完成；PR保持Draft，等待独立复审，不合并或推进其他阶段。
+
+### 11.17 observation writer：开发回归与正式首跑的分界
+
+§11.16按docs-first落盘（`aa7ecd0`），旧诊断源码原样入该提交；新增RED提交
+`b5c41f8`保留两处实际失败：调用方修改map会改变store历史，以及client仍接同步sink。
+普通client现显式选择buffered constructor；同步constructor与JSONL读取仍可用。
+安全写入、legacy executor、session生产代码、原relay测试、配置和工作流均未修改。
+
+开发期验证（Go1.23.1，GOMAXPROCS=28，不是正式压力验收）：
+
+| 首跑 | 结果 |
+| --- | --- |
+| ownership/boundary RED | 2/2预期失败，store0.513s、architecture0.800s；原日志保留 |
+| store focused first | 12项通过，1.102s |
+| lifecycle/session focused first | client4.841s、session0.556s，通过 |
+| boundary/mutation first | 新门禁通过；原RuntimeSnapshot变异5因新分支复用了首个匹配锚点而失败，原日志保留 |
+| focused race20 first | store21.126s、client83.656s、session2.027s、architecture584.559s，全通过 |
+| new-gate prefilter race20 first | 32.435s通过；相同21种变异各20次拒绝 |
+| scoped vet | client/session/store通过；不是全仓vet |
+
+原UI门禁没有删改：新observation错误返回采用独立匹配表达，使原变异仍落到UI
+writer等待分支。新门禁随后只增加identifier文本预筛，避免每个变异重复解析不含
+相关标识符的源文件；文件集合未缩小，并以上表独立race20复核。旧两项因果实验
+改为显式`WINKYOU_124_CAUSAL_DIAGNOSTIC=1`才运行，不冻结“应忽略取消”为验收标准。
+这些test-only后续调整不改变上述受测生产文件；不把开发PASS冒充整个PR验收。
+
+实测不变量：阻塞唯一writer期间4097次Record完成，内存保留1000条最新历史；
+待写128、full丢弃3968、seal丢弃128、实际写入1、peak writer=1。FIFO/map所有权、
+16KiB含换行边界、oversize/encoding/write/remove错误计数、32个并发producer与seal
+均通过；真实JSONL可由原同步reader读取。清理前在途写不可假报drained，清理失败
+保持不可重启；成功关闭时active=0、pending=0、done见证、文件无残留。
+engine实际2s等待返回pending、重启被拒，解除阻塞后再次Stop只join原owner。
+这不等于证明不可中断的文件系统调用能在2s内结束，也不是全进程goroutine普查。
+
+原始私有证据摘要（不上传含本机信息的日志）：ownership-boundary-red-first.jsonl
+SHA-256=`9b1e32643069e137480a3a910fa8a6c93b9a6b861eaf98262b5a3542f5d8aab2`；
+boundary-mutation-first.jsonl
+SHA-256=`249269e661d6ea3fb80e56548b57404c6066b5bf40f6a17c78edd9682809a248`。
+
+下一项是冻结代码后按原profile开始全新压力50首跑；尚未把任何旧诊断65PASS或
+开发race20计入该批次。原§11.10/§11.14的RED、停止条件和未闭合根因全部保留。

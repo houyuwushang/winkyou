@@ -29,6 +29,8 @@ var (
 )
 
 const (
+	// Ordinary observation-file drain only; not a connection/governor window.
+	observationDrainTimeout  = 2 * time.Second
 	defaultHeartbeatInterval = 10 * time.Second
 	defaultStateSyncInterval = 5 * time.Second
 	defaultFreshnessWindow   = 20 * time.Second
@@ -116,6 +118,10 @@ func (e *engine) Start(ctx context.Context) (err error) {
 	if e.started {
 		e.mu.Unlock()
 		return ErrEngineAlreadyStarted
+	}
+	if e.observationStore != nil && e.stopping {
+		e.mu.Unlock()
+		return solverstore.ErrObservationDrainPending
 	}
 	if e.stopping || e.snapshotWriter != nil {
 		e.mu.Unlock()
@@ -295,11 +301,13 @@ func (e *engine) initObservationStore() {
 	if e.observationStore != nil {
 		return
 	}
-	store := solverstore.NewObservationStore(e.observationStorePath())
+	store := solverstore.NewBufferedObservationStore(e.observationStorePath(), e.removeObservationState)
 	if err := store.LoadFromFile(); err != nil {
 		e.log.Debug("failed to load observation history", logger.Error(err), logger.String("path", e.observationStorePath()))
 	}
+	e.mu.Lock()
 	e.observationStore = store
+	e.mu.Unlock()
 }
 
 func (e *engine) observationStorePath() string {
@@ -338,6 +346,10 @@ func (e *engine) Stop() error {
 	if writer != nil {
 		writer.seal()
 	}
+	observations := e.observationStore
+	if observations != nil {
+		observations.Seal()
+	}
 	runCancel := e.runCancel
 	coord := e.coord
 	pingConn := e.pingConn
@@ -362,7 +374,23 @@ func (e *engine) Stop() error {
 		}
 		e.wg.Wait()
 		e.cleanupResources()
-		e.stopErr = e.removeObservationState()
+		e.stopErr = nil
+		if observations == nil {
+			e.stopErr = e.removeObservationState()
+		}
+	}
+	if observations != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), observationDrainTimeout)
+		err := observations.Drain(ctx)
+		cancel()
+		if err != nil {
+			e.setState(EngineStateStopping, errorString(err))
+			return errors.Join(e.stopErr, err)
+		}
+		stats := observations.PersistenceStats()
+		if stats.DroppedFull+stats.DroppedOversize+stats.EncodingErrors+stats.WriteErrors+stats.DroppedOnSeal != 0 {
+			e.log.Warn("ordinary observation disk copies incomplete", logger.Any("persistence", stats))
+		}
 	}
 	if writer != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), runtimeSnapshotDrainTimeout)
@@ -377,6 +405,7 @@ func (e *engine) Stop() error {
 	e.setState(EngineStateStopped, "")
 	e.mu.Lock()
 	e.snapshotWriter = nil
+	e.observationStore = nil
 	e.stopping = false
 	e.mu.Unlock()
 	return e.stopErr
@@ -751,7 +780,6 @@ func (e *engine) cleanupResources() {
 	e.inbandConn = nil
 	e.netif = nil
 	e.nat = nil
-	e.observationStore = nil
 	e.runCtx = nil
 	e.runCancel = nil
 	e.mu.Unlock()
