@@ -356,6 +356,10 @@ tuple 冲突时允许隐式改写源端口；这与用例要求的 EIM/EIF 单 e
   改源 IP，IPv4/UDP/固定 `/32` 拓扑白名单；校验和由 action 修正，端口不改写。
   不再建立 UDP conntrack NAT 映射。TCP、restricted/EDM 规则和原 5ms netem 均不变。
   [iproute2 nat action 规范](https://man7.org/linux/man-pages/man8/tc-nat.8.html)
+- TCP NAT table 的 hook 对未显式匹配规则的 tracked UDP 仍可能分配 null binding。
+  因此参考档仅对精确接口/地址匹配的 transit UDP 使用 NOTRACK，成功样本额外证明
+  两个 NAT 的 UDP conntrack 为零；这不是关闭主机 conntrack，也不作用于 EDM/restricted。
+  [Linux null-binding 源码](https://github.com/torvalds/linux/blob/master/net/netfilter/nf_nat_core.c)
 - 配置只作用于本 fixture 已创建的两个 NAT namespace。未知 mode/地址组合返回空计划；
   配置失败直接结束，不 fallback 到旧规则。endpoint socket 仍为 governed wildcard/ephemeral。
 - 新契约逐项固定生成命令；恢复 UDP SNAT、缺少一个方向、反转方向或改 UDP port 均被
@@ -382,3 +386,80 @@ tuple 冲突时允许隐式改写源端口；这与用例要求的 EIM/EIF 单 e
 | native natlab | `60a3806819b602d987dd73755fa802581bc12cb19c185a34ff4eab414eb279fa` |
 | full | `afc49fe16ea20d8f9256410ab6ce9df06603b4d7020def52537a3f918a80ce6d` |
 | relay | `38622a6ee07b17b95e303d752940e11b9dadd1a84818a92ffede47811e0236c2` |
+
+### asymmetric 计划阶段：固定数学结果的重复计算
+
+这是本轮**独立列出的生产纯函数优化**；与此前 test-only 诊断/夹具提交分开。
+没有改变概率公式/精度/舍入、admission 阈值、candidate、digest 编码、身份或任何限额。
+
+`freezeAndExchangePlan` 经本地构造、source 编解码、对端重建、bilateral 计划与校验，
+多次调用同一 `probabilityFor`。hard profile 已复用编译期固定数学结果，但 asymmetric
+每次仍重算相同的 `65535 / 128 / 512` 精确概率、Poisson 与偏差。
+
+- 原样 C1b asymmetric 入口的 3 个本地 CPU 采样用例均 PASS（15.761s）；总 CPU 样本
+  5.88s，其中 `probabilityFor` 1.14s、`PoissonApproximation` 1.13s、`big.Rat.norm`
+  1.08s。采样本身影响调度；这些是本地热点证据，不冒充历史 Windows runner 的 profile。
+- 仓库外、修复前的 race benchmark（固定 20 次）：每次 32,840,115ns、2,776,898B、
+  11,592 次分配；仅复用不可变结果的实验对照为 170ns、零分配。
+- 实现只保留**一个进程内、无输入 key 的编译期数值条目**，首次仍调用原数学纯函数，
+  使用 `sync.OnceValues` 合并并发初始化。缓存只含数值/字符串；coverage、role、地址、
+  evidence、credential、plan、source/joint digest 均不入缓存。
+- 双方仍各自构造、重建与验证全部承诺，不能用对端的数值替代本地计算；每次构造都
+  恢复自己的条件说明/coverage。增加 64 并发 value ownership、逐调用 coverage、
+  错 cost/概率/evidence/validation/source digest 必拒绝，以及恢复重复计算的变异回归。
+- 原全部 JSON golden **未修改**；fixture SHA-256 为
+  `4c9e0e7893a8e60bce3093ca4b3c2a94138fb3c0bf210086de6b3366e261eced`。
+  修复减少一项已证实的无效开销，但不把所有历史 READY 超时或整 job 超时宣称为同一根因。
+
+实际实现的 Go 1.23.1、race、20 次固定 benchmark：
+
+| 数值路径 | ns/op | B/op | allocs/op |
+| --- | ---: | ---: | ---: |
+| 原公式 fresh 重算 | 33472505 | 2778919 | 11603 |
+| 实际不可变条目读取 | 140 | 0 | 0 |
+
+新源码受影响包 race×20 已通过：hardnatplan 134.941s（含原字节 golden）、
+hardnatcontrol 103.933s、directconnect/gateb 2.592s。完整最终验收如下。
+
+本地验证异常单列（不充当产品 RED，也不冒充 PASS）：
+
+- 初次 Fresh100 命令漏设 `WINKYOU_GATE_C1B_REPEAT_REQUIRED=1`，因此只有 SKIP、
+  实际执行数为 0。封存日志 SHA-256：
+  `64fe396c1ec70d01b14e4821212d151b2a40b5951dc0a573416504378b250ec0`。
+  后续必须显式 required、精确核对 100 个 fresh 子用例及 residue witness。
+- 全仓构建首次停在 `compile -V=full`：编译器进程弹出 CRT `R6016`，未进入项目测试，
+  无 suite 输出。仅结束本次异常验证进程并确认其错误框；没有修改系统或安全软件。
+  错误框原文私有封存 SHA-256：
+  `4f4221080606748c567cb2a9e469ba6221c31b98e2b16b4ad3d0e57b68204036`。
+  独立 compiler 版本检查恢复正常后，重新执行未完成的全仓验证：88 个测试包 PASS、
+  11 个无测试包，governor 122.765s。新执行日志 SHA-256：
+  `c1c8819554524aabb29f7a45b4300d3fafb0ac0bd00e552773fd4f3652902bb7`。
+  这是本地构建故障后的恢复执行，不是 GitHub CI rerun。
+
+最终本地验收（Go 1.23.1、无额外 CPU 压力；所有原窗口/限额不变）：
+
+| 范围 | 实测结果 |
+| --- | --- |
+| 数值缓存等价/所有权/承诺拒绝/变异 race×20 | PASS，2.150s。 |
+| liveness 业务共存 race×20 | 60/60 PASS，209.693s；business 3/3、tap_stole=0、extra_socket=0。 |
+| 三 profile 原连接入口 race×20 | 60/60 PASS，88.635s；另有 accounting oracle 子用例，不混入连接样本数。 |
+| 显式 required Fresh100，首个实际批次 | 100/100 PASS，151.100s；三 profile 轮换、CLI=true，`fresh_namespaces=100 deterministic_schedules=3 residue=0 wall_ms=149510`。 |
+| 原 slow-FINISH/asymmetric race×20 | 20/20 PASS，98.696s；原 3500ms 注入、等待期间 UDP 不增长。 |
+| 最终 NOTRACK/EIM 纯契约 race×20 | PASS，1.462s；私有 overlay 只提取纯函数，不执行 OS 网络。 |
+| vet / architecture + mutation / Linux tagged cross-vet | PASS；架构 8.349s。 |
+| 全仓 #116 分区 / 独立 relay race×20 | 88 个测试包 PASS + 11 无测试包；relay 20/20 PASS，142.927s、20 次 observer join。 |
+
+真实 TC/IP-only、UDP conntrack=0、精确报文计数与 namespace teardown 的新证据必须来自
+新 head 的 required CI；最终首跑状态在 PR 顶层记录。旧 head 的 RED/平台超时不被覆盖，
+不 rerun 旧 CI，不自行合并，不授权任何现场 I/O。
+
+| 最终本地捕获文本（UTF-16LE） | SHA-256 |
+| --- | --- |
+| affected race×20 | `cd585b471bba7bd13ceadb3134f3205893647ae3e32c28025b8713297d83ba4d` |
+| liveness 60/60 | `350fc98f1173418220c7f6be549536ac7f3b758d6fbdaf257d4c51b03f9353ed` |
+| product 60/60 | `b83d8cadea00f554ece364cac8741a62bf5f44562e8e74021e9c7e802c7eb460` |
+| actual required Fresh100 | `302ab680f61f9ebbb65651d03d2e2ea7f96458a7174f8ac8cebb6905b59f6e73` |
+| slow FINISH | `80900ce7afd0cf6724aab35783eb2a38297733070096219104011e09974bc39f` |
+| final EIM/NOTRACK | `bd394c7d26031923fb5d17bd45d8e9ca05d8f80c8ba53b5d702f162ebbfb5720` |
+| resumed relay | `dec76eede764aec85f0aee2a4f63a4c7855a4aef1043c2c69a900569da2ffdab` |
+| actual arithmetic benchmark | `07adbfcf92de2c0775b620b440cf1f2c9588d92541a844787ced744583302a9b` |
