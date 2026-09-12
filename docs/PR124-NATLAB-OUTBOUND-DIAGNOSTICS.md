@@ -63,3 +63,46 @@ natlab cross-vet，再按 #116 分区运行全仓、独立 relay race×20 和全
 保持原 PR Draft、不合并、不进入下一 Gate。
 
 本节后续只追加实测结果；计划本身不代表验证已经通过。
+
+## 4. 实现与本地结果（2026-09-13）
+
+测试实现：`ff3cd257880b1dfdcde57e54ad10223127f10317`；此前
+`8c418ad8e4f2368d979905f2e56869b4768dde88` 只冻结上述诊断范围。
+基线之后生产、配置、workflow、依赖及原协议向量 delta 均为 0。
+
+日志读法：`side=0` 是 initiator NAT，`side=1` 是 responder NAT；每侧保留原完整
+路由器计数，20 个固定 phase 槽只记录第一次到达。`Seen=false` 不构成证据；
+`peer_ready` 是原 base preferred 的返回点，只有 error 为 none 才表示 barrier 成功。
+所有 `at_ns` 与 query 起止值以本用例同一 `started` 为原点；不是墙钟时间。
+DROP query 汇总只在首发侧记录，`first_sent` / `first_denied` 在两侧使用同一个采样时刻。
+query error、router first_failure、terminal、首次 Close 各自独立，后来的正常 Close
+返回不覆盖此前错误。失败 cleanup 七项顺序是：endpoint/monitor、observer、socket close、
+停止后 packet 稳定性、OS socket/process、conntrack、namespace/veth/恢复读回。
+不可用的计数标 `valid=false`，从不以返回结构里的零冒充测得零。
+
+Go 1.23.1，Windows amd64；各正式批次 fail-fast，无人工 CPU 压力。
+新增测试还覆盖命令 exit code、错误/地址格式化毒丸、并发快照、21 项接线变异
+（其中三个逐一删除不同 Fatal 前的双侧快照），以及七处清理失败均不跳过后续步骤。
+
+| 验证 | 本地实测 |
+| --- | --- |
+| 诊断首个 focused race×20 | PASS，3.050s（当时尚未加入最后三个 AST 变异） |
+| 完整 `test/natlab -race -count=20` | PASS，4.404s；15 个顶层测试各 20 次，300 PASS，0 FAIL；包含 helper 的普通无操作调用，不包含 Linux OS 用例 |
+| `go vet ./...` | PASS，exit 0 |
+| `go test ./internal/architecture -count=1` | PASS，9.176s |
+| `GOOS=linux CGO_ENABLED=0 go vet -tags=natlab ./test/natlab` | PASS；更新后的 `-tags=natlab,c1bproof` 同样 PASS |
+| `go test ./... -count=1 -skip '^TestRelayWGGoTwoEnginesExchangeIPv4Packets$'` | PASS，88 个测试包、11 个无测试包、0 FAIL |
+| 独立 relay `-race -count=20 -failfast -timeout=25m` | PASS，143.566s；20/20、最长 7.14s、20 次 observer join；未与其他重测试并行 |
+
+本地整包 race 日志 SHA-256：
+`189f45c68636d99ed102f0bef182ed982ed6def057bed6d46fa79a7bfa6c35ea`。
+全仓分区日志 SHA-256：
+`294c6cfa0253ed5f76db0fe771fb00b178f94d6ba03edc190aed4fd67ddc7515`。
+独立 relay 日志 SHA-256：
+`5ab601cf8fdbff79b15195f43d04582a15566a413c9a3c278eff62eba4ab15a6`。
+原 `gateB3LateHitMappingPlan.preferred` 文本单独与基线核对完全相同。
+最终全仓 vet、格式/diff 检查、增量隐私扫描通过；未改主 checkout、主机配置或停机状态。
+
+Linux tagged 的原 observer/Close/outbound-Fatal 行为测试通过交叉 vet，但本地没有执行
+Linux 内核；不可把它写成 netns 或 failure-path OS 排水验收。其实际 race×20 与真实
+矩阵由原 required CI 执行，当前 head 的首跑结果另记在 PR 描述，不制造证据提交循环。
