@@ -463,3 +463,121 @@ hardnatcontrol 103.933s、directconnect/gateb 2.592s。完整最终验收如下�
 | final EIM/NOTRACK | `bd394c7d26031923fb5d17bd45d8e9ca05d8f80c8ba53b5d702f162ebbfb5720` |
 | resumed relay | `dec76eede764aec85f0aee2a4f63a4c7855a4aef1043c2c69a900569da2ffdab` |
 | actual arithmetic benchmark | `07adbfcf92de2c0775b620b440cf1f2c9588d92541a844787ced744583302a9b` |
+
+### a86f795 首跑：NAT OS 见证通过，另捕获 server crash 测试竞态
+
+下面是本 head 的独立首跑证据，不 rerun，也不覆盖上一批 RED。
+
+最终 59 项均已结束：57 success / 1 failure / 1 skipped（Linux relay smoke 因上游
+Linux 全仓失败而跳过）。唯一 failure 为下面的 crash fixture 竞态；没有 job cap 取消。
+所有 workflow 均为 attempt 1。
+
+- [N2d repeat](https://github.com/houyuwushang/winkyou/actions/runs/34720353392/job/103624966271)：
+  3 轮 × 10 = 30/30 通过，每次均实际记录
+  `N2D_EIM_TRANSLATION ip_only=true udp_conntrack=0 ingress_egress=[[2 3] [3 2]] exact=true`。
+- [push required N2d/N3b](https://github.com/houyuwushang/winkyou/actions/runs/34720352217/job/103624963169)
+  与 [PR required N2d/N3b](https://github.com/houyuwushang/winkyou/actions/runs/34720353370/job/103624966367)
+  均通过，各有 3 个 N2d + 20 个 N3b 的精确 TC 见证。逐端 STUN=1/1、direct=2/1、
+  UDP=3/2；终局 socket/process/server active connection 均为零，packet counter 稳定，
+  剩余 TCP conntrack 经 fixture teardown 归零。成功没有放宽源校验或增加发送。
+- 这些结果闭合本次 TC/NOTRACK 修正的实际 OS 行为验证；不反推旧样本未记录的源端口。
+
+四个 C1b memory job 也全部首跑通过，各精确执行 100 个 fresh 子用例并报告 residue=0：
+
+| C1b job | Fresh100 wall_ms | 原始 HTTP UTF-8 日志 SHA-256 |
+| --- | ---: | --- |
+| [push Windows](https://github.com/houyuwushang/winkyou/actions/runs/34720352217/job/103624963213) | 130963 | `47d4eb09c26f62bf9f51968e684d8df1476f0825635ff6f2c87127e285832829` |
+| [PR Windows](https://github.com/houyuwushang/winkyou/actions/runs/34720353370/job/103624966471) | 122148 | `7a888d59704dd891cf3a8dac79d41e43940a978b890e1a339fdadeffb1a1ce3f` |
+| [push Linux](https://github.com/houyuwushang/winkyou/actions/runs/34720352217/job/103624963273) | 110482 | `1c5e1fada7ac525d4230d72e0d2e1fcd4073bb784a1c0476a6907ce29ae36041` |
+| [PR Linux](https://github.com/houyuwushang/winkyou/actions/runs/34720353370/job/103624966431) | 111879 | `9a4475b2d9bf223416ccf226fbeedd31c63dc83179acb5e98fc07e049a22f732` |
+
+Windows liveness model/owner 首跑也通过；其原始日志 SHA-256 为
+`1fbe44819fdb4b86fc98b8ad39e04f402d505ab2ac75cf076332f2727dfc5115`。
+这些是新 head 的通过证据，不把上一批未采样的 READY 停顿反推为已被唯一归因。
+
+另一个 [Linux 全仓首跑](https://github.com/houyuwushang/winkyou/actions/runs/34720352217/job/103624963064)
+在 `TestServerCrashProcess` 失败：`crash witness subprocess unexpectedly exited cleanly`，
+用例耗时 0.01s。这不是 NAT 或数据面失败。
+
+根因与反向控制：
+
+1. 原测试先 `connection.Close()`，再 `Process.Kill()`，最后要求 `Wait()` 非零。
+   客户端 EOF 可先让 server 的 TLS 读取结束，`Serve` 返回后测试子进程正常退出；
+   向已退出但未回收的进程发 Kill 与 `Wait` 的正常退出状态并不互斥。
+2. 仓库外原源码 overlay 只固定这一调度顺序：Close 后先等待子进程退出，再检查旧
+   崩溃前提。单次控制实验稳定 RED，原文为
+   `CONTROLLED_REPRO close_before_kill=true clean_exit=true listener_rebind=true`。
+   这是验证先后关系的独立实验，不是旧 CI 重跑，也没有改生产代码。
+3. 正向测试先完成 TLS，证明 server 已接受连接，持有连接直到 Kill/Wait 完成；
+   Unix 必须为 SIGKILL，Windows 必须为 `Process.Kill` 对应退出码，且不能存在正常
+   terminal/test 输出。随后验证 accepted socket 非 timeout 地结束、端口重绑和 child join。
+4. 新 EOF 反向用例显式允许正常终局，要求 `tls_failed`、accepted=1、exit=0；同一个
+   crash oracle 必须拒绝它。正常退出与真实 crash 的判据没有互相替代。
+5. 所有子进程路径都注册 kill/join cleanup；输出只检查脱敏聚合 record，不打印配置、
+   路径或原始子进程输出。本修复只涉及测试及本文档，不改 server/窗口/限额/工作流。
+
+首批本地验证（Go 1.23.1）：正反向 race×20 通过（24.977s），正向 OS crash race×100
+通过（9.541s）；后续 TLS 诊断与最终源码验证在下文单列，避免混淆批次。
+
+| 封存日志 | 编码 | SHA-256 |
+| --- | --- | --- |
+| a86 Linux server crash RED | HTTP UTF-8 | `ebba1c0dc6436cd4a98bf49c18d9b677a33dbe8585b038197b9dee287e13f9c2` |
+| a86 N2d/N3b push PASS | HTTP UTF-8 | `c81fb24b55c748789978c3439d0c04cee2a73df34d132b3547a7487f6a5d9ce5` |
+| a86 N2d repeat 30/30 PASS | HTTP UTF-8 | `39c7c6558f120536311b86ddcede8ad16b046a1cc283965b92968a6ec7e89488` |
+| a86 N2d/N3b PR PASS | HTTP UTF-8 | `e33e418c66f85fc92dfc017e29ed285e3e16ad4561e33c8c929760a90507c959` |
+| Close-before-Kill 控制 RED | UTF-16LE | `da299bc1941fb0c01ec7ac7ccf10c5aea2f07d1fc3c63b232ef139cafde4eb01` |
+| 修复正反向 race×20 | UTF-16LE | `8ce4988080d16582a4b0d2778756dddffdbc4006ade8764e886614a45ab97c43` |
+
+本地包级首跑另捕获一项**尚未归因**的 RED：正常双 slot 用例的第一个 TLS handshake
+收到 EOF，用例 5.43s，包在 76.146s fail-fast。原日志没有 server terminal class 或
+分阶段耗时，无法把 5.43s 分配到 fixture/TCP/TLS/服务端等待；不猜测宿主负载、
+杀进程竞态或某个第三方组件，也不延长 presence/attempt 窗口。
+
+只用仓库外 overlay 和 runtime/trace 做了三项诊断（这些不是普通验收 PASS）：
+
+| 诊断 | 原样结果与限制 |
+| --- | --- |
+| 定点 100 个正常双 slot | 未复现；200 次 TLS，最长 16.898ms，104.698s。初版观察器在成功 cleanup 多等 1s，改变了样本间隔，明确不能作为原调度的对照。 |
+| 无额外成功等待的完整包 race×20 | 未复现；260 次 TLS，最长 15.73ms，158.326s。保留原 3s presence；trace/日志仍可能影响调度。 |
+| 同一观察器，连续 1,000 个双 slot | 未复现；2,000 次 TLS，最长 20.7621ms，32.425s；不抹掉首个 RED。 |
+
+最终测试侧诊断永久记录 `config_ns`、`dial_ns`、`handshake_ns`、`serve_ns` 与脱敏
+terminal class。正常双 slot 用例额外在 cleanup 中 cancel/join 自己的 Serve goroutine，
+只在既有用例结束后执行；成功路径不多等 1s，不修改任何生产计时或通过条件。
+这是观测与测试资源归属改进，**不是声称已经修复这项未复现的 TLS EOF 根因**。
+
+| 本地封存诊断（UTF-16LE） | SHA-256 |
+| --- | --- |
+| 最初包级 TLS EOF RED | `ee31191cb9d9004582e192e8f7361a1b210091b700d69478e2ff6169e58963a6` |
+| 初版定点 trace | `2ae14d007b7211ae83367951cee05bc4a0bf403a6220f4495f833c297bba1be4` |
+| 完整包 trace | `73650be023bb8f142eef097c958562958b68a8bb68a624ee26d77e402f0529c4` |
+| 连续 1,000 trace | `f3f714b174044d8bf88ef69fe541b84ad6839e68d15d6fc5f66302c96c251c2b` |
+
+交叉验证命令异常单列：最初只设置 `GOOS=linux`，仍继承 Windows `CGO_ENABLED=1`，
+导致 Windows gcc 编译 Linux runtime/cgo 时缺少 `sigset_t`。这是命令环境错误，未运行
+Linux 测试。错误日志 SHA-256 为
+`333ae31fa70d8cf4605fe702a5b8803cbb7e1919aa17d2e2e15974edaf17915d`。
+随后仅在该交叉命令中显式 `CGO_ENABLED=0`，Linux vet 通过；原生 race 恢复 cgo，
+没有修改主机环境配置、产品或 CI workflow，也不冒充本地执行 Linux OS 见证。
+
+追加修复的最终源码本地验收（无 trace/overlay、Go 1.23.1）：
+
+| 检查 | 结果 |
+| --- | --- |
+| 真实 server crash race×100 | 100/100 PASS，9.828s；每次有 kill/socket drain/rebind/child join 见证。 |
+| rendezvousserver 完整包 race×20 | PASS，158.076s；包含正向 crash、正常 EOF 反向控制及原全部用例。 |
+| `go vet ./...` / architecture + mutation | PASS；架构 8.464s。 |
+| 显式 pure-Go Linux cross-vet | PASS；仅交叉检查，不计入 OS 测试。 |
+| 全仓 `go test ./... -count=1 -skip '^TestRelayWGGoTwoEnginesExchangeIPv4Packets$'` | 88 个测试包 PASS + 11 个无测试包；governor 119.973s。 |
+| 独立 relay race×20 | 20/20 PASS，142.391s；20 次 `observer_workers=0`。 |
+
+最终源码 PASS 不撤回上面的未归因 TLS EOF；它仍是明确登记的诊断限制。
+本追加提交相对 a86f795 的 production/config/workflow delta 为零；保留 Draft 等待复审。
+
+| 最终源码验收（UTF-16LE） | SHA-256 |
+| --- | --- |
+| crash race×100 | `cc0c00844dcdf26d487b43ae02d9a8022d76eca16edcf539f2b272e216e49d30` |
+| package race×20 | `aee0312e13259435d5c33d80d6309441a61c737e699485fc4ad6305b8e152ef2` |
+| architecture | `1a506a902fbcdb2facb51da8aec90145799fbe74655ab09f0f60a4a3c4f35efb` |
+| full #116 | `c81d8633661239a58b35fd3b7059734096bd9c4c115e6004b4d8c68387361097` |
+| relay race×20 | `d22d4c3a7c8f31972477048962816c47084494f25ddd472d4da972771b54a169` |
