@@ -220,6 +220,15 @@ func TestGateC1bMemoryCLIEvidenceDriftAndExhaustionAreOneShot(t *testing.T) {
 func runGateC1bMemoryProductProfile(t *testing.T, label string, test gateC1bMemoryProfile) {
 	t.Helper()
 	windows := memoryFixtureWindows(test.profile)
+	var phases *gateC1bMemoryPhaseWitness
+	if test.liveness != nil {
+		phases = newGateC1bMemoryPhaseWitness()
+		defer func() {
+			if t.Failed() {
+				phases.report(t)
+			}
+		}()
+	}
 	// The protocol key includes the validity window. Freeze it so the
 	// conditional birthday profiles exercise a reproducible successful
 	// schedule instead of turning this composition proof into a probability
@@ -430,7 +439,7 @@ func runGateC1bMemoryProductProfile(t *testing.T, label string, test gateC1bMemo
 	leftStream, rightStream := net.Pipe()
 	defer leftStream.Close()
 	defer rightStream.Close()
-	clocks := [2]*gateB2ManualClock{newGateB2ManualClock(now), newGateB2ManualClock(now)}
+	clocks := [2]*gateC1bMemoryClock{memoryFixtureClock(now), memoryFixtureClock(now)}
 	ready := 0
 	var readyMu sync.Mutex
 	initiatorCtx, cancelInitiator := context.WithCancel(context.Background())
@@ -455,6 +464,9 @@ func runGateC1bMemoryProductProfile(t *testing.T, label string, test gateC1bMemo
 		stages []string
 	}
 	results := make(chan outcome, 2)
+	// Retain the existing actual-write witnesses; never infer reciprocal NAT
+	// pairs from the two independent target/source sets or from plan length.
+	candidateDiagnostics := [2]*candidateWitness{newCandidateWitness(), newCandidateWitness()}
 	var livenessCancelTimer *time.Timer
 	var livenessRestartProofs [2]gatecorchestrator.MemoryProofOptions
 	livenessTimerDone := make(chan struct{})
@@ -497,7 +509,7 @@ func runGateC1bMemoryProductProfile(t *testing.T, label string, test gateC1bMemo
 				ProbeFactory: &natSimProbeFactory{network: network, nat: nats[index], evidence: evidenceDiagnostic,
 					localAddress: []netip.Addr{netip.MustParseAddr("192.0.2.10"), netip.MustParseAddr("192.0.2.20")}[index],
 					basePort:     []uint16{30000, 31000}[index], plannerRole: test.plannerRoles[index],
-					witness: newCandidateWitness()},
+					witness: candidateDiagnostics[index]},
 				Harness: &gateb.HarnessHooks{NoiseRandom: bytes.NewReader(bytes.Repeat([]byte{byte(40 + index)}, 4096)),
 					ObservationRandom: gateB2ObservationRandom(byte(70 + index)), Now: clocks[index].Now,
 					NewTimer: clocks[index].NewTimer, Wait: clocks[index].Wait,
@@ -505,6 +517,7 @@ func runGateC1bMemoryProductProfile(t *testing.T, label string, test gateC1bMemo
 				BuildVersion: "gate-c1b-memory-product", Random: bytes.NewReader(bytes.Repeat([]byte{byte(90 + index)}, 64)),
 				InactiveEvery: 100 * time.Millisecond,
 				Progress: func(progress gatecorchestrator.Progress) error {
+					phases.mark(index, progress.Stage)
 					if test.timing != nil {
 						test.timing.stage(index, progress.Stage)
 					}
@@ -648,6 +661,9 @@ func runGateC1bMemoryProductProfile(t *testing.T, label string, test gateC1bMemo
 			}
 		}
 		if len(unready) != 0 {
+			t.Logf("CANDIDATE_FAILURE left={%s} right={%s} reciprocal_pairs=%d network=%+v",
+				candidateDiagnostics[0].summary(), candidateDiagnostics[1].summary(),
+				reciprocalCandidatePairs(candidateDiagnostics[0], candidateDiagnostics[1]), network.Snapshot())
 			t.Fatal(errors.Join(unready...))
 		}
 	}

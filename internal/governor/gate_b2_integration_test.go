@@ -730,6 +730,11 @@ func (datagram *natSimDatagram) ReadFrom(ctx context.Context, target []byte) (in
 		if err != nil || ok {
 			if ok {
 				datagram.evidence.mark(target[:n], evidenceAdapterRead, err)
+				if datagram.witness != nil {
+					if metadata, inspectErr := hardnatcontrol.InspectFrame(target[:n]); inspectErr == nil && metadata.Type == hardnatcontrol.FrameCandidate {
+						datagram.witness.recordCandidateRead()
+					}
+				}
 			}
 			return n, source, err
 		}
@@ -914,6 +919,7 @@ type candidateWitness struct {
 	targets map[uint16]struct{}
 	sources map[uint16]struct{}
 	pairs   map[[2]uint16]struct{}
+	reads   uint32 // Actual adapter reads, not protocol acceptance.
 }
 
 func newCandidateWitness() *candidateWitness {
@@ -924,6 +930,11 @@ func (witness *candidateWitness) recordCandidate(source, target uint16) {
 	witness.targets[target] = struct{}{}
 	witness.sources[source] = struct{}{}
 	witness.pairs[[2]uint16{source, target}] = struct{}{}
+	witness.mu.Unlock()
+}
+func (witness *candidateWitness) recordCandidateRead() {
+	witness.mu.Lock()
+	witness.reads++
 	witness.mu.Unlock()
 }
 func (witness *candidateWitness) snapshot() (map[uint16]struct{}, map[uint16]struct{}) {
@@ -940,7 +951,10 @@ func (witness *candidateWitness) snapshot() (map[uint16]struct{}, map[uint16]str
 }
 func (witness *candidateWitness) summary() string {
 	targets, sources := witness.snapshot()
-	return fmt.Sprintf("targets=%d sources=%d", len(targets), len(sources))
+	witness.mu.Lock()
+	reads := witness.reads
+	witness.mu.Unlock()
+	return fmt.Sprintf("targets=%d sources=%d adapter_candidate_reads=%d", len(targets), len(sources), reads)
 }
 func candidateIntersection(left, right *candidateWitness) int {
 	leftTargets, leftSources := left.snapshot()
