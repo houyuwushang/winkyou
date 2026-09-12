@@ -39,9 +39,18 @@ func testN3BDiagnosticRequiredContracts(t *testing.T) {
 			t.Run("serve", TestN3BDiagnosticServeFailurePrivacy)
 			t.Run("child_output", TestN2DChildOutputDiagnosticIsBoundedAndPrivate)
 			t.Run("wiring", TestN3BDiagnosticActualHarnessWiringMutations)
+			t.Run("cause_privacy", TestN3BDiagnosticCausePrivacy)
 		}) {
 			return
 		}
+	}
+}
+
+func TestN3BDiagnosticCausePrivacy(t *testing.T) {
+	if n3bSafeCauseWord("SYNTHETIC_PRIVATE") != "other" ||
+		n3bSafeCauseWord("unregistered_target") != "unregistered_target" ||
+		n3bSafeCauseWord("connection_refused") != "connection_refused" {
+		t.Fatal("cause vocabulary did not remain bounded")
 	}
 }
 
@@ -129,10 +138,12 @@ func TestN3BDiagnosticActualHarnessWiringMutations(t *testing.T) {
 		required []string
 	}{
 		{"n3b_stdio_linux_test.go", []string{"diagnostic := inspectN3BStdioOutput(output.Bytes())", "result.StdioDiagnostic = &diagnostic",
+			"func(witness solverstdio.N3BNatlabFailureWitness) { cause = witness }", "diagnostic.Cause = cause",
 			"n3bFailedCaseDiagnostics(t, topology, servers, initiator, responder)", "iteration <= 20", "if !t.Run(", "assertN2DSuccessResult(t, initiatorResult"}},
 		{"n2d_endpoint_linux_test.go", []string{"process.command.Stdout = &process.output", "process.command.Stderr = &process.output",
 			"process.output.clear()", "logN2DEndpointFailure(t, process)", "if waitErr != nil || !result.OK"}},
 		{"n3b_failure_diagnostics_linux_test.go", []string{"logN2DEndpointFailure(t, left)", "logN2DEndpointFailure(t, right)",
+			"n3bSafeCauseWord(diag.Cause.Cause)", "diag.Cause.Seen", "N3B_CAUSE_FAILURE",
 			"n3bSafeClass(diag.Class)", "n3bSafeStage(diag.Stage)", "n3bSafeParseFailure(diag.ParseFailure)", "topology.assertNoLeaks()"}},
 	} {
 		payload, err := os.ReadFile(file.name)

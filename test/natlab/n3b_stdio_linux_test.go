@@ -102,8 +102,11 @@ func runN3BStdioV2Attempt(config n2dEndpointConfig) (result n2dEndpointResult, r
 	var output bytes.Buffer
 	ctx, cancel := context.WithTimeout(context.Background(), n2dProcessLimit)
 	defer cancel()
-	serveErr := solverstdio.ServeN3BNatlab(ctx, bytes.NewReader(inputPayload), &output, config.GovernorDir)
+	var cause solverstdio.N3BNatlabFailureWitness
+	serveErr := solverstdio.ServeN3BNatlab(ctx, bytes.NewReader(inputPayload), &output, config.GovernorDir,
+		func(witness solverstdio.N3BNatlabFailureWitness) { cause = witness })
 	diagnostic := inspectN3BStdioOutput(output.Bytes())
+	diagnostic.Cause = cause
 	diagnostic.ServeClass = n3bServeErrorClass(serveErr)
 	result.StdioDiagnostic = &diagnostic
 	if serveErr != nil {

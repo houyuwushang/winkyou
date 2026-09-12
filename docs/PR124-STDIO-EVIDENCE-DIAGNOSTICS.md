@@ -53,6 +53,8 @@ hard-16k race 首例及仅加 cause 见证的 race×20 通过，不能抵销原 
 
 本地命令/结果与新 head 的 CI 首跑分开记录。Linux OS/netns 证据仅以 required CI 为准，
 Windows 的交叉 vet 不冒充实际执行；失败原文留仓库外，公开只给脱敏摘要与哈希。
+本页 SHA-256 对应封存的首跑文本文件；PowerShell `Tee-Object` 捕获文件为带 BOM 的
+UTF-16LE，不是 GitHub 下载压缩包或 UTF-8 HTTP 响应的字节哈希。内容与批次不被后续 PASS 覆盖。
 
 本地 Go 1.23.1 / Windows，未加人工压力：
 
@@ -110,3 +112,114 @@ Windows / Go 1.23.1，固定 1000 次、单目标、零 socket 的 `-benchmem` �
 独立 relay race×20 为 20/20 PASS（143.243s），20 次 observer join；natlab 原生纯测试 race×20
 PASS（3.847s），新存储回归单独 race×20 PASS（1.589s）。没有修改生产代码、工作流、47s envelope、
 router witness 等待界、目标/包/PPS 预算或任何现场配置；Linux OS 组合效果等待新提交的首跑 CI。
+
+## `4957d29` 首跑与第二次诊断切片
+
+该 head 首跑最终为 **55 PASS / 4 FAIL**：3 个实质失败与 1 个 liveness 汇总失败，未 rerun。
+前一 head `f073ecb` 最终为 58 PASS / 1 FAIL。新 head 的两个 Mapping Lifetime required
+矩阵均通过（389.68s / 391.13s；原失败用例 48.66s / 48.91s），不覆盖原 RED，也不倒推
+稀疏存储就是历史转发积压的唯一原因。两份新 PASS 日志 SHA-256 分别为
+`8115c1dd1785258bcb39bb5fd0f57b4bd45d08663c9f4022ff826c78f419f15e`、
+`304491e31fead339f345cd61dce2dc892b90f9c1709ec0c63092f72902b42a7d`。
+
+### N3b：已缩小范围，未确定底层原因
+
+[PR 侧 required 首跑](https://github.com/houyuwushang/winkyou/actions/runs/34712057986/job/103602472924)
+第 9 次 fresh N3b 用例失败（此前 8 次通过，失败即停）：initiator 为
+`verification_failed@verify`（148ms），responder 为 `punch_timeout@punch`（137ms）。
+两端均已 burn；initiator 已到 `punch`，responder 只到 `punch_sent`。实际 UDP 为
+STUN `1/1`、direct `2/1`，结束后计数不增长；socket/process=0，conntrack `7 → 0`，
+server 与 topology 清理检查均通过。错误结果没有成功 result；其中缺省的 FINISH 布尔值
+不能作为 journal 缺少 FINISH 的证据。
+
+该短耗时不是耗尽 punch deadline 的证据：公开 `punch_timeout` 合并了多种底层错误。
+本切片仅给 `linux && natlab` 的既有 stdio harness 增加值类型 observer，委托原
+`machineAuthority.ConnectDirect`，不替换 connector/参数/结果，不改公开 schema。
+记录白名单 typed cause、caller context、I/O operation 与 timeout 布尔值；不调用原始
+error/endpoint 的字符串方法。若 cleanup 另附 cancellation，优先保留原 Failure.Cause。
+新增 poison 隐私、原结果不变、后续清理不覆盖首因与真实接线变异回归。
+
+原日志 SHA-256：`ed4df1a2862a5fad409885cf2e41f852e403d55c5a3975f2c93a3d62af40a772`。
+这是为下一次首跑补齐原因见证，**不是已修复 N3b 根因的声明**。
+
+### Predictive：测试时钟破坏角色先后顺序
+
+[Linux WireGuard 首跑](https://github.com/houyuwushang/winkyou/actions/runs/34712057980/job/103602472884)
+在 `m3/rx-responder` 的 liveness 启动前失败：双方均
+`hard_nat_candidate_exhausted@candidates`，outbound `45/45`，fault 尚未 armed。
+13 条证据均完成，不能归入旧的 hard-16k 证据不足。日志 SHA-256：
+`2af733f0fd8348de40e7eb12668236bc04e8bf4e049e7b5dcb104a6a87062872`。
+
+零网络本地对照（Windows / Go 1.23.1，`GOMAXPROCS=4`、4 个并行 fresh fixture、race、
+每组失败即停，无额外 CPU worker）：
+
+- 初批第 4 组失败；双方真实 source/target 配对的反向交集为 32，不是预测窗口不相交。
+- 增加实际 adapter candidate-read 计数后，第 7 组再现：initiator 读到 0、responder 读到 32，
+  两端各发 32；只有 initiator 是协议 chooser，因此没有任何 winner。
+- 原测试时钟把产品已有的 250ms responder lead 缩为 2ms。新永久回归在旧代码实测
+  `elapsed_ns=2544700 required_ns=250000000` 而 RED，证明模拟时钟丢失了角色排序语义。
+- 修复只在所有 C1b/liveness 共用的 `memoryFixtureClock` 中保留调用方原本要求的亚秒 wait；
+  独立 Gate B 快速模拟的原时钟及 100/200/250ms 窗口不继承这一变化。
+  整秒 PPS 窗仍按原规则压缩、逻辑时间推进不变。
+  不更改产品 250ms、1s predictive candidate 窗、10s active 窗、plan、seed、候选与包数，
+  不添加同步握手、重试或额外发送。取消仍立即拒绝。
+- 相同 25×4 fresh 预条件对照 **100/100 PASS，84.388s**。该短测不是 65s/85s 断流证明；
+  原完整断流场景另行验证。旧 timing 输出中的 `busy_workers=2` 是压力报告的固定标签，
+  本次未启动这些 worker，不能据它宣称有额外 CPU 压力。
+
+最初直接修改公共 Gate B 测试时钟的版本虽通过本地全仓（governor 257.571s），
+源码审计仍发现它会影响上述独立快速模拟。最终把相同等待语义收窄到 C1b 共用时钟，
+真实构造点与绕回旧时钟的变异受门禁约束；中间版本的 PASS 不冒充最终版本验证。
+
+保留首批、方向见证批、旧时钟单元 RED、新时钟 100 次 PASS，SHA-256 依次为：
+
+| 证据 | SHA-256 |
+| --- | --- |
+| 首次预条件 RED | `ca994a7a3e0d1f4f528c0f6ce5480dedca23f97152e4c97cf681b666457e90e0` |
+| 双方向读计数 RED | `3bdcd9ec75abf6cba743e8ba5fcc32aa09986bebbf78a828e4a2676ec46149d0` |
+| 原时钟永久回归 RED | `85fbdd786480d9f6aeb7dce0ebd1b7f146df82ddc60b1554228e5f0cf738c26e` |
+| 修复后预条件 100 次 PASS | `11e6c987c58a9d428f20285ef98c5c8979c5c31347b6ee16cd2e3503872f34fc` |
+
+上述复现证明一个足够原因，历史 CI 没有双向 read 计数，不据此宣称唯一历史归因。
+
+### Windows READY：独立未闭合项
+
+[Windows model/owner 首跑](https://github.com/houyuwushang/winkyou/actions/runs/34712057980/job/103602472927)
+最后在业务 race×20 的 asymmetric 子例失败（11.52s）：两端
+`attempt_expired@ready`、outbound `13/13`、零 candidate，非 predictive 角色排序问题，
+也不是已启动数据面被 tap 抢包。第 13 条证据 adapter_read 时点为 658,956,100ns / 369,184,000ns；
+现有日志不能定位此后至 READY 终止之间的等待，不猜测 CPU、磁盘或协议锁。
+
+增加仅测试侧的固定 `2×32` progress 时点表，使用现有回调、共享单调时钟，
+首个观测不可覆盖，未知 stage 不进入日志，无新 worker 或生产 hook。
+原日志 SHA-256：`9eaa2253c42400a7d8d36bd66782eee22823cd43a7125d49f4214485064dc4bf`。
+
+### 收窄后版本的验证
+
+以下均为各命名批次的首次执行，失败即停；未 rerun GitHub 的旧 RED。
+
+| 范围 | 结果 |
+| --- | --- |
+| C1b 共用时钟、构造点变异、阶段时点存储，`-race -count=20` | PASS，14.265s。 |
+| N3b typed cause、首因、隐私、接线变异，`-race -count=20` | PASS，solverstdio 1.904s / natlab 1.722s。仓库外 overlay 仅移除 build tag；四份函数体与实际源码一致。Go 1.23 的 virtual-file vet 限制仅使该 overlay 使用 `-vet=off`，不关闭仓库或 CI vet。 |
+| 最终 C1b clock 的 25×4 fresh 预条件对照 | PASS，100/100，83.749s；GOMAXPROCS=4，未启动额外 CPU worker。 |
+| `TestSessionLivenessBusinessCoexistsWithTap`，`-race -count=20` | PASS，285.958s；三 profile 共 60/60，原双向业务与所有权断言不变。 |
+| `go vet ./...`、`go test ./internal/architecture -count=1` | PASS；架构 8.404s，未扩大包准入。 |
+| Linux `-tags=natlab,c1bproof` 交叉 vet | PASS；不冒充实际 Linux OS 执行。 |
+| 最终全仓 #116 分区 | PASS，88 个测试包 + 11 个无测试包；governor 253.683s。 |
+| 完整 stdio 包 `go test -race ./internal/solverstdio -count=20` | PASS，5.683s；包括原 v1/v2 schema 回归，Linux-only helper 另由上述同源码 overlay 验证。 |
+| 独立 relay `-race -count=20` | PASS，146.007s，20/20；该产品路径和依赖在本切片零改动。 |
+
+同一 C1b 等待语义在收窄封装前已完成六种原断流场景（91.589s）：M2 排水 40000ms，
+M3 60001ms，均在原 47s/67s 上限内、原 residue=0 断言通过。收窄后最终 OS 组合仍须由
+新 head 的 required CI 复核，不把中间版结果写成最终 head 的 CI PASS。
+
+| 最终本地封存文件 | SHA-256 |
+| --- | --- |
+| scoped fresh100 | `a3b241dde39ad241c5faaae40a38fe67f9cfa8028e0c7fcc33223044327097e4` |
+| scoped business race×20 | `3bbbb23fa0b3fa939bfb13dd53e714a91bf1652f6649fdf48ffaaab4ad10ea62` |
+| scoped full suite | `de268df693079da4e3b84717aab0a403d5030ef12a3c36eec955ad0e175eae3d` |
+| independent relay race×20 | `ba23f12a855465d322d39fc29432a5545e795b0ac5d112a91417b202a90afd0a` |
+
+stdio 与 Windows READY 的历史原因仍未闭合；新 head 首跑与后续诊断继续记录在 PR 描述，
+不能以单次绿灯替代上述归因边界。

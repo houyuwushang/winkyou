@@ -40,6 +40,8 @@ func logN2DEndpointFailure(t testing.TB, process *n2dEndpointProcess) {
 			n3bSafeClass(diag.Class), n3bSafeStage(diag.Stage), diag.BurnedKnown, diag.Burned, n3bSafeStage(diag.LastProgress), n3bSafeParseFailure(diag.ParseFailure), n3bSafeServeClass(diag.ServeClass))
 		t.Logf("N3B_STDIO_CONTRACT role=%s stages=%v result_success=%t bidirectional=%t promoted=%t burned=%t finish=%t",
 			process.config.Role, stages, diag.ResultSuccess, diag.Bidirectional, diag.Promoted, diag.ResultBurned, diag.FinishRecorded)
+		t.Logf("N3B_CAUSE_FAILURE role=%s seen=%t cause=%s context=%s operation=%s network_timeout=%t",
+			process.config.Role, diag.Cause.Seen, n3bSafeCauseWord(diag.Cause.Cause), n3bSafeCauseWord(diag.Cause.Context), n3bSafeCauseWord(diag.Cause.Operation), diag.Cause.NetworkTimeout)
 	}
 }
 

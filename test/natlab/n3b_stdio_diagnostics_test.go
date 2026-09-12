@@ -27,6 +27,19 @@ type n3bStdioDiagnostic struct {
 	Stages                                   [16]string
 	ResultSuccess, Bidirectional, Promoted   bool
 	ResultBurned, FinishRecorded             bool
+	Cause                                    solverstdio.N3BNatlabFailureWitness
+}
+
+func n3bSafeCauseWord(value string) string {
+	switch value {
+	case "none", "active", "other", "canceled", "deadline", "read", "write", "dial", "listen",
+		"context_canceled", "context_deadline", "eof", "closed", "connection_refused", "connection_reset",
+		"network_unreachable", "host_unreachable", "unregistered_target", "invalid_target", "reply_rejected",
+		"datagram_contract", "lease_closed", "socket_closed", "carrier_transport", "carrier_terminal":
+		return value
+	default:
+		return "other"
+	}
 }
 
 func inspectN3BStdioOutput(payload []byte) n3bStdioDiagnostic {
