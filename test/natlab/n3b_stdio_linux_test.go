@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"reflect"
@@ -23,11 +24,27 @@ import (
 const n3bActionStdioV2 = "n3b_stdio_v2_attempt"
 
 func testN3BStdioV2EIMSuccess(t *testing.T) {
+	// Fresh isolated fixtures, not retries inside an attempt. Preserve the
+	// first RED and stop the series; every original success/cost assertion is
+	// retained. The existing required job timeout is not changed.
+	for iteration := 1; iteration <= 20; iteration++ {
+		if !t.Run(fmt.Sprintf("repeat_%d", iteration), runN3BStdioV2EIMSuccess) {
+			return
+		}
+	}
+}
+
+func runN3BStdioV2EIMSuccess(t *testing.T) {
 	topology := newN2DTopology(t, n2dMappingEIM, n2dMappingEIM)
 	servers := startN3BServers(t, topology)
 	artifacts := buildN2DArtifacts(t, "n3b-stdio-v2-eim", time.Now())
 	initiator := newN3BStdioEndpointProcess(t, topology, servers, artifacts, directattempt.RoleInitiator)
 	responder := newN3BStdioEndpointProcess(t, topology, servers, artifacts, directattempt.RoleResponder)
+	defer func() {
+		if t.Failed() {
+			n3bFailedCaseDiagnostics(t, topology, servers, initiator, responder)
+		}
+	}()
 
 	initiator.start(t)
 	responder.start(t)
@@ -85,7 +102,14 @@ func runN3BStdioV2Attempt(config n2dEndpointConfig) (result n2dEndpointResult, r
 	var output bytes.Buffer
 	ctx, cancel := context.WithTimeout(context.Background(), n2dProcessLimit)
 	defer cancel()
-	if err := solverstdio.ServeN3BNatlab(ctx, bytes.NewReader(inputPayload), &output, config.GovernorDir); err != nil {
+	var cause solverstdio.N3BNatlabFailureWitness
+	serveErr := solverstdio.ServeN3BNatlab(ctx, bytes.NewReader(inputPayload), &output, config.GovernorDir,
+		func(witness solverstdio.N3BNatlabFailureWitness) { cause = witness })
+	diagnostic := inspectN3BStdioOutput(output.Bytes())
+	diagnostic.Cause = cause
+	diagnostic.ServeClass = n3bServeErrorClass(serveErr)
+	result.StdioDiagnostic = &diagnostic
+	if serveErr != nil {
 		clear(output.Bytes())
 		result.ErrorClass = "stdio_serve"
 		return result, errors.New("N3b stdio process failed")

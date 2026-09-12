@@ -10,7 +10,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
-	"io"
 	"net/netip"
 	"os"
 	"os/exec"
@@ -83,36 +82,39 @@ type n2dEndpointConfig struct {
 }
 
 type n2dEndpointResult struct {
-	OK                   bool   `json:"ok"`
-	Role                 string `json:"role"`
-	Terminal             string `json:"terminal"`
-	ErrorClass           string `json:"error_class,omitempty"`
-	Burned               bool   `json:"burned"`
-	SameSocket           bool   `json:"same_socket"`
-	STUNPackets          int    `json:"stun_packets"`
-	DirectPackets        int    `json:"direct_packets"`
-	UDPPackets           int    `json:"udp_packets"`
-	ControlFrames        int    `json:"control_frames"`
-	HandshakeFrames      int    `json:"handshake_frames"`
-	CarrierFramesRead    int    `json:"carrier_frames_read"`
-	CarrierFramesWritten int    `json:"carrier_frames_written"`
-	CarrierBytesRead     int    `json:"carrier_bytes_read"`
-	CarrierBytesWritten  int    `json:"carrier_bytes_written"`
-	DNSResolutions       int    `json:"dns_resolutions"`
-	SafetyState          string `json:"safety_state"`
-	SafetyBlocksWork     bool   `json:"safety_blocks_work"`
-	LedgerState          string `json:"ledger_state"`
-	LedgerSequence       uint64 `json:"ledger_sequence"`
-	LedgerRecords        int    `json:"ledger_records"`
-	LedgerAdmissions     int    `json:"ledger_admissions"`
-	LedgerFailures       int    `json:"ledger_failures"`
-	ActivePeers          int    `json:"active_peers"`
-	ActiveAttempts       int    `json:"active_attempts"`
-	ReservedSockets      int    `json:"reserved_sockets"`
-	ReservedTargets      int    `json:"reserved_targets"`
-	ReservedFiveTuples   int    `json:"reserved_five_tuples"`
-	ReservedPackets      int    `json:"reserved_packets"`
-	ElapsedMilliseconds  int64  `json:"elapsed_milliseconds"`
+	FailureCause         n2dCauseWitness     `json:"failure_cause"`
+	PunchReceiveSource   string              `json:"punch_receive_source,omitempty"`
+	StdioDiagnostic      *n3bStdioDiagnostic `json:"stdio_diagnostic,omitempty"`
+	OK                   bool                `json:"ok"`
+	Role                 string              `json:"role"`
+	Terminal             string              `json:"terminal"`
+	ErrorClass           string              `json:"error_class,omitempty"`
+	Burned               bool                `json:"burned"`
+	SameSocket           bool                `json:"same_socket"`
+	STUNPackets          int                 `json:"stun_packets"`
+	DirectPackets        int                 `json:"direct_packets"`
+	UDPPackets           int                 `json:"udp_packets"`
+	ControlFrames        int                 `json:"control_frames"`
+	HandshakeFrames      int                 `json:"handshake_frames"`
+	CarrierFramesRead    int                 `json:"carrier_frames_read"`
+	CarrierFramesWritten int                 `json:"carrier_frames_written"`
+	CarrierBytesRead     int                 `json:"carrier_bytes_read"`
+	CarrierBytesWritten  int                 `json:"carrier_bytes_written"`
+	DNSResolutions       int                 `json:"dns_resolutions"`
+	SafetyState          string              `json:"safety_state"`
+	SafetyBlocksWork     bool                `json:"safety_blocks_work"`
+	LedgerState          string              `json:"ledger_state"`
+	LedgerSequence       uint64              `json:"ledger_sequence"`
+	LedgerRecords        int                 `json:"ledger_records"`
+	LedgerAdmissions     int                 `json:"ledger_admissions"`
+	LedgerFailures       int                 `json:"ledger_failures"`
+	ActivePeers          int                 `json:"active_peers"`
+	ActiveAttempts       int                 `json:"active_attempts"`
+	ReservedSockets      int                 `json:"reserved_sockets"`
+	ReservedTargets      int                 `json:"reserved_targets"`
+	ReservedFiveTuples   int                 `json:"reserved_five_tuples"`
+	ReservedPackets      int                 `json:"reserved_packets"`
+	ElapsedMilliseconds  int64               `json:"elapsed_milliseconds"`
 }
 
 type n2dEvent struct {
@@ -621,7 +623,7 @@ func (runtime *n2dEndpointRuntime) punch(ctx context.Context, config n2dEndpoint
 	buffer := make([]byte, directattempt.MaxFrameBytes)
 	defer clear(buffer)
 	if role == directattempt.RoleInitiator {
-		_, _, err := socket.ReceiveReply(punchContext, buffer, func(packet []byte, from netip.AddrPort) error {
+		_, source, err := socket.ReceiveReply(punchContext, buffer, func(packet []byte, from netip.AddrPort) error {
 			if from != peer {
 				return directattempt.ErrInvalidFrame
 			}
@@ -632,6 +634,7 @@ func (runtime *n2dEndpointRuntime) punch(ctx context.Context, config n2dEndpoint
 			return nil
 		})
 		if err != nil {
+			runtime.result.PunchReceiveSource = n2dSourceRelation(source, peer)
 			return err
 		}
 		ack, err := runtime.protocol.Seal(directattempt.FrameACK, nil)
@@ -649,7 +652,7 @@ func (runtime *n2dEndpointRuntime) punch(ctx context.Context, config n2dEndpoint
 
 	for received := 0; received < 2; received++ {
 		complete := false
-		_, _, err := socket.ReceiveReply(punchContext, buffer, func(packet []byte, from netip.AddrPort) error {
+		_, source, err := socket.ReceiveReply(punchContext, buffer, func(packet []byte, from netip.AddrPort) error {
 			if from != peer {
 				return directattempt.ErrInvalidFrame
 			}
@@ -667,6 +670,7 @@ func (runtime *n2dEndpointRuntime) punch(ctx context.Context, config n2dEndpoint
 			return nil
 		})
 		if err != nil {
+			runtime.result.PunchReceiveSource = n2dSourceRelation(source, peer)
 			return err
 		}
 		if complete {
@@ -681,7 +685,7 @@ func (runtime *n2dEndpointRuntime) expire(config n2dEndpointConfig, class string
 	runtime.result.Terminal = n2dTerminalExpired
 	runtime.result.ErrorClass = class
 	_ = n2dEmit(config, n2dStageTerminal, 0)
-	_ = cause
+	runtime.result.FailureCause = n2dObserveCause(cause)
 	return runtime.result, runtime.finish(governor.PairingTerminalExpired)
 }
 
@@ -690,7 +694,7 @@ func (runtime *n2dEndpointRuntime) protocolFailure(config n2dEndpointConfig, cla
 	runtime.result.Terminal = n2dTerminalExpired
 	runtime.result.ErrorClass = class
 	_ = n2dEmit(config, n2dStageTerminal, 0)
-	_ = cause
+	runtime.result.FailureCause = n2dObserveCause(cause)
 	return runtime.result, runtime.finish(governor.PairingTerminalProtocolError)
 }
 
@@ -1019,6 +1023,7 @@ func n2dOpaqueID(label string) string {
 }
 
 type n2dEndpointProcess struct {
+	output       n2dChildOutputDiagnostic
 	command      *exec.Cmd
 	done         chan struct{}
 	waitMu       sync.Mutex
@@ -1096,8 +1101,8 @@ func newN2DEndpointProcess(t testing.TB, topology *n2dTopology, servers *n2dServ
 		"-test.run=^TestN2DEndpointProcess$", "-test.count=1", "-test.timeout=16s",
 	)
 	process.command.Env = append(os.Environ(), n2dEndpointHelperEnv+"=1", n2dHelperConfigEnv+"="+process.configPath)
-	process.command.Stdout = io.Discard
-	process.command.Stderr = io.Discard
+	process.command.Stdout = &process.output
+	process.command.Stderr = &process.output
 	process.command.SysProcAttr = &syscall.SysProcAttr{Pdeathsig: syscall.SIGKILL}
 	t.Cleanup(process.stop)
 	return process
@@ -1114,6 +1119,7 @@ func (process *n2dEndpointProcess) start(t testing.TB) {
 	process.started = true
 	go func() {
 		err := process.command.Wait()
+		process.output.clear()
 		process.waitMu.Lock()
 		process.waitErr = err
 		process.waitMu.Unlock()
@@ -1165,6 +1171,7 @@ func (process *n2dEndpointProcess) waitResult(t testing.TB) n2dEndpointResult {
 			waitErr := process.waitErr
 			process.waitMu.Unlock()
 			if waitErr != nil || !result.OK {
+				logN2DEndpointFailure(t, process)
 				t.Fatal("N2d endpoint returned a harness failure")
 			}
 			return result

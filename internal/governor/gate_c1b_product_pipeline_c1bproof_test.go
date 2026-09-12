@@ -34,6 +34,7 @@ import (
 	"winkyou/internal/v2/pairgen"
 	"winkyou/internal/v2/sshassembly"
 	"winkyou/pkg/config"
+	"winkyou/pkg/netif"
 	"winkyou/pkg/tunnel"
 )
 
@@ -219,6 +220,15 @@ func TestGateC1bMemoryCLIEvidenceDriftAndExhaustionAreOneShot(t *testing.T) {
 func runGateC1bMemoryProductProfile(t *testing.T, label string, test gateC1bMemoryProfile) {
 	t.Helper()
 	windows := memoryFixtureWindows(test.profile)
+	// All entries share the same establishment pipeline, including the slow
+	// FINISH regressions. Retain its prefix even when failure precedes FINISH
+	// or liveness arming; a liveness-only observer missed that distinction.
+	phases := newGateC1bMemoryPhaseWitness()
+	defer func() {
+		if t.Failed() {
+			phases.report(t)
+		}
+	}()
 	// The protocol key includes the validity window. Freeze it so the
 	// conditional birthday profiles exercise a reproducible successful
 	// schedule instead of turning this composition proof into a probability
@@ -292,7 +302,16 @@ func runGateC1bMemoryProductProfile(t *testing.T, label string, test gateC1bMemo
 	}
 	topology := hardnatobserve.Topology{Primary: netip.MustParseAddrPort("203.0.113.10:3478"),
 		Other: netip.MustParseAddrPort("203.0.113.11:3479")}
-	responders := startNATSimRFC5780Responders(t, network, topology)
+	var evidenceDiagnostic *gateB2EvidenceDiagnostic
+	if test.liveness != nil {
+		evidenceDiagnostic = newGateB2EvidenceDiagnostic()
+		defer func() {
+			if t.Failed() {
+				evidenceDiagnostic.log(t)
+			}
+		}()
+	}
+	responders := startNATSimRFC5780Responders(t, network, topology, evidenceDiagnostic)
 
 	set, err := gatecattempt.EncodeArtifactSet(gatecattempt.ArtifactMaterial{
 		CredentialID: gateB2OpaqueID("c1b-product-credential"), AttemptID: gateB2OpaqueID("c1b-product-attempt"),
@@ -417,10 +436,11 @@ func runGateC1bMemoryProductProfile(t *testing.T, label string, test gateC1bMemo
 		}
 	}
 
-	leftStream, rightStream := net.Pipe()
+	leftPipe, rightPipe := net.Pipe()
+	leftStream, rightStream := phases.observeStream(leftPipe, 0), phases.observeStream(rightPipe, 1)
 	defer leftStream.Close()
 	defer rightStream.Close()
-	clocks := [2]*gateB2ManualClock{newGateB2ManualClock(now), newGateB2ManualClock(now)}
+	clocks := [2]*gateC1bMemoryClock{memoryFixtureClock(now), memoryFixtureClock(now)}
 	ready := 0
 	var readyMu sync.Mutex
 	initiatorCtx, cancelInitiator := context.WithCancel(context.Background())
@@ -445,11 +465,19 @@ func runGateC1bMemoryProductProfile(t *testing.T, label string, test gateC1bMemo
 		stages []string
 	}
 	results := make(chan outcome, 2)
+	// Retain the existing actual-write witnesses; never infer reciprocal NAT
+	// pairs from the two independent target/source sets or from plan length.
+	candidateDiagnostics := [2]*candidateWitness{newCandidateWitness(), newCandidateWitness()}
 	var livenessCancelTimer *time.Timer
 	var livenessRestartProofs [2]gatecorchestrator.MemoryProofOptions
 	livenessTimerDone := make(chan struct{})
 	scheduleLiveness := func(fn func()) *time.Timer {
 		return time.AfterFunc(test.liveness.hold, func() { defer close(livenessTimerDone); fn() })
+	}
+	stopHealthyLiveness := func() {
+		test.liveness.captureHealth()
+		cancelInitiator()
+		cancelResponder()
 	}
 	var joinTimerOnce sync.Once
 	joinLivenessTimer := func() {
@@ -479,10 +507,10 @@ func runGateC1bMemoryProductProfile(t *testing.T, label string, test gateC1bMemo
 			proof := gatecorchestrator.MemoryProofOptions{
 				Request: requests[index], Artifact: artifacts[index], Config: configs[index], Machine: machines[index],
 				Ledger: ledgers[index], SSHAuthority: authority, Stream: []net.Conn{leftStream, rightStream}[index],
-				ProbeFactory: &natSimProbeFactory{network: network, nat: nats[index],
+				ProbeFactory: &natSimProbeFactory{network: network, nat: nats[index], evidence: evidenceDiagnostic,
 					localAddress: []netip.Addr{netip.MustParseAddr("192.0.2.10"), netip.MustParseAddr("192.0.2.20")}[index],
 					basePort:     []uint16{30000, 31000}[index], plannerRole: test.plannerRoles[index],
-					witness: newCandidateWitness()},
+					witness: candidateDiagnostics[index]},
 				Harness: &gateb.HarnessHooks{NoiseRandom: bytes.NewReader(bytes.Repeat([]byte{byte(40 + index)}, 4096)),
 					ObservationRandom: gateB2ObservationRandom(byte(70 + index)), Now: clocks[index].Now,
 					NewTimer: clocks[index].NewTimer, Wait: clocks[index].Wait,
@@ -490,6 +518,7 @@ func runGateC1bMemoryProductProfile(t *testing.T, label string, test gateC1bMemo
 				BuildVersion: "gate-c1b-memory-product", Random: bytes.NewReader(bytes.Repeat([]byte{byte(90 + index)}, 64)),
 				InactiveEvery: 100 * time.Millisecond,
 				Progress: func(progress gatecorchestrator.Progress) error {
+					phases.mark(index, progress.Stage)
 					if test.timing != nil {
 						test.timing.stage(index, progress.Stage)
 					}
@@ -509,10 +538,10 @@ func runGateC1bMemoryProductProfile(t *testing.T, label string, test gateC1bMemo
 											businessCtx, stop := context.WithTimeout(initiatorCtx, 5*time.Second)
 											test.liveness.faultError = test.liveness.controls[0].ExchangeBusiness(businessCtx, test.liveness.controls[1])
 											stop()
-											cancelInitiator()
+											stopHealthyLiveness()
 										case "normal-admission":
 											test.liveness.admission, test.liveness.faultError = test.liveness.controls[0].RejectNormalAdmission()
-											cancelInitiator()
+											stopHealthyLiveness()
 										case "automatic-control":
 											test.liveness.faultError = test.liveness.controls[0].ExceedAutomaticControl(initiatorCtx)
 										case "bypass-admission":
@@ -522,7 +551,15 @@ func runGateC1bMemoryProductProfile(t *testing.T, label string, test gateC1bMemo
 										}
 									})
 								} else if test.liveness.lossDirection == 0 {
-									livenessCancelTimer = scheduleLiveness(cancelInitiator)
+									livenessCancelTimer = scheduleLiveness(func() {
+										if test.liveness.closeMode == "" {
+											stopHealthyLiveness()
+										} else {
+											test.liveness.captureHealth()
+											test.liveness.faultAt.Store(time.Now().UnixNano())
+											cancelInitiator() // dedicated delivery/loss proof, not idle health
+										}
+									})
 								} else {
 									livenessCancelTimer = scheduleLiveness(func() {
 										test.liveness.faultAt.Store(time.Now().UnixNano())
@@ -562,6 +599,11 @@ func runGateC1bMemoryProductProfile(t *testing.T, label string, test gateC1bMemo
 			if test.liveness != nil {
 				proof.Random = nil
 				proof.LivenessArmed = func(control gatecorchestrator.LivenessMemoryProofControl) { test.liveness.controls[index] = control }
+				if test.liveness.closeMode == "interleaved" && index == 0 {
+					proof.WrapMemoryInterface = func(ni netif.MemoryTestInterface) netif.MemoryTestInterface {
+						return &closeInterleavingInterface{MemoryTestInterface: ni, proof: test.liveness, closed: make(chan struct{})}
+					}
+				}
 				proof.ProbeFactory = &livenessLossFactory{Factory: proof.ProbeFactory, proof: test.liveness, side: index}
 				livenessRestartProofs[index] = proof
 			}
@@ -611,10 +653,18 @@ func runGateC1bMemoryProductProfile(t *testing.T, label string, test gateC1bMemo
 		for _, got := range outcomes {
 			if err := gateC1bLivenessReadyPrecondition(got.result, got.err, test.liveness.started); err != nil {
 				t.Logf("liveness precondition role=%s: %v", got.role, err)
+				t.Logf("EVIDENCE_FAILURE role=%s required_reply_absent=%t evidence_insufficient=%t observation_failed=%t invalid_evidence=%t deadline=%t canceled=%t outbound=%d/%d",
+					got.role, errors.Is(got.err, hardnatobserve.ErrRequiredReplyAbsent), errors.Is(got.err, hardnatplan.ErrEvidenceInsufficient),
+					errors.Is(got.err, hardnatobserve.ErrObservationFailed), errors.Is(got.err, hardnatplan.ErrInvalidEvidence),
+					errors.Is(got.err, context.DeadlineExceeded), errors.Is(got.err, context.Canceled),
+					nats[0].Snapshot().OutboundPackets, nats[1].Snapshot().OutboundPackets)
 				unready = append(unready, err)
 			}
 		}
 		if len(unready) != 0 {
+			t.Logf("CANDIDATE_FAILURE left={%s} right={%s} reciprocal_pairs=%d network=%+v",
+				candidateDiagnostics[0].summary(), candidateDiagnostics[1].summary(),
+				reciprocalCandidatePairs(candidateDiagnostics[0], candidateDiagnostics[1]), network.Snapshot())
 			t.Fatal(errors.Join(unready...))
 		}
 	}

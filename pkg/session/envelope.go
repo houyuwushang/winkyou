@@ -58,7 +58,11 @@ func (s *Session) boundTransportMessageTarget(msg solver.Message) strategyMessag
 }
 
 func (s *Session) sendCapability(ctx context.Context) error {
-	envelope, err := s.newEnvelope(rproto.MsgTypeCapability, s.localCapability())
+	var capability any = s.localCapability()
+	if s.agreement != nil {
+		capability = s.agreement.local
+	}
+	envelope, err := s.newEnvelope(rproto.MsgTypeCapability, capability)
 	if err != nil {
 		return err
 	}
@@ -66,7 +70,10 @@ func (s *Session) sendCapability(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	sendCtx, cancel := s.operationContext(ctx)
+	if s.agreement != nil && (len(envelope.Payload) > selectionPayloadLimit || len(payload) > selectionEnvelopeLimit) {
+		return s.stopSelection(selectionFailure("selection_invalid"))
+	}
+	sendCtx, cancel := s.selectionCapabilityContext(ctx)
 	defer cancel()
 	return s.io.Send(sendCtx, solver.Message{
 		Kind:       solver.MessageKindEnvelope,
@@ -102,12 +109,31 @@ func (s *Session) sendPathCommit(ctx context.Context, result solver.Result) erro
 }
 
 func (s *Session) handleEnvelopeMessage(msg solver.Message) error {
+	if s.agreement != nil && (msg.Type == rproto.MsgTypeCapability || msg.Type == selectionProposalType || msg.Type == selectionConfirmType) && len(msg.Payload) > selectionEnvelopeLimit {
+		return s.stopSelection(selectionFailure("selection_invalid"))
+	}
 	envelope, err := rproto.UnmarshalEnvelope(msg.Payload)
 	if err != nil {
+		if s.agreement != nil {
+			return s.stopSelection(selectionFailure("selection_invalid"))
+		}
 		return err
 	}
 	if envelope.SessionID != s.cfg.SessionID {
+		if s.agreement != nil {
+			return s.stopSelection(selectionFailure("selection_invalid"))
+		}
 		return nil
+	}
+	if s.agreement != nil {
+		if envelope.FromNode != s.cfg.PeerID || envelope.ToNode != s.cfg.LocalNodeID || msg.Type != envelope.MsgType {
+			return s.stopSelection(selectionFailure("selection_invalid"))
+		}
+		if envelope.MsgType == rproto.MsgTypeCapability || envelope.MsgType == selectionProposalType || envelope.MsgType == selectionConfirmType {
+			if err := decodeSelectionJSONBound(msg.Payload, &envelope, selectionEnvelopeLimit); err != nil {
+				return s.stopSelection(err)
+			}
+		}
 	}
 
 	receivedAt := msg.ReceivedAt
@@ -122,6 +148,9 @@ func (s *Session) handleEnvelopeMessage(msg solver.Message) error {
 
 	switch envelope.MsgType {
 	case rproto.MsgTypeCapability:
+		if s.agreement != nil {
+			return s.receiveSelectionCapability(envelope.Payload, receivedAt)
+		}
 		var capability rproto.Capability
 		if len(envelope.Payload) > 0 {
 			if err := json.Unmarshal(envelope.Payload, &capability); err != nil {
@@ -129,6 +158,10 @@ func (s *Session) handleEnvelopeMessage(msg solver.Message) error {
 			}
 		}
 		s.setRemoteCapability(capability, receivedAt)
+	case selectionProposalType, selectionConfirmType:
+		if s.agreement != nil {
+			return s.receiveSelectionControl(envelope.MsgType, envelope.Payload)
+		}
 	case rproto.MsgTypePathCommit:
 		var pathCommit rproto.PathCommit
 		if len(envelope.Payload) > 0 {
@@ -184,13 +217,19 @@ func (s *Session) remoteCapabilitySnapshot() (rproto.Capability, bool) {
 }
 
 func (s *Session) waitForRemoteCapability(ctx context.Context) (rproto.Capability, error) {
+	if s.agreement != nil {
+		return s.waitForSelectionCapability(ctx)
+	}
 	if capability, received := s.remoteCapabilitySnapshot(); received {
+		if len(capability.Strategies) == 0 {
+			return rproto.Capability{}, selectionFailure("capability_missing")
+		}
 		return capability, nil
 	}
 
 	timeout := s.capabilityWaitTimeout()
 	if timeout <= 0 {
-		return rproto.Capability{}, nil
+		return rproto.Capability{}, selectionDeadline("capability_missing")
 	}
 
 	timer := time.NewTimer(timeout)
@@ -201,9 +240,12 @@ func (s *Session) waitForRemoteCapability(ctx context.Context) (rproto.Capabilit
 		case <-ctx.Done():
 			return rproto.Capability{}, ctx.Err()
 		case <-timer.C:
-			return s.remoteCapability(), nil
+			return rproto.Capability{}, selectionDeadline("capability_missing")
 		case <-s.capabilityCh:
 			if capability, received := s.remoteCapabilitySnapshot(); received {
+				if len(capability.Strategies) == 0 {
+					return rproto.Capability{}, selectionFailure("capability_missing")
+				}
 				return capability, nil
 			}
 		}

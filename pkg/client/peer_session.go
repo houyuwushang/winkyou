@@ -145,7 +145,7 @@ func (e *engine) newPeerRunner(s *peerSession) (*sesspkg.Session, error) {
 		observationSink = observationStore
 		observationHistory = observationStore
 	}
-	return sesspkg.New(sesspkg.Config{
+	return sesspkg.NewConverging(sesspkg.Config{
 		SessionID:             s.sessionID,
 		LocalNodeID:           localNodeID,
 		PeerID:                s.nodeID,
@@ -242,8 +242,12 @@ func (e *engine) handlePeerSolverMessage(nodeID string, msg solver.Message) {
 		e.warnDroppedSolverMessage(nodeID, msg, fmt.Errorf("peer session runner is closed"))
 		return
 	}
-	if err := runner.HandleMessage(e.sessionContext(), msg); err != nil {
-		e.handlePeerSessionError(nodeID, s, err)
+	if err := runner.HandleMessageFrom(e.sessionContext(), nodeID, msg); err != nil {
+		if sesspkg.IsSelectionError(err) {
+			e.handlePeerSessionHookError(nodeID, s, err)
+		} else {
+			e.handlePeerSessionError(nodeID, s, err)
+		}
 	}
 }
 

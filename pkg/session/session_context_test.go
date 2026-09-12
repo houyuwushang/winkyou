@@ -83,6 +83,7 @@ func TestSessionBindUsesRunContextCancellation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
+	deliverLibraryTestCapability(t, s)
 	if err := s.Start(runCtx); err != nil {
 		t.Fatalf("Start() error = %v", err)
 	}
@@ -114,6 +115,7 @@ func TestSessionPathCommitUsesRunContextCancellation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
+	deliverLibraryTestCapability(t, s)
 	if err := s.Start(runCtx); err != nil {
 		t.Fatalf("Start() error = %v", err)
 	}
@@ -147,6 +149,7 @@ func TestSessionCloseUsesIndependentCleanupContext(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
+	deliverLibraryTestCapability(t, s)
 	if err := s.Start(runCtx); err != nil {
 		t.Fatalf("Start() error = %v", err)
 	}

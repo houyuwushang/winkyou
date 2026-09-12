@@ -48,7 +48,12 @@ func (s *Session) Start(ctx context.Context) error {
 		s.startMu.Unlock()
 	}()
 
+	if err := s.beginSelectionPass(); err != nil {
+		s.fail(err)
+		return err
+	}
 	if err := s.sendCapability(ctx); err != nil {
+		err = s.stopSelection(err)
 		s.fail(err)
 		return err
 	}
@@ -103,8 +108,11 @@ func (s *Session) ImproveProtectedDirect(ctx context.Context) (bool, error) {
 		return false, nil
 	}
 
-	if err := s.sendCapability(ctx); err != nil {
+	if err := s.beginSelectionPass(); err != nil {
 		return false, err
+	}
+	if err := s.sendCapability(ctx); err != nil {
+		return false, s.stopSelection(err)
 	}
 	found, err := s.selectAndBindProtectedDirect(ctx)
 	if !found && s.State() != StateBound && s.State() != StateClosed {
@@ -121,6 +129,7 @@ func (s *Session) Close() error {
 	}
 	s.closed = true
 	s.closeMu.Unlock()
+	s.stopSelection(selectionFailure("selection_closed"))
 
 	s.startMu.Lock()
 	runCancel := s.runCancel

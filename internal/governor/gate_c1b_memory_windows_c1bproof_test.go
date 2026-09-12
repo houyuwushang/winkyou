@@ -3,9 +3,13 @@
 package governor_test
 
 import (
+	"context"
+	"errors"
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"io"
+	"net"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -41,6 +45,58 @@ func memoryFixtureWindows(profile hardnatplan.Profile) memoryFixtureWindow {
 	}
 }
 
+// Every C1b/liveness entry uses this one clock policy. Independent Gate B
+// codec/exhaustion fixtures keep their original more compressed clocks and
+// 100/200/250ms windows. Neither clock changes any product timer or wire value.
+type gateC1bMemoryClock struct{ *gateB2ManualClock }
+
+func memoryFixtureClock(now time.Time) *gateC1bMemoryClock {
+	return &gateC1bMemoryClock{newGateB2ManualClock(now)}
+}
+
+func (clock *gateC1bMemoryClock) Wait(ctx context.Context, duration time.Duration) error {
+	if duration >= time.Second {
+		return clock.gateB2ManualClock.Wait(ctx, duration)
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	// Unlike a PPS bookkeeping interval, a subsecond role lead orders two
+	// actual senders. Keep the pause requested by the product, not a 2ms yield.
+	clock.Advance(duration)
+	timer := time.NewTimer(duration)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
+}
+
+func TestGateC1bMemoryClockPreservesSubsecondRoleLead(t *testing.T) {
+	now := time.Date(2026, 8, 29, 16, 0, 0, 0, time.UTC)
+	clock := memoryFixtureClock(now)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	started := time.Now()
+	const roleLead = 250 * time.Millisecond // Existing product pause, not new headroom.
+	if err := clock.Wait(ctx, roleLead); err != nil {
+		t.Fatal("role lead failed within its unchanged context")
+	}
+	if elapsed := time.Since(started); elapsed < roleLead {
+		t.Fatalf("subsecond role ordering was compressed: elapsed_ns=%d required_ns=%d", elapsed.Nanoseconds(), roleLead.Nanoseconds())
+	}
+	if clock.Now().Sub(now) != roleLead {
+		t.Fatal("role lead changed the governed logical time")
+	}
+	cancelled, stop := context.WithCancel(context.Background())
+	stop()
+	if err := clock.Wait(cancelled, roleLead); !errors.Is(err, context.Canceled) || clock.Now().Sub(now) != roleLead {
+		t.Fatal("canceled wait advanced the schedule")
+	}
+}
+
 // The old profile timing fields no longer exist, so entry-specific assignments
 // cannot compile. This gate also rejects a second hook or inline hook override.
 func memoryFixtureWindowSourceValid(source []byte, ownsHook bool) bool {
@@ -48,7 +104,7 @@ func memoryFixtureWindowSourceValid(source []byte, ownsHook bool) bool {
 	if err != nil {
 		return false
 	}
-	hooks, timingSelectors, sourceCalls := 0, 0, 0
+	hooks, timingSelectors, sourceCalls, clockCalls, phaseCalls := 0, 0, 0, 0, 0
 	valid := true
 	ast.Inspect(file, func(node ast.Node) bool {
 		if selector, ok := node.(*ast.SelectorExpr); ok && (selector.Sel.Name == "candidateTime" || selector.Sel.Name == "activeTime") {
@@ -92,6 +148,22 @@ func memoryFixtureWindowSourceValid(source []byte, ownsHook bool) bool {
 		if !ok || function.Name.Name != "runGateC1bMemoryProductProfile" {
 			continue
 		}
+		// The phase witness is unconditional at the common entry, not nested
+		// under liveness/slow-FINISH/profile branches that would hide a RED.
+		for _, statement := range function.Body.List {
+			assignment, ok := statement.(*ast.AssignStmt)
+			if !ok || len(assignment.Rhs) != 1 {
+				continue
+			}
+			call, ok := assignment.Rhs[0].(*ast.CallExpr)
+			if !ok {
+				continue
+			}
+			name, ok := call.Fun.(*ast.Ident)
+			if ok && name.Name == "newGateC1bMemoryPhaseWitness" {
+				phaseCalls++
+			}
+		}
 		ast.Inspect(function, func(node ast.Node) bool {
 			call, ok := node.(*ast.CallExpr)
 			if !ok {
@@ -101,16 +173,21 @@ func memoryFixtureWindowSourceValid(source []byte, ownsHook bool) bool {
 			if ok && name.Name == "memoryFixtureWindows" {
 				sourceCalls++
 			}
+			if ok && name.Name == "memoryFixtureClock" {
+				clockCalls++
+			}
 			return true
 		})
 	}
 	if ownsHook {
-		return valid && hooks == 1 && timingSelectors == 2 && sourceCalls == 1
+		return valid && hooks == 1 && timingSelectors == 2 && sourceCalls == 1 && clockCalls == 2 && phaseCalls == 1
 	}
 	return valid && hooks == 0 && timingSelectors == 0 && sourceCalls == 0
 }
 
 func testGateC1bMemoryFixtureWindowSource(t *testing.T) {
+	t.Run("role-ordering-clock", TestGateC1bMemoryClockPreservesSubsecondRoleLead)
+	t.Run("phase-witness", TestGateC1bMemoryPhaseWitnessIsBoundedFirstObservation)
 	floors := []memoryFixtureWindow{{time.Second, 10 * time.Second}, {1500 * time.Millisecond, 10 * time.Second}, {4 * time.Second, 12 * time.Second}}
 	for index, profile := range gateC1bMemoryProfiles {
 		window := memoryFixtureWindows(profile.profile)
@@ -130,6 +207,8 @@ func testGateC1bMemoryFixtureWindowSource(t *testing.T) {
 		t.Fatal("memory entry windows must have exactly one authority and one hook consumer")
 	}
 	for _, mutation := range [][2]string{
+		{"phases := newGateC1bMemoryPhaseWitness()", "var phases *gateC1bMemoryPhaseWitness; if test.liveness != nil { phases = newGateC1bMemoryPhaseWitness() }"},
+		{"memoryFixtureClock(now)", "newGateB2ManualClock(now)"},
 		{"CandidateWindow: windows.candidateTime", "CandidateWindow: 250*time.Millisecond"},
 		{"ActiveEnvelope: windows.activeTime", "ActiveEnvelope: 0"},
 		{"windows := memoryFixtureWindows(test.profile)", "windows := memoryFixtureWindow{}"},
@@ -171,6 +250,199 @@ type gateC1bMemoryTimingWitness struct {
 	ready     [2]time.Time
 	packets   [2]int
 	success   [2]bool
+}
+
+// Observe only the existing progress callback. Fixed slots, monotonic process
+// offsets and known stage names; no stream/packet/identity/path is recorded.
+type gateC1bMemoryPhaseWitness struct {
+	mu    sync.Mutex
+	start time.Time
+	seen  [2][32]bool
+	at    [2][32]time.Duration
+	io    [2][2]gateC1bMemoryIOWitness // side, read/write; never retains buffers.
+}
+
+type gateC1bMemoryIOWitness struct {
+	started, finished int
+	bytes             int
+	begin, end        time.Duration
+	err               string
+}
+
+// Observe the caller-provided memory stream only. The original connection,
+// bytes, errors, deadlines and close behavior pass through unchanged; no I/O
+// capability or retry is added. Pending operations remain visible at failure.
+type gateC1bObservedMemoryConn struct {
+	net.Conn
+	witness *gateC1bMemoryPhaseWitness
+	side    int
+}
+
+func (w *gateC1bMemoryPhaseWitness) observeStream(connection net.Conn, side int) net.Conn {
+	return &gateC1bObservedMemoryConn{Conn: connection, witness: w, side: side}
+}
+
+func (connection *gateC1bObservedMemoryConn) Read(buffer []byte) (int, error) {
+	connection.witness.beginIO(connection.side, 0)
+	n, err := connection.Conn.Read(buffer)
+	connection.witness.endIO(connection.side, 0, n, err)
+	return n, err
+}
+
+func (connection *gateC1bObservedMemoryConn) Write(buffer []byte) (int, error) {
+	connection.witness.beginIO(connection.side, 1)
+	n, err := connection.Conn.Write(buffer)
+	connection.witness.endIO(connection.side, 1, n, err)
+	return n, err
+}
+
+func (w *gateC1bMemoryPhaseWitness) beginIO(side, direction int) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	entry := &w.io[side][direction]
+	entry.started++
+	entry.begin = time.Since(w.start)
+}
+
+func (w *gateC1bMemoryPhaseWitness) endIO(side, direction, n int, err error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	entry := &w.io[side][direction]
+	entry.finished++
+	entry.bytes += n
+	entry.end = time.Since(w.start)
+	entry.err = "none"
+	switch {
+	case errors.Is(err, io.EOF):
+		entry.err = "eof"
+	case errors.Is(err, net.ErrClosed), errors.Is(err, io.ErrClosedPipe):
+		entry.err = "closed"
+	case errors.Is(err, os.ErrDeadlineExceeded):
+		entry.err = "deadline"
+	case err != nil:
+		entry.err = "other"
+	}
+}
+
+func newGateC1bMemoryPhaseWitness() *gateC1bMemoryPhaseWitness {
+	return &gateC1bMemoryPhaseWitness{start: time.Now()}
+}
+
+func (w *gateC1bMemoryPhaseWitness) mark(side int, stage string) {
+	if w == nil || side < 0 || side >= len(w.seen) {
+		return
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	for slot, known := range gatecorchestrator.ProductProgressSequence {
+		if slot >= len(w.seen[side]) {
+			return
+		}
+		if stage == known {
+			if !w.seen[side][slot] {
+				w.seen[side][slot], w.at[side][slot] = true, time.Since(w.start)
+			}
+			return
+		}
+	}
+}
+
+func (w *gateC1bMemoryPhaseWitness) report(t *testing.T) {
+	t.Helper()
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	for side := range 2 {
+		for slot, stage := range gatecorchestrator.ProductProgressSequence {
+			if slot >= len(w.seen[side]) {
+				t.Error("phase witness capacity exceeded")
+				return
+			}
+			t.Logf("MEMORY_PHASE side=%d stage=%s seen=%t at_ns=%d", side, stage, w.seen[side][slot], w.at[side][slot].Nanoseconds())
+		}
+		for direction, entry := range w.io[side] {
+			t.Logf("MEMORY_IO side=%d direction=%s started=%d finished=%d bytes=%d last_begin_ns=%d last_end_ns=%d error=%s",
+				side, []string{"read", "write"}[direction], entry.started, entry.finished, entry.bytes,
+				entry.begin.Nanoseconds(), entry.end.Nanoseconds(), entry.err)
+		}
+	}
+}
+
+func TestGateC1bMemoryPhaseWitnessIsBoundedFirstObservation(t *testing.T) {
+	if len(gatecorchestrator.ProductProgressSequence) > 32 {
+		t.Fatal("progress schema outgrew the bounded witness")
+	}
+	w := newGateC1bMemoryPhaseWitness()
+	w.mark(0, gatecorchestrator.ProductProgressSequence[0])
+	first := w.at[0][0]
+	w.mark(0, gatecorchestrator.ProductProgressSequence[0])
+	w.mark(-1, "private")
+	w.mark(2, "private")
+	w.mark(1, "private")
+	if !w.seen[0][0] || w.at[0][0] != first || w.seen[1] != ([32]bool{}) {
+		t.Fatal("repeated/unknown stage changed the first fixed-slot witness")
+	}
+	var workers sync.WaitGroup
+	for side := range 2 {
+		workers.Add(1)
+		go func(side int) {
+			defer workers.Done()
+			for _, stage := range gatecorchestrator.ProductProgressSequence {
+				w.mark(side, stage)
+			}
+		}(side)
+	}
+	workers.Wait()
+	for side := range 2 {
+		for slot := range gatecorchestrator.ProductProgressSequence {
+			if !w.seen[side][slot] || w.at[side][slot] < 0 {
+				t.Fatal("lost a concurrent phase observation")
+			}
+		}
+	}
+	t.Run("transparent_memory_stream", testGateC1bMemoryStreamWitness)
+}
+
+func testGateC1bMemoryStreamWitness(t *testing.T) {
+	w := newGateC1bMemoryPhaseWitness()
+	left, right := net.Pipe()
+	defer left.Close()
+	defer right.Close()
+	writer, reader := w.observeStream(left, 0), w.observeStream(right, 1)
+	if err := writer.SetDeadline(time.Now().Add(time.Second)); err != nil {
+		t.Fatal("original memory deadline failed")
+	}
+	if err := reader.SetDeadline(time.Now().Add(time.Second)); err != nil {
+		t.Fatal("original memory read deadline failed")
+	}
+	joined := make(chan error, 1)
+	go func() { _, err := writer.Write([]byte("SYNTHETIC_PRIVATE")); joined <- err }()
+	buffer := make([]byte, len("SYNTHETIC_PRIVATE"))
+	if _, err := io.ReadFull(reader, buffer); err != nil || string(buffer) != "SYNTHETIC_PRIVATE" {
+		t.Fatal("stream witness changed bytes or errors")
+	}
+	select {
+	case err := <-joined:
+		if err != nil {
+			t.Fatal("memory writer failed")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("memory writer did not join")
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal("memory close failed")
+	}
+	if _, err := reader.Read(buffer); !errors.Is(err, io.EOF) {
+		t.Fatal("close/EOF changed")
+	}
+	if w.io[0][1].started != 1 || w.io[0][1].finished != 1 || w.io[0][1].bytes != len(buffer) ||
+		w.io[1][0].started != 2 || w.io[1][0].finished != 2 || w.io[1][0].err != "eof" {
+		t.Fatal("memory stream counts lost actual completions")
+	}
+	w.beginIO(0, 0)
+	w.endIO(0, 0, 0, errors.New("SYNTHETIC_PRIVATE"))
+	if w.io[0][0].err != "other" {
+		t.Fatal("stream error text was retained")
+	}
 }
 
 func (w *gateC1bMemoryTimingWitness) stage(side int, stage string) {

@@ -25,6 +25,9 @@ func (s *Session) selectAndExecute(ctx context.Context) error {
 
 	var lastErr error
 	for i, candidate := range candidates {
+		if err := s.prepareCandidateAgreement(ctx, candidate); err != nil {
+			return err
+		}
 		if err := s.setSelectedStrategyCandidate(candidate); err != nil {
 			return err
 		}
@@ -44,7 +47,7 @@ func (s *Session) selectAndExecute(ctx context.Context) error {
 			})
 			s.discardPendingStrategyMessages()
 			s.clearSelectedStrategy()
-			s.ignoreCleanupError(s.runCleanup(candidate.Strategy.Close))
+			s.ignoreCleanupError(s.closeSelectionStrategy(candidate.Strategy))
 			if ctx != nil && ctx.Err() != nil {
 				return err
 			}
@@ -70,6 +73,12 @@ func (s *Session) selectAndExecuteProtectedDirect(ctx context.Context, candidate
 		if primaryKey != "" && protectedDirectSearchComplete(allOutcomes, candidates[i:], s.cfg.PathPolicy) {
 			break
 		}
+		if err := s.prepareCandidateAgreement(ctx, candidate); err != nil {
+			if primaryKey != "" {
+				break
+			}
+			return err
+		}
 		if err := s.setSelectedStrategyCandidate(candidate); err != nil {
 			return err
 		}
@@ -82,7 +91,7 @@ func (s *Session) selectAndExecuteProtectedDirect(ctx context.Context, candidate
 			}
 			s.discardPendingStrategyMessages()
 			s.clearSelectedStrategy()
-			s.ignoreCleanupError(s.runCleanup(candidate.Strategy.Close))
+			s.ignoreCleanupError(s.closeSelectionStrategy(candidate.Strategy))
 			if ctx != nil && ctx.Err() != nil {
 				return err
 			}
@@ -100,7 +109,7 @@ func (s *Session) selectAndExecuteProtectedDirect(ctx context.Context, candidate
 			}
 			s.discardPendingStrategyMessages()
 			s.clearSelectedStrategy()
-			s.ignoreCleanupError(s.runCleanup(candidate.Strategy.Close))
+			s.ignoreCleanupError(s.closeSelectionStrategy(candidate.Strategy))
 			if ctx != nil && ctx.Err() != nil {
 				return err
 			}
@@ -158,6 +167,9 @@ func (s *Session) selectAndBindProtectedDirect(ctx context.Context) (bool, error
 		if !strategyMayProduceDirect(candidate.Name) {
 			continue
 		}
+		if err := s.prepareCandidateAgreement(ctx, candidate); err != nil {
+			return false, err
+		}
 		if err := s.setSelectedStrategyCandidate(candidate); err != nil {
 			return false, err
 		}
@@ -168,7 +180,7 @@ func (s *Session) selectAndBindProtectedDirect(ctx context.Context) (bool, error
 			s.recordProtectedDirectAttemptFailure(ctx, candidate.Name, err, primaryPathID)
 			s.discardPendingStrategyMessages()
 			s.clearSelectedStrategy()
-			s.ignoreCleanupError(s.runCleanup(candidate.Strategy.Close))
+			s.ignoreCleanupError(s.closeSelectionStrategy(candidate.Strategy))
 			if ctx != nil && ctx.Err() != nil {
 				return false, err
 			}
@@ -186,7 +198,7 @@ func (s *Session) selectAndBindProtectedDirect(ctx context.Context) (bool, error
 		s.recordProtectedDirectAttemptFailure(ctx, candidate.Name, err, primaryPathID)
 		s.discardPendingStrategyMessages()
 		s.clearSelectedStrategy()
-		s.ignoreCleanupError(s.runCleanup(candidate.Strategy.Close))
+		s.ignoreCleanupError(s.closeSelectionStrategy(candidate.Strategy))
 		if ctx != nil && ctx.Err() != nil {
 			return false, err
 		}
@@ -203,10 +215,19 @@ func (s *Session) executeSelectedStrategy(ctx context.Context, strategy solver.S
 	if err != nil {
 		return err
 	}
+	if err := s.selectionTerminalError(); err != nil {
+		s.closeOutcomeTransports(outcomes)
+		return err
+	}
 	return s.bindOutcomeSet(ctx, outcomes, nil)
 }
 
 func (s *Session) executeStrategyOutcomes(ctx context.Context, strategy solver.Strategy) ([]solver.CandidateOutcome, error) {
+	ctx, cancelSelection, err := s.enterSelection(ctx, strategy)
+	if err != nil {
+		return nil, err
+	}
+	defer cancelSelection()
 	if err := s.runStrategyPreflightProbe(ctx, strategy); err != nil {
 		s.emitObservation(ctx, solver.Observation{
 			Strategy:   strategy.Name(),
@@ -218,6 +239,9 @@ func (s *Session) executeStrategyOutcomes(ctx context.Context, strategy solver.S
 				"source":      "preflight_orchestration",
 			},
 		})
+	}
+	if s.agreement != nil && ctx.Err() != nil {
+		return nil, ctx.Err()
 	}
 
 	s.transition(StatePlanning)
@@ -267,9 +291,13 @@ func (s *Session) executeStrategyOutcomes(ctx context.Context, strategy solver.S
 		}
 	}
 
-	budget := s.candidateExecutionBudget(len(plans))
+	budget := s.subtractSelectionTime(s.candidateExecutionBudget(len(plans)))
 	outcomes := s.executeCandidateLoop(ctx, strategy, plans, budget)
 	s.discardPendingStrategyMessages()
+	if err := s.selectionTerminalError(); err != nil {
+		s.closeOutcomeTransports(outcomes)
+		return nil, err
+	}
 
 	return outcomes, nil
 }
@@ -763,11 +791,8 @@ func (s *Session) executeCandidate(ctx context.Context, strategy solver.Strategy
 	if execCtx == nil {
 		execCtx = context.Background()
 	}
-	if timeout := s.executionTimeout(); timeout > 0 {
-		var cancel context.CancelFunc
-		execCtx, cancel = context.WithTimeout(execCtx, timeout)
-		defer cancel()
-	}
+	execCtx, cancel := s.selectionExecutionContext(execCtx, s.executionTimeout())
+	defer cancel()
 
 	result, err := s.executePlan(execCtx, strategy, plan)
 	outcome.FinishedAt = time.Now()
@@ -830,12 +855,13 @@ func (s *Session) executeCandidateGroup(ctx context.Context, strategy solver.Str
 		familyPlanID: familyPlan,
 		entries:      entries,
 	}
+	s.openSelectionExecutor(group)
 	s.transition(StateExecuting)
 	s.setActiveExecutor(familyPlan, group)
 	defer func() {
 		s.clearActiveExecutor(group)
 		s.discardPendingStrategyMessagesForPlanFamily(familyPlan)
-		s.ignoreCleanupError(s.runCleanup(group.Close))
+		s.ignoreCleanupError(s.closeSelectionExecutor(group))
 	}()
 
 	execCtx := ctx
@@ -845,11 +871,8 @@ func (s *Session) executeCandidateGroup(ctx context.Context, strategy solver.Str
 	if execCtx == nil {
 		execCtx = context.Background()
 	}
-	if timeout := s.candidateGroupExecutionTimeout(len(entries)); timeout > 0 {
-		var cancel context.CancelFunc
-		execCtx, cancel = context.WithTimeout(execCtx, timeout)
-		defer cancel()
-	}
+	execCtx, cancel := s.selectionExecutionContext(execCtx, s.candidateGroupExecutionTimeout(len(entries)))
+	defer cancel()
 	groupCtx, cancelGroup := context.WithCancel(execCtx)
 	defer cancelGroup()
 
@@ -907,6 +930,9 @@ func (s *Session) executeCandidateGroup(ctx context.Context, strategy solver.Str
 }
 
 func (s *Session) executePlan(ctx context.Context, strategy solver.Strategy, plan solver.Plan) (solver.Result, error) {
+	if s.agreement != nil && ctx.Err() != nil {
+		return solver.Result{}, ctx.Err()
+	}
 	factory, ok := strategy.(solver.ExecutorFactory)
 	if !ok {
 		return strategy.Execute(ctx, s.io, plan)
@@ -916,11 +942,12 @@ func (s *Session) executePlan(ctx context.Context, strategy solver.Strategy, pla
 	if err != nil {
 		return solver.Result{}, err
 	}
+	s.openSelectionExecutor(executor)
 	s.setActiveExecutor(plan.ID, executor)
 	defer func() {
 		s.clearActiveExecutor(executor)
 		s.discardPendingStrategyMessagesForPlan(plan.ID)
-		s.ignoreCleanupError(s.runCleanup(executor.Close))
+		s.ignoreCleanupError(s.closeSelectionExecutor(executor))
 	}()
 	if err := s.flushPendingStrategyMessages(ctx, executor, plan.ID); err != nil {
 		return solver.Result{}, err
