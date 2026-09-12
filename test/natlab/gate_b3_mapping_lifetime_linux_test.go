@@ -5,8 +5,6 @@ package natlab
 import (
 	"context"
 	"os/exec"
-	"strconv"
-	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -37,9 +35,10 @@ type gateB3OrderedEarlyMappingPlan struct {
 	done          chan struct{}
 	peerNamespace string
 	once          sync.Once
+	diagnostics   [2]*gateB3NATDiagnostic
 }
 
-func (plan *gateB3OrderedEarlyMappingPlan) preferred(ctx context.Context, left bool, target uint16) (uint16, error) {
+func (plan *gateB3OrderedEarlyMappingPlan) preferred(ctx context.Context, left bool, target uint16) (port uint16, err error) {
 	plan.base.mu.Lock()
 	side := 1
 	if left {
@@ -51,8 +50,16 @@ func (plan *gateB3OrderedEarlyMappingPlan) preferred(ctx context.Context, left b
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, 2*time.Second)
 		defer cancel()
+		diag := plan.diagnostics[side]
+		diag.mark(gateB3PreferredEnter, time.Now(), nil, ctx.Err())
+		deadline, _ := ctx.Deadline()
+		diag.mark(gateB3PreferredDeadline, deadline, nil, ctx.Err())
+		defer func() { diag.mark(gateB3PreferredReturn, time.Now(), err, ctx.Err()) }()
 	}
-	port, err := plan.base.preferred(ctx, left, target)
+	port, err = plan.base.preferred(ctx, left, target)
+	if first {
+		plan.diagnostics[side].mark(gateB3PeerReady, time.Now(), err, ctx.Err())
+	}
 	if err != nil || !first || left == plan.firstLeft {
 		return port, err
 	}
@@ -69,36 +76,57 @@ func (plan *gateB3OrderedEarlyMappingPlan) preferred(ctx context.Context, left b
 // independent observer waits for the EXISTING default-deny policy to process
 // the opener before the other mapping may open. No timer tunes the ordering.
 func (plan *gateB3OrderedEarlyMappingPlan) observeInitialDenial() {
+	plan.observeInitialDenialWith(func(command *exec.Cmd) ([]byte, error) { return command.Output() })
+}
+
+// Only the test query runner is replaceable. The real command, deadline,
+// positive-DROP release predicate, polling and waiter behavior are unchanged.
+func (plan *gateB3OrderedEarlyMappingPlan) observeInitialDenialWith(run func(*exec.Cmd) ([]byte, error)) {
 	defer close(plan.done)
+	side := 1
+	if plan.firstLeft {
+		side = 0
+	}
+	diag := plan.diagnostics[side]
+	var observerErr error
+	defer func() { diag.mark(gateB3ObserverDone, time.Now(), observerErr, plan.ctx.Err()) }()
 	select {
 	case <-plan.firstSent:
 	case <-plan.ctx.Done():
+		observerErr = plan.ctx.Err()
 		return
 	}
 	ctx, cancel := context.WithTimeout(plan.ctx, 2*time.Second)
 	defer cancel()
+	diag.mark(gateB3DenialWait, time.Now(), nil, ctx.Err())
+	deadline, _ := ctx.Deadline()
+	diag.mark(gateB3DenialDeadline, deadline, nil, ctx.Err())
 	for {
 		command := exec.CommandContext(ctx, "ip", "netns", "exec", plan.peerNamespace, "iptables", "-w", "1", "-nvxL", "WYM_INITIAL")
 		command.WaitDelay = 100 * time.Millisecond
-		output, err := command.Output()
+		diag.queryStart()
+		output, err := run(command)
 		if err != nil {
+			diag.queryEnd("", err, ctx.Err())
+			observerErr = err
 			return
 		}
-		for _, line := range strings.Split(string(output), "\n") {
-			fields := strings.Fields(line)
-			if len(fields) >= 3 && fields[2] == "DROP" {
-				count, err := strconv.ParseUint(fields[0], 10, 64)
-				if err == nil && count > 0 {
-					close(plan.firstDenied)
-					return
-				}
+		outcome := gateB3DenialOutcome(output)
+		diag.queryEnd(outcome, nil, ctx.Err())
+		if outcome == "positive" {
+			at := time.Now()
+			for _, diagnostic := range plan.diagnostics {
+				diagnostic.mark(gateB3FirstDenied, at, nil, ctx.Err())
 			}
+			close(plan.firstDenied)
+			return
 		}
 		timer := time.NewTimer(time.Millisecond)
 		select {
 		case <-timer.C:
 		case <-ctx.Done():
 			timer.Stop()
+			observerErr = ctx.Err()
 			return
 		}
 	}
@@ -106,7 +134,13 @@ func (plan *gateB3OrderedEarlyMappingPlan) observeInitialDenial() {
 
 func (plan *gateB3OrderedEarlyMappingPlan) forwarded(left bool) {
 	if left == plan.firstLeft {
-		plan.once.Do(func() { close(plan.firstSent) })
+		plan.once.Do(func() {
+			at := time.Now()
+			for _, diagnostic := range plan.diagnostics {
+				diagnostic.mark(gateB3FirstSent, at, nil, plan.ctx.Err())
+			}
+			close(plan.firstSent)
+		})
 	}
 }
 
@@ -159,21 +193,29 @@ func configureGateB3LifetimeCase(t *testing.T, cfg gateB3LifetimeCase, left, rig
 		base.hitOrdinal = 0
 		ctx, cancel := context.WithCancel(context.Background())
 		plan := &gateB3OrderedEarlyMappingPlan{base: base, firstLeft: cfg.winnerLeft, firstSent: make(chan struct{}),
-			firstDenied: make(chan struct{}), ctx: ctx, cancel: cancel, done: make(chan struct{}), peerNamespace: left.namespace}
+			firstDenied: make(chan struct{}), ctx: ctx, cancel: cancel, done: make(chan struct{}), peerNamespace: left.namespace,
+			diagnostics: [2]*gateB3NATDiagnostic{left.gateB3Diagnostic, right.gateB3Diagnostic}}
 		if cfg.winnerLeft {
 			plan.peerNamespace = right.namespace
 		}
 		go plan.observeInitialDenial()
 		t.Cleanup(func() {
-			cancel()
-			select {
-			case <-plan.done:
-			case <-time.After(2 * time.Second):
+			if !plan.stopObserver() {
 				t.Error("mapping lifetime initial-denial observer did not drain")
 			}
 		})
 		left.gateB3MappingPlan, left.gateB3MappingPlanLeft = plan, true
 		right.gateB3MappingPlan = plan
+	}
+}
+
+func (plan *gateB3OrderedEarlyMappingPlan) stopObserver() bool {
+	plan.cancel()
+	select {
+	case <-plan.done:
+		return true
+	case <-time.After(2 * time.Second):
+		return false
 	}
 }
 

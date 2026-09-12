@@ -148,6 +148,8 @@ func testGateB3FullShapeLifetime(t *testing.T, dropEvery uint64, conntrackCap in
 	}
 	observer := startGateB2ObserverSet(t, topology.public)
 	leftConfig, rightConfig := gateB3RouterConfig(topology, true, 11, dropEvery), gateB3RouterConfig(topology, false, 29, dropEvery)
+	leftConfig.gateB3Diagnostic = &gateB3NATDiagnostic{origin: started}
+	rightConfig.gateB3Diagnostic = &gateB3NATDiagnostic{origin: started}
 	var leftPeerFlow, rightPeerFlow atomic.Int64
 	leftPeerFlow.Store(-1)
 	rightPeerFlow.Store(-1)
@@ -205,19 +207,30 @@ func testGateB3FullShapeLifetime(t *testing.T, dropEvery uint64, conntrackCap in
 	leftRouter := startGateB2NATRouter(t, leftConfig)
 	rightRouter := startGateB2NATRouter(t, rightConfig)
 	conntrackMonitor := startGateB3ConntrackMonitor(t, topology.natA, topology.natB)
+	var initiator, responder *gateB2EndpointProcess
+	residueComplete := false
+	defer func() {
+		if t.Failed() && !residueComplete {
+			// Runs on Fatal too, before ordinary t.Cleanup destroys evidence.
+			logGateB3RouterPair(t, leftRouter, rightRouter)
+			gateB3FailedCaseCleanup(t, topology, observer, leftRouter, rightRouter,
+				initiator, responder, conntrackMonitor, lifetimeGuard, leftModel, rightModel)
+			logGateB3RouterPair(t, leftRouter, rightRouter)
+		}
+	}()
 	if err := topology.installGateB2PacketCounters(observer.topology); err != nil {
 		t.Fatal("Gate B3 packet counter setup failed")
 	}
 	artifacts := buildGateB3Artifacts(t, fmt.Sprintf("drop-%d", dropEvery))
 	defer clearGateB2Artifacts(&artifacts)
-	initiator, responder := startGateB3Pair(t, topology, observer.topology, artifacts)
+	initiator, responder = startGateB3Pair(t, topology, observer.topology, artifacts)
 	initiatorResult, responderResult := waitGateB3Result(t, initiator), waitGateB3Result(t, responder)
 	for _, result := range []gateB3EndpointResult{initiatorResult, responderResult} {
 		assertGateB3FrozenShape(t, result)
 	}
 	if conntrackCap == gateB3ConntrackCap {
-		waitGateB3RouterOutbound(t, leftRouter, initiatorResult.UDPPackets+initiatorResult.DataPacketsWritten)
-		waitGateB3RouterOutbound(t, rightRouter, responderResult.UDPPackets+responderResult.DataPacketsWritten)
+		waitGateB3RouterOutbound(t, leftRouter, initiatorResult.UDPPackets+initiatorResult.DataPacketsWritten, leftRouter, rightRouter)
+		waitGateB3RouterOutbound(t, rightRouter, responderResult.UDPPackets+responderResult.DataPacketsWritten, leftRouter, rightRouter)
 	}
 	leftConntrackPeak, rightConntrackPeak, monitorErr := conntrackMonitor.Stop()
 	if monitorErr != nil {
@@ -279,6 +292,8 @@ func testGateB3FullShapeLifetime(t *testing.T, dropEvery uint64, conntrackCap in
 	// evidence. Do not let Fatal below bypass the independent residue gate.
 	assertGateB3NoResidue(t, topology, observer, leftRouter, rightRouter, !success,
 		conntrackCap < gateB3ConntrackCap, initiator.governorDir, responder.governorDir)
+	residueComplete = true
+	logGateB3RouterPair(t, leftRouter, rightRouter)
 	if lifetime != nil {
 		if err := lifetimeGuard.close(); err != nil {
 			t.Fatal("mapping lifetime isolation restoration/handle witness failed")
@@ -832,9 +847,10 @@ func waitGateB3Result(t testing.TB, process *gateB2EndpointProcess) gateB3Endpoi
 	return gateB3EndpointResult{}
 }
 
-func waitGateB3RouterOutbound(t testing.TB, router *gateB2NATRouter, want int) {
+func waitGateB3RouterOutbound(t testing.TB, router *gateB2NATRouter, want int, pair ...*gateB2NATRouter) {
 	t.Helper()
 	if router == nil || want < 0 {
+		logGateB3RouterPair(t, pair...)
 		t.Fatal("Gate B3 NAT outbound witness input rejected")
 	}
 	deadline := time.Now().Add(gateB3RouterWitnessLimit)
@@ -844,6 +860,7 @@ func waitGateB3RouterOutbound(t testing.TB, router *gateB2NATRouter, want int) {
 			return
 		}
 		if got > uint64(want) {
+			logGateB3RouterPair(t, pair...)
 			t.Fatalf("Gate B3 NAT outbound witness exceeded endpoint emission: got=%d want=%d", got, want)
 		}
 		time.Sleep(10 * time.Millisecond)
@@ -855,6 +872,7 @@ func waitGateB3RouterOutbound(t testing.TB, router *gateB2NATRouter, want int) {
 	dropped, parseErr := strconv.ParseUint(strings.TrimSpace(output), 10, 64)
 	t.Logf("Gate B3 ingress gap witness: counters=%+v kernel_tun_tx_dropped=%d kernel_counter_valid=%t",
 		router.Witness(), dropped, err == nil && parseErr == nil)
+	logGateB3RouterPair(t, pair...)
 	t.Fatalf("Gate B3 NAT outbound witness did not drain accepted emissions: got=%d want=%d",
 		router.Witness().Outbound, want)
 }
