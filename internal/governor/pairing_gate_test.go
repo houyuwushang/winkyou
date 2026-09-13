@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -240,23 +241,92 @@ func TestCommittedAttemptInvalidatesBeforeFirstEmission(t *testing.T) {
 		}
 		environment.clock.Set(environment.request.ExpiresAt)
 		authorization, err := committed.ConsumeForCarrier(environment.context)
-		if errors.Is(err, ErrPairingCredentialExpired) {
-			t.Log("ordering=validate_first")
-		} else {
-			t.Log("ordering=watcher_first")
-		}
-		if authorization != nil || !errors.Is(err, ErrPairingCredentialExpired) {
-			t.Fatalf("consume expired token = %#v/%v", authorization, err)
-		}
-		snapshot, readErr := readPairingLedgerSnapshot(environment.path, environment.clock.Now(), environment.owner.Info().InstanceID, validateTestPairingLedgerFile)
-		if readErr != nil {
-			t.Fatalf("read expired journal: %v", readErr)
-		}
-		entry := snapshot.admissions[environment.request.CredentialID]
-		if entry == nil || entry.finish == nil || entry.finish.Reason != PairingTerminalExpired {
-			t.Fatalf("expired admission = %#v", entry)
-		}
+		assertTestExpiredCarrierAuthorization(t, environment, authorization, err)
 	})
+}
+
+func assertTestExpiredCarrierAuthorization(t *testing.T, environment *testPairingGateEnvironment, authorization *CommittedCarrierAuthorization, err error) {
+	t.Helper()
+	if errors.Is(err, ErrPairingCredentialExpired) {
+		t.Log("ordering=validate_first")
+	} else {
+		t.Log("ordering=watcher_first")
+	}
+	if authorization != nil || !errors.Is(err, ErrPairingCredentialExpired) {
+		t.Errorf("consume expired token = %#v/%v", authorization, err)
+	}
+	snapshot, readErr := readPairingLedgerSnapshot(environment.path, environment.clock.Now(), environment.owner.Info().InstanceID, validateTestPairingLedgerFile)
+	if readErr != nil {
+		t.Fatalf("read expired journal: %v", readErr)
+	}
+	entry := snapshot.admissions[environment.request.CredentialID]
+	if entry == nil || entry.finish == nil || entry.finish.Reason != PairingTerminalExpired || snapshot.sequence != 3 {
+		t.Fatal("expiry lost its durable FINISH reason or appended another journal record")
+	}
+	t.Logf("expiry_terminal reason=%s journal_sequence=%d authorization_nil=%t invalid=%t", entry.finish.Reason, snapshot.sequence, authorization == nil, errors.Is(err, ErrCommittedAttemptInvalid))
+}
+
+// Preserve the original naturally scheduled regression above. This companion
+// controls only the test clock through an EXISTING gate hook; it does not add a
+// watcher, mutate CommittedAttempt, synthesize FINISH or install a product hook.
+func TestCommittedAttemptExpiryObserverOrderings(t *testing.T) {
+	for _, watcherFirst := range []bool{false, true} {
+		name := "validate_first"
+		if watcherFirst {
+			name = "watcher_first"
+		}
+		t.Run(name, func(t *testing.T) {
+			environment := newTestPairingGateEnvironment(t, "expiry-order-"+name, OperationConnectTest)
+			var armed atomic.Bool
+			var calls atomic.Int32
+			var clockTimedOut atomic.Bool
+			watcherEntered, released := make(chan struct{}), make(chan struct{})
+			var releaseOnce sync.Once
+			release := func() { releaseOnce.Do(func() { close(released) }) }
+			t.Cleanup(release)
+			environment.ledger.now = func() time.Time {
+				// After beforeReturn there is exactly one final postcheck clock
+				// read. The next read initializes the sole production watcher.
+				if armed.Load() && calls.Add(1) == 2 {
+					close(watcherEntered)
+					select {
+					case <-released:
+					case <-time.After(5 * time.Second):
+						clockTimedOut.Store(true)
+					}
+				}
+				return environment.clock.Now()
+			}
+			gate := &PairingAdmissionGate{hooks: pairingAdmissionGateHooks{beforeReturn: func() error {
+				armed.Store(true)
+				return nil
+			}}}
+			committed, err := gate.Commit(environment.context, environment.attempt, environment.request)
+			if err != nil {
+				t.Fatal("controlled expiry commit failed")
+			}
+			select {
+			case <-watcherEntered:
+			case <-time.After(5 * time.Second):
+				t.Fatal("existing watcher never reached the test clock barrier")
+			}
+			environment.clock.Set(environment.request.ExpiresAt)
+			if watcherFirst {
+				release()
+				select {
+				case <-committed.finished:
+				case <-time.After(5 * time.Second):
+					t.Fatal("expired watcher did not durably finish")
+				}
+			}
+			authorization, consumeErr := committed.ConsumeForCarrier(environment.context)
+			release()
+			if clockTimedOut.Load() || errors.Is(consumeErr, ErrPairingCredentialExpired) == watcherFirst {
+				t.Fatal("requested observer ordering was not witnessed")
+			}
+			assertTestExpiredCarrierAuthorization(t, environment, authorization, consumeErr)
+		})
+	}
 }
 
 func TestPairingAdmissionGateMissingCorruptAndRollbackEmitNoToken(t *testing.T) {
