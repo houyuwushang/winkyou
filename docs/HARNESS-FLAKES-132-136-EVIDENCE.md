@@ -53,3 +53,18 @@ go test -race ./internal/governor -run '^TestCommittedAttempt(InvalidatesBeforeF
 validate_first=400、watcher_first=200，600 次真实 expired FINISH 的 sequence 均为 3。
 绿日志 SHA-256：`0904a37fb7ab7b014c3d70502a5ed1a05268abfaee7f82a241e99f32c4dc77e5`。
 全部控制在 `_test.go`，5s 只界定测试屏障等待，不变更任何产品 timer 或资源预算。
+
+## #136：relay 回环 coordinator 的冷启动夹具预算（设计先行）
+
+保留 [#136 原始 RED](https://github.com/houyuwushang/winkyou/issues/136)：新 race 进程
+首个 alpha.Start 在约 0.29s `DeadlineExceeded`，此前无协议消息。当前夹具写死 200ms，
+和同一夹具 30s transport 断言、10s stats 等待相比缺乏冷启动余量。
+
+仅改 `pkg/client/relay_wggo_test.go`：将两个既有 10s stats 等待等价命名，coordinator
+缺席快速失败预算取其五分之一 = 2s；生产 config.Default、所有 selection/transport
+窗口及后续协议断言不变。新增纯夹具配置契约锁定该派生关系，构造 engine 但不 Start。
+
+预定旧值与新值各 20 个全新测试进程，每个只运行一次原真实 relay/WireGuard 用例：
+Go 1.23.1、race、GOMAXPROCS=28、无附加 CPU 压力，逐进程独立原始日志。
+这不是同一进程 count=20 的热缓存证明；old/new 两组都不丢弃失败样本或重跑求绿。
+旧组没有复现时如实报告 0/20，而不将契约 RED 冒称实际冷启动超时。
