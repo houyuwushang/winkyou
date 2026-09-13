@@ -959,3 +959,29 @@ required job 的**逐步骤墙钟耗时**回填本次 Draft PR 描述，未完�
 脱敏与边界负向用例可在 Windows 无 socket 运行，也由现有 Linux required diagnostics
 入口执行。本增补只改善反例可观测性；后续 CI 即使不再复现，也不构成根因已修复的
 证明。其他 Mapping Lifetime 失败与 Windows job 容量问题分别记录，不混入本诊断改动。
+
+### 7.5 #133：连续 Fresh100 窗口校准（先测量，未宣称修复）
+
+基线 `ed9522b`。旧 §7.2 只测了每轮三个 profile、重复 20 轮，不能替代同一进程内
+100 个 fresh namespace 的顺序条件。原始反例保留在 [#133](https://github.com/houyuwushang/winkyou/issues/133)：
+predictive-fresh-96 双端 `attempt_expired`，以及 liveness 在 candidates 阶段未 arm。
+
+本轮只改 `gate_c1b_memory_windows_c1bproof_test.go` 的窗口策略与测量测试。测量沿用
+实际 CLI memory runner、原 profile 轮转次序与现有只读 progress 见证：100 次顺序运行，
+predictive / asymmetric / hard-16k 分别 34 / 33 / 33 个配对；两个端点都纳入统计，
+缺失 winner 不记为 0，不丢弃慢样本，失败即停止并输出已完成样本和当前失败见证。
+
+环境固定 Go 1.23.1、`WINKYOU_GATE_C1B_REPEAT_REQUIRED=1`、两个持续 busy goroutine。
+本仓库为 public，workflow 使用标准 `windows-latest` 且未覆盖 `GOMAXPROCS`；按
+[GitHub 标准 public runner 规格](https://docs.github.com/en/actions/reference/runners/github-hosted-runners#standard-github-hosted-runners-for-public-repositories)
+的四个逻辑 CPU，本地设 `GOMAXPROCS=4`，不再把旧校准的 2 当成 CI 实际配置。
+分别预定一次与 Fresh100 相同的非 race 批次和一次 race 批次，日志分开保留，不以后一批
+覆盖前一批。不能把本机测量冒称 hosted Windows OS 的实测。
+
+统计使用单调时间的 candidate→winner（含互认）与 nearest-rank p50 / p95 / max；
+回归门要求各 profile 的 p95 严格小于其 candidateTime 的 80%。只有证据表明原地板
+不足才修改相应 candidateTime：`ceil(max × 1.25 / 0.5s) × 0.5s`，不凭估计预加余量。
+activeTime 和其他 profile 保持原值，除非它们也有同等不足证据；缺失完成时间时不能
+把截断样本冒充可用于该公式的 max。生产预算、窗口、工作流和其它文件均不改。
+
+当前尚未运行新测量，结果与原始日志摘要待实测后补入；本节不构成关闭 #133 的证据。
