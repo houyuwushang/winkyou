@@ -822,7 +822,7 @@ func (router *gateB2NATRouter) forwardInbound(tun *os.File, reply gateB2MappedRe
 		return errors.New("Gate B2 isolated NAT short TUN write")
 	}
 	router.inbound.Add(1)
-	router.tailWitness.observe(gateB3TailDelivered, reply.payload)
+	router.tailWitness.observe(gateB3TailTUNWritten, reply.payload)
 	if metadata, err := hardnatcontrol.InspectFrame(reply.payload); err == nil && metadata.Type == hardnatcontrol.FrameWinner {
 		router.winnerInbound.Add(1)
 	}

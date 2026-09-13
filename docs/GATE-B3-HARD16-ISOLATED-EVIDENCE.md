@@ -661,7 +661,8 @@ GOOS=linux CGO_ENABLED=0 go vet -tags=natlab,c1bproof ./test/natlab
 合计无法确定最后一包经过了哪一段，也不能以 winner 缺失推导 socket 没读到。
 
 本轮只在 natlab 测试中增加固定 ordinal 的计数：发送侧 TUN 接收/入队/转发、对端
-NAT 映射读取/回注 TUN 成功，以及对端既有 Datagram.ReadFrom 的实际成功返回。
+NAT 映射读取/回注 TUN 成功、对端 endpoint namespace 的 INPUT 计数，以及对端
+既有 Datagram.ReadFrom 的实际成功返回。
 最后一项由测试 wrapper 原样委托已有 sealed factory/Datagram，既不新开 socket，
 也不增加独立 reader，不碰 production probeio。统计元数据不是认证成功见证。
 
@@ -670,7 +671,8 @@ peer_socket_read`，附入站/出站队列容量、采样水位与采样峰值�
 不是未采到满队列的证明；缺失终态文件将 socket read 标为 unavailable，不伪造 0。
 失败也先留两侧见证再执行原残留门，不把干净耗尽改成成功。
 
-只使用 `hardnatcontrol.InspectFrame` 读取既有公开 header，不记录 packet、目标或身份；
+只读取既有公开 header（`hardnatcontrol.InspectFrame` / 内核固定 u32 条件），不记录
+packet、目标或身份；
 不能通过尾候选匹配、winner 或 TUN 写成功冒称对端应用已验证报文。固定单发、不重试，
 ordinal=16383、512 PPS、所有窗口/容量保持不变。
 
@@ -698,4 +700,23 @@ architecture/mutation PASS（8.693s）；最终 Linux `CGO_ENABLED=0`、
 `-tags=natlab,c1bproof` 全仓交叉 vet PASS。
 
 没有队列丢失的 OS 实测，故不修改队列/背压/重试或成功断言，当前按 `Refs #132`
-提交见证，保留 issue 开放。CI 首次 `GATE_B3_TAIL` 六阶段计数与队列观测待回填。
+提交见证，保留 issue 开放。CI 首次 `GATE_B3_TAIL` 分段计数与队列观测待回填。
+
+#### 11.9.2 自查：TUN 写成功不等于 endpoint namespace 已收到
+
+在唯一推送前自查发现，最初 `peer_namespace_delivered` 的计数点只是**对端 NAT** 的
+TUN 写成功，尚未证明报文已进入**对端 endpoint**。修订将旧点明确命名为
+`peer_tun_written`；另在两个 disposable endpoint 的 INPUT 链各装只 RETURN 的计数
+规则，匹配 UDP 中的公开 magic/version/domain/candidate-type/ordinal=16383。
+不修改 accept/drop、路由、NAT 映射、队列、报文或重试；不操作 initial namespace。
+
+u32 的 `@` 按可变 IPv4 IHL 跳转，跳过 UDP header 后读取冻结头部；排除分片。
+位移与偏移语义按 [iptables-extensions u32 手册](https://man7.org/linux/man-pages/man8/iptables-extensions.8.html)
+核对；golden 锁定完整表达式，合成 IPv4 IHL=20..60 字节逐项校验读位。
+元数据计数不是解密/认证成功证据，也不能以不匹配的数据包证明网络丢包。
+
+`peer_namespace_delivered` 现仅取该 INPUT counter，无法读取时 -1 且
+`peer_namespace_witness=false`。正常收尾必须在 netns teardown **之前**读取；失败
+路径同样先读取再走原清理。接线门要求 INPUT/RETURN/两端安装和观察先于清理。
+此自查修订首批 `^TestGateB3LifetimeTail` race×20 PASS（1.846s）；本机没有执行
+iptables/netns，内核计数的可用性与结果仍由 Linux required CI 首跑给出。

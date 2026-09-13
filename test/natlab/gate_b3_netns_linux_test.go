@@ -216,7 +216,7 @@ func testGateB3FullShapeLifetime(t *testing.T, dropEvery uint64, conntrackCap in
 			gateB3ReportFailedCase(
 				func() {
 					logGateB3EndpointPair(t, initiator, responder)
-					logGateB3TailDeliveryPair(t, leftRouter, rightRouter, initiator, responder)
+					logGateB3TailDeliveryPair(t, topology, leftRouter, rightRouter, initiator, responder)
 				},
 				func() {
 					logGateB3RouterPair(t, leftRouter, rightRouter)
@@ -229,6 +229,9 @@ func testGateB3FullShapeLifetime(t *testing.T, dropEvery uint64, conntrackCap in
 	}()
 	if err := topology.installGateB2PacketCounters(observer.topology); err != nil {
 		t.Fatal("Gate B3 packet counter setup failed")
+	}
+	if err := topology.installGateB3TailIngressCounters(); err != nil {
+		t.Fatal("Gate B3 tail INPUT counter setup failed")
 	}
 	artifacts := buildGateB3Artifacts(t, fmt.Sprintf("drop-%d", dropEvery))
 	defer clearGateB2Artifacts(&artifacts)
@@ -304,10 +307,12 @@ func testGateB3FullShapeLifetime(t *testing.T, dropEvery uint64, conntrackCap in
 	}
 	// A rejected terminal is still required to leave complete OS cleanup
 	// evidence. Do not let Fatal below bypass the independent residue gate.
+	if !logGateB3TailDeliveryPair(t, topology, leftRouter, rightRouter, initiator, responder) {
+		t.Error("Gate B3 endpoint tail INPUT witness unavailable")
+	}
 	assertGateB3NoResidue(t, topology, observer, leftRouter, rightRouter, !success,
 		conntrackCap < gateB3ConntrackCap, initiator.governorDir, responder.governorDir)
 	residueComplete = true
-	logGateB3TailDeliveryPair(t, leftRouter, rightRouter, initiator, responder)
 	logGateB3RouterPair(t, leftRouter, rightRouter)
 	if lifetime != nil {
 		if err := lifetimeGuard.close(); err != nil {

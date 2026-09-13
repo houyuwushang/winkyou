@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"net/netip"
 	"os"
 	"strings"
@@ -20,10 +21,40 @@ const (
 	gateB3TailQueued
 	gateB3TailForwarded
 	gateB3TailMappedRead
-	gateB3TailDelivered
+	gateB3TailTUNWritten
 	gateB3TailSocketRead
 	gateB3TailStages
 )
+
+// IPv4 INPUT, UDP only (the rule supplies -p udp). @ follows variable IHL;
+// offsets then include the eight-byte UDP header. Count public metadata, not
+// authenticity. In particular a NAT TUN write is NOT endpoint INPUT evidence.
+func gateB3TailIngressU32() string {
+	return fmt.Sprintf("4&0x3FFF=0&&0>>22&0x3C@8=0x%08X&&0>>22&0x3C@12>>8=0x%06X&&0>>22&0x3C@26=%d",
+		binary.BigEndian.Uint32([]byte(hardnatcontrol.FrameMagic)),
+		uint32(hardnatcontrol.FrameVersion)<<16|uint32(hardnatcontrol.DomainDirectPunch)<<8|uint32(hardnatcontrol.FrameCandidate),
+		hardnatbudget.Hard16CandidatePackets-1)
+}
+
+func TestGateB3LifetimeTailIngressFilter(t *testing.T) {
+	const golden = "4&0x3FFF=0&&0>>22&0x3C@8=0x57594842&&0>>22&0x3C@12>>8=0x010204&&0>>22&0x3C@26=16383"
+	if gateB3TailIngressU32() != golden {
+		t.Fatal("endpoint ingress filter drifted from frozen public header offsets")
+	}
+	for ihl := 20; ihl <= 60; ihl += 4 {
+		packet := make([]byte, ihl+8+40)
+		packet[0], packet[9] = 0x40|byte(ihl/4), 17
+		copy(packet[ihl+8:], syntheticGateB3TailFrame(16383))
+		// The same big-endian loads/shifts as u32, including IPv4 options.
+		base := int(binary.BigEndian.Uint32(packet[:4]) >> 22 & 0x3C)
+		if base != ihl || binary.BigEndian.Uint32(packet[4:8])&0x3FFF != 0 ||
+			binary.BigEndian.Uint32(packet[base+8:base+12]) != 0x57594842 ||
+			binary.BigEndian.Uint32(packet[base+12:base+16])>>8 != 0x010204 ||
+			binary.BigEndian.Uint32(packet[base+26:base+30]) != 16383 {
+			t.Fatal("endpoint ingress filter does not select the actual tail header")
+		}
+	}
+}
 
 type gateB3TailWitness struct {
 	counts [gateB3TailStages]atomic.Uint64
@@ -130,9 +161,10 @@ func TestGateB3LifetimeTailWitness(t *testing.T) {
 
 func TestGateB3LifetimeTailWitnessWiring(t *testing.T) {
 	for filename, markers := range map[string][]string{
-		"gate_b2_nat_linux_test.go":      {"router.tailWitness.observe(gateB3TailAccepted", "router.tailWitness.counts[gateB3TailQueued].Add(1)", "router.tailWitness.observe(gateB3TailForwarded", "router.tailWitness.observe(gateB3TailMappedRead", "router.tailWitness.observe(gateB3TailDelivered", "router.tailWitness.queue("},
-		"gate_b3_endpoint_linux_test.go": {"gateB3TailFactory{", "TailSocketRead", "TailReadWitness"},
-		"gate_b3_netns_linux_test.go":    {"logGateB3TailDeliveryPair(t, leftRouter, rightRouter, initiator, responder)"},
+		"gate_b2_nat_linux_test.go":          {"router.tailWitness.observe(gateB3TailAccepted", "router.tailWitness.counts[gateB3TailQueued].Add(1)", "router.tailWitness.observe(gateB3TailForwarded", "router.tailWitness.observe(gateB3TailMappedRead", "router.tailWitness.observe(gateB3TailTUNWritten", "router.tailWitness.queue("},
+		"gate_b3_endpoint_linux_test.go":     {"gateB3TailFactory{", "TailSocketRead", "TailReadWitness"},
+		"gate_b3_netns_linux_test.go":        {"logGateB3TailDeliveryPair(t, topology, leftRouter, rightRouter, initiator, responder)", "topology.installGateB3TailIngressCounters()"},
+		"gate_b3_tail_ingress_linux_test.go": {"topology.clientA, topology.clientB", "\"INPUT\"", "gateB3TailIngressU32()", "\"RETURN\"", "runNamespaced(namespace, \"iptables\"", "n2dChainPackets(namespace, gateB3TailIngressChain)"},
 	} {
 		data, err := os.ReadFile(filename)
 		if err != nil {
@@ -155,5 +187,15 @@ func TestGateB3LifetimeTailWitnessWiring(t *testing.T) {
 				t.Fatal("tail witness removal escaped")
 			}
 		}
+	}
+	data, err := os.ReadFile("gate_b3_netns_linux_test.go")
+	if err != nil {
+		t.Fatal("tail ingress observation order source unavailable")
+	}
+	source := string(data)
+	observation := strings.Index(source, "if !logGateB3TailDeliveryPair(")
+	cleanup := strings.Index(source, "\n\tassertGateB3NoResidue(")
+	if observation < 0 || cleanup < observation {
+		t.Fatal("endpoint INPUT counter must be read before namespace teardown")
 	}
 }

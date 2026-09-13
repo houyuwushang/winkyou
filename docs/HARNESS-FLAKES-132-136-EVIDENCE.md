@@ -4,7 +4,7 @@
 本批按 #133 → #135 → #132 → #134 → #136 串行处理，完成后一次推送，Draft 等独立复审。
 
 - #133：维护者接受仅补 Fresh100 测量回归、原窗口不变、`Refs #133`；见
-  [C1b 证据 §7.5](GATE-C1B-PRODUCT-COMPOSITION-EVIDENCE.md#75-133连续-fresh100-窗口校准先测量未宣称修复)。
+  [C1b 证据 §7.5](GATE-C1B-PRODUCT-COMPOSITION-EVIDENCE.md)。
 - #135 / #132：等待预算与尾包分段见证见
   [Gate B3 证据](GATE-B3-HARD16-ISOLATED-EVIDENCE.md)。#132 未定位 OS 丢失点前仅 `Refs`。
 

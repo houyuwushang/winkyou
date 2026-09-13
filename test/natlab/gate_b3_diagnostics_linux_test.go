@@ -21,8 +21,9 @@ func logGateB3EndpointPair(t testing.TB, pair ...*gateB2EndpointProcess) {
 	}
 }
 
-func logGateB3TailDeliveryPair(t testing.TB, left, right *gateB2NATRouter, initiator, responder *gateB2EndpointProcess) {
+func logGateB3TailDeliveryPair(t testing.TB, topology *n2dTopology, left, right *gateB2NATRouter, initiator, responder *gateB2EndpointProcess) bool {
 	t.Helper()
+	ingress := topology.gateB3TailIngressCounts()
 	routers := [2]*gateB2NATRouter{left, right}
 	processes := [2]*gateB2EndpointProcess{initiator, responder}
 	for side, router := range routers {
@@ -38,13 +39,18 @@ func logGateB3TailDeliveryPair(t testing.TB, left, right *gateB2NATRouter, initi
 		if readable {
 			readCount = int64(result.TailSocketRead)
 		}
-		t.Logf("GATE_B3_TAIL side=%d ordinal=16383 non_atomic=true router_accepted=%d router_queued=%d router_forwarded=%d peer_mapped_read=%d peer_namespace_delivered=%d peer_socket_read=%d peer_socket_witness=%t queue_capacity=%d queue_sample=%d/%d queue_sampled_peak=%d/%d peer_queue_sample=%d/%d peer_queue_sampled_peak=%d/%d",
+		peerIngress := int64(-1)
+		if ingress[1-side].valid {
+			peerIngress = int64(ingress[1-side].packets)
+		}
+		t.Logf("GATE_B3_TAIL side=%d ordinal=16383 non_atomic=true router_accepted=%d router_queued=%d router_forwarded=%d peer_mapped_read=%d peer_tun_written=%d peer_namespace_delivered=%d peer_namespace_witness=%t peer_socket_read=%d peer_socket_witness=%t queue_capacity=%d queue_sample=%d/%d queue_sampled_peak=%d/%d peer_queue_sample=%d/%d peer_queue_sampled_peak=%d/%d",
 			side, router.tailWitness.counts[gateB3TailAccepted].Load(), router.tailWitness.counts[gateB3TailQueued].Load(),
 			router.tailWitness.counts[gateB3TailForwarded].Load(), peer.tailWitness.counts[gateB3TailMappedRead].Load(),
-			peer.tailWitness.counts[gateB3TailDelivered].Load(), readCount, readable, router.config.packetQueueCapacity,
+			peer.tailWitness.counts[gateB3TailTUNWritten].Load(), peerIngress, ingress[1-side].valid, readCount, readable, router.config.packetQueueCapacity,
 			router.tailWitness.level[0].Load(), router.tailWitness.level[1].Load(), router.tailWitness.peak[0].Load(), router.tailWitness.peak[1].Load(),
 			peer.tailWitness.level[0].Load(), peer.tailWitness.level[1].Load(), peer.tailWitness.peak[0].Load(), peer.tailWitness.peak[1].Load())
 	}
+	return ingress[0].valid && ingress[1].valid
 }
 
 func logGateB3RouterPair(t testing.TB, pair ...*gateB2NATRouter) {
