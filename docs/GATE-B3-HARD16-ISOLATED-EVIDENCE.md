@@ -676,3 +676,26 @@ ordinal=16383、512 PPS、所有窗口/容量保持不变。
 
 本机无 netns，不能确认历史丢失点。若首跑没有把丢失定位到测试队列，本批仅用
 `Refs #132`，不关闭 issue；即使该次 OS 成功也不声称历史根因已修复。
+
+#### 11.9.1 见证能力的红绿控制（不是丢包根因证明）
+
+`52fa0c3` 的首批 RED（race、count=1、0.559s）分别拒绝六个缺失阶段计数、缺失队列
+采样及三个真实 fixture 的接线缺口。这里的 RED 是“缺少观察能力”，不是本机复现了
+历史 netns 丢包。原始日志 SHA-256：
+`494200ac23eca27f2a0438ea2c1946c87fd4e7293d13655d2bef0e2954fe4822`。
+
+`6aa1a9e` 只补观察能力；sealed factory 委托原 Open，Datagram 委托原 ReadFrom、
+WriteTo/Close/deadline/LocalAddr，不增加 reader、socket 或发射。ReadFrom 完成时只对
+既有公开 header 计数，不保留缓冲区。队列交接前保存 tail 分类，交接后不再读取可能被
+转发 worker 清空的 payload；入队计数仍在实际 channel send 成功后记录。
+
+`TestGateB3LifetimeTailWitness` 覆盖唯一尾 ordinal、邻近 ordinal、截断、成功读、
+错误读保持原错误身份和单次底层调用、采样峰值。真实接线变异逐项移除即失败。
+`-race -count=20` 初次纯门 PASS（1.441s）；交接所有权自查修订后的完整同组首批
+PASS（1.450s），不是覆盖失败的 rerun。后一日志 SHA-256：
+`05674da0ea501f8340f7b120e101ed24f4aac9f27b0e192ed17ed747b46ccae4`。
+architecture/mutation PASS（8.693s）；最终 Linux `CGO_ENABLED=0`、
+`-tags=natlab,c1bproof` 全仓交叉 vet PASS。
+
+没有队列丢失的 OS 实测，故不修改队列/背压/重试或成功断言，当前按 `Refs #132`
+提交见证，保留 issue 开放。CI 首次 `GATE_B3_TAIL` 六阶段计数与队列观测待回填。
