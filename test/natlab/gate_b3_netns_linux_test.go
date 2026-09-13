@@ -214,7 +214,10 @@ func testGateB3FullShapeLifetime(t *testing.T, dropEvery uint64, conntrackCap in
 		if t.Failed() && !residueComplete {
 			// Runs on Fatal too, before ordinary t.Cleanup destroys evidence.
 			gateB3ReportFailedCase(
-				func() { logGateB3EndpointPair(t, initiator, responder) },
+				func() {
+					logGateB3EndpointPair(t, initiator, responder)
+					logGateB3TailDeliveryPair(t, leftRouter, rightRouter, initiator, responder)
+				},
 				func() {
 					logGateB3RouterPair(t, leftRouter, rightRouter)
 					gateB3FailedCaseCleanup(t, topology, observer, leftRouter, rightRouter,
@@ -304,6 +307,7 @@ func testGateB3FullShapeLifetime(t *testing.T, dropEvery uint64, conntrackCap in
 	assertGateB3NoResidue(t, topology, observer, leftRouter, rightRouter, !success,
 		conntrackCap < gateB3ConntrackCap, initiator.governorDir, responder.governorDir)
 	residueComplete = true
+	logGateB3TailDeliveryPair(t, leftRouter, rightRouter, initiator, responder)
 	logGateB3RouterPair(t, leftRouter, rightRouter)
 	if lifetime != nil {
 		if err := lifetimeGuard.close(); err != nil {

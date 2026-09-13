@@ -226,6 +226,7 @@ type gateB2NATRouter struct {
 	candidateForwardedBySlot [16]atomic.Uint64
 	tail16Read               atomic.Uint64
 	tail16Forwarded          atomic.Uint64
+	tailWitness              gateB3TailWitness
 	runFailure               atomic.Pointer[string]
 	winnerObservation        chan [2]netip.AddrPort
 	observationDone          chan struct{}
@@ -329,12 +330,14 @@ func (router *gateB2NATRouter) run() error {
 	for runErr == nil {
 		select {
 		case packet := <-outbound:
+			router.tailWitness.queue(0, len(outbound))
 			if err := router.forwardOutbound(packet, replies); err != nil {
 				router.config.gateB3Diagnostic.fail(gateB3OutboundFailure, err, router.ctx.Err())
 				runErr = errors.Join(errGateB2NATOutbound, err)
 			}
 			clear(packet.payload)
 		case reply := <-replies:
+			router.tailWitness.queue(1, len(replies))
 			if err := router.forwardInbound(tun, reply); err != nil {
 				router.config.gateB3Diagnostic.fail(gateB3InboundFailure, err, router.ctx.Err())
 				runErr = errors.Join(errGateB2NATInbound, err)
@@ -466,6 +469,7 @@ func (router *gateB2NATRouter) readTUN(tun *os.File, packets chan<- gateB2TUNPac
 			router.tunRejected.Add(1)
 			continue
 		}
+		tail := router.tailWitness.observe(gateB3TailAccepted, packet.payload)
 		if metadata, err := hardnatcontrol.InspectFrame(packet.payload); err == nil && metadata.Type == hardnatcontrol.FrameCandidate {
 			router.candidateRead.Add(1)
 			if metadata.SocketSlot < 16 {
@@ -480,6 +484,12 @@ func (router *gateB2NATRouter) readTUN(tun *os.File, packets chan<- gateB2TUNPac
 		}
 		select {
 		case packets <- packet:
+			// Ownership moved to the forwarding worker, which may clear the
+			// payload immediately. Retain only the pre-send classification.
+			if tail {
+				router.tailWitness.counts[gateB3TailQueued].Add(1)
+			}
+			router.tailWitness.queue(0, len(packets))
 		case <-router.ctx.Done():
 			clear(packet.payload)
 			return
@@ -534,6 +544,7 @@ func (router *gateB2NATRouter) forwardOutbound(packet gateB2TUNPacket, replies c
 		return err
 	}
 	router.outbound.Add(1)
+	router.tailWitness.observe(gateB3TailForwarded, packet.payload)
 	if plan, ok := router.config.gateB3MappingPlan.(*gateB3OrderedEarlyMappingPlan); ok {
 		if metadata, err := hardnatcontrol.InspectFrame(packet.payload); err == nil && metadata.Type == hardnatcontrol.FrameCandidate && metadata.Ordinal == 0 {
 			plan.forwarded(router.config.gateB3MappingPlanLeft)
@@ -764,8 +775,10 @@ func (router *gateB2NATRouter) readMapped(mapping *gateB2NATMapping, replies cha
 			return
 		}
 		payload := append([]byte(nil), buffer[:n]...)
+		router.tailWitness.observe(gateB3TailMappedRead, payload)
 		select {
 		case replies <- gateB2MappedReply{mapping: mapping, source: source, payload: payload}:
+			router.tailWitness.queue(1, len(replies))
 		case <-router.ctx.Done():
 			clear(payload)
 			return
@@ -809,6 +822,7 @@ func (router *gateB2NATRouter) forwardInbound(tun *os.File, reply gateB2MappedRe
 		return errors.New("Gate B2 isolated NAT short TUN write")
 	}
 	router.inbound.Add(1)
+	router.tailWitness.observe(gateB3TailDelivered, reply.payload)
 	if metadata, err := hardnatcontrol.InspectFrame(reply.payload); err == nil && metadata.Type == hardnatcontrol.FrameWinner {
 		router.winnerInbound.Add(1)
 	}

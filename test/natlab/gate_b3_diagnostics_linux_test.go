@@ -21,6 +21,32 @@ func logGateB3EndpointPair(t testing.TB, pair ...*gateB2EndpointProcess) {
 	}
 }
 
+func logGateB3TailDeliveryPair(t testing.TB, left, right *gateB2NATRouter, initiator, responder *gateB2EndpointProcess) {
+	t.Helper()
+	routers := [2]*gateB2NATRouter{left, right}
+	processes := [2]*gateB2EndpointProcess{initiator, responder}
+	for side, router := range routers {
+		peer := routers[1-side]
+		if router == nil || peer == nil {
+			t.Logf("GATE_B3_TAIL side=%d ordinal=16383 router_available=false", side)
+			continue
+		}
+		var result gateB3EndpointResult
+		process := processes[1-side]
+		readable := process != nil && readN1JSON(process.resultPath, &result) && result.TailReadWitness
+		readCount := int64(-1)
+		if readable {
+			readCount = int64(result.TailSocketRead)
+		}
+		t.Logf("GATE_B3_TAIL side=%d ordinal=16383 non_atomic=true router_accepted=%d router_queued=%d router_forwarded=%d peer_mapped_read=%d peer_namespace_delivered=%d peer_socket_read=%d peer_socket_witness=%t queue_capacity=%d queue_sample=%d/%d queue_sampled_peak=%d/%d peer_queue_sample=%d/%d peer_queue_sampled_peak=%d/%d",
+			side, router.tailWitness.counts[gateB3TailAccepted].Load(), router.tailWitness.counts[gateB3TailQueued].Load(),
+			router.tailWitness.counts[gateB3TailForwarded].Load(), peer.tailWitness.counts[gateB3TailMappedRead].Load(),
+			peer.tailWitness.counts[gateB3TailDelivered].Load(), readCount, readable, router.config.packetQueueCapacity,
+			router.tailWitness.level[0].Load(), router.tailWitness.level[1].Load(), router.tailWitness.peak[0].Load(), router.tailWitness.peak[1].Load(),
+			peer.tailWitness.level[0].Load(), peer.tailWitness.level[1].Load(), peer.tailWitness.peak[0].Load(), peer.tailWitness.peak[1].Load())
+	}
+}
+
 func logGateB3RouterPair(t testing.TB, pair ...*gateB2NATRouter) {
 	t.Helper()
 	// Process-wide, point-in-time measurements, not a per-attempt peak and

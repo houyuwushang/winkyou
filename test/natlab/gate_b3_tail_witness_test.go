@@ -31,9 +31,30 @@ type gateB3TailWitness struct {
 	peak   [2]atomic.Int64
 }
 
-func (w *gateB3TailWitness) observe(stage int, packet []byte) {}
+func (w *gateB3TailWitness) observe(stage int, packet []byte) bool {
+	if w == nil || stage < 0 || stage >= gateB3TailStages {
+		return false
+	}
+	metadata, err := hardnatcontrol.InspectFrame(packet)
+	if err == nil && metadata.Type == hardnatcontrol.FrameCandidate && metadata.Ordinal == hardnatbudget.Hard16CandidatePackets-1 {
+		w.counts[stage].Add(1)
+		return true
+	}
+	return false
+}
 
-func (w *gateB3TailWitness) queue(direction, count int) {}
+func (w *gateB3TailWitness) queue(direction, count int) {
+	if w == nil || direction < 0 || direction >= len(w.level) || count < 0 {
+		return
+	}
+	w.level[direction].Store(int64(count))
+	for {
+		old := w.peak[direction].Load()
+		if old >= int64(count) || w.peak[direction].CompareAndSwap(old, int64(count)) {
+			return
+		}
+	}
+}
 
 // No extra reads/writes/targets, and no retained payload. It wraps the exact
 // governed datagram only in the test helper, never in a production adapter.
@@ -44,6 +65,9 @@ type gateB3TailDatagram struct {
 
 func (d *gateB3TailDatagram) ReadFrom(ctx context.Context, packet []byte) (int, netip.AddrPort, error) {
 	n, from, err := d.Datagram.ReadFrom(ctx, packet)
+	if err == nil && n >= 0 && n <= len(packet) {
+		d.witness.observe(gateB3TailSocketRead, packet[:n])
+	}
 	return n, from, err
 }
 
@@ -106,7 +130,7 @@ func TestGateB3LifetimeTailWitness(t *testing.T) {
 
 func TestGateB3LifetimeTailWitnessWiring(t *testing.T) {
 	for filename, markers := range map[string][]string{
-		"gate_b2_nat_linux_test.go":      {"router.tailWitness.observe(gateB3TailAccepted", "router.tailWitness.observe(gateB3TailQueued", "router.tailWitness.observe(gateB3TailForwarded", "router.tailWitness.observe(gateB3TailMappedRead", "router.tailWitness.observe(gateB3TailDelivered", "router.tailWitness.queue("},
+		"gate_b2_nat_linux_test.go":      {"router.tailWitness.observe(gateB3TailAccepted", "router.tailWitness.counts[gateB3TailQueued].Add(1)", "router.tailWitness.observe(gateB3TailForwarded", "router.tailWitness.observe(gateB3TailMappedRead", "router.tailWitness.observe(gateB3TailDelivered", "router.tailWitness.queue("},
 		"gate_b3_endpoint_linux_test.go": {"gateB3TailFactory{", "TailSocketRead", "TailReadWitness"},
 		"gate_b3_netns_linux_test.go":    {"logGateB3TailDeliveryPair(t, leftRouter, rightRouter, initiator, responder)"},
 	} {
