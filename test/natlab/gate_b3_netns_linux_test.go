@@ -41,7 +41,6 @@ const (
 	gateB3DisposableRunnerEnv         = "WINKYOU_GATE_B3_DISPOSABLE_RUNNER"
 	gateB3PortMin                     = uint16(hardnatplan.DynamicPortMin)
 	gateB3PortMax                     = uint16(hardnatplan.DynamicPortMax)
-	gateB3ProcessLimit                = 52 * time.Second
 	// The test-only TUN router may trail the endpoint process on a loaded CI
 	// host. This bounds observation of packets already accepted by the endpoint
 	// sockets; it never extends an attempt or permits another emission.
