@@ -247,7 +247,7 @@ func (topology *n2dTopology) create() (err error) {
 	// this, an early peer opener that races ahead of the local pinhole is
 	// "confirmed" into conntrack as a NAT-local flow, poisons the SNAT port
 	// table, and evicts port preservation for the very mapping under test.
-	// The DNAT-based EIM reference tier translates before INPUT and stays
+	// The stateless EIM reference tier translates before INPUT and stays
 	// unaffected; the restricted and EDM tiers rely on this default-deny.
 	stage = "inbound_filter"
 	for _, gateway := range []struct{ namespace, address string }{
@@ -294,40 +294,25 @@ func n2dConfigureEnd(namespace, temporaryName, finalName, cidr string) error {
 }
 
 func (topology *n2dTopology) applyNAT(namespace string, mode n2dMappingMode, publicAddress, privateAddress string) error {
-	if !netip.MustParseAddr(publicAddress).Is4() || !netip.MustParseAddr(privateAddress).Is4() {
-		return errors.New("N2d NAT address is not IPv4")
+	// Only the two already-created disposable routers may consume this plan.
+	// No initial-namespace command or externally supplied address is accepted.
+	if !((namespace == topology.natA && publicAddress == n2dNATAWAN && privateAddress == n2dClientAAddress) ||
+		(namespace == topology.natB && publicAddress == n2dNATBWAN && privateAddress == n2dClientBAddress)) {
+		return errors.New("N2d NAT topology binding rejected")
 	}
-	// The EIM reference case uses an explicit one-endpoint, port-preserving UDP
-	// mapping in both directions. Plain SNAT is insufficient evidence because
-	// conntrack would still impose destination-specific reply filtering. EDM
-	// deliberately keeps that filtering and requests a fresh random source port
-	// for each destination tuple.
-	rules := []string{
-		"-A PREROUTING -i wan0 -p udp -d " + publicAddress + " -j DNAT --to-destination " + privateAddress,
-		"-A POSTROUTING -s " + privateAddress + "/32 -o wan0 -p udp -j SNAT --to-source " + publicAddress,
-		"-A POSTROUTING -s " + privateAddress + "/32 -o wan0 -p tcp -j SNAT --to-source " + publicAddress,
+	plan, err := n2dNATPlanFor(mode, publicAddress, privateAddress)
+	if err != nil {
+		return err
 	}
-	if mode == n2dMappingEIMRestricted {
-		rules = []string{
-			"-A POSTROUTING -s " + privateAddress + "/32 -o wan0 -p udp -j SNAT --to-source " + publicAddress,
-			"-A POSTROUTING -s " + privateAddress + "/32 -o wan0 -p tcp -j SNAT --to-source " + publicAddress,
+	if _, err := runNamespaced(namespace, "iptables-restore", strings.NewReader(plan.Script)); err != nil {
+		return err
+	}
+	for _, args := range plan.TrafficControl {
+		if _, err := runNamespaced(namespace, "tc", nil, args...); err != nil {
+			return err // Never fall back to the non-port-stable conntrack model.
 		}
 	}
-	if mode == n2dMappingEDM {
-		rules = []string{
-			"-A POSTROUTING -s " + privateAddress + "/32 -o wan0 -p udp -j SNAT --to-source " + publicAddress + " --random-fully",
-			"-A POSTROUTING -s " + privateAddress + "/32 -o wan0 -p tcp -j SNAT --to-source " + publicAddress,
-		}
-	}
-	scriptLines := []string{
-		"*nat", ":PREROUTING ACCEPT [0:0]", ":INPUT ACCEPT [0:0]", ":OUTPUT ACCEPT [0:0]",
-		":POSTROUTING ACCEPT [0:0]",
-	}
-	scriptLines = append(scriptLines, rules...)
-	scriptLines = append(scriptLines, "COMMIT", "")
-	script := strings.Join(scriptLines, "\n")
-	_, err := runNamespaced(namespace, "iptables-restore", strings.NewReader(script))
-	return err
+	return nil
 }
 
 func (topology *n2dTopology) installPacketCounters(stunPort uint16) error {

@@ -6,11 +6,13 @@ import (
 	"context"
 	"io"
 	"net/netip"
+	"time"
 
 	"winkyou/internal/probeio"
 	"winkyou/internal/v2/directconnect/gateb"
 	"winkyou/internal/v2/hardnatobserve"
 	"winkyou/internal/v2/hardnatplan"
+	"winkyou/internal/v2/oobcarrier"
 	"winkyou/internal/v2/sshassembly"
 	"winkyou/pkg/netif"
 	"winkyou/pkg/tunnel"
@@ -28,6 +30,9 @@ type NATLabProofOptions struct {
 	Observers    [4]netip.AddrPort
 	NewInterface func(string, int) (netif.MemoryTestInterface, error)
 	Progress     ProgressReporter
+	// ObserveChildIO is a test-only result tap after the real bounded stream's
+	// Read/Write returns. No bytes, stream, descriptor or authority are exposed.
+	ObserveChildIO func(write bool, n int, err error)
 }
 
 func RunNATLabInitiator(ctx context.Context, entry InitiatorOptions, proof NATLabProofOptions) (Result, error) {
@@ -61,6 +66,16 @@ func natlabProofDependencies(proof NATLabProofOptions) (dependencies, error) {
 		return dependencies{}, err
 	}
 	deps := defaultDependencies()
+	if proof.ObserveChildIO != nil {
+		adopt := deps.newChildStream
+		deps.newChildStream = func(input io.Reader, output io.Writer, deadline time.Time) (oobcarrier.BoundedStream, error) {
+			stream, err := adopt(input, output, deadline)
+			if err != nil {
+				return nil, err
+			}
+			return &natlabObservedChildStream{BoundedStream: stream, observe: proof.ObserveChildIO}, nil
+		}
+	}
 	deps.newSSHAuthority = func(endpoint netip.AddrPort) (sshassembly.SSHEndpointAuthority, error) {
 		if endpoint.Addr().IsLoopback() {
 			return sshassembly.NewLoopbackAuthority(endpoint)
@@ -85,4 +100,21 @@ func natlabProofDependencies(proof NATLabProofOptions) (dependencies, error) {
 		deps.newTunnel = tunnel.NewGateCNATLabWireGuard
 	}
 	return deps, nil
+}
+
+type natlabObservedChildStream struct {
+	oobcarrier.BoundedStream
+	observe func(write bool, n int, err error)
+}
+
+func (stream *natlabObservedChildStream) Read(buffer []byte) (int, error) {
+	n, err := stream.BoundedStream.Read(buffer)
+	stream.observe(false, n, err)
+	return n, err
+}
+
+func (stream *natlabObservedChildStream) Write(buffer []byte) (int, error) {
+	n, err := stream.BoundedStream.Write(buffer)
+	stream.observe(true, n, err)
+	return n, err
 }

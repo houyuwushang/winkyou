@@ -124,6 +124,34 @@ const bypass = "PasswordAuthentication=yes StrictHostKeyChecking=no ProxyCommand
 	}
 }
 
+func TestGateC1bPipeAdoptionExceptionCannotOpenSocketsOrEscapeOwner(t *testing.T) {
+	root := t.TempDir()
+	writeArchitectureMutation(t, root, "internal/v2/gatecchildstream/pipe_unix.go", `package gatecchildstream
+import "golang.org/x/sys/unix"
+var _ = unix.Socket
+var _ = unix.Dup2
+var _ = unix.Exec
+`)
+	writeArchitectureMutation(t, root, "internal/v2/gatecchildstream/other.go", `package gatecchildstream
+import (
+  "os"
+  "golang.org/x/sys/unix"
+)
+var _ = unix.FcntlInt
+var _ = os.NewFile
+`)
+	violations, err := gateC1bCapabilityViolations(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, fragment := range []string{"forbidden pipe syscall Socket", "forbidden pipe syscall Dup2", "forbidden pipe syscall Exec",
+		"other.go imports golang.org/x/sys/unix", "constructs an unapproved child pipe owner"} {
+		if !containsLineFragment(violations, fragment) {
+			t.Errorf("pipe authority mutation %q missed: %v", fragment, violations)
+		}
+	}
+}
+
 func TestGateC1bShapeGateDetectsRawFactoryHostTUNContextAndRetryMutations(t *testing.T) {
 	root := t.TempDir()
 	writeArchitectureMutation(t, root, "internal/v2/gatecorchestrator/bypass.go", `package gatecorchestrator
@@ -387,6 +415,24 @@ func gateC1bCapabilityViolations(root string) ([]string, error) {
 					forbidden = true
 				}
 			}
+			// Pipe ownership transfer only: no socket/process/path authority.
+			// Every unix selector in this exact file is checked below; importing
+			// unix in another child-stream file remains forbidden.
+			if imported == "golang.org/x/sys/unix" && relative == "internal/v2/gatecchildstream/pipe_unix.go" {
+				forbidden = specification.Name != nil
+				allowed := map[string]bool{"FcntlInt": true, "F_DUPFD_CLOEXEC": true, "SetNonblock": true, "Close": true}
+				ast.Inspect(parsed, func(node ast.Node) bool {
+					selector, ok := node.(*ast.SelectorExpr)
+					if !ok {
+						return true
+					}
+					owner, ok := selector.X.(*ast.Ident)
+					if ok && owner.Name == "unix" && !allowed[selector.Sel.Name] {
+						violations = append(violations, relative+" uses forbidden pipe syscall "+selector.Sel.Name)
+					}
+					return true
+				})
+			}
 			if forbidden {
 				violations = append(violations, relative+" imports "+imported)
 			}
@@ -399,6 +445,18 @@ func gateC1bCapabilityViolations(root string) ([]string, error) {
 		}
 		return nil
 	})
+	if err == nil {
+		uses, useErr := importedSelectorUseViolations(root, "os", map[string]string{"NewFile": "constructs an unapproved child pipe owner"},
+			map[string]struct{}{"internal/v2/gatecchildstream/pipe_unix.go": {}})
+		// Only apply this additional owner check to the child stream; other
+		// existing OS adapters are governed by their own boundaries.
+		for _, use := range uses {
+			if strings.Contains(use, "internal/v2/gatecchildstream/") {
+				violations = append(violations, use)
+			}
+		}
+		err = useErr
+	}
 	return uniqueSortedStrings(violations), err
 }
 

@@ -32,6 +32,7 @@ type Session struct {
 	executeMu sync.Mutex
 	closeMu   sync.Mutex
 	closed    bool
+	agreement *selectionAgreement
 
 	metaMu sync.RWMutex
 	meta   Snapshot
@@ -130,6 +131,8 @@ func (s *Session) Snapshot() Snapshot {
 		RemoteCapability:        cloneCapability(s.meta.RemoteCapability),
 		SelectedStrategy:        s.meta.SelectedStrategy,
 		SelectionNegotiated:     s.meta.SelectionNegotiated,
+		SelectionDigest:         s.meta.SelectionDigest,
+		SelectionOrdinal:        s.meta.SelectionOrdinal,
 		CapabilityExchangeAt:    s.meta.CapabilityExchangeAt,
 		LastPathCommit:          clonePathCommit(s.meta.LastPathCommit),
 		LastPathCommitAt:        s.meta.LastPathCommitAt,

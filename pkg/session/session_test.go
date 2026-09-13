@@ -385,6 +385,7 @@ func TestSessionStartFailureCanRetry(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
+	deliverLibraryTestCapability(t, s)
 
 	if err := s.Start(context.Background()); err == nil {
 		t.Fatal("first Start() error = nil, want failure")
@@ -436,6 +437,7 @@ func TestSessionStartIsNoOpAfterSuccess(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
+	deliverLibraryTestCapability(t, s)
 
 	if err := s.Start(context.Background()); err != nil {
 		t.Fatalf("first Start() error = %v", err)

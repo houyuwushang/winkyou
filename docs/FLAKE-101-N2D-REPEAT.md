@@ -6,7 +6,7 @@ Status: Draft，定位中，尚未宣称修复。基线 `fde8dfa`，2026-09-08�
 
 - 现行 `newN2DTopology` 已使用递增原子序号生成 namespace/veth 名；不能再次把“改成 fresh 名”当作本 PR 的修复。
 - 当前 punch 每端 opener 只发一次，initiator 收 SYN_ACK 后才发唯一 ACK；没有 punch 重试。不得以“重试预算”解释 A 签名或增加发送。
-- EIM fixture 已有静态 DNAT/SNAT，required 三次重复与所有协议时限保持。仅观察 TIME_WAIT/端口相同不能证明跨 namespace 状态污染。
+- 本记录基线的 EIM fixture 使用静态 DNAT/SNAT；后续 PR124 将该参考档改为 IP-only 无状态转换，见 [追加证据](./PR124-STDIO-EVIDENCE-DIAGNOSTICS.md)。required 三次重复与所有协议时限保持。仅观察 TIME_WAIT/端口相同不能证明跨 namespace 状态污染。
 - `assertNoLeaks` 证明可见 namespace/veth 消失，不证明 kernel RCU 内部 reclamation 完成。本 PR 不以额外 sleep 冒充这个证据。
 
 ## 诊断方法

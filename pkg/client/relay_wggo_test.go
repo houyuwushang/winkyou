@@ -20,6 +20,22 @@ import (
 	"winkyou/pkg/tunnel"
 )
 
+const (
+	relayWGGoFixtureStatsWait = 10 * time.Second
+	// The coordinator is in-process/loopback. Allow cold race/gRPC startup
+	// one fifth of the existing stats wait, but still fail fast if absent.
+	// The independent 30s transport and 10s stats assertions remain unchanged.
+	relayWGGoFixtureCoordinatorTimeout = relayWGGoFixtureStatsWait / 5
+)
+
+func TestRelayWGGoFixtureCoordinatorBudget(t *testing.T) {
+	eng := newRelayWGGoTestEngine(t, "synthetic", "127.0.0.1:1", "turn:127.0.0.1:1")
+	if relayWGGoFixtureStatsWait != 10*time.Second || relayWGGoFixtureCoordinatorTimeout != 2*time.Second ||
+		eng.cfg.Coordinator.Timeout != relayWGGoFixtureCoordinatorTimeout {
+		t.Fatal("relay coordinator fixture lost its bounded cold-start budget derivation")
+	}
+}
+
 func TestRelayWGGoTwoEnginesExchangeIPv4Packets(t *testing.T) {
 	t.Setenv("WINKYOU_NETIF_ALLOW_MEMORY", "1")
 	t.Setenv("WINKYOU_TUNNEL_FORCE_WGGO", "1")
@@ -52,7 +68,7 @@ func TestRelayWGGoTwoEnginesExchangeIPv4Packets(t *testing.T) {
 	t.Cleanup(func() {
 		_ = beta.Stop()
 	})
-	// Keep registration's separate 200ms fixture timeout outside the opt-in
+	// Keep registration's separately bounded fixture timeout outside the opt-in
 	// transport-stall pressure experiment. It has its own preserved RED sample.
 	startRelayCPUPressure(t)
 	t.Cleanup(func() {
@@ -97,8 +113,8 @@ func TestRelayWGGoTwoEnginesExchangeIPv4Packets(t *testing.T) {
 	assertRuntimeRelayPeerDiagnostics(t, "alpha", alphaRuntimePeer)
 	assertRuntimeRelayPeerDiagnostics(t, "beta", betaRuntimePeer)
 
-	waitForPeerStatsGrowth(t, alpha, "beta", 10*time.Second, alphaBefore)
-	waitForPeerStatsGrowth(t, beta, "alpha", 10*time.Second, betaBefore)
+	waitForPeerStatsGrowth(t, alpha, "beta", relayWGGoFixtureStatsWait, alphaBefore)
+	waitForPeerStatsGrowth(t, beta, "alpha", relayWGGoFixtureStatsWait, betaBefore)
 }
 
 func newRelayWGGoTestEngine(t *testing.T, nodeName, coordinatorAddr, turnURL string) *engine {
@@ -107,7 +123,7 @@ func newRelayWGGoTestEngine(t *testing.T, nodeName, coordinatorAddr, turnURL str
 	cfg := config.Default()
 	cfg.Node.Name = nodeName
 	cfg.Coordinator.URL = "grpc://" + coordinatorAddr
-	cfg.Coordinator.Timeout = 200 * time.Millisecond
+	cfg.Coordinator.Timeout = relayWGGoFixtureCoordinatorTimeout
 	cfg.NetIf.Backend = "auto"
 	cfg.WireGuard.ListenPort = 0
 	cfg.NAT.STUNServers = nil

@@ -5,8 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
-	"os"
-	"os/signal"
 	"sync"
 	"time"
 
@@ -136,7 +134,7 @@ func newSolverDirectConnectCmd(options *Options, runner gateCProductRunner) *cob
 				return gatecorchestrator.ErrRequestInvalid
 			}
 			progress := newGateCProgressWriter(command.ErrOrStderr())
-			ctx, stop := signal.NotifyContext(command.Context(), os.Interrupt)
+			ctx, stop := solverSignalContext(command.Context())
 			defer stop()
 			result, err := runner.Connect(ctx, gatecorchestrator.InitiatorOptions{
 				RequestFile: requestFile, Config: configuration, ConfigPath: options.ConfigPath,
@@ -173,7 +171,7 @@ func newSolverDirectChildCmd(options *Options, runner gateCProductRunner) *cobra
 			}
 			progress := newGateCProgressWriter(command.ErrOrStderr())
 			progress.responder = true
-			ctx, stop := signal.NotifyContext(command.Context(), os.Interrupt)
+			ctx, stop := solverSignalContext(command.Context())
 			defer stop()
 			result, err := runner.Child(ctx, command.InOrStdin(), command.OutOrStdout(), gatecorchestrator.ResponderOptions{
 				Config: configuration, ConfigPath: configPath, BuildVersion: version.Version, Progress: progress.Report,
@@ -369,7 +367,7 @@ func newSolverServeCmd(opts *Options, runner solverStdioRunner) *cobra.Command {
 			if opts != nil {
 				configPath = opts.ConfigPath
 			}
-			ctx, stop := signal.NotifyContext(command.Context(), os.Interrupt)
+			ctx, stop := solverSignalContext(command.Context())
 			defer stop()
 			return runner.Serve(ctx, command.InOrStdin(), command.OutOrStdout(), solverstdio.Options{ConfigPath: configPath})
 		},

@@ -25,6 +25,7 @@ var (
 	ErrCarrierDomain      = errors.New("oobcarrier: authenticated frame arrived on the wrong carrier")
 	ErrCarrierTerminal    = errors.New("oobcarrier: terminal")
 	ErrCarrierTransport   = errors.New("oobcarrier: bounded stream failure")
+	ErrCarrierDrain       = errors.New("oobcarrier: bounded stream did not drain")
 	ErrHandshakeOrder     = errors.New("oobcarrier: handshake ordering violation")
 	ErrInvalidFrame       = errors.New("oobcarrier: invalid bounded frame")
 	ErrApplicationBudget  = errors.New("oobcarrier: application byte ceiling exceeded")
@@ -138,6 +139,7 @@ type Carrier struct {
 	deadlineSeen  bool
 	eofSeen       bool
 	drainComplete bool
+	drainDeadline time.Time
 	closeErr      error
 
 	closed        chan struct{}
@@ -148,7 +150,8 @@ type Carrier struct {
 	readerStarted bool
 	closeOnce     sync.Once
 	drainOnce     sync.Once
-	ops           sync.WaitGroup
+	ops           int
+	opsDrained    chan struct{}
 }
 
 // Adopt takes ownership of exactly one caller-provided child stream without
@@ -177,7 +180,7 @@ func Adopt(config Config) (*Carrier, error) {
 	carrier := &Carrier{
 		stream: config.Stream, lease: lease, drain: drain, channelID: config.OOBChannelID,
 		role: config.Role, mode: carrierModeGateA, state: stateAdopted, expiresAt: time.Now().Add(ActiveEnvelope),
-		closed: make(chan struct{}), drained: make(chan struct{}), watchDone: make(chan struct{}),
+		closed: make(chan struct{}), drained: make(chan struct{}), watchDone: make(chan struct{}), opsDrained: make(chan struct{}),
 		incoming: make(chan carrierReadResult, MaxFramesPerDirection), readerDone: make(chan struct{}),
 	}
 	go carrier.watch()
@@ -223,7 +226,7 @@ func AdoptHardNAT(config HardNATConfig) (*Carrier, error) {
 	carrier := &Carrier{
 		stream: config.Stream, lease: lease, drain: drain, channelID: config.OOBChannelID,
 		role: config.Role, mode: carrierModeGateB2, state: stateAdopted, expiresAt: expiresAt,
-		closed: make(chan struct{}), drained: make(chan struct{}), watchDone: make(chan struct{}),
+		closed: make(chan struct{}), drained: make(chan struct{}), watchDone: make(chan struct{}), opsDrained: make(chan struct{}),
 		incoming: make(chan carrierReadResult, MaxFramesPerDirection), readerDone: make(chan struct{}),
 	}
 	go carrier.watch()
@@ -431,7 +434,7 @@ func (carrier *Carrier) MarkHandshakeComplete() error {
 		return carrier.TerminalCause()
 	}
 	carrier.readerStarted = true
-	carrier.ops.Add(1)
+	carrier.ops++
 	carrier.mu.Unlock()
 	go carrier.readLoop()
 	return nil
@@ -603,7 +606,7 @@ func (carrier *Carrier) write(ctx context.Context, kind rendezvouswire.Kind, pay
 	if !carrier.beginOperation() {
 		return carrier.TerminalCause()
 	}
-	defer carrier.ops.Done()
+	defer carrier.endOperation()
 	if postburn {
 		err = carrier.checkAuthorization(ctx, first)
 		if err != nil {
@@ -658,8 +661,8 @@ func (carrier *Carrier) read(ctx context.Context) (rendezvouswire.Frame, error) 
 			case <-carrier.closed:
 				terminal := carrier.TerminalCause()
 				if errors.Is(terminal, ErrCarrierTransport) && errors.Is(context.Cause(ctx), terminal) {
-					if carrier.readerDone != nil {
-						<-carrier.readerDone
+					if !carrier.waitReader() {
+						return rendezvouswire.Frame{}, ErrCarrierDrain
 					}
 					select {
 					case result := <-carrier.incoming:
@@ -681,8 +684,8 @@ func (carrier *Carrier) read(ctx context.Context) (rendezvouswire.Frame, error) 
 		case result := <-carrier.incoming:
 			return result.frame, result.err
 		case <-carrier.closed:
-			if carrier.readerDone != nil {
-				<-carrier.readerDone
+			if !carrier.waitReader() {
+				return rendezvouswire.Frame{}, ErrCarrierDrain
 			}
 			select {
 			case result := <-carrier.incoming:
@@ -693,8 +696,8 @@ func (carrier *Carrier) read(ctx context.Context) (rendezvouswire.Frame, error) 
 		case <-ctx.Done():
 			select {
 			case <-carrier.closed:
-				if carrier.readerDone != nil {
-					<-carrier.readerDone
+				if !carrier.waitReader() {
+					return rendezvouswire.Frame{}, ErrCarrierDrain
 				}
 			default:
 			}
@@ -713,7 +716,7 @@ func (carrier *Carrier) decode(ctx context.Context) (rendezvouswire.Frame, error
 	if !carrier.beginOperation() {
 		return rendezvouswire.Frame{}, carrier.TerminalCause()
 	}
-	defer carrier.ops.Done()
+	defer carrier.endOperation()
 	return carrier.decodeFrame(ctx)
 }
 
@@ -744,7 +747,7 @@ func (carrier *Carrier) decodeFrame(ctx context.Context) (rendezvouswire.Frame, 
 func (carrier *Carrier) readLoop() {
 	var terminal error
 	defer func() {
-		carrier.ops.Done()
+		carrier.endOperation()
 		if terminal != nil {
 			carrier.fail(terminal)
 		}
@@ -801,8 +804,17 @@ func (carrier *Carrier) beginOperation() bool {
 	if carrier.state == stateClosed {
 		return false
 	}
-	carrier.ops.Add(1)
+	carrier.ops++
 	return true
+}
+
+func (carrier *Carrier) endOperation() {
+	carrier.mu.Lock()
+	defer carrier.mu.Unlock()
+	carrier.ops--
+	if carrier.state == stateClosed && carrier.ops == 0 {
+		close(carrier.opsDrained)
+	}
 }
 
 func (carrier *Carrier) operationContext(ctx context.Context) (context.Context, context.CancelFunc) {
@@ -886,6 +898,11 @@ func (carrier *Carrier) contextIOError(ctx context.Context, err error) error {
 
 func (carrier *Carrier) terminate(cause error) error {
 	carrier.fail(cause)
+	carrier.mu.Lock()
+	defer carrier.mu.Unlock()
+	if errors.Is(carrier.closeErr, ErrCarrierDrain) {
+		return errors.Join(cause, carrier.closeErr)
+	}
 	return cause
 }
 
@@ -897,28 +914,71 @@ func (carrier *Carrier) fail(cause error) {
 		carrier.mu.Lock()
 		carrier.state = stateClosed
 		carrier.closeErr = cause
+		carrier.drainDeadline = time.Now().Add(DrainTimeout)
+		if carrier.ops == 0 {
+			close(carrier.opsDrained)
+		}
 		stream := carrier.stream
 		carrier.mu.Unlock()
 		close(carrier.closed)
+		var closeErr error
 		if stream != nil {
 			_ = stream.SetDeadline(time.Now())
-			_ = stream.Close()
+			closeErr = stream.Close()
 		}
-		carrier.completeDrain()
+		carrier.completeDrain(closeErr)
 	})
 }
 
-func (carrier *Carrier) completeDrain() {
-	carrier.ops.Wait()
+func (carrier *Carrier) completeDrain(closeErr error) {
 	carrier.drainOnce.Do(func() {
-		if carrier.drain != nil {
-			_ = carrier.drain.Complete()
+		// Close includes physical stream drain by contract. If it reports a
+		// failure, do not follow it with an unbounded Wait or mark the governor
+		// witness complete. The governor retains its fail-closed timeout path.
+		joined := false
+		if closeErr == nil {
+			joined = carrier.waitUntilDrainDeadline(carrier.opsDrained)
+		}
+		if joined && carrier.drain != nil {
+			closeErr = carrier.drain.Complete()
 		}
 		carrier.mu.Lock()
-		carrier.drainComplete = true
+		carrier.drainComplete = joined && closeErr == nil
+		if !carrier.drainComplete {
+			carrier.closeErr = errors.Join(carrier.closeErr, ErrCarrierTransport, ErrCarrierDrain, closeErr)
+		}
 		carrier.mu.Unlock()
+		// This channel witnesses completion of the bounded close PROCEDURE.
+		// Witness.Drained separately reports physical completion, never forced
+		// logical revocation. No detached waiter is created for a broken stream.
 		close(carrier.drained)
 	})
+}
+
+func (carrier *Carrier) waitUntilDrainDeadline(done <-chan struct{}) bool {
+	select {
+	case <-done:
+		return true
+	default:
+	}
+	carrier.mu.Lock()
+	deadline := carrier.drainDeadline
+	carrier.mu.Unlock()
+	timer := time.NewTimer(time.Until(deadline))
+	defer timer.Stop()
+	select {
+	case <-done:
+		return true
+	case <-timer.C:
+		return false
+	}
+}
+
+func (carrier *Carrier) waitReader() bool {
+	if carrier.readerDone == nil {
+		return true
+	}
+	return carrier.waitUntilDrainDeadline(carrier.readerDone)
 }
 
 func (carrier *Carrier) watch() {
@@ -954,8 +1014,11 @@ func (carrier *Carrier) Close() error {
 	carrier.mu.Lock()
 	readerStarted := carrier.readerStarted
 	carrier.mu.Unlock()
-	if readerStarted {
-		<-carrier.readerDone
+	if readerStarted && !carrier.waitReader() {
+		carrier.mu.Lock()
+		carrier.closeErr = errors.Join(carrier.closeErr, ErrCarrierTransport, ErrCarrierDrain)
+		carrier.mu.Unlock()
+		return carrier.TerminalCause()
 	}
 	carrier.clearIncoming()
 	carrier.mu.Lock()

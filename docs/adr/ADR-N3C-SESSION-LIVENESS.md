@@ -328,6 +328,21 @@ governor。只给 session 写强制点一个绑定不可变 session 身份、不
   混用旧 peer 的负面测试只证明新版一端有界拒绝/结束，不推定旧实现获得了新失联规则；
   exact build 双端事前核对是窗口前置，不用旧 artifact 的通过伪称已经协商了新 policy。
 
+### 8.1 CLOSE 完成见证修复（2026-09-12）
+
+PR #124：维护者已授权修复，独立复审待完成。`ActiveWrites` 是整个 active transport 的聚合
+计数，不能证明某一个 WYCE CLOSE 已完成；`InjectPacket` 返回也只是 inner 接纳，不是 outer
+发送。在 liveness 路径，新增可选控制计数 `close_admitted` / `close_inner_injected` 只分别记录
+本次 teardown intent 接纳 / 完整 inner 注入。没有逐 CLOSE outer 见证时 `Echo.close_written=0`，
+本地取消仍用已有 `canceled`，不再误报 `authenticated_close_sent`；接收方的
+`authenticated_close` 仍由旧 WYCE parser 证明。仅沿用从 admission 起的原 1s 出站机会，
+许可/absolute/撤销优先，之后仅原 2s drain。不加 ACK/重传，不改变缺 policy 的旧 C1b 行为；
+原 wire/error golden 保持不变。
+
+健康 idle 的许可、proof、rekey 必须在 fixture 取消之前独立取证，teardown 投递与丢失另测，
+不把 best-effort 必达作为 180s 空闲健康的前提，也不接受取消前已经失联的样本。
+原始 RED、归因强度及验证记录见 [修复证据](../PR124-LIVENESS-CLOSE-REPAIR.md)。
+
 ## 9. 实现前冻结、实现后必过的验收矩阵
 
 本表**全部待实现/待实测**；docs CI 全绿不能勾选它。

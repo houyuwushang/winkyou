@@ -49,6 +49,33 @@ type hardProbabilityCacheValue struct {
 // the returned value and never stored.
 var hardProbabilityCache sync.Map
 
+// These three numbers depend only on the compiled 65535/128/512 model, never
+// on a role, key, endpoint, source commitment or evidence. Copy immutable
+// scalars/strings by value; every caller still reconstructs and validates its
+// own complete commitment, coverage and joint plan below. As with the existing
+// hard-profile cache, repeated validation must not repeatedly spend the live
+// attempt envelope computing the same exact high-precision arithmetic.
+type asymmetricProbabilityNumbers struct {
+	primary Probability
+	poisson string
+	delta   string
+}
+
+var frozenAsymmetricNumbers = sync.OnceValues(computeAsymmetricProbabilityNumbers)
+
+func computeAsymmetricProbabilityNumbers() (asymmetricProbabilityNumbers, error) {
+	var numbers asymmetricProbabilityNumbers
+	var err error
+	numbers.primary, err = CollisionProbabilityWithoutReplacement(65535, 128, 512)
+	if err == nil {
+		numbers.poisson, err = PoissonApproximation(65535, 128, 512)
+	}
+	if err == nil {
+		numbers.delta, err = ApproximationDelta(numbers.primary, numbers.poisson)
+	}
+	return numbers, err
+}
+
 // BuildLocalCommitment validates one side's trusted evidence and freezes its
 // own predicted source schedule. It never guesses or consumes the peer's
 // schedule. Cost admission precedes source-slot allocation.
@@ -281,11 +308,13 @@ func probabilityFor(profile Profile, resource ResourceClass, model StateModel, s
 		report.Model = string(ProfileAsymmetricBirthday)
 		report.Universe = shape.universe.Name
 		report.Assumptions = "EDM mappings are uniform without replacement and the opposite mapping is reusable"
-		primary, err := CollisionProbabilityWithoutReplacement(65535, 128, 512)
+		numbers, err := frozenAsymmetricNumbers()
 		if err != nil {
 			return report, err
 		}
-		report.Primary, report.FullRangeBaseline = primary, primary
+		report.Primary, report.FullRangeBaseline = numbers.primary, numbers.primary
+		report.PoissonApproximation, report.ApproximationDelta = numbers.poisson, numbers.delta
+		return report, nil
 	default:
 		return report, ErrUnsupportedProfile
 	}

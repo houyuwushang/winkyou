@@ -1,0 +1,240 @@
+package governor_test
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"os"
+	"runtime"
+	"strconv"
+	"sync"
+	"sync/atomic"
+	"testing"
+	"time"
+
+	"winkyou/internal/governor"
+	"winkyou/internal/probeio"
+	"winkyou/internal/v2/loopbackcarrier"
+)
+
+type absenceTimeWitness struct {
+	mu     sync.Mutex
+	start  time.Time
+	points map[string]time.Time
+}
+
+func (w *absenceTimeWitness) record(point string, at time.Time) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if _, exists := w.points[point]; !exists {
+		w.points[point] = at
+	}
+}
+
+func TestLoopbackAbsenceLifecycleWitnessWorker(t *testing.T) {
+	count, err := strconv.Atoi(os.Getenv("WINKYOU_ABSENCE_WITNESS_WORKER_RUNS"))
+	if err != nil || count < 1 || count > 1000 {
+		t.Fatal("explicit worker count required")
+	}
+	checkAbsenceLifetimeNegativeControls(t)
+	var current atomic.Pointer[absenceTimeWitness]
+	observe := func(point string, at time.Time) {
+		if witness := current.Load(); witness != nil {
+			witness.record(point, at)
+		}
+	}
+	governor.AbsenceObserverForTest = observe
+	probeio.AbsenceObserverForTest = observe
+	loopbackcarrier.AbsenceObserverForTest = observe
+	trips := 0
+	for index := 0; index < count; index++ {
+		if !t.Run(fmt.Sprintf("sample_%03d", index+1), func(t *testing.T) {
+			stopPressure := absenceWitnessPressure(t)
+			defer stopPressure()
+			now := time.Now().UTC().Truncate(time.Second)
+			namespace := t.TempDir()
+			if err := governor.PrepareLoopbackCarrierTestNamespace(namespace, now); err != nil {
+				t.Fatal(err)
+			}
+			machine, err := governor.AcquireLoopbackCarrierTestGovernor(namespace, "absence-read-only-witness")
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = machine.Close() })
+			local, absent := reserveLoopbackEndpoint(t), reserveLoopbackEndpoint(t)
+			bundle, _ := processBundles(t, local, absent, absent, local, repeatedKey(81), now)
+			witness := &absenceTimeWitness{points: make(map[string]time.Time)}
+			if err := governor.ObserveAbsenceJournalForTest(machine, witness.record); err != nil {
+				t.Fatal(err)
+			}
+			current.Store(witness)
+			ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
+			defer cancel()
+			witness.start = time.Now()
+			_, connectErr := loopbackcarrier.Connect(ctx, machine, bundle, "absence-read-only-witness", nil)
+			witness.record("connect_return", time.Now())
+			snapshot := machine.Snapshot()
+			t.Logf("ABSENCE_POSTCHECK deadline_error=%t safety_clear=%t peers=%d attempts=%d", errors.Is(connectErr, context.DeadlineExceeded), snapshot.SafetyTrip.State == governor.SafetyTripClear, snapshot.ActivePeers, snapshot.ActiveAttempts)
+			if snapshot.ActivePeers != 0 || snapshot.ActiveAttempts != 0 || snapshot.Reserved != (governor.Resources{}) {
+				t.Fatal("absence left governor resources")
+			}
+			if err := machine.Close(); err != nil {
+				t.Fatal(err)
+			}
+			reopened, err := governor.AcquireLoopbackCarrierTestGovernor(namespace, "absence-reopen-witness")
+			var persisted governor.SafetyTripStatus
+			if err != nil {
+				var rejected *governor.SafetyTripError
+				if !errors.As(err, &rejected) {
+					t.Fatal(err)
+				}
+				persisted = rejected.Status
+			} else {
+				persisted = reopened.Snapshot().SafetyTrip
+				if err := reopened.Close(); err != nil {
+					t.Fatal(err)
+				}
+			}
+			ledger, err := governor.InspectLoopbackCarrierTestLedger(namespace, time.Now())
+			if err != nil || ledger.OneHourAdmissions != 1 || ledger.ConsecutiveFailures != 1 {
+				t.Fatal("absence journal outcome changed")
+			}
+			assertReusable(t, local)
+			witness.mu.Lock()
+			defer witness.mu.Unlock()
+			required := []string{"attempt_acquire_begin", "attempt_acquired", "burn_appended", "burn_synced", "presence_deadline", "probeio_started", "tripwire_timer_armed", "presence_read_return", "finish_appended", "finish_synced", "probeio_workers_stopped", "tripwire_timer_stopped", "controller_close_return", "connect_return"}
+			for _, name := range required {
+				if witness.points[name].IsZero() {
+					t.Fatalf("missing monotonic witness: %s", name)
+				}
+			}
+			durations := make(map[string]int64)
+			for name, at := range witness.points {
+				durations[name] = at.Sub(witness.start).Nanoseconds()
+			}
+			span := func(a, b string) int64 { return witness.points[b].Sub(witness.points[a]).Nanoseconds() }
+			durations["attempt_to_timer_stop_ns"] = span("attempt_acquired", "tripwire_timer_stopped")
+			durations["probeio_to_timer_stop_ns"] = span("probeio_started", "tripwire_timer_stopped")
+			durations["deadline_read_lateness_ns"] = span("presence_deadline", "presence_read_return")
+			durations["finish_sync_ns"] = span("finish_appended", "finish_synced")
+			durations["finish_sync_to_drain_return_ns"] = span("finish_synced", "controller_close_return")
+			_, latched := witness.points["persistent_trip_latched"]
+			clear := snapshot.SafetyTrip.State == governor.SafetyTripClear && persisted.State == governor.SafetyTripClear && !latched
+			if !clear {
+				trips++
+			}
+			report := struct {
+				Sample        int              `json:"sample"`
+				SafetyClear   bool             `json:"safety_clear"`
+				LatchObserved bool             `json:"latch_observed"`
+				Times         map[string]int64 `json:"monotonic_ns"`
+			}{index + 1, clear, latched, durations}
+			encoded, err := json.Marshal(report)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Logf("ABSENCE_MEASUREMENT %s", encoded)
+			if clear {
+				if err := absenceLifetimeInvariant(witness.points); err != nil {
+					t.Error(err)
+				}
+			}
+			if clear && !errors.Is(connectErr, context.DeadlineExceeded) {
+				t.Fatalf("unexpected absence terminal: %v", connectErr)
+			}
+		}) {
+			break
+		}
+	}
+	t.Logf("measurement_requested=%d persistent_trip_samples=%d", count, trips)
+	if trips != 0 {
+		t.Error("measurement observed a persistent trip; no production repair applied")
+	}
+}
+
+// Connect wall time is diagnostic only. Both resource-owner and actual probe
+// controller origins are checked; they are explicitly not the same timestamp.
+func absenceLifetimeInvariant(points map[string]time.Time) error {
+	ordered := []string{"attempt_acquired", "probeio_started", "presence_read_return", "finish_appended", "finish_synced", "probeio_workers_stopped", "tripwire_timer_stopped", "controller_close_return", "connect_return"}
+	for index, point := range ordered {
+		if points[point].IsZero() {
+			return fmt.Errorf("missing lifecycle point: %s", point)
+		}
+		if index > 0 && points[point].Before(points[ordered[index-1]]) {
+			return fmt.Errorf("lifecycle order violated at %s", point)
+		}
+	}
+	for _, origin := range []string{"attempt_acquired", "probeio_started"} {
+		if points["tripwire_timer_stopped"].Sub(points[origin]) >= loopbackcarrier.AttemptDuration {
+			return fmt.Errorf("%s to probeio stop exceeded unchanged admission duration", origin)
+		}
+	}
+	return nil
+}
+
+func checkAbsenceLifetimeNegativeControls(t *testing.T) {
+	t.Helper()
+	base := time.Now()
+	valid := map[string]time.Time{}
+	for index, point := range []string{"attempt_acquired", "probeio_started", "presence_read_return", "finish_appended", "finish_synced", "probeio_workers_stopped", "tripwire_timer_stopped", "controller_close_return", "connect_return"} {
+		valid[point] = base.Add(time.Duration(index) * time.Millisecond)
+	}
+	// A delayed return is not an extended probe socket lifecycle.
+	valid["connect_return"] = base.Add(16 * time.Second)
+	if err := absenceLifetimeInvariant(valid); err != nil {
+		t.Fatal(err)
+	}
+	for _, mutation := range []string{"missing", "finish_after_stop", "at_limit", "over_limit"} {
+		points := make(map[string]time.Time)
+		for name, at := range valid {
+			points[name] = at
+		}
+		switch mutation {
+		case "missing":
+			delete(points, "probeio_started")
+		case "finish_after_stop":
+			points["finish_synced"] = base.Add(10 * time.Second)
+		case "at_limit", "over_limit":
+			stop := base.Add(15 * time.Second)
+			if mutation == "over_limit" {
+				stop = stop.Add(time.Nanosecond)
+			}
+			points["tripwire_timer_stopped"], points["controller_close_return"] = stop, stop
+		}
+		if absenceLifetimeInvariant(points) == nil {
+			t.Fatalf("lifecycle mutation escaped: %s", mutation)
+		}
+	}
+}
+
+func absenceWitnessPressure(t *testing.T) func() {
+	if os.Getenv("WINKYOU_FLAKE_111_CPU_STRESS") != "1" {
+		return func() {}
+	}
+	workers := runtime.NumCPU() * 2
+	stop := make(chan struct{})
+	var wait sync.WaitGroup
+	var checksum atomic.Uint64
+	for index := 0; index < workers; index++ {
+		wait.Add(1)
+		go func(seed uint64) {
+			defer wait.Done()
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+				}
+				for iteration := 0; iteration < 65536; iteration++ {
+					seed = seed*6364136223846793005 + 1442695040888963407
+				}
+				checksum.Add(seed)
+				runtime.Gosched()
+			}
+		}(uint64(index + 1))
+	}
+	t.Logf("pressure cores=%d gomaxprocs=%d workers=%d", runtime.NumCPU(), runtime.GOMAXPROCS(0), workers)
+	var once sync.Once
+	return func() { once.Do(func() { close(stop); wait.Wait(); t.Log("pressure_workers_remaining=0") }) }
+}

@@ -114,6 +114,7 @@ Linux [conntrack 文档](https://docs.kernel.org/networking/nf_conntrack-sysctl.
   个 mapping 均不能作为当前 direct tuple 的可信剩余寿命；未知就是未知。
 - 本裁决不建议新增一个无法证实的公共 `mapping_expired` 错误类。实际 timeout/EOF 仍诚实保留，
   寿命故障归因只在具有受控 fault 和独立见证的 harness 中成立。
+- 观测失败不等于失效证据，查询超时不等于缺席；M-E 仍须有成功的存在读数和确认前的显式消失读数。
 
 ### 4.2 建议测试层
 

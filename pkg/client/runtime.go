@@ -8,7 +8,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
 	"time"
 
 	"winkyou/pkg/config"
@@ -16,8 +15,6 @@ import (
 )
 
 var ErrRuntimeStateNotFound = errors.New("client runtime state not found")
-
-var runtimeStateIOMu sync.RWMutex
 
 type RuntimeState struct {
 	SchemaVersion   int                 `json:"schema_version,omitempty"`
@@ -122,8 +119,11 @@ func RuntimeStatePath(configPath string) string {
 }
 
 func LoadRuntimeState(path string) (*RuntimeState, error) {
-	runtimeStateIOMu.RLock()
-	defer runtimeStateIOMu.RUnlock()
+	unlock, err := lockRuntimeFile(path, true)
+	if err != nil {
+		return nil, err
+	}
+	defer unlock()
 	return loadRuntimeStateUnlocked(path)
 }
 
@@ -163,14 +163,20 @@ func WriteRuntimeState(path string, state *RuntimeState) error {
 		return err
 	}
 	payload = append(payload, '\n')
-	runtimeStateIOMu.Lock()
-	defer runtimeStateIOMu.Unlock()
+	unlock, err := lockRuntimeFile(path, false)
+	if err != nil {
+		return err
+	}
+	defer unlock()
 	return atomicWriteRuntimeFile(RuntimeStatePath(path), payload, 0o600)
 }
 
 func RemoveRuntimeState(path string) error {
-	runtimeStateIOMu.Lock()
-	defer runtimeStateIOMu.Unlock()
+	unlock, err := lockRuntimeFile(path, false)
+	if err != nil {
+		return err
+	}
+	defer unlock()
 	return removePathWithRetry(RuntimeStatePath(path))
 }
 
@@ -184,8 +190,11 @@ func RemoveRuntimeStateIfInstance(path, instanceID string) error {
 	if instanceID == "" {
 		return fmt.Errorf("client runtime instance id is required")
 	}
-	runtimeStateIOMu.Lock()
-	defer runtimeStateIOMu.Unlock()
+	unlock, err := lockRuntimeFile(path, false)
+	if err != nil {
+		return err
+	}
+	defer unlock()
 	state, err := loadRuntimeStateUnlocked(path)
 	if errors.Is(err, ErrRuntimeStateNotFound) {
 		return nil

@@ -1,0 +1,36 @@
+package governor
+
+import "time"
+
+// This file is added only to the disposable governor test overlay, never to
+// a production build or the existing #115 test files. Hooks observe real
+// append/sync/latch completion and never change their result.
+func ObserveAbsenceJournalForTest(machine *Governor, record func(string, time.Time)) error {
+	ledger, err := LoopbackCarrierTestLedger(machine)
+	if err != nil {
+		return err
+	}
+	ledger.hooks.afterAppendBeforeSync = func(entry pairingJournalRecord) error {
+		if entry.Type == pairingRecordBurnAndAdmit {
+			record("burn_appended", time.Now())
+		}
+		if entry.Type == pairingRecordFinish {
+			record("finish_appended", time.Now())
+		}
+		return nil
+	}
+	ledger.hooks.afterSync = func(entry pairingJournalRecord) error {
+		if entry.Type == pairingRecordBurnAndAdmit {
+			record("burn_synced", time.Now())
+		}
+		if entry.Type == pairingRecordFinish {
+			record("finish_synced", time.Now())
+		}
+		return nil
+	}
+	machine.owner.tripStore.hooks.afterTripLatchSync = func() error {
+		record("persistent_trip_latched", time.Now())
+		return nil
+	}
+	return nil
+}

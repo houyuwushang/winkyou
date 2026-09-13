@@ -126,6 +126,7 @@ type gateB2NATConfig struct {
 	// worker. It is not a before-send witness and never blocks forwarding.
 	gateB3AfterWinner func(context.Context, netip.AddrPort, netip.AddrPort) error
 	gateB3Lifetime    *gateB3NATLifetime
+	gateB3Diagnostic  *gateB3NATDiagnostic
 }
 
 type gateB2UsedPort struct {
@@ -225,6 +226,7 @@ type gateB2NATRouter struct {
 	candidateForwardedBySlot [16]atomic.Uint64
 	tail16Read               atomic.Uint64
 	tail16Forwarded          atomic.Uint64
+	tailWitness              gateB3TailWitness
 	runFailure               atomic.Pointer[string]
 	winnerObservation        chan [2]netip.AddrPort
 	observationDone          chan struct{}
@@ -260,7 +262,9 @@ func startGateB2NATRouter(t testing.TB, config gateB2NATConfig) *gateB2NATRouter
 		randomState: config.randomSeed, usedPorts: make(map[gateB2UsedPort]struct{}),
 	}
 	go func() {
-		router.done <- RunInNamespace(config.namespace, router.run)
+		err := RunInNamespace(config.namespace, router.run)
+		config.gateB3Diagnostic.fail(gateB3NamespaceFailure, err, router.ctx.Err())
+		router.done <- err
 	}()
 	select {
 	case err := <-router.ready:
@@ -276,13 +280,22 @@ func startGateB2NATRouter(t testing.TB, config gateB2NATConfig) *gateB2NATRouter
 		_ = router.Close()
 		t.Fatal("Gate B2 isolated NAT route setup failed")
 	}
-	t.Cleanup(func() { _ = router.Close() })
+	t.Cleanup(func() {
+		err := router.Close()
+		if config.gateB3Diagnostic != nil {
+			// Close may already have run on the normal or failure path. Its
+			// first result lives in the diagnostic and cannot be erased here.
+			t.Logf("GATE_B3_NAT_CLEANUP close=%+v call=%+v",
+				config.gateB3Diagnostic.snapshot().Points[gateB3RouterClose], gateB3SafeError(err, nil))
+		}
+	})
 	return router
 }
 
 func (router *gateB2NATRouter) run() error {
 	tun, err := openGateB2TUN(router.config.tunName)
 	if err != nil {
+		router.config.gateB3Diagnostic.fail(gateB3TUNFailure, err, router.ctx.Err())
 		router.ready <- err
 		return err
 	}
@@ -317,17 +330,22 @@ func (router *gateB2NATRouter) run() error {
 	for runErr == nil {
 		select {
 		case packet := <-outbound:
+			router.tailWitness.queue(0, len(outbound))
 			if err := router.forwardOutbound(packet, replies); err != nil {
+				router.config.gateB3Diagnostic.fail(gateB3OutboundFailure, err, router.ctx.Err())
 				runErr = errors.Join(errGateB2NATOutbound, err)
 			}
 			clear(packet.payload)
 		case reply := <-replies:
+			router.tailWitness.queue(1, len(replies))
 			if err := router.forwardInbound(tun, reply); err != nil {
+				router.config.gateB3Diagnostic.fail(gateB3InboundFailure, err, router.ctx.Err())
 				runErr = errors.Join(errGateB2NATInbound, err)
 			}
 			clear(reply.payload)
 		case err := <-readErr:
 			if router.ctx.Err() == nil {
+				router.config.gateB3Diagnostic.fail(gateB3TUNFailure, err, nil)
 				runErr = errors.Join(errGateB2NATTUNRead, err)
 			}
 		case <-router.ctx.Done():
@@ -336,6 +354,7 @@ func (router *gateB2NATRouter) run() error {
 	}
 	failure := gateB2NATDrainClass(runErr)
 	router.runFailure.Store(&failure)
+	router.config.gateB3Diagnostic.mark(gateB3RouterTerminal, time.Now(), runErr, router.ctx.Err())
 	router.cancel()
 	router.closeDescriptors()
 	router.readers.Wait()
@@ -450,6 +469,7 @@ func (router *gateB2NATRouter) readTUN(tun *os.File, packets chan<- gateB2TUNPac
 			router.tunRejected.Add(1)
 			continue
 		}
+		tail := router.tailWitness.observe(gateB3TailAccepted, packet.payload)
 		if metadata, err := hardnatcontrol.InspectFrame(packet.payload); err == nil && metadata.Type == hardnatcontrol.FrameCandidate {
 			router.candidateRead.Add(1)
 			if metadata.SocketSlot < 16 {
@@ -464,6 +484,12 @@ func (router *gateB2NATRouter) readTUN(tun *os.File, packets chan<- gateB2TUNPac
 		}
 		select {
 		case packets <- packet:
+			// Ownership moved to the forwarding worker, which may clear the
+			// payload immediately. Retain only the pre-send classification.
+			if tail {
+				router.tailWitness.counts[gateB3TailQueued].Add(1)
+			}
+			router.tailWitness.queue(0, len(packets))
 		case <-router.ctx.Done():
 			clear(packet.payload)
 			return
@@ -501,14 +527,24 @@ func (router *gateB2NATRouter) forwardOutbound(packet gateB2TUNPacket, replies c
 	if router.config.recordTargets != nil && packet.destination.Addr() == router.config.peerPublic {
 		router.config.recordTargets.record(packet.destination.Port())
 	}
+	diag := router.config.gateB3Diagnostic
+	firstDirect := diag != nil && packet.destination.Addr() == router.config.peerPublic && router.candidateForwarded.Load() == 0
+	if firstDirect {
+		diag.mark(gateB3WriteBegin, time.Now(), nil, router.ctx.Err())
+	}
 	var _, err = mapping.connection.WriteToUDPAddrPort(packet.payload, packet.destination)
 	if router.config.reusePortsByTarget {
 		_, err = mapping.connection.Write(packet.payload)
 	}
+	if firstDirect {
+		diag.mark(gateB3WriteEnd, time.Now(), err, router.ctx.Err())
+	}
 	if err != nil {
+		diag.fail(gateB3WriteEnd, err, router.ctx.Err())
 		return err
 	}
 	router.outbound.Add(1)
+	router.tailWitness.observe(gateB3TailForwarded, packet.payload)
 	if plan, ok := router.config.gateB3MappingPlan.(*gateB3OrderedEarlyMappingPlan); ok {
 		if metadata, err := hardnatcontrol.InspectFrame(packet.payload); err == nil && metadata.Type == hardnatcontrol.FrameCandidate && metadata.Ordinal == 0 {
 			plan.forwarded(router.config.gateB3MappingPlanLeft)
@@ -586,7 +622,7 @@ func (router *gateB2NATRouter) newMapping(key gateB2NATKey, internal, target net
 	}
 	mapping := &gateB2NATMapping{
 		connection: connection, internal: internal, public: public,
-		allowed:   make(map[netip.AddrPort]struct{}, 512),
+		allowed:   newGateB2AllowedSources(),
 		createdAt: time.Now(),
 	}
 	router.mappingsMu.Lock()
@@ -621,7 +657,7 @@ func (router *gateB2NATRouter) openMappedSocket(preferred uint16, target netip.A
 			if _, exists := router.usedPorts[key]; exists {
 				return nil, netip.AddrPort{}, errors.New("Gate B3 isolated NAT four-tuple already allocated")
 			}
-			connection, err := dialGateB3MappedSocket(router.ctx, endpoint, target)
+			connection, err := dialGateB3MappedSocket(router.ctx, endpoint, target, router.config.gateB3Diagnostic)
 			if err == nil {
 				router.usedPorts[key] = struct{}{}
 			}
@@ -631,22 +667,33 @@ func (router *gateB2NATRouter) openMappedSocket(preferred uint16, target netip.A
 		return connection, endpoint, err
 	}
 	planned := false
+	diag := router.config.gateB3Diagnostic
+	firstDirect := diag != nil && target.Addr() == router.config.peerPublic && router.candidateForwarded.Load() == 0
 	if router.config.gateB3MappingPlan != nil && target.Addr() == router.config.peerPublic {
 		var err error
 		preferred, err = router.config.gateB3MappingPlan.preferred(
 			router.ctx, router.config.gateB3MappingPlanLeft, target.Port(),
 		)
 		if err != nil || preferred < router.config.mappingPortMin || preferred > router.config.mappingPortMax {
-			return nil, netip.AddrPort{}, errors.Join(errors.New("Gate B3 isolated NAT mapping plan failed"), err)
+			failure := errors.Join(errors.New("Gate B3 isolated NAT mapping plan failed"), err)
+			diag.fail(gateB3PreferredReturn, failure, router.ctx.Err())
+			return nil, netip.AddrPort{}, failure
 		}
 		planned = true
 	}
 	if preferred != 0 {
+		if firstDirect {
+			diag.mark(gateB3MappingBindBegin, time.Now(), nil, router.ctx.Err())
+		}
 		connection, endpoint, err := try(preferred)
+		if firstDirect {
+			diag.mark(gateB3MappingBindEnd, time.Now(), err, router.ctx.Err())
+		}
 		if err == nil {
 			return connection, endpoint, nil
 		}
 		if planned {
+			diag.fail(gateB3MappingBindEnd, err, router.ctx.Err())
 			return nil, netip.AddrPort{}, err
 		}
 		// A favorable set has ample disjoint ports. Skip a local collision but
@@ -687,7 +734,7 @@ func (router *gateB2NATRouter) openMappedSocket(preferred uint16, target netip.A
 	return nil, netip.AddrPort{}, errors.New("Gate B2 isolated NAT mapping range exhausted")
 }
 
-func dialGateB3MappedSocket(ctx context.Context, local, remote netip.AddrPort) (*net.UDPConn, error) {
+func dialGateB3MappedSocket(ctx context.Context, local, remote netip.AddrPort, diag *gateB3NATDiagnostic) (*net.UDPConn, error) {
 	dialer := net.Dialer{
 		LocalAddr: net.UDPAddrFromAddrPort(local),
 		Control: func(_, _ string, raw syscall.RawConn) error {
@@ -699,8 +746,10 @@ func dialGateB3MappedSocket(ctx context.Context, local, remote netip.AddrPort) (
 				}
 				controlErr = unix.SetsockoptInt(int(descriptor), unix.SOL_SOCKET, unix.SO_REUSEPORT, 1)
 			}); err != nil {
+				diag.fail(gateB3SocketOption, err, ctx.Err())
 				return err
 			}
+			diag.fail(gateB3SocketOption, controlErr, ctx.Err())
 			return controlErr
 		},
 	}
@@ -726,8 +775,10 @@ func (router *gateB2NATRouter) readMapped(mapping *gateB2NATMapping, replies cha
 			return
 		}
 		payload := append([]byte(nil), buffer[:n]...)
+		router.tailWitness.observe(gateB3TailMappedRead, payload)
 		select {
 		case replies <- gateB2MappedReply{mapping: mapping, source: source, payload: payload}:
+			router.tailWitness.queue(1, len(replies))
 		case <-router.ctx.Done():
 			clear(payload)
 			return
@@ -771,6 +822,7 @@ func (router *gateB2NATRouter) forwardInbound(tun *os.File, reply gateB2MappedRe
 		return errors.New("Gate B2 isolated NAT short TUN write")
 	}
 	router.inbound.Add(1)
+	router.tailWitness.observe(gateB3TailTUNWritten, reply.payload)
 	if metadata, err := hardnatcontrol.InspectFrame(reply.payload); err == nil && metadata.Type == hardnatcontrol.FrameWinner {
 		router.winnerInbound.Add(1)
 	}
@@ -840,6 +892,7 @@ func (router *gateB2NATRouter) Close() error {
 		case <-time.After(gateB2RouterDrain):
 			closeErr = errGateB2NATDrain
 		}
+		router.config.gateB3Diagnostic.mark(gateB3RouterClose, time.Now(), closeErr, router.ctx.Err())
 	})
 	return closeErr
 }

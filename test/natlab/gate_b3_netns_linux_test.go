@@ -41,7 +41,6 @@ const (
 	gateB3DisposableRunnerEnv         = "WINKYOU_GATE_B3_DISPOSABLE_RUNNER"
 	gateB3PortMin                     = uint16(hardnatplan.DynamicPortMin)
 	gateB3PortMax                     = uint16(hardnatplan.DynamicPortMax)
-	gateB3ProcessLimit                = 52 * time.Second
 	// The test-only TUN router may trail the endpoint process on a loaded CI
 	// host. This bounds observation of packets already accepted by the endpoint
 	// sockets; it never extends an attempt or permits another emission.
@@ -98,6 +97,8 @@ func TestLinuxGateB3Hard16Proof(t *testing.T) {
 	t.Run("topology_setup_error_redaction", testGateB3TopologySetupErrorRedaction)
 	t.Run("router_mapping_cap_pre_io", testGateB3RouterMappingCapPreIO)
 	t.Run("tun_ingress_queue_contract", testGateB3TUNIngressQueueContract)
+	t.Run("mapping_storage_semantics", TestGateB3MappingSparseSourceSemantics)
+	t.Run("mapping_storage_constructor", TestGateB3MappingSparseConstructorRegression)
 	t.Run("loss_terminal_contract", testGateB3LossTerminalContract)
 	// Exercise the low-ceiling fault before any 16K topology can leave
 	// invisible conntrack/RCU reclamation behind. The fault remains one-shot
@@ -148,6 +149,8 @@ func testGateB3FullShapeLifetime(t *testing.T, dropEvery uint64, conntrackCap in
 	}
 	observer := startGateB2ObserverSet(t, topology.public)
 	leftConfig, rightConfig := gateB3RouterConfig(topology, true, 11, dropEvery), gateB3RouterConfig(topology, false, 29, dropEvery)
+	leftConfig.gateB3Diagnostic = &gateB3NATDiagnostic{origin: started}
+	rightConfig.gateB3Diagnostic = &gateB3NATDiagnostic{origin: started}
 	var leftPeerFlow, rightPeerFlow atomic.Int64
 	leftPeerFlow.Store(-1)
 	rightPeerFlow.Store(-1)
@@ -205,19 +208,46 @@ func testGateB3FullShapeLifetime(t *testing.T, dropEvery uint64, conntrackCap in
 	leftRouter := startGateB2NATRouter(t, leftConfig)
 	rightRouter := startGateB2NATRouter(t, rightConfig)
 	conntrackMonitor := startGateB3ConntrackMonitor(t, topology.natA, topology.natB)
+	var initiator, responder *gateB2EndpointProcess
+	residueComplete := false
+	defer func() {
+		if t.Failed() && !residueComplete {
+			// Runs on Fatal too, before ordinary t.Cleanup destroys evidence.
+			gateB3ReportFailedCase(
+				func() {
+					logGateB3EndpointPair(t, initiator, responder)
+					logGateB3TailDeliveryPair(t, topology, leftRouter, rightRouter, initiator, responder)
+				},
+				func() {
+					logGateB3RouterPair(t, leftRouter, rightRouter)
+					gateB3FailedCaseCleanup(t, topology, observer, leftRouter, rightRouter,
+						initiator, responder, conntrackMonitor, lifetimeGuard, leftModel, rightModel)
+					logGateB3RouterPair(t, leftRouter, rightRouter)
+				},
+			)
+		}
+	}()
 	if err := topology.installGateB2PacketCounters(observer.topology); err != nil {
 		t.Fatal("Gate B3 packet counter setup failed")
 	}
+	if err := topology.installGateB3TailIngressCounters(); err != nil {
+		t.Fatal("Gate B3 tail INPUT counter setup failed")
+	}
 	artifacts := buildGateB3Artifacts(t, fmt.Sprintf("drop-%d", dropEvery))
 	defer clearGateB2Artifacts(&artifacts)
-	initiator, responder := startGateB3Pair(t, topology, observer.topology, artifacts)
-	initiatorResult, responderResult := waitGateB3Result(t, initiator), waitGateB3Result(t, responder)
+	initiator, responder = startGateB3Pair(t, topology, observer.topology, artifacts)
+	layer := ""
+	if lifetime != nil {
+		layer = lifetime.layer
+	}
+	resultLimit := gateB3ResultWaitLimit(layer)
+	initiatorResult, responderResult := waitGateB3ResultWithin(t, initiator, resultLimit), waitGateB3ResultWithin(t, responder, resultLimit)
 	for _, result := range []gateB3EndpointResult{initiatorResult, responderResult} {
 		assertGateB3FrozenShape(t, result)
 	}
 	if conntrackCap == gateB3ConntrackCap {
-		waitGateB3RouterOutbound(t, leftRouter, initiatorResult.UDPPackets+initiatorResult.DataPacketsWritten)
-		waitGateB3RouterOutbound(t, rightRouter, responderResult.UDPPackets+responderResult.DataPacketsWritten)
+		waitGateB3RouterOutbound(t, leftRouter, initiatorResult.UDPPackets+initiatorResult.DataPacketsWritten, leftRouter, rightRouter)
+		waitGateB3RouterOutbound(t, rightRouter, responderResult.UDPPackets+responderResult.DataPacketsWritten, leftRouter, rightRouter)
 	}
 	leftConntrackPeak, rightConntrackPeak, monitorErr := conntrackMonitor.Stop()
 	if monitorErr != nil {
@@ -277,8 +307,13 @@ func testGateB3FullShapeLifetime(t *testing.T, dropEvery uint64, conntrackCap in
 	}
 	// A rejected terminal is still required to leave complete OS cleanup
 	// evidence. Do not let Fatal below bypass the independent residue gate.
+	if !logGateB3TailDeliveryPair(t, topology, leftRouter, rightRouter, initiator, responder) {
+		t.Error("Gate B3 endpoint tail INPUT witness unavailable")
+	}
 	assertGateB3NoResidue(t, topology, observer, leftRouter, rightRouter, !success,
 		conntrackCap < gateB3ConntrackCap, initiator.governorDir, responder.governorDir)
+	residueComplete = true
+	logGateB3RouterPair(t, leftRouter, rightRouter)
 	if lifetime != nil {
 		if err := lifetimeGuard.close(); err != nil {
 			t.Fatal("mapping lifetime isolation restoration/handle witness failed")
@@ -299,8 +334,7 @@ func testGateB3FullShapeLifetime(t *testing.T, dropEvery uint64, conntrackCap in
 		winnerModel.mu.Lock()
 		flow, sentAt, age, refresh := winnerModel.winner, winnerModel.sentAt, winnerModel.age, winnerModel.refresh
 		winnerModel.mu.Unlock()
-		if lifetime.layer == "M-E" && (flow.presentAt.IsZero() || flow.goneAt.IsZero() || !flow.presentAt.Before(flow.goneAt) ||
-			!flow.goneAt.Before(sentAt) || flow.present || sentAt.Sub(flow.sampledAt) > 1500*time.Millisecond ||
+		if lifetime.layer == "M-E" && (!validGateB3ExpiryObservation(flow, sentAt) ||
 			age < 30*time.Second || refresh != 1 || winnerWitness.WinnerOutbound != 1 || peerWitness.WinnerInbound != 0 ||
 			leftConfig.dropAllCandidateInbound || rightConfig.dropAllCandidateInbound || dropEvery != 0) {
 			t.Error("mapping lifetime expiry causal witness incomplete or another fault was injected")
@@ -804,7 +838,12 @@ func newGateB3EndpointProcessWithFault(t testing.TB, namespace string, role dire
 
 func waitGateB3Result(t testing.TB, process *gateB2EndpointProcess) gateB3EndpointResult {
 	t.Helper()
-	deadline := time.Now().Add(gateB3ProcessLimit)
+	return waitGateB3ResultWithin(t, process, gateB3ProcessLimit)
+}
+
+func waitGateB3ResultWithin(t testing.TB, process *gateB2EndpointProcess, limit time.Duration) gateB3EndpointResult {
+	t.Helper()
+	deadline := time.Now().Add(limit)
 	for time.Now().Before(deadline) {
 		var result gateB3EndpointResult
 		if readN1JSON(process.resultPath, &result) {
@@ -833,9 +872,10 @@ func waitGateB3Result(t testing.TB, process *gateB2EndpointProcess) gateB3Endpoi
 	return gateB3EndpointResult{}
 }
 
-func waitGateB3RouterOutbound(t testing.TB, router *gateB2NATRouter, want int) {
+func waitGateB3RouterOutbound(t testing.TB, router *gateB2NATRouter, want int, pair ...*gateB2NATRouter) {
 	t.Helper()
 	if router == nil || want < 0 {
+		logGateB3RouterPair(t, pair...)
 		t.Fatal("Gate B3 NAT outbound witness input rejected")
 	}
 	deadline := time.Now().Add(gateB3RouterWitnessLimit)
@@ -845,6 +885,7 @@ func waitGateB3RouterOutbound(t testing.TB, router *gateB2NATRouter, want int) {
 			return
 		}
 		if got > uint64(want) {
+			logGateB3RouterPair(t, pair...)
 			t.Fatalf("Gate B3 NAT outbound witness exceeded endpoint emission: got=%d want=%d", got, want)
 		}
 		time.Sleep(10 * time.Millisecond)
@@ -856,6 +897,7 @@ func waitGateB3RouterOutbound(t testing.TB, router *gateB2NATRouter, want int) {
 	dropped, parseErr := strconv.ParseUint(strings.TrimSpace(output), 10, 64)
 	t.Logf("Gate B3 ingress gap witness: counters=%+v kernel_tun_tx_dropped=%d kernel_counter_valid=%t",
 		router.Witness(), dropped, err == nil && parseErr == nil)
+	logGateB3RouterPair(t, pair...)
 	t.Fatalf("Gate B3 NAT outbound witness did not drain accepted emissions: got=%d want=%d",
 		router.Witness().Outbound, want)
 }

@@ -19,6 +19,7 @@ import (
 	"winkyou/internal/v2/oobcarrier"
 	"winkyou/internal/v2/sshassembly"
 	"winkyou/pkg/config"
+	"winkyou/pkg/netif"
 )
 
 // MemoryProofOptions exists only in c1bproof-tagged test binaries. It cannot
@@ -41,6 +42,8 @@ type MemoryProofOptions struct {
 	StageRoot     string
 	LivenessClock LivenessClock
 	LivenessArmed func(LivenessMemoryProofControl)
+	// Test-only scheduling at the existing inner boundary; never a new socket.
+	WrapMemoryInterface func(netif.MemoryTestInterface) netif.MemoryTestInterface
 }
 
 // RunMemoryProof composes the real Gate C pipeline with a tagged in-memory
@@ -69,6 +72,16 @@ func RunMemoryResponder(ctx context.Context, input io.Reader, output io.Writer, 
 
 func memoryProofDependencies(options MemoryProofOptions) dependencies {
 	deps := defaultDependencies()
+	if options.WrapMemoryInterface != nil {
+		open := deps.newInterface
+		deps.newInterface = func(name string, mtu int) (netif.MemoryTestInterface, error) {
+			ni, err := open(name, mtu)
+			if err != nil {
+				return nil, err
+			}
+			return options.WrapMemoryInterface(ni), nil
+		}
+	}
 	if options.LivenessClock != nil {
 		deps.newLivenessClock = func() LivenessClock { return options.LivenessClock }
 	}
@@ -115,6 +128,39 @@ func memoryProofDependencies(options MemoryProofOptions) dependencies {
 // LivenessMemoryProofControl exists ONLY in c1bproof binaries. It exposes fixed
 // proof experiments, not raw streams, endpoints, sockets or keys.
 type LivenessMemoryProofControl struct{ controller *livenessController }
+
+// HealthySnapshot reads the CURRENT local permit before fixture cancellation.
+// It neither renews the permit nor infers health from a terminal aggregate.
+func (p LivenessMemoryProofControl) HealthySnapshot() (LivenessWitness, uint64, error) {
+	c := p.controller
+	if c == nil {
+		return LivenessWitness{}, 0, errLivenessUnavailable
+	}
+	err := c.permit()
+	w := c.gate.Witness()
+	if w.Closed || w.ActivePolicy == nil {
+		return c.model.snapshot(), 0, errLivenessUnavailable
+	}
+	return c.model.snapshot(), w.ActivePolicy.HandshakeInitiations + w.ActivePolicy.HandshakeResponses, err
+}
+
+// CompleteUnrelatedCloseWrite is a fixed synthetic scheduling experiment.
+// None of these unauthenticated packets is a CLOSE or a liveness proof.
+func (p LivenessMemoryProofControl) CompleteUnrelatedCloseWrite(ctx context.Context, kind string) error {
+	typ, size := uint32(4), 128
+	switch kind {
+	case "data":
+	case "empty":
+		size = 32
+	case "rekey":
+		typ, size = 1, 148
+	default:
+		return errLivenessProtocol
+	}
+	packet := make([]byte, size)
+	binary.LittleEndian.PutUint32(packet, typ)
+	return p.controller.gate.WritePacket(ctx, packet)
+}
 
 func (p LivenessMemoryProofControl) RejectNormalAdmission() (LivenessWitness, error) {
 	c := p.controller
