@@ -627,3 +627,29 @@ runner 启动/调度裕度。该残差**不是独立测得的 FINISH fsync 延�
 
 本机 Windows 只运行纯函数、文件见证与契约 race×20，并交叉 vet Linux tagged 源码；
 不运行 netns，不把模型测试说成 OS 证明。首次红回归、修复后证据与 CI 首跑另行追加。
+
+#### 11.8.1 首次红回归与实现证据
+
+`324a358` 只等价提取原 52s 等待来源并添加契约，首次 `-race -count=1` RED（0.471s）：
+M-E/M-X 均报告 `got=52s want=57s`；接线门拒绝缺少的双端诊断及 shape-specific 等待。
+原始日志 SHA-256：`ffad7b6982835b04a7226c7682899e7248df989477e79347ca30d396ba641934`。
+
+修复 `4948beb` 按 §11.8 的三来源求和；只有 M-E/M-X 选 57s，所有旧默认调用仍走 52s。
+result 一旦报告进程已退出、harness error 或缺失终态仍立即失败，不把新增等待当作重试。
+真实 child 的现有 progress callback 只写固定 stage 见证；父端等待失败时读取两端最后
+stage / result class（非原子快照，缺失不猜测），随后执行原七阶段残留检查。日志只含
+固定枚举和 0/1 侧编号，result 上限 64KiB、stage 上限 128 bytes，非法/超长/未知值不透传。
+
+Goexit/Fatal 等价控制证明：wait 退出 → 双端诊断 → 原残留门；诊断自身退出也不能绕过
+cleanup。真实 Linux fixture 接线变异移除等待/诊断/清理任一项即被拒绝，不用独立单测
+替代真实调用处。当前 main 既有失败清理也保留原错误、原全部阶段与其继续执行测试。
+
+```text
+go test -race ./test/natlab -run '^TestGateB3Lifetime(Result|DiagnosticCleanup|DiagnosticWiring)' -count=20 -failfast -v
+GOOS=linux CGO_ENABLED=0 go vet -tags=natlab,c1bproof ./test/natlab
+```
+
+修复后首批 race×20 PASS（1.950s），Linux 交叉 vet PASS。绿日志 SHA-256：
+`10b21b73461c883ed0330bf6f174db87a1e4c05cc3b9387489ecd32a0e9e8bfa`。
+未修改生产文件/配置/工作流。两份 required Mapping Lifetime 的真实 OS 结果待本批唯一
+推送后的首跑记录；Windows 本地结果不能替代该验收，也不覆盖原 hosted RED。
