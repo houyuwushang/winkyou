@@ -959,3 +959,111 @@ required job 的**逐步骤墙钟耗时**回填本次 Draft PR 描述，未完�
 脱敏与边界负向用例可在 Windows 无 socket 运行，也由现有 Linux required diagnostics
 入口执行。本增补只改善反例可观测性；后续 CI 即使不再复现，也不构成根因已修复的
 证明。其他 Mapping Lifetime 失败与 Windows job 容量问题分别记录，不混入本诊断改动。
+
+### 7.5 #133：连续 Fresh100 窗口校准（先测量，未宣称修复）
+
+基线 `ed9522b`。旧 §7.2 只测了每轮三个 profile、重复 20 轮，不能替代同一进程内
+100 个 fresh namespace 的顺序条件。原始反例保留在 [#133](https://github.com/houyuwushang/winkyou/issues/133)：
+predictive-fresh-96 双端 `attempt_expired`，以及 liveness 在 candidates 阶段未 arm。
+
+本轮只改 `gate_c1b_memory_windows_c1bproof_test.go` 的窗口策略与测量测试。测量沿用
+实际 CLI memory runner、原 profile 轮转次序与现有只读 progress 见证：100 次顺序运行，
+predictive / asymmetric / hard-16k 分别 34 / 33 / 33 个配对；两个端点都纳入统计，
+缺失 winner 不记为 0，不丢弃慢样本，失败即停止并输出已完成样本和当前失败见证。
+
+环境固定 Go 1.23.1、`WINKYOU_GATE_C1B_REPEAT_REQUIRED=1`、两个持续 busy goroutine。
+本仓库为 public，workflow 使用标准 `windows-latest` 且未覆盖 `GOMAXPROCS`；按
+[GitHub 标准 public runner 规格](https://docs.github.com/en/actions/reference/runners/github-hosted-runners#standard-github-hosted-runners-for-public-repositories)
+的四个逻辑 CPU，本地设 `GOMAXPROCS=4`，不再把旧校准的 2 当成 CI 实际配置。
+分别预定一次与 Fresh100 相同的非 race 批次和一次 race 批次，日志分开保留，不以后一批
+覆盖前一批。不能把本机测量冒称 hosted Windows OS 的实测。
+
+统计使用单调时间的 candidate→winner（含互认）与 nearest-rank p50 / p95 / max；
+回归门要求各 profile 的 p95 严格小于其 candidateTime 的 80%。只有证据表明原地板
+不足才修改相应 candidateTime：`ceil(max × 1.25 / 0.5s) × 0.5s`，不凭估计预加余量。
+activeTime 和其他 profile 保持原值，除非它们也有同等不足证据；缺失完成时间时不能
+把截断样本冒充可用于该公式的 max。生产预算、窗口、工作流和其它文件均不改。
+
+#### 7.5.1 两个预定首批的实际结果：旧窗口均通过
+
+测量提交 `7b3f51a`，Windows Go 1.23.1，`GOMAXPROCS=4`、两个 busy goroutine，
+100 次顺序执行，既有真实 CLI memory runner、计费和残留断言全部保留。两个预先声明的
+批次分别留档，均不是失败后的 rerun；没有延迟注入或额外负载来人为制造 RED。
+
+| 批次 | profile | 配对 / 端点 | candidate→winner p50 / p95 / max（ms） | 原 candidate / active | p95 < 80% |
+| --- | --- | --- | --- | --- | --- |
+| 非 race 首批 | predictive | 34 / 68 | 502.393 / 504.079 / 504.604 | 1s / 10s | PASS |
+| 非 race 首批 | asymmetric | 33 / 66 | 452.608 / 454.134 / 454.745 | 1.5s / 10s | PASS |
+| 非 race 首批 | hard-16k | 33 / 66 | 386.009 / 408.270 / 417.375 | 4s / 12s | PASS |
+| race 首批 | predictive | 34 / 68 | 503.220 / 506.661 / 516.139 | 1s / 10s | PASS |
+| race 首批 | asymmetric | 33 / 66 | 455.023 / 457.976 / 466.477 | 1.5s / 10s | PASS |
+| race 首批 | hard-16k | 33 / 66 | 878.994 / 963.716 / 1016.696 | 4s / 12s | PASS |
+
+非 race **100/100，112.968s**；race **100/100，159.131s**。每批 200 个端点均 ready，
+两个压力 worker 均有实际工作并 join，原逐样本 natsim/governor 排水门通过。最慢候选
+样本没有被丢弃；日志中的纳秒原值用于计算，表格仅为显示而舍入。
+
+predictive 实测 max 为 `516139400ns`，指定推导结果：
+
+```text
+ceil(516139400ns × 1.25 / 500000000ns) × 500000000ns = 1s
+```
+
+结果等于现有地板，不支持增加。asymmetric 和 hard-16k 的 p95 也未越界，全部
+candidateTime / activeTime **保持基线原值**，没有为了得到“修复后绿”而调整窗口。
+
+```text
+GOTOOLCHAIN=go1.23.1 GOMAXPROCS=4 WINKYOU_GATE_C1B_REPEAT_REQUIRED=1
+go test -tags=c1bproof ./internal/governor -run '^TestGateC1bMemoryFixtureFresh100Schedules$' -v -count=1 -failfast -timeout=12m
+go test -race -tags=c1bproof ./internal/governor -run '^TestGateC1bMemoryFixtureFresh100Schedules$' -v -count=1 -failfast -timeout=12m
+```
+
+原始日志保存在仓库外，不上传路径或生成材料。SHA-256（原文件字节，未重写）：
+
+- 非 race：`49e3abab3062dc3d2d6c68825ef7ed05d64dd8a964e9db03152e428b24bccd33`。
+- race：`88a228c4cbf126ef0de2499bf54da819b6471bf96b6bdb014ec76186ad1a48d2`。
+
+**结论与停止点：未复现，不是修复。** 旧 hosted CI 的 RED 仍然有效；这两次本机成功
+既不能证明其根因，也不能代替提示词要求的“旧地板 RED → 有依据上调 → GREEN”。
+因此不声明 `Closes #133`，不伪造修复提交，不开始串行下一项 #135，也不推送或创建
+本批 PR。需要维护者决定是否允许 #133 在本批仅交付测量回归并保留 issue 开放，或者
+先安排同类 hosted runner 的独立校准；在此之前不能宣称五项收尾完成。
+
+本次停止前另完成：窗口单一来源/原变异/角色时钟 `-race -count=20` PASS（7.887s）；
+`go vet ./...` PASS；`go test ./internal/architecture -count=1` PASS（8.788s）；
+`GOOS=linux CGO_ENABLED=0 go vet -tags=natlab,c1bproof ./...` PASS。
+`git diff --check` 与新增内容隐私扫描 PASS。当前增量只有本文档和获准的测量测试文件，
+生产/配置/工作流 delta=0；未运行五项批次最终全仓/完整受影响包 race×20/relay 验收，
+未触发远端 CI，不把这些待完成项目标为通过。
+
+维护者续令（2026-09-13）：接受本批以 `Refs #133` 仅交付上述测量回归，保留原窗口并
+保持 issue 开放；允许继续 #135 → #132 → #134 → #136。这个裁决不把未复现改写为修复，
+不授权抬高窗口或关闭 #133；其余串行、一次推送及独立复审纪律不变。
+
+#### 7.5.2 最终稳定性首批：20 × Fresh100
+
+最终测试代码 `2033dba`，同一 Go 1.23.1 测试进程连续运行 20 个 Fresh100 批次，
+每批都按原次序执行 100 个 fresh namespace，并保持两个 busy worker；GOMAXPROCS=4。
+该长批次单独执行，没有与其它本地重验证重叠。没有改窗口、注入额外延迟、减少 count、
+跳过慢样本或重跑失败。全部 **20/20 批、2,000/2,000 对、4,000/4,000 端点 PASS**，
+总耗时 **3171.581s**，每批原资源/排水断言和三个 p95 门均通过，40 个压力 worker 均退出。
+
+| profile | 配对 / 端点 | 合并全部端点的 p50 / p95 / max（ms） | 20 批中最差 p95（ms） | 原 candidate / active |
+| --- | --- | --- | --- | --- |
+| predictive | 680 / 1360 | 502.861 / 505.098 / 534.502 | 525.661 | 1s / 10s |
+| asymmetric | 660 / 1320 | 454.810 / 462.852 / 486.541 | 477.197 | 1.5s / 10s |
+| hard-16k | 660 / 1320 | 887.131 / 936.335 / 1112.642 | 1087.127 | 4s / 12s |
+
+合并分位数仍用 nearest-rank，不把“各批 p95 的平均值”冒称总体 p95。predictive
+最慢样本为 `534502200ns`，`ceil(max × 1.25 / 0.5s) × 0.5s` 仍等于 **1s**。
+其他 profile 的 p95 同样远低于原门槛，全部原 candidateTime / activeTime 保持不变。
+
+```text
+GOTOOLCHAIN=go1.23.1 GOMAXPROCS=4 WINKYOU_GATE_C1B_REPEAT_REQUIRED=1
+go test -race -tags=c1bproof ./internal/governor -run '^TestGateC1bMemoryFixtureFresh100Schedules$' -count=20 -timeout=75m -v -failfast
+```
+
+原始首次日志 SHA-256：`96091fba76e82331f5288b436269af2bd31f555bb5e19b61f24b8ee1b381b15c`。
+这项长时本地证据增强了原窗口在指定模型/负载下的可重复性，但仍不是历史 hosted RED
+的根因证明；#133 继续仅 `Refs`、保持开放。全仓与其它批次验证见
+[收尾证据](HARNESS-FLAKES-132-136-EVIDENCE.md)，Linux OS 矩阵须另看远端首次 CI。

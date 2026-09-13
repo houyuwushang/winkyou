@@ -8,6 +8,51 @@ import (
 	"time"
 )
 
+func logGateB3EndpointPair(t testing.TB, pair ...*gateB2EndpointProcess) {
+	t.Helper()
+	for side, process := range pair {
+		if process == nil {
+			t.Logf("GATE_B3_ENDPOINT_TERMINAL side=%d available=false", side)
+			continue
+		}
+		snapshot := readGateB3ResultDiagnostic(process.resultPath)
+		t.Logf("GATE_B3_ENDPOINT_TERMINAL side=%d non_atomic=true result=%s last_stage=%s error_stage=%s class=%s",
+			side, snapshot.State, snapshot.LastStage, snapshot.ErrorStage, snapshot.Class)
+	}
+}
+
+func logGateB3TailDeliveryPair(t testing.TB, topology *n2dTopology, left, right *gateB2NATRouter, initiator, responder *gateB2EndpointProcess) bool {
+	t.Helper()
+	ingress := topology.gateB3TailIngressCounts()
+	routers := [2]*gateB2NATRouter{left, right}
+	processes := [2]*gateB2EndpointProcess{initiator, responder}
+	for side, router := range routers {
+		peer := routers[1-side]
+		if router == nil || peer == nil {
+			t.Logf("GATE_B3_TAIL side=%d ordinal=16383 router_available=false", side)
+			continue
+		}
+		var result gateB3EndpointResult
+		process := processes[1-side]
+		readable := process != nil && readN1JSON(process.resultPath, &result) && result.TailReadWitness
+		readCount := int64(-1)
+		if readable {
+			readCount = int64(result.TailSocketRead)
+		}
+		peerIngress := int64(-1)
+		if ingress[1-side].valid {
+			peerIngress = int64(ingress[1-side].packets)
+		}
+		t.Logf("GATE_B3_TAIL side=%d ordinal=16383 non_atomic=true router_accepted=%d router_queued=%d router_forwarded=%d peer_mapped_read=%d peer_tun_written=%d peer_namespace_delivered=%d peer_namespace_witness=%t peer_socket_read=%d peer_socket_witness=%t queue_capacity=%d queue_sample=%d/%d queue_sampled_peak=%d/%d peer_queue_sample=%d/%d peer_queue_sampled_peak=%d/%d",
+			side, router.tailWitness.counts[gateB3TailAccepted].Load(), router.tailWitness.counts[gateB3TailQueued].Load(),
+			router.tailWitness.counts[gateB3TailForwarded].Load(), peer.tailWitness.counts[gateB3TailMappedRead].Load(),
+			peer.tailWitness.counts[gateB3TailTUNWritten].Load(), peerIngress, ingress[1-side].valid, readCount, readable, router.config.packetQueueCapacity,
+			router.tailWitness.level[0].Load(), router.tailWitness.level[1].Load(), router.tailWitness.peak[0].Load(), router.tailWitness.peak[1].Load(),
+			peer.tailWitness.level[0].Load(), peer.tailWitness.level[1].Load(), peer.tailWitness.peak[0].Load(), peer.tailWitness.peak[1].Load())
+	}
+	return ingress[0].valid && ingress[1].valid
+}
+
 func logGateB3RouterPair(t testing.TB, pair ...*gateB2NATRouter) {
 	t.Helper()
 	// Process-wide, point-in-time measurements, not a per-attempt peak and

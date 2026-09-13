@@ -604,3 +604,119 @@ required Mapping Lifetime job 的既有 `^TestGateB3Lifetime` 选择器会执行
 随后执行原完整 M-S/M-E/M-X OS 矩阵。新 head 的首次 CI 结果另行填入 PR 描述；当前尚未
 取得本修复的 Linux OS 结果。不 rerun #117 求绿；仅在获准的 #119/#126 精确签名命中时各可
 透明 rerun 一次并保留失败。PR 保持 Draft，不自行合并；阶段 2/3 按原 main 绿与复审停点继续。
+
+### 11.8 #135：full-envelope 终态的测试结果等待（设计先行）
+
+基线 `ed9522b`。保留 [#135 的首次 RED](https://github.com/houyuwushang/winkyou/actions/runs/34561354246/job/103144553616)：
+M-E initiator-winner 在 53.84s 报 `Gate B3 endpoint result deadline exceeded`。现行通用
+结果文件等待为 52s；issue 记录的同形成功 `wall_ms=48275` 距该等待上限仅约 3.725s。
+这是测试进程/结果观察预算，不改变 38s candidates、45s active 或 2s drain。
+
+计划将等待来源固定为：45s active + 2s drain + 10s 测试进程/FINISH/发布预算 = 57s。
+最后一项由历史全程观测的 `48.275s - 47s = 1.275s` 残差向上取整到 2s，再加 8s
+runner 启动/调度裕度。该残差**不是独立测得的 FINISH fsync 延迟**；它包含外围开销，
+这里只用作测试预留的观测依据，不据此判断生产性能根因或推导 OS 包数。
+
+只对原来明确接受 full-envelope expired 的 M-E / M-X 形态采用 57s；两者沿用同一
+`validGateB3ExpiryPair` 与 deadline 条件。M-S、普通 Hard16、fault 等其它形态保持 52s。
+等待函数不重试已退出的子进程，不修改子进程 49s caller ctx 或 51s 测试 watchdog。
+
+当前 main 已有 `gateB3FailedCaseCleanup` 的失败 defer，不重复实现或抹去它。补充
+固定字段的双端最后 stage/class 见证，并通过 Fatal/Goexit 契约与接线变异确保日志与
+原七阶段残留检查仍执行；缺失/部分结果明确不可用，任意未知文本脱敏。
+
+本机 Windows 只运行纯函数、文件见证与契约 race×20，并交叉 vet Linux tagged 源码；
+不运行 netns，不把模型测试说成 OS 证明。首次红回归、修复后证据与 CI 首跑另行追加。
+
+#### 11.8.1 首次红回归与实现证据
+
+`324a358` 只等价提取原 52s 等待来源并添加契约，首次 `-race -count=1` RED（0.471s）：
+M-E/M-X 均报告 `got=52s want=57s`；接线门拒绝缺少的双端诊断及 shape-specific 等待。
+原始日志 SHA-256：`ffad7b6982835b04a7226c7682899e7248df989477e79347ca30d396ba641934`。
+
+修复 `4948beb` 按 §11.8 的三来源求和；只有 M-E/M-X 选 57s，所有旧默认调用仍走 52s。
+result 一旦报告进程已退出、harness error 或缺失终态仍立即失败，不把新增等待当作重试。
+真实 child 的现有 progress callback 只写固定 stage 见证；父端等待失败时读取两端最后
+stage / result class（非原子快照，缺失不猜测），随后执行原七阶段残留检查。日志只含
+固定枚举和 0/1 侧编号，result 上限 64KiB、stage 上限 128 bytes，非法/超长/未知值不透传。
+
+Goexit/Fatal 等价控制证明：wait 退出 → 双端诊断 → 原残留门；诊断自身退出也不能绕过
+cleanup。真实 Linux fixture 接线变异移除等待/诊断/清理任一项即被拒绝，不用独立单测
+替代真实调用处。当前 main 既有失败清理也保留原错误、原全部阶段与其继续执行测试。
+
+```text
+go test -race ./test/natlab -run '^TestGateB3Lifetime(Result|DiagnosticCleanup|DiagnosticWiring)' -count=20 -failfast -v
+GOOS=linux CGO_ENABLED=0 go vet -tags=natlab,c1bproof ./test/natlab
+```
+
+修复后首批 race×20 PASS（1.950s），Linux 交叉 vet PASS。绿日志 SHA-256：
+`10b21b73461c883ed0330bf6f174db87a1e4c05cc3b9387489ecd32a0e9e8bfa`。
+未修改生产文件/配置/工作流。两份 required Mapping Lifetime 的真实 OS 结果待本批唯一
+推送后的首跑记录；Windows 本地结果不能替代该验收，也不覆盖原 hosted RED。
+
+### 11.9 #132：ordinal 16383 的分段交付见证（先观测，不推断修复）
+
+保留 [#132 首次尾部耗尽记录](https://github.com/houyuwushang/winkyou/issues/132)：双端
+`hard_nat_candidate_exhausted/candidates`、winner=0/0、UDP=16397/16397。现有 tail16
+合计无法确定最后一包经过了哪一段，也不能以 winner 缺失推导 socket 没读到。
+
+本轮只在 natlab 测试中增加固定 ordinal 的计数：发送侧 TUN 接收/入队/转发、对端
+NAT 映射读取/回注 TUN 成功、对端 endpoint namespace 的 INPUT 计数，以及对端
+既有 Datagram.ReadFrom 的实际成功返回。
+最后一项由测试 wrapper 原样委托已有 sealed factory/Datagram，既不新开 socket，
+也不增加独立 reader，不碰 production probeio。统计元数据不是认证成功见证。
+
+日志按发送侧对应对端的方向打印 `router_accepted / peer_namespace_delivered /
+peer_socket_read`，附入站/出站队列容量、采样水位与采样峰值。采样峰值是下界观测，
+不是未采到满队列的证明；缺失终态文件将 socket read 标为 unavailable，不伪造 0。
+失败也先留两侧见证再执行原残留门，不把干净耗尽改成成功。
+
+只读取既有公开 header（`hardnatcontrol.InspectFrame` / 内核固定 u32 条件），不记录
+packet、目标或身份；
+不能通过尾候选匹配、winner 或 TUN 写成功冒称对端应用已验证报文。固定单发、不重试，
+ordinal=16383、512 PPS、所有窗口/容量保持不变。
+
+本机无 netns，不能确认历史丢失点。若首跑没有把丢失定位到测试队列，本批仅用
+`Refs #132`，不关闭 issue；即使该次 OS 成功也不声称历史根因已修复。
+
+#### 11.9.1 见证能力的红绿控制（不是丢包根因证明）
+
+`52fa0c3` 的首批 RED（race、count=1、0.559s）分别拒绝六个缺失阶段计数、缺失队列
+采样及三个真实 fixture 的接线缺口。这里的 RED 是“缺少观察能力”，不是本机复现了
+历史 netns 丢包。原始日志 SHA-256：
+`494200ac23eca27f2a0438ea2c1946c87fd4e7293d13655d2bef0e2954fe4822`。
+
+`6aa1a9e` 只补观察能力；sealed factory 委托原 Open，Datagram 委托原 ReadFrom、
+WriteTo/Close/deadline/LocalAddr，不增加 reader、socket 或发射。ReadFrom 完成时只对
+既有公开 header 计数，不保留缓冲区。队列交接前保存 tail 分类，交接后不再读取可能被
+转发 worker 清空的 payload；入队计数仍在实际 channel send 成功后记录。
+
+`TestGateB3LifetimeTailWitness` 覆盖唯一尾 ordinal、邻近 ordinal、截断、成功读、
+错误读保持原错误身份和单次底层调用、采样峰值。真实接线变异逐项移除即失败。
+`-race -count=20` 初次纯门 PASS（1.441s）；交接所有权自查修订后的完整同组首批
+PASS（1.450s），不是覆盖失败的 rerun。后一日志 SHA-256：
+`05674da0ea501f8340f7b120e101ed24f4aac9f27b0e192ed17ed747b46ccae4`。
+architecture/mutation PASS（8.693s）；最终 Linux `CGO_ENABLED=0`、
+`-tags=natlab,c1bproof` 全仓交叉 vet PASS。
+
+没有队列丢失的 OS 实测，故不修改队列/背压/重试或成功断言，当前按 `Refs #132`
+提交见证，保留 issue 开放。CI 首次 `GATE_B3_TAIL` 分段计数与队列观测待回填。
+
+#### 11.9.2 自查：TUN 写成功不等于 endpoint namespace 已收到
+
+在唯一推送前自查发现，最初 `peer_namespace_delivered` 的计数点只是**对端 NAT** 的
+TUN 写成功，尚未证明报文已进入**对端 endpoint**。修订将旧点明确命名为
+`peer_tun_written`；另在两个 disposable endpoint 的 INPUT 链各装只 RETURN 的计数
+规则，匹配 UDP 中的公开 magic/version/domain/candidate-type/ordinal=16383。
+不修改 accept/drop、路由、NAT 映射、队列、报文或重试；不操作 initial namespace。
+
+u32 的 `@` 按可变 IPv4 IHL 跳转，跳过 UDP header 后读取冻结头部；排除分片。
+位移与偏移语义按 [iptables-extensions u32 手册](https://man7.org/linux/man-pages/man8/iptables-extensions.8.html)
+核对；golden 锁定完整表达式，合成 IPv4 IHL=20..60 字节逐项校验读位。
+元数据计数不是解密/认证成功证据，也不能以不匹配的数据包证明网络丢包。
+
+`peer_namespace_delivered` 现仅取该 INPUT counter，无法读取时 -1 且
+`peer_namespace_witness=false`。正常收尾必须在 netns teardown **之前**读取；失败
+路径同样先读取再走原清理。接线门要求 INPUT/RETURN/两端安装和观察先于清理。
+此自查修订首批 `^TestGateB3LifetimeTail` race×20 PASS（1.846s）；本机没有执行
+iptables/netns，内核计数的可用性与结果仍由 Linux required CI 首跑给出。

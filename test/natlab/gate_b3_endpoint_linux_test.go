@@ -35,6 +35,23 @@ type gateB3EndpointResult struct {
 	CampaignPackets    int    `json:"campaign_packets"`
 	CampaignCircuit    bool   `json:"campaign_circuit_open"`
 	LocalDeadline      bool   `json:"local_deadline"`
+	TailSocketRead     uint64 `json:"tail_socket_read"`
+	TailReadWitness    bool   `json:"tail_read_witness"`
+}
+
+// A read-only wrapper around the existing sealed constructor result. Open is
+// still invoked only by the governor-owned controller, exactly once per socket.
+type gateB3TailFactory struct {
+	probeio.HardNATCampaignNATLabFactory
+	witness *gateB3TailWitness
+}
+
+func (factory *gateB3TailFactory) Open(ctx context.Context) (probeio.Datagram, error) {
+	datagram, err := factory.HardNATCampaignNATLabFactory.Open(ctx)
+	if err != nil {
+		return datagram, err
+	}
+	return &gateB3TailDatagram{Datagram: datagram, witness: factory.witness}, nil
 }
 
 func TestGateB3EndpointProcess(t *testing.T) {
@@ -141,12 +158,22 @@ func runGateB3Endpoint(config gateB2EndpointConfig) (result gateB3EndpointResult
 	if err := os.WriteFile(config.ReadyPath, []byte("ready\n"), 0o600); err != nil {
 		return result, err
 	}
+	var tailReads gateB3TailWitness
+	observedFactory := &gateB3TailFactory{HardNATCampaignNATLabFactory: natLabFactory, witness: &tailReads}
 	gateResult, runErr := gateb.Run(ctx, gateb.Config{
 		Machine: machine, Ledger: ledger, Artifact: artifact, Stream: recordedStream,
-		ObserverTopology: topology, HardNATLabFactory: natLabFactory, BuildVersion: "gate-b3-netns",
-		Progress: func(string, bool) error { return nil },
+		ObserverTopology: topology, HardNATLabFactory: observedFactory, BuildVersion: "gate-b3-netns",
+		Progress: func(stage string, _ bool) error {
+			// Test-only last observation. It carries no identity, address or
+			// payload; a concurrent partial read remains explicitly unavailable.
+			if err := os.WriteFile(config.ResultPath+".stage", []byte(gateB3ResultStage(stage)), 0o600); err != nil {
+				return errors.New("Gate B3 stage witness unavailable")
+			}
+			return nil
+		},
 	})
 	copyGateB3Result(&result, gateResult)
+	result.TailSocketRead, result.TailReadWitness = tailReads.counts[gateB3TailSocketRead].Load(), true
 	result.LocalDeadline = errors.Is(runErr, context.DeadlineExceeded)
 	if runErr != nil {
 		var failure *gateb.Failure

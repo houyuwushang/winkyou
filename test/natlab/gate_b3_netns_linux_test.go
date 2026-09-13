@@ -41,7 +41,6 @@ const (
 	gateB3DisposableRunnerEnv         = "WINKYOU_GATE_B3_DISPOSABLE_RUNNER"
 	gateB3PortMin                     = uint16(hardnatplan.DynamicPortMin)
 	gateB3PortMax                     = uint16(hardnatplan.DynamicPortMax)
-	gateB3ProcessLimit                = 52 * time.Second
 	// The test-only TUN router may trail the endpoint process on a loaded CI
 	// host. This bounds observation of packets already accepted by the endpoint
 	// sockets; it never extends an attempt or permits another emission.
@@ -214,19 +213,35 @@ func testGateB3FullShapeLifetime(t *testing.T, dropEvery uint64, conntrackCap in
 	defer func() {
 		if t.Failed() && !residueComplete {
 			// Runs on Fatal too, before ordinary t.Cleanup destroys evidence.
-			logGateB3RouterPair(t, leftRouter, rightRouter)
-			gateB3FailedCaseCleanup(t, topology, observer, leftRouter, rightRouter,
-				initiator, responder, conntrackMonitor, lifetimeGuard, leftModel, rightModel)
-			logGateB3RouterPair(t, leftRouter, rightRouter)
+			gateB3ReportFailedCase(
+				func() {
+					logGateB3EndpointPair(t, initiator, responder)
+					logGateB3TailDeliveryPair(t, topology, leftRouter, rightRouter, initiator, responder)
+				},
+				func() {
+					logGateB3RouterPair(t, leftRouter, rightRouter)
+					gateB3FailedCaseCleanup(t, topology, observer, leftRouter, rightRouter,
+						initiator, responder, conntrackMonitor, lifetimeGuard, leftModel, rightModel)
+					logGateB3RouterPair(t, leftRouter, rightRouter)
+				},
+			)
 		}
 	}()
 	if err := topology.installGateB2PacketCounters(observer.topology); err != nil {
 		t.Fatal("Gate B3 packet counter setup failed")
 	}
+	if err := topology.installGateB3TailIngressCounters(); err != nil {
+		t.Fatal("Gate B3 tail INPUT counter setup failed")
+	}
 	artifacts := buildGateB3Artifacts(t, fmt.Sprintf("drop-%d", dropEvery))
 	defer clearGateB2Artifacts(&artifacts)
 	initiator, responder = startGateB3Pair(t, topology, observer.topology, artifacts)
-	initiatorResult, responderResult := waitGateB3Result(t, initiator), waitGateB3Result(t, responder)
+	layer := ""
+	if lifetime != nil {
+		layer = lifetime.layer
+	}
+	resultLimit := gateB3ResultWaitLimit(layer)
+	initiatorResult, responderResult := waitGateB3ResultWithin(t, initiator, resultLimit), waitGateB3ResultWithin(t, responder, resultLimit)
 	for _, result := range []gateB3EndpointResult{initiatorResult, responderResult} {
 		assertGateB3FrozenShape(t, result)
 	}
@@ -292,6 +307,9 @@ func testGateB3FullShapeLifetime(t *testing.T, dropEvery uint64, conntrackCap in
 	}
 	// A rejected terminal is still required to leave complete OS cleanup
 	// evidence. Do not let Fatal below bypass the independent residue gate.
+	if !logGateB3TailDeliveryPair(t, topology, leftRouter, rightRouter, initiator, responder) {
+		t.Error("Gate B3 endpoint tail INPUT witness unavailable")
+	}
 	assertGateB3NoResidue(t, topology, observer, leftRouter, rightRouter, !success,
 		conntrackCap < gateB3ConntrackCap, initiator.governorDir, responder.governorDir)
 	residueComplete = true
@@ -820,7 +838,12 @@ func newGateB3EndpointProcessWithFault(t testing.TB, namespace string, role dire
 
 func waitGateB3Result(t testing.TB, process *gateB2EndpointProcess) gateB3EndpointResult {
 	t.Helper()
-	deadline := time.Now().Add(gateB3ProcessLimit)
+	return waitGateB3ResultWithin(t, process, gateB3ProcessLimit)
+}
+
+func waitGateB3ResultWithin(t testing.TB, process *gateB2EndpointProcess, limit time.Duration) gateB3EndpointResult {
+	t.Helper()
+	deadline := time.Now().Add(limit)
 	for time.Now().Before(deadline) {
 		var result gateB3EndpointResult
 		if readN1JSON(process.resultPath, &result) {
