@@ -984,4 +984,54 @@ predictive / asymmetric / hard-16k 分别 34 / 33 / 33 个配对；两个端点�
 activeTime 和其他 profile 保持原值，除非它们也有同等不足证据；缺失完成时间时不能
 把截断样本冒充可用于该公式的 max。生产预算、窗口、工作流和其它文件均不改。
 
-当前尚未运行新测量，结果与原始日志摘要待实测后补入；本节不构成关闭 #133 的证据。
+#### 7.5.1 两个预定首批的实际结果：旧窗口均通过
+
+测量提交 `7b3f51a`，Windows Go 1.23.1，`GOMAXPROCS=4`、两个 busy goroutine，
+100 次顺序执行，既有真实 CLI memory runner、计费和残留断言全部保留。两个预先声明的
+批次分别留档，均不是失败后的 rerun；没有延迟注入或额外负载来人为制造 RED。
+
+| 批次 | profile | 配对 / 端点 | candidate→winner p50 / p95 / max（ms） | 原 candidate / active | p95 < 80% |
+| --- | --- | --- | --- | --- | --- |
+| 非 race 首批 | predictive | 34 / 68 | 502.393 / 504.079 / 504.604 | 1s / 10s | PASS |
+| 非 race 首批 | asymmetric | 33 / 66 | 452.608 / 454.134 / 454.745 | 1.5s / 10s | PASS |
+| 非 race 首批 | hard-16k | 33 / 66 | 386.009 / 408.270 / 417.375 | 4s / 12s | PASS |
+| race 首批 | predictive | 34 / 68 | 503.220 / 506.661 / 516.139 | 1s / 10s | PASS |
+| race 首批 | asymmetric | 33 / 66 | 455.023 / 457.976 / 466.477 | 1.5s / 10s | PASS |
+| race 首批 | hard-16k | 33 / 66 | 878.994 / 963.716 / 1016.696 | 4s / 12s | PASS |
+
+非 race **100/100，112.968s**；race **100/100，159.131s**。每批 200 个端点均 ready，
+两个压力 worker 均有实际工作并 join，原逐样本 natsim/governor 排水门通过。最慢候选
+样本没有被丢弃；日志中的纳秒原值用于计算，表格仅为显示而舍入。
+
+predictive 实测 max 为 `516139400ns`，指定推导结果：
+
+```text
+ceil(516139400ns × 1.25 / 500000000ns) × 500000000ns = 1s
+```
+
+结果等于现有地板，不支持增加。asymmetric 和 hard-16k 的 p95 也未越界，全部
+candidateTime / activeTime **保持基线原值**，没有为了得到“修复后绿”而调整窗口。
+
+```text
+GOTOOLCHAIN=go1.23.1 GOMAXPROCS=4 WINKYOU_GATE_C1B_REPEAT_REQUIRED=1
+go test -tags=c1bproof ./internal/governor -run '^TestGateC1bMemoryFixtureFresh100Schedules$' -v -count=1 -failfast -timeout=12m
+go test -race -tags=c1bproof ./internal/governor -run '^TestGateC1bMemoryFixtureFresh100Schedules$' -v -count=1 -failfast -timeout=12m
+```
+
+原始日志保存在仓库外，不上传路径或生成材料。SHA-256（原文件字节，未重写）：
+
+- 非 race：`49e3abab3062dc3d2d6c68825ef7ed05d64dd8a964e9db03152e428b24bccd33`。
+- race：`88a228c4cbf126ef0de2499bf54da819b6471bf96b6bdb014ec76186ad1a48d2`。
+
+**结论与停止点：未复现，不是修复。** 旧 hosted CI 的 RED 仍然有效；这两次本机成功
+既不能证明其根因，也不能代替提示词要求的“旧地板 RED → 有依据上调 → GREEN”。
+因此不声明 `Closes #133`，不伪造修复提交，不开始串行下一项 #135，也不推送或创建
+本批 PR。需要维护者决定是否允许 #133 在本批仅交付测量回归并保留 issue 开放，或者
+先安排同类 hosted runner 的独立校准；在此之前不能宣称五项收尾完成。
+
+本次停止前另完成：窗口单一来源/原变异/角色时钟 `-race -count=20` PASS（7.887s）；
+`go vet ./...` PASS；`go test ./internal/architecture -count=1` PASS（8.788s）；
+`GOOS=linux CGO_ENABLED=0 go vet -tags=natlab,c1bproof ./...` PASS。
+`git diff --check` 与新增内容隐私扫描 PASS。当前增量只有本文档和获准的测量测试文件，
+生产/配置/工作流 delta=0；未运行五项批次最终全仓/完整受影响包 race×20/relay 验收，
+未触发远端 CI，不把这些待完成项目标为通过。
