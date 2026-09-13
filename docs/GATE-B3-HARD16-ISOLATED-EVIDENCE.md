@@ -604,3 +604,26 @@ required Mapping Lifetime job 的既有 `^TestGateB3Lifetime` 选择器会执行
 随后执行原完整 M-S/M-E/M-X OS 矩阵。新 head 的首次 CI 结果另行填入 PR 描述；当前尚未
 取得本修复的 Linux OS 结果。不 rerun #117 求绿；仅在获准的 #119/#126 精确签名命中时各可
 透明 rerun 一次并保留失败。PR 保持 Draft，不自行合并；阶段 2/3 按原 main 绿与复审停点继续。
+
+### 11.8 #135：full-envelope 终态的测试结果等待（设计先行）
+
+基线 `ed9522b`。保留 [#135 的首次 RED](https://github.com/houyuwushang/winkyou/actions/runs/34561354246/job/103144553616)：
+M-E initiator-winner 在 53.84s 报 `Gate B3 endpoint result deadline exceeded`。现行通用
+结果文件等待为 52s；issue 记录的同形成功 `wall_ms=48275` 距该等待上限仅约 3.725s。
+这是测试进程/结果观察预算，不改变 38s candidates、45s active 或 2s drain。
+
+计划将等待来源固定为：45s active + 2s drain + 10s 测试进程/FINISH/发布预算 = 57s。
+最后一项由历史全程观测的 `48.275s - 47s = 1.275s` 残差向上取整到 2s，再加 8s
+runner 启动/调度裕度。该残差**不是独立测得的 FINISH fsync 延迟**；它包含外围开销，
+这里只用作测试预留的观测依据，不据此判断生产性能根因或推导 OS 包数。
+
+只对原来明确接受 full-envelope expired 的 M-E / M-X 形态采用 57s；两者沿用同一
+`validGateB3ExpiryPair` 与 deadline 条件。M-S、普通 Hard16、fault 等其它形态保持 52s。
+等待函数不重试已退出的子进程，不修改子进程 49s caller ctx 或 51s 测试 watchdog。
+
+当前 main 已有 `gateB3FailedCaseCleanup` 的失败 defer，不重复实现或抹去它。补充
+固定字段的双端最后 stage/class 见证，并通过 Fatal/Goexit 契约与接线变异确保日志与
+原七阶段残留检查仍执行；缺失/部分结果明确不可用，任意未知文本脱敏。
+
+本机 Windows 只运行纯函数、文件见证与契约 race×20，并交叉 vet Linux tagged 源码；
+不运行 netns，不把模型测试说成 OS 证明。首次红回归、修复后证据与 CI 首跑另行追加。
