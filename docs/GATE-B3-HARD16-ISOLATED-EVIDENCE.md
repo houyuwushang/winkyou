@@ -653,3 +653,26 @@ GOOS=linux CGO_ENABLED=0 go vet -tags=natlab,c1bproof ./test/natlab
 `10b21b73461c883ed0330bf6f174db87a1e4c05cc3b9387489ecd32a0e9e8bfa`。
 未修改生产文件/配置/工作流。两份 required Mapping Lifetime 的真实 OS 结果待本批唯一
 推送后的首跑记录；Windows 本地结果不能替代该验收，也不覆盖原 hosted RED。
+
+### 11.9 #132：ordinal 16383 的分段交付见证（先观测，不推断修复）
+
+保留 [#132 首次尾部耗尽记录](https://github.com/houyuwushang/winkyou/issues/132)：双端
+`hard_nat_candidate_exhausted/candidates`、winner=0/0、UDP=16397/16397。现有 tail16
+合计无法确定最后一包经过了哪一段，也不能以 winner 缺失推导 socket 没读到。
+
+本轮只在 natlab 测试中增加固定 ordinal 的计数：发送侧 TUN 接收/入队/转发、对端
+NAT 映射读取/回注 TUN 成功，以及对端既有 Datagram.ReadFrom 的实际成功返回。
+最后一项由测试 wrapper 原样委托已有 sealed factory/Datagram，既不新开 socket，
+也不增加独立 reader，不碰 production probeio。统计元数据不是认证成功见证。
+
+日志按发送侧对应对端的方向打印 `router_accepted / peer_namespace_delivered /
+peer_socket_read`，附入站/出站队列容量、采样水位与采样峰值。采样峰值是下界观测，
+不是未采到满队列的证明；缺失终态文件将 socket read 标为 unavailable，不伪造 0。
+失败也先留两侧见证再执行原残留门，不把干净耗尽改成成功。
+
+只使用 `hardnatcontrol.InspectFrame` 读取既有公开 header，不记录 packet、目标或身份；
+不能通过尾候选匹配、winner 或 TUN 写成功冒称对端应用已验证报文。固定单发、不重试，
+ordinal=16383、512 PPS、所有窗口/容量保持不变。
+
+本机无 netns，不能确认历史丢失点。若首跑没有把丢失定位到测试队列，本批仅用
+`Refs #132`，不关闭 issue；即使该次 OS 成功也不声称历史根因已修复。
