@@ -1039,3 +1039,31 @@ go test -race -tags=c1bproof ./internal/governor -run '^TestGateC1bMemoryFixture
 维护者续令（2026-09-13）：接受本批以 `Refs #133` 仅交付上述测量回归，保留原窗口并
 保持 issue 开放；允许继续 #135 → #132 → #134 → #136。这个裁决不把未复现改写为修复，
 不授权抬高窗口或关闭 #133；其余串行、一次推送及独立复审纪律不变。
+
+#### 7.5.2 最终稳定性首批：20 × Fresh100
+
+最终测试代码 `2033dba`，同一 Go 1.23.1 测试进程连续运行 20 个 Fresh100 批次，
+每批都按原次序执行 100 个 fresh namespace，并保持两个 busy worker；GOMAXPROCS=4。
+该长批次单独执行，没有与其它本地重验证重叠。没有改窗口、注入额外延迟、减少 count、
+跳过慢样本或重跑失败。全部 **20/20 批、2,000/2,000 对、4,000/4,000 端点 PASS**，
+总耗时 **3171.581s**，每批原资源/排水断言和三个 p95 门均通过，40 个压力 worker 均退出。
+
+| profile | 配对 / 端点 | 合并全部端点的 p50 / p95 / max（ms） | 20 批中最差 p95（ms） | 原 candidate / active |
+| --- | --- | --- | --- | --- |
+| predictive | 680 / 1360 | 502.861 / 505.098 / 534.502 | 525.661 | 1s / 10s |
+| asymmetric | 660 / 1320 | 454.810 / 462.852 / 486.541 | 477.197 | 1.5s / 10s |
+| hard-16k | 660 / 1320 | 887.131 / 936.335 / 1112.642 | 1087.127 | 4s / 12s |
+
+合并分位数仍用 nearest-rank，不把“各批 p95 的平均值”冒称总体 p95。predictive
+最慢样本为 `534502200ns`，`ceil(max × 1.25 / 0.5s) × 0.5s` 仍等于 **1s**。
+其他 profile 的 p95 同样远低于原门槛，全部原 candidateTime / activeTime 保持不变。
+
+```text
+GOTOOLCHAIN=go1.23.1 GOMAXPROCS=4 WINKYOU_GATE_C1B_REPEAT_REQUIRED=1
+go test -race -tags=c1bproof ./internal/governor -run '^TestGateC1bMemoryFixtureFresh100Schedules$' -count=20 -timeout=75m -v -failfast
+```
+
+原始首次日志 SHA-256：`96091fba76e82331f5288b436269af2bd31f555bb5e19b61f24b8ee1b381b15c`。
+这项长时本地证据增强了原窗口在指定模型/负载下的可重复性，但仍不是历史 hosted RED
+的根因证明；#133 继续仅 `Refs`、保持开放。全仓与其它批次验证见
+[收尾证据](HARNESS-FLAKES-132-136-EVIDENCE.md)，Linux OS 矩阵须另看远端首次 CI。

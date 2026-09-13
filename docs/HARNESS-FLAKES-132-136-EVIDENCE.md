@@ -98,3 +98,37 @@ go test -race ./pkg/client -run '^TestRelayWGGoTwoEnginesExchangeIPv4Packets$' -
 再次计算 SHA-256：old `8da513c2420f9dcd896f42415eb8432bb1c0f70779171071b878949ed374461e`；
 new `ec0478ba15b8061bd20d57e9a702ef917263dd03240ce3687c75fd2af407cbc7`。
 原始日志仅本地留存；独立 relay race×20、全仓和远端首次 CI 结果在批次验证节另记。
+
+## 批次验证（Go 1.23.1）
+
+下表均为最终测试代码 `2033dba` 的本地首次批次；无首跑失败被 rerun 覆盖。
+常规批次 GOMAXPROCS=28；Fresh100 校准单独采用 GOMAXPROCS=4 与两个 busy worker。
+
+| 命令 / 分区 | 首跑结果 |
+| --- | --- |
+| `go vet ./...` | PASS |
+| `go test ./internal/architecture -count=1 -v -failfast` | PASS，8.453s，包含变异门 |
+| `go test -race ./test/natlab -count=20 -timeout=10m -v -failfast` | PASS，4.839s（Windows 纯函数/契约，非 netns） |
+| `GOOS=linux CGO_ENABLED=0 go vet -tags=natlab,c1bproof ./...` | PASS |
+| `go test -race -p=1 ./internal/governor ./pkg/client -skip '^TestRelayWGGoTwoEnginesExchangeIPv4Packets$' -count=20 -timeout=60m -v -failfast` | PASS；governor 1030.362s、client 93.900s |
+| `go test ./... -count=1 -skip '^TestRelayWGGoTwoEnginesExchangeIPv4Packets$' -timeout=20m -v` | PASS，88 个测试包、11 个无测试包；governor 125.140s |
+| `go test -race ./pkg/client -run '^TestRelayWGGoTwoEnginesExchangeIPv4Packets$' -count=20 -timeout=10m -v -failfast` | PASS，165.298s，20/20，20 次 `observer_workers=0` |
+| `GOMAXPROCS=4 WINKYOU_GATE_C1B_REPEAT_REQUIRED=1 go test -race -tags=c1bproof ./internal/governor -run '^TestGateC1bMemoryFixtureFresh100Schedules$' -count=20 -timeout=75m -v -failfast` | PASS，3171.581s，20/20 批、2000/2000 对、4000/4000 端点 |
+
+`-skip` 仅为 #116 原定的 relay 独立分区。race 里原本不运行的 loopback 子进程见证
+已在非 race 全仓实际 PASS：双进程 journal 0.17s、Noise message-one 崩溃 0.26s、
+Promote 前崩溃 0.35s。没有新增 skip 或降低 count。
+
+以上有输出的首次日志 SHA-256：
+
+- architecture：`20e66a59798880f5c9c964c25e696331dc69c1d8f47a761d76a3637953fa26d2`
+- natlab race×20：`089942cea6c681fff43ab387a81776cf288da24d4a617861f46dbe01e35dab3d`
+- governor/client race×20：`23306326676e27a62d5dc368df30c79909290998e2721a42071c5ee9ae73529a`
+- 全仓：`f242649fadb43dacd79c9818dcf23250dc1e9f69915ccdca162386f834bb98aa`
+- 独立 relay：`a1c288db3bb083aaaaccab059e3b5b9f7f50bb2bc66947ea36f256108132b9f8`
+- Fresh100 race×20：`96091fba76e82331f5288b436269af2bd31f555bb5e19b61f24b8ee1b381b15c`
+
+Fresh100 的逐 profile 统计与 1s 推导见 [C1b 证据 §7.5.2](GATE-C1B-PRODUCT-COMPOSITION-EVIDENCE.md)。
+本地验收全部通过，未命中其它已登记签名；所有首次 RED 仅为前述刻意保留的旧契约/
+观察能力反例。本机不具备 netns，远端首次 required OS 矩阵仍须独立通过；本地结果不
+替代它，CI 首跑结束后在 PR 单列实际结果。#133/#132 不以本地通过而宣称根因已修复。
