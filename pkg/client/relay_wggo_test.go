@@ -68,7 +68,7 @@ func TestRelayWGGoTwoEnginesExchangeIPv4Packets(t *testing.T) {
 	t.Cleanup(func() {
 		_ = beta.Stop()
 	})
-	// Keep registration's separate 200ms fixture timeout outside the opt-in
+	// Keep registration's separately bounded fixture timeout outside the opt-in
 	// transport-stall pressure experiment. It has its own preserved RED sample.
 	startRelayCPUPressure(t)
 	t.Cleanup(func() {
@@ -113,8 +113,8 @@ func TestRelayWGGoTwoEnginesExchangeIPv4Packets(t *testing.T) {
 	assertRuntimeRelayPeerDiagnostics(t, "alpha", alphaRuntimePeer)
 	assertRuntimeRelayPeerDiagnostics(t, "beta", betaRuntimePeer)
 
-	waitForPeerStatsGrowth(t, alpha, "beta", 10*time.Second, alphaBefore)
-	waitForPeerStatsGrowth(t, beta, "alpha", 10*time.Second, betaBefore)
+	waitForPeerStatsGrowth(t, alpha, "beta", relayWGGoFixtureStatsWait, alphaBefore)
+	waitForPeerStatsGrowth(t, beta, "alpha", relayWGGoFixtureStatsWait, betaBefore)
 }
 
 func newRelayWGGoTestEngine(t *testing.T, nodeName, coordinatorAddr, turnURL string) *engine {
@@ -123,7 +123,7 @@ func newRelayWGGoTestEngine(t *testing.T, nodeName, coordinatorAddr, turnURL str
 	cfg := config.Default()
 	cfg.Node.Name = nodeName
 	cfg.Coordinator.URL = "grpc://" + coordinatorAddr
-	cfg.Coordinator.Timeout = 200 * time.Millisecond
+	cfg.Coordinator.Timeout = relayWGGoFixtureCoordinatorTimeout
 	cfg.NetIf.Backend = "auto"
 	cfg.WireGuard.ListenPort = 0
 	cfg.NAT.STUNServers = nil
