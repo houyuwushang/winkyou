@@ -1297,6 +1297,16 @@ responder 已 detach/active，但 post-OOB echo 失败。两侧 3/3 trace、carr
 成功/排水断言及 OS/netns 不变，首次反例和新窗口见
 [C1b 证据 §7](../GATE-C1B-PRODUCT-COMPOSITION-EVIDENCE.md#7-issue-119-内存-fixture-窗口单一化2026-09-10)。
 
+2026-09-13，PR #124 的实现诊断补注（待独立复审，不增加设计授权）：memory fake clock
+可以压缩整秒 PPS 记账区间，但不得把产品已有的亚秒角色排序 pause 一并改为 2ms。
+predictive 原 250ms responder lead 被压缩后，零网络复现中 32 组 reciprocal candidate
+全部只到达非 chooser，双方有界耗尽。所有 C1b/liveness 共用的 `memoryFixtureClock`
+恢复调用方原本要求的亚秒等待，不改变独立 Gate B 快速模拟的原时钟；
+`memoryFixtureWindows` 的 candidate/active 值、产品 lead、逻辑时间、PPS/包/目标上限及
+所有 OS 路径均不变。旧 RED、双向计数、永久回归和 fresh100 对照见
+[PR124 诊断记录](../PR124-STDIO-EVIDENCE-DIAGNOSTICS.md#predictive测试时钟破坏角色先后顺序)。
+该证据不证明其它 READY 超时或历史 CI 的唯一原因，也不放宽固定窗口。
+
 ### 19.9 R1 确认交换的时间边界（2026-09-07，维护者接受独立复审裁决）
 
 维护者接受 [独立复审裁决](https://github.com/houyuwushang/winkyou/pull/110#issuecomment-5565715193)，

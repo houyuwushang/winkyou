@@ -8,6 +8,7 @@ import (
 )
 
 // Counts only: no nonce, sequence, IDs, digests, endpoints or peer timestamps.
+// Close receipts count teardown admission/inner injection, NOT outer completion.
 type LivenessWitness struct {
 	PingAdmitted              uint64        `json:"ping_admitted"`
 	PongAdmitted              uint64        `json:"pong_admitted"`
@@ -22,6 +23,8 @@ type LivenessWitness struct {
 	OutboundDropped           uint64        `json:"outbound_dropped"`
 	OutboundExpired           uint64        `json:"outbound_expired"`
 	InnerInjected             uint64        `json:"inner_injected"`
+	CloseAdmitted             uint64        `json:"close_admitted,omitempty"`
+	CloseInnerInjected        uint64        `json:"close_inner_injected,omitempty"`
 	AdmissionBypass           uint64        `json:"admission_bypass"`
 	WriterFailures            uint64        `json:"writer_failures"`
 	UTCRollbacks              uint64        `json:"utc_rollbacks"`

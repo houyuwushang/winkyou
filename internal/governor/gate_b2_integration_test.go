@@ -695,6 +695,7 @@ func gateB2OpaqueID(label string) string {
 }
 
 type natSimProbeFactory struct {
+	evidence     *gateB2EvidenceDiagnostic
 	network      *natsim.Network
 	nat          *natsim.NAT
 	localAddress netip.Addr
@@ -712,10 +713,11 @@ func (factory *natSimProbeFactory) Open(context.Context) (probeio.Datagram, erro
 	if err != nil {
 		return nil, err
 	}
-	return &natSimDatagram{connection: connection, network: factory.network, plannerRole: factory.plannerRole, witness: factory.witness}, nil
+	return &natSimDatagram{connection: connection, network: factory.network, plannerRole: factory.plannerRole, witness: factory.witness, evidence: factory.evidence}, nil
 }
 
 type natSimDatagram struct {
+	evidence    *gateB2EvidenceDiagnostic
 	connection  *natsim.PacketConn
 	network     *natsim.Network
 	plannerRole hardnatplan.Role
@@ -726,6 +728,14 @@ func (datagram *natSimDatagram) ReadFrom(ctx context.Context, target []byte) (in
 	for {
 		n, source, ok, err := datagram.connection.TryReadFromAddrPort(target)
 		if err != nil || ok {
+			if ok {
+				datagram.evidence.mark(target[:n], evidenceAdapterRead, err)
+				if datagram.witness != nil {
+					if metadata, inspectErr := hardnatcontrol.InspectFrame(target[:n]); inspectErr == nil && metadata.Type == hardnatcontrol.FrameCandidate {
+						datagram.witness.recordCandidateRead()
+					}
+				}
+			}
 			return n, source, err
 		}
 		timer := time.NewTimer(time.Millisecond)
@@ -741,7 +751,9 @@ func (datagram *natSimDatagram) WriteTo(ctx context.Context, packet []byte, targ
 	if err := ctx.Err(); err != nil {
 		return 0, err
 	}
+	datagram.evidence.mark(packet, evidenceSendBegin, nil)
 	n, err := datagram.connection.WriteToAddrPort(packet, target)
+	datagram.evidence.mark(packet, evidenceSendEnd, err)
 	if err == nil && datagram.witness != nil {
 		if metadata, inspectErr := hardnatcontrol.InspectFrame(packet); inspectErr == nil && metadata.Type == hardnatcontrol.FrameCandidate {
 			if mapped, mapErr := datagram.network.MappedAddr(datagram.connection, target); mapErr == nil {
@@ -757,8 +769,12 @@ func (datagram *natSimDatagram) SetDeadline(deadline time.Time) error {
 func (datagram *natSimDatagram) LocalAddr() net.Addr { return datagram.connection.LocalAddr() }
 func (datagram *natSimDatagram) Close() error        { return datagram.connection.Close() }
 
-func startNATSimRFC5780Responders(t testing.TB, network *natsim.Network, topology hardnatobserve.Topology) []*natsim.PacketConn {
+func startNATSimRFC5780Responders(t testing.TB, network *natsim.Network, topology hardnatobserve.Topology, diagnostics ...*gateB2EvidenceDiagnostic) []*natsim.PacketConn {
 	t.Helper()
+	var diagnostic *gateB2EvidenceDiagnostic
+	if len(diagnostics) == 1 {
+		diagnostic = diagnostics[0]
+	}
 	endpoints, err := topology.Endpoints()
 	if err != nil {
 		t.Fatal(err)
@@ -791,6 +807,7 @@ func startNATSimRFC5780Responders(t testing.TB, network *natsim.Network, topolog
 						continue
 					}
 				}
+				diagnostic.mark(buffer[:n], evidenceResponderRead, nil)
 				transaction, change, parseErr := hardnatplan.ParseBehaviorBindingRequest(buffer[:n])
 				if parseErr != nil {
 					continue
@@ -807,7 +824,9 @@ func startNATSimRFC5780Responders(t testing.TB, network *natsim.Network, topolog
 					OtherAddress: planEndpoint(endpoints[3]), HasOtherAddress: true,
 				})
 				if buildErr == nil {
-					_, _ = responders[writerIndex].WriteToAddrPort(response, source)
+					diagnostic.mark(response, evidenceReplyBegin, nil)
+					_, writeErr := responders[writerIndex].WriteToAddrPort(response, source)
+					diagnostic.mark(response, evidenceReplyEnd, writeErr)
 				}
 				clear(response)
 			}
@@ -900,6 +919,7 @@ type candidateWitness struct {
 	targets map[uint16]struct{}
 	sources map[uint16]struct{}
 	pairs   map[[2]uint16]struct{}
+	reads   uint32 // Actual adapter reads, not protocol acceptance.
 }
 
 func newCandidateWitness() *candidateWitness {
@@ -910,6 +930,11 @@ func (witness *candidateWitness) recordCandidate(source, target uint16) {
 	witness.targets[target] = struct{}{}
 	witness.sources[source] = struct{}{}
 	witness.pairs[[2]uint16{source, target}] = struct{}{}
+	witness.mu.Unlock()
+}
+func (witness *candidateWitness) recordCandidateRead() {
+	witness.mu.Lock()
+	witness.reads++
 	witness.mu.Unlock()
 }
 func (witness *candidateWitness) snapshot() (map[uint16]struct{}, map[uint16]struct{}) {
@@ -926,7 +951,10 @@ func (witness *candidateWitness) snapshot() (map[uint16]struct{}, map[uint16]str
 }
 func (witness *candidateWitness) summary() string {
 	targets, sources := witness.snapshot()
-	return fmt.Sprintf("targets=%d sources=%d", len(targets), len(sources))
+	witness.mu.Lock()
+	reads := witness.reads
+	witness.mu.Unlock()
+	return fmt.Sprintf("targets=%d sources=%d adapter_candidate_reads=%d", len(targets), len(sources), reads)
 }
 func candidateIntersection(left, right *candidateWitness) int {
 	leftTargets, leftSources := left.snapshot()

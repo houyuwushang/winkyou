@@ -1,0 +1,583 @@
+# PR #124：stdio 与 fresh-evidence 首跑故障见证
+
+2026-09-13，维护者授权继续定位、修复并验证；沿用原 Draft PR，不自行合并。
+最初切片修复测试诊断信息丢失；后续测试夹具修复与每次首跑分节追加。
+不改产品协议、配置、工作流或资源/时间上限。
+
+## 原始 RED（不被后续 PASS 覆盖）
+
+- [N3b 首跑](https://github.com/houyuwushang/winkyou/actions/runs/34707131912/job/103589102460)：
+  `n3b_stdio_v2_eim_eim_product_entry` 在 0.41s 报 `N2d endpoint returned a harness failure`。
+  RPC 的已脱敏 class/stage 被解析器丢弃，父端又合并 wait error 与 `OK=false`，子进程
+  stdout/stderr 被丢弃，故不能从该日志推断 TLS/STUN/ledger 等具体故障源。
+- [Windows liveness 首跑](https://github.com/houyuwushang/winkyou/actions/runs/34707131913/job/103589102667)：
+  hard-16k responder 为 `hard_nat_evidence_insufficient@fresh_evidence`，initiator 为
+  `oob_stream_closed@plan_committed`；两端 liveness 尚未 armed，子用例 3.93s。
+  两个 run 均无上传的现场 artifact。required 汇总失败是派生状态，不是第三个根因。
+
+原始日志 SHA-256：
+
+| 证据 | SHA-256 |
+| --- | --- |
+| N3b | `784e47f6fa5ab6d043cb5c4186def93e73ac90272a56460ffc4bfbd9dcaefca5` |
+| Windows owner | `b58cc6407128b805448b93bda72dd6ce20e14e2cb6d5540017e7a80f20bd312a` |
+
+## 已完成的诊断与归因边界
+
+原 N3b parser 的纯内存提取实验：8 个不同 RPCError 均缩为同一错误。Windows 原样
+hard-16k race 首例及仅加 cause 见证的 race×20 通过，不能抵销原 RED。
+
+仅在测试 responder 暂缓最后一条必需回复，实测 256,653,700ns（350ms 为注入上限，
+排水取消提前结束），原 250ms 回复 deadline 即产生与 CI 相同的双端 class/stage。
+下层 cause 为 `ErrRequiredReplyAbsent`，不是模型的 `ErrEvidenceInsufficient`；双端各
+13 次证据发射、零 candidate。该受控样本 0.85s，**只证明一个足够原因，不证明 CI 当时
+就是该原因**，不能据此归因 CPU/Windows/杀毒/NAT，更不能调大 deadline。
+
+## 此切片
+
+- N3b 在清理响应 buffer 前采集有界输出摘要；只保留白名单 class/stage、burned 是否
+  已知、帧数与 progress。原 parser 和全部成功断言保持不变。
+- 父端记录结构化结果是否可读、子进程是否已退出、脱敏退出类别和固定 runtime marker
+  布尔值。子进程输出只由有界接收器识别 marker，尾部随后清零；不日志化原文。
+- N3b 失败路径先取双方结果，再逐项排水、采集 packet/socket/process/conntrack/topology
+  见证；查询失败与真实零值分开，不改变原失败结论。
+- required N3b 用例增加为 20 次 fresh namespace 串行执行、首次失败即停止该序列。
+  不重试原 attempt、不修改单次预算、协议或现有 CI timeout。
+- liveness 内存夹具的观测见证为固定 `2 × 13 × 6` 表，仅失败时输出。phase 依次为
+  `0=send_begin / 1=send_end / 2=responder_read / 3=reply_begin / 4=reply_end / 5=adapter_read`。
+  ordinal 为本夹具已签发事务 1–13，不打印事务 ID/目标。共享进程单调时钟与产品证据
+  manual clock 分离；adapter_read 不冒充产品已经完成解析/接受。
+- 相同 stage 的 first witness 不被后续写覆盖。单元测试覆盖隐私、容量、并发、跨 write
+  runtime marker，以及真实 harness 接线的变异拒绝。
+
+## 验证记录
+
+本地命令/结果与新 head 的 CI 首跑分开记录。Linux OS/netns 证据仅以 required CI 为准，
+Windows 的交叉 vet 不冒充实际执行；失败原文留仓库外，公开只给脱敏摘要与哈希。
+本页 SHA-256 对应封存的首跑文本文件；PowerShell `Tee-Object` 捕获文件为带 BOM 的
+UTF-16LE，不是 GitHub 下载压缩包或 UTF-8 HTTP 响应的字节哈希。内容与批次不被后续 PASS 覆盖。
+
+本地 Windows，未加人工压力（旧批次未留存 `go version`；执行版本勘误见文末）：
+
+| 命令/范围 | 首跑结果 |
+| --- | --- |
+| `go test -race -tags=c1bproof ./internal/governor -run '^TestSessionLivenessBusinessCoexistsWithTap$' -count=20 -failfast -v -timeout=8m` | PASS，220.163s；3 profile 各 20/20，60 次业务双向 3/3，tap_stole=0、extra_socket=0。 |
+| `go test ./... -count=1 -skip '^TestRelayWGGoTwoEnginesExchangeIPv4Packets$'` | PASS，88 个有测试包 + 11 个无测试包。 |
+| 独立 `go test -race ./pkg/client -run '^TestRelayWGGoTwoEnginesExchangeIPv4Packets$' -count=20 -failfast -v -timeout=6m` | PASS，142.343s；20/20，20 次 observer join。 |
+| `go vet ./...`、`go test ./internal/architecture -count=1` | PASS；未改架构门禁。初版诊断文件缺少 linux/natlab 标签被门禁拒绝，随后为文件加回标签而非豁免。 |
+| 纯观测存储 race×20 | PASS，1.435s。 |
+| 最终 N3b 纯诊断契约 race×20 | PASS，1.563s；仓库外 overlay 仅移除两个纯测试文件的标签以执行单元函数，不运行 Linux harness、不进入产品。实际源码仍严格 linux/natlab；同一契约进入 required Linux 矩阵。 |
+| Linux tagged 交叉 vet | PASS，显式 `GOOS=linux GOARCH=amd64 CGO_ENABLED=0`；本机不能用 Windows C 编译器验证 Linux cgo，实际 race OS 证明留给 CI。 |
+
+| 新本地原始日志 | SHA-256 |
+| --- | --- |
+| 完整业务 race×20 | `4cb8be33931efa7474d26b3f7c041ce28466e43387858a14abf9dfdde4bd1c22` |
+| 全仓分区 | `ac7b5a002db1364aacb376510d3de251911ded5f0138d88765fc879662b8a2ec` |
+| 独立 relay race×20 | `38b7fca11188e91bbec9af337c1c2c54749f5c06c976cb596a7d27e79ceccb61` |
+
+新 head 的 CI 首跑仍待执行；不得据此声称两个历史 CI 根因均已解决。
+
+## 后续首跑：NAT 转发积压与稀疏存储修复
+
+`f073ecb` 的 [Mapping Lifetime 推送侧首跑](https://github.com/houyuwushang/winkyou/actions/runs/34710914297/job/103599434035)
+在 `M_X_single_side_filter_before_winner` 失败（67.26s，整包 440.26s），原日志
+SHA-256 为 `ad73f6167c72aa2f37e361e6ce80bc92e0014df6e752ff4da1eba0bcb1b12dc4`。
+该失败不被同 head 的 PR 侧 PASS 或后续批次覆盖。
+
+- 两侧 `CandidateRead=16384`，所有 slot/tail 已读；TUN 丢包计数为 0。
+  超时见证为 `got=12499 want=16397`，两路 router 仍在转发、未记录运行错误。
+- 首包 mapping barrier/deny 协调约 13ms 完成，不能把此次积压归因于旧的首包等待故障。
+  后续 `context_canceled` 在失败清理时才出现，不冒充最初根因。
+- 失败路径独立完成七项清理：发包计数不再增长、socket=0、process=0、
+  conntrack `58786 → 0`、namespace/veth 与原配置恢复均成功。`ledger_acceptance=false`、
+  `scenario_pass=false` 保留，清理通过不等于场景通过。
+
+源码确认一项独立的无效分配：每条 APDM 映射仅对应一个目标，却为 `allowed` 预留 512 个目标。
+改为按需增长的空 map；EIM 仍可增长，不增加目标上限，不改变过滤、过期 `clear`、mapping/端口分配、
+每映射 UDP socket 或报文缓冲区。新增真实构造点检查、恢复 512 hint 的变异拒绝、
+1024 个纯值目标的增长/所有权/清空测试，两个 required Gate B3 矩阵均调用这些回归。
+
+Windows，固定 1000 次、单目标、零 socket 的 `-benchmem` 首跑（旧批次未留存执行版本）：
+
+| 构造表达式 | B/op | allocs/op |
+| --- | ---: | ---: |
+| 原 `make(map[netip.AddrPort]struct{}, 512)` | 41042 | 3 |
+| 实际新构造器 `newGateB2AllowedSources()` | 336 | 2 |
+
+这是本地分配量测量；按双端 32768 条 candidate mapping 推算可避免约 1.24 GiB 分配，
+**不是原 CI 的 RSS/GC 测量，也不能单凭它认定原超时的唯一原因**。保留原 RED，并在 router
+诊断中加入进程级时点 `heap_alloc/heap_inuse/stack_inuse/total_alloc/num_gc/pause_total_ns/goroutines`，
+不强制 GC、不启新 worker，不把时点数值宣称为每 attempt 峰值。
+
+验证首跑：`go vet ./...`、全仓 #116 分区（88 个测试包）、架构门禁（8.522s）与 Linux tagged vet 均 PASS；
+独立 relay race×20 为 20/20 PASS（143.243s），20 次 observer join；natlab 原生纯测试 race×20
+PASS（3.847s），新存储回归单独 race×20 PASS（1.589s）。没有修改生产代码、工作流、47s envelope、
+router witness 等待界、目标/包/PPS 预算或任何现场配置；Linux OS 组合效果等待新提交的首跑 CI。
+
+## `4957d29` 首跑与第二次诊断切片
+
+该 head 首跑最终为 **55 PASS / 4 FAIL**：3 个实质失败与 1 个 liveness 汇总失败，未 rerun。
+前一 head `f073ecb` 最终为 58 PASS / 1 FAIL。新 head 的两个 Mapping Lifetime required
+矩阵均通过（389.68s / 391.13s；原失败用例 48.66s / 48.91s），不覆盖原 RED，也不倒推
+稀疏存储就是历史转发积压的唯一原因。两份新 PASS 日志 SHA-256 分别为
+`8115c1dd1785258bcb39bb5fd0f57b4bd45d08663c9f4022ff826c78f419f15e`、
+`304491e31fead339f345cd61dce2dc892b90f9c1709ec0c63092f72902b42a7d`。
+
+### N3b：已缩小范围，未确定底层原因
+
+[PR 侧 required 首跑](https://github.com/houyuwushang/winkyou/actions/runs/34712057986/job/103602472924)
+第 9 次 fresh N3b 用例失败（此前 8 次通过，失败即停）：initiator 为
+`verification_failed@verify`（148ms），responder 为 `punch_timeout@punch`（137ms）。
+两端均已 burn；initiator 已到 `punch`，responder 只到 `punch_sent`。实际 UDP 为
+STUN `1/1`、direct `2/1`，结束后计数不增长；socket/process=0，conntrack `7 → 0`，
+server 与 topology 清理检查均通过。错误结果没有成功 result；其中缺省的 FINISH 布尔值
+不能作为 journal 缺少 FINISH 的证据。
+
+该短耗时不是耗尽 punch deadline 的证据：公开 `punch_timeout` 合并了多种底层错误。
+本切片仅给 `linux && natlab` 的既有 stdio harness 增加值类型 observer，委托原
+`machineAuthority.ConnectDirect`，不替换 connector/参数/结果，不改公开 schema。
+记录白名单 typed cause、caller context、I/O operation 与 timeout 布尔值；不调用原始
+error/endpoint 的字符串方法。若 cleanup 另附 cancellation，优先保留原 Failure.Cause。
+新增 poison 隐私、原结果不变、后续清理不覆盖首因与真实接线变异回归。
+
+原日志 SHA-256：`ed4df1a2862a5fad409885cf2e41f852e403d55c5a3975f2c93a3d62af40a772`。
+这是为下一次首跑补齐原因见证，**不是已修复 N3b 根因的声明**。
+
+### Predictive：测试时钟破坏角色先后顺序
+
+[Linux WireGuard 首跑](https://github.com/houyuwushang/winkyou/actions/runs/34712057980/job/103602472884)
+在 `m3/rx-responder` 的 liveness 启动前失败：双方均
+`hard_nat_candidate_exhausted@candidates`，outbound `45/45`，fault 尚未 armed。
+13 条证据均完成，不能归入旧的 hard-16k 证据不足。日志 SHA-256：
+`2af733f0fd8348de40e7eb12668236bc04e8bf4e049e7b5dcb104a6a87062872`。
+
+零网络本地对照（Windows，`GOMAXPROCS=4`、4 个并行 fresh fixture、race、
+每组失败即停，无额外 CPU worker）：
+
+- 初批第 4 组失败；双方真实 source/target 配对的反向交集为 32，不是预测窗口不相交。
+- 增加实际 adapter candidate-read 计数后，第 7 组再现：initiator 读到 0、responder 读到 32，
+  两端各发 32；只有 initiator 是协议 chooser，因此没有任何 winner。
+- 原测试时钟把产品已有的 250ms responder lead 缩为 2ms。新永久回归在旧代码实测
+  `elapsed_ns=2544700 required_ns=250000000` 而 RED，证明模拟时钟丢失了角色排序语义。
+- 修复只在所有 C1b/liveness 共用的 `memoryFixtureClock` 中保留调用方原本要求的亚秒 wait；
+  独立 Gate B 快速模拟的原时钟及 100/200/250ms 窗口不继承这一变化。
+  整秒 PPS 窗仍按原规则压缩、逻辑时间推进不变。
+  不更改产品 250ms、1s predictive candidate 窗、10s active 窗、plan、seed、候选与包数，
+  不添加同步握手、重试或额外发送。取消仍立即拒绝。
+- 相同 25×4 fresh 预条件对照 **100/100 PASS，84.388s**。该短测不是 65s/85s 断流证明；
+  原完整断流场景另行验证。旧 timing 输出中的 `busy_workers=2` 是压力报告的固定标签，
+  本次未启动这些 worker，不能据它宣称有额外 CPU 压力。
+
+最初直接修改公共 Gate B 测试时钟的版本虽通过本地全仓（governor 257.571s），
+源码审计仍发现它会影响上述独立快速模拟。最终把相同等待语义收窄到 C1b 共用时钟，
+真实构造点与绕回旧时钟的变异受门禁约束；中间版本的 PASS 不冒充最终版本验证。
+
+保留首批、方向见证批、旧时钟单元 RED、新时钟 100 次 PASS，SHA-256 依次为：
+
+| 证据 | SHA-256 |
+| --- | --- |
+| 首次预条件 RED | `ca994a7a3e0d1f4f528c0f6ce5480dedca23f97152e4c97cf681b666457e90e0` |
+| 双方向读计数 RED | `3bdcd9ec75abf6cba743e8ba5fcc32aa09986bebbf78a828e4a2676ec46149d0` |
+| 原时钟永久回归 RED | `85fbdd786480d9f6aeb7dce0ebd1b7f146df82ddc60b1554228e5f0cf738c26e` |
+| 修复后预条件 100 次 PASS | `11e6c987c58a9d428f20285ef98c5c8979c5c31347b6ee16cd2e3503872f34fc` |
+
+上述复现证明一个足够原因，历史 CI 没有双向 read 计数，不据此宣称唯一历史归因。
+
+### Windows READY：独立未闭合项
+
+[Windows model/owner 首跑](https://github.com/houyuwushang/winkyou/actions/runs/34712057980/job/103602472927)
+最后在业务 race×20 的 asymmetric 子例失败（11.52s）：两端
+`attempt_expired@ready`、outbound `13/13`、零 candidate，非 predictive 角色排序问题，
+也不是已启动数据面被 tap 抢包。第 13 条证据 adapter_read 时点为 658,956,100ns / 369,184,000ns；
+现有日志不能定位此后至 READY 终止之间的等待，不猜测 CPU、磁盘或协议锁。
+
+增加仅测试侧的固定 `2×32` progress 时点表，使用现有回调、共享单调时钟，
+首个观测不可覆盖，未知 stage 不进入日志，无新 worker 或生产 hook。
+原日志 SHA-256：`9eaa2253c42400a7d8d36bd66782eee22823cd43a7125d49f4214485064dc4bf`。
+
+### 收窄后版本的验证
+
+以下均为各命名批次的首次执行，失败即停；未 rerun GitHub 的旧 RED。
+
+| 范围 | 结果 |
+| --- | --- |
+| C1b 共用时钟、构造点变异、阶段时点存储，`-race -count=20` | PASS，14.265s。 |
+| N3b typed cause、首因、隐私、接线变异，`-race -count=20` | PASS，solverstdio 1.904s / natlab 1.722s。仓库外 overlay 仅移除 build tag；四份函数体与实际源码一致。该 virtual-file overlay 的 vet 报虚拟文件不存在，故仅该诊断命令使用 `-vet=off`，不关闭仓库或 CI vet；不将此错误归因于某个未实测的 Go 版本。 |
+| 最终 C1b clock 的 25×4 fresh 预条件对照 | PASS，100/100，83.749s；GOMAXPROCS=4，未启动额外 CPU worker。 |
+| `TestSessionLivenessBusinessCoexistsWithTap`，`-race -count=20` | PASS，285.958s；三 profile 共 60/60，原双向业务与所有权断言不变。 |
+| `go vet ./...`、`go test ./internal/architecture -count=1` | PASS；架构 8.404s，未扩大包准入。 |
+| Linux `-tags=natlab,c1bproof` 交叉 vet | PASS；不冒充实际 Linux OS 执行。 |
+| 最终全仓 #116 分区 | PASS，88 个测试包 + 11 个无测试包；governor 253.683s。 |
+| 完整 stdio 包 `go test -race ./internal/solverstdio -count=20` | PASS，5.683s；包括原 v1/v2 schema 回归，Linux-only helper 另由上述同源码 overlay 验证。 |
+| 独立 relay `-race -count=20` | PASS，146.007s，20/20；该产品路径和依赖在本切片零改动。 |
+
+同一 C1b 等待语义在收窄封装前已完成六种原断流场景（91.589s）：M2 排水 40000ms，
+M3 60001ms，均在原 47s/67s 上限内、原 residue=0 断言通过。收窄后最终 OS 组合仍须由
+新 head 的 required CI 复核，不把中间版结果写成最终 head 的 CI PASS。
+
+| 最终本地封存文件 | SHA-256 |
+| --- | --- |
+| scoped fresh100 | `a3b241dde39ad241c5faaae40a38fe67f9cfa8028e0c7fcc33223044327097e4` |
+| scoped business race×20 | `3bbbb23fa0b3fa939bfb13dd53e714a91bf1652f6649fdf48ffaaab4ad10ea62` |
+| scoped full suite | `de268df693079da4e3b84717aab0a403d5030ef12a3c36eec955ad0e175eae3d` |
+| independent relay race×20 | `ba23f12a855465d322d39fc29432a5545e795b0ac5d112a91417b202a90afd0a` |
+
+stdio 与 Windows READY 的历史原因仍未闭合；新 head 首跑与后续诊断继续记录在 PR 描述，
+不能以单次绿灯替代上述归因边界。
+
+## d0e1f84 首跑续查：保留原始失败原因，不再只报超时大类
+
+本轮仍未 rerun。两组 N3b required 首跑各 20 次 fresh 成功（共 40），但
+[N2d 固定 3×10 诊断](https://github.com/houyuwushang/winkyou/actions/runs/34715130679/job/103610906520)
+在第 3 轮第 9 个样本失败，整批为 29/30。该诊断原本按固定矩阵继续采样，
+不是失败后的重跑；失败本身保留为 RED。
+
+initiator 的 `punch_sent=107776us`、`terminal=127987us`：仅相隔 20211us，
+明显不是耗尽 1500ms punch 窗口。responder 为 `punch_sent=118000us`、
+`terminal=1618982us`。上述时间是各 child 内部的单调偏移，不能互当跨进程时钟。
+STUN 为 `1/1`、direct 为 `1/1`、control 为 `3/2`；终局 socket/process/
+server-active 均为 0，conntrack `8→0`。成功门禁照常拒绝该样本。
+
+已确认的信息丢失发生在测试 harness：`expire` 和 `protocolFailure` 用 `_ = cause`
+丢弃底层原因，统一保留 `punch_timeout` 等上层类。当前修订只在原 FINISH 前保存
+typed cause；原 class、terminal、FINISH reason、预算、收发与成功断言不变。
+失败的 `ReceiveReply` 另记源与 peer 的关系枚举（未观测/匹配/同地址异端口/异地址），
+不记录实际地址或端口。输出处再次白名单过滤，poison 和断线变异测试进入原 required
+矩阵。没有证据前，不宣称 ICMP、NAT 改端口或上下文取消就是历史根因。
+
+[Windows C1b 首跑](https://github.com/houyuwushang/winkyou/actions/runs/34715128858/job/103610901547)
+还在 `SlowDurableFinish/asymmetric` 失败：双方完成 `plan_committed` 后未到 `ready`，
+candidate=0、FINISH 延迟注入 calls=0，safety 仍 clear。这不是 FINISH 延迟注入已触发的失败。
+原 phase witness 仅在 liveness 分支启用，现移到所有 C1b 入口共用的无条件位置，
+用 mutation 防止重新藏入 liveness 条件分支；不增加生产 hook 或时间余量。
+同一测试侧 observer 对原 `net.Pipe` 透明计数 Read/Write 的开始、完成、字节数、最后时间与
+白名单错误，不保存 buffer，不改返回值/deadline/Close。由此可区分“尚未开始 READY 写入”
+与“已进入流读写但未完成”；该计数不等价于协议接受，且不能改变失败结果。
+
+独立零网络对照：asymmetric 正常条件（GOMAXPROCS=4、4 并行、race）100/100 PASS，
+126.974s；随后 GOMAXPROCS=2、2 个实跑 CPU worker、4 并行的独立加压诊断在第二组失败。
+其失败是 candidate exhaustion/OOB closed，并非历史 READY expiry：`fresh_evidence`
+约 1.85–2.03s、`plan_committed` 约 5.20–5.28s、`candidates` 约 5.50s；已发 `141/525`，
+3 个 reciprocal pair，但 chooser adapter reads=0。16 槽、每槽 2MiB 的私有 stack ring
+均未截断、sampler 已退出；采样本身会改变调度，不能把此结果冒充 CI 的同根复现。
+未据此改动 100ms/2ms 测试压缩等待、窗口、候选或生产时序。
+
+### 执行版本勘误
+
+旧记录把 `go.mod` 的最低版本 1.23.1 写成了本地执行版本，证据不足，现撤回该标注；
+不修改旧封存日志或结果。当前实查本机默认是 `go1.26.5 windows/amd64`，上述两个
+CI 日志明确是 Go 1.23.1。后续复现显式使用进程级 `GOTOOLCHAIN=go1.23.1` 并记录
+`go version`，不更改 CI、全局环境或主机配置。旧 overlay vet 的确切失败是虚拟文件
+不存在，不能以此推断某一 Go 版本特有的缺陷。
+
+| 原始新首跑/诊断文件（仓库外封存） | SHA-256 |
+| --- | --- |
+| N2d repeat RED，原始 HTTP 字节 | `e975852694c720a2afdc094487a7fcf72a4c010d55bdb592ed6787137358e8f2` |
+| Windows C1b RED，原始 HTTP 字节 | `8f7693d0982fcbf93862de4d1c7f46807f02582f9355ad11bb8f4aa71f8710c3` |
+| push N3b 20 PASS，原始 HTTP 字节 | `5a64b281e2618040f6da979da6c5a302d112cbed580c50bc7a845436121be90d` |
+| PR N3b 20 PASS，原始 HTTP 字节 | `cea43d4c01a96c049f6070d69dd37c4fcc78e63cd837cfa4966585551101e253` |
+| 本地 asymmetric 正常诊断，UTF-16LE 捕获文本 | `4b6e1143f3ad88a135226bc75cab4a6825606db48c0543e208d23e8476738759` |
+| 本地 asymmetric 加压 RED，UTF-16LE 捕获文本 | `4356a5899c17224a0e26c6b76a65d04690abe44c1aecbe3982883c407e978e58` |
+
+### 本轮验证与未闭合项
+
+d0e1f84 首跑最终为 **57/59 PASS、上述 2 项 RED**，没有 rerun；不是全绿。
+以下本地验证均显式固定 Go 1.23.1，保留独立首跑文件：
+
+| 验证 | 实测结果 |
+| --- | --- |
+| N2d 同源码纯 observer、隐私与断线变异，race×20 | PASS，1.470s；Windows 仅通过仓库外 overlay 执行纯函数，真实源码保持 `linux && natlab`。 |
+| 最终 C1b phase/透明 stream/clock/common-entry gate，race×20 | PASS，13.181s；原 bytes、错误、deadline、Close 透传，unknown error 只记 `other`。 |
+| 最终 C1b 三 profile 原始连接入口，race×20 | PASS，60/60，99.461s；原 packet accounting oracle、交接与排水断言不变。 |
+| 最终 slow-FINISH asymmetric 原始入口，race×20 | PASS，20/20，109.945s；每次原 3500ms 注入恰好 1 次，等待期间 UDP `144/529` 不增长。 |
+| 全仓 `go test ./... -count=1 -skip '^TestRelayWGGoTwoEnginesExchangeIPv4Packets$'` | PASS，88 个测试包 + 11 个无测试包；governor 120.641s。之后仅调整 c1bproof 标签下 observer，并由上两行覆盖。 |
+| 独立 `go test -race ./pkg/client -run '^TestRelayWGGoTwoEnginesExchangeIPv4Packets$' -count=20 -failfast` | PASS，20/20，142.221s；此前一次本地 runner 误写不存在的 package 路径而未执行测试，保留为命令错误，不归为产品 RED。 |
+| `go vet ./...`、tagged vet、architecture + mutation | PASS；最终架构 8.346s。真实非回环验证仍仅由 required CI 隔离 netns 执行。 |
+
+另有同 Go 1.23.1、无人工压力的 20 个 fresh slow-FINISH/asymmetric 私有 stack 诊断：
+20/20 PASS、110.979s，未产生失败 stack 文件。此诊断和上表 PASS 不能排除历史间歇失败。
+本轮修复的是“底层 cause 丢弃”和“非 liveness 入口无阶段见证”；N2d 提前终止与 Windows
+READY 阻塞的历史触发根因仍待新首跑见证，不据此自我批准、不合并、不扩大权限。
+
+| 本轮封存文件（UTF-16LE 捕获文本） | SHA-256 |
+| --- | --- |
+| pinned full suite | `50ca92c288078ffb697efcb0641d7b8388d24ef15635beed38c8812c5dc81347` |
+| pinned relay race×20 | `45a3b4e24afe5bf2a8706436611ae487cd64ad3068803a8eb396816dd5f54be6` |
+| 最终三 profile race×20 | `cd66d5c3f63bf0120fc8f7a74fbeb2f06fdbba49f4867bb0e07e299353c9d0b1` |
+| 最终 slow-FINISH asymmetric race×20 | `f1de86f5ede61296e2c5fbeec14f20306bdee14a8cfcc538c1e32e47ce308648` |
+| pinned 私有 stack 诊断 | `eca1bd8c1936dbc9c3cb35ccac5e1f54e5e55bd207b7278b791eb284df3537c0` |
+
+## `5e7ef63` 首跑：取得原始拒绝类与计划阶段时间线
+
+本节记录原始失败，不以另一 job 的 PASS 覆盖，也没有 rerun。
+该 head 首跑最终为 **55 PASS / 3 FAIL / 1 CANCELLED（共 59）**：两项实际失败、
+一项派生 liveness 汇总失败，另一个 Windows C1b job 达到平台 25 分钟上限。
+
+- [N3b 推送侧](https://github.com/houyuwushang/winkyou/actions/runs/34717142097/job/103616311427)：
+  第 18 个 fresh 用例失败（0.69s，之前 17 PASS）；responder 原因明确为
+  `unregistered_target`、`context=active`、`network_timeout=false`，进度止于 `punch_sent`。
+  initiator 已经 `punch`，随后 `verification_failed@verify`。这不是 1.5s 超时。
+  STUN `1/1`、direct `2/1`；socket/process/server active 全部零、packet stable、
+  conntrack `7 → 0`、namespace/veth 无残留。此历史 N3b 样本没有保存实际 source
+  端口关系，不能把“已观察到端口改写”写成事实。
+- 同 job 的预期 EDM 负向用例确实取得 `peer_address_different_port`；它证明新见证
+  能区分错误来源，但不是上述 EIM/N3b 样本的端点证据。
+- [PR 侧 N2d/N3b](https://github.com/houyuwushang/winkyou/actions/runs/34717145431/job/103616325454)
+  的 3 + 20 次 fresh 正向均 PASS；[独立 N2d repeat](https://github.com/houyuwushang/winkyou/actions/runs/34717145371/job/103616321219)
+  30/30 PASS。它们没有覆盖或消除原 RED。
+- [Windows model](https://github.com/houyuwushang/winkyou/actions/runs/34717145358/job/103616319642)：
+  asymmetric 10.48s，两端 `attempt_expired@ready`、零 candidate、liveness 未 armed。
+  新见证定位到 `freezeAndExchangePlan` 区间：side 0 的 fresh/plan 为
+  `799326300 / 10429994700 ns`（差 `9630668400 ns`）；side 1 为
+  `556282800 / 10193603900 ns`（差 `9637321100 ns`）。所有 stream Read/Write 均已结束；
+  最后的 write 在约 7.22s / 8.56s 执行，read 在约 10.16s 以 EOF/deadline 结束。
+  这是计划构造/交换阶段的实测定位，不是 FINISH 慢写，也不能单凭它进一步归因调度器。
+- [Windows C1b PR 侧](https://github.com/houyuwushang/winkyou/actions/runs/34717145431/job/103616325434)
+  check annotation 明确为 `maximum execution time of 25m0s`。取消时 fresh-81 正在
+  observation，两端报 `context canceled`，不能记为 Fresh100 通过，也不能无证据地把
+  平台取消另判为一次 250ms 回复超时。原始日志 SHA-256：
+  `b5e1129ebffb8b2db5295f90de67770c99bf6bc4b31e4667ec004f727edb48a8`。
+
+| 原始 HTTP UTF-8 日志 | SHA-256 |
+| --- | --- |
+| N3b typed RED | `1474a1b83b391f50cce138838015a09899868a45a358b59a36bde77db0c48221` |
+| N2d/N3b PR PASS | `f16c67c0f6d8d53181e4a9159ed83d2068ec33dd589da6a8a3c4a8d79b27f479` |
+| N2d repeat 30/30 PASS | `d55f3b8b6c8ffc0b3518e1a9c89fd257480be4bf35095bf23cf91ed1cb49affc` |
+| Windows plan-stage RED | `cbb19ff73142ab84ea53c9c514eb0703fabb33cfae5e17fa76d0bf2e91a33aaf` |
+
+### EIM 参考模型修正（不是放宽生产源校验）
+
+旧参考档的 UDP DNAT/SNAT 只倾向保留端口，并非严格保证。Netfilter 文档明确说明
+tuple 冲突时允许隐式改写源端口；这与用例要求的 EIM/EIF 单 endpoint 参考模型不同。
+这证明一项独立模型缺陷；不把旧样本归为某个未核实的 kernel 版本或特定内核 bug。
+[Netfilter NAT 行为说明](https://www.netfilter.org/documentation/HOWTO/NAT-HOWTO-6.html)
+
+- 仅 `linux && natlab` 的 EIM/EIF 档改用 `tc nat`：WAN ingress 改目的 IP、egress
+  改源 IP，IPv4/UDP/固定 `/32` 拓扑白名单；校验和由 action 修正，端口不改写。
+  不再建立 UDP conntrack NAT 映射。TCP、restricted/EDM 规则和原 5ms netem 均不变。
+  [iproute2 nat action 规范](https://man7.org/linux/man-pages/man8/tc-nat.8.html)
+- TCP NAT table 的 hook 对未显式匹配规则的 tracked UDP 仍可能分配 null binding。
+  因此参考档仅对精确接口/地址匹配的 transit UDP 使用 NOTRACK，成功样本额外证明
+  两个 NAT 的 UDP conntrack 为零；这不是关闭主机 conntrack，也不作用于 EDM/restricted。
+  [Linux null-binding 源码](https://github.com/torvalds/linux/blob/master/net/netfilter/nf_nat_core.c)
+- 配置只作用于本 fixture 已创建的两个 NAT namespace。未知 mode/地址组合返回空计划；
+  配置失败直接结束，不 fallback 到旧规则。endpoint socket 仍为 governed wildcard/ephemeral。
+- 新契约逐项固定生成命令；恢复 UDP SNAT、缺少一个方向、反转方向或改 UDP port 均被
+  变异测试拒绝。原测试成功/失败类、预算、次数与协议顺序没有调整。
+- N2d/N3b 每个成功样本新增独立 tc action 报文计数，逐端核对 ingress = 本端 STUN +
+  对端 direct、egress = 本端 UDP total；统计缺失/歧义/溢出/drop 不是零值。
+  原 probeio 来源校验与双向 VERIFY 仍是必须条件，失败路径也输出脱敏计数。
+- 本机 Windows 无 Linux netns 权限；纯函数 race×20 已通过（1.450s），不冒充 OS 执行。
+  修正后的真实 TC 转换、计数与 teardown 必须由新 head required CI 首跑证明。
+
+本次 EIM 修正的本地首跑（显式 Go 1.23.1）：
+
+| 范围 | 结果 |
+| --- | --- |
+| 新 EIM 纯契约 / 隐私 / 变异 race×20 | PASS，1.450s；仅仓库外纯函数 overlay，Linux 源文件标签不变。 |
+| 原生 natlab 纯测试 race×20 | PASS，3.858s。 |
+| 全仓 #116 分区 | PASS，88 个测试包 + 11 无测试包，governor 122.470s。 |
+| 独立 relay race×20 | PASS，20/20，141.473s，observer join 20 次。 |
+| vet / architecture + mutation / Linux tagged cross-vet、完整交叉链接 | PASS；架构 8.728s。交叉链接不冒充真实 Linux 执行。 |
+
+| 本地封存捕获文本（UTF-16LE） | SHA-256 |
+| --- | --- |
+| EIM contract | `a9018abd709c62de1419a98988110b21d6909f56e4140e4baa1a517fbc2c1bc7` |
+| native natlab | `60a3806819b602d987dd73755fa802581bc12cb19c185a34ff4eab414eb279fa` |
+| full | `afc49fe16ea20d8f9256410ab6ce9df06603b4d7020def52537a3f918a80ce6d` |
+| relay | `38622a6ee07b17b95e303d752940e11b9dadd1a84818a92ffede47811e0236c2` |
+
+### asymmetric 计划阶段：固定数学结果的重复计算
+
+这是本轮**独立列出的生产纯函数优化**；与此前 test-only 诊断/夹具提交分开。
+没有改变概率公式/精度/舍入、admission 阈值、candidate、digest 编码、身份或任何限额。
+
+`freezeAndExchangePlan` 经本地构造、source 编解码、对端重建、bilateral 计划与校验，
+多次调用同一 `probabilityFor`。hard profile 已复用编译期固定数学结果，但 asymmetric
+每次仍重算相同的 `65535 / 128 / 512` 精确概率、Poisson 与偏差。
+
+- 原样 C1b asymmetric 入口的 3 个本地 CPU 采样用例均 PASS（15.761s）；总 CPU 样本
+  5.88s，其中 `probabilityFor` 1.14s、`PoissonApproximation` 1.13s、`big.Rat.norm`
+  1.08s。采样本身影响调度；这些是本地热点证据，不冒充历史 Windows runner 的 profile。
+- 仓库外、修复前的 race benchmark（固定 20 次）：每次 32,840,115ns、2,776,898B、
+  11,592 次分配；仅复用不可变结果的实验对照为 170ns、零分配。
+- 实现只保留**一个进程内、无输入 key 的编译期数值条目**，首次仍调用原数学纯函数，
+  使用 `sync.OnceValues` 合并并发初始化。缓存只含数值/字符串；coverage、role、地址、
+  evidence、credential、plan、source/joint digest 均不入缓存。
+- 双方仍各自构造、重建与验证全部承诺，不能用对端的数值替代本地计算；每次构造都
+  恢复自己的条件说明/coverage。增加 64 并发 value ownership、逐调用 coverage、
+  错 cost/概率/evidence/validation/source digest 必拒绝，以及恢复重复计算的变异回归。
+- 原全部 JSON golden **未修改**；fixture SHA-256 为
+  `4c9e0e7893a8e60bce3093ca4b3c2a94138fb3c0bf210086de6b3366e261eced`。
+  修复减少一项已证实的无效开销，但不把所有历史 READY 超时或整 job 超时宣称为同一根因。
+
+实际实现的 Go 1.23.1、race、20 次固定 benchmark：
+
+| 数值路径 | ns/op | B/op | allocs/op |
+| --- | ---: | ---: | ---: |
+| 原公式 fresh 重算 | 33472505 | 2778919 | 11603 |
+| 实际不可变条目读取 | 140 | 0 | 0 |
+
+新源码受影响包 race×20 已通过：hardnatplan 134.941s（含原字节 golden）、
+hardnatcontrol 103.933s、directconnect/gateb 2.592s。完整最终验收如下。
+
+本地验证异常单列（不充当产品 RED，也不冒充 PASS）：
+
+- 初次 Fresh100 命令漏设 `WINKYOU_GATE_C1B_REPEAT_REQUIRED=1`，因此只有 SKIP、
+  实际执行数为 0。封存日志 SHA-256：
+  `64fe396c1ec70d01b14e4821212d151b2a40b5951dc0a573416504378b250ec0`。
+  后续必须显式 required、精确核对 100 个 fresh 子用例及 residue witness。
+- 全仓构建首次停在 `compile -V=full`：编译器进程弹出 CRT `R6016`，未进入项目测试，
+  无 suite 输出。仅结束本次异常验证进程并确认其错误框；没有修改系统或安全软件。
+  错误框原文私有封存 SHA-256：
+  `4f4221080606748c567cb2a9e469ba6221c31b98e2b16b4ad3d0e57b68204036`。
+  独立 compiler 版本检查恢复正常后，重新执行未完成的全仓验证：88 个测试包 PASS、
+  11 个无测试包，governor 122.765s。新执行日志 SHA-256：
+  `c1c8819554524aabb29f7a45b4300d3fafb0ac0bd00e552773fd4f3652902bb7`。
+  这是本地构建故障后的恢复执行，不是 GitHub CI rerun。
+
+最终本地验收（Go 1.23.1、无额外 CPU 压力；所有原窗口/限额不变）：
+
+| 范围 | 实测结果 |
+| --- | --- |
+| 数值缓存等价/所有权/承诺拒绝/变异 race×20 | PASS，2.150s。 |
+| liveness 业务共存 race×20 | 60/60 PASS，209.693s；business 3/3、tap_stole=0、extra_socket=0。 |
+| 三 profile 原连接入口 race×20 | 60/60 PASS，88.635s；另有 accounting oracle 子用例，不混入连接样本数。 |
+| 显式 required Fresh100，首个实际批次 | 100/100 PASS，151.100s；三 profile 轮换、CLI=true，`fresh_namespaces=100 deterministic_schedules=3 residue=0 wall_ms=149510`。 |
+| 原 slow-FINISH/asymmetric race×20 | 20/20 PASS，98.696s；原 3500ms 注入、等待期间 UDP 不增长。 |
+| 最终 NOTRACK/EIM 纯契约 race×20 | PASS，1.462s；私有 overlay 只提取纯函数，不执行 OS 网络。 |
+| vet / architecture + mutation / Linux tagged cross-vet | PASS；架构 8.349s。 |
+| 全仓 #116 分区 / 独立 relay race×20 | 88 个测试包 PASS + 11 无测试包；relay 20/20 PASS，142.927s、20 次 observer join。 |
+
+真实 TC/IP-only、UDP conntrack=0、精确报文计数与 namespace teardown 的新证据必须来自
+新 head 的 required CI；最终首跑状态在 PR 顶层记录。旧 head 的 RED/平台超时不被覆盖，
+不 rerun 旧 CI，不自行合并，不授权任何现场 I/O。
+
+| 最终本地捕获文本（UTF-16LE） | SHA-256 |
+| --- | --- |
+| affected race×20 | `cd585b471bba7bd13ceadb3134f3205893647ae3e32c28025b8713297d83ba4d` |
+| liveness 60/60 | `350fc98f1173418220c7f6be549536ac7f3b758d6fbdaf257d4c51b03f9353ed` |
+| product 60/60 | `b83d8cadea00f554ece364cac8741a62bf5f44562e8e74021e9c7e802c7eb460` |
+| actual required Fresh100 | `302ab680f61f9ebbb65651d03d2e2ea7f96458a7174f8ac8cebb6905b59f6e73` |
+| slow FINISH | `80900ce7afd0cf6724aab35783eb2a38297733070096219104011e09974bc39f` |
+| final EIM/NOTRACK | `bd394c7d26031923fb5d17bd45d8e9ca05d8f80c8ba53b5d702f162ebbfb5720` |
+| resumed relay | `dec76eede764aec85f0aee2a4f63a4c7855a4aef1043c2c69a900569da2ffdab` |
+| actual arithmetic benchmark | `07adbfcf92de2c0775b620b440cf1f2c9588d92541a844787ced744583302a9b` |
+
+### a86f795 首跑：NAT OS 见证通过，另捕获 server crash 测试竞态
+
+下面是本 head 的独立首跑证据，不 rerun，也不覆盖上一批 RED。
+
+最终 59 项均已结束：57 success / 1 failure / 1 skipped（Linux relay smoke 因上游
+Linux 全仓失败而跳过）。唯一 failure 为下面的 crash fixture 竞态；没有 job cap 取消。
+所有 workflow 均为 attempt 1。
+
+- [N2d repeat](https://github.com/houyuwushang/winkyou/actions/runs/34720353392/job/103624966271)：
+  3 轮 × 10 = 30/30 通过，每次均实际记录
+  `N2D_EIM_TRANSLATION ip_only=true udp_conntrack=0 ingress_egress=[[2 3] [3 2]] exact=true`。
+- [push required N2d/N3b](https://github.com/houyuwushang/winkyou/actions/runs/34720352217/job/103624963169)
+  与 [PR required N2d/N3b](https://github.com/houyuwushang/winkyou/actions/runs/34720353370/job/103624966367)
+  均通过，各有 3 个 N2d + 20 个 N3b 的精确 TC 见证。逐端 STUN=1/1、direct=2/1、
+  UDP=3/2；终局 socket/process/server active connection 均为零，packet counter 稳定，
+  剩余 TCP conntrack 经 fixture teardown 归零。成功没有放宽源校验或增加发送。
+- 这些结果闭合本次 TC/NOTRACK 修正的实际 OS 行为验证；不反推旧样本未记录的源端口。
+
+四个 C1b memory job 也全部首跑通过，各精确执行 100 个 fresh 子用例并报告 residue=0：
+
+| C1b job | Fresh100 wall_ms | 原始 HTTP UTF-8 日志 SHA-256 |
+| --- | ---: | --- |
+| [push Windows](https://github.com/houyuwushang/winkyou/actions/runs/34720352217/job/103624963213) | 130963 | `47d4eb09c26f62bf9f51968e684d8df1476f0825635ff6f2c87127e285832829` |
+| [PR Windows](https://github.com/houyuwushang/winkyou/actions/runs/34720353370/job/103624966471) | 122148 | `7a888d59704dd891cf3a8dac79d41e43940a978b890e1a339fdadeffb1a1ce3f` |
+| [push Linux](https://github.com/houyuwushang/winkyou/actions/runs/34720352217/job/103624963273) | 110482 | `1c5e1fada7ac525d4230d72e0d2e1fcd4073bb784a1c0476a6907ce29ae36041` |
+| [PR Linux](https://github.com/houyuwushang/winkyou/actions/runs/34720353370/job/103624966431) | 111879 | `9a4475b2d9bf223416ccf226fbeedd31c63dc83179acb5e98fc07e049a22f732` |
+
+Windows liveness model/owner 首跑也通过；其原始日志 SHA-256 为
+`1fbe44819fdb4b86fc98b8ad39e04f402d505ab2ac75cf076332f2727dfc5115`。
+这些是新 head 的通过证据，不把上一批未采样的 READY 停顿反推为已被唯一归因。
+
+另一个 [Linux 全仓首跑](https://github.com/houyuwushang/winkyou/actions/runs/34720352217/job/103624963064)
+在 `TestServerCrashProcess` 失败：`crash witness subprocess unexpectedly exited cleanly`，
+用例耗时 0.01s。这不是 NAT 或数据面失败。
+
+根因与反向控制：
+
+1. 原测试先 `connection.Close()`，再 `Process.Kill()`，最后要求 `Wait()` 非零。
+   客户端 EOF 可先让 server 的 TLS 读取结束，`Serve` 返回后测试子进程正常退出；
+   向已退出但未回收的进程发 Kill 与 `Wait` 的正常退出状态并不互斥。
+2. 仓库外原源码 overlay 只固定这一调度顺序：Close 后先等待子进程退出，再检查旧
+   崩溃前提。单次控制实验稳定 RED，原文为
+   `CONTROLLED_REPRO close_before_kill=true clean_exit=true listener_rebind=true`。
+   这是验证先后关系的独立实验，不是旧 CI 重跑，也没有改生产代码。
+3. 正向测试先完成 TLS，证明 server 已接受连接，持有连接直到 Kill/Wait 完成；
+   Unix 必须为 SIGKILL，Windows 必须为 `Process.Kill` 对应退出码，且不能存在正常
+   terminal/test 输出。随后验证 accepted socket 非 timeout 地结束、端口重绑和 child join。
+4. 新 EOF 反向用例显式允许正常终局，要求 `tls_failed`、accepted=1、exit=0；同一个
+   crash oracle 必须拒绝它。正常退出与真实 crash 的判据没有互相替代。
+5. 所有子进程路径都注册 kill/join cleanup；输出只检查脱敏聚合 record，不打印配置、
+   路径或原始子进程输出。本修复只涉及测试及本文档，不改 server/窗口/限额/工作流。
+
+首批本地验证（Go 1.23.1）：正反向 race×20 通过（24.977s），正向 OS crash race×100
+通过（9.541s）；后续 TLS 诊断与最终源码验证在下文单列，避免混淆批次。
+
+| 封存日志 | 编码 | SHA-256 |
+| --- | --- | --- |
+| a86 Linux server crash RED | HTTP UTF-8 | `ebba1c0dc6436cd4a98bf49c18d9b677a33dbe8585b038197b9dee287e13f9c2` |
+| a86 N2d/N3b push PASS | HTTP UTF-8 | `c81fb24b55c748789978c3439d0c04cee2a73df34d132b3547a7487f6a5d9ce5` |
+| a86 N2d repeat 30/30 PASS | HTTP UTF-8 | `39c7c6558f120536311b86ddcede8ad16b046a1cc283965b92968a6ec7e89488` |
+| a86 N2d/N3b PR PASS | HTTP UTF-8 | `e33e418c66f85fc92dfc017e29ed285e3e16ad4561e33c8c929760a90507c959` |
+| Close-before-Kill 控制 RED | UTF-16LE | `da299bc1941fb0c01ec7ac7ccf10c5aea2f07d1fc3c63b232ef139cafde4eb01` |
+| 修复正反向 race×20 | UTF-16LE | `8ce4988080d16582a4b0d2778756dddffdbc4006ade8764e886614a45ab97c43` |
+
+本地包级首跑另捕获一项**尚未归因**的 RED：正常双 slot 用例的第一个 TLS handshake
+收到 EOF，用例 5.43s，包在 76.146s fail-fast。原日志没有 server terminal class 或
+分阶段耗时，无法把 5.43s 分配到 fixture/TCP/TLS/服务端等待；不猜测宿主负载、
+杀进程竞态或某个第三方组件，也不延长 presence/attempt 窗口。
+
+只用仓库外 overlay 和 runtime/trace 做了三项诊断（这些不是普通验收 PASS）：
+
+| 诊断 | 原样结果与限制 |
+| --- | --- |
+| 定点 100 个正常双 slot | 未复现；200 次 TLS，最长 16.898ms，104.698s。初版观察器在成功 cleanup 多等 1s，改变了样本间隔，明确不能作为原调度的对照。 |
+| 无额外成功等待的完整包 race×20 | 未复现；260 次 TLS，最长 15.73ms，158.326s。保留原 3s presence；trace/日志仍可能影响调度。 |
+| 同一观察器，连续 1,000 个双 slot | 未复现；2,000 次 TLS，最长 20.7621ms，32.425s；不抹掉首个 RED。 |
+
+最终测试侧诊断永久记录 `config_ns`、`dial_ns`、`handshake_ns`、`serve_ns` 与脱敏
+terminal class。正常双 slot 用例额外在 cleanup 中 cancel/join 自己的 Serve goroutine，
+只在既有用例结束后执行；成功路径不多等 1s，不修改任何生产计时或通过条件。
+这是观测与测试资源归属改进，**不是声称已经修复这项未复现的 TLS EOF 根因**。
+
+| 本地封存诊断（UTF-16LE） | SHA-256 |
+| --- | --- |
+| 最初包级 TLS EOF RED | `ee31191cb9d9004582e192e8f7361a1b210091b700d69478e2ff6169e58963a6` |
+| 初版定点 trace | `2ae14d007b7211ae83367951cee05bc4a0bf403a6220f4495f833c297bba1be4` |
+| 完整包 trace | `73650be023bb8f142eef097c958562958b68a8bb68a624ee26d77e402f0529c4` |
+| 连续 1,000 trace | `f3f714b174044d8bf88ef69fe541b84ad6839e68d15d6fc5f66302c96c251c2b` |
+
+交叉验证命令异常单列：最初只设置 `GOOS=linux`，仍继承 Windows `CGO_ENABLED=1`，
+导致 Windows gcc 编译 Linux runtime/cgo 时缺少 `sigset_t`。这是命令环境错误，未运行
+Linux 测试。错误日志 SHA-256 为
+`333ae31fa70d8cf4605fe702a5b8803cbb7e1919aa17d2e2e15974edaf17915d`。
+随后仅在该交叉命令中显式 `CGO_ENABLED=0`，Linux vet 通过；原生 race 恢复 cgo，
+没有修改主机环境配置、产品或 CI workflow，也不冒充本地执行 Linux OS 见证。
+
+追加修复的最终源码本地验收（无 trace/overlay、Go 1.23.1）：
+
+| 检查 | 结果 |
+| --- | --- |
+| 真实 server crash race×100 | 100/100 PASS，9.828s；每次有 kill/socket drain/rebind/child join 见证。 |
+| rendezvousserver 完整包 race×20 | PASS，158.076s；包含正向 crash、正常 EOF 反向控制及原全部用例。 |
+| `go vet ./...` / architecture + mutation | PASS；架构 8.464s。 |
+| 显式 pure-Go Linux cross-vet | PASS；仅交叉检查，不计入 OS 测试。 |
+| 全仓 `go test ./... -count=1 -skip '^TestRelayWGGoTwoEnginesExchangeIPv4Packets$'` | 88 个测试包 PASS + 11 个无测试包；governor 119.973s。 |
+| 独立 relay race×20 | 20/20 PASS，142.391s；20 次 `observer_workers=0`。 |
+
+最终源码 PASS 不撤回上面的未归因 TLS EOF；它仍是明确登记的诊断限制。
+本追加提交相对 a86f795 的 production/config/workflow delta 为零；保留 Draft 等待复审。
+
+| 最终源码验收（UTF-16LE） | SHA-256 |
+| --- | --- |
+| crash race×100 | `cc0c00844dcdf26d487b43ae02d9a8022d76eca16edcf539f2b272e216e49d30` |
+| package race×20 | `aee0312e13259435d5c33d80d6309441a61c737e699485fc4ad6305b8e152ef2` |
+| architecture | `1a506a902fbcdb2facb51da8aec90145799fbe74655ab09f0f60a4a3c4f35efb` |
+| full #116 | `c81d8633661239a58b35fd3b7059734096bd9c4c115e6004b4d8c68387361097` |
+| relay race×20 | `d22d4c3a7c8f31972477048962816c47084494f25ddd472d4da972771b54a169` |

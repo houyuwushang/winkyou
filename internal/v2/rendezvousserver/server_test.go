@@ -1,6 +1,7 @@
 package rendezvousserver
 
 import (
+	"bytes"
 	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
@@ -10,6 +11,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"io"
 	"math/big"
 	"net"
@@ -32,7 +34,26 @@ func TestOneShotServerCompletesExactOpaqueEnvelopeAndClosesListener(t *testing.T
 	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
 	defer cancel()
 	done := make(chan TerminalRecord, 1)
-	go func() { done <- Serve(ctx, config) }()
+	joined := make(chan struct{})
+	var terminal TerminalRecord
+	var serveElapsed time.Duration
+	serveStarted := time.Now()
+	go func() {
+		terminal = Serve(ctx, config)
+		serveElapsed = time.Since(serveStarted)
+		done <- terminal
+		close(joined)
+	}()
+	t.Cleanup(func() {
+		cancel()
+		select {
+		case <-joined:
+			t.Logf("SERVER_TERMINAL_TIMING class=%s serve_ns=%d accepted=%d joined=true",
+				terminal.Class, serveElapsed.Nanoseconds(), terminal.AcceptedConnections)
+		case <-time.After(2 * time.Second):
+			t.Error("test server did not join after cancellation")
+		}
+	})
 
 	a := dialTestTLS(t, config.ListenAddress)
 	defer a.Close()
@@ -260,10 +281,71 @@ func TestServerCrashProcess(t *testing.T) {
 			t.Fatal(err)
 		}
 		clear(payload)
-		_ = Serve(context.Background(), config)
+		record := Serve(context.Background(), config)
+		if _, err := os.Stdout.Write(MarshalTerminal(record)); err != nil {
+			t.Fatal("could not write secret-free child terminal witness")
+		}
 		return
 	}
 	config, _ := serverTestConfig(t)
+	child := startServerCrashChild(t, config)
+	// Completing TLS proves that Serve accepted the socket. Keep it open until
+	// Kill/Wait: closing it here can let Serve return normally on TLS EOF before
+	// the crash injection, which is not an OS crash witness.
+	connection := dialTestTLS(t, config.ListenAddress)
+	defer connection.Close()
+	if err := child.command.Process.Kill(); err != nil {
+		t.Fatal("could not inject server child crash")
+	}
+	child.wait(t)
+	if !child.killed() {
+		t.Fatal("child did not provide an OS-kill witness without a normal terminal record")
+	}
+	if err := connection.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := connection.Read(make([]byte, 1)); err == nil {
+		t.Fatal("accepted socket survived server child crash")
+	} else if timeout, ok := err.(net.Error); ok && timeout.Timeout() {
+		t.Fatal("accepted socket did not drain after server child crash")
+	}
+	assertAddressRebinds(t, config.ListenAddress)
+	t.Log("SERVER_CRASH_WITNESS killed=true terminal_record=false accepted_socket_drained=true listener_rebind=true child_joined=true")
+}
+
+func TestServerCrashWitnessRejectsCloseBeforeKill(t *testing.T) {
+	config, _ := serverTestConfig(t)
+	child := startServerCrashChild(t, config)
+	connection := dialTestTCP(t, config.ListenAddress)
+	if err := connection.Close(); err != nil {
+		t.Fatal(err)
+	}
+	// A deterministic ordering of the old fixture: allow EOF to finish Serve
+	// before considering Kill. A graceful exit must never count as a crash.
+	child.wait(t)
+	if child.err != nil || child.killed() {
+		t.Fatal("EOF control was not a graceful exit rejected by the crash witness")
+	}
+	var record TerminalRecord
+	if err := json.NewDecoder(bytes.NewReader(child.output.Bytes())).Decode(&record); err != nil {
+		t.Fatal("EOF control did not return a terminal record")
+	}
+	if record.Class != ClassTLSFailed || record.AcceptedConnections != 1 {
+		t.Fatalf("EOF control terminal = %+v", record)
+	}
+	assertAddressRebinds(t, config.ListenAddress)
+	t.Log("SERVER_CRASH_EOF_CONTROL clean_exit=true class=tls_failed crash_witness=false listener_rebind=true child_joined=true")
+}
+
+type serverCrashChild struct {
+	command *exec.Cmd
+	done    chan struct{}
+	err     error
+	output  bytes.Buffer
+}
+
+func startServerCrashChild(t *testing.T, config Config) *serverCrashChild {
+	t.Helper()
 	payload, err := json.Marshal(config)
 	if err != nil {
 		t.Fatal(err)
@@ -271,20 +353,47 @@ func TestServerCrashProcess(t *testing.T) {
 	command := exec.Command(os.Args[0], "-test.run=^TestServerCrashProcess$", "-test.count=1")
 	command.Env = append(os.Environ(), "WINKYOU_RENDEZVOUS_CRASH_CONFIG="+base64.RawURLEncoding.EncodeToString(payload))
 	clear(payload)
-	command.Stdout = io.Discard
-	command.Stderr = io.Discard
+	child := &serverCrashChild{command: command, done: make(chan struct{})}
+	command.Stdout = &child.output
+	command.Stderr = &child.output
+	command.WaitDelay = 2 * time.Second
 	if err := command.Start(); err != nil {
 		t.Fatal(err)
 	}
-	connection := dialTestTCP(t, config.ListenAddress)
-	_ = connection.Close()
-	if err := command.Process.Kill(); err != nil {
-		t.Fatal(err)
+	go func() {
+		child.err = command.Wait()
+		close(child.done)
+	}()
+	t.Cleanup(func() {
+		select {
+		case <-child.done:
+			return
+		default:
+		}
+		_ = command.Process.Kill()
+		select {
+		case <-child.done:
+		case <-time.After(5 * time.Second):
+			t.Error("server crash fixture child cleanup did not join")
+		}
+	})
+	return child
+}
+
+func (child *serverCrashChild) wait(t *testing.T) {
+	t.Helper()
+	select {
+	case <-child.done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("server crash fixture child did not terminate")
 	}
-	if err := command.Wait(); err == nil {
-		t.Fatal("crash witness subprocess unexpectedly exited cleanly")
-	}
-	assertAddressRebinds(t, config.ListenAddress)
+}
+
+// Called only after done is closed, so Wait and its output copier have joined.
+func (child *serverCrashChild) killed() bool {
+	var exitError *exec.ExitError
+	return errors.As(child.err, &exitError) && child.output.Len() == 0 &&
+		serverCrashKilledState(exitError.ProcessState)
 }
 
 func TestListenAddressRequiresCanonicalLiteral(t *testing.T) {
@@ -302,6 +411,8 @@ func TestListenAddressRequiresCanonicalLiteral(t *testing.T) {
 
 func serverTestConfig(t *testing.T) (Config, string) {
 	t.Helper()
+	started := time.Now()
+	defer func() { t.Logf("SERVER_FIXTURE_TIMING config_ns=%d", time.Since(started).Nanoseconds()) }()
 	root := t.TempDir()
 	certificatePath, keyPath := writeTestCertificate(t, root)
 	now := time.Now().UTC().Truncate(time.Second)
@@ -354,16 +465,21 @@ func dialTestTCP(t *testing.T, address string) net.Conn {
 
 func dialTestTLS(t *testing.T, address string) *tls.Conn {
 	t.Helper()
+	started := time.Now()
 	raw := dialTestTCP(t, address)
+	dialElapsed := time.Since(started)
 	connection := tls.Client(raw, &tls.Config{
 		InsecureSkipVerify: true,
 		MinVersion:         tls.VersionTLS13,
 		MaxVersion:         tls.VersionTLS13,
 	})
+	handshakeStarted := time.Now()
 	if err := connection.Handshake(); err != nil {
 		_ = raw.Close()
-		t.Fatalf("TLS handshake: %v", err)
+		t.Fatalf("TLS handshake: %v; dial_ns=%d handshake_ns=%d total_ns=%d",
+			err, dialElapsed.Nanoseconds(), time.Since(handshakeStarted).Nanoseconds(), time.Since(started).Nanoseconds())
 	}
+	t.Logf("SERVER_TLS_TIMING dial_ns=%d handshake_ns=%d", dialElapsed.Nanoseconds(), time.Since(handshakeStarted).Nanoseconds())
 	if connection.ConnectionState().Version != tls.VersionTLS13 {
 		t.Fatal("server negotiated a non-TLS-1.3 version")
 	}

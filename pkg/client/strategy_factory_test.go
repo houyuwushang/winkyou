@@ -127,7 +127,7 @@ func TestStrategyResolverResolveMissingCapabilityWithoutFallback(t *testing.T) {
 	}
 }
 
-func TestEngineStrategyResolverDefaultsToLegacyWithImplicitFallback(t *testing.T) {
+func TestEngineStrategyResolverDefaultsRejectImplicitFallback(t *testing.T) {
 	eng := &engine{}
 	resolver := eng.newStrategyResolver()
 
@@ -137,15 +137,7 @@ func TestEngineStrategyResolverDefaultsToLegacyWithImplicitFallback(t *testing.T
 	}
 
 	strategy, selection, err := resolver.Resolve(rproto.Capability{}, true)
-	if err != nil {
-		t.Fatalf("Resolve(empty capability) error = %v", err)
-	}
-	if strategy.Name() != legacyice.StrategyName {
-		t.Fatalf("Resolve(empty capability) strategy = %q, want %q", strategy.Name(), legacyice.StrategyName)
-	}
-	if selection != (sesspkg.Selection{StrategyName: legacyice.StrategyName, Negotiated: false}) {
-		t.Fatalf("Resolve(empty capability) selection = %#v, want implicit legacy fallback", selection)
-	}
+	assertNoImplicitEngineSelection(t, strategy, selection, err)
 }
 
 func TestEngineStrategyResolverSelectsRelayOnlyWhenRemoteOnlySupportsRelayOnly(t *testing.T) {
@@ -180,7 +172,7 @@ func TestEngineStrategyResolverSelectsSignalRelayWhenRemoteOnlySupportsSignalRel
 	}
 }
 
-func TestEngineStrategyResolverSignalRelayFirstUsesConfiguredImplicitFallback(t *testing.T) {
+func TestEngineStrategyResolverSignalRelayFirstRejectsConfiguredImplicitFallback(t *testing.T) {
 	cfg := config.Default()
 	cfg.Connectivity.StrategyOrder = []string{signalrelay.StrategyName, tcpframed.StrategyName, legacyice.StrategyName}
 	cfg.TCPFramed.Enabled = true
@@ -198,19 +190,8 @@ func TestEngineStrategyResolverSignalRelayFirstUsesConfiguredImplicitFallback(t 
 		Initiator:        true,
 		RemoteCapability: rproto.Capability{},
 	})
-	if err != nil {
-		t.Fatalf("ResolveAll(empty capability) error = %v", err)
-	}
-	if got, want := resolverCandidateNames(candidates), []string{signalrelay.StrategyName, tcpframed.StrategyName, legacyice.StrategyName}; !slices.Equal(got, want) {
-		t.Fatalf("ResolveAll(empty capability) candidates = %#v, want %#v", got, want)
-	}
-	for _, candidate := range candidates {
-		if candidate.Selection.Negotiated {
-			t.Fatalf("candidate %s negotiated = true, want implicit fallback", candidate.Name)
-		}
-		if candidate.Reason != "implicit_configured_order_fallback" {
-			t.Fatalf("candidate %s reason = %q, want implicit_configured_order_fallback", candidate.Name, candidate.Reason)
-		}
+	if err == nil || len(candidates) != 0 || !strings.Contains(err.Error(), "fallback disabled") {
+		t.Fatal("configured order must not guess from empty remote capability")
 	}
 }
 
@@ -397,22 +378,14 @@ func TestTCPFramedStrategyConfigPropagatesStaticEndpointPolicy(t *testing.T) {
 	}
 }
 
-func TestEngineStrategyResolverConnectivityRelayOnlyKeepsImplicitLegacyFallback(t *testing.T) {
+func TestEngineStrategyResolverConnectivityRelayOnlyRejectsImplicitLegacyFallback(t *testing.T) {
 	cfg := config.Default()
 	cfg.Connectivity.Mode = relayonly.StrategyName
 	eng := &engine{cfg: cfg}
 	resolver := eng.newStrategyResolver()
 
 	strategy, selection, err := resolver.Resolve(rproto.Capability{}, true)
-	if err != nil {
-		t.Fatalf("Resolve(empty capability) error = %v", err)
-	}
-	if strategy.Name() != legacyice.StrategyName {
-		t.Fatalf("Resolve(empty capability) strategy = %q, want %q", strategy.Name(), legacyice.StrategyName)
-	}
-	if selection != (sesspkg.Selection{StrategyName: legacyice.StrategyName, Negotiated: false}) {
-		t.Fatalf("Resolve(empty capability) selection = %#v, want implicit legacy fallback", selection)
-	}
+	assertNoImplicitEngineSelection(t, strategy, selection, err)
 }
 
 func TestNewEngineRejectsUnknownConnectivityStrategy(t *testing.T) {
@@ -449,19 +422,18 @@ func TestEngineStrategyResolverForceRelayPrefersRelayOnlyWhenMutual(t *testing.T
 	}
 }
 
-func TestEngineStrategyResolverForceRelayKeepsImplicitLegacyFallback(t *testing.T) {
+func TestEngineStrategyResolverForceRelayRejectsImplicitLegacyFallback(t *testing.T) {
 	eng := &engine{cfg: config.Config{NAT: config.NATConfig{ForceRelay: true}}}
 	resolver := eng.newStrategyResolver()
 
 	strategy, selection, err := resolver.Resolve(rproto.Capability{}, true)
-	if err != nil {
-		t.Fatalf("Resolve(empty capability) error = %v", err)
-	}
-	if strategy.Name() != legacyice.StrategyName {
-		t.Fatalf("Resolve(empty capability) strategy = %q, want %q", strategy.Name(), legacyice.StrategyName)
-	}
-	if selection != (sesspkg.Selection{StrategyName: legacyice.StrategyName, Negotiated: false}) {
-		t.Fatalf("Resolve(empty capability) selection = %#v, want implicit legacy fallback", selection)
+	assertNoImplicitEngineSelection(t, strategy, selection, err)
+}
+
+func assertNoImplicitEngineSelection(t *testing.T, strategy solver.Strategy, selection sesspkg.Selection, err error) {
+	t.Helper()
+	if err == nil || strategy != nil || selection != (sesspkg.Selection{}) || !strings.Contains(err.Error(), "fallback disabled") {
+		t.Fatal("product resolver must reject empty capability without constructing a strategy")
 	}
 }
 

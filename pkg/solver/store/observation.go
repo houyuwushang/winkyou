@@ -1,7 +1,9 @@
 package store
 
 import (
+	"context"
 	"encoding/json"
+	"io"
 	"os"
 	"path/filepath"
 	"sync"
@@ -17,6 +19,8 @@ type ObservationStore struct {
 	mu           sync.Mutex
 	observations []solver.Observation
 	filePath     string
+	writer       *observationWriter
+	sealed       bool
 }
 
 // NewObservationStore creates a new observation store
@@ -30,14 +34,26 @@ func NewObservationStore(filePath string) *ObservationStore {
 
 // Record adds an observation to the store
 func (s *ObservationStore) Record(obs solver.Observation) error {
+	obs = solver.CloneObservation(obs)
 	if obs.Timestamp.IsZero() {
 		obs.Timestamp = time.Now()
 	}
 
 	s.mu.Lock()
+	if s.sealed {
+		s.mu.Unlock()
+		return ErrObservationStoreClosed
+	}
 	s.observations = append(s.observations, obs)
 	// Keep last 1000 observations in memory
 	s.observations = trimObservationHistory(s.observations, observationMemoryLimit)
+	if s.writer != nil {
+		// Record order and admission order share this memory-only critical
+		// section. No filesystem operation or worker wait runs under s.mu.
+		s.writer.enqueue(obs)
+		s.mu.Unlock()
+		return nil // memory-visible, NOT a durable-write acknowledgement
+	}
 	s.mu.Unlock()
 
 	// Persist to file if configured
@@ -51,9 +67,7 @@ func (s *ObservationStore) Record(obs solver.Observation) error {
 func (s *ObservationStore) List() []solver.Observation {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	out := make([]solver.Observation, len(s.observations))
-	copy(out, s.observations)
-	return out
+	return solver.CloneObservations(s.observations)
 }
 
 // Recent returns up to the last limit observations in chronological order.
@@ -61,18 +75,22 @@ func (s *ObservationStore) Recent(limit int) []solver.Observation {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if limit <= 0 || limit >= len(s.observations) {
-		out := make([]solver.Observation, len(s.observations))
-		copy(out, s.observations)
-		return out
+		return solver.CloneObservations(s.observations)
 	}
 	start := len(s.observations) - limit
-	out := make([]solver.Observation, len(s.observations[start:]))
-	copy(out, s.observations[start:])
-	return out
+	return solver.CloneObservations(s.observations[start:])
 }
 
 // appendToFile appends an observation to the JSONL file
 func (s *ObservationStore) appendToFile(obs solver.Observation) error {
+	data, err := json.Marshal(obs)
+	if err != nil {
+		return err
+	}
+	return s.appendJSONLine(append(data, '\n'))
+}
+
+func (s *ObservationStore) appendJSONLine(data []byte) (err error) {
 	if err := os.MkdirAll(filepath.Dir(s.filePath), 0755); err != nil {
 		return err
 	}
@@ -81,15 +99,45 @@ func (s *ObservationStore) appendToFile(obs solver.Observation) error {
 	if err != nil {
 		return err
 	}
-	defer f.Close()
-
-	data, err := json.Marshal(obs)
-	if err != nil {
-		return err
+	defer func() {
+		if closeErr := f.Close(); err == nil {
+			err = closeErr
+		}
+	}()
+	n, err := f.Write(data)
+	if err == nil && n != len(data) {
+		err = io.ErrShortWrite
 	}
-
-	_, err = f.Write(append(data, '\n'))
 	return err
+}
+
+// Seal rejects future records and discards pending ordinary disk copies. The
+// buffered owner finishes its sole active write before removing the file.
+func (s *ObservationStore) Seal() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.sealed = true
+	if s.writer != nil {
+		s.writer.seal()
+	}
+}
+
+// Drain only waits for the original buffered owner. It does not interrupt an
+// OS syscall, retry removal, or authorize replacing an undrained owner.
+func (s *ObservationStore) Drain(ctx context.Context) error {
+	if s.writer == nil {
+		return nil
+	}
+	return s.writer.wait(ctx)
+}
+
+// PersistenceStats exposes aggregate counts only, never observation contents
+// or raw filesystem errors. Synchronous stores have Buffered=false.
+func (s *ObservationStore) PersistenceStats() ObservationPersistenceStats {
+	if s.writer == nil {
+		return ObservationPersistenceStats{}
+	}
+	return s.writer.stats()
 }
 
 // LoadFromFile loads observations from a JSONL file

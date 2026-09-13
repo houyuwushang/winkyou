@@ -21,6 +21,9 @@ const n2dSuccessRepetitions = 3
 func TestLinuxN2DEndToEndProof(t *testing.T) {
 	requireN2DEnvironment(t)
 
+	t.Run("n3b_diagnostic_contract", testN3BDiagnosticRequiredContracts)
+	t.Run("n2d_failure_cause_contract", TestN2DCauseWitnessTypedErrorsAndPrivacy)
+	t.Run("eim_mapping_contract", TestN2DEIMMappingContract)
 	t.Run("eim_eim_success_exact_witness", testN2DEIMSuccess)
 	t.Run("n3b_stdio_v2_eim_eim_product_entry", testN3BStdioV2EIMSuccess)
 	t.Run("port_restricted_blind_open_success", testN2DPortRestrictedSuccess)
@@ -69,6 +72,7 @@ func runN2DEIMSuccess(t *testing.T, repetitions int, diagnostics bool) {
 			assertN2DSuccessResult(t, initiatorResult, directattempt.RoleInitiator)
 			assertN2DSuccessResult(t, responderResult, directattempt.RoleResponder)
 			assertN2DPacketResultMatch(t, counts, initiatorResult, responderResult)
+			assertN2DEIMTranslationCounts(t, topology, counts)
 			if counts.InitiatorDirect != 2 || counts.ResponderDirect != 1 {
 				t.Fatalf("N2d direct witness = %d/%d, want exact 2/1", counts.InitiatorDirect, counts.ResponderDirect)
 			}
@@ -389,6 +393,14 @@ func logN2DCounts(t testing.TB, scenario string, counts n2dPacketCounts, initiat
 		scenario, counts.InitiatorSTUN, counts.ResponderSTUN, counts.InitiatorDirect, counts.ResponderDirect,
 		counts.InitiatorTotal, counts.ResponderTotal, initiator.ControlFrames, responder.ControlFrames,
 		initiator.CarrierFramesWritten, responder.CarrierFramesWritten)
+	for side, result := range []n2dEndpointResult{initiator, responder} {
+		if result.FailureCause.Seen {
+			witness := result.FailureCause
+			t.Logf("N2D_CAUSE_FAILURE side=%d cause=%s operation=%s timeout=%t punch_source=%s",
+				side, n2dSafeCause(witness.Cause), n2dSafeOperation(witness.Operation), witness.Timeout,
+				n2dSafeSourceRelation(result.PunchReceiveSource))
+		}
+	}
 }
 
 func assertN2DPersistentTrip(t testing.TB, namespace string) {

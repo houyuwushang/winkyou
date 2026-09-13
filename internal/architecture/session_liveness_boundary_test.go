@@ -28,6 +28,7 @@ func sessionLivenessViolations(root string) ([]string, error) {
 		"armLiveness":                {"internal/v2/gatecorchestrator/liveness_controller.go": true, "internal/v2/gatecorchestrator/orchestrator.go": true},
 		"livenessProofHook":          {"internal/v2/gatecorchestrator/types.go": true, "internal/v2/gatecorchestrator/orchestrator.go": true, "internal/v2/gatecorchestrator/memory_proof_c1bproof.go": true},
 		"LivenessMemoryProofControl": {"internal/v2/gatecorchestrator/memory_proof_c1bproof.go": true},
+		"WrapMemoryInterface":        {"internal/v2/gatecorchestrator/memory_proof_c1bproof.go": true},
 	}
 	err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
@@ -85,8 +86,31 @@ func sessionLivenessViolations(root string) ([]string, error) {
 				if !ok {
 					continue
 				}
+				if fn.Name.Name == "bestEffortClose" {
+					ast.Inspect(fn.Body, func(n ast.Node) bool {
+						if sel, ok := n.(*ast.SelectorExpr); ok && sel.Sel.Name == "ActiveWrites" {
+							violations = append(violations, "aggregate writes cannot witness CLOSE")
+						}
+						return true
+					})
+				}
 				workers, timers := 0, 0
 				ast.Inspect(fn.Body, func(n ast.Node) bool {
+					if literal, ok := n.(*ast.BasicLit); ok && literal.Kind == token.STRING && literal.Value == `"authenticated_close_sent"` {
+						violations = append(violations, "liveness lacks per-CLOSE outer completion authority")
+					}
+					if inc, ok := n.(*ast.IncDecStmt); ok {
+						if sel, ok := inc.X.(*ast.SelectorExpr); ok && sel.Sel.Name == "closeWrites" {
+							violations = append(violations, "liveness lacks per-CLOSE outer completion authority")
+						}
+					}
+					if assignment, ok := n.(*ast.AssignStmt); ok {
+						for _, lhs := range assignment.Lhs {
+							if sel, ok := lhs.(*ast.SelectorExpr); ok && sel.Sel.Name == "closeWrites" {
+								violations = append(violations, "liveness lacks per-CLOSE outer completion authority")
+							}
+						}
+					}
 					if _, ok := n.(*ast.GoStmt); ok {
 						workers++
 					}
@@ -146,6 +170,8 @@ func sessionLivenessViolations(root string) ([]string, error) {
 			"Permit: c.permit", "case <-c.stop:", "go c.writer()", "go c.watchdog()",
 			"c.model.beginWrite(e)", "c.ni.InjectPacket(e.packet)",
 			"Elapsed: model.currentMonotonicElapsed", "c.model.windowExpiredLocked(c.model.writeWindow)",
+			"err == nil && n == want && e.teardown", "c.model.witness.CloseInnerInjected++",
+			"c.model.witness.CloseAdmitted++", "c.model.windowExpiredLocked(e.window)",
 		}},
 		{"internal/probeio/wireguard_active_policy.go", []string{
 			"!gate.finishRecorded || !gate.detached", "gate.activePolicy != nil", "p.policy.Permit()",
@@ -236,6 +262,10 @@ func f() {
 func TestSessionLivenessGateRejectsAuthorityAndLayerMutations(t *testing.T) {
 	for _, tc := range []struct{ file, source, want string }{
 		{"pkg/runtime/bypass.go", "package runtime; func f(){ _ = SetInnerTap; _ = ArmActivePolicy }", "unapproved liveness authority"},
+		{"pkg/runtime/inner_wrap.go", "package runtime; func f(){ _ = WrapMemoryInterface }", "unapproved liveness authority"},
+		{"internal/v2/gatecorchestrator/liveness_bypass.go", "package gatecorchestrator; func bestEffortClose(){ if c.gate.Witness().ActiveWrites > before { c.closeWrites++ } }", "aggregate writes cannot witness CLOSE"},
+		{"internal/v2/gatecorchestrator/liveness_bypass.go", "package gatecorchestrator; func f(){ return \"authenticated_close_sent\" }", "per-CLOSE outer completion"},
+		{"internal/v2/gatecorchestrator/liveness_bypass.go", "package gatecorchestrator; func f(){ c.closeWrites = 1 }", "per-CLOSE outer completion"},
 		{"pkg/tunnel/bypass.go", "package tunnel; import _ \"winkyou/internal/v2/gatecorchestrator\"", "domain dependency"},
 		{"internal/v2/gatecorchestrator/liveness_bypass.go", "package gatecorchestrator; import \"net\"; var _=net.Dial", "raw capability"},
 		{"internal/v2/gatecorchestrator/liveness_bypass.go", "package gatecorchestrator; func f(){ _=controller.OpenProbeSocket; _=controller.RegisterTarget; _=context.Background }", "forbidden"},
@@ -268,6 +298,8 @@ func TestSessionLivenessGateDetectsEarlyArmRawRenewalAndBypass(t *testing.T) {
 		{"internal/v2/gatecorchestrator/liveness_model.go", "func (m *livenessModel) receive(", "func (m *livenessModel) rawRX(", "only authenticated PONG"},
 		{"internal/v2/gatecorchestrator/liveness_controller.go", "make(chan livenessControlEvent, 2)", "make(chan livenessControlEvent, 3)", "queue exceeds two"},
 		{"internal/v2/gatecorchestrator/liveness_controller.go", "go c.writer()", "go c.writer(); go c.writer()", "worker topology drift"},
+		{"internal/v2/gatecorchestrator/liveness_controller.go", "err == nil && n == want && e.teardown", "e.teardown", "missing enforcement"},
+		{"internal/v2/gatecorchestrator/liveness_controller.go", "c.model.windowExpiredLocked(e.window)", "false, error(nil)", "missing enforcement"},
 	} {
 		t.Run(fmt.Sprint(i), func(t *testing.T) {
 			data, err := os.ReadFile(filepath.Join(repository, filepath.FromSlash(tc.file)))

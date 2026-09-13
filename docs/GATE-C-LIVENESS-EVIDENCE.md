@@ -1,5 +1,8 @@
 # Gate C session liveness 隔离实现证据
 
+后续修复索引（2026-09-12）：[PR #124 CLOSE 完成见证](./PR124-LIVENESS-CLOSE-REPAIR.md)。
+本文历史 RED 和原验收记录保留，不以新 PASS 覆盖。
+
 状态：Draft PR #112 实现中；时钟修订 A 已接受，修订后全矩阵与独立复审仍须核对。不授权 C1c、disposable router、
 现场 I/O 或新网络能力。基线 `fde8dfa60b3c4708ca9a2b4fd783270a08c7d87f`。
 权威：[Accepted ADR](./adr/ADR-N3C-SESSION-LIVENESS.md) §11/§12 与
