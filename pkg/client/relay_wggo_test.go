@@ -20,6 +20,22 @@ import (
 	"winkyou/pkg/tunnel"
 )
 
+const (
+	relayWGGoFixtureStatsWait = 10 * time.Second
+	// The coordinator is in-process/loopback. Allow cold race/gRPC startup
+	// one fifth of the existing stats wait, but still fail fast if absent.
+	// The independent 30s transport and 10s stats assertions remain unchanged.
+	relayWGGoFixtureCoordinatorTimeout = relayWGGoFixtureStatsWait / 5
+)
+
+func TestRelayWGGoFixtureCoordinatorBudget(t *testing.T) {
+	eng := newRelayWGGoTestEngine(t, "synthetic", "127.0.0.1:1", "turn:127.0.0.1:1")
+	if relayWGGoFixtureStatsWait != 10*time.Second || relayWGGoFixtureCoordinatorTimeout != 2*time.Second ||
+		eng.cfg.Coordinator.Timeout != relayWGGoFixtureCoordinatorTimeout {
+		t.Fatal("relay coordinator fixture lost its bounded cold-start budget derivation")
+	}
+}
+
 func TestRelayWGGoTwoEnginesExchangeIPv4Packets(t *testing.T) {
 	t.Setenv("WINKYOU_NETIF_ALLOW_MEMORY", "1")
 	t.Setenv("WINKYOU_TUNNEL_FORCE_WGGO", "1")
