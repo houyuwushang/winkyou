@@ -28,3 +28,28 @@ journal sequence=3。类型化 expiry cause 只决定日志 `validate_first` / `
 
 P1 仍待维护者另行裁决：`terminalChosen` 按 `terminalReason` 拼接类型化 cause。
 本批不实现 P1；issue 评论继续保留该待决项，不能把测试修复当成错误面已统一。
+
+### #134 实测与修复
+
+旧判据自然调度首批 race×200 **200/200 PASS（3.915s）**，但全部是 validate_first，
+没有覆盖另一条路径；不把它称作根因修复。随后 `78bf98c` 增加两种顺序的确定性
+test-only 控制：复用既有 beforeReturn hook，最终 postcheck 的一次时钟读取之后，
+在唯一生产 watcher 首次读取测试时钟前设置屏障；不增加 watcher、不修改 committed
+对象，也不伪造 FINISH。释放屏障与 Consume 的顺序决定谁先观察 expiry。
+
+该控制首次 RED（0.612s）：validate_first PASS，watcher_first 被旧的类型化 cause
+断言拒绝；**两条路径的真实 journal 都是 expired、sequence=3、authorization=nil、
+ErrCommittedAttemptInvalid=true**。日志 SHA-256：
+`50766fe3fdcbda542ed52422f58e3056fb2c85d5f47a5e29f6b6340e1ee89856`。
+
+修复 `7231f72` 只把公共断言改为 `ErrCommittedAttemptInvalid`；原自然顺序用例仍在，
+追加 FINISH reason 与 sequence=3 的精确检查。P1 生产错误身份没有改变。
+
+```text
+go test -race ./internal/governor -run '^TestCommittedAttempt(InvalidatesBeforeFirstEmission|ExpiryObserverOrderings)$/^(credential_expiry|validate_first|watcher_first)$' -count=200 -v -failfast -timeout=5m
+```
+
+修复后首批 PASS（12.773s），自然用例 200 次 + 两个受控顺序各 200 次；实际日志
+validate_first=400、watcher_first=200，600 次真实 expired FINISH 的 sequence 均为 3。
+绿日志 SHA-256：`0904a37fb7ab7b014c3d70502a5ed1a05268abfaee7f82a241e99f32c4dc77e5`。
+全部控制在 `_test.go`，5s 只界定测试屏障等待，不变更任何产品 timer 或资源预算。
