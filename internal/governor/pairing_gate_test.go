@@ -252,7 +252,7 @@ func assertTestExpiredCarrierAuthorization(t *testing.T, environment *testPairin
 	} else {
 		t.Log("ordering=watcher_first")
 	}
-	if authorization != nil || !errors.Is(err, ErrPairingCredentialExpired) {
+	if authorization != nil || !errors.Is(err, ErrCommittedAttemptInvalid) {
 		t.Errorf("consume expired token = %#v/%v", authorization, err)
 	}
 	snapshot, readErr := readPairingLedgerSnapshot(environment.path, environment.clock.Now(), environment.owner.Info().InstanceID, validateTestPairingLedgerFile)
