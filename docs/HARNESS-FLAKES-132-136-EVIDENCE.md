@@ -68,3 +68,33 @@ validate_first=400、watcher_first=200，600 次真实 expired FINISH 的 sequen
 Go 1.23.1、race、GOMAXPROCS=28、无附加 CPU 压力，逐进程独立原始日志。
 这不是同一进程 count=20 的热缓存证明；old/new 两组都不丢弃失败样本或重跑求绿。
 旧组没有复现时如实报告 0/20，而不将契约 RED 冒称实际冷启动超时。
+
+### #136 首批对照与实现证据
+
+`92d3f00` 保持实际 200ms，新增派生预算契约首次 RED（0.974s）；仅证明旧配置不满足
+2s 夹具契约，不是复现 alpha.Start 超时。`fbbe972` 将 coordinator timeout 接到
+`relayWGGoFixtureStatsWait / 5`，两个原 10s stats 等待只做等价常量提取。
+预算契约的修复后首批 race×20 PASS（1.944s）。
+
+| 实际配置 | 新进程数 | Start deadline 失败 | 其它失败 | 完整用例通过 | 用例耗时 min / mean / max |
+| --- | ---: | ---: | ---: | ---: | --- |
+| 200ms 旧值 | 20 | 0/20 | 0 | 20/20 | 6.91 / 7.016 / 7.16s |
+| 2s 派生值 | 20 | 0/20 | 0 | 20/20 | 8.12 / 8.1305 / 8.17s |
+
+两组均为 Go 1.23.1、GOMAXPROCS=28、race、每个全新进程 count=1、无人工压力，串行
+执行且各保留 20 份首次日志。本机 **未复现** 原始 hosted Start deadline；新值增加的是
+夹具的有界冷启动余量，不能将本表解释为延迟优化或确定的旧值失败率上界。
+
+```text
+go test -race ./pkg/client -run '^TestRelayWGGoFixtureCoordinatorBudget$' -count=20 -failfast -v
+# old/new 各启动 20 个全新进程；不是同一进程的 count=20：
+go test -race ./pkg/client -run '^TestRelayWGGoTwoEnginesExchangeIPv4Packets$' -count=1 -failfast -v -timeout=2m
+```
+
+原始 RED / GREEN 预算日志 SHA-256 分别为
+`9d6dcc56ffe7cca381b543d2cb4906839bb3ff5abf3f73358f5217fc02f6c514` /
+`4d721f0b323ae1095a4f882b76a6c2171a1dc12bb86ec8dc8797178fdfd89d92`。
+每组 20 份日志按文件名排序，以 `filename + space + sha256 + LF` 的 UTF-8 摘要清单
+再次计算 SHA-256：old `8da513c2420f9dcd896f42415eb8432bb1c0f70779171071b878949ed374461e`；
+new `ec0478ba15b8061bd20d57e9a702ef917263dd03240ce3687c75fd2af407cbc7`。
+原始日志仅本地留存；独立 relay race×20、全仓和远端首次 CI 结果在批次验证节另记。
