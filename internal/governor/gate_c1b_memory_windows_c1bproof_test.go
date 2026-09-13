@@ -13,6 +13,8 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -541,6 +543,86 @@ func TestGateC1bMemoryFixtureStressSchedules(t *testing.T) {
 			started := time.Now()
 			defer profile.timing.report(t, profile, started)
 			runGateC1bMemoryProductProfile(t, "fixture-stress-"+profile.name, profile)
+		}) {
+			t.FailNow()
+		}
+	}
+}
+
+// Repeat the actual Fresh100 profile order in one process, not one short batch
+// per -count iteration. The old isolated calibration remains a separate test.
+// No clock, progress callback, deadline or scheduling fault is injected here.
+func TestGateC1bMemoryFixtureFresh100Schedules(t *testing.T) {
+	if os.Getenv("WINKYOU_GATE_C1B_REPEAT_REQUIRED") != "1" {
+		t.Skip("Fresh100 fixture calibration was not explicitly required")
+	}
+	// Standard public windows-latest has four logical CPUs and CI does not
+	// override Go's default. Two busy workers stay alive for the whole batch.
+	if runtime.GOMAXPROCS(0) != 4 {
+		t.Fatal("Fresh100 fixture calibration requires CI-equivalent GOMAXPROCS=4")
+	}
+	var samples [3][]time.Duration
+	var completed [3]int
+	// Report partial measurements on the FIRST failure, never convert absent
+	// winner timestamps to zero or retry the failed namespace.
+	defer func() {
+		for index, profile := range gateC1bMemoryProfiles {
+			values := samples[index]
+			if len(values) == 0 {
+				t.Logf("MEMORY_FRESH100_SUMMARY profile=%s completed=%d endpoints=0 complete=false", profile.name, completed[index])
+				continue
+			}
+			sort.Slice(values, func(i, j int) bool { return values[i] < values[j] })
+			p50 := values[(len(values)*50+99)/100-1]
+			p95 := values[(len(values)*95+99)/100-1]
+			maximum := values[len(values)-1]
+			window := memoryFixtureWindows(profile.profile)
+			t.Logf("MEMORY_FRESH100_SUMMARY profile=%s completed=%d endpoints=%d p50_ns=%d p95_ns=%d max_ns=%d candidate_budget_ns=%d headroom_ok=%t",
+				profile.name, completed[index], len(values), p50.Nanoseconds(), p95.Nanoseconds(), maximum.Nanoseconds(),
+				window.candidateTime.Nanoseconds(), p95*5 < window.candidateTime*4)
+			want := 33
+			if index == 0 {
+				want = 34
+			}
+			if completed[index] != want || len(values) != want*2 {
+				t.Errorf("Fresh100 calibration incomplete: profile=%s completed=%d want=%d", profile.name, completed[index], want)
+			}
+			if p95*5 >= window.candidateTime*4 {
+				t.Errorf("Fresh100 p95 must be below 80%% of candidate window: profile=%s p95_ns=%d candidate_budget_ns=%d", profile.name, p95.Nanoseconds(), window.candidateTime.Nanoseconds())
+			}
+		}
+	}()
+	startGateC1bMemoryFixturePressure(t)
+	for iteration := range 100 {
+		index := iteration % len(gateC1bMemoryProfiles)
+		profile := gateC1bMemoryProfiles[index]
+		profile.cli, profile.timing = true, &gateC1bMemoryTimingWitness{}
+		label := profile.name + "-fresh-" + strconv.Itoa(iteration)
+		if !t.Run(label, func(t *testing.T) {
+			started := time.Now()
+			defer func() {
+				profile.timing.report(t, profile, started)
+				w := profile.timing
+				w.mu.Lock()
+				defer w.mu.Unlock()
+				complete := true
+				for side := range 2 {
+					seen := !w.candidate[side].IsZero() && !w.winner[side].IsZero() && !w.winner[side].Before(w.candidate[side])
+					elapsed := time.Duration(-1)
+					if seen {
+						elapsed = w.winner[side].Sub(w.candidate[side])
+						samples[index] = append(samples[index], elapsed)
+					}
+					complete = complete && seen && w.success[side]
+					t.Logf("MEMORY_FRESH100_SAMPLE ordinal=%d profile=%s side=%d winner_seen=%t ready=%t candidate_to_winner_ns=%d", iteration, profile.name, side, seen, w.success[side], elapsed.Nanoseconds())
+				}
+				if complete {
+					completed[index]++
+				} else {
+					t.Error("Fresh100 candidate measurement or successful terminal is missing")
+				}
+			}()
+			runGateC1bMemoryProductProfile(t, label, profile)
 		}) {
 			t.FailNow()
 		}
