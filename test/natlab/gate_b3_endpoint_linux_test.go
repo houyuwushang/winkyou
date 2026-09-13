@@ -144,7 +144,14 @@ func runGateB3Endpoint(config gateB2EndpointConfig) (result gateB3EndpointResult
 	gateResult, runErr := gateb.Run(ctx, gateb.Config{
 		Machine: machine, Ledger: ledger, Artifact: artifact, Stream: recordedStream,
 		ObserverTopology: topology, HardNATLabFactory: natLabFactory, BuildVersion: "gate-b3-netns",
-		Progress: func(string, bool) error { return nil },
+		Progress: func(stage string, _ bool) error {
+			// Test-only last observation. It carries no identity, address or
+			// payload; a concurrent partial read remains explicitly unavailable.
+			if err := os.WriteFile(config.ResultPath+".stage", []byte(gateB3ResultStage(stage)), 0o600); err != nil {
+				return errors.New("Gate B3 stage witness unavailable")
+			}
+			return nil
+		},
 	})
 	copyGateB3Result(&result, gateResult)
 	result.LocalDeadline = errors.Is(runErr, context.DeadlineExceeded)

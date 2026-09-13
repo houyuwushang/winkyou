@@ -8,6 +8,19 @@ import (
 	"time"
 )
 
+func logGateB3EndpointPair(t testing.TB, pair ...*gateB2EndpointProcess) {
+	t.Helper()
+	for side, process := range pair {
+		if process == nil {
+			t.Logf("GATE_B3_ENDPOINT_TERMINAL side=%d available=false", side)
+			continue
+		}
+		snapshot := readGateB3ResultDiagnostic(process.resultPath)
+		t.Logf("GATE_B3_ENDPOINT_TERMINAL side=%d non_atomic=true result=%s last_stage=%s error_stage=%s class=%s",
+			side, snapshot.State, snapshot.LastStage, snapshot.ErrorStage, snapshot.Class)
+	}
+}
+
 func logGateB3RouterPair(t testing.TB, pair ...*gateB2NATRouter) {
 	t.Helper()
 	// Process-wide, point-in-time measurements, not a per-attempt peak and

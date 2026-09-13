@@ -213,10 +213,15 @@ func testGateB3FullShapeLifetime(t *testing.T, dropEvery uint64, conntrackCap in
 	defer func() {
 		if t.Failed() && !residueComplete {
 			// Runs on Fatal too, before ordinary t.Cleanup destroys evidence.
-			logGateB3RouterPair(t, leftRouter, rightRouter)
-			gateB3FailedCaseCleanup(t, topology, observer, leftRouter, rightRouter,
-				initiator, responder, conntrackMonitor, lifetimeGuard, leftModel, rightModel)
-			logGateB3RouterPair(t, leftRouter, rightRouter)
+			gateB3ReportFailedCase(
+				func() { logGateB3EndpointPair(t, initiator, responder) },
+				func() {
+					logGateB3RouterPair(t, leftRouter, rightRouter)
+					gateB3FailedCaseCleanup(t, topology, observer, leftRouter, rightRouter,
+						initiator, responder, conntrackMonitor, lifetimeGuard, leftModel, rightModel)
+					logGateB3RouterPair(t, leftRouter, rightRouter)
+				},
+			)
 		}
 	}()
 	if err := topology.installGateB2PacketCounters(observer.topology); err != nil {
@@ -225,7 +230,12 @@ func testGateB3FullShapeLifetime(t *testing.T, dropEvery uint64, conntrackCap in
 	artifacts := buildGateB3Artifacts(t, fmt.Sprintf("drop-%d", dropEvery))
 	defer clearGateB2Artifacts(&artifacts)
 	initiator, responder = startGateB3Pair(t, topology, observer.topology, artifacts)
-	initiatorResult, responderResult := waitGateB3Result(t, initiator), waitGateB3Result(t, responder)
+	layer := ""
+	if lifetime != nil {
+		layer = lifetime.layer
+	}
+	resultLimit := gateB3ResultWaitLimit(layer)
+	initiatorResult, responderResult := waitGateB3ResultWithin(t, initiator, resultLimit), waitGateB3ResultWithin(t, responder, resultLimit)
 	for _, result := range []gateB3EndpointResult{initiatorResult, responderResult} {
 		assertGateB3FrozenShape(t, result)
 	}
@@ -819,7 +829,12 @@ func newGateB3EndpointProcessWithFault(t testing.TB, namespace string, role dire
 
 func waitGateB3Result(t testing.TB, process *gateB2EndpointProcess) gateB3EndpointResult {
 	t.Helper()
-	deadline := time.Now().Add(gateB3ProcessLimit)
+	return waitGateB3ResultWithin(t, process, gateB3ProcessLimit)
+}
+
+func waitGateB3ResultWithin(t testing.TB, process *gateB2EndpointProcess, limit time.Duration) gateB3EndpointResult {
+	t.Helper()
+	deadline := time.Now().Add(limit)
 	for time.Now().Before(deadline) {
 		var result gateB3EndpointResult
 		if readN1JSON(process.resultPath, &result) {

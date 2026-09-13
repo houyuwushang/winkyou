@@ -22,6 +22,9 @@ const (
 )
 
 func gateB3ResultWaitLimit(layer string) time.Duration {
+	if layer == "M-E" || layer == "M-X" {
+		return gateB3FullEnvelopeResultLimit
+	}
 	return gateB3ProcessLimit
 }
 
