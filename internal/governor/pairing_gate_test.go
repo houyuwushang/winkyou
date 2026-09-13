@@ -239,7 +239,13 @@ func TestCommittedAttemptInvalidatesBeforeFirstEmission(t *testing.T) {
 			t.Fatalf("commit: %v", err)
 		}
 		environment.clock.Set(environment.request.ExpiresAt)
-		if authorization, err := committed.ConsumeForCarrier(environment.context); authorization != nil || !errors.Is(err, ErrPairingCredentialExpired) {
+		authorization, err := committed.ConsumeForCarrier(environment.context)
+		if errors.Is(err, ErrPairingCredentialExpired) {
+			t.Log("ordering=validate_first")
+		} else {
+			t.Log("ordering=watcher_first")
+		}
+		if authorization != nil || !errors.Is(err, ErrPairingCredentialExpired) {
 			t.Fatalf("consume expired token = %#v/%v", authorization, err)
 		}
 		snapshot, readErr := readPairingLedgerSnapshot(environment.path, environment.clock.Now(), environment.owner.Info().InstanceID, validateTestPairingLedgerFile)
