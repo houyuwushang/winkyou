@@ -1,5 +1,7 @@
 # TASK-02: 网络接口抽象层
 
+> 隐私说明：部署标识已替换为占位符；历史计数、协议约束及暂停/NO-GO 结论不变。示例不可直接执行，见[公开文档规则](../DOCUMENTATION-PRIVACY.md)。
+
 > 历史任务说明：本任务文档按 legacy MVP baseline 编写。当前 active architecture baseline 为 `docs/CONNECTIVITY-SOLVER-BASELINE.md`。
 > MVP 范围包含 `TUN`、`userspace`、`proxy`，`TAP` 为 post-MVP 能力。
 
@@ -275,7 +277,7 @@ func TestTUNReadWrite(t *testing.T) {
     require.NoError(t, err)
     defer tun.Close()
     
-    err = tun.SetIP(net.ParseIP("10.100.0.1"), net.CIDRMask(24, 32))
+    err = tun.SetIP(net.ParseIP("<IPV4_1>"), net.CIDRMask(24, 32))
     require.NoError(t, err)
     
     // 在另一个goroutine发送ping
@@ -287,7 +289,7 @@ func TestTUNReadWrite(t *testing.T) {
 
 | 验收项 | 验收条件 | 测试方法 |
 |--------|----------|----------|
-| AC-02-1 | TCP连接能建立 | `curl http://10.100.0.2:8080` 成功 |
+| AC-02-1 | TCP连接能建立 | `curl http://<IPV4_2>:8080` 成功 |
 | AC-02-2 | UDP能发送接收 | DNS查询或自定义UDP测试 |
 | AC-02-3 | 无需root权限 | 普通用户运行测试 |
 | AC-02-4 | 性能可接受 | 吞吐量 > 100Mbps |

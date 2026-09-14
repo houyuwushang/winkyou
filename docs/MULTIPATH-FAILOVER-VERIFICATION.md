@@ -1,5 +1,7 @@
 # Multipath Failover Verification
 
+> Privacy: deployment identifiers are placeholders. Historical counts, protocol constraints, and pause/NO-GO decisions are unchanged. Examples are not directly executable; see the [public-document policy](./DOCUMENTATION-PRIVACY.md).
+
 This note describes the real-device verification script for protected direct
 multipath. It is intentionally operator-facing and does not store credentials.
 
@@ -8,8 +10,8 @@ multipath. It is intentionally operator-facing and does not store credentials.
 Use the current three-node test topology as labels:
 
 - A: local machine, also referred to as `local-a`.
-- B: `chen-win`, used as coordinator host, jump host, or middle-node dependency in tests.
-- C: `inner-gw`, the target peer behind B-side access.
+- B: `<NODE_B_HOST>`, used as coordinator host, jump host, or middle-node dependency in tests.
+- C: `<NODE_A_HOST>`, the target peer behind B-side access.
 
 Do not commit SSH passwords or private keys into this repository. If a fault
 action uses SSH, rely on an interactive SSH prompt, SSH agent, or local
@@ -61,13 +63,13 @@ operator can see whether `active_path_id`, `last_failover_at`, or
 
 Fault actions require both an action flag and `--confirm-fault`.
 
-Stop coordinator on `chen-win`:
+Stop coordinator on `<NODE_B_HOST>`:
 
 ```bash
 python scripts/verify-multipath-failover.py \
   --stop-coordinator \
   --confirm-fault \
-  --coordinator-host chen-win
+  --coordinator-host <NODE_B_HOST>
 ```
 
 Stop a relay process on the relay host:
@@ -76,7 +78,7 @@ Stop a relay process on the relay host:
 python scripts/verify-multipath-failover.py \
   --stop-relay \
   --confirm-fault \
-  --relay-host chen-win
+  --relay-host <NODE_B_HOST>
 ```
 
 Run an explicit host-specific primary dependency fault:
@@ -85,7 +87,7 @@ Run an explicit host-specific primary dependency fault:
 python scripts/verify-multipath-failover.py \
   --pause-primary-host \
   --confirm-fault \
-  --primary-host chen-win \
+  --primary-host <NODE_B_HOST> \
   --pause-primary-command "<operator supplied command>"
 ```
 
@@ -101,7 +103,7 @@ python scripts/verify-multipath-failover.py \
   --pause-primary-host \
   --confirm-fault \
   --require-failover \
-  --primary-host chen-win \
+  --primary-host <NODE_B_HOST> \
   --pause-primary-command "<operator supplied command>"
 ```
 

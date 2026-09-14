@@ -1,5 +1,7 @@
 # TASK-03: WireGuard隧道层
 
+> 隐私说明：部署标识已替换为占位符；历史计数、协议约束及暂停/NO-GO 结论不变。示例不可直接执行，见[公开文档规则](../DOCUMENTATION-PRIVACY.md)。
+
 > 历史任务说明：本任务文档按 legacy MVP baseline 编写。当前 active architecture baseline 为 `docs/CONNECTIVITY-SOLVER-BASELINE.md`。
 > MVP 固定交付 `wireguard-go` 封装，不将 `Wink Protocol v1` 纳入本任务交付范围。
 
@@ -280,26 +282,26 @@ Public:  bPublicKeyBase64...
 # 节点A配置
 interface:
   private_key: aPrivateKeyBase64...
-  address: 10.100.0.1/24
+  address: <IPV4_1>/24
   listen_port: 51820
 peers:
   - public_key: bPublicKeyBase64...
-    allowed_ips: 10.100.0.2/32
+    allowed_ips: <IPV4_2>/32
     endpoint: B_IP:51820
 
 # 节点B配置
 interface:
   private_key: bPrivateKeyBase64...
-  address: 10.100.0.2/24
+  address: <IPV4_2>/24
   listen_port: 51820
 peers:
   - public_key: aPublicKeyBase64...
-    allowed_ips: 10.100.0.1/32
+    allowed_ips: <IPV4_1>/32
     endpoint: A_IP:51820
 
 # 测试
-$ ping 10.100.0.2  # 从A ping B
-PING 10.100.0.2: 64 bytes, time=5ms
+$ ping <IPV4_2>  # 从A ping B
+PING <IPV4_2>: 64 bytes, time=5ms
 ```
 
 ### AC-04: 密钥管理验收
@@ -411,8 +413,8 @@ wireguard-go使用IPC协议配置，格式如下：
 private_key=hex_encoded_key
 listen_port=51820
 public_key=hex_encoded_peer_key
-allowed_ip=10.100.0.0/24
-endpoint=1.2.3.4:51820
+allowed_ip=<IPV4_3>/24
+endpoint=<IPV4_4>:51820
 ```
 
 ### 3. Keepalive重要性

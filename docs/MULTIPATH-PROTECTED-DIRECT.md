@@ -1,5 +1,7 @@
 # Protected Direct Multipath
 
+> Privacy: deployment identifiers are placeholders. Historical counts, protocol constraints, and pause/NO-GO decisions are unchanged. Examples are not directly executable; see the [public-document policy](./DOCUMENTATION-PRIVACY.md).
+
 本文定义从 Prompt 43 起的当前开发方向：WinkYou 需要支持质量最优 primary path，同时尽量保持 direct/P2P path 作为 protected standby。它是当前 roadmap 文档，不能替代 [`CONNECTIVITY-SOLVER-BASELINE.md`](./CONNECTIVITY-SOLVER-BASELINE.md) 的 session、solver、strategy 和 transport 边界。
 
 ## 目标
@@ -114,8 +116,8 @@ direct/P2P path 即使不是最低延迟，也有一个关键价值：它通常�
 当前真实验证拓扑命名：
 
 - A = 本机 Windows 节点。
-- B = `chen-win`，当前可作为 coordinator、跳板或间歇 bootstrap 参与者。
-- C = `inner-gw`，远端 Linux 节点。
+- B = `<NODE_B_HOST>`，当前可作为 coordinator、跳板或间歇 bootstrap 参与者。
+- C = `<NODE_A_HOST>`，远端 Linux 节点。
 
 该拓扑中的关键判断是：B 可以帮助 A/C 完成 bootstrap 或临时信息交换，但 B 不应成为 A-C 用户数据面的默认持续依赖。任何验证凭据都属于本地操作秘密，不能写入仓库文档、配置示例或测试 fixture。
 

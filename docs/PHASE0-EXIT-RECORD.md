@@ -2,7 +2,7 @@
 
 - 状态：**已完成 / 出口门槛全部满足**
 - 日期：2026-08-13
-- 记录人：维护者 @houyuwushang（专家审查协助核验）
+- 记录人：维护者 houyuwushang（专家审查协助核验）
 - 对应计划：[`proposals/WINKYOU-V2-DIRECT-FIRST-PLAN.md`](./proposals/WINKYOU-V2-DIRECT-FIRST-PLAN.md) §16 Phase 0
 - 本记录的效力：确认 Phase 0 退出门槛已满足，v2 计划自本记录合入起由 **Draft 标记为 Accepted**。
 
@@ -30,7 +30,7 @@
 
 ## 3. 回滚责任
 
-- **回滚责任人**：维护者 @houyuwushang。
+- **回滚责任人**：维护者 houyuwushang。
 - **回滚单位**：main 全部以 merge commit 合入,单个 PR 可独立 `git revert -m 1 <merge-sha>`。
 - **安全回滚约束**：任何回滚不得移除 §1.2 的永久回归门禁与 §2 的安全边界；若回滚涉及这些文件,必须在回滚 PR 中说明并保留等效门禁。
 

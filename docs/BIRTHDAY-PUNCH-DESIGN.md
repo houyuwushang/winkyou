@@ -1,5 +1,7 @@
 # 生日悖论直连改造设计（Birthday-Paradox Direct Punch）
 
+> 隐私说明：部署标识已替换为占位符；历史计数、协议约束及暂停/NO-GO 结论不变。示例不可直接执行，见[公开文档规则](./DOCUMENTATION-PRIVACY.md)。
+
 > **暂停告警（2026-07-22）：** 产品化 cached self-bootstrap 在失联重试中造成 UDP 五元组/出口会话风暴。该方向短期暂停，当前实现为 **NO-GO**，不得在办公网、生产网或未经外部限流的公网启用。早期真机直连成功只证明算法可行，不代表长期自治恢复具备资源安全性。事故计算与恢复门禁见 [`INCIDENT-2026-07-22-SELF-BOOTSTRAP-UDP-STORM.md`](./INCIDENT-2026-07-22-SELF-BOOTSTRAP-UDP-STORM.md)。
 >
 > 状态：M6 真机公网直连和 M7 无 Wintun 用户态 SSH bridge 已完成（2026-07-16），M8 记录了随后约 11 小时的无重连会话及单 stream 收尾缺陷。之后 `birthday_punch` 获胜 socket 已接入自治图运行时并完成三节点现场 edge rotation；recovery card/cached self-bootstrap 随后取得 r12 公网进程重入结果。Slice 4.5 已把运行时抽到 `pkg/meshruntime`，并在 2026-07-19 完成 C -> B -> A 三节点产品 `wink up` 滚动现场部署：三者均 zero seed、无基础设施 coordinator，并各有两条一跳 `protected_direct` packet edge。透明系统 L3、OS 自启动/重启、同时冷启动和公网 IP 变化仍是后续工作。
@@ -16,7 +18,7 @@
 | 打洞时序 | **~7ms** 一次性 burst | 信令**同步触发** + 持续数秒双向对撞 |
 | NAT 分类 | 单 STUN → `nat_type=unknown` | 多 STUN 分类，据类型选策略 |
 
-现场实测：inner 端发出 500+ 包全部出向、对端 tcpdump **零入站**（`.live-run/inner-live-wide-collect.txt`）。根因是 inner 用单 socket 打对端 2050 个端口，自己的对称 NAT 给每个目标分配不同公网源端口，对端无法匹配任何映射，全部当未授权入站丢弃。
+现场实测：inner 端发出 500+ 包全部出向、对端 tcpdump **零入站**（`.live-run/<NODE_A_INSTANCE>-wide-collect.txt`）。根因是 inner 用单 socket 打对端 2050 个端口，自己的对称 NAT 给每个目标分配不同公网源端口，对端无法匹配任何映射，全部当未授权入站丢弃。
 
 生日悖论数字（danderson 实测）：一端对称开 256 socket、另一端猜 256 次 → 命中 **64%**；而 `m=1、n=2050` 的现状双对称命中率 **≈0%**。不是发得不够，是撒错了维度。
 
@@ -69,7 +71,7 @@ signal+sync (M4) ───┘                                             （现
 
 ## 6. 验证判据（M6 终态）
 
-- ✅ inner `enp69s0` 抓到来自 `192.0.2.10` 的公网入站 UDP；R3 为 26 包、0 kernel drop。
+- ✅ inner `<PHYSICAL_INTERFACE>` 抓到来自 `192.0.2.10` 的公网入站 UDP；R3 为 26 包、0 kernel drop。
 - ✅ 两端 `punchtest` 都打印 `HIT`，应用层 ping/echo 连续三轮 5/5，RTT 35–37ms。
 - ✅ `m6-overlayoff-20260716-r4` 在两端 Tailscale/natpierce 都关闭时仍双端 HIT + 5/5，公网物理路由和持续状态监控均已留证。
 - ✅ `no-wintun-20260716-r1` 把命中 socket 升级为 QUIC/mTLS bridge；本机 `Tailscale=Stopped`、`natpierce_count=0`，远端 `tailscale=inactive`、`natpierce_count=0` 时，通过 `127.0.0.1:22022` 新建 SSH 仍成功。
@@ -151,19 +153,19 @@ cached self-bootstrap 对 preserving/sequential 端口模型先进行一次低�
 
 | run | 参数（双方） | 结果 |
 |---|---|---|
-| `m6-codex-20260716-r1` | 128 sockets × 64 fresh targets/round，250ms，burst 1 | 双端 HIT + 5/5 |
-| `m6-codex-20260716-r2` | 128 × 48，300ms，burst 1 | 双端 HIT + 5/5，RTT 36–37ms |
-| `m6-codex-20260716-r3` | 128 × 48，300ms，burst 1，45s 窗口 | 双端 HIT + 5/5；inner 物理口抓到 26 包、0 drop |
+| `M6-R1` | 128 sockets × 64 fresh targets/round，250ms，burst 1 | 双端 HIT + 5/5 |
+| `M6-R2` | 128 × 48，300ms，burst 1 | 双端 HIT + 5/5，RTT 36–37ms |
+| `M6-R3` | 128 × 48，300ms，burst 1，45s 窗口 | 双端 HIT + 5/5；inner 物理口抓到 26 包、0 drop |
 
-R3 首包为 `192.0.2.10:19786 -> 172.20.0.11:16048`，与 responder 的 `peer=192.0.2.10:19786`、本地获胜端口 `16048` 完全对应。现场产物归档在 `.live-run/runs/m6-codex-20260716-r{1,2,3}/`（Git 忽略）。较低负载 `128×48×300ms` 已连续两轮成功，并已回灌正式 strategy。
+R3 首包为 `192.0.2.10:19786 -> <IPV4_1>:16048`，与 responder 的 `peer=192.0.2.10:19786`、本地获胜端口 `16048` 完全对应。现场产物归档在 `<PRIVATE_ARTIFACT_DIRECTORY>`（Git 忽略）。较低负载 `128×48×300ms` 已连续两轮成功，并已回灌正式 strategy。
 
 ### 8.5 M7 无 Wintun 数据面
 
 - `pkg/dataplane/portforward` 接管 puncher 的获胜 `*net.UDPConn`，使用 `quic-go v0.54.1`（兼容项目 `go 1.23`）承载双向可靠流。
 - 共享的 32 字节随机 secret 通过 HMAC 分别派生 client/server Ed25519 身份；QUIC 使用 TLS 1.3、双方固定公钥校验和角色区分，不信任系统 CA，也不是裸 `InsecureSkipVerify`。
 - responder 只拨配置中的固定 TCP target；initiator 默认只监听 `127.0.0.1`。每个本地 TCP 连接映射为一条 QUIC 双向 stream。
-- 真机 v2 命中约 37 秒：本机获胜 socket `0.0.0.0:53746 -> 198.51.100.20:11459`，远端 `0.0.0.0:35239 -> 192.0.2.10:2131`；随后 `ssh -p 22022 node-c-user@127.0.0.1` 成功。
-- 全部 overlay 关闭的证明来自同一轮 v1：本机公网路由为物理以太网 ifIndex 9 / `10.0.0.1`，远端回程为 `enp69s0` / `172.20.0.1`；关闭后另开 SSH stream 返回 `BOTH_OVERLAYS_OFF_BRIDGE_OK`。
+- 真机 v2 命中约 37 秒：本机获胜 socket `0.0.0.0:53746 -> 198.51.100.20:11459`，远端 `0.0.0.0:35239 -> 192.0.2.10:2131`；随后 `ssh -p 22022 <SSH_DESTINATION_1>` 成功。
+- 全部 overlay 关闭的证明来自同一轮 v1：本机公网路由为物理以太网 ifIndex 9 / `10.0.0.1`，远端回程为 `<PHYSICAL_INTERFACE>` / `<IPV4_2>`；关闭后另开 SSH stream 返回 `BOTH_OVERLAYS_OFF_BRIDGE_OK`。
 
 ### 8.6 M8 长时运行快照（2026-07-17）
 

@@ -1,5 +1,7 @@
 # WinkYou 自托管 Quickstart
 
+> 隐私说明：部署标识已替换为占位符；历史计数、协议约束及暂停/NO-GO 结论不变。示例不可直接执行，见[公开文档规则](./DOCUMENTATION-PRIVACY.md)。
+
 本文给出一条从零跑通的最小路径：一台 Linux 公网服务器运行 coordinator + coturn，两台 client 加入同一个虚拟网络，并分别验证 direct path 与 relay path。
 
 这是默认 `legacy` 模式的 quickstart，不是 Slice 4.5 `autonomous_mesh` 指南。默认关闭的自治图模式不启动这里的 coordinator/WireGuard client 生命周期；它的类型化配置、独立状态文件冒烟和 graceful `wink down` 见 [`LONG-RUNNING-CLIENT.md`](./LONG-RUNNING-CLIENT.md)。该自治 CLI adapter 尚未现场部署，不能用本 quickstart 的验收结果替代。
@@ -114,7 +116,7 @@ Windows PowerShell 等价写法：
 
 ```powershell
 $authKey = "<PASTE_THE_SAME_RANDOM_KEY>"
-$caFile = "C:\ProgramData\WinkYou\coordinator.crt"
+$caFile = "<LOCAL_PATH_1>"
 $content = Get-Content deploy\quickstart\config.node-a.yaml -Raw
 $content = $content.Replace("<HOST>", "203.0.113.10")
 $content = $content.Replace("<COORDINATOR_AUTH_KEY>", $authKey)
@@ -127,7 +129,7 @@ $content | Set-Content -Encoding utf8 node-a.yaml
 ```powershell
 deploy\quickstart\windows-run.ps1 `
   -HostAddress 203.0.113.10 `
-  -CoordinatorCAFile C:\ProgramData\WinkYou\coordinator.crt `
+  -CoordinatorCAFile <LOCAL_PATH_1> `
   -CoordinatorAuthKey "<PASTE_THE_SAME_RANDOM_KEY>"
 ```
 

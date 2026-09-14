@@ -1,5 +1,7 @@
 # ADR：N3c Gate C1 SSH/OOB assembly 与产品入口设计冻结
 
+> 隐私说明：部署标识已替换为占位符；历史计数、协议约束及暂停/NO-GO 结论不变。示例不可直接执行，见[公开文档规则](../DOCUMENTATION-PRIVACY.md)。
+
 - 状态：**Accepted（2026-09-05）：独立评审已接受设计冻结；Gate C1a 已完成，Issue #100
   已由 PR #103 关闭，并另行授权 Gate C1b 的前台一次性 product composition 实现与
   memory、literal-loopback、`linux && natlab` required netns 取证。仍不授权 C1c、构建现场
@@ -780,7 +782,7 @@ command、`-T`、无 `-N/-s`。这只是把“执行固定 command session”的
 配置表达，不放宽 shell、subsystem、forwarding、TTY、fallback 或任意命令边界。
 
 C1a 的 Windows 零连接 `ssh -G` 实现验证进一步发现：即使使用 `-F none`，系统 OpenSSH 仍需
-固定 `PROGRAMDATA=C:\ProgramData` 才能展开 effective config；仅提供 `SYSTEMROOT/WINDIR` 会在
+固定 `PROGRAMDATA=<LOCAL_PATH_1>` 才能展开 effective config；仅提供 `SYSTEMROOT/WINDIR` 会在
 启动前失败。因此最小 child environment 固定为这三个系统值，不继承 `PATH`、`HOME`、
 `USERPROFILE`、`SSH_AUTH_SOCK` 或 `SSH_ASKPASS*`。该兼容性修正不引入 request-derived env，
 不读取 ssh config，也不增加连接或网络权限。

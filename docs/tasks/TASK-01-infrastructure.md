@@ -1,5 +1,7 @@
 # TASK-01: 基础设施模块
 
+> 隐私说明：部署标识已替换为占位符；历史计数、协议约束及暂停/NO-GO 结论不变。示例不可直接执行，见[公开文档规则](../DOCUMENTATION-PRIVACY.md)。
+
 > 历史任务说明：本任务文档按 legacy MVP baseline 编写。当前 active architecture baseline 为 `docs/CONNECTIVITY-SOLVER-BASELINE.md`。
 > 本文档描述的是 MVP 所需基础设施，不覆盖 GUI、移动端和自研协议路线。
 
@@ -137,7 +139,7 @@ $ wink up
 
 $ wink status
 Status: connected
-Virtual IP: 10.100.0.5
+Virtual IP: <IPV4_1>
 Peers: 3 online
 Uptime: 2h 30m
 

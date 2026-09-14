@@ -1,5 +1,7 @@
 # TASK-06: 客户端核心
 
+> 隐私说明：部署标识已替换为占位符；历史计数、协议约束及暂停/NO-GO 结论不变。示例不可直接执行，见[公开文档规则](../DOCUMENTATION-PRIVACY.md)。
+
 > 历史任务说明：本任务文档按 legacy MVP baseline 编写。当前 active architecture baseline 为 `docs/CONNECTIVITY-SOLVER-BASELINE.md`。
 > `TASK-07` 不是本任务的开发启动前置依赖，但属于 MVP 发布门禁依赖。
 
@@ -239,22 +241,22 @@ $ wink status
 WinkYou Status
 --------------
 State:         Connected
-Virtual IP:    10.100.0.5/16
+Virtual IP:    <IPV4_1>/16
 Uptime:        2h 30m
 Peers:         3 online
 
 $ wink peers
 NAME          IP            STATUS     LATENCY   TYPE
-laptop        10.100.0.2    online     5ms       direct
-server        10.100.0.3    online     15ms      direct
-phone         10.100.0.4    online     50ms      relay
+laptop        <IPV4_2>    online     5ms       direct
+server        <IPV4_3>    online     15ms      direct
+phone         <IPV4_4>    online     50ms      relay
 
 $ wink ping laptop
-PING 10.100.0.2 (laptop) via wink0
-64 bytes from 10.100.0.2: time=5.2ms
-64 bytes from 10.100.0.2: time=4.8ms
-64 bytes from 10.100.0.2: time=5.1ms
---- 10.100.0.2 ping statistics ---
+PING <IPV4_2> (laptop) via wink0
+64 bytes from <IPV4_2>: time=5.2ms
+64 bytes from <IPV4_2>: time=4.8ms
+64 bytes from <IPV4_2>: time=5.1ms
+--- <IPV4_2> ping statistics ---
 3 packets transmitted, 3 received, 0% packet loss
 rtt min/avg/max = 4.8/5.0/5.2 ms
 ```

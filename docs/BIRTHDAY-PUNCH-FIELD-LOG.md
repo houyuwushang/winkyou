@@ -1,5 +1,7 @@
 # birthday_punch 真机联调实录（Field Log）
 
+> 隐私说明：部署标识已替换为占位符；历史计数、协议约束及暂停/NO-GO 结论不变。示例不可直接执行，见[公开文档规则](./DOCUMENTATION-PRIVACY.md)。
+
 > 配套 [`BIRTHDAY-PUNCH-DESIGN.md`](./BIRTHDAY-PUNCH-DESIGN.md)（设计与代码现状）。
 > 本文给**接手 M6/M7 真机联调的帮手**：读完能理解拓扑、跑通 `punchtest`、看懂已试过什么、知道下一步该干什么。
 > 更新于 2026-07-17。**凭据（SSH 账号/密码、sudo 密码）不在本文，由项目负责人通过私有渠道提供。**
@@ -13,18 +15,18 @@
 
 ## 1. 真机拓扑
 
-本机既是**控制机**又是**节点 B**。目标是在 inner（节点 A）和本机（节点 B）的**公网 IP** 之间打通 UDP 直连。
+本机既是**控制机**又是**节点 B**。目标是在节点 A 和本机（节点 B）的**公网 IP** 之间打通 UDP 直连。
 
 | 角色 | 系统 | 公网 IP | natpierce | Tailscale | 其它 | 备注 |
 |---|---|---|---|---|---|---|
-| **inner**（节点 A） | Linux `node-c-host` | `198.51.100.20`（教育网） | 网关 `10.20.0.1` | `100.64.0.10` | 本地 `172.20.0.11` | **Go 1.18，不能本地编译**，二进制需交叉编译传入 |
-| **本机**（节点 B + 控制机） | Windows | `192.0.2.10` | `10.20.0.3` | `100.64.0.11` | `10.0.0.10` / `192.168.11.x` | 有管理员权限；透明 wink 数据面仍受 Wintun 阻塞（见 §8），M7 固定目标 bridge 不使用 Wintun |
-| **node-b**（可选 coordinator 宿主） | Windows | `203.0.113.30` | 时有时无 | — | `192.168.50.217`（本机局域网可达） | natpierce 两跳的跳板；不稳 |
+| **节点 A** | Linux `<HOST_ALIAS_1>` | `198.51.100.20`（教育网） | 网关 `<IPV4_1>` | `<IPV4_2>` | 本地 `<IPV4_3>` | **Go 1.18，不能本地编译**，二进制需交叉编译传入 |
+| **本机**（节点 B + 控制机） | Windows | `192.0.2.10` | `<IPV4_4>` | `<IPV4_5>` | `<IPV4_6>` / `<PRIVATE_SUBNET>` | 有管理员权限；透明 wink 数据面仍受 Wintun 阻塞（见 §8），M7 固定目标 bridge 不使用 Wintun |
+| **可选 coordinator 宿主** | Windows | `203.0.113.30` | 时有时无 | — | `<IPV4_7>`（本机局域网可达） | natpierce 两跳的跳板；不稳 |
 
 **SSH 通道**（凭据私有渠道给）：
-- **Tailscale 直连** `ssh node-c-user@100.64.0.10`：稳定，但 251ms 高延迟，传大文件慢/易超时。
-- **natpierce 两跳** `ssh inner-gw`（`~/.ssh/config` 已配 `ProxyJump node-b`）：8ms 快，但**频繁断线**。
-- **WinkYou 公网 bridge** `ssh -o ProxyJump=none -p 22022 node-c-user@127.0.0.1`：M7 已实测；本机仅监听 loopback，底层为 punch 获胜 socket 上的 QUIC/mTLS，不需要 Tailscale/natpierce/Wintun。
+- **Tailscale 直连** `ssh <SSH_DESTINATION_1>`：稳定，但 251ms 高延迟，传大文件慢/易超时。
+- **natpierce 两跳** `ssh <NODE_A_HOST>`（`<SSH_CONFIG>` 已配 `ProxyJump <JUMP_HOST>`）：8ms 快，但**频繁断线**。
+- **WinkYou 公网 bridge** `ssh -o ProxyJump=none -p 22022 <SSH_DESTINATION_2>`：M7 已实测；本机仅监听 loopback，底层为 punch 获胜 socket 上的 QUIC/mTLS，不需要 Tailscale/natpierce/Wintun。
 - 本机无 `sshpass`/`plink`，密码认证用 OpenSSH `SSH_ASKPASS` 脚本（`<scratchpad>/askpass.sh`，按 prompt 分发密码）+ `SSH_ASKPASS_REQUIRE=force DISPLAY=:0`。
 
 ## 2. NAT 行为实测（最关键的事实）
@@ -64,8 +66,8 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o punchtest-linux ./cmd/punchtes
 go build -o punchtest.exe ./cmd/punchtest                                           # 本机
 # 传输：压缩后走 natpierce 快（~10s，但会断）或 Tailscale 稳但慢（压缩后 ~1min）
 gzip -c punchtest-linux > punchtest-linux.gz          # 6MB → ~3.6MB
-scp punchtest-linux.gz node-c-user@100.64.0.10:~/winkyou-live/
-ssh node-c-user@100.64.0.10 "cd ~/winkyou-live && gunzip -f punchtest-linux.gz && chmod +x punchtest-linux"
+scp punchtest-linux.gz <SSH_DESTINATION_3>:<REMOTE_PATH>
+ssh <SSH_DESTINATION_1> "cd ~/winkyou-live && gunzip -f punchtest-linux.gz && chmod +x punchtest-linux"
 ```
 
 ## 5. 已试过的打洞配置与结果
@@ -90,7 +92,7 @@ M6 成功轮次前的多 STUN 重测显示**两端当时均为 symmetric + rando
 
 ```bash
 # 点火即撤，打洞后台跑完整窗口，SSH 断了也不影响
-ssh node-c-user@100.64.0.10 "cd ~/winkyou-live && setsid bash -c \
+ssh <SSH_DESTINATION_1> "cd ~/winkyou-live && setsid bash -c \
   './punchtest-linux punch --remote-ip 192.0.2.10 --remote-pattern random --birthday 48 \
    --sockets 128 --burst 1 --round-delay 300ms --role responder --duration 120s > punch-inner.txt 2>&1' \
   </dev/null >/dev/null 2>&1 & echo LAUNCHED"
@@ -99,11 +101,11 @@ ssh node-c-user@100.64.0.10 "cd ~/winkyou-live && setsid bash -c \
 # 结束后 ssh 读回：cat ~/winkyou-live/punch-inner.txt / tcpdump 文件
 ```
 
-**实际成功证据**：R3 的 inner `enp69s0` 抓到 26 个来自本机公网 IP 的 UDP 包、0 kernel drop；payload 以明文 `WKP1` 开头，首包 `192.0.2.10:19786 -> 172.20.0.11:16048` 与 responder HIT 日志完全匹配。Windows 到 `198.51.100.20` 的选路为物理以太网 `10.0.0.10 -> 10.0.0.1`，inner 回程为 `enp69s0 -> 172.20.0.1`；因此本轮 punch 数据面未由 Tailscale/natpierce 承载。注意 Tailscale 仍用于 SSH 点火，两项 overlay 服务也未关闭，这不是“停掉 overlay 后复测”的证据。
+**实际成功证据**：R3 的 inner `<PHYSICAL_INTERFACE>` 抓到 26 个来自本机公网 IP 的 UDP 包、0 kernel drop；payload 以明文 `WKP1` 开头，首包 `192.0.2.10:19786 -> <IPV4_3>:16048` 与 responder HIT 日志完全匹配。Windows 到 `198.51.100.20` 的选路为物理以太网 `<IPV4_6> -> 10.0.0.1`，inner 回程为 `<PHYSICAL_INTERFACE> -> <IPV4_8>`；因此本轮 punch 数据面未由 Tailscale/natpierce 承载。注意 Tailscale 仍用于 SSH 点火，两项 overlay 服务也未关闭，这不是“停掉 overlay 后复测”的证据。
 
 **已验证基线**：`--sockets 128 --birthday 48 --burst 1 --round-delay 300ms`。正式 `birthday_punch` strategy 已从初版的 256 sockets × 256 固定 targets/200ms，改为这组低速、每轮 fresh targets 的参数。
 
-M6 真机产物在本机 `.live-run/runs/m6-codex-20260716-r{1,2,3}/`，远端镜像位于 `~/winkyou-live/runs/`。
+M6 真机产物在本机 `<PRIVATE_ARTIFACT_DIRECTORY>`，远端镜像位于 `<REMOTE_ARTIFACT_DIRECTORY>`。
 
 ## 7. M7 无 Wintun 用户态 SSH bridge
 
@@ -120,25 +122,25 @@ M6 真机产物在本机 `.live-run/runs/m6-codex-20260716-r{1,2,3}/`，远端�
 
 - 本机：`0.0.0.0:56207 -> 198.51.100.20:26912`，本地监听 `127.0.0.1:22022`。
 - inner：`0.0.0.0:60544 -> 192.0.2.10:13152`，固定 target `127.0.0.1:22`。
-- 首个全新 SSH stream 返回 `BRIDGE_SSH_OK node-c-host`。
+- 首个全新 SSH stream 返回 `BRIDGE_SSH_OK <HOST_ALIAS_1>`。
 
 随后设置两端 180 秒自动恢复保险并关闭 overlay：
 
-- 本机：`Tailscale=Stopped`、`natpierce_count=0`；到 `198.51.100.20` 的路由为物理以太网 ifIndex 9，经 `10.0.0.1`，源地址 `10.0.0.10`。
-- inner：`tailscale=inactive`、`natpierce_count=0`；到 `192.0.2.10` 的路由为 `enp69s0`，经 `172.20.0.1`，源地址 `172.20.0.11`。
-- 在上述状态下另开一个 SSH 连接，返回 `BOTH_OVERLAYS_OFF_BRIDGE_OK node-c-host`。这不是沿用既有控制会话：本地 TCP 与 QUIC stream 都是关闭 overlay 后新建。
+- 本机：`Tailscale=Stopped`、`natpierce_count=0`；到 `198.51.100.20` 的路由为物理以太网 ifIndex 9，经 `10.0.0.1`，源地址 `<IPV4_6>`。
+- inner：`tailscale=inactive`、`natpierce_count=0`；到 `192.0.2.10` 的路由为 `<PHYSICAL_INTERFACE>`，经 `<IPV4_8>`，源地址 `<IPV4_3>`。
+- 在上述状态下另开一个 SSH 连接，返回 `BOTH_OVERLAYS_OFF_BRIDGE_OK <HOST_ALIAS_1>`。这不是沿用既有控制会话：本地 TCP 与 QUIC stream 都是关闭 overlay 后新建。
 
 修正正常关闭误判后又完成 v2 公网重打洞：本机 `0.0.0.0:53746 -> 198.51.100.20:11459`，inner `0.0.0.0:35239 -> 192.0.2.10:2131`，约 37 秒 HIT；SSH 返回 `BRIDGE_V2_OK`，两端日志不再出现 stream canceled。Windows OpenSSH 仍偶尔打印 `close - IO is still pending on closed socket`，但直接 Tailscale SSH 也同样打印，且命令 exit 0，不是 bridge 独有错误。
 
-本机证据位于 `.live-run/runs/no-wintun-20260716-r1/`；远端位于 `~/winkyou-live/runs/no-wintun-20260716-r1/`。共享 secret 不进 Git，本文不记录其内容。
+本机证据位于 `.live-run/runs/no-wintun-20260716-r1/`；远端位于 `<REMOTE_ARTIFACT_DIRECTORY>no-wintun-20260716-r1/`。共享 secret 不进 Git，本文不记录其内容。
 
 ### 7.3 当前 bridge 的自助使用
 
 只要本机 bridge 仍监听 `127.0.0.1:22022`，就可以直接使用远端 SSH：
 
 ```powershell
-ssh -o ProxyJump=none -p 22022 node-c-user@127.0.0.1
-scp -O -P 22022 .\test.txt node-c-user@127.0.0.1:/tmp/
+ssh -o ProxyJump=none -p 22022 <SSH_DESTINATION_2>
+scp -O -P 22022 .\test.txt <SSH_DESTINATION_4>:<REMOTE_PATH>
 ```
 
 SSH/SFTP 客户端统一填写 host `127.0.0.1`、port `22022`、user `node-c-user`。每个 TCP 会话映射为独立 QUIC stream，可以并发使用。该 listener 只绑定 loopback，因此默认仅本机可访问；底层仍只转发到 responder 配置的 `127.0.0.1:22`，不是任意 IP/端口可达的虚拟局域网。
@@ -147,7 +149,7 @@ SSH/SFTP 客户端统一填写 host `127.0.0.1`、port `22022`、user `node-c-us
 
 - v2 会话建立于 `2026-07-16 22:13:51 +08:00`。本机 bridge PID `73724`、远端 PID `3397713`；测试策略为 `no_restart_no_repunch`。
 - 从 `22:30` 起每分钟新建一条 SSH stream；截至 `2026-07-17 09:12:09 +08:00`，`626/626` 次完整成功，原会话已知连续业务可用时间约 10 小时 58 分。
-- `09:13:12` 的下一次探针已经在两端日志中完成 stream OPEN、target connect/accept，远端也出现已认证的 `sshd: node-c-user@notty`，但短命令没有正常退出；`09:17` 的人工交互 SSH 则已获得远端 `pts/1`。到 `09:22` 双端 bridge 进程仍是原 PID，没有重打洞。
+- `09:13:12` 的下一次探针已经在两端日志中完成 stream OPEN、target connect/accept，远端也出现已认证的 `sshd: <SSH_DESTINATION_5>`，但短命令没有正常退出；`09:17` 的人工交互 SSH 则已获得远端 `pts/1`。到 `09:22` 双端 bridge 进程仍是原 PID，没有重打洞。
 - 因此应记录为：**单条 QUIC 会话存活超过 11 小时，626 次短连接完整成功；随后首次出现 stream 收尾卡住，但不能据此判定 QUIC 会话整体已断。** 旧监控器缺少 wall-clock 硬超时，卡住后日志停止增长，这是监控缺陷，也暴露了需要排查的 per-stream 关闭语义。
 - 本机原始记录为 `.live-run/runs/no-wintun-20260716-r1/soak-monitor.tsv`、`soak-monitor.state`、`bridge-local-v2.log`；远端对应 `bridge-remote-v2.log`。
 
@@ -162,7 +164,7 @@ SSH/SFTP 客户端统一填写 host `127.0.0.1`、port `22022`、user `node-c-us
 
 ## 8. 其它环境坑（避免重踩）
 
-- **GOCACHE 易失**：本机默认 `GOCACHE=D:\go-race-work\cache` 被外部进程周期清理，`go test`/`build` 链接阶段间歇报 "cannot open file …go-race-work…" 或 "package X is not in std"。跑前 `export GOCACHE=<稳定目录>`。
+- **GOCACHE 易失**：本机默认 `GOCACHE=<LOCAL_PATH_1>` 被外部进程周期清理，`go test`/`build` 链接阶段间歇报 "cannot open file …go-race-work…" 或 "package X is not in std"。跑前 `export GOCACHE=<稳定目录>`。
 - **本机 Wintun**：`wink up` 建 `wink0` 曾出现 `context deadline exceeded`。Claude 当时先换 DLL，仍超时，随后把测试切到 memory backend；那是测试绕过，不是 Wintun 修复。M7 已用用户态 QUIC/TCP bridge 真正绕开 WireGuard/Wintun，但透明三层路由仍未实现。
 - **SSH 后台进程挂住会话**：后台启动长进程必须完全脱离 fd（`setsid` + `</dev/null >log 2>&1`），否则 SSH 等 stdout EOF 而挂起（表现为命令无输出、超时）。
 - **耐久探针必须有外层硬超时**：仅设置 OpenSSH `ConnectTimeout`/`ServerAliveInterval` 不足以覆盖“认证成功但 channel 不收尾”；每次探针应由独立 wall-clock deadline 约束，并把 open、认证、命令完成和连接关闭分层记录。
