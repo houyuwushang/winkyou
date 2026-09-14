@@ -344,25 +344,33 @@ func TestCarrierCancellationDeadlineAndEOFAreTerminalAndDrained(t *testing.T) {
 		},
 		{
 			name: "peer EOF", want: ErrCarrierTransport, eof: true,
-			run: func(_ context.Context, _ context.CancelFunc, peer net.Conn) {
-				go func() {
-					time.Sleep(10 * time.Millisecond)
-					_ = peer.Close()
-				}()
-			},
+			run: func(context.Context, context.CancelFunc, net.Conn) {},
 		},
 	}
 	for _, testCase := range tests {
 		t.Run(testCase.name, func(t *testing.T) {
 			victimStream, peerStream := net.Pipe()
+			t.Cleanup(func() { _ = victimStream.Close(); _ = peerStream.Close() })
+			var stream BoundedStream = victimStream
+			if testCase.eof {
+				// EOF is already available before AwaitPresence, without a
+				// scheduled peer close competing with a 30ms caller timeout.
+				// The existing empty memory stream returns io.EOF synchronously.
+				stream = &memoryStream{}
+			}
 			victim, err := Adopt(Config{
-				Stream: victimStream, OOBChannelID: testChannelID, Role: directattempt.RoleResponder,
+				Stream: stream, OOBChannelID: testChannelID, Role: directattempt.RoleResponder,
 				testLease: newFakeAttempt(t, directattempt.RoleResponder),
 			})
 			if err != nil {
 				t.Fatal(err)
 			}
-			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
+			t.Cleanup(func() { _ = victim.Close() })
+			ctx, cancel := context.WithCancel(context.Background())
+			if testCase.deadline {
+				cancel()
+				ctx, cancel = context.WithTimeout(context.Background(), 30*time.Millisecond)
+			}
 			defer cancel()
 			testCase.run(ctx, cancel, peerStream)
 			runErr := victim.AwaitPresence(ctx)
@@ -374,6 +382,46 @@ func TestCarrierCancellationDeadlineAndEOFAreTerminalAndDrained(t *testing.T) {
 			witness := victim.Witness()
 			if !witness.Closed || !witness.Drained || witness.Deadline != testCase.deadline || witness.EOF != testCase.eof {
 				t.Fatalf("terminal witness = %+v", witness)
+			}
+		})
+	}
+}
+
+// The negative control fixes the opposite causal order: a caller deadline
+// that has already expired wins over an available EOF. This is not permission
+// for the EOF-first regression above to accept arbitrary terminal causes.
+func TestCarrierEOFDeadlineOrderingControl(t *testing.T) {
+	for _, deadlineFirst := range []bool{false, true} {
+		name := "EOF_first"
+		want := ErrCarrierTransport
+		ctx := context.Background()
+		if deadlineFirst {
+			name, want = "deadline_first", ErrPresenceTimeout
+			var cancel context.CancelFunc
+			ctx, cancel = context.WithDeadline(ctx, time.Now().Add(-time.Second))
+			defer cancel()
+		}
+		t.Run(name, func(t *testing.T) {
+			attempt := newFakeAttempt(t, directattempt.RoleResponder)
+			carrier, err := Adopt(Config{Stream: &memoryStream{}, OOBChannelID: testChannelID,
+				Role: directattempt.RoleResponder, testLease: attempt})
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = carrier.Close() })
+			if err := carrier.AwaitPresence(ctx); !errors.Is(err, want) {
+				t.Fatalf("causal terminal = %v, want %v", err, want)
+			}
+			_ = carrier.Close()
+			if witness := carrier.Witness(); !witness.Closed || !witness.Drained ||
+				!witness.EOF || witness.Deadline != deadlineFirst || witness.FramesRead != 0 || witness.FramesWritten != 0 {
+				t.Fatalf("causal drain witness = %+v", witness)
+			}
+			attempt.mu.Lock()
+			drains := attempt.drains
+			attempt.mu.Unlock()
+			if drains != 0 {
+				t.Fatalf("remaining registered drains = %d", drains)
 			}
 		})
 	}
