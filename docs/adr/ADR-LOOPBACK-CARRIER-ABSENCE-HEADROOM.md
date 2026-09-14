@@ -1,6 +1,7 @@
 # ADR：loopback 缺席路径的生命周期见证与 FINISH/drain 余量
 
 Status: **Draft，测量证据；未修改生产余量**（2026-09-09）。Refs #111。
+当前 O2 实施裁决见 §9；上述 Draft 状态与下列旧基线属于 §1–§8 的历史测量记录。
 基线 `214ff2d`；#115 分支未修改。2026-09-09维护者明确允许本PR修改旧墙钟断言
 所在测试文件，具体范围见§7。
 
@@ -585,3 +586,112 @@ go test -race ./pkg/client -run '^TestRelayWGGoTwoEnginesExchangeIPv4Packets$' -
 本地首跑全部通过不等于远端CI全绿，也不关闭#111或补造旧间隙根因。
 提交与推送仅沿用#123原分支，保持Draft；本head远端CI首跑在PR描述独立记录，
 不manual rerun、不合并。推送后停止实现并等待复审，#124/阶段3继续冻结。
+
+## 9. O2 裁决与设计（2026-09-14）
+
+本节依据维护者本批明确选择 O2 的实施指令。问题背景见
+[#111 既有记录](https://github.com/houyuwushang/winkyou/issues/111#issuecomment-5630029119)；
+该旧评论仍列待选方案，不能冒称它已经包含本次裁决。基线 `2864a18`。
+本节授权独立 Draft 实现与隔离测试，不授权合并、现场 I/O、主机配置或后续现场窗口。
+§1–§8 的原始 RED、未定位结论和旧批次数字保持原貌，不重写为本次证据。
+
+### 9.1 修复目标与取舍
+
+`admittedCarrier.run` 的缺席终局原先先写 durable FINISH，再调用 controller.Close，
+使 FINISH append/fsync 仍位于 probeio 的 15s duration 绊线内。O2 将这条终局路径改为
+**撤销探测权限 → durable FINISH → 关闭 attempt lease**。
+
+```text
+旧 run 终局：13s 自有 deadline → FINISH append/sync → Controller.Close → 停止 probeio
+新 run 终局：13s 自有 deadline → RevokeForTerminal → FINISH append/sync → Controller.Close
+                                 │                    │                     │
+                                 │                    配对 drain Complete   释放 attempt
+                                 probeio 句柄/worker 排空、timer 停止、自己的 drain Complete
+                                 attempt 与配对 drain 此时仍保留
+```
+
+不选 O1：增加固定余量仍把磁盘等待放在活动探测绊线内。
+[#124 的 trace 证据](ADR-STRATEGY-SELECTION-CONVERGENCE.md#11113-已证实的阻塞链)
+已在普通 runtime 快照路径观测到约 10s 的 MoveFileEx 系统调用；这不是对本路径 FINISH
+fsync 或 §8.5 旧缺失 trace 样本的归因，但足以说明额外 2s 不是这种等待的可靠上界。
+不选 O3：本次明确决定移除 run 终局上可避免的持久化/探测计时耦合，不仅记录风险。
+FINISH 仍同步落盘，不改成后台队列、不跳过 fsync、不退款。
+
+### 9.2 显式终局撤销能力
+
+新增 `probeio.Controller.RevokeForTerminal()`，唯一生产调用点是
+`internal/v2/loopbackcarrier/carrier.go` 的 `admittedCarrier.run` 终局 defer。
+
+- 复用既有 stopLocal 的撤销/排水语义：拒绝新操作、取消本地 context、关闭全部未移交
+  probe socket，并等待已接纳的 I/O 与 pending open。之后 Open/Write/Register 均拒绝，
+  有效参数下归为 `ErrLeaseClosed`；不能复活旧 handle、换 endpoint 或重新 Promote。
+- 复用既有 handoff 完成通知唤醒 duration watcher。这里不移交 datagram、不创建
+  PacketTransport、不把失败标成 promoted，只复用“保留 attempt，但探测权限已经结束”
+  的计时器脱离语义。watchLifecycle 正常退出，不因随后 FINISH 慢而触发 duration trip。
+- 返回前确认 watcher 已退出，并幂等完成 probeio 自己的 drain；不能只拿 watchDone
+  当作 Complete 已发生的证明，因为现有 watcher 先关闭 watchDone 再调用 Complete。
+- 不调用 AttemptLease.Close，不完成 pairing gate 的 drain。后者仍由既有 finish() 负责。
+  API 幂等；它返回的错误 join 进 carrier 错误，不得导致 FINISH 被跳过。
+- 沿用 reviewed Datagram 的 Close/解除 I/O 契约，不新增任意第三方 factory 或强制终止
+  不合作内核调用的承诺。逻辑 revoked 与物理排空不能混为一谈。
+
+run 的 defer 无论成功还是失败，都先调用此幂等 API（controller 存在时），再调用
+authorization.Finish(reason)，最后调用 controller.Close。已完成的 terminal promotion
+不会被重复移交；其短命 transport 仍按原路径关闭。本 API 不返回任何数据面能力。
+
+### 9.3 两个 drain 与计费不变量
+
+正常终局下，最终 Controller.Close 之前 probeio 与 pairing gate 的 drain 均已完成，
+AttemptLease.Close 应立即收束。若仍有未完成 drain，既有
+`CancellationDrainTimeout` 与持久 `cancellation_timeout` 语义不变，不能吞掉第二道绊线。
+
+冻结值全部不变：`AttemptDuration=15s`、`terminalDrainMargin=2s`、
+`MaxAttemptDuration`、machine cancellation drain 2s、3 packets / 3 PPS。
+2s terminal margin 用于 run 退出到撤销，不再要求覆盖其后的 FINISH 磁盘等待。
+admission 仍全额计入 15s envelope；24h packet 与 admission 计数不因早撤销而减少。
+这不是向 Gate B/C 引入新的完成阶段：§19.9、handoff 实现、golden 与预算保持字节不变。
+
+### 9.4 崩溃窗口
+
+- revoke 前崩溃：沿用原 governor/OS 与未完成 admission 恢复；不新增恢复代码。
+- revoke 完成、FINISH 写入前崩溃：OS socket 已排空，journal 有 BURN 无 FINISH。
+  既有 unfinished charge 保留，重启不能重用该 credential 或获得退款。
+- FINISH 写入/sync 期间崩溃：仍按已有持久 journal 校验/恢复处理，不能凭进程内标志
+  补造 FINISH。任何不确定状态仍 fail-closed。
+- FINISH 成功后、最终 Close 前崩溃：持久终局已可见；不新增补发、重试或自动恢复。
+
+测试只核对这些现有行为，使用新临时 namespace 与合成 credential，绝不 reset ledger。
+
+### 9.5 红回归、变异与验收
+
+先在 governor 的既有 FINISH `afterAppendBeforeSync` test hook 注入：
+
+| 回归 | 延迟 | 旧 run 终局预期 | 修复后预期 |
+| --- | ---: | --- | --- |
+| R1 | 2.5s | memory_safety_not_clear，持久 hard_limit_exceeded | clear、FINISH=expired、资源归零、端口可重绑 |
+| R2 | 10s | 同上 | 同上 |
+
+Connect 墙钟预计约 13s 加注入延迟，只记录分段数据，不把它重新作为 probe 资源上限。
+原默认缺席回归及其 AST 接线门保持原样，调用方仍为独立 60s 兜底。
+新变异必须拒绝 FINISH 先于 revoke、revoke 后仍能发送、提前关闭 attempt、计费减少、
+白名单外引用该 API；错误传播与幂等完成另有测试。崩溃窗口通过真实 journal 与 OS 见证，
+不把内存状态或强制退出本身冒充持久/物理排水证据。
+
+Go1.23.1 首跑验收依次记录：R1/R2 RED→GREEN；#123 同 profile 的压力至少50
+（GOMAXPROCS 与 2×CPU busy worker、race、fail-fast）、无压力至少100、focused race×20；
+probeio/governor/loopbackcarrier/architecture race×20；C1b memory pipeline 本机首跑；
+#116 全仓分区与独立 relay race×20；vet 与 Linux CGO=0、natlab/c1bproof tagged vet。
+普通 cmd/wink 构建产物留仓库外，go tool nm 须为零 natlab/c1bproof 符号。
+远端首轮 CI 单列，不 rerun 求绿；每步独立提交，未执行项不预填 PASS。
+
+### 9.6 单独登记的提前 FINISH 路径
+
+源码核对另发现共享 pairing gate 的 BeforeFirstEmission/CheckActive 可以在 validate 失败时
+先调用内部 finish，再向 carrier 返回错误；watchInvalidation 也可独立选择终局。
+仅重排 run 的 defer 不能证明这些更早的 FINISH 也先撤销了 probeio。
+已在 [#111 补充记录](https://github.com/houyuwushang/winkyou/issues/111#issuecomment-5660948336)
+登记。当前是源码可达性结论，不伪称已对这条支路取得动态 latch 复现。
+
+按本批不扩改共享生产范围的纪律，本 PR 不顺手修改该授权层。R1/R2 只证明本次指定的
+run-owned 缺席终局；这一残留不隐去，当前保留 Refs #111，不贸然声明全部失败路径或
+整个 issue 已闭合。是否扩展该顺序覆盖由维护者/独立复审另行处理。
