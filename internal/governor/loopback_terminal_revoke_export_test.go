@@ -1,9 +1,34 @@
 package governor
 
 import (
+	"os"
 	"sync"
 	"time"
 )
+
+// BeforeLoopbackCarrierFinishWrite pauses the existing writeFrame test seam
+// before any FINISH bytes reach the journal. Other records use their original
+// write path. The subprocess test kills the holder; no recovery is replaced.
+func BeforeLoopbackCarrierFinishWrite(machine *Governor, before func(PairingTerminalReason) error) error {
+	ledger, err := LoopbackCarrierTestLedger(machine)
+	if err != nil {
+		return err
+	}
+	ledger.mu.Lock()
+	defer ledger.mu.Unlock()
+	if before == nil || ledger.hooks.writeFrame != nil {
+		return ErrInvalidRequest
+	}
+	ledger.hooks.writeFrame = func(file *os.File, record pairingJournalRecord, frame []byte) (int, error) {
+		if record.Type == pairingRecordFinish {
+			if err := before(record.Reason); err != nil {
+				return 0, err
+			}
+		}
+		return file.Write(frame)
+	}
+	return nil
+}
 
 // CarrierFinishDelayWitness is test-only. The existing journal observer keeps
 // measuring the actual append/sync boundaries; this witness proves that the
