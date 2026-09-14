@@ -4,6 +4,7 @@
 
 - Current architecture authority: [`CONNECTIVITY-SOLVER-BASELINE.md`](./CONNECTIVITY-SOLVER-BASELINE.md)
 - Repository homepage and status summary: [`../README.md`](../README.md)
+- Public-document privacy policy and precise example/syntax boundaries: [`DOCUMENTATION-PRIVACY.md`](./DOCUMENTATION-PRIVACY.md)
 - Supplemental architecture notes: [`ARCHITECTURE.md`](./ARCHITECTURE.md)
 
 When documents disagree, treat `CONNECTIVITY-SOLVER-BASELINE.md` as the source of truth for connectivity solver/session/strategy boundaries.
