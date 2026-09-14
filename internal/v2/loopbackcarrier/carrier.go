@@ -21,10 +21,10 @@ const (
 	handshakePacketBytes = noisecore.PublicKeySize + noisecore.TagSize
 
 	// terminalDrainMargin is reserved out of AttemptDuration so a peerless or
-	// stalled attempt cancels itself, appends its durable FINISH, and stops
-	// the probeio lifecycle strictly before the duration tripwire would latch
-	// the persistent machine safety trip. The worst-case admission envelope
-	// still charges the full AttemptDuration.
+	// stalled attempt cancels itself and revokes probeio strictly before its
+	// duration tripwire would latch the persistent machine safety trip. Durable
+	// FINISH follows revocation while the attempt is still retained. The
+	// worst-case admission envelope still charges the full AttemptDuration.
 	terminalDrainMargin = 2 * time.Second
 )
 
@@ -155,6 +155,9 @@ func (carrier *admittedCarrier) run(ctx context.Context) (result Result, err err
 	reason := governor.PairingTerminalCarrierError
 	var controller *probeio.Controller
 	defer func() {
+		if controller != nil {
+			err = errors.Join(err, controller.RevokeForTerminal())
+		}
 		finishErr := carrier.authorization.Finish(reason)
 		if finishErr != nil {
 			err = errors.Join(err, ErrCarrierTerminal, finishErr)
