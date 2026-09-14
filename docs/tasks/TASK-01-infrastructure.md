@@ -78,8 +78,8 @@ wireguard:
 
 nat:
   stun_servers:
-    - "stun:stun.l.google.com:19302"
-    - "stun:stun.cloudflare.com:3478"
+    - "stun:<STUN_HOST_1>:19302"
+    - "stun:<STUN_HOST_3>:3478"
   turn_servers:
     - url: "turn:relay.example.com:3478"
       username: "wink"

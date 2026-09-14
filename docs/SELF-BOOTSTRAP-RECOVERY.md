@@ -440,7 +440,7 @@ this matters for the next process-restart experiment, but does not by itself
 prove recovery after a public-IP change.
 
 The post-success route check selected the physical Ethernet interface (source
-`<IPV4_1>`, gateway `10.0.0.1`) for both public peers. Tailscale reported
+`<IPV4_1>`, gateway `<GATEWAY_ADDRESS>`) for both public peers. Tailscale reported
 stopped. A natpierce UI process was present, but it owned none of A's two UDP
 sockets or the `22022`/`22024`/`32110` listeners and was not the selected public
 route. The snapshot is

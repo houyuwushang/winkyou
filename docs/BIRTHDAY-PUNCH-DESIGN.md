@@ -118,8 +118,8 @@ signal+sync (M4) ───┘                                             （现
 nat:
   punch_interface: Ethernet  # 必须替换为本机精确名称；Linux 常见为 eth0
   stun_servers:
-    - stun:stun.cloudflare.com:3478
-    - stun:stun.l.google.com:19302
+    - stun:<STUN_HOST_3>:3478
+    - stun:<STUN_HOST_1>:19302
 ```
 
 启用后，运行时先把接口名解析为精确的 interface index 和可用单播 IPv4；接口不存在、已 down 或没有可用 IPv4 时启动/本轮求解直接失败，不回退到系统默认路由。所有同 socket mapping probe、fresh-socket port-allocation probe 和 punch socket 都绑定该源 IP；Windows 还在 bind 前设置 `IP_UNICAST_IF`，Linux 使用 `SO_BINDTODEVICE`（权限不足会显式失败）。未配置时保持原来的系统路由选择行为，且 `local_bind_ip` / `local_bind_interface` 证据留空，不能把 wildcard socket 地址误当成实际出口。显式配置时，`birthday_punch` 的 `PathSummary.Details` 与 self-bootstrap status/event 日志使用同名证据 `local_bind_ip`、`local_bind_interface`；self-bootstrap 另记录获胜 socket 的 `local_bind_addr`。
@@ -165,7 +165,7 @@ R3 首包为 `192.0.2.10:19786 -> <IPV4_1>:16048`，与 responder 的 `peer=192.
 - 共享的 32 字节随机 secret 通过 HMAC 分别派生 client/server Ed25519 身份；QUIC 使用 TLS 1.3、双方固定公钥校验和角色区分，不信任系统 CA，也不是裸 `InsecureSkipVerify`。
 - responder 只拨配置中的固定 TCP target；initiator 默认只监听 `127.0.0.1`。每个本地 TCP 连接映射为一条 QUIC 双向 stream。
 - 真机 v2 命中约 37 秒：本机获胜 socket `0.0.0.0:53746 -> 198.51.100.20:11459`，远端 `0.0.0.0:35239 -> 192.0.2.10:2131`；随后 `ssh -p 22022 <SSH_DESTINATION_1>` 成功。
-- 全部 overlay 关闭的证明来自同一轮 v1：本机公网路由为物理以太网 ifIndex 9 / `10.0.0.1`，远端回程为 `<PHYSICAL_INTERFACE>` / `<IPV4_2>`；关闭后另开 SSH stream 返回 `BOTH_OVERLAYS_OFF_BRIDGE_OK`。
+- 全部 overlay 关闭的证明来自同一轮 v1：本机公网路由为物理以太网 ifIndex 9 / `<GATEWAY_ADDRESS>`，远端回程为 `<PHYSICAL_INTERFACE>` / `<IPV4_2>`；关闭后另开 SSH stream 返回 `BOTH_OVERLAYS_OFF_BRIDGE_OK`。
 
 ### 8.6 M8 长时运行快照（2026-07-17）
 

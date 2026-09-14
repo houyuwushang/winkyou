@@ -101,7 +101,7 @@ ssh <SSH_DESTINATION_1> "cd ~/winkyou-live && setsid bash -c \
 # 结束后 ssh 读回：cat ~/winkyou-live/punch-inner.txt / tcpdump 文件
 ```
 
-**实际成功证据**：R3 的 inner `<PHYSICAL_INTERFACE>` 抓到 26 个来自本机公网 IP 的 UDP 包、0 kernel drop；payload 以明文 `WKP1` 开头，首包 `192.0.2.10:19786 -> <IPV4_3>:16048` 与 responder HIT 日志完全匹配。Windows 到 `198.51.100.20` 的选路为物理以太网 `<IPV4_6> -> 10.0.0.1`，inner 回程为 `<PHYSICAL_INTERFACE> -> <IPV4_8>`；因此本轮 punch 数据面未由 Tailscale/natpierce 承载。注意 Tailscale 仍用于 SSH 点火，两项 overlay 服务也未关闭，这不是“停掉 overlay 后复测”的证据。
+**实际成功证据**：R3 的 inner `<PHYSICAL_INTERFACE>` 抓到 26 个来自本机公网 IP 的 UDP 包、0 kernel drop；payload 以明文 `WKP1` 开头，首包 `192.0.2.10:19786 -> <IPV4_3>:16048` 与 responder HIT 日志完全匹配。Windows 到 `198.51.100.20` 的选路为物理以太网 `<IPV4_6> -> <GATEWAY_ADDRESS>`，inner 回程为 `<PHYSICAL_INTERFACE> -> <IPV4_8>`；因此本轮 punch 数据面未由 Tailscale/natpierce 承载。注意 Tailscale 仍用于 SSH 点火，两项 overlay 服务也未关闭，这不是“停掉 overlay 后复测”的证据。
 
 **已验证基线**：`--sockets 128 --birthday 48 --burst 1 --round-delay 300ms`。正式 `birthday_punch` strategy 已从初版的 256 sockets × 256 固定 targets/200ms，改为这组低速、每轮 fresh targets 的参数。
 
@@ -126,7 +126,7 @@ M6 真机产物在本机 `<PRIVATE_ARTIFACT_DIRECTORY>`，远端镜像位于 `<R
 
 随后设置两端 180 秒自动恢复保险并关闭 overlay：
 
-- 本机：`Tailscale=Stopped`、`natpierce_count=0`；到 `198.51.100.20` 的路由为物理以太网 ifIndex 9，经 `10.0.0.1`，源地址 `<IPV4_6>`。
+- 本机：`Tailscale=Stopped`、`natpierce_count=0`；到 `198.51.100.20` 的路由为物理以太网 ifIndex 9，经 `<GATEWAY_ADDRESS>`，源地址 `<IPV4_6>`。
 - inner：`tailscale=inactive`、`natpierce_count=0`；到 `192.0.2.10` 的路由为 `<PHYSICAL_INTERFACE>`，经 `<IPV4_8>`，源地址 `<IPV4_3>`。
 - 在上述状态下另开一个 SSH 连接，返回 `BOTH_OVERLAYS_OFF_BRIDGE_OK <HOST_ALIAS_1>`。这不是沿用既有控制会话：本地 TCP 与 QUIC stream 都是关闭 overlay 后新建。
 

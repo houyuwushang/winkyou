@@ -279,7 +279,7 @@ natpierce process were in fact running during the field check, but neither
 carried the accepted path. The ULA destinations resolved locally through
 loopback. A's public B/C packet sockets used candidate UDP ports `52507` and
 `62451`, routed from physical Ethernet address `<IPV4_1>` through gateway
-`10.0.0.1`; natpierce separately held `58606 -> 203.0.113.40`.
+`<GATEWAY_ADDRESS>`; natpierce separately held `58606 -> 203.0.113.40`.
 
 This was the A-only facade acceptance checkpoint. The later guarded Slice 4.5
 rollout replaced all three field processes with managed `wink up` runtimes while

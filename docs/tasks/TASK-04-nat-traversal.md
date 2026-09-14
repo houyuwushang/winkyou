@@ -1,5 +1,7 @@
 # TASK-04: NAT穿透模块
 
+> 隐私说明：部署标识已替换为占位符；历史计数、协议约束及暂停/NO-GO 结论不变。示例不可直接执行，见[公开文档规则](../DOCUMENTATION-PRIVACY.md)。
+
 > 历史任务说明：本任务文档按 legacy MVP baseline 编写。当前 active architecture baseline 为 `docs/CONNECTIVITY-SOLVER-BASELINE.md`。
 > MVP 的 NAT/ICE 完成交付依赖 `TASK-05` 提供的信令能力。
 
@@ -278,14 +280,14 @@ pkg/nat/
 └── types.go            # 类型定义
 ```
 
-### 默认STUN服务器
+### 历史默认 STUN 列表结构（目标已脱敏）
 
 ```go
 var DefaultSTUNServers = []string{
-    "stun:stun.l.google.com:19302",
-    "stun:stun1.l.google.com:19302",
-    "stun:stun.cloudflare.com:3478",
-    "stun:stun.stunprotocol.org:3478",
+    "stun:<STUN_HOST_1>:19302",
+    "stun:<STUN_HOST_2>:19302",
+    "stun:<STUN_HOST_3>:3478",
+    "stun:<STUN_HOST_4>:3478",
 }
 ```
 

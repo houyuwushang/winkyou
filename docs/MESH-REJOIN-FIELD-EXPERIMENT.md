@@ -408,7 +408,7 @@ live recovery cards. A stored the new B/C endpoints, B stored A at
 is `.live-run/runs/mesh-selfbootstrap-20260718-r12/field-evidence/A/reciprocal-recovery-cards-post-A-r12.json`.
 
 The independent underlay check selected the physical Ethernet interface
-(`<IPV4_3>` via `10.0.0.1`) for both public remote IPs. Tailscale was stopped;
+(`<IPV4_3>` via `<GATEWAY_ADDRESS>`) for both public remote IPs. Tailscale was stopped;
 a present natpierce UI process owned none of A's WinkYou UDP sockets or local
 listeners. The route evidence is
 `.live-run/runs/mesh-selfbootstrap-20260718-r12/field-evidence/A/underlay-route-check-post-A-r12.json`.
