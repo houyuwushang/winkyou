@@ -59,4 +59,30 @@ fixture did not cross only the original challenge deadline exactly once
 
 ## 本批实测
 
-待首跑完成后追加；未执行的验证不计为通过。
+### 压力夹具建立记录
+
+首次尝试把 TestMain 放入一个不存在于工作树的新 overlay 文件。Go list 能发现它，
+但默认 vet 报该文件不存在，命令以 build failed 结束，任何测试都未执行。
+这不是 #138 的动态 RED；原始日志保留，SHA-256：
+`de9fb266d873f1eb06c5754e79ce1527317526f63c3577ca369e59c4b1fa540b`。
+
+随后只修正仓库外压力夹具的装载方式：overlay 已有的完成阶段测试文件，保留所有原测试，
+附加两个 busy worker 的 TestMain。没有关闭 vet，没有修改工作树中的被测文件。
+有效压力批次首行必须见证 `gomaxprocs=2 busy_workers=2`，结束须有 `busy_workers=0 drained=true`。
+夹具建立失败日志与有效批次日志分别保存，不覆盖、不混作红绿结果。
+
+### 旧代码压力与确定性红回归
+
+| 首跑 | 测试结果 | 外层命令结果 |
+| --- | --- | --- |
+| 旧完成阶段目标，GOMAXPROCS=2、两个 busy worker、race×200 | 200/200 轮、400/400 子用例 PASS，动态失败 0；包耗时 644.218s；worker 排空 | exit 0，994.074s |
+| 新 AST 门扫描未修改的旧文件 | RED，准确命中基线第 40、132、253 行；包耗时 0.755s | exit 1，299.321s |
+
+有效压力日志 SHA-256：`e7cee62895e28db688052a160288b722074cbc3ee91a7e3bcc31de979bb01518`。
+AST RED 日志 SHA-256：`24d7efcbbadb594309e0f1788467cd032c38de495d83c801a859d5a8fd6bff2e`。
+
+两条命令在测试进程退出后仍有较长的外层 Go 收尾耗时；只读核对时测试子进程已经消失，
+外层 Go 尚在，最终均自行退出。没有强杀、重跑或改缓存配置。该耗时原因尚未精确定位，
+不把它归为产品失败，也不从总墙钟反推 challenge 的时间余量。
+
+修复后的结果待各批次结束后追加；未执行的验证不计为通过。
