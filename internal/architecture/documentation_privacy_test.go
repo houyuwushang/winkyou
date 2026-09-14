@@ -22,13 +22,14 @@ type docPrivacyFinding struct {
 
 var (
 	docIPv4       = regexp.MustCompile(`[0-9]{1,3}(?:\.[0-9]{1,3}){3}`)
+	docPartialV4  = regexp.MustCompile(`(?i)[0-9]{1,3}(?:\.(?:[0-9]{1,3}|x|\*)){3}`)
 	docIPv6       = regexp.MustCompile(`[0-9A-Fa-f:.]+(?:%[A-Za-z0-9_.-]+)?`)
 	docDrive      = regexp.MustCompile(`(?i)(?:^|[^\pL\pN])([a-z]:[\\/])`)
 	docHome       = regexp.MustCompile(`(?i)\\+Users\\+|(?:^|[^\pL\pN_])/(?:home|Users)/`)
 	docKey        = regexp.MustCompile(`ssh-(?:ed25519|rsa)|SHA256:[A-Za-z0-9+/=]{20,}`)
 	docMAC        = regexp.MustCompile(`(?i)\b[0-9a-f]{2}(?::[0-9a-f]{2}){5}\b`)
 	docInlineCode = regexp.MustCompile("`([^`]+)`")
-	docURLs       = regexp.MustCompile(`https?://[^\s<>\)]+`)
+	docURLs       = regexp.MustCompile(`\]\((https?://[^\s<>\)]+)\)`)
 	docAtTokens   = regexp.MustCompile("(?:" +
 		"main@[a-f0-9]{7,40}|github\\.com/flynn/noise@v1\\.1\\.0|" +
 		"actions/(?:checkout|setup-go|upload-artifact)@v[0-9]+|" +
@@ -47,9 +48,15 @@ func docWordBoundary(line string, start, end int) bool {
 		}
 	}
 	if end < len(line) {
-		r, _ := utf8.DecodeRuneInString(line[end:])
-		if unicode.IsLetter(r) || unicode.IsDigit(r) || r == '_' || r == '.' {
+		r, size := utf8.DecodeRuneInString(line[end:])
+		if unicode.IsLetter(r) || unicode.IsDigit(r) || r == '_' {
 			return false
+		}
+		if r == '.' && end+size < len(line) {
+			next, _ := utf8.DecodeRuneInString(line[end+size:])
+			if unicode.IsLetter(next) || unicode.IsDigit(next) || next == '_' || next == '.' {
+				return false
+			}
 		}
 	}
 	return true
@@ -73,9 +80,12 @@ func docAllowedAddress(addr netip.Addr, suffix string) bool {
 	}
 	// Exact prefix tokens only: this does NOT authorize addresses inside them.
 	for host, bits := range map[string]string{"10.0.0.0": "/24", "100.64.0.0": "/10", "198.18.0.0": "/15", "128.0.0.0": "/1"} {
-		if addr.String() == host && strings.HasPrefix(suffix, bits) &&
-			(len(suffix) == len(bits) || suffix[len(bits)] < '0' || suffix[len(bits)] > '9') {
-			return true
+		if addr.String() == host && strings.HasPrefix(suffix, bits) {
+			if len(suffix) == len(bits) {
+				return true
+			}
+			next, _ := utf8.DecodeRuneInString(suffix[len(bits):])
+			return unicode.IsSpace(next) || strings.ContainsRune("`\"'),;]}>|。；、，", next)
 		}
 	}
 	return false
@@ -89,10 +99,11 @@ func docAllowedAt(line string, offset int) bool {
 	}
 	// A public reference path/version is not URL user-info. Only these existing
 	// reference hosts have an at-sign; arbitrary links do not bypass the gate.
-	for _, span := range docURLs.FindAllStringIndex(line, -1) {
-		if span[0] <= offset && offset < span[1] {
-			u, err := url.Parse(strings.TrimRight(line[span[0]:span[1]], "`.,"))
-			if err == nil && u.User == nil && (u.Host == "pkg.go.dev" || u.Host == "medium.com") {
+	for _, span := range docURLs.FindAllStringSubmatchIndex(line, -1) {
+		if span[2] <= offset && offset < span[3] {
+			u, err := url.Parse(line[span[2]:span[3]])
+			if err == nil && u.User == nil && !strings.Contains(u.RawQuery+u.Fragment, "@") &&
+				(u.Host == "pkg.go.dev" || u.Host == "medium.com") {
 				return true
 			}
 		}
@@ -115,6 +126,16 @@ func docAllowedAt(line string, offset int) bool {
 
 func docPrivacyLine(line string) []string {
 	classes := make(map[string]bool)
+	for _, span := range docPartialV4.FindAllStringIndex(line, -1) {
+		token := line[span[0]:span[1]]
+		if !strings.ContainsAny(token, "xX*") || !docWordBoundary(line, span[0], span[1]) {
+			continue
+		}
+		addr, err := netip.ParseAddr(strings.NewReplacer("x", "0", "X", "0", "*", "0").Replace(token))
+		if err != nil || !docAllowedAddress(addr, "") {
+			classes["ipv4_not_documentation_example"] = true
+		}
+	}
 	for _, span := range docIPv4.FindAllStringIndex(line, -1) {
 		if !docWordBoundary(line, span[0], span[1]) {
 			continue
@@ -129,7 +150,7 @@ func docPrivacyLine(line string) []string {
 		if strings.Count(token, ":") < 2 || !docWordBoundary(line, span[0], span[1]) {
 			continue
 		}
-		addr, err := netip.ParseAddr(token)
+		addr, err := netip.ParseAddr(strings.TrimRight(token, "."))
 		if err == nil && addr.Is6() && !docAllowedAddress(addr, line[span[1]:]) {
 			classes["ipv6_not_documentation_example"] = true
 		}
@@ -139,9 +160,25 @@ func docPrivacyLine(line string) []string {
 			classes["identity_at_token"] = true
 		}
 	}
-	for name, rule := range map[string]*regexp.Regexp{"absolute_drive_path": docDrive, "personal_directory": docHome, "ssh_key_or_fingerprint": docKey, "hardware_address": docMAC} {
+	for name, rule := range map[string]*regexp.Regexp{"absolute_drive_path": docDrive, "personal_directory": docHome, "ssh_key_or_fingerprint": docKey} {
 		if rule.MatchString(line) {
 			classes[name] = true
+		}
+	}
+	for _, span := range docMAC.FindAllStringIndex(line, -1) {
+		// Do not reinterpret six hextets inside a valid IPv6 literal as a MAC.
+		insideIPv6 := false
+		for _, addrSpan := range docIPv6.FindAllStringIndex(line, -1) {
+			if addrSpan[0] <= span[0] && span[1] <= addrSpan[1] {
+				addr, err := netip.ParseAddr(strings.TrimRight(line[addrSpan[0]:addrSpan[1]], "."))
+				insideIPv6 = err == nil && addr.Is6()
+				if insideIPv6 {
+					break
+				}
+			}
+		}
+		if !insideIPv6 {
+			classes["hardware_address"] = true
 		}
 	}
 	commands := []string{strings.TrimSpace(line)}
@@ -178,30 +215,38 @@ func docLiteralSSHHost(command string) bool {
 	if len(fields) == 0 {
 		return false
 	}
-	if fields[0] == "HostName" || fields[0] == "ProxyJump" {
+	if strings.EqualFold(fields[0], "HostName") || strings.EqualFold(fields[0], "ProxyJump") {
 		return len(fields) > 1 && !docSafeDestination(fields[1])
 	}
-	if strings.HasPrefix(fields[0], "ProxyJump=") {
-		return !docSafeDestination(strings.TrimPrefix(fields[0], "ProxyJump="))
+	if strings.HasPrefix(strings.ToLower(fields[0]), "proxyjump=") {
+		return !docSafeDestination(fields[0][len("ProxyJump="):])
 	}
 	if fields[0] != "ssh" {
 		return false // prose mentioning SSH is not a shell command
 	}
 	for i := 1; i < len(fields); i++ {
 		arg := fields[i]
-		if arg == "-o" && i+1 < len(fields) {
-			i++
-			option := strings.Trim(fields[i], "\"'")
-			for _, key := range []string{"ProxyJump=", "HostName=", "User="} {
-				if strings.HasPrefix(option, key) && !docSafeDestination(strings.TrimPrefix(option, key)) {
+		if strings.HasPrefix(arg, "-o") {
+			option := strings.TrimPrefix(arg, "-o")
+			if option == "" && i+1 < len(fields) {
+				i++
+				option = fields[i]
+			}
+			option = strings.Trim(option, "\"'")
+			for _, key := range []string{"proxyjump=", "hostname=", "user="} {
+				if strings.HasPrefix(strings.ToLower(option), key) && !docSafeDestination(option[len(key):]) {
 					return true
 				}
 			}
 			continue
 		}
-		if (arg == "-l" || arg == "-J") && i+1 < len(fields) {
-			i++
-			if !docSafeDestination(fields[i]) {
+		if strings.HasPrefix(arg, "-l") || strings.HasPrefix(arg, "-J") {
+			destination := arg[2:]
+			if destination == "" && i+1 < len(fields) {
+				i++
+				destination = fields[i]
+			}
+			if !docSafeDestination(destination) {
 				return true
 			}
 			continue
@@ -270,10 +315,14 @@ func TestPublicDocumentationPrivacySyntax(t *testing.T) {
 		"`main@1234567`", "`github.com/flynn/noise@v1.1.0`", "uses: actions/checkout@v4",
 		"`hard_nat_candidate_exhausted@candidates`", "`attempt_expired@ready`",
 		"[API](https://pkg.go.dev/github.com/flynn/noise@v1.1.0)",
-		"[article](https://medium.com/@<AUTHOR>/topic)", // angle placeholders are not a destination
+		"[article](https://medium.com/@%3CAUTHOR%3E/topic)",
 		"~/.winkyou-field/c1c.json", "ssh <SSH_DESTINATION>", "ProxyJump=none", "ssh localhost",
 		"SSH assembly is isolated", "a literal SSH endpoint authority", "ssh -p <PORT> <SSH_DESTINATION>",
 		"ssh -o ProxyJump=none -i <KEY_FILE> <SSH_DESTINATION>",
+		"198.51.100.x 203.0.113.* 192.0.2.x",
+		"2001:db8:00:11:22:33:44:55", "ssh -l<USER> -J<JUMP_HOST> <SSH_DESTINATION>",
+		"ssh -oProxyJump=none -oUser=<USER> <SSH_DESTINATION>",
+		"Gateway 192.0.2.1. End.", "uses actions/checkout@v4.",
 	}
 	for i, line := range good {
 		t.Run(fmt.Sprintf("allowed-%02d", i), func(t *testing.T) {
@@ -295,6 +344,13 @@ func TestPublicDocumentationPrivacySyntax(t *testing.T) {
 		"https://synthetic-user@medium.com/topic", "[ref](https://host.invalid/@synthetic)",
 		"ssh -p 22 synthetic-host", "ssh -l synthetic-user localhost", "ssh -J synthetic-host localhost",
 		"ssh -o User=synthetic-user localhost", "`ssh synthetic-host`",
+		"10.23.45.x", "172.23.*.*", "10.23.45.X", "100.64.0.0/10evil", "10.0.0.0/24:22",
+		"https://medium.com/@synthetic", "[ref](https://medium.com/topic?key=x@host.invalid)",
+		"[ref](https://medium.com/topic#x@host.invalid)",
+		"ssh -lsynthetic-user localhost", "ssh -Jsynthetic-host localhost",
+		"ssh -oUser=synthetic-user localhost", "ssh -ohostname=host.invalid localhost",
+		"hostname host.invalid", "proxyjump=host.invalid", "fd00:0:00:11:22:33:44:55",
+		"Gateway 10.23.45.67.", "Gateway 10.23.45.67. End.", "Gateway fd00::1.",
 	}
 	for i, line := range bad {
 		t.Run(fmt.Sprintf("rejected-%02d", i), func(t *testing.T) {
