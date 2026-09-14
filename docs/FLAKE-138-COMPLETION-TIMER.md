@@ -2,7 +2,8 @@
 
 ## 范围与已知签名
 
-状态：修复与首跑验证中。基线 `2864a18`，仅测试与证据文档；不改产品、配置、工作流或冻结数字。
+状态：本地首跑验收完成，等待独立复审；远端 CI 首跑另列于 PR。基线 `2864a18`，
+仅测试与证据文档；不改产品、配置、工作流或冻结数字。
 
 [原始 issue #138](https://github.com/houyuwushang/winkyou/issues/138) 记录了 Windows required
 memory job 的首跑失败：
@@ -85,4 +86,50 @@ AST RED 日志 SHA-256：`24d7efcbbadb594309e0f1788467cd032c38de495d83c801a859d5
 外层 Go 尚在，最终均自行退出。没有强杀、重跑或改缓存配置。该耗时原因尚未精确定位，
 不把它归为产品失败，也不从总墙钟反推 challenge 的时间余量。
 
-修复后的结果待各批次结束后追加；未执行的验证不计为通过。
+### 修复后首跑
+
+修复只改变三处完成阶段测试的等待依据，并将 responder 的“非 nil 错误”检查收紧为
+准确的 `DeadlineExceeded`；没有把任意取消误判为成功跨过原始 deadline。
+两处不读取 context 错误状态的绝对时刻等待保留，并补上用途注释。
+
+| 批次 | 首跑结果 |
+| --- | --- |
+| AST 实际文件门与 18 个合成正负/作用域用例 | PASS，0.226s；旧代码的三处 RED 变 GREEN |
+| 完整 CI 完成阶段选择器，race×20 | PASS，91.797s；命令 exit 0，外层 96.249s |
+| 完整选择器，GOMAXPROCS=2、两个 busy worker、race×200 | PASS，12 个测试组各 200 轮，失败 0、race 报告 0；包耗时 3247.154s，命令 exit 0，外层 3251.175s；worker 排空 |
+| `go vet ./...` | PASS，exit 0，19.073s，无诊断输出 |
+| `go test ./internal/architecture -count=1 -v` | PASS，9.737s；命令 exit 0，外层 12.508s |
+| 全仓 #116 分区，`-count=1` | PASS，88 个有测试的包、11 个无测试文件的包，失败 0；命令 exit 0，161.430s |
+| 独立 relay，race×20、fail-fast | PASS，20/20，164.669s；命令 exit 0，外层 185.270s |
+
+AST GREEN 日志 SHA-256：`c98410b38324423f730f7e2bec24c2ec10b3d6499639fd05f944bb5ba79c46fb`。
+race×20 日志 SHA-256：`25f9963d278ef718e3245986a24ddf5936d4db277dc0fff392c29fbcc62d89bf`。
+完整压力×200 日志 SHA-256：`b5c92478c513ecba062b2db9922c70902b4c4591527a9069f8503687e2f40c2b`。
+完整 architecture 日志 SHA-256：`9d954abf70c82dad9e1c3b4fa7be717be97272abfc77893300ec72dca550e76c`。
+全仓分区日志 SHA-256：`8cef76cc35c2e0d37aa5fa7a6fb863335f591af6e7512600e5bced114059fd1a`。
+独立 relay 日志 SHA-256：`ef13bf89434ac81477294bce42dcaffc8e4a0c50fb53eac15e633ef18e99275d`。
+
+全仓命令为 `go test ./... -count=1 -skip '^TestRelayWGGoTwoEnginesExchangeIPv4Packets$' -timeout=20m -v`。
+relay 依 #116 单独执行 race×20，不在分区中重复执行。全仓输出含基线已有的 13 条 SKIP：
+两条 required-job 专用高重复证明、一条 Windows symlink 条件、三条 opt-in 诊断、
+两条 Windows alias 特权测试、两条外部 TURN 依赖、两条历史诊断 characterization 和一条 Docker 外部夹具。
+没有新增 skip、降低 count 或改工作流；这些未启用的条件测试不计为本机通过，required job 的结果另列于 PR。
+
+完整选择器压力×200 的外层测试 runner 单独给足累计等待时间，不改变任何单个测试的
+3s challenge / 8s guard / absolute envelope，也不改变 CI 的原有分组与 12m runner。
+
+独立 relay 命令为 `go test -race ./pkg/client -run '^TestRelayWGGoTwoEnginesExchangeIPv4Packets$' -count=20 -timeout=10m -v -failfast`。
+本地有效测试首跑均未命中其他已登记签名；没有重跑测试求绿。旧代码动态复现为零，
+确定性 RED→GREEN 依据是 AST 原文件回归，二者没有混写。
+
+### 范围与发布核对
+
+`git diff --check` 通过。相对基线只改本证据文档、completion timer AST 测试和
+`wireguard_completion_phase_test.go`；生产、配置、工作流 delta 均为零。
+完成阶段生产行为、三报文计数、冻结 deadline/absolute envelope 不变。
+
+仓库外增量隐私检查最初因盘符正则缺少词边界，误把 issue 的 HTTPS 链接当成本机路径。
+补充两个盘符正例和一个 HTTPS 反例后，3/3 控制例通过，增量扫描为零命中；
+没有删除链接或修改产品内容来绕过扫描。该检查夹具误报与真实隐私泄漏分开记录。
+提交身份逐项核对为维护者本人，无协作署名尾注；原始证据只留仓库外。
+不合并，不启动现场网络、计划任务或主机配置操作。远端首跑在 PR 中记录，未执行的验证不计为通过。
