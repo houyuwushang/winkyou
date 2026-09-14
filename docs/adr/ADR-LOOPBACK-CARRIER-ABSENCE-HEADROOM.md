@@ -695,3 +695,25 @@ probeio/governor/loopbackcarrier/architecture race×20；C1b memory pipeline 本
 按本批不扩改共享生产范围的纪律，本 PR 不顺手修改该授权层。R1/R2 只证明本次指定的
 run-owned 缺席终局；这一残留不隐去，当前保留 Refs #111，不贸然声明全部失败路径或
 整个 issue 已闭合。是否扩展该顺序覆盖由维护者/独立复审另行处理。
+
+### 9.7 实施前 R1/R2 首跑 RED
+
+在 docs 提交 `09d0aa2` 上仅新增测试，生产代码仍为基线。Go1.23.1、Windows、
+GOMAXPROCS=28、CGO=1，无人工压力；两个子例在同一进程串行运行，不 fail-fast、不 rerun：
+
+```text
+go test -race ./internal/governor -run '^TestLoopbackCarrierSlowFinishRevokesBeforeDurableIO$' -count=1 -timeout=3m -v
+```
+
+| 首跑 | 实际 FINISH hook 延迟 | Connect | memory / persisted | FINISH | 24h admission / packets | 未完成 / 活动 attempt | 端口重绑 |
+| --- | ---: | ---: | --- | --- | --- | --- | --- |
+| R1 | 2,500.2886ms | 15,506.3473ms | tripped / hard_limit_exceeded | expired | 1 / 3 | 0 / 0 | PASS |
+| R2 | 10,000.3356ms | 23,005.1182ms | tripped / hard_limit_exceeded | expired | 1 / 3 | 0 / 0 | PASS |
+
+两个 hook 均只执行一次；两例都产生 `memory_safety_not_clear`、`owner_reopen_failed`、
+`persistent_safety_not_clear`，后两项来自带原持久 trip 的 owner 重开拒绝，未清除 trip 或 ledger。
+package 首跑 FAIL39.575s；两个 port-rebind 子例 PASS、peer/reservation 归零、清理后 owner lock
+可重取。该 RED 是实际 duration trip，不是编译失败或夹具提前取消。
+原始日志保存在仓库外，SHA-256：
+`e85b4b81f0ba98673aacc3005cd6d8568912945c73e136391a507363f4d5e412`。
+尚未运行修复后 GREEN；后续结果另列，不能覆盖本表。
