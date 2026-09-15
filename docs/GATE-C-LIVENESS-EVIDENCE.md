@@ -375,3 +375,29 @@ Mapping Lifetime、C1b 与 Linux/Windows 全仓 CI 首跑通过。
 
 本批只改工作流、本 CI 契约测试、本文三个文件。没有生产/配置改动，不操作现场环境。
 命中 #133/#101/#125/#132/#138 只登记，不改夹具、不 rerun；推送一次后等待复审，不合并。
+
+### 11.5 本地 RED → GREEN（Go1.23.1，Windows）
+
+先确认原契约在基线 PASS0.392s，再提交新的分组契约。在旧 workflow 上实际 RED：
+检测到 combined job、缺失两条独立 matrix 及不完整的 Required 汇总；四个预算算式
+子用例已经通过。随后仅修改工作流，新契约与29个负向变异全部通过。
+
+| 批次 | 结果 | 原始日志 SHA-256 |
+| --- | --- | --- |
+| 新契约 + 旧 workflow | 预期 FAIL0.404s；未运行后续变异，不伪称负例已过 | `bc599bc392268b57160af9d2697dae22b7c9ed1d1efcdefb167e071c89f36091` |
+| 新契约 + 拆分 workflow | PASS0.163s；29个变异、4个预算子用例 | `5aff2327e309d499b998a10556d8cd1a9a86ba76fd1a937dfa2d0c5bffcb20b3` |
+| 同一契约 race×20 | PASS4.825s | `2579dfde3606b26483280f7ae756c653c052c73945a1cebef2e6a95640b9f0c4` |
+| 完整 architecture | 111个顶层测试 PASS10.355s；0失败/0跳过 | `4dec56a66307139a6117fda17016bf085a93f55209e40b30ceeb4f5b2b12ec3c` |
+| 全仓 vet | PASS；空诊断输出 | `e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855` |
+
+```text
+go test ./test/natlab -run TestSessionLivenessCIContract -count=1 -v
+go test -race ./test/natlab -run TestSessionLivenessCIContract -count=20 -failfast
+go vet ./...
+go test ./internal/architecture -count=1 -v
+```
+
+只变更本节、CI 契约和指定 workflow。工作流从 `real-wireguard` 到 `required` 之前的
+全部原有 job 与基线逐字一致；七条原测试/向量命令逐字保留，仅按 §11.3 分组。
+`git diff --check` 通过。新增16个来源链接均为已核对的公开 job 链接；新增文字无部署
+身份、地址、指纹或路径。这里的静态/契约 PASS 不替代远端首跑时长验收；CI 表在 PR 单列。
