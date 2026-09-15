@@ -275,3 +275,103 @@ proof、required flag、次数、test runner 时间、遗漏依赖及忽略失�
 实测。当前修复 head 的两份 Mapping Lifetime、全 Session Liveness 和 C1b required
 首跑结果逐项记录在 Draft PR，未完成前不标绿。只有 #125/#118/#120 精确签名各允许
 一次透明 rerun，原 run 必须保留并说明；其它 RED 停下报告，不顺手修复。
+
+## 11. #143 owner job 预算
+
+本节基线为 `2864a18`，只授权拆分 CI 调度与对应契约，不改变产品、测试命令、
+`-race`、`-count`、测试 `-timeout` 或场景。采用方案 a：两个 OS 对称拆为 `model`
+和 `owner`，而不是延长原来的单 job。原始 RED 保留；本批不 rerun 求绿。
+
+### 11.1 原始取消与复审输入
+
+| 原始首跑 | job 总墙钟 | 进入 business 时距 job 开始 | business 结论 | 后续 restart / vector |
+| --- | --- | --- | --- | --- |
+| [#141，run34835058747 / job103946887124](https://github.com/houyuwushang/winkyou/actions/runs/34835058747/job/103946887124) | 1206s | 943s | 第8步取消 | 未运行，不算 PASS |
+| [main，run34804512914 / job103853610081](https://github.com/houyuwushang/winkyou/actions/runs/34804512914/job/103853610081) | 1207s | 940s | 第8步取消 | 未运行，不算 PASS |
+
+两次均由平台的20分钟 job 上限取消，不是某个测试自己的 `-timeout`。
+原始时间戳核对为940/943s，不能把复审输入中的“前7步约1100s”当实测值引用。
+取消的 business 时长不是成功样本；已完成的 setup、Vet、race、architecture、owner
+步骤仍是有效成本观测。其它主体发起的后续 attempt 不覆盖这里的首跑记录。
+
+复审提供的七次 run 范围表保留如下，作为预算提案的输入；它不等于下面逐 job
+核实得到的完整极值范围：
+
+| 步骤 | windows-latest 输入范围（秒） | ubuntu-latest 输入范围（秒） |
+| --- | --- | --- |
+| setup（checkout + setup-go） | 约55–65 | 约15–25 |
+| Vet | 21–31 | 7–11 |
+| Full affected-package race×20 | 257–300 | 249–257 |
+| Architecture and mutation ×20 | 141–190 | 106–156 |
+| Same durable owner ×20 | 308–363 | 280–286 |
+| Real business coexists ×20 | 242–266 | 228–240 |
+| Restart rejects spent artifact | 17–22 | 13–14 |
+| Byte-vector（python） | 0–5 | 0–1 |
+| 成功 job 总墙钟 | 1067–1168 | 915–972 |
+
+### 11.2 逐 job 核对与引用值
+
+从以下七次 run 的**首个 attempt**各取两个 OS 的 job；同一成功 Linux job 在后续
+attempt 中出现的副本只计一次。只用已完成成功步骤计算其范围：
+
+| run | Windows job | Linux job |
+| --- | --- | --- |
+| 34851930171 | [104001768388](https://github.com/houyuwushang/winkyou/actions/runs/34851930171/job/104001768388) | [104001768223](https://github.com/houyuwushang/winkyou/actions/runs/34851930171/job/104001768223) |
+| 34835058747 | [103946887124](https://github.com/houyuwushang/winkyou/actions/runs/34835058747/job/103946887124) | [103946886806](https://github.com/houyuwushang/winkyou/actions/runs/34835058747/job/103946886806) |
+| 34817728449 | [103891969675](https://github.com/houyuwushang/winkyou/actions/runs/34817728449/job/103891969675) | [103891969661](https://github.com/houyuwushang/winkyou/actions/runs/34817728449/job/103891969661) |
+| 34804512914 | [103853610081](https://github.com/houyuwushang/winkyou/actions/runs/34804512914/job/103853610081) | [103853610148](https://github.com/houyuwushang/winkyou/actions/runs/34804512914/job/103853610148) |
+| 34796256669 | [103829831047](https://github.com/houyuwushang/winkyou/actions/runs/34796256669/job/103829831047) | [103829830937](https://github.com/houyuwushang/winkyou/actions/runs/34796256669/job/103829830937) |
+| 34765537945 | [103745717665](https://github.com/houyuwushang/winkyou/actions/runs/34765537945/job/103745717665) | [103745717580](https://github.com/houyuwushang/winkyou/actions/runs/34765537945/job/103745717580) |
+| 34756680128 | [103722135040](https://github.com/houyuwushang/winkyou/actions/runs/34756680128/job/103722135040) | [103722135062](https://github.com/houyuwushang/winkyou/actions/runs/34756680128/job/103722135062) |
+
+| 步骤 | Windows 实际范围（秒） | Linux 实际范围（秒） |
+| --- | --- | --- |
+| setup（checkout + setup-go） | 47–93 | 13–17 |
+| Vet | 22–38 | 7–11 |
+| Full affected-package race×20 | 257–300 | 249–257 |
+| Architecture and mutation ×20 | 143–190 | 106–156 |
+| Same durable owner ×20 | 317–363 | 280–286 |
+| Real business coexists ×20 | 245–266 | 228–240 |
+| Restart rejects spent artifact | 17–22 | 13–15 |
+| Byte-vector（python） | 1–5 | 0–1 |
+| 成功 job 总墙钟 | 1067–1179 | 915–972 |
+
+`setup` 只取 checkout 与 setup-go 两步之和；不把同一开销重复记账，也不把取消步骤
+补成成功时长。Windows setup=93s 来自 main 原始取消 job，Vet=38s 来自
+job103745717665；Linux restart=15s 来自 job103745717580。这些大于输入范围的实际值
+必须纳入同一公式，不能为保留原提案的分钟数而舍弃。脱敏时间戳汇总留仓库外，SHA-256：
+`559c4b1e6ab30f4dd862ce04b6dcebadfd695727c31ba285e275c770d29d3f6e`。
+
+### 11.3 对称拆分与上限
+
+- `model`：Vet → Full affected-package race×20 → Architecture ×20 → Byte-vector。
+- `owner`：Same durable owner ×20 → Real business coexists ×20 → Restart rejects spent artifact。
+- 两条 matrix 都恰有 Linux / Windows 两个独立 leg，`fail-fast: false`，
+  `GORACE=halt_on_error=1`；每条都使用原来的 checkout / setup-go。
+- `Session Liveness Required` 继续 `always()`，逐一检查两个新 job 以及原有
+  real-WireGuard、Windows real-WireGuard、fresh100、netns，任一失败、取消或跳过均失败。
+
+按“步骤实测最大值之和 + 对应 OS 的 setup 最大值”，乘1.25，再向上取整分钟。
+这里是 job 调度余量，不是产品 liveness / drain 或测试运行器时限：
+
+| OS / leg | 算式（秒） | ×1.25 后（秒） | `timeout-minutes` | 首跑80%验收线（秒） |
+| --- | --- | --- | --- | --- |
+| Windows model | (38 + 300 + 190 + 5 + 93) × 1.25 | 782.5 | **14** | 672 |
+| Windows owner | (363 + 266 + 22 + 93) × 1.25 | 930 | **16** | 768 |
+| Linux model | (11 + 257 + 156 + 1 + 17) × 1.25 | 552.5 | **10** | 480 |
+| Linux owner | (286 + 240 + 15 + 17) × 1.25 | 697.5 | **12** | 576 |
+
+不延长15m/8m/2m等任何原测试 `-timeout`，不减少20次/1次，不跳过任何命令。
+新 job 首跑实测必须同时满足 SUCCESS 与墙钟不超过各自 job 上限的80%；未完成、
+取消或虽绿但越过80%均不算预算验收通过。还需全部其它 Session Liveness leg、两份
+Mapping Lifetime、C1b 与 Linux/Windows 全仓 CI 首跑通过。
+
+### 11.4 交付与停止边界
+
+契约先在旧 workflow 上证明 RED，再拆工作流。契约锁定四个精确 leg / 分钟字面量、
+命令顺序、测试 timeout/count、环境、fail-fast 与 Required 的每条依赖和成功断言；
+负向变异须拒绝合回单 job、漏命令、缩 timeout/count、遗漏依赖和低于公式的 job 上限。
+本地验证与 CI 首跑结果追加记录，不用后续 PASS 替换原始 RED。
+
+本批只改工作流、本 CI 契约测试、本文三个文件。没有生产/配置改动，不操作现场环境。
+命中 #133/#101/#125/#132/#138 只登记，不改夹具、不 rerun；推送一次后等待复审，不合并。
