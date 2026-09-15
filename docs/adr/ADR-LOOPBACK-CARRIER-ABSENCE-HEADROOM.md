@@ -1,6 +1,7 @@
 # ADR：loopback 缺席路径的生命周期见证与 FINISH/drain 余量
 
 Status: **Draft，测量证据；未修改生产余量**（2026-09-09）。Refs #111。
+当前 O2 实施裁决见 §9；上述 Draft 状态与下列旧基线属于 §1–§8 的历史测量记录。
 基线 `214ff2d`；#115 分支未修改。2026-09-09维护者明确允许本PR修改旧墙钟断言
 所在测试文件，具体范围见§7。
 
@@ -585,3 +586,351 @@ go test -race ./pkg/client -run '^TestRelayWGGoTwoEnginesExchangeIPv4Packets$' -
 本地首跑全部通过不等于远端CI全绿，也不关闭#111或补造旧间隙根因。
 提交与推送仅沿用#123原分支，保持Draft；本head远端CI首跑在PR描述独立记录，
 不manual rerun、不合并。推送后停止实现并等待复审，#124/阶段3继续冻结。
+
+## 9. O2 裁决与设计（2026-09-14）
+
+本节依据维护者本批明确选择 O2 的实施指令。问题背景见
+[#111 既有记录](https://github.com/houyuwushang/winkyou/issues/111#issuecomment-5630029119)；
+该旧评论仍列待选方案，不能冒称它已经包含本次裁决。基线 `2864a18`。
+本节授权独立 Draft 实现与隔离测试，不授权合并、现场 I/O、主机配置或后续现场窗口。
+§1–§8 的原始 RED、未定位结论和旧批次数字保持原貌，不重写为本次证据。
+
+### 9.1 修复目标与取舍
+
+`admittedCarrier.run` 的缺席终局原先先写 durable FINISH，再调用 controller.Close，
+使 FINISH append/fsync 仍位于 probeio 的 15s duration 绊线内。O2 将这条终局路径改为
+**撤销探测权限 → durable FINISH → 关闭 attempt lease**。
+
+```text
+旧 run 终局：13s 自有 deadline → FINISH append/sync → Controller.Close → 停止 probeio
+新 run 终局：13s 自有 deadline → RevokeForTerminal → FINISH append/sync → Controller.Close
+                                 │                    │                     │
+                                 │                    配对 drain Complete   释放 attempt
+                                 probeio 句柄/worker 排空、timer 停止、自己的 drain Complete
+                                 attempt 与配对 drain 此时仍保留
+```
+
+不选 O1：增加固定余量仍把磁盘等待放在活动探测绊线内。
+[#124 的 trace 证据](ADR-STRATEGY-SELECTION-CONVERGENCE.md#11113-已证实的阻塞链)
+已在普通 runtime 快照路径观测到约 10s 的 MoveFileEx 系统调用；这不是对本路径 FINISH
+fsync 或 §8.5 旧缺失 trace 样本的归因，但足以说明额外 2s 不是这种等待的可靠上界。
+不选 O3：本次明确决定移除 run 终局上可避免的持久化/探测计时耦合，不仅记录风险。
+FINISH 仍同步落盘，不改成后台队列、不跳过 fsync、不退款。
+
+### 9.2 显式终局撤销能力
+
+新增 `probeio.Controller.RevokeForTerminal()`，唯一生产调用点是
+`internal/v2/loopbackcarrier/carrier.go` 的 `admittedCarrier.run` 终局 defer。
+
+- 复用既有 stopLocal 的撤销/排水语义：拒绝新操作、取消本地 context、关闭全部未移交
+  probe socket，并等待已接纳的 I/O 与 pending open。之后 Open/Write/Register 均拒绝，
+  有效参数下归为 `ErrLeaseClosed`；不能复活旧 handle、换 endpoint 或重新 Promote。
+- 复用既有 handoff 完成通知唤醒 duration watcher。这里不移交 datagram、不创建
+  PacketTransport、不把失败标成 promoted，只复用“保留 attempt，但探测权限已经结束”
+  的计时器脱离语义。watchLifecycle 正常退出，不因随后 FINISH 慢而触发 duration trip。
+- 返回前确认 watcher 已退出，并幂等完成 probeio 自己的 drain；不能只拿 watchDone
+  当作 Complete 已发生的证明，因为现有 watcher 先关闭 watchDone 再调用 Complete。
+- 不调用 AttemptLease.Close，不完成 pairing gate 的 drain。后者仍由既有 finish() 负责。
+  API 幂等；它返回的错误 join 进 carrier 错误，不得导致 FINISH 被跳过。
+- 沿用 reviewed Datagram 的 Close/解除 I/O 契约，不新增任意第三方 factory 或强制终止
+  不合作内核调用的承诺。逻辑 revoked 与物理排空不能混为一谈。
+
+run 的 defer 无论成功还是失败，都先调用此幂等 API（controller 存在时），再调用
+authorization.Finish(reason)，最后调用 controller.Close。已完成的 terminal promotion
+不会被重复移交；其短命 transport 仍按原路径关闭。本 API 不返回任何数据面能力。
+
+### 9.3 两个 drain 与计费不变量
+
+正常终局下，最终 Controller.Close 之前 probeio 与 pairing gate 的 drain 均已完成，
+AttemptLease.Close 应立即收束。若仍有未完成 drain，既有
+`CancellationDrainTimeout` 与持久 `cancellation_timeout` 语义不变，不能吞掉第二道绊线。
+
+冻结值全部不变：`AttemptDuration=15s`、`terminalDrainMargin=2s`、
+`MaxAttemptDuration`、machine cancellation drain 2s、3 packets / 3 PPS。
+2s terminal margin 用于 run 退出到撤销，不再要求覆盖其后的 FINISH 磁盘等待。
+admission 仍全额计入 15s envelope；24h packet 与 admission 计数不因早撤销而减少。
+这不是向 Gate B/C 引入新的完成阶段：§19.9、handoff 实现、golden 与预算保持字节不变。
+
+### 9.4 崩溃窗口
+
+- revoke 前崩溃：沿用原 governor/OS 与未完成 admission 恢复；不新增恢复代码。
+- revoke 完成、FINISH 写入前崩溃：OS socket 已排空，journal 有 BURN 无 FINISH。
+  既有 unfinished charge 保留，重启不能重用该 credential 或获得退款。
+- FINISH 写入/sync 期间崩溃：仍按已有持久 journal 校验/恢复处理，不能凭进程内标志
+  补造 FINISH。任何不确定状态仍 fail-closed。
+- FINISH 成功后、最终 Close 前崩溃：持久终局已可见；不新增补发、重试或自动恢复。
+
+测试只核对这些现有行为，使用新临时 namespace 与合成 credential，绝不 reset ledger。
+
+### 9.5 红回归、变异与验收
+
+先在 governor 的既有 FINISH `afterAppendBeforeSync` test hook 注入：
+
+| 回归 | 延迟 | 旧 run 终局预期 | 修复后预期 |
+| --- | ---: | --- | --- |
+| R1 | 2.5s | memory_safety_not_clear，持久 hard_limit_exceeded | clear、FINISH=expired、资源归零、端口可重绑 |
+| R2 | 10s | 同上 | 同上 |
+
+Connect 墙钟预计约 13s 加注入延迟，只记录分段数据，不把它重新作为 probe 资源上限。
+原默认缺席回归及其 AST 接线门保持原样，调用方仍为独立 60s 兜底。
+新变异必须拒绝 FINISH 先于 revoke、revoke 后仍能发送、提前关闭 attempt、计费减少、
+白名单外引用该 API；错误传播与幂等完成另有测试。崩溃窗口通过真实 journal 与 OS 见证，
+不把内存状态或强制退出本身冒充持久/物理排水证据。
+
+Go1.23.1 首跑验收依次记录：R1/R2 RED→GREEN；#123 同 profile 的压力至少50
+（GOMAXPROCS 与 2×CPU busy worker、race、fail-fast）、无压力至少100、focused race×20；
+probeio/governor/loopbackcarrier/architecture race×20；C1b memory pipeline 本机首跑；
+#116 全仓分区与独立 relay race×20；vet 与 Linux CGO=0、natlab/c1bproof tagged vet。
+普通 cmd/wink 构建产物留仓库外，go tool nm 须为零 natlab/c1bproof 符号。
+远端首轮 CI 单列，不 rerun 求绿；每步独立提交，未执行项不预填 PASS。
+
+### 9.6 单独登记的提前 FINISH 路径
+
+源码核对另发现共享 pairing gate 的 BeforeFirstEmission/CheckActive 可以在 validate 失败时
+先调用内部 finish，再向 carrier 返回错误；watchInvalidation 也可独立选择终局。
+仅重排 run 的 defer 不能证明这些更早的 FINISH 也先撤销了 probeio。
+已在 [#111 补充记录](https://github.com/houyuwushang/winkyou/issues/111#issuecomment-5660948336)
+登记。当前是源码可达性结论，不伪称已对这条支路取得动态 latch 复现。
+
+按本批不扩改共享生产范围的纪律，本 PR 不顺手修改该授权层。R1/R2 只证明本次指定的
+run-owned 缺席终局；这一残留不隐去，当前保留 Refs #111，不贸然声明全部失败路径或
+整个 issue 已闭合。是否扩展该顺序覆盖由维护者/独立复审另行处理。
+
+### 9.7 实施前 R1/R2 首跑 RED
+
+在 docs 提交 `09d0aa2` 上仅新增测试，生产代码仍为基线。Go1.23.1、Windows、
+GOMAXPROCS=28、CGO=1，无人工压力；两个子例在同一进程串行运行，不 fail-fast、不 rerun：
+
+```text
+go test -race ./internal/governor -run '^TestLoopbackCarrierSlowFinishRevokesBeforeDurableIO$' -count=1 -timeout=3m -v
+```
+
+| 首跑 | 实际 FINISH hook 延迟 | Connect | memory / persisted | FINISH | 24h admission / packets | 未完成 / 活动 attempt | 端口重绑 |
+| --- | ---: | ---: | --- | --- | --- | --- | --- |
+| R1 | 2,500.2886ms | 15,506.3473ms | tripped / hard_limit_exceeded | expired | 1 / 3 | 0 / 0 | PASS |
+| R2 | 10,000.3356ms | 23,005.1182ms | tripped / hard_limit_exceeded | expired | 1 / 3 | 0 / 0 | PASS |
+
+两个 hook 均只执行一次；两例都产生 `memory_safety_not_clear`、`owner_reopen_failed`、
+`persistent_safety_not_clear`，后两项来自带原持久 trip 的 owner 重开拒绝，未清除 trip 或 ledger。
+package 首跑 FAIL39.575s；两个 port-rebind 子例 PASS、peer/reservation 归零、清理后 owner lock
+可重取。该 RED 是实际 duration trip，不是编译失败或夹具提前取消。
+原始日志保存在仓库外，SHA-256：
+`e85b4b81f0ba98673aacc3005cd6d8568912945c73e136391a507363f4d5e412`。
+尚未运行修复后 GREEN；后续结果另列，不能覆盖本表。
+
+### 9.8 O2 实现与定向首跑
+
+`ea6b696` 只新增 `internal/probeio/terminal_revoke.go` 并修改 loopback run 的终局 defer 与
+一段说明注释；生产净变更为 31 行新增、4 行删除。既有 probeio.go、Gate A/B/C 实现、所有冻结
+常量与 golden 均未改动。`1e517c0` 另行加入所有权、顺序、崩溃与调用者门测试。
+
+| 首跑 | 实际 FINISH hook 延迟 | Connect | memory / persisted | FINISH | admission / packets | 资源 / 未完成 / 重绑 |
+| --- | ---: | ---: | --- | --- | --- | --- |
+| R1 GREEN | 2,500.2569ms | 15,508.4195ms | clear / clear | expired | 1 / 3 | 0 / 0 / PASS |
+| R2 GREEN | 10,000.1137ms | 23,008.0858ms | clear / clear | expired | 1 / 3 | 0 / 0 / PASS |
+
+与 §9.7 完全相同的命令和延迟注入；两个 FINISH hook 均执行一次。package PASS39.933s，
+外层命令46,712ms；原始日志 SHA-256：
+`15b72a32cba1a5134109ba620fe88fa05bb13772a2100866b52cffaf724886e7`。
+这里大于15s的 Connect 墙钟包含已撤销后的持久 I/O，不是把探测窗口延长到了23s。
+
+定向测试首跑另证：
+
+- `go test -race ./internal/probeio ./internal/v2/loopbackcarrier -run '^TestTerminalRevoke' -count=1 -timeout=2m -v`：
+  probeio PASS1.915s，loopbackcarrier PASS1.654s。两个 probe datagram 全关；撤销后的
+  Open/Register/Read/Write 拒绝；pending open 与在途 read/write 排空；16 个并发重复调用幂等；
+  probeio drain 完成但另一个 owner 的 drain、attempt 与原 request 仍保留。FINISH 内进行 OS 端口
+  重绑见证，撤销/FINISH/Close 三种错误都保留，FINISH 恰好调用一次。
+- `go test ./internal/architecture -run '^TestTerminalRevoke' -count=1 -v`：PASS0.867s；
+  21 个越权引用形态、8 个顺序/排水变异、7 个成本降低变异全部被拒。
+  原默认 observation 门另外继续检查 admission/24h packet 不退款。
+- `go test -race ./internal/governor -run '^TestLoopbackTerminalRevokeCrash' -count=1 -timeout=3m -v`：
+  PASS2.076s。实际 run 在 FINISH 首字节写入前被 test-only ledger seam 暂停，子进程活着时端口
+  已可重绑；kill 后 journal 仍只有 INITIALIZE+BURN，未完成 admission=1、packets=3。
+  同材料重启失败，独立 UDP 接收见证零发射，端口与 owner lock 可重取、safety clear。
+- `go test -race ./internal/governor -run '^TestLoopbackTerminalRevokeRetainsSecondDrainTripwire$' -count=1 -timeout=2m -v`：
+  PASS3.893s。所有 drain 完成时 Close 在本机时钟精度内立即返回、safety clear；故意留下另一 owner
+  的 drain 时 Close2,007.9645ms 返回，原 `cancellation_timeout` 持久 trip 可重开验证，资源归零。
+  这是第二道绊线的负向控制，不是正常缺席批次的生产 RED，也未降低2s门槛。
+
+新增崩溃与第二道绊线夹具各有一次编译前检查失败（辅助函数返回值个数、现有常量名引用错误）；
+均只修新测试，原始日志单独保留。这两次不是动态 RED，也未计入上述编译通过后的首跑。
+其余完整验收批次尚未完成，不预填全绿。
+
+### 9.9 旧 opt-in 精确计时模板的范围限制
+
+另见 [#111 测试兼容性记录](https://github.com/houyuwushang/winkyou/issues/111#issuecomment-5661368752)：
+`absence_worker_test.go.txt` 的旧 `absenceLifetimeInvariant` 要求 FINISH sync 先于 probeio worker/
+timer 停止，且把 `finish_after_stop` 设为负向控制；这正是 O2 要改变的先后关系。
+本批按约束保留原默认缺席测试、AST、overlay 与 template 字节不变，未运行的旧 opt-in 不计为
+O2 的 PASS，也不据此宣称精确双起点旧测量已迁移。当前是源码兼容性发现，不是已复现的新动态
+latch；该模板的单独迁移需后续确认。默认真实 journal 回归和本批 R1/R2、撤销、崩溃见证独立有效。
+
+### 9.10 原默认缺席回归：压力首批
+
+Go1.23.1、Windows、GOMAXPROCS=28、56 个 busy worker（2×28 CPU），保持原 helper、
+60s caller guard、所有终局断言与 fail-fast。该批次在 `1e517c0` 上运行，期间只追加文档：
+
+```powershell
+$env:WINKYOU_FLAKE_111_CPU_STRESS = '1'
+go test -race ./internal/governor -run '^TestLoopbackCarrierAbsentPeerExpiresCleanlyWithoutSafetyTrip$' -count=50 -failfast -timeout=30m -json
+```
+
+首跑50/50 PASS，package802.894s、外层807,274ms；50 个 FINISH=expired，50 个双层 safety clear，
+50 次压力 worker_remaining=0；FAIL、memory_safety_not_clear、persistent_safety_not_clear 均0。
+日志 SHA-256：`44b4018e052ef51b14a04a1a6a6c4cda8a2f528099665183e7926f2e64ce1532`。
+Connect 最大23,119.9938ms，FINISH sync 最大36.7789ms，fixture 最大10,075.8071ms。
+
+4 个 Connect≥15s 的原始计时行如下，样本序号为本批独立计数，不沿用 §8 的历史序号：
+
+```text
+sample=10
+ABSENCE_IN_PROCESS fixture_ns=376425800 connect_ns=21272820500 journal_lower_bound_ns=13479090400 burn_sync_ns=10201000 finish_sync_ns=19977700 after_finish_ns=0
+sample=17
+ABSENCE_IN_PROCESS fixture_ns=10075807100 connect_ns=23119993800 journal_lower_bound_ns=13058696500 burn_sync_ns=14536200 finish_sync_ns=23057600 after_finish_ns=14441500
+sample=18
+ABSENCE_IN_PROCESS fixture_ns=381187600 connect_ns=18755118400 journal_lower_bound_ns=13362208500 burn_sync_ns=2112500 finish_sync_ns=1999500 after_finish_ns=502900
+sample=25
+ABSENCE_IN_PROCESS fixture_ns=10056326300 connect_ns=17958584800 journal_lower_bound_ns=13033751700 burn_sync_ns=573000 finish_sync_ns=20802000 after_finish_ns=1004300
+```
+
+这些墙钟样本不能反推内部 timer 的停止时刻，也不是新的 FINISH fsync 根因定位。
+O2 的慢 FINISH 顺序证明来自 §9.7–§9.8 的同故障 RED→GREEN、FINISH 内重绑与 drain 见证。
+本表不替代后续无压力100、focused20、四包race20或远端 CI，尚未执行/完成者另列。
+
+### 9.11 原默认缺席回归：无压力首批
+
+保持 Go1.23.1、Windows、GOMAXPROCS=28，关闭人工压力与旧 opt-in observer：
+
+```powershell
+$env:WINKYOU_FLAKE_111_CPU_STRESS = '0'
+$env:WINKYOU_ABSENCE_WITNESS = '0'
+go test -race ./internal/governor -run '^TestLoopbackCarrierAbsentPeerExpiresCleanlyWithoutSafetyTrip$' -count=100 -failfast -timeout=45m -json
+```
+
+首跑100/100 PASS，package1304.494s、外层1,308,872ms；100 个 FINISH=expired，100 个双层
+safety clear，FAIL=0。Connect 最大13,025.785ms、FINISH sync 最大5.8863ms、fixture最大
+29.7236ms；Connect≥15s 样本为0。原始日志 SHA-256：
+`bbfba34234cf2c0d2771bde53162e0abd132c93908beae6dca06cd66479733e7`。
+没有缩短任何产品或测试内 deadline，没有减少次数，也没有把这100次当作压力样本重复记账。
+
+### 9.12 原 focused race×20 首批
+
+同一 Go1.23.1/Windows/GOMAXPROCS=28、无人工压力：
+
+```text
+go test -race ./internal/governor ./internal/v2/loopbackcarrier -run '^Test(LoopbackCarrierAbsentPeerExpiresCleanlyWithoutSafetyTrip|AbsentPeer|Absence)' -count=20 -failfast -timeout=25m -json
+```
+
+governor PASS268.300s，loopbackcarrier PASS3.594s，外层276,117ms；7 个非 opt-in 顶层入口
+各20/20，20次缺席 FINISH=expired，FAIL=0。包含原观察/计费负向控制、默认回归接线 AST、
+overlay/template 插入后可还原的原门禁，文件本身未修改。
+`TestAbsenceLifecycleWitness` 沿用原 opt-in 条件，20次均未启用；这20个既有 skip 不算 PASS，
+也不是为 O2 新加 skip，其语义限制已在 §9.9 单独披露。
+原始日志 SHA-256：`703d5e76e2e738bf6c7c1db2bdf25ad74a81563602771fc29b0df8d36f6612c3`。
+
+### 9.13 四个受影响包的完整 race×20 首批
+
+沿用 Go1.23.1/Windows/GOMAXPROCS=28，无人工压力，按包串行：
+
+```text
+go test -race -p=1 ./internal/probeio ./internal/governor ./internal/v2/loopbackcarrier ./internal/architecture -count=20 -failfast -timeout=90m -json
+```
+
+| 包 | 首跑 | package 耗时 |
+| --- | --- | ---: |
+| probeio | PASS，完整20轮 | 142.634s |
+| governor | PASS，完整20轮 | 1925.999s |
+| loopbackcarrier | PASS，完整20轮 | 34.038s |
+| architecture | PASS，完整20轮 | 850.782s |
+
+总命令2,966,104ms，FAIL=0；没有命中其他需登记的实际失败签名。R1/R2 各20次 clear/expired，
+新子进程崩溃/重启见证20次、第二道绊线正负控制各20次；全部句柄撤销、在途 I/O 排空、
+FINISH 内重绑与错误保留、调用边界与变异门也各20轮。原 handoff/完成阶段测试和 golden 未改。
+日志 SHA-256：`ea3a98861e815f9b472d9984833369c14d621eb20b540051f9dc64014035246a`。
+
+本批另外保留13个原有条件入口的 skip（每个20次）：pairing gate 的 parent-witness crash、
+safety-trip emission boundary、32进程同 credential 竞争、1000次同 bundle 重启、fresh-credential
+restart windows、emit-before-burn witness mutation；hard-NAT 的32进程竞争、1000次重启及
+FreshTopology100；旧 loopback 两进程成功、message-one crash、pre-Promote crash；以及旧
+opt-in 精确缺席 observer。它们没有新增 skip、没有被算作 PASS，也不能借本次替代其独立 CI 门。
+本批新增的真实子进程 revoke/FINISH 崩溃回归则未跳过，已经在 race 下实际跑满20次。
+
+### 9.14 C1b memory pipeline 与独立校准
+
+首次宽选择器 `^TestGateC1bMemory` 在 GOMAXPROCS=28 下误选了仅允许 GOMAXPROCS=4 的
+`TestGateC1bMemoryFixtureFresh100Schedules` 校准入口；它在采样前拒绝运行，package FAIL1.133s，
+原文为 `Fresh100 fixture calibration requires CI-equivalent GOMAXPROCS=4`。
+这是验证命令的前置配置错误，不是 #133 的候选耗尽复现，也没有运行到实际 pipeline。
+该首跑 RED 完整保留，SHA-256：
+`06cc8ef79cd16b2a7ab3ff45348fb6f84c6eacba6b9026a31b69fa7194ca85f5`。
+已在 [#133 验证配置记录](https://github.com/houyuwushang/winkyou/issues/133#issuecomment-5662482727)
+登记；未修改仓库窗口、测试、工作流，也没有覆盖原日志或重跑该错误配置。
+
+之后按各入口原有前置分区：普通 pipeline 使用 GOMAXPROCS=28；Fresh100 校准单独使用4；
+原独立压力校准单独使用2并启用其压力开关。各自保存新的首次执行结果，不冒充宽选择器首跑全绿。
+普通 pipeline 保持 Go1.23.1、Windows、race，启用 `WINKYOU_GATE_C1B_REPEAT_REQUIRED=1`：
+
+```text
+go test -race -tags=c1bproof ./internal/governor -run '^TestGateC1b(Memory(ProductPipelineReachesPostOOBEcho|SlowDurableFinishReachesPostOOBEcho|FixtureSessionWindows|SlowResponderDurableFinishReachesPostOOBEcho|CancellationAfterDurableFinish|ProductPipelineFresh100|CLIAndClaimedChildPipeline|CLIEvidenceDriftAndExhaustionAreOneShot)|GateBProductHandoffRetainsOwnershipUntilFinish)$' -count=1 -failfast -timeout=30m -json
+```
+
+九个顶层入口首跑全部 PASS，无 FAIL/skip，package193.898s、外层200,898ms。
+Fresh100 实际100个 fresh namespace、3种确定性 schedule、residue=0，wall154,413ms；
+另覆盖 handoff 持有到 FINISH、慢 FINISH、取消、CLI/claimed-child 组合及证据漂移/候选耗尽一次性终局。
+日志 SHA-256：`abadef7083d71e820e1c9413eb8b19bec728c22fec5184c20523c7af457a9b7f`。
+Fresh100 独立校准首次正确配置执行（GOMAXPROCS=4、内部2个 busy worker）：
+
+```text
+go test -race -tags=c1bproof ./internal/governor -run '^TestGateC1bMemoryFixtureFresh100Schedules$' -count=1 -failfast -timeout=15m -json
+```
+
+| profile | 完成场景 / endpoint | p50 | p95 | max | 原 candidate 窗口 | p95 < 80% |
+| --- | ---: | ---: | ---: | ---: | ---: | --- |
+| predictive | 34 / 68 | 502.9541ms | 505.5464ms | 524.2687ms | 1000ms | PASS |
+| asymmetric | 33 / 66 | 454.8016ms | 462.4929ms | 475.2712ms | 1500ms | PASS |
+| hard-16k | 33 / 66 | 911.1974ms | 989.9197ms | 1010.9043ms | 4000ms | PASS |
+
+100个 fresh namespace 全部完成，无 FAIL/skip；package164.932s、外层169,919ms。
+SHA-256：`9040d6cbef9e19577c29a6e5d7427e16ae7fb1e13767797167feeb60f19cbc05`。
+未修改 #133/#119 的窗口或夹具，不把本批的有限测量当作其全部环境已消除 flake 的证明。
+
+原独立校准另按 GOMAXPROCS=2、`WINKYOU_FLAKE_119_STRESS=1` 首次执行：
+
+```text
+go test -race -tags=c1bproof ./internal/governor -run '^TestGateC1bMemoryFixtureStressSchedules$' -count=1 -failfast -timeout=5m -json
+```
+
+PASS10.528s，外层16,189ms，无 FAIL；SHA-256：
+`da3acefaacd8afaa643c6fcb2b0ffa8db7b561cd184163552ad7e17fca3ae395`。
+以上校准的运行器超时不改变任何产品/夹具冻结数字。剩余全仓验收单独记录。
+
+### 9.15 静态检查与全仓分区首跑
+
+继续按 Go1.23.1、Windows、GOMAXPROCS=28 串行执行；没有 source/workflow 变更或 CI rerun：
+
+| 命令 | 首跑结果 | 外层耗时 | 原始日志 SHA-256 |
+| --- | --- | ---: | --- |
+| `go vet ./...` | PASS，无诊断输出 | 14,209ms | `e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855` |
+| `go test ./internal/architecture -count=1 -json` | PASS9.228s | 12,095ms | `1b9158ce0df6e86fd6c558f16dfeaa70100f6c7e857d807e050a13964780660f` |
+| `go test ./... -count=1 -skip '^TestRelayWGGoTwoEnginesExchangeIPv4Packets$' -json` | PASS，88个有测试包、11个无测试包 | 193,097ms | `9bbe7b98b4a70c5b377b55a37c578e66532930524cf3501a923a2f1c78681292` |
+| `go test -race ./pkg/client -run '^TestRelayWGGoTwoEnginesExchangeIPv4Packets$' -count=20 -failfast -timeout=15m -json` | PASS20/20，package164.705s | 173,701ms | `e9bb85064946eac83a297621c3571119d8bd3e8427f003e89801832e36135b47` |
+| `GOOS=linux CGO_ENABLED=0 go vet -tags=natlab,c1bproof ./...` | PASS，无诊断输出；未运行 Linux 二进制 | 15,451ms | `e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855` |
+
+全仓按 #116 原分区只把 relay 用例移到独立 race×20 批次，并非删除验收。1814个顶层测试 PASS，
+0个失败；14个原有 opt-in/平台入口 skip 未计入 PASS：artifact symlink、旧缺席精确 observer、
+hard-NAT1000重启及 FreshTopology100、TUN backend、两个 relay 诊断、两个旧 ICE/relay 条件测试、
+session 诊断阻塞、legacyICE 诊断取消、Docker smoke、两个 Windows 特权转发测试。
+未新增跳过条件，也未把本机跳过当作 required CI 已通过。
+
+生产范围核验仍严格只有两个文件：terminal_revoke.go 为24行新增，carrier.go 为7行新增/4行删除。
+既有 probeio.go、Gate A/B/C、默认缺席测试及 overlay/template、配置、工作流均零差异。
+新增行身份/密钥/个人路径扫描零命中，13个相对文件链接全部存在，`git diff --check` 无错误。
+远端 CI 与其尚未运行的门禁另列，不预填 PASS。
+
+普通 `cmd/wink` 无标签构建留仓库外，仅运行编译器和 `go tool nm`，从未执行该二进制。
+build/nm 均退出0，5,442ms；natlab/c1bproof 符号命中0。
+构建产物 SHA-256：`25419f3c6680d4b9f4526e3761b746d3556e81a3a6725c5c13787b0a832b2e7f`；
+原始 nm 输出 SHA-256：`7a6ce5c19cbc28b4f0d0cd551f87862f271ca4802f19fdca5eb0fbe2daa94f27`。
+本地必跑动态批次均通过，但 §9.6/§9.9 的单独范围限制与 §9.14 的首次命令配置 RED 均保留。
+本 PR 使用 Refs #111，等待独立复审，不合并、不推进现场权限。

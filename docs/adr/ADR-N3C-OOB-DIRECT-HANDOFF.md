@@ -544,3 +544,25 @@ C1b、C1c、C2 分别评审和签发。
 继承 stdin 的原始 RED、真实 poller/read/write 见证、peer 侧 EOF/EPIPE 注入与后续 CI
 结果见 [Gate C1b evidence §4.3](../GATE-C1B-PRODUCT-COMPOSITION-EVIDENCE.md#43-issue-121继承管道的第二个阻断与修复范围2026-09-09)。
 本注记不授权现场 I/O、后续阶段或预算变更。
+
+## 21. loopback 终局撤销与 durable FINISH（2026-09-14）
+
+维护者选择 #111 的 O2，具体范围、红回归与残留见
+[loopback absence ADR §9](ADR-LOOPBACK-CARRIER-ABSENCE-HEADROOM.md#9-o2-裁决与设计2026-09-14)。
+新增 probeio 的显式终局撤销 API，仅允许 loopbackcarrier 的 run 终局 defer 消费：
+
+1. RevokeForTerminal 撤销/关闭全部 probe 句柄、排空本地 I/O、停止 duration watcher，
+   幂等完成 probeio 自己的 drain；不移交 transport、不新建数据面权限。
+2. 此时 attempt lease 和 pairing gate 的 drain 仍保留。之后原 authorization.Finish
+   同步写 durable FINISH 并完成 pairing drain，最后才 Controller.Close/释放 attempt。
+3. revoke 错误加入终局错误但不得跳过 FINISH；最终 Close 的原 cancellation-timeout
+   持久 trip 仍有效。revoke 与 FINISH 之间崩溃，沿用 BURN 无 FINISH 的未完成记账恢复。
+4. 这与既有 handoff 的“探测权限已撤销，但保留 attempt 等待 FINISH”一致，
+   不等同于提前 lease.Close，不改变 §7/§16、Gate B/C handoff、C1 §19.9 完成阶段或预算。
+5. architecture 精确锁定唯一生产调用点；其它 carrier、stdio/CLI、runtime、legacy、
+   scheduler、WireGuard 不得直接调用或取得该方法值。测试可在隔离夹具中验证负向变异。
+
+loopback 仍为 15s 全额 admission、2s terminal margin、3 packets / 3 PPS；
+FINISH 移出其探测 duration 绊线不等于增加探测时间、退款或允许重试。
+共享授权层可能更早选择 FINISH 的既有支路另在 #111 登记，不用本节的 run defer
+证明冒充其已闭合。本节不授权现场、产品新入口、Gate B/C 变更或新恢复机制。
