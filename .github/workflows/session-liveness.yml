@@ -9,14 +9,22 @@ permissions:
   contents: read
 
 jobs:
-  model-and-owner:
-    name: Liveness model and owner (${{ matrix.os }})
+  model:
+    name: Liveness model (${{ matrix.os }})
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest]
+        # Completed-step maxima + setup, then ceil(1.25 * seconds / 60).
+        # Linux: (11+257+156+1+17)=442s -> 10m.
+        # Windows: (38+300+190+5+93)=626s -> 14m.
+        # Source: docs/GATE-C-LIVENESS-EVIDENCE.md section 11.2-11.3.
+        include:
+          - os: ubuntu-latest
+            timeout_minutes: 10
+          - os: windows-latest
+            timeout_minutes: 14
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 20
+    timeout-minutes: ${{ matrix.timeout_minutes }}
     env:
       GORACE: halt_on_error=1
     steps:
@@ -30,14 +38,38 @@ jobs:
         run: go test -race -count=20 -timeout=15m ./internal/probeio ./internal/v2/gatecorchestrator ./pkg/config ./pkg/tunnel
       - name: Architecture and mutation proofs
         run: go test -race ./internal/architecture -run 'SessionLiveness|GateC1b' -count=20
+      - name: Independent byte-vector implementation
+        run: python internal/v2/gatecorchestrator/testdata/liveness_reference.py
+
+  owner:
+    name: Liveness owner (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        # Same measured-ceiling rule as model; no test -timeout changes.
+        # Linux: (286+240+15+17)=558s -> ceil(1.25*558/60)=12m.
+        # Windows: (363+266+22+93)=744s -> ceil(1.25*744/60)=16m.
+        # Source: docs/GATE-C-LIVENESS-EVIDENCE.md section 11.2-11.3.
+        include:
+          - os: ubuntu-latest
+            timeout_minutes: 12
+          - os: windows-latest
+            timeout_minutes: 16
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: ${{ matrix.timeout_minutes }}
+    env:
+      GORACE: halt_on_error=1
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
       - name: Same durable owner - normal rejection, control excess, admission bypass and loss of owner
         run: go test -race -tags=c1bproof ./internal/governor -run '^TestSessionLivenessOwnerTripCasesAreDistinct$' -count=20 -timeout=8m
       - name: Real business remains bidirectional and is never stolen by the tap
         run: go test -race -tags=c1bproof ./internal/governor -run '^TestSessionLivenessBusinessCoexistsWithTap$' -count=20 -timeout=8m
       - name: Same artifact after owner restart is rejected before all I/O
         run: go test -race -tags=c1bproof ./internal/governor -run '^TestSessionLivenessRestartRejectsSpentArtifactBeforeIO$' -count=1 -timeout=2m
-      - name: Independent byte-vector implementation
-        run: python internal/v2/gatecorchestrator/testdata/liveness_reference.py
 
   real-wireguard:
     name: Liveness real WireGuard (ubuntu-latest)
@@ -164,14 +196,15 @@ jobs:
   required:
     name: Session Liveness Required
     if: always()
-    needs: [model-and-owner, real-wireguard, real-wireguard-windows, fresh100, netns]
+    needs: [model, owner, real-wireguard, real-wireguard-windows, fresh100, netns]
     runs-on: ubuntu-latest
     steps:
       - name: Fail for any missing, skipped or failed proof
         env:
-          MODEL: ${{ needs.model-and-owner.result }}
+          MODEL: ${{ needs.model.result }}
+          OWNER: ${{ needs.owner.result }}
           WIREGUARD: ${{ needs.real-wireguard.result }}
           WINDOWS_WIREGUARD: ${{ needs.real-wireguard-windows.result }}
           FRESH: ${{ needs.fresh100.result }}
           NETNS: ${{ needs.netns.result }}
-        run: test "$MODEL" = success && test "$WIREGUARD" = success && test "$WINDOWS_WIREGUARD" = success && test "$FRESH" = success && test "$NETNS" = success
+        run: test "$MODEL" = success && test "$OWNER" = success && test "$WIREGUARD" = success && test "$WINDOWS_WIREGUARD" = success && test "$FRESH" = success && test "$NETNS" = success
