@@ -1,5 +1,7 @@
 # Cached-endpoint self-bootstrap and recovery cards
 
+> Privacy: deployment identifiers are placeholders. Historical counts, protocol constraints, and pause/NO-GO decisions are unchanged. Examples are not directly executable; see the [public-document policy](./DOCUMENTATION-PRIVACY.md).
+
 > **PAUSED / NO-GO (2026-07-22):** the productized cached self-bootstrap loop
 > caused a UDP tuple/session storm while retrying unreachable peers. This work
 > is paused for the short term. Do not enable, deploy, or field-test it on an
@@ -95,7 +97,7 @@ nat:
 autonomous_mesh:
   enabled: true
   node_id: demo-a
-  virtual_ip: fd7a:115c:a1e0::a
+  virtual_ip: <OVERLAY_IPV6_1>
   listen: off
   control_listen: 127.0.0.1:32110
   maintain_peers: [demo-b]
@@ -438,13 +440,13 @@ this matters for the next process-restart experiment, but does not by itself
 prove recovery after a public-IP change.
 
 The post-success route check selected the physical Ethernet interface (source
-`10.0.0.10`, gateway `10.0.0.1`) for both public peers. Tailscale reported
+`<IPV4_1>`, gateway `<GATEWAY_ADDRESS>`) for both public peers. Tailscale reported
 stopped. A natpierce UI process was present, but it owned none of A's two UDP
 sockets or the `22022`/`22024`/`32110` listeners and was not the selected public
 route. The snapshot is
 `.live-run/runs/mesh-selfbootstrap-20260718-r12/field-evidence/A/underlay-route-check-post-A-r12.json`.
 
-B retained `C=10.20.0.1:32100`, but C r12 deliberately had no mesh listener,
+B retained `C=<IPV4_2>:32100`, but C r12 deliberately had no mesh listener,
 so that connector could not create the successful r12 edge. It existed solely
 so an r8 rollback could listen again after the mandatory 135-second cache wait.
 natpierce and SSH carried deployment commands and evidence retrieval only; they

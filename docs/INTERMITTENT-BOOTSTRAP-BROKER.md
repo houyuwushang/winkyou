@@ -1,5 +1,7 @@
 # Intermittent Bootstrap Broker
 
+> Privacy: deployment identifiers are placeholders. Historical counts, protocol constraints, and pause/NO-GO decisions are unchanged. Examples are not directly executable; see the [public-document policy](./DOCUMENTATION-PRIVACY.md).
+
 This document defines the A/B/C intermittent bootstrap broker design. It is not
 a peer relay design and does not enable user-data forwarding through B.
 
@@ -18,8 +20,8 @@ After: B can go offline; A-C direct or multipath data plane continues.
 In the current lab labels:
 
 - A is the local machine, often called `local-a`.
-- B is `chen-win`.
-- C is `inner-gw`.
+- B is `<NODE_B_HOST>`.
+- C is `<NODE_A_HOST>`.
 
 No credentials belong in this document or repository.
 
@@ -89,7 +91,7 @@ B. It is a bootstrap mechanism, not a continuous data path.
 5. Only after the model and simulator are stable, consider client runtime
    integration behind an explicit disabled-by-default gate.
 6. After runtime integration exists, add real three-node validation using
-   local-a, chen-win, and inner-gw.
+   local-a, `<NODE_B_HOST>`, and `<NODE_A_HOST>`.
 
 ## Boundaries
 

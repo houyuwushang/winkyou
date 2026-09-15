@@ -1,5 +1,7 @@
 # Rank-2 x Rank-3 field preflight (2026-07-22)
 
+> Privacy: deployment identifiers are placeholders. Historical counts, protocol constraints, and pause/NO-GO decisions are unchanged. Examples are not directly executable; see the [public-document policy](./DOCUMENTATION-PRIVACY.md).
+
 > **SUPERSEDED / PAUSED:** later on 2026-07-22, the managed A build generated
 > a severe UDP tuple/session storm during cached self-bootstrap. The earlier
 > isolated A-B gate below remains historical connectivity evidence, but is not
@@ -27,7 +29,7 @@ neighbors. The maintained edges were `protected_direct`, reachable, and had no
 WinkYou infrastructure coordinator. A continued to expose B's SSH service at
 `127.0.0.1:22024` and C's at `127.0.0.1:22022`.
 
-On B, the natpierce process, adapter address `10.6.22.4`, and natpierce routes
+On B, the natpierce process, adapter address `<IPV4_1>`, and natpierce routes
 were absent while a fresh SSH session through `127.0.0.1:22024` still worked.
 The temporary collection task was also removed. Thus natpierce is no longer
 needed for ordinary B administration in this live state.
@@ -43,9 +45,9 @@ do not prove operating-system reboot or physical-WAN independence.
 ## Candidate-card aggregation
 
 A's latest normal card contains three distinct B endpoints at
-`211.86.158.120`: ports `57118`, `62630`, and `52861`. Repeating B's normal
+`<IPV4_2>`: ports `57118`, `62630`, and `52861`. Repeating B's normal
 restart reused this group rather than producing a fourth distinct A-observed
-port. C's immutable observation contains B at `211.86.158.120:63416`.
+port. C's immutable observation contains B at `<IPV4_2>:63416`.
 
 The field-card compiler now accepts an optional C card. It validates that card
 as node C, takes only C's peer-B observations, and supplements A only when A
@@ -97,14 +99,14 @@ The current B public address is not owned by natpierce, but it is not a
 physical-WAN address either. Read-only inspection on B returned:
 
 ```text
-211.86.158.120/24 -> OpenVPN TAP-Windows6 (ifIndex 6)
-0.0.0.0/1        -> 211.86.158.1 via OpenVPN TAP-Windows6
-128.0.0.0/1      -> 211.86.158.1 via OpenVPN TAP-Windows6
+<IPV4_2>/24 -> OpenVPN TAP-Windows6 (ifIndex 6)
+0.0.0.0/1        -> <IPV4_3> via OpenVPN TAP-Windows6
+128.0.0.0/1      -> <IPV4_3> via OpenVPN TAP-Windows6
 ```
 
-B also has ordinary candidate underlays at `192.168.1.5` on
-`vEthernet (WAN-openwrt)` and `192.168.11.217` on
-`vEthernet (LAN-openwrt)`, but the two more-specific `/1` routes currently send
+B also has ordinary candidate underlays at `<IPV4_4>` on
+`<UPLINK_INTERFACE>` and `<IPV4_5>` on
+`<BACKEND_INTERFACE>`, but the two more-specific `/1` routes currently send
 public destinations through OpenVPN. Consequently, today's
 `protected_direct` result means that WinkYou has a direct UDP peer edge with no
 WinkYou coordinator or data relay **over the host's selected IP underlay**. It
@@ -125,8 +127,8 @@ Bound STUN probes first established independent, non-OpenVPN underlays:
 
 | Node | Bound interface/source | Observed public IPv4 | Allocation evidence |
 | --- | --- | --- | --- |
-| A | `以太网` / `10.3.9.11` | `36.33.24.21` | random, confidence `0.285714` |
-| B | `vEthernet (WAN-openwrt)` / `192.168.1.5` | `36.33.20.220` | sequential `+1`, confidence `0.857142` |
+| A | `以太网` / `<IPV4_6>` | `<IPV4_7>` | random, confidence `0.285714` |
+| B | `<UPLINK_INTERFACE>` / `<IPV4_4>` | `<IPV4_8>` | sequential `+1`, confidence `0.857142` |
 
 The isolated configs had no infrastructure coordinator, no bootstrap seed, and
 no relay. Their only initial peer information was reciprocal recovery-card
@@ -148,8 +150,8 @@ edge:
 
 | Side | Winning local socket | Learned remote public socket | Result |
 | --- | --- | --- | --- |
-| A | `10.3.9.11:62885` on `以太网` | `36.33.20.220:35305` | `peer_hello -> installing -> attached` |
-| B | `192.168.1.5:59766` on `vEthernet (WAN-openwrt)` | `36.33.24.21:14714` | `peer_hello -> installing -> attached` |
+| A | `<IPV4_6>:62885` on `以太网` | `<IPV4_8>:35305` | `peer_hello -> installing -> attached` |
+| B | `<IPV4_4>:59766` on `<UPLINK_INTERFACE>` | `<IPV4_7>:14714` | `peer_hello -> installing -> attached` |
 
 Both runtimes then reported one connected peer, a one-hop `A -> B` / `B -> A`
 packet route, and `protected_direct`. A exposed B's SSH target at

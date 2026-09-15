@@ -1,5 +1,7 @@
 # WinkYou 排障指南
 
+> 隐私说明：部署标识已替换为占位符；历史计数、协议约束及暂停/NO-GO 结论不变。示例不可直接执行，见[公开文档规则](./DOCUMENTATION-PRIVACY.md)。
+
 本文按连接链路分层排查。当前可用命令主要是 `wink status`、`wink peers`、`wink logs`、`wink doctor`、client 日志、coordinator 日志和 coturn 日志。
 
 ## 1. Config
@@ -78,7 +80,7 @@ Windows：
 
 - 用管理员权限运行终端
 - 确认 Wintun/TUN backend 可用
-- 如果是手动下载的 Wintun，建议把 `wintun.dll` 放在 `wink.exe` 同目录或部署脚本明确复制到运行目录；本地验证环境曾使用 `D:\deployment\winkyou\bin\wintun.dll`
+- 如果是手动下载的 Wintun，建议把 `wintun.dll` 放在 `wink.exe` 同目录或部署脚本明确复制到运行目录；本地验证环境曾使用 `<LOCAL_PATH_1>`
 - 如果创建接口失败，先重启终端或系统，再确认安全软件没有拦截虚拟网卡
 - 如果 `wink peers` 显示 `Data: alive`、`Xport Tx/Rx` 持续增长，但外部 `wink ping`、PowerShell UDP 或普通应用流量没有到达远端，先区分是 TUN 入站问题还是路径问题。临时用 `WINKYOU_TRACE_TUN_PACKETS=1` 启动 `wink up`，再重试应用流量；stderr 会打印 `wink tun read ...` 和 `wink tun write ...`。如果 in-band `33435` 有 read/write，而目标应用端口没有 `read`，同时 `Get-NetAdapterStatistics -Name wink0` 的 `OutboundDiscardedPackets` 增加，说明该包在 Windows/Wintun/本机防火墙路径上被丢弃，尚未进入 WinkYou tunnel。
 - 复核 Windows 路由和接口统计：
@@ -124,7 +126,7 @@ Xport Err
 - `Handshake: -` 且 `Conn Type: relay`：优先排查 coturn relay 端口范围
 - `Xport Tx` 增长但 `Xport Rx` 不增长：对端 client 可能未运行或 relay 回包失败
 - `State: connected` 但 ping 不通：检查双方虚拟 IP、系统防火墙和 ICMP 策略
-- `Path Strat: signal_relay` 且 `Path Deps: coordinator:...:coordinator_signal_stream`：说明当前数据面通过 coordinator signal stream 兜底。它可以在 direct/TCP 暂不可用时保持 WireGuard 运行，但依赖 coordinator；断开 chen-win/coordinator/natpierce 这一整条承载 coordinator 的 underlay 后，它也会断。
+- `Path Strat: signal_relay` 且 `Path Deps: coordinator:...:coordinator_signal_stream`：说明当前数据面通过 coordinator signal stream 兜底。它可以在 direct/TCP 暂不可用时保持 WireGuard 运行，但依赖 coordinator；断开 `<NODE_B_HOST>`/coordinator/natpierce 这一整条承载 coordinator 的 underlay 后，它也会断。
 - 如果 `State: connected` 且 `Conn Type: direct`，但候选地址显示为 `100.64.0.0/10`、Tailscale、Docker bridge、其他 VPN/TAP 地址，这只能证明当前 path 不是 TURN relay；不能证明完全不借助已有 overlay。当前代码会把这类 direct-like path 标为带 dependency 的普通路径，不再把它暴露为 `protected_direct_path_id`。纯 NAT piercing 验证应优先查看 `legacyice/public_direct` 是否成功；它会排除私网、`100.64.0.0/10`、loopback、link-local、benchmark/overlay 等 candidate。如果该 plan 失败，说明当前环境下 WinkYou 尚未证明独立公网 direct path。
 - 真实 protected direct 的证据应来自 `wink peers --json`：`last_path_role` 为 `protected_direct`、`last_path_dependencies` 为空；如果启用了 multipath，还应看到非空 `protected_direct_path_id`。如果 `last_path_dependencies` 包含 `unknown:remote_cgnat_or_overlay_candidate` 或类似值，说明当前 path 仍可能依赖 natpierce、VPN/TAP 或跳板 underlay。
 - 如果当前已经 connected/bound，但没有 `protected_direct_path_id`，新版 client 会保留现有 path 并在后台继续尝试 protected direct。尝试失败只会关闭临时 transport，不应打断原 path；只有后续结果明确为 `protected_direct` 时才会替换 tunnel peer transport。
@@ -137,7 +139,7 @@ nat:
     - docker0
   candidate_cidr_exclude:
     - 100.64.0.0/10
-    - 172.16.0.0/12
+    - <IPV4_1>/12
 ```
 
 Windows 需要按真实接口名配置，例如 `Tailscale`、`vEthernet (WSL)` 或 Docker/Wintun 对应接口。过滤后重新启动两端 `wink up`，再用 `wink peers` 和 `wink doctor` 检查 selected candidate。
@@ -150,9 +152,9 @@ nat:
   candidate_port_max: 40100
   nat1to1_candidate_type: srflx
   nat1to1_ips:
-    - "203.0.113.10/192.168.0.10"
+    - "203.0.113.10/<IPV4_2>"
   public_endpoint_hints:
-    - "117.48.146.2:41000/192.168.1.20:40000"
+    - "<IPV4_3>:41000/<IPV4_4>:40000"
 ```
 
 这只适用于公网 IP/端口映射相对可预测的场景。`nat1to1_ips` 表示公网 IP 映射，`public_endpoint_hints` 表示本机已知的公网 UDP `ip:port`，也可以写成 `公网ip:公网端口/本地ip:本地端口` 绑定到具体本地 UDP base；它只会作为 `legacyice/public_direct` 的额外 srflx 候选发布。当 mapped hint 带本地 base 时，`legacyice/public_direct` 会让本次 ICE agent 只在这些本地 IP 上 gather；如果只有一个唯一的本地 base 端口，会在该本地 `ip:port` 上使用固定 UDP mux，让 host candidate、STUN/server-reflexive candidate 和 best-effort pre-punch 共用同一个 socket，从而让公网 hint 指向 WinkYou 实际用于打洞的 socket。收到远端 offer/answer 候选后，pre-punch 会在 executor 生命周期内按 `nat.connect_timeout` 做有界重试；排查时可以看 `remote_candidates_punched` 的 `punch_local_addr`/`punch_local_port`、`punch_round`/`punch_rounds`、`candidate_start`/`candidate_next_start`、`candidate_first`/`candidate_last` 和 `candidate_port_min`/`candidate_port_max`，确认是否从预期固定 socket 持续覆盖剩余端口窗口。若 mapped 公网端口和本地 base 端口不同，public-direct 还会把“公网 IP + 本地固定 socket 端口”作为第二个预测中心点。若运营商 NAT 会为每个 UDP socket 动态改写端口，过期的 `public_endpoint_hints` 不能保证复现 natpierce 的成功路径；默认配置 `nat.public_endpoint_hint_port_window: 2` 会围绕已观测端口追加小窗口候选，生产启动检测到 symmetric NAT，或 NAT 类型因只有一个 STUN 来源成功而仍为 `unknown` 但本轮已有 endpoint hint 时，会把有效窗口提高到 `512`。public-direct 的普通 candidate 信令/pre-punch 每轮默认最多 1024 个候选；当 endpoint hint/window 候选超过默认上限时，会最多放宽到 4096 个，确保完整受控 hint 窗口不会在信令和预打洞阶段被截断。然后再查看 `legacyice/public_direct` 是否采集到了 server-reflexive/peer-reflexive candidate，或使用 TURN/`relay_only` fallback。
@@ -175,7 +177,7 @@ nat:
   public_endpoint_hint_port_window: 2
 ```
 
-如果 doctor 显示 `nat_type=symmetric`，或只有一个 STUN 来源成功导致 `nat_type=unknown`，这些映射仍只是 best-effort：这不是说 natpierce 的直连不可能，而是说明 WinkYou 不能把“到 STUN 服务器的映射”直接当成“到 inner-gw peer 的映射”。生产配置会在有 endpoint hint 时自动扩大有效端口窗口，覆盖更多可预测端口漂移；这种情况继续看 `legacyice/public_direct` 是否学到 `peer_reflexive_pair` / `public_direct_learned_pair`，或手工配置已确认稳定的 natpierce/路由器端点。需要保守复现时，可以设为 `auto_public_endpoint_hints: false` 或 `public_endpoint_hint_port_window: 0`。
+如果 doctor 显示 `nat_type=symmetric`，或只有一个 STUN 来源成功导致 `nat_type=unknown`，这些映射仍只是 best-effort：这不是说 natpierce 的直连不可能，而是说明 WinkYou 不能把“到 STUN 服务器的映射”直接当成“到 `<NODE_A_HOST>` peer 的映射”。生产配置会在有 endpoint hint 时自动扩大有效端口窗口，覆盖更多可预测端口漂移；这种情况继续看 `legacyice/public_direct` 是否学到 `peer_reflexive_pair` / `public_direct_learned_pair`，或手工配置已确认稳定的 natpierce/路由器端点。需要保守复现时，可以设为 `auto_public_endpoint_hints: false` 或 `public_endpoint_hint_port_window: 0`。
 
 无 TURN 的 `auto` 模式还会禁用 `legacy_ice_udp` 内部的 `legacyice/relay_only` plan。这样即使 observation history 里有旧的 relay success，当前会话也不会先等待不可用的 relay plan，而是把预算留给 `direct_prefer` 和 `public_direct`。显式 `connectivity.mode: relay_only` 或 `nat.force_relay: true` 仍会保留 relay-only 行为，用于检查 TURN 配置或强制 relay。
 
@@ -201,7 +203,7 @@ legacyice/direct_prefer -> legacyice/public_direct -> legacyice/relay_only
 
 当前 session 会按 strategy message 顶层 `plan_id` 缓存未来 plan 的消息。如果两端推进速度不一致，`legacyice/public_direct` 的 offer/answer 不应再被仍在执行 `legacyice/direct_prefer` 的 executor 吞掉。public-direct 收到 offer/answer credentials 但里面没有可用公网候选时，会短暂等待后续 `candidate` burst；observation 中应能看到 `remote_candidates_waiting`。如果随后仍失败，说明 grace 窗口内没有收到可用 public-direct candidate，继续排查控制面延迟、candidate 信令是否被发送、远端候选是否被过滤。若仍看不到 `public_direct` 的 candidate 事件，优先确认两端二进制都已更新。
 
-如果 natpierce 能从本机直达 `inner-gw`，但 WinkYou 不能建立 `protected_direct`，不要先判断为“物理不可达”。先运行：
+如果 natpierce 能从本机直达 `<NODE_A_HOST>`，但 WinkYou 不能建立 `protected_direct`，不要先判断为“物理不可达”。先运行：
 
 ```powershell
 wink --config <config.yaml> doctor
@@ -234,30 +236,30 @@ Get-Content <runtime-state-base>.observations.jsonl |
 - 成功记录中 `remote_candidate_kind=prflx` 或 `public_direct_learned_pair=true`：说明 ICE 过程中通过对端 STUN Binding Request 学到了 peer-reflexive 候选对，更接近 natpierce 这类运行中打洞成功的证据。仍需同时确认 `path_role=protected_direct` 且 `path_dependencies` 为空。
 - 如果 selected pair 的本地地址是 `100.64.0.0/10`、198.18/15、loopback、link-local 或 overlay/VPN 地址，即使远端是公网，也不会触发 `public_direct` 的 protected-direct 切换；应检查 mapped hint 的本地 base IP 是否写到真实出口网卡，而不是 natpierce/Tailscale/Docker 等虚拟接口。
 
-本机能 ping `10.6.22.1` 时，还要先看 Windows 路由表。如果 `10.6.22.0/24` 当前挂在 `natpierce` 接口上，这只能证明 natpierce 的虚拟路由可达，不证明 WinkYou 已经建立了独立 direct path：
+本机能 ping `<IPV4_5>` 时，还要先看 Windows 路由表。如果 `<IPV4_6>/24` 当前挂在 `natpierce` 接口上，这只能证明 natpierce 的虚拟路由可达，不证明 WinkYou 已经建立了独立 direct path：
 
 ```powershell
-Get-NetRoute -DestinationPrefix 10.6.22.0/24
+Get-NetRoute -DestinationPrefix <IPV4_6>/24
 Get-NetIPAddress -AddressFamily IPv4 | Where-Object InterfaceAlias -like '*natpierce*'
 ```
 
-如果 `inner-gw` 本身不是 WinkYou peer，而是 chen-win 后面的后端网段，那么 WinkYou 之前只知道 chen-win 的 peer `/32`，不会自动知道 `10.6.22.0/24` 应该经由 chen-win 转发。natpierce 能通，可能是因为它本身已经发布/安装了这条虚拟路由。对应的 WinkYou 配置应放在网关 peer 上：
+如果 `<NODE_A_HOST>` 本身不是 WinkYou peer，而是 `<NODE_B_HOST>` 后面的后端网段，那么 WinkYou 之前只知道 `<NODE_B_HOST>` 的 peer `/32`，不会自动知道 `<IPV4_6>/24` 应该经由 `<NODE_B_HOST>` 转发。natpierce 能通，可能是因为它本身已经发布/安装了这条虚拟路由。对应的 WinkYou 配置应放在网关 peer 上：
 
 ```yaml
 node:
-  name: chen-win
+  name: <NODE_B_HOST>
   advertise_routes:
-    - "10.6.22.0/24"
+    - "<IPV4_6>/24"
 ```
 
-重新启动网关 peer 后，其他 peer 应在 `wink peers --json` 里看到该 peer 的 `advertised_routes` 包含 `10.6.22.0/24`。绑定成功后，本机会把这条网段加入该 peer 的 WireGuard `AllowedIPs`，并添加经由该 peer 虚拟 IP 的系统路由。Windows TUN 会用低 route/interface metric 安装 WinkYou 后端路由，减少同前缀 natpierce/Tailscale 路由抢占；但如果系统里已有更具体的 `10.6.22.1/32` host route，它仍会优先于 `10.6.22.0/24`，需要清理该 stale overlay route，或让网关 peer 发布同样具体的 WinkYou route。网关 peer 仍必须在操作系统层开启 IP forwarding/转发，并允许防火墙通过该后端网段；否则路由会存在，但包仍可能在 chen-win 或 inner-gw 侧被丢弃。后端主机也必须知道如何回到 WinkYou 虚拟网段；如果 inner-gw 不能配置静态回程路由，就需要在 chen-win 上做 SNAT/masquerade，让后端看到的源地址变成 chen-win 在后端网段里的地址。
+重新启动网关 peer 后，其他 peer 应在 `wink peers --json` 里看到该 peer 的 `advertised_routes` 包含 `<IPV4_6>/24`。绑定成功后，本机会把这条网段加入该 peer 的 WireGuard `AllowedIPs`，并添加经由该 peer 虚拟 IP 的系统路由。Windows TUN 会用低 route/interface metric 安装 WinkYou 后端路由，减少同前缀 natpierce/Tailscale 路由抢占；但如果系统里已有更具体的 `<IPV4_5>/32` host route，它仍会优先于 `<IPV4_6>/24`，需要清理该 stale overlay route，或让网关 peer 发布同样具体的 WinkYou route。网关 peer 仍必须在操作系统层开启 IP forwarding/转发，并允许防火墙通过该后端网段；否则路由会存在，但包仍可能在 `<NODE_B_HOST>` 或 `<NODE_A_HOST>` 侧被丢弃。后端主机也必须知道如何回到 WinkYou 虚拟网段；如果 `<NODE_A_HOST>` 不能配置静态回程路由，就需要在 `<NODE_B_HOST>` 上做 SNAT/masquerade，让后端看到的源地址变成 `<NODE_B_HOST>` 在后端网段里的地址。
 
-普通 `wink peers` 文本输出也会显示 `Routes` 行；`wink doctor` 的 `routing` 层会分别报告本节点 `node.advertise_routes` 正在发布的路由、当前操作系统 IP forwarding 状态、后端回程路由/SNAT 风险、运行时从远端 peer 收到的后端路由，以及本机操作系统路由表是否已经把这些远端后端网段指向对应 peer 的 WinkYou 虚拟 IP。如果 `routing/peer advertised routes` 只提示未绑定或没有运行时状态，先把对应 gateway peer 连到 `connected/bound`，再检查 Windows 路由表和 WireGuard `AllowedIPs`。如果 `routing/os route table` 失败，说明路由没有安装、下一跳错误或残留了旧路由，先重连 gateway peer 并清理 stale route；如果 `routing/ip forwarding` 失败，先在 gateway peer 上开启系统转发和防火墙放行；如果 `routing/backend return path` 提醒未验证，继续检查 inner-gw 的回程路由或 chen-win 上的 SNAT，否则 `inner-gw` 后端网段仍然不会通。
+普通 `wink peers` 文本输出也会显示 `Routes` 行；`wink doctor` 的 `routing` 层会分别报告本节点 `node.advertise_routes` 正在发布的路由、当前操作系统 IP forwarding 状态、后端回程路由/SNAT 风险、运行时从远端 peer 收到的后端路由，以及本机操作系统路由表是否已经把这些远端后端网段指向对应 peer 的 WinkYou 虚拟 IP。如果 `routing/peer advertised routes` 只提示未绑定或没有运行时状态，先把对应 gateway peer 连到 `connected/bound`，再检查 Windows 路由表和 WireGuard `AllowedIPs`。如果 `routing/os route table` 失败，说明路由没有安装、下一跳错误或残留了旧路由，先重连 gateway peer 并清理 stale route；如果 `routing/ip forwarding` 失败，先在 gateway peer 上开启系统转发和防火墙放行；如果 `routing/backend return path` 提醒未验证，继续检查 `<NODE_A_HOST>` 的回程路由或 `<NODE_B_HOST>` 上的 SNAT，否则 `<NODE_A_HOST>` 后端网段仍然不会通。
 
 如果某个地址看起来“能直连”，但怀疑它实际仍走 natpierce、Tailscale、Docker 或其他外部 overlay，运行：
 
 ```powershell
-wink --config <config.yaml> doctor --route-target 10.6.22.1
+wink --config <config.yaml> doctor --route-target <IPV4_5>
 ```
 
 `routing/target route` 会显示当前操作系统访问该目标 IP 选中的接口、本地地址和下一跳。如果接口是 `natpierce`，只能说明 natpierce overlay 正在承载这条路；要证明 WinkYou 独立承载，需要看到该目标网段作为远端 peer 的 `advertised_routes` 被安装到 WinkYou peer 虚拟 IP，或者看到 `legacyice/public_direct` 的 `protected_direct` observation。
@@ -346,7 +348,7 @@ tcp_framed:
   dial_timeout: 5s
 ```
 
-现场验证中，本机到 inner-gw 的 `10.6.22.1:22` 能通过 natpierce/chen-win 访问，但 inner-gw 临时监听的随机 TCP 端口没有收到本机连接，`tcpdump -i natpierce tcp port 22` 看到的 SSH 来源也是 `10.6.22.4` 而不是本机 `10.6.22.3`。这种现象说明当前外部 overlay 只证明特定通道或端口可达，不证明随机 `tcp_framed` 端口可达。若 `connection refused` 或超时，先确认端口确实监听、被转发、能从对端直接连接，再用 `tcp_framed.role` / `tcp_framed.dial_addr` 固定角色。
+现场验证中，本机到 `<NODE_A_HOST>` 的 `<IPV4_5>:22` 能通过 natpierce/`<NODE_B_HOST>` 访问，但 `<NODE_A_HOST>` 临时监听的随机 TCP 端口没有收到本机连接，`tcpdump -i natpierce tcp port 22` 看到的 SSH 来源也是 `<IPV4_7>` 而不是本机 `<IPV4_8>`。这种现象说明当前外部 overlay 只证明特定通道或端口可达，不证明随机 `tcp_framed` 端口可达。若 `connection refused` 或超时，先确认端口确实监听、被转发、能从对端直接连接，再用 `tcp_framed.role` / `tcp_framed.dial_addr` 固定角色。
 
 运行 `wink --config <config.yaml> doctor --strategy tcp_framed` 可以检查当前 TCP framed 配置。若配置了 `tcp_framed.dial_addr`，doctor 会实际 TCP connect 该地址；`tcp_framed dial` 失败说明该 endpoint 当前不能被本机直接使用，即使 SSH、natpierce 或其他外部工具的某个特定端口仍然能通。
 实际 session 拨号会在 `tcp_framed.dial_timeout` 窗口内重试固定 endpoint；如果 doctor 一次性探测成功但 session 仍失败，继续看两端 session 日志中的 `tcp_framed` error、启动顺序和防火墙状态。

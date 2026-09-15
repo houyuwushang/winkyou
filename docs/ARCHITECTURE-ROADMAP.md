@@ -1,5 +1,7 @@
 # WinkYou 架构改进 - 团队执行路线图
 
+> 隐私说明：部署标识已替换为占位符；历史计数、协议约束及暂停/NO-GO 结论不变。示例不可直接执行，见[公开文档规则](./DOCUMENTATION-PRIVACY.md)。
+
 > [!IMPORTANT]
 > **Proposal / Archive**: This document is a 2026-05 architecture overhaul proposal and brainstorm artifact. It is not the active roadmap or current architecture baseline. Use [`CONNECTIVITY-SOLVER-BASELINE.md`](./CONNECTIVITY-SOLVER-BASELINE.md) as the current source of truth.
 
@@ -404,7 +406,7 @@ Goroutine 管理        背压机制              Metrics + 监控         混�
 
 ### 联系方式
 
-- 架构组邮箱: arch@winkyou.example
+- 架构组联系渠道: `<CONTACT_CHANNEL>`
 - Slack 频道: #winkyou-arch
 - Issue 追踪: GitHub Issues
 

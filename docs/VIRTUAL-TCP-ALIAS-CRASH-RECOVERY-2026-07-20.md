@@ -1,5 +1,7 @@
 # Windows Virtual-TCP Alias Crash Recovery (2026-07-20)
 
+> Privacy: deployment identifiers are placeholders. Historical counts, protocol constraints, and pause/NO-GO decisions are unchanged. Examples are not directly executable; see the [public-document policy](./DOCUMENTATION-PRIVACY.md).
+
 Status: accepted for an A-process hard crash and same-scope, same-mapping
 restart in the trusted A/B/C field cohort. B and C remained running throughout
 the accepted experiment. This is not acceptance of machine reboot, OS
@@ -8,7 +10,7 @@ autostart, simultaneous cold start, or transparent system L3.
 ## Why A was the failure target
 
 A was the operator-controlled Windows node and owned the two selected-port ULA
-facades, `[fd00::b]:22` and `[fd00::c]:22`. Killing only A therefore exercised
+facades, `[<OVERLAY_IPV6_1>]:22` and `[<OVERLAY_IPV6_2>]:22`. Killing only A therefore exercised
 the operationally relevant failure: the local WinkYou process disappeared
 without running its alias cleanup, while B and C continued to maintain their
 own direct mesh edge. No physical host was powered off and no B/C process was
@@ -22,7 +24,7 @@ the old alias manager had no durable proof that the new process was entitled to
 adopt them. Four guarded launch attempts therefore failed closed with:
 
 ```text
-system ingress ipalias: address already exists: fd00::b
+system ingress ipalias: address already exists: <OVERLAY_IPV6_1>
 ```
 
 This was an alias-lifecycle gap, not a Windows permission failure, a mesh
@@ -110,7 +112,7 @@ acceptance count.
 
 After recovery, all six directed A/B/C WinkYou ping paths completed, with
 observed successful RTTs roughly 37-61 ms; one B-to-C probe required a retry.
-Normal IPv6 SSH also completed through A's `[fd00::b]:22` and `[fd00::c]:22`
+Normal IPv6 SSH also completed through A's `[<OVERLAY_IPV6_1>]:22` and `[<OVERLAY_IPV6_2>]:22`
 facades and returned the expected remote hostnames. Final A status had direct
 one-hop routes to B and C, `infrastructure_coordinator=false`, and
 `data_dropped=0`.

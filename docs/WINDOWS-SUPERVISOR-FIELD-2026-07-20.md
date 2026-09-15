@@ -1,5 +1,7 @@
 # Windows Child-Supervisor Field Acceptance (2026-07-20)
 
+> Privacy: deployment identifiers are placeholders. Historical counts, protocol constraints, and pause/NO-GO decisions are unchanged. Examples are not directly executable; see the [public-document policy](./DOCUMENTATION-PRIVACY.md).
+
 > **Operational warning (2026-07-22):** this document is historical process-
 > recovery evidence, not authorization to enable `WinkYou-A`. A later managed
 > autonomous build caused a severe UDP tuple/session storm, and the supervisor
@@ -65,7 +67,7 @@ was deliberately left alive. Its log then recorded:
 3. new child PID `10992` at `20:31:12+08:00`.
 
 The new runtime state, with a new instance ID, was observable about 9.1 seconds
-after the kill command. Both `fd00::b` and `fd00::c` remained present throughout
+after the kill command. Both `<OVERLAY_IPV6_1>` and `<OVERLAY_IPV6_2>` remained present throughout
 the outage, and the task and supervisor stayed Running. No operator launch,
 alias cleanup, peer restart, coordinator, or punch command occurred between the
 kill and the new state publication.
@@ -80,7 +82,7 @@ At both ends of the hold:
 
 - A-to-B `/v1/ping` used request/reply paths `A>B` and `B>A`;
 - A-to-C `/v1/ping` used request/reply paths `A>C` and `C>A`; and
-- TCP connects to `[fd00::b]:22` and `[fd00::c]:22` succeeded through the two
+- TCP connects to `[<OVERLAY_IPV6_1>]:22` and `[<OVERLAY_IPV6_2>]:22` succeeded through the two
   loopback ULA facades.
 
 ## Clean-stop behavior

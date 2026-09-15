@@ -1,5 +1,7 @@
 # Tuple Convergence Fix and Three-Node Field Rollout (2026-07-20)
 
+> Privacy: deployment identifiers are placeholders. Historical counts, protocol constraints, and pause/NO-GO decisions are unchanged. Examples are not directly executable; see the [public-document policy](./DOCUMENTATION-PRIVACY.md).
+
 Status: accepted in the A/B/C trusted-node field cohort. The defect was not an
 operating-system permission failure.
 
@@ -113,7 +115,7 @@ Fresh SSH validation passed:
 - A to B through 127.0.0.1:22024, three times;
 - A to C through 127.0.0.1:22022, three times;
 - B to C through B's 127.0.0.1:22025, three times; and
-- A's virtual facades fd00::b port 22 and fd00::c port 22.
+- A's virtual facades `<OVERLAY_IPV6_1>` port 22 and `<OVERLAY_IPV6_2>` port 22.
 
 The Win32-OpenSSH close warning remained visible on successful probes, but all
 commands exited zero with complete output. It was not counted as link failure.
@@ -122,7 +124,7 @@ During the mixed-version C-first window, natpierce was used only as an
 out-of-band management route from B to C to verify C's new PID. It was not an
 acceptance data path. After convergence, A's two Wink UDP sockets were owned by
 PID 84400; the B and C public endpoints both selected physical Ethernet, source
-10.3.9.11, and gateway 10.3.9.1. Tailscale and natpierce processes remained
+`<IPV4_1>`, and gateway `<GATEWAY_ADDRESS>`. Tailscale and natpierce processes remained
 present, but neither was the selected route for those Wink edges.
 
 ## Remaining boundary

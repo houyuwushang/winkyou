@@ -1,5 +1,7 @@
 # ADR: Autonomous Mesh Control and Peer Transit
 
+> Privacy: deployment identifiers are placeholders. Historical counts, protocol constraints, and pause/NO-GO decisions are unchanged. Examples are not directly executable; see the [public-document policy](./DOCUMENTATION-PRIVACY.md).
+
 > **PAUSED / NO-GO (2026-07-22):** the automatic maintained-edge and cached
 > self-bootstrap paths described in this historical ADR are disabled at the
 > product boundary after the UDP tuple/session storm. Current binaries reject
@@ -245,7 +247,7 @@ compatible with r12. The remote node must still publish an explicit
 `--tcp-target`, and only the locally configured virtual listener port is
 available. A normal Windows TCP client can therefore use a selected address and
 port directly without a per-application proxy setting; the accepted field
-commands were `ssh -6 node-b-user@fd00::b` and `ssh -6 node-c-user@fd00::c`.
+commands were `ssh -6 <SSH_DESTINATION_1>` and `ssh -6 <SSH_DESTINATION_2>`.
 
 This slice is not arbitrary-port forwarding, UDP, ICMP, transparent system L3,
 subnet routing, or exit-node support. It does not use Wintun or WireGuard. Full
@@ -260,14 +262,14 @@ through ordinary peer B timed out; the next attempt succeeded and reached
 packet edges.
 
 The retained loopback listeners `127.0.0.1:22024/22022` and the new virtual
-listeners `[fd00::b]:22/[fd00::c]:22` made four entry points. Two complete
+listeners `[<OVERLAY_IPV6_1>]:22/[<OVERLAY_IPV6_2>]:22` made four entry points. Two complete
 banner rounds returned Windows OpenSSH 9.5 for B and Ubuntu OpenSSH 8.9 for C,
 then the wrapper held the topology and listeners for 45 seconds. An independent
 final acceptance increased A's `data_forwarded` counter from `40` to `60` while
 `data_dropped` stayed `0`.
 
 Normal Windows OpenSSH then completed authenticated commands through both ULA
-addresses: B returned `node-b-host`, C returned `node-c-host`, and both
+addresses: B returned `<HOST_ALIAS_1>`, C returned `<HOST_ALIAS_2>`, and both
 clients exited with status `0`.
 
 Both ULA aliases existed only on Windows loopback interface index `1` as
@@ -276,8 +278,8 @@ zero matching aliases, and the portproxy table was empty. Tailscale service and 
 natpierce process were in fact running during the field check, but neither
 carried the accepted path. The ULA destinations resolved locally through
 loopback. A's public B/C packet sockets used candidate UDP ports `52507` and
-`62451`, routed from physical Ethernet address `10.0.0.10` through gateway
-`10.0.0.1`; natpierce separately held `58606 -> 203.0.113.40`.
+`62451`, routed from physical Ethernet address `<IPV4_1>` through gateway
+`<GATEWAY_ADDRESS>`; natpierce separately held `58606 -> 203.0.113.40`.
 
 This was the A-only facade acceptance checkpoint. The later guarded Slice 4.5
 rollout replaced all three field processes with managed `wink up` runtimes while
@@ -823,7 +825,7 @@ node:
 autonomous_mesh:
   enabled: true
   node_id: demo-a
-  virtual_ip: fd7a:115c:a1e0::a
+  virtual_ip: <OVERLAY_IPV6_3>
   listen: off
   control_listen: 127.0.0.1:0
 ```

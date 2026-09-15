@@ -1,5 +1,7 @@
 # TASK-05: 协调服务器
 
+> 隐私说明：部署标识已替换为占位符；历史计数、协议约束及暂停/NO-GO 结论不变。示例不可直接执行，见[公开文档规则](../DOCUMENTATION-PRIVACY.md)。
+
 > 历史任务说明：本任务文档按 legacy MVP baseline 编写。当前 active architecture baseline 为 `docs/CONNECTIVITY-SOLVER-BASELINE.md`。
 > MVP 只冻结 `Register / Heartbeat / ListPeers / GetPeer / Signal` 五个 RPC。
 
@@ -428,10 +430,10 @@ storage:
   path: "/var/lib/wink/coordinator.db"
   
 network:
-  cidr: "10.100.0.0/16"      # 虚拟网络地址空间
+  cidr: "<IPV4_1>/16"      # 虚拟网络地址空间
   reserved:                   # 保留地址
-    - "10.100.0.1"            # 网关（如需要）
-    - "10.100.0.254"          # DNS（如需要）
+    - "<IPV4_2>"            # 网关（如需要）
+    - "<IPV4_3>"          # DNS（如需要）
 
 heartbeat:
   interval: 30s              # 期望的心跳间隔

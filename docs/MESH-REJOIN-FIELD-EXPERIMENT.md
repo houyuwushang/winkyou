@@ -1,5 +1,7 @@
 # Peer-coordinated mesh rejoin field experiment
 
+> Privacy: deployment identifiers are placeholders. Historical counts, protocol constraints, and pause/NO-GO decisions are unchanged. Examples are not directly executable; see the [public-document policy](./DOCUMENTATION-PRIVACY.md).
+
 > **PAUSED / NO-GO (2026-07-22):** this document preserves historical field
 > evidence, not current deployment instructions. Automatic maintained-edge
 > recovery and cached self-bootstrap are disabled at the product boundary after
@@ -30,12 +32,12 @@ trusted mesh peer whose role exists only for that attempt.
 
 - `A`: the local Windows workstation;
 - `B`: `node-b`, initially outside the WinkYou mesh;
-- `C`: `inner-gw`;
+- `C`: `<NODE_A_HOST>`;
 - historical starting `A-C`: the public `punchbridge` path then exposed at local
   SSH port `127.0.0.1:22022` (after the later A r12 migration that same local
   port is owned by `meshnode` and routes to C);
-- temporary `C-B`: the natpierce management underlay (`C=10.20.0.1`,
-  `B=10.20.0.4`).
+- temporary `C-B`: the natpierce management underlay (`C=<IPV4_1>`,
+  `B=<IPV4_2>`).
 
 ## Connectivity-preserving edge rotation
 
@@ -337,7 +339,7 @@ claim that r8 could write a recovery card itself.
 
 C's r12 launcher deliberately used `--mesh-listen off`, contained no `--peer`,
 and later reported an empty `desired_bootstrap_peers` map. B retained the legacy
-seed `C=10.20.0.1:32100`, but that connector could not reach r12 because r12
+seed `C=<IPV4_1>:32100`, but that connector could not reach r12 because r12
 opened no mesh listener. Its only purpose was to recover the old r8 listener if
 verified rollback became necessary, so it cannot explain the successful r12
 edge.
@@ -406,7 +408,7 @@ live recovery cards. A stored the new B/C endpoints, B stored A at
 is `.live-run/runs/mesh-selfbootstrap-20260718-r12/field-evidence/A/reciprocal-recovery-cards-post-A-r12.json`.
 
 The independent underlay check selected the physical Ethernet interface
-(`10.0.0.10` via `10.0.0.1`) for both public remote IPs. Tailscale was stopped;
+(`<IPV4_3>` via `<GATEWAY_ADDRESS>`) for both public remote IPs. Tailscale was stopped;
 a present natpierce UI process owned none of A's WinkYou UDP sockets or local
 listeners. The route evidence is
 `.live-run/runs/mesh-selfbootstrap-20260718-r12/field-evidence/A/underlay-route-check-post-A-r12.json`.
@@ -475,9 +477,9 @@ any node:
 
 1. restore A's public management path at `127.0.0.1:22022`, start the separate
    A-C forwarding session shown below, and verify that `127.0.0.1:32101`
-   accepts a TCP connection to C's actual `10.20.0.1:32100` listener;
+   accepts a TCP connection to C's actual `<IPV4_1>:32100` listener;
 2. from B, verify that the natpierce management route can connect to
-   `10.20.0.1:32100` without using a WinkYou route;
+   `<IPV4_1>:32100` without using a WinkYou route;
 3. copy r9, the matching launcher, the rolling wrapper, and
    `r9-manifest.json` into the same run directory that contains the old r7/r8
    binary and stdout/stderr pair; verify every manifest hash and run PowerShell
@@ -527,7 +529,7 @@ When starting B through an in-band SSH session, detach the wrapper first so the
 session can return before B's old mesh process is stopped:
 
 ```powershell
-$script = 'D:\workspace\winkyou\.live-run\runs\mesh-rejoin-20260717-r1\AB-rolling-restart-r9.ps1'
+$script = '<LOCAL_PATH_1>'
 Start-Process powershell.exe -WindowStyle Hidden -ArgumentList @(
   '-NoProfile', '-ExecutionPolicy', 'Bypass',
   '-File', ('"{0}"' -f $script), '-Node', 'B',
@@ -616,7 +618,7 @@ $forward = Invoke-RestMethod -Method Post `
   -ContentType application/json `
   -Body '{"listen":"127.0.0.1:22025","remote_id":"C"}'
 
-ssh -p 22025 node-c-user@127.0.0.1
+ssh -p 22025 <SSH_DESTINATION_1>
 ```
 
 The returned `$forward.id` is the runtime-owned listener ID. It can be removed
@@ -640,11 +642,11 @@ process-restart behavior. This is still not system-service or operating-system
 boot/autostart acceptance.
 
 The first ordinary SSH connection observed the ED25519 host-key fingerprint
-`SHA256:VxRev6xvoIVmmWG575EkdW7ZuuWkXSlzVsWcZb/wf8c`, completed real
+`<SSH_FINGERPRINT>`, completed real
 authentication, and returned:
 
 ```text
-HOST=node-c-host
+HOST=<HOST_ALIAS_1>
 USER=node-c-user
 ```
 
@@ -652,7 +654,7 @@ Five consecutive fresh authenticated connections succeeded in
 `2.673-2.883 s`. The user-facing command on B is therefore:
 
 ```powershell
-ssh -p 22025 node-c-user@127.0.0.1
+ssh -p 22025 <SSH_DESTINATION_1>
 ```
 
 ### r8 topology used by the service proof
@@ -710,7 +712,7 @@ A control:           127.0.0.1:32110
 A -> C bootstrap:    127.0.0.1:32101 (SSH -L through port 22022)
 A -> B routed SSH:   127.0.0.1:22024 (owned by meshnode)
 
-C mesh listener:     10.20.0.1:32100
+C mesh listener:     <IPV4_1>:32100
 C control:           127.0.0.1:32110
 
 B mesh listener:     off (outbound bootstrap only)
@@ -723,12 +725,12 @@ session:
 
 ```powershell
 ssh -o ProxyJump=none -p 22022 -N `
-  -L 127.0.0.1:32101:10.20.0.1:32100 `
-  node-c-user@127.0.0.1
+  -L 127.0.0.1:32101:<IPV4_1>:32100 `
+  <SSH_DESTINATION_1>
 ```
 
 A starts with `--peer C=127.0.0.1:32101`. In the historical r4-r8 experiment B
-started with `--peer C=10.20.0.1:32100`; that desired peer was removed after A-B
+started with `--peer C=<IPV4_1>:32100`; that desired peer was removed after A-B
 became stable. r9 deliberately retains both configured seeds and must not use
 that removal step. For the routed-management extension, A also starts with
 `--tcp-forward 127.0.0.1:22024=B`, and B starts with
@@ -754,7 +756,7 @@ After all three status documents show `A-C-B` and `B-C-A` routes:
    this run it did not reconnect the natpierce application session. The user
    restored that session manually.
 7. Expose B's loopback SSH target through the A listener, then connect with
-   `ssh -o ProxyJump=none -p 22024 node-b-user@127.0.0.1`. Do not configure a
+   `ssh -o ProxyJump=none -p 22024 <SSH_DESTINATION_2>`. Do not configure a
    `ProxyCommand`; compare A and C data counters to prove C is not the data
    path.
 
@@ -808,7 +810,7 @@ After the second shortcut, B reported neighbors A and C and direct routes
 `[B,A]` and `[B,C]`.
 
 The bootstrap-removal check disabled B's `natpierce` adapter. C could no
-longer ping `10.20.0.4`, including a delayed check more than two minutes after
+longer ping `<IPV4_2>`, including a delayed check more than two minutes after
 disable, while WinkYou still returned one-hop A-B and C-B pings. The delayed
 samples were about 37.8 ms and 60.8 ms respectively. One A-B control ping at
 the instant of adapter transition timed out; the next five all succeeded and
@@ -845,10 +847,10 @@ public-direct edge, this command reached B without a jump host or
 
 ```powershell
 ssh -o ProxyJump=none -o BatchMode=yes `
-  -p 22024 node-b-user@127.0.0.1 hostname
+  -p 22024 <SSH_DESTINATION_2> hostname
 ```
 
-It returned `node-b-host`. During the first direct-SSH checks, A's routed
+It returned `<HOST_ALIAS_2>`. During the first direct-SSH checks, A's routed
 data counter increased from 0 to 26 while C's counter remained 0. The same
 direct session queried B's loopback control API and deleted B's temporary C
 bootstrap peer. B then reported neighbor A only and route `[B,A,C]`. The two

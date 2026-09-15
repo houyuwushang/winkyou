@@ -1,5 +1,7 @@
 # WinkYou 长期运行客户端
 
+> 隐私说明：部署标识已替换为占位符；历史计数、协议约束及暂停/NO-GO 结论不变。示例不可直接执行，见[公开文档规则](./DOCUMENTATION-PRIVACY.md)。
+
 > **2026-07-22 暂停告警：** 本文的通用托管方法不构成重新启用 autonomous birthday recovery 的授权。后续现场构建在失联恢复时引发严重 UDP 五元组/出口会话风暴；该方向短期暂停，`WinkYou-A` 计划任务必须保持禁用，stop marker 必须保留。当前 `wink` 会拒绝 `maintain_peers` 和 `recovery_card`，`meshnode` 会拒绝对应参数。legacy 模式与自治恢复应分开评估。详见 [`INCIDENT-2026-07-22-SELF-BOOTSTRAP-UDP-STORM.md`](./INCIDENT-2026-07-22-SELF-BOOTSTRAP-UDP-STORM.md)。
 
 本文说明当前可用的长期运行方式。现阶段不引入新的 service 框架；`wink up` 仍是前台 client 进程，Linux 交给 systemd 管理，Windows 先使用管理员启动项、Task Scheduler 或 NSSM 管理。
@@ -54,7 +56,7 @@ nat:
 autonomous_mesh:
   enabled: true
   node_id: demo-a
-  virtual_ip: fd7a:115c:a1e0::a
+  virtual_ip: <OVERLAY_IPV6_1>
   listen: 0.0.0.0:32100
   control_listen: 127.0.0.1:32110
 
@@ -69,7 +71,7 @@ autonomous_mesh:
     - listen: 127.0.0.1:22022
       remote_id: demo-b
   virtual_tcp_forwards:
-    - listen: "[fd7a:115c:a1e0::b]:22"
+    - listen: "[<OVERLAY_IPV6_2>]:22"
       remote_id: demo-b
 ```
 
@@ -97,7 +99,7 @@ node:
 autonomous_mesh:
   enabled: true
   node_id: demo-a
-  virtual_ip: fd7a:115c:a1e0::a
+  virtual_ip: <OVERLAY_IPV6_1>
   listen: off
   control_listen: 127.0.0.1:0
 ```
@@ -175,7 +177,7 @@ log:
   level: info
   format: text
   output: file
-  file: C:\Users\<you>\AppData\Roaming\wink\wink.log
+  file: <LOCAL_PATH_1>
 ```
 
 查看最近日志：
@@ -257,8 +259,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\install-wink-supervi
 再以管理员 PowerShell 安装。先把二进制和 supervisor 复制到管理员保护的稳定目录，把配置和状态目录放到受保护的 ProgramData 子目录；不要让 `SYSTEM` 启动项直接执行普通用户可修改的 checkout 文件。下面使用 SID，避免 Windows 显示语言影响 `icacls`：
 
 ```powershell
-$InstallDir = "C:\Program Files\WinkYou"
-$DataDir = "C:\ProgramData\WinkYou"
+$InstallDir = "<INSTALL_DIRECTORY>"
+$DataDir = "<LOCAL_PATH_3>"
 New-Item -ItemType Directory -Path $InstallDir, $DataDir -Force
 icacls $InstallDir /setowner "*S-1-5-32-544"
 if ($LASTEXITCODE -ne 0) { throw "failed to set owner on $InstallDir" }
@@ -278,11 +280,11 @@ Copy-Item ".\path\to\config.yaml" "$DataDir\config.yaml"
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\install-wink-supervised-task.ps1 `
   -TaskName "WinkYou-A" `
-  -WinkExe "C:\Program Files\WinkYou\wink.exe" `
-  -Config "C:\ProgramData\WinkYou\config.yaml" `
-  -State "C:\ProgramData\WinkYou\wink.runtime.json" `
-  -WorkingDirectory "C:\Program Files\WinkYou" `
-  -SupervisorScript "C:\Program Files\WinkYou\run-wink-supervisor.ps1" `
+  -WinkExe "<INSTALL_DIRECTORY>\wink.exe" `
+  -Config "<LOCAL_PATH_4>" `
+  -State "<LOCAL_PATH_5>" `
+  -WorkingDirectory "<INSTALL_DIRECTORY>" `
+  -SupervisorScript "<INSTALL_DIRECTORY>\run-wink-supervisor.ps1" `
   -StartNow
 ```
 
@@ -301,7 +303,7 @@ log:
   level: info
   format: text
   output: file
-  file: C:\ProgramData\WinkYou\wink.log
+  file: <LOCAL_PATH_6>
 ```
 
 查看和 `down` 应在管理员 PowerShell 中使用已安装二进制的绝对路径，避免误用 checkout 中的另一个版本：
@@ -309,21 +311,21 @@ log:
 ```powershell
 Get-ScheduledTask -TaskName "WinkYou-A"
 Get-ScheduledTaskInfo -TaskName "WinkYou-A"
-Test-Path "C:\ProgramData\WinkYou\wink.runtime.json.supervisor.stop"
-Get-Content "C:\ProgramData\WinkYou\wink.runtime.json.supervisor.log" -Tail 50
-$Wink = "C:\Program Files\WinkYou\wink.exe"
-& $Wink --config "C:\ProgramData\WinkYou\config.yaml" --state "C:\ProgramData\WinkYou\wink.runtime.json" status
-& $Wink --config "C:\ProgramData\WinkYou\config.yaml" --state "C:\ProgramData\WinkYou\wink.runtime.json" peers
-& $Wink --config "C:\ProgramData\WinkYou\config.yaml" --state "C:\ProgramData\WinkYou\wink.runtime.json" logs --tail 200
+Test-Path "<LOCAL_PATH_7>"
+Get-Content "<LOCAL_PATH_8>" -Tail 50
+$Wink = "<INSTALL_DIRECTORY>\wink.exe"
+& $Wink --config "<LOCAL_PATH_4>" --state "<LOCAL_PATH_5>" status
+& $Wink --config "<LOCAL_PATH_4>" --state "<LOCAL_PATH_5>" peers
+& $Wink --config "<LOCAL_PATH_4>" --state "<LOCAL_PATH_5>" logs --tail 200
 ```
 
 临时停止时先禁用任务并写入 stop marker，再在有界循环中使用认证的 graceful down。supervisor 在退避、启动前和 child 运行期间都会观察 marker；循环允许第一次 `down` 恰好命中旧 state。只有任务不再 Running 且 runtime state 中没有仍存活的 PID 才算停稳；超时要保留 marker 并排查，不能直接注销任务：
 
 ```powershell
 $Task = "WinkYou-A"
-$Wink = "C:\Program Files\WinkYou\wink.exe"
-$Config = "C:\ProgramData\WinkYou\config.yaml"
-$State = "C:\ProgramData\WinkYou\wink.runtime.json"
+$Wink = "<INSTALL_DIRECTORY>\wink.exe"
+$Config = "<LOCAL_PATH_4>"
+$State = "<LOCAL_PATH_5>"
 $StopFile = $State + ".supervisor.stop"
 Disable-ScheduledTask -TaskName $Task
 New-Item -ItemType File -Path $StopFile -Force
@@ -353,7 +355,7 @@ if ($TaskRunning -or $RuntimeAlive) {
 
 ```powershell
 $Task = "WinkYou-A"
-$StopFile = "C:\ProgramData\WinkYou\wink.runtime.json.supervisor.stop"
+$StopFile = "<LOCAL_PATH_7>"
 if ((Get-ScheduledTask -TaskName $Task).State -eq "Running") {
   throw "the old supervisor is still running"
 }
@@ -366,7 +368,7 @@ Start-ScheduledTask -TaskName $Task
 
 ```powershell
 $Task = "WinkYou-A"
-$State = "C:\ProgramData\WinkYou\wink.runtime.json"
+$State = "<LOCAL_PATH_5>"
 if ((Get-ScheduledTask -TaskName $Task).State -eq "Running") { throw "task is still running" }
 if (Test-Path $State) { throw "runtime state remains; recover once and stop gracefully before uninstall" }
 Unregister-ScheduledTask -TaskName $Task -Confirm:$false
@@ -378,10 +380,10 @@ Remove-Item ($State + ".supervisor.stop"), ($State + ".supervisor.lock") -Force 
 如果偏好 Windows service 管理器，可用 NSSM 包装前台命令：
 
 ```powershell
-nssm install WinkYou "C:\Program Files\WinkYou\wink.exe" "--config `"C:\ProgramData\WinkYou\config.yaml`" --state `"C:\ProgramData\WinkYou\wink.runtime.json`" up"
-nssm set WinkYou AppDirectory "C:\Program Files\WinkYou"
-nssm set WinkYou AppStdout "C:\ProgramData\WinkYou\wink.stdout.log"
-nssm set WinkYou AppStderr "C:\ProgramData\WinkYou\wink.stderr.log"
+nssm install WinkYou "<INSTALL_DIRECTORY>\wink.exe" "--config `"<LOCAL_PATH_4>`" --state `"<LOCAL_PATH_5>`" up"
+nssm set WinkYou AppDirectory "<INSTALL_DIRECTORY>"
+nssm set WinkYou AppStdout "<LOCAL_PATH_9>"
+nssm set WinkYou AppStderr "<LOCAL_PATH_10>"
 nssm start WinkYou
 ```
 

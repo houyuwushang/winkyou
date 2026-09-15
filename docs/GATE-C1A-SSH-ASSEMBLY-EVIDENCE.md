@@ -1,5 +1,7 @@
 # Gate C1a：SSH assembly 隔离实现证据
 
+> 隐私说明：部署标识已替换为占位符；历史计数、协议约束及暂停/NO-GO 结论不变。示例不可直接执行，见[公开文档规则](./DOCUMENTATION-PRIVACY.md)。
+
 状态：**Draft implementation evidence；只覆盖纯内存、fake child、字面回环 OpenSSH profile
 验证与 `linux && natlab` 编译期 authority。它不授权 C1b child pipeline、Gate A/B 产品组合、
 WireGuard、非回环 SSH/UDP、部署、现场 I/O 或任何自动恢复。**
@@ -67,7 +69,7 @@ architecture 与 mutation gate 证明：
 
 | platform | executable | child environment |
 | --- | --- | --- |
-| Windows | `C:\Windows\System32\OpenSSH\ssh.exe` | `SYSTEMROOT`、`WINDIR`、`PROGRAMDATA` 的固定系统值 |
+| Windows | `<LOCAL_PATH_1>` | `SYSTEMROOT`、`WINDIR`、`PROGRAMDATA` 的固定系统值 |
 | Linux | `/usr/bin/ssh` | `LANG=C`、`LC_ALL=C` |
 
 remote command 固定为 `wink solver direct child --stdio`。完整 argv golden 强制 `-F none -T`、
@@ -76,7 +78,7 @@ key-only、single identity、strict host key、single owner-only known-hosts fil
 `ConnectionAttempts=1` 与 `ConnectTimeout=3`。request 不能提供 executable、附加 argv、command 或 env。
 
 Windows 的零连接 `ssh -G` 实测还证明：即便使用 `-F none`，系统 OpenSSH 仍需读取固定
-`PROGRAMDATA=C:\ProgramData` 才能完成配置展开；只有 `SYSTEMROOT/WINDIR` 时会在启动前失败。
+`PROGRAMDATA=<LOCAL_PATH_2>` 才能完成配置展开；只有 `SYSTEMROOT/WINDIR` 时会在启动前失败。
 因此该变量作为第三个固定系统值进入最小 child environment，但 `PATH`、`HOME`、`USERPROFILE`、
 `SSH_AUTH_SOCK` 与 `SSH_ASKPASS*` 仍不继承。该测试只展开 effective config，不建立连接。
 

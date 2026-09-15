@@ -1,5 +1,7 @@
 # 2026-04-15 Deployment Questions For Expert Review
 
+> Privacy: deployment identifiers are placeholders. Historical counts, protocol constraints, and pause/NO-GO decisions are unchanged. Examples are not directly executable; see the [public-document policy](./DOCUMENTATION-PRIVACY.md).
+
 ## Context
 
 Today we attempted the documented quickstart deployment path:
@@ -16,17 +18,17 @@ Coordinator registration works. Both peers become visible through `wink peers`. 
 ### 1. Windows TUN path is alive
 
 - Windows `wink.exe up` reaches `wink engine started`.
-- `wink0` receives the expected virtual IP, for example `10.42.0.1/24`.
+- `wink0` receives the expected virtual IP, for example `<IPV4_1>/24`.
 - Application traffic is sourced from the overlay IP, for example:
-  - `read udp4 10.42.0.1:53465->10.42.0.2:33434: i/o timeout`
+  - `read udp4 <IPV4_1>:53465-><IPV4_2>:33434: i/o timeout`
 
 This means the packet path is making it into the host stack and out through the TUN route.
 
 ### 2. Linux TUN path is alive
 
 - Linux peer starts successfully with `backend=tun`.
-- `ip addr show wink0` shows the expected virtual IP, for example `10.42.0.2/24`.
-- `ip route get 10.42.0.1` resolves to `dev wink0`.
+- `ip addr show wink0` shows the expected virtual IP, for example `<IPV4_2>/24`.
+- `ip route get <IPV4_1>` resolves to `dev wink0`.
 
 ### 3. Direct-only mode does not connect in this environment
 

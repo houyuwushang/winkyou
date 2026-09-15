@@ -1,5 +1,7 @@
 # Slice 4.5 three-node `wink up` field rollout (2026-07-19)
 
+> Privacy: deployment identifiers are placeholders. Historical counts, protocol constraints, and pause/NO-GO decisions are unchanged. Examples are not directly executable; see the [public-document policy](./DOCUMENTATION-PRIVACY.md).
+
 Status: accepted for the guarded C -> B -> A product-lifecycle rollout. All
 three field nodes now run the default-off autonomous graph engine through the
 normal managed `wink up` lifecycle. This record does not accept operating-system
@@ -48,8 +50,8 @@ configured product facades:
 
 - `127.0.0.1:22024` to B;
 - `127.0.0.1:22022` to C;
-- `[fd00::b]:22` to B; and
-- `[fd00::c]:22` to C.
+- `[<OVERLAY_IPV6_1>]:22` to B; and
+- `[<OVERLAY_IPV6_2>]:22` to C.
 
 All four commands returned their complete expected stdout or status JSON, so
 these were data/command-path checks rather than listener-only or banner-only

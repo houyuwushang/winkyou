@@ -1,5 +1,7 @@
 # 控制面断线与 P2P 保持
 
+> 隐私说明：部署标识已替换为占位符；历史计数、协议约束及暂停/NO-GO 结论不变。示例不可直接执行，见[公开文档规则](./DOCUMENTATION-PRIVACY.md)。
+
 本文记录 2026-06-04 真实部署验证后暴露的问题和后续 TODO。它是当前 active 运维说明，不能替代 [`CONNECTIVITY-SOLVER-BASELINE.md`](./CONNECTIVITY-SOLVER-BASELINE.md) 的架构边界。
 
 ## 当前代码状态
@@ -34,68 +36,68 @@ client 还新增了 bound 后的 protected-direct improvement：如果当前已 
 测试拓扑：
 
 - 本机 Windows 作为 `local-a`
-- `chen-win` 运行 coordinator
-- `inner-gw` 作为远端 Linux 节点
-- 本机只能通过 `chen-win` 跳板 SSH 到 `inner-gw`
+- `<NODE_B_HOST>` 运行 coordinator
+- `<NODE_A_HOST>` 作为远端 Linux 节点
+- 本机只能通过 `<NODE_B_HOST>` 跳板 SSH 到 `<NODE_A_HOST>`
 - 两端 WinkYou 配置只启用 STUN，没有配置 TURN relay
-- 本机 Windows 的 Wintun 依赖由本地下载的 `D:\deployment\winkyou\bin\wintun.dll` 提供；正式部署文档不能假设系统已经全局安装 Wintun
+- 本机 Windows 的 Wintun 依赖由本地下载的 `<LOCAL_PATH_1>` 提供；正式部署文档不能假设系统已经全局安装 Wintun
 
 验证结果：
 
-- `local-a` 获得虚拟 IP `10.88.0.2`
-- `inner-b` 获得虚拟 IP `10.88.0.1`
+- `local-a` 获得虚拟 IP `<IPV4_1>`
+- `inner-b` 获得虚拟 IP `<IPV4_2>`
 - `wink peers` 两端都显示 `State: connected`
 - `Conn Type: direct`
 - `ICE State: connected`
 - WireGuard handshake 出现
-- `10.88.0.1` 和 `10.88.0.2` 双向 ping 成功
+- `<IPV4_2>` 和 `<IPV4_1>` 双向 ping 成功
 
-这证明数据面没有通过 `chen-win` TURN relay 转发。但 `Conn Type: direct` 在 ICE 语义里只表示选中的 candidate pair 不是 TURN relay，并不自动表示该 path 独立于已有 overlay 或跳板 underlay。历史 runtime/observation 多次记录 remote candidate 为 `100.102.17.35:*`，属于 `100.64.0.0/10`，因此更准确的判断是：该 path 是 ICE direct-like path，但很可能仍依赖 natpierce/chen-win 相关 underlay。断开本机到 `chen-win` 的 natpierce 连接后，WinkYou 连接也断开，这与上述证据并不矛盾。
+这证明数据面没有通过 `<NODE_B_HOST>` TURN relay 转发。但 `Conn Type: direct` 在 ICE 语义里只表示选中的 candidate pair 不是 TURN relay，并不自动表示该 path 独立于已有 overlay 或跳板 underlay。历史 runtime/observation 多次记录 remote candidate 为 `<IPV4_3>:*`，属于 `100.64.0.0/10`，因此更准确的判断是：该 path 是 ICE direct-like path，但很可能仍依赖 natpierce/`<NODE_B_HOST>` 相关 underlay。断开本机到 `<NODE_B_HOST>` 的 natpierce 连接后，WinkYou 连接也断开，这与上述证据并不矛盾。
 
-后续通过 SSH 密码登录 `chen-win` 后，已确认可以只停止 `wink-coordinator` 进程而不触碰 natpierce/underlay 网络。排查过程中先暴露了一个部署问题：重启本机验证版 client 后，前置数据面一度没有重新达到 bound/handshake：
+后续通过 SSH 密码登录 `<NODE_B_HOST>` 后，已确认可以只停止 `wink-coordinator` 进程而不触碰 natpierce/underlay 网络。排查过程中先暴露了一个部署问题：重启本机验证版 client 后，前置数据面一度没有重新达到 bound/handshake：
 
-- coordinator 在 `chen-win` 上运行，进程名 `wink-coordinator`。
+- coordinator 在 `<NODE_B_HOST>` 上运行，进程名 `wink-coordinator`。
 - `local-a` 控制面在线，能看到 `inner-b`，但 runtime 显示 `control_state=connected`、`data_state=failed/connecting`、`connected_peers=0`。
 - 本机 controlled-side retry 修复后，`local-a` 会重新进入 solver 并写出新的 observation，但没有收到足够的远端响应完成 direct path。
 - 未加 candidate filter 时曾选中过 `100.64.0.0/10` 地址段 candidate，并出现 `transport: short packet write 0/148`；这不是纯 coordinator outage 现象，也不能作为独立 protected direct path 的证据。
-- 仅在本机加 `nat.candidate_interface_include: natpierce` 和 `nat.candidate_cidr_include: 10.6.22.0/24` 会让本机过滤生效，但远端 `inner-b` 未同步配置时无法形成可用 candidate pair。
-- 进一步检查发现，`chen-win` 上的 coordinator 以默认 memory store 启动；重启 coordinator 后 `ListPeers` 返回空数组，说明注册表丢失，而旧 client 只保留本地 runtime 状态，没有自动重新注册，导致看起来 control 连接还在、实际 coordinator 不知道任何 peer。
+- 仅在本机加 `nat.candidate_interface_include: natpierce` 和 `nat.candidate_cidr_include: <IPV4_4>/24` 会让本机过滤生效，但远端 `inner-b` 未同步配置时无法形成可用 candidate pair。
+- 进一步检查发现，`<NODE_B_HOST>` 上的 coordinator 以默认 memory store 启动；重启 coordinator 后 `ListPeers` 返回空数组，说明注册表丢失，而旧 client 只保留本地 runtime 状态，没有自动重新注册，导致看起来 control 连接还在、实际 coordinator 不知道任何 peer。
 
 修复和部署调整后，2026-06-04 21:48 已完成基础真实 outage 验证：
 
-- `chen-win` coordinator scheduled task 已切到 SQLite store：`--store-backend sqlite --sqlite-path coordinator.db`。
-- coordinator 注册表按原身份恢复为 `inner-b=node-000001/10.88.0.1`、`local-a=node-000002/10.88.0.2`。
+- `<NODE_B_HOST>` coordinator scheduled task 已切到 SQLite store：`--store-backend sqlite --sqlite-path coordinator.db`。
+- coordinator 注册表按原身份恢复为 `inner-b=node-000001/<IPV4_2>`、`local-a=node-000002/<IPV4_1>`。
 - 本机运行包含 coordinator NotFound 重注册修复的新验证版 client。
 - 验证前 `wink peers` 显示 `inner-b` 为 `state=connected`、`data_state=alive`、WireGuard handshake 非空、transport packet counters 非零。
 - `wink ping inner-b` 成功。
-- 只停止 `chen-win` 上的 `wink-coordinator` 进程，保持 natpierce/underlay 不动。
+- 只停止 `<NODE_B_HOST>` 上的 `wink-coordinator` 进程，保持 natpierce/underlay 不动。
 - coordinator 停止 15 秒期间，`wink peers --json` 仍显示 peer connected/bound，`wink ping inner-b` 仍成功。
 - verifier 随后通过 scheduled task 拉起 coordinator，重启后 `wink ping inner-b` 继续成功。
 
 因此，基础结论是：在这次 direct path 已 bound 的真实环境中，短时间只停止 coordinator 进程不会拆掉数据面。不要把这个结论扩大为“任意控制面故障、任意时长、任意网络拓扑都能保持”。下一步仍需覆盖 heartbeat/signaling stream 长时间失败、cached path 恢复和 in-band peer control 接入。
 
-安全验证脚本 [`scripts/verify-control-plane-outage.py`](../scripts/verify-control-plane-outage.py) 已用于上述真实 kill-coordinator 回归。该脚本会先检查本机 `wink peers --json`、`last_handshake`、transport error 和 overlay probe；默认使用 `wink ping`，也可用 `--ping-method icmp` 切回系统 ICMP。只有确认已经存在 connected/bound peer 后，才会读取环境变量里的 chen-win SSH 密码并停止远端 coordinator。当前本机 runtime 没有 bound peer 时，脚本会直接退出并拒绝触碰远端进程。
+安全验证脚本 [`scripts/verify-control-plane-outage.py`](../scripts/verify-control-plane-outage.py) 已用于上述真实 kill-coordinator 回归。该脚本会先检查本机 `wink peers --json`、`last_handshake`、transport error 和 overlay probe；默认使用 `wink ping`，也可用 `--ping-method icmp` 切回系统 ICMP。只有确认已经存在 connected/bound peer 后，才会读取环境变量里的 `<NODE_B_HOST>` SSH 密码并停止远端 coordinator。当前本机 runtime 没有 bound peer 时，脚本会直接退出并拒绝触碰远端进程。
 
-代码已补上 coordinator client 的 NotFound 恢复路径：heartbeat 发现当前 node 在 coordinator 中不存在时，会关闭旧 signal stream 并用最近一次 register 请求重新注册。这主要用于 coordinator 持久化 store 或稳定身份恢复场景。当前 chen-win 测试部署仍需要切到 `--store-backend sqlite --sqlite-path ...`，并让两端 client 都运行包含该修复的新版本后，再进行真实 outage 验证。
+代码已补上 coordinator client 的 NotFound 恢复路径：heartbeat 发现当前 node 在 coordinator 中不存在时，会关闭旧 signal stream 并用最近一次 register 请求重新注册。这主要用于 coordinator 持久化 store 或稳定身份恢复场景。当前 `<NODE_B_HOST>` 测试部署仍需要切到 `--store-backend sqlite --sqlite-path ...`，并让两端 client 都运行包含该修复的新版本后，再进行真实 outage 验证。
 
 ## 拓扑澄清
 
-不要把两个 `10.6.22.1` 混为一个节点：
+不要把两个 `<IPV4_5>` 混为一个节点：
 
-- 本机看到的 `10.6.22.1` 是本机/`chen-win` 所在的 natpierce 虚拟网关。
-- `inner-gw` 的 `10.6.22.1` 是 `chen-win` 另一侧能看到的虚拟局域网节点。
-- `inner-gw` 不是本机可直接访问的 `10.6.22.1`。
-- `local-a` 和 `inner-gw` 不是同一个二层/三层可直达网络里的两个普通节点，而是通过 natpierce/跳板链路间接互通的两个节点。
+- 本机看到的 `<IPV4_5>` 是本机/`<NODE_B_HOST>` 所在的 natpierce 虚拟网关。
+- `<NODE_A_HOST>` 的 `<IPV4_5>` 是 `<NODE_B_HOST>` 另一侧能看到的虚拟局域网节点。
+- `<NODE_A_HOST>` 不是本机可直接访问的 `<IPV4_5>`。
+- `local-a` 和 `<NODE_A_HOST>` 不是同一个二层/三层可直达网络里的两个普通节点，而是通过 natpierce/跳板链路间接互通的两个节点。
 
-因此，直接断开本机到 `chen-win` 的 natpierce 连接不是一个纯粹的 coordinator outage 测试。它会同时移除 coordinator 可达性、SSH 跳板可达性，并且可能移除 ICE 选中的 underlay candidate 所依赖的路径。要单独验证“coordinator 挂了以后已建立数据面是否保持”，应该保持 natpierce/underlay 网络不动，只在 `chen-win` 上停止 coordinator 进程。
+因此，直接断开本机到 `<NODE_B_HOST>` 的 natpierce 连接不是一个纯粹的 coordinator outage 测试。它会同时移除 coordinator 可达性、SSH 跳板可达性，并且可能移除 ICE 选中的 underlay candidate 所依赖的路径。要单独验证“coordinator 挂了以后已建立数据面是否保持”，应该保持 natpierce/underlay 网络不动，只在 `<NODE_B_HOST>` 上停止 coordinator 进程。
 
 ## 根因判断
 
-当前问题不是 `PacketTransport` 必须通过 `chen-win` 转发，而是控制面仍持续依赖 `chen-win`：
+当前问题不是 `PacketTransport` 必须通过 `<NODE_B_HOST>` 转发，而是控制面仍持续依赖 `<NODE_B_HOST>`：
 
-- coordinator 部署在 `chen-win`
-- 本机 coordinator URL 指向 `grpc://192.168.11.217:50051`
-- `inner-gw` coordinator URL 指向 `grpc://10.6.22.4:50051`
+- coordinator 部署在 `<NODE_B_HOST>`
+- 本机 coordinator URL 指向 `grpc://<IPV4_6>:50051`
+- `<NODE_A_HOST>` coordinator URL 指向 `grpc://<IPV4_7>:50051`
 - 两端注册、心跳、peer online 状态和 session 信令都依赖这个 coordinator
 
 当前 client 还有一个行为风险：收到 peer offline 或 coordinator 判断 peer 不在线时，会走 `cleanupPeer`，从而清理 peer session、tunnel peer 和 endpoint。这样即使数据面已经 bound，只要控制面短暂断开，也可能被主动拆掉。
@@ -155,7 +157,7 @@ coordinator bootstrap
 - fake coordinator 发出 peer offline 后，已 connected peer 不应被 `RemovePeer`。
 - coordinator heartbeat 失败时，client 进程不应主动拆除已 bound transport。
 - path commit 已完成后，短时间 control outage 不应导致 `wink peers` 从 connected 直接变 disconnected。
-- 真实环境验证应保持 natpierce/underlay 不断，只停止 `chen-win` 上的 coordinator 进程，再观察 `wink peers`、WireGuard handshake 和 `wink ping`；基础 15 秒 outage 已通过，后续应扩展时长和故障类型。
+- 真实环境验证应保持 natpierce/underlay 不断，只停止 `<NODE_B_HOST>` 上的 coordinator 进程，再观察 `wink peers`、WireGuard handshake 和 `wink ping`；基础 15 秒 outage 已通过，后续应扩展时长和故障类型。
 
 ### P1: 缓存 peer lease 和最近成功 path
 
@@ -176,7 +178,7 @@ coordinator bootstrap
 
 状态：消息模型、校验和 JSON 编解码已加入 `pkg/peercontrol`；client 网络循环已接入 heartbeat、path_health、最小 `re_ice_request` 和 `session_signal`。当前 `re_ice_request` 调度已有 peer session 的 protected-direct improvement；session/strategy message 会在 coordinator 之外额外通过 in-band `session_signal` 发送，但首次 bootstrap 仍不依赖该通道。
 
-已建立虚拟网后，可以在 `10.88.0.0/24` 内增加轻量 peer control channel，承载：
+已建立虚拟网后，可以在 `<IPV4_8>/24` 内增加轻量 peer control channel，承载：
 
 - peer heartbeat
 - endpoint update
@@ -198,7 +200,7 @@ coordinator bootstrap
 
 状态：NAT/ICE 配置已支持 candidate interface include/exclude 和 candidate CIDR include/exclude；`wink doctor` 会展示过滤配置，并检查 runtime candidate 是否命中 excluded CIDR。
 
-本次 direct path 中 candidate 可能包含 Tailscale/peer-reflexive 地址或 Docker bridge host 地址。这证明没有使用 `chen-win` TURN relay，但不能证明完全不借助已有 overlay。
+本次 direct path 中 candidate 可能包含 Tailscale/peer-reflexive 地址或 Docker bridge host 地址。这证明没有使用 `<NODE_B_HOST>` TURN relay，但不能证明完全不借助已有 overlay。
 
 当前可用配置：
 
@@ -209,7 +211,7 @@ nat:
     - docker0
   candidate_cidr_exclude:
     - 100.64.0.0/10
-    - 172.16.0.0/12
+    - <IPV4_9>/12
 ```
 
 后续仍需要真实验证：
@@ -220,4 +222,4 @@ nat:
 
 ### P2: 部署建议
 
-生产 quickstart 中 coordinator 应部署在双方都能稳定访问的公网或固定网络位置，并优先使用持久化 store，例如 `--store-backend sqlite --sqlite-path /var/lib/wink/coordinator.db`。`chen-win` 可以作为 SSH 跳板或临时测试机，但不应作为唯一控制面依赖；否则断开 natpierce 后，peer discovery、heartbeat 和 session signaling 都会失效。测试环境如果使用 memory store，重启 coordinator 会丢失注册表，必须重启或升级两端 client 重新注册后才能继续建链。
+生产 quickstart 中 coordinator 应部署在双方都能稳定访问的公网或固定网络位置，并优先使用持久化 store，例如 `--store-backend sqlite --sqlite-path /var/lib/wink/coordinator.db`。`<NODE_B_HOST>` 可以作为 SSH 跳板或临时测试机，但不应作为唯一控制面依赖；否则断开 natpierce 后，peer discovery、heartbeat 和 session signaling 都会失效。测试环境如果使用 memory store，重启 coordinator 会丢失注册表，必须重启或升级两端 client 重新注册后才能继续建链。

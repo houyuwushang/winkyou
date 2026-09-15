@@ -1,5 +1,7 @@
 # TASK-07: 中继服务
 
+> 隐私说明：部署标识已替换为占位符；历史计数、协议约束及暂停/NO-GO 结论不变。示例不可直接执行，见[公开文档规则](../DOCUMENTATION-PRIVACY.md)。
+
 > 历史任务说明：本任务文档按 legacy MVP baseline 编写。当前 active architecture baseline 为 `docs/CONNECTIVITY-SOLVER-BASELINE.md`。
 > MVP 只交付 `UDP TURN + 长期凭证`，不要求协调服务器签发 TURN 临时凭证。
 > 本任务中的“中继”专指专用 `TURN server relay`；“节点 A 作为 B 到 C 的受信中继”属于 `post-MVP` 扩展，见 `../PEER-RELAY-DESIGN.md`。
@@ -321,7 +323,7 @@ server:
   listen_tcp: ":3478"      # 可选
   
   # 公网IP（中继地址）
-  relay_ip: "1.2.3.4"
+  relay_ip: "<IPV4_1>"
   
   # 中继端口范围
   relay_port_range:
@@ -449,7 +451,7 @@ MVP 冻结决策:
 docker run -d --name wink-relay \
   -p 3478:3478/udp \
   -p 49152-65535:49152-65535/udp \
-  -e RELAY_IP=1.2.3.4 \
+  -e RELAY_IP=<IPV4_1> \
   wink/relay:latest
 ```
 

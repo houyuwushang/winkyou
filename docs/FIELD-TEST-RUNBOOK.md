@@ -1,5 +1,7 @@
 # WinkYou 首次真实网络 STUN 观测 Runbook
 
+> 隐私说明：部署标识已替换为占位符；历史计数、协议约束及暂停/NO-GO 结论不变。示例不可直接执行，见[公开文档规则](./DOCUMENTATION-PRIVACY.md)。
+
 状态：**待维护者具名授权执行**。本文只定义一次有界、可停止、可脱敏的现场实验；合入文档
 不等于授权部署、开放防火墙或向公网发包。执行前必须选定具体服务器、执行人、时间窗和
 回滚人，并确认 `wink-stund` 与主动 `diagnose` 来自已经评审的同一发布基线。
@@ -76,7 +78,7 @@ Get-FileHash .\dist\wink-stund-linux-amd64 -Algorithm SHA256
 把显示的哈希写入私有实验记录，再传到服务器临时目录：
 
 ```powershell
-scp .\dist\wink-stund-linux-amd64 <SERVER_USER>@<SERVER_HOST>:/tmp/wink-stund
+scp .\dist\wink-stund-linux-amd64 <SSH_DESTINATION_1>:<REMOTE_PATH>
 ```
 
 `<SERVER_USER>` 与 `<SERVER_HOST>` 必须只在命令行本地替换，不能把替换后的命令提交。
