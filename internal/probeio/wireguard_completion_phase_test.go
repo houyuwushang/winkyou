@@ -30,14 +30,19 @@ func TestConsumerFinishedCompletionAfterChallengeDeadline(t *testing.T) {
 			gate, packets, lease, calls := completionPhaseFixture(t, WireGuardInitiator, buffered, 0)
 			ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
 			defer cancel()
-			deadline := completionChallengeDeadline(t, gate)
+			_ = completionChallengeDeadline(t, gate)
 			finishCalls := 0
 			err := gate.FinishAndActivate(ctx, func() error {
 				finishCalls++
 				if !gate.Witness().PeerFinishConfirmed {
 					t.Error("local FINISH preceded authenticated peer FINISHED")
 				}
-				waitCompletionBoundary(deadline.Add(200 * time.Millisecond))
+				// Observe context cancellation itself, not a competing timer.
+				select {
+				case <-gate.challengeCtx.Done():
+				case <-ctx.Done():
+					return ctx.Err()
+				}
 				return nil
 			})
 			w := gate.Witness()
@@ -127,15 +132,19 @@ func TestConsumerFinishedResponderConfirmationAfterChallengeDeadline(t *testing.
 	gate, packets, lease, calls := completionPhaseFixture(t, WireGuardResponder, false, 0)
 	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
 	defer cancel()
-	deadline := completionChallengeDeadline(t, gate)
+	_ = completionChallengeDeadline(t, gate)
 	err := gate.FinishAndActivate(ctx, func() error {
-		waitCompletionBoundary(deadline.Add(500 * time.Millisecond))
+		select {
+		case <-gate.challengeCtx.Done():
+		case <-ctx.Done():
+			return ctx.Err()
+		}
 		return nil
 	})
 	if err != nil {
 		t.Fatalf("late responder FINISHED rejected: failure=%+v writes=%d", gate.Witness().CompletionFailure, calls.writes.Load())
 	}
-	if gate.Witness().CompletionWrites != 1 || gate.challengeCtx.Err() == nil || gate.attemptCtx.Err() != nil {
+	if gate.Witness().CompletionWrites != 1 || !errors.Is(gate.challengeCtx.Err(), context.DeadlineExceeded) || gate.attemptCtx.Err() != nil {
 		t.Fatal("fixture did not complete one FINISHED after only challenge expiry")
 	}
 	assertCompletionPhaseActive(t, gate, packets, lease, calls)
@@ -151,6 +160,8 @@ func TestConsumerFinishedInitiatorConfirmationAfterChallengeDeadline(t *testing.
 	arrival := completionChallengeDeadline(t, gate).Add(500 * time.Millisecond)
 	go func() {
 		defer close(done)
+		// Schedule packet arrival at an absolute time; no context Err is
+		// inferred from this independent timer in this test.
 		waitCompletionBoundary(arrival)
 		packets.queueRead(fakeConsumerFinishedFrame())
 	}()
@@ -169,6 +180,8 @@ func TestConsumerFinishedCompletionEntryAfterPassedChallengeExpires(t *testing.T
 			gate, packets, lease, calls := completionPhaseFixture(t, role, false, 0)
 			ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
 			defer cancel()
+			// Exercise admission after the nominal boundary. This test asserts
+			// activation/ownership, not that the context's timer has fired.
 			waitCompletionBoundary(completionChallengeDeadline(t, gate).Add(500 * time.Millisecond))
 			if err := gate.FinishAndActivate(ctx, func() error { return nil }); err != nil {
 				t.Fatalf("passed challenge lost completion admission: %v", err)
@@ -242,7 +255,7 @@ func TestConsumerFinishedDetachAfterChallengeDeadline(t *testing.T) {
 			gate, packets, lease, calls := completionPhaseFixture(t, role, false, 0)
 			ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
 			defer cancel()
-			deadline := completionChallengeDeadline(t, gate)
+			_ = completionChallengeDeadline(t, gate)
 			lease.mu.Lock()
 			lease.drain = &completionPhaseDrain{DrainHandle: lease.drain, beforeComplete: func() {
 				w := gate.Witness()
@@ -250,7 +263,11 @@ func TestConsumerFinishedDetachAfterChallengeDeadline(t *testing.T) {
 					(role == WireGuardResponder && w.CompletionWrites != 1) {
 					t.Error("detach preceded durable FINISH and the exact 3/3 exchange")
 				}
-				waitCompletionBoundary(deadline.Add(200 * time.Millisecond))
+				select {
+				case <-gate.challengeCtx.Done():
+				case <-ctx.Done():
+					t.Error("test guard expired before observing challenge context cancellation")
+				}
 			}}
 			lease.mu.Unlock()
 			if err := gate.FinishAndActivate(ctx, func() error { return nil }); err != nil {
