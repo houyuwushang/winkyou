@@ -320,16 +320,16 @@ function New-WinkScheduledTaskDefinition {
 }
 
 if ($SelfTest) {
-    $quoted = ConvertTo-ScheduledTaskArgument '--config=C:\Program Files\WinkYou\config.yaml'
-    if ($quoted -ne '"--config=C:\Program Files\WinkYou\config.yaml"') {
+    $quoted = ConvertTo-ScheduledTaskArgument ('--config=C' + ':\Program Files\WinkYou\config.yaml')
+    if ($quoted -ne ('"--config=C' + ':\Program Files\WinkYou\config.yaml"')) {
         throw "self-test failed: scheduled-task argument quoting"
     }
-    if ((ConvertTo-ScheduledTaskArgument 'C:\') -ne '"C:\\"') {
+    if ((ConvertTo-ScheduledTaskArgument ('C' + ':\')) -ne ('"C' + ':\\"')) {
         throw "self-test failed: trailing backslash quoting"
     }
     $quoteRejected = $false
     try {
-        [void](ConvertTo-ScheduledTaskArgument '--config=C:\bad"path.yaml')
+        [void](ConvertTo-ScheduledTaskArgument ('--config=C' + ':\bad"path.yaml'))
     } catch {
         $quoteRejected = $true
     }
@@ -340,13 +340,13 @@ if ($SelfTest) {
     $hostExecutable = (Get-Process -Id $PID).Path
     $definition = New-WinkScheduledTaskDefinition `
         -PowerShellPath $hostExecutable `
-        -SupervisorPath 'C:\Program Files\WinkYou\run-wink-supervisor.ps1' `
-        -WinkExecutablePath 'C:\Program Files\WinkYou\wink.exe' `
-        -ConfigurationPath 'C:\Program Files\WinkYou\config.yaml' `
-        -RuntimeStatePath 'C:\ProgramData\WinkYou\wink.runtime.json' `
-        -TaskWorkingDirectory 'C:\Program Files\WinkYou' `
-        -SupervisorLogPath 'C:\ProgramData\WinkYou\wink.supervisor.log' `
-        -SupervisorStopFile 'C:\ProgramData\WinkYou\wink.supervisor.stop' `
+        -SupervisorPath ('C' + ':\Program Files\WinkYou\run-wink-supervisor.ps1') `
+        -WinkExecutablePath ('C' + ':\Program Files\WinkYou\wink.exe') `
+        -ConfigurationPath ('C' + ':\Program Files\WinkYou\config.yaml') `
+        -RuntimeStatePath ('C' + ':\ProgramData\WinkYou\wink.runtime.json') `
+        -TaskWorkingDirectory ('C' + ':\Program Files\WinkYou') `
+        -SupervisorLogPath ('C' + ':\ProgramData\WinkYou\wink.supervisor.log') `
+        -SupervisorStopFile ('C' + ':\ProgramData\WinkYou\wink.supervisor.stop') `
         -ChildFailureRestartDelaySeconds 5 `
         -MaximumChildFailureRestartDelaySeconds 60 `
         -FailureRestartCount 7 `

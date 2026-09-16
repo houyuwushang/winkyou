@@ -331,7 +331,7 @@ func TestPublicDirectSelectedPairDetailsExposePeerReflexiveLearning(t *testing.T
 		},
 		Remote: &nat.Candidate{
 			Type:    nat.CandidateTypePrflx,
-			Address: &net.UDPAddr{IP: net.IPv4(117, 48, 146, 2), Port: 41000},
+			Address: &net.UDPAddr{IP: net.IPv4(198, 51, 100, 200), Port: 41000},
 		},
 	}
 	details := selectedPairDetails(pair, modePublicDirect)
@@ -344,7 +344,7 @@ func TestPublicDirectSelectedPairDetailsExposePeerReflexiveLearning(t *testing.T
 	if details["local_candidate_kind"] != "host" || details["remote_candidate_kind"] != "prflx" {
 		t.Fatalf("selected pair candidate kinds = %#v, want host/prflx", details)
 	}
-	if !strings.Contains(details["selected_pair_summary"], "host:192.168.1.20:40000<->prflx:117.48.146.2:41000") {
+	if !strings.Contains(details["selected_pair_summary"], "host:192.168.1.20:40000<->prflx:198.51.100.200:41000") {
 		t.Fatalf("selected pair summary = %q, want host<->prflx summary", details["selected_pair_summary"])
 	}
 }
@@ -352,8 +352,8 @@ func TestPublicDirectSelectedPairDetailsExposePeerReflexiveLearning(t *testing.T
 func TestPublicDirectSendOfferAdvertisesOnlyPublicCandidates(t *testing.T) {
 	hostCandidate := nat.Candidate{Type: nat.CandidateTypeHost, Address: &net.UDPAddr{IP: net.IPv4(10, 0, 0, 1), Port: 1001}}
 	overlayCandidate := nat.Candidate{Type: nat.CandidateTypeHost, Address: &net.UDPAddr{IP: net.IPv4(100, 102, 17, 35), Port: 1002}}
-	publicCandidate := nat.Candidate{Type: nat.CandidateTypeSrflx, Address: &net.UDPAddr{IP: net.IPv4(117, 48, 146, 2), Port: 1003}}
-	relayCandidate := nat.Candidate{Type: nat.CandidateTypeRelay, Address: &net.UDPAddr{IP: net.IPv4(20, 0, 0, 1), Port: 2001}}
+	publicCandidate := nat.Candidate{Type: nat.CandidateTypeSrflx, Address: &net.UDPAddr{IP: net.IPv4(198, 51, 100, 200), Port: 1003}}
+	relayCandidate := nat.Candidate{Type: nat.CandidateTypeRelay, Address: &net.UDPAddr{IP: net.IPv4(198, 51, 100, 230), Port: 2001}}
 	agent := &recordingICEAgent{
 		gathered:      []nat.Candidate{hostCandidate, overlayCandidate, publicCandidate, relayCandidate},
 		connectErr:    context.Canceled,
@@ -423,10 +423,10 @@ func TestPublicDirectSendOfferAdvertisesOnlyPublicCandidates(t *testing.T) {
 	if obs.Details["candidate_total"] != "4" || obs.Details["candidate_kept"] != "1" || obs.Details["candidate_rejected"] != "3" {
 		t.Fatalf("candidate_gathered counts = %#v, want total=4 kept=1 rejected=3", obs.Details)
 	}
-	if !strings.Contains(obs.Details["candidate_kept_samples"], "srflx:117.48.146.2:1003") {
+	if !strings.Contains(obs.Details["candidate_kept_samples"], "srflx:198.51.100.200:1003") {
 		t.Fatalf("candidate_gathered kept samples = %q, want public srflx sample", obs.Details["candidate_kept_samples"])
 	}
-	for _, want := range []string{"host:10.0.0.1:1001(local_private_candidate)", "host:100.102.17.35:1002(local_cgnat_or_overlay_candidate)", "relay:20.0.0.1:2001(local_relay_candidate)"} {
+	for _, want := range []string{"host:10.0.0.1:1001(local_private_candidate)", "host:100.102.17.35:1002(local_cgnat_or_overlay_candidate)", "relay:198.51.100.230:2001(local_relay_candidate)"} {
 		if !strings.Contains(obs.Details["candidate_rejected_samples"], want) {
 			t.Fatalf("candidate_gathered rejected samples = %q, want %q", obs.Details["candidate_rejected_samples"], want)
 		}
@@ -451,7 +451,7 @@ func TestPublicDirectAdvertisesConfiguredPublicEndpointHints(t *testing.T) {
 		connectErr:    context.Canceled,
 		connectCalled: make(chan struct{}),
 	}
-	publicEndpointHint := "117.48.146.2:41000/192.168.1.20:40000"
+	publicEndpointHint := "198.51.100.200:41000/192.168.1.20:40000"
 	exec := newExecutor(Config{
 		NewICEAgent: func(ctx context.Context, req AgentRequest) (nat.ICEAgent, error) {
 			_ = ctx
@@ -501,8 +501,8 @@ func TestPublicDirectAdvertisesConfiguredPublicEndpointHints(t *testing.T) {
 		t.Fatalf("offer candidates = %#v, want mapped and local-port public endpoint hints", offer.ICE.Candidates)
 	}
 	hint := offer.ICE.Candidates[0]
-	if hint.Type != nat.CandidateTypeSrflx || hint.Address.String() != "117.48.146.2:41000" {
-		t.Fatalf("offer hint = %#v, want srflx 117.48.146.2:41000", hint)
+	if hint.Type != nat.CandidateTypeSrflx || hint.Address.String() != "198.51.100.200:41000" {
+		t.Fatalf("offer hint = %#v, want srflx 198.51.100.200:41000", hint)
 	}
 	if hint.RelatedAddr == nil || hint.RelatedAddr.String() != "192.168.1.20:40000" {
 		t.Fatalf("offer hint related addr = %#v, want 192.168.1.20:40000", hint.RelatedAddr)
@@ -511,8 +511,8 @@ func TestPublicDirectAdvertisesConfiguredPublicEndpointHints(t *testing.T) {
 		t.Fatalf("offer hint foundation/priority = %q/%d, want populated", hint.Foundation, hint.Priority)
 	}
 	localPortHint := offer.ICE.Candidates[1]
-	if localPortHint.Type != nat.CandidateTypeSrflx || localPortHint.Address.String() != "117.48.146.2:40000" {
-		t.Fatalf("offer local-port hint = %#v, want srflx 117.48.146.2:40000", localPortHint)
+	if localPortHint.Type != nat.CandidateTypeSrflx || localPortHint.Address.String() != "198.51.100.200:40000" {
+		t.Fatalf("offer local-port hint = %#v, want srflx 198.51.100.200:40000", localPortHint)
 	}
 	if localPortHint.RelatedAddr == nil || localPortHint.RelatedAddr.String() != "192.168.1.20:40000" {
 		t.Fatalf("offer local-port hint related addr = %#v, want 192.168.1.20:40000", localPortHint.RelatedAddr)
@@ -524,17 +524,17 @@ func TestPublicDirectAdvertisesConfiguredPublicEndpointHints(t *testing.T) {
 	if _, ok := bases["192.168.1.21"]; ok {
 		t.Fatalf("public direct local bases = %#v, want only explicitly mapped local base", bases)
 	}
-	role, deps := pathPolicyMetadata("direct", candidatePairWithTypes(nat.CandidateTypeHost, "192.168.1.20", nat.CandidateTypePrflx, "117.48.146.3"), modePublicDirect, bases, nil)
+	role, deps := pathPolicyMetadata("direct", candidatePairWithTypes(nat.CandidateTypeHost, "192.168.1.20", nat.CandidateTypePrflx, "198.51.100.223"), modePublicDirect, bases, nil)
 	if role != solver.PathRoleProtectedDirect || len(deps) != 0 {
 		t.Fatalf("path policy with public endpoint hint base = role %q deps %#v, want protected direct", role, deps)
 	}
-	role, deps = pathPolicyMetadata("direct", candidatePairWithTypes(nat.CandidateTypeHost, "192.168.1.21", nat.CandidateTypePrflx, "117.48.146.3"), modePublicDirect, bases, nil)
+	role, deps = pathPolicyMetadata("direct", candidatePairWithTypes(nat.CandidateTypeHost, "192.168.1.21", nat.CandidateTypePrflx, "198.51.100.223"), modePublicDirect, bases, nil)
 	if role != solver.PathRolePrimaryCandidate || len(deps) != 1 || deps[0].Reason != "local_private_candidate" {
 		t.Fatalf("path policy with unmapped private base = role %q deps %#v, want dependent direct", role, deps)
 	}
 	observations := io.Observations()
 	obs := findObservation(observations, "candidate_gathered")
-	if obs == nil || !strings.Contains(obs.Details["candidate_kept_samples"], "srflx:117.48.146.2:41000<-192.168.1.20:40000") {
+	if obs == nil || !strings.Contains(obs.Details["candidate_kept_samples"], "srflx:198.51.100.200:41000<-192.168.1.20:40000") {
 		t.Fatalf("observations = %#v, want kept public endpoint hint sample", observations)
 	}
 	if obs.Details["public_endpoint_hint_count"] != "1" {
@@ -554,7 +554,7 @@ func TestPublicDirectAdvertisesConfiguredPublicEndpointHints(t *testing.T) {
 func TestPublicDirectGatherTimeoutOnlyShortensWithEndpointHints(t *testing.T) {
 	withHint := newExecutor(Config{GatherTimeout: 10 * time.Second}, solver.SolveInput{}, solver.Plan{ID: planIDPublicDirect}, executorConfig{
 		Mode:                modePublicDirect,
-		PublicEndpointHints: []string{"117.48.146.2:41000/192.168.1.20:40000"},
+		PublicEndpointHints: []string{"198.51.100.200:41000/192.168.1.20:40000"},
 	})
 	if got := withHint.gatherTimeout(); got != publicDirectHintGatherTimeout {
 		t.Fatalf("gatherTimeout(with hint) = %v, want %v", got, publicDirectHintGatherTimeout)
@@ -569,7 +569,7 @@ func TestPublicDirectGatherTimeoutOnlyShortensWithEndpointHints(t *testing.T) {
 
 	shortConfigured := newExecutor(Config{GatherTimeout: 100 * time.Millisecond}, solver.SolveInput{}, solver.Plan{ID: planIDPublicDirect}, executorConfig{
 		Mode:                modePublicDirect,
-		PublicEndpointHints: []string{"117.48.146.2:41000/192.168.1.20:40000"},
+		PublicEndpointHints: []string{"198.51.100.200:41000/192.168.1.20:40000"},
 	})
 	if got := shortConfigured.gatherTimeout(); got != 100*time.Millisecond {
 		t.Fatalf("gatherTimeout(short configured) = %v, want configured timeout", got)
@@ -579,7 +579,7 @@ func TestPublicDirectGatherTimeoutOnlyShortensWithEndpointHints(t *testing.T) {
 func TestPublicDirectExpandsPublicEndpointHintPortWindow(t *testing.T) {
 	candidates, err := appendPublicEndpointHintCandidates(nil, executorConfig{
 		Mode:                         modePublicDirect,
-		PublicEndpointHints:          []string{"117.48.146.2:41000/192.168.1.20:40000"},
+		PublicEndpointHints:          []string{"198.51.100.200:41000/192.168.1.20:40000"},
 		PublicEndpointHintPortWindow: 2,
 	})
 	if err != nil {
@@ -596,16 +596,16 @@ func TestPublicDirectExpandsPublicEndpointHintPortWindow(t *testing.T) {
 		got = append(got, candidate.Address.String())
 	}
 	want := []string{
-		"117.48.146.2:41000",
-		"117.48.146.2:40999",
-		"117.48.146.2:41001",
-		"117.48.146.2:40998",
-		"117.48.146.2:41002",
-		"117.48.146.2:40000",
-		"117.48.146.2:39999",
-		"117.48.146.2:40001",
-		"117.48.146.2:39998",
-		"117.48.146.2:40002",
+		"198.51.100.200:41000",
+		"198.51.100.200:40999",
+		"198.51.100.200:41001",
+		"198.51.100.200:40998",
+		"198.51.100.200:41002",
+		"198.51.100.200:40000",
+		"198.51.100.200:39999",
+		"198.51.100.200:40001",
+		"198.51.100.200:39998",
+		"198.51.100.200:40002",
 	}
 	if !slices.Equal(got, want) {
 		t.Fatalf("expanded hint candidates = %#v, want %#v", got, want)
@@ -615,15 +615,15 @@ func TestPublicDirectExpandsPublicEndpointHintPortWindow(t *testing.T) {
 func TestPublicDirectHintPriorityIncludesLocalBasePortCenter(t *testing.T) {
 	candidates, err := appendPublicEndpointHintCandidates(nil, executorConfig{
 		Mode:                         modePublicDirect,
-		PublicEndpointHints:          []string{"117.48.146.2:41000/192.168.1.20:40000"},
+		PublicEndpointHints:          []string{"198.51.100.200:41000/192.168.1.20:40000"},
 		PublicEndpointHintPortWindow: 2,
 	})
 	if err != nil {
 		t.Fatalf("appendPublicEndpointHintCandidates() error = %v", err)
 	}
 	ordered := prioritizePublicDirectSignalCandidates(candidates)
-	localBaseCenter := candidateAddressIndex(ordered, "117.48.146.2:40000")
-	mappedOffsetOne := candidateAddressIndex(ordered, "117.48.146.2:40999")
+	localBaseCenter := candidateAddressIndex(ordered, "198.51.100.200:40000")
+	mappedOffsetOne := candidateAddressIndex(ordered, "198.51.100.200:40999")
 	if localBaseCenter < 0 || mappedOffsetOne < 0 {
 		t.Fatalf("ordered candidates missing expected addresses: %#v", candidateAddresses(ordered))
 	}
@@ -636,8 +636,8 @@ func TestPublicDirectHintPriorityInterleavesMultipleHintsByOffset(t *testing.T) 
 	candidates, err := appendPublicEndpointHintCandidates(nil, executorConfig{
 		Mode: modePublicDirect,
 		PublicEndpointHints: []string{
-			"117.48.146.2:41000/192.168.1.20:40000",
-			"117.48.146.3:42000/192.168.1.20:40000",
+			"198.51.100.200:41000/192.168.1.20:40000",
+			"198.51.100.223:42000/192.168.1.20:40000",
 		},
 		PublicEndpointHintPortWindow: 2,
 	})
@@ -645,8 +645,8 @@ func TestPublicDirectHintPriorityInterleavesMultipleHintsByOffset(t *testing.T) 
 		t.Fatalf("appendPublicEndpointHintCandidates() error = %v", err)
 	}
 	ordered := prioritizePublicDirectSignalCandidates(candidates)
-	secondHintBase := candidateAddressIndex(ordered, "117.48.146.3:42000")
-	firstHintOffsetTwo := candidateAddressIndex(ordered, "117.48.146.2:40998")
+	secondHintBase := candidateAddressIndex(ordered, "198.51.100.223:42000")
+	firstHintOffsetTwo := candidateAddressIndex(ordered, "198.51.100.200:40998")
 	if secondHintBase < 0 || firstHintOffsetTwo < 0 {
 		t.Fatalf("ordered candidates missing expected addresses: %#v", candidateAddresses(ordered))
 	}
@@ -681,13 +681,13 @@ func TestPublicDirectCandidateObservationReportsEndpointHintPortWindow(t *testin
 		Strategy: StrategyName,
 	}, executorConfig{
 		Mode:                         modePublicDirect,
-		PublicEndpointHints:          []string{"117.48.146.2:41000/192.168.1.20:40000"},
+		PublicEndpointHints:          []string{"198.51.100.200:41000/192.168.1.20:40000"},
 		PublicEndpointHintPortWindow: 2,
 	})
 	summary := newCandidateFilterSummary()
 	summary.record(nat.Candidate{
 		Type:    nat.CandidateTypeSrflx,
-		Address: &net.UDPAddr{IP: net.IPv4(117, 48, 146, 2), Port: 41000},
+		Address: &net.UDPAddr{IP: net.IPv4(198, 51, 100, 200), Port: 41000},
 	}, true, "")
 	io := &capturingSessionIO{}
 
@@ -712,7 +712,7 @@ func TestPublicDirectCandidateObservationReportsEndpointHintPortWindow(t *testin
 func TestExecutorPublicDirectSingleCandidatePunchAvoidsObservationNoise(t *testing.T) {
 	publicCandidate := nat.Candidate{
 		Type:       nat.CandidateTypeSrflx,
-		Address:    &net.UDPAddr{IP: net.IPv4(117, 48, 146, 2), Port: 41000},
+		Address:    &net.UDPAddr{IP: net.IPv4(198, 51, 100, 200), Port: 41000},
 		Priority:   100,
 		Foundation: "remote-srflx",
 	}
@@ -739,7 +739,7 @@ func TestPublicDirectCandidateSignalsAreBounded(t *testing.T) {
 	for i := range candidates {
 		candidates[i] = nat.Candidate{
 			Type:    nat.CandidateTypeSrflx,
-			Address: &net.UDPAddr{IP: net.IPv4(117, 48, 146, 2), Port: 41000 + i},
+			Address: &net.UDPAddr{IP: net.IPv4(198, 51, 100, 200), Port: 41000 + i},
 		}
 	}
 	exec := newExecutor(Config{}, solver.SolveInput{
@@ -784,14 +784,14 @@ func TestPublicDirectCandidateSignalsPrioritizeEndpointHintsWhenCapped(t *testin
 	for i := range candidates {
 		candidates[i] = nat.Candidate{
 			Type:       nat.CandidateTypeSrflx,
-			Address:    &net.UDPAddr{IP: net.IPv4(117, 48, 146, 3), Port: 42000 + i},
+			Address:    &net.UDPAddr{IP: net.IPv4(198, 51, 100, 223), Port: 42000 + i},
 			Priority:   1000 - uint32(i),
 			Foundation: "srflx-" + strconv.Itoa(i),
 		}
 	}
 	hintCandidate := nat.Candidate{
 		Type:       nat.CandidateTypeSrflx,
-		Address:    &net.UDPAddr{IP: net.IPv4(117, 48, 146, 2), Port: 41000},
+		Address:    &net.UDPAddr{IP: net.IPv4(198, 51, 100, 200), Port: 41000},
 		Priority:   1,
 		Foundation: "public-hint-1",
 		RelatedAddr: &net.UDPAddr{
@@ -829,7 +829,7 @@ func TestPublicDirectCandidateSignalsPrioritizeEndpointHintsWhenCapped(t *testin
 func TestPublicDirectCandidateSignalsCoverEndpointHintWindowWhenCapped(t *testing.T) {
 	candidates, err := appendPublicEndpointHintCandidates(nil, executorConfig{
 		Mode:                         modePublicDirect,
-		PublicEndpointHints:          []string{"210.30.106.93:50000/172.29.7.111:64779"},
+		PublicEndpointHints:          []string{"198.51.100.231:50000/172.29.7.111:64779"},
 		PublicEndpointHintPortWindow: 512,
 	})
 	if err != nil {
@@ -837,7 +837,7 @@ func TestPublicDirectCandidateSignalsCoverEndpointHintWindowWhenCapped(t *testin
 	}
 	candidates = append(candidates, nat.Candidate{
 		Type:       nat.CandidateTypeSrflx,
-		Address:    &net.UDPAddr{IP: net.IPv4(210, 30, 106, 93), Port: 30000},
+		Address:    &net.UDPAddr{IP: net.IPv4(198, 51, 100, 231), Port: 30000},
 		Foundation: "srflx-current",
 	})
 	if len(candidates) <= publicDirectCandidateSignalLimit {
@@ -871,11 +871,11 @@ func TestPublicDirectCandidateSignalsCoverEndpointHintWindowWhenCapped(t *testin
 
 func TestPublicDirectCandidateSignalRoundResumesAfterPartialSend(t *testing.T) {
 	candidates := []nat.Candidate{
-		{Type: nat.CandidateTypeSrflx, Address: &net.UDPAddr{IP: net.IPv4(117, 48, 146, 2), Port: 41000}, Foundation: "srflx-1"},
-		{Type: nat.CandidateTypeSrflx, Address: &net.UDPAddr{IP: net.IPv4(117, 48, 146, 2), Port: 41001}, Foundation: "srflx-2"},
-		{Type: nat.CandidateTypeSrflx, Address: &net.UDPAddr{IP: net.IPv4(117, 48, 146, 2), Port: 41002}, Foundation: "srflx-3"},
-		{Type: nat.CandidateTypeSrflx, Address: &net.UDPAddr{IP: net.IPv4(117, 48, 146, 2), Port: 41003}, Foundation: "srflx-4"},
-		{Type: nat.CandidateTypeSrflx, Address: &net.UDPAddr{IP: net.IPv4(117, 48, 146, 2), Port: 41004}, Foundation: "srflx-5"},
+		{Type: nat.CandidateTypeSrflx, Address: &net.UDPAddr{IP: net.IPv4(198, 51, 100, 200), Port: 41000}, Foundation: "srflx-1"},
+		{Type: nat.CandidateTypeSrflx, Address: &net.UDPAddr{IP: net.IPv4(198, 51, 100, 200), Port: 41001}, Foundation: "srflx-2"},
+		{Type: nat.CandidateTypeSrflx, Address: &net.UDPAddr{IP: net.IPv4(198, 51, 100, 200), Port: 41002}, Foundation: "srflx-3"},
+		{Type: nat.CandidateTypeSrflx, Address: &net.UDPAddr{IP: net.IPv4(198, 51, 100, 200), Port: 41003}, Foundation: "srflx-4"},
+		{Type: nat.CandidateTypeSrflx, Address: &net.UDPAddr{IP: net.IPv4(198, 51, 100, 200), Port: 41004}, Foundation: "srflx-5"},
 	}
 	exec := newExecutor(Config{}, solver.SolveInput{
 		SessionID: "session/node-a/node-b",
@@ -901,15 +901,15 @@ func TestPublicDirectCandidateSignalRoundResumesAfterPartialSend(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unmarshal first second-round candidate error = %v", err)
 	}
-	if payload.ICE.Candidate.Address.String() != "117.48.146.2:41003" {
-		t.Fatalf("second round first candidate = %v, want resume at 117.48.146.2:41003", payload.ICE.Candidate.Address)
+	if payload.ICE.Candidate.Address.String() != "198.51.100.200:41003" {
+		t.Fatalf("second round first candidate = %v, want resume at 198.51.100.200:41003", payload.ICE.Candidate.Address)
 	}
 	obs := findObservation(secondRound.Observations(), "candidate_signaled")
 	if obs == nil || obs.Details["candidate_start"] != "3" {
 		t.Fatalf("second round observations = %#v, want candidate_start=3", secondRound.Observations())
 	}
-	if obs.Details["candidate_first"] != "117.48.146.2:41003" ||
-		obs.Details["candidate_last"] != "117.48.146.2:41002" ||
+	if obs.Details["candidate_first"] != "198.51.100.200:41003" ||
+		obs.Details["candidate_last"] != "198.51.100.200:41002" ||
 		obs.Details["candidate_next_start"] != "3" ||
 		obs.Details["candidate_port_min"] != "41000" ||
 		obs.Details["candidate_port_max"] != "41004" {
@@ -920,7 +920,7 @@ func TestPublicDirectCandidateSignalRoundResumesAfterPartialSend(t *testing.T) {
 func TestPublicDirectCandidateSignalsRetryAsynchronously(t *testing.T) {
 	candidate := nat.Candidate{
 		Type:    nat.CandidateTypeSrflx,
-		Address: &net.UDPAddr{IP: net.IPv4(117, 48, 146, 2), Port: 41000},
+		Address: &net.UDPAddr{IP: net.IPv4(198, 51, 100, 200), Port: 41000},
 	}
 	exec := newExecutor(Config{}, solver.SolveInput{
 		SessionID: "session/node-a/node-b",
@@ -987,7 +987,7 @@ func TestPublicDirectCandidateSignalRetryIntervalScalesWithConnectTimeout(t *tes
 func TestPublicDirectCandidateSignalObservationReportsRetryWindow(t *testing.T) {
 	candidate := nat.Candidate{
 		Type:    nat.CandidateTypeSrflx,
-		Address: &net.UDPAddr{IP: net.IPv4(117, 48, 146, 2), Port: 41000},
+		Address: &net.UDPAddr{IP: net.IPv4(198, 51, 100, 200), Port: 41000},
 	}
 	exec := newExecutor(Config{ConnectTimeout: 25 * time.Second}, solver.SolveInput{
 		SessionID: "session/node-a/node-b",
@@ -1074,7 +1074,7 @@ func TestPublicDirectCandidateSignalSendTimeoutScalesWithCandidateCount(t *testi
 func TestPublicDirectFailureIncludesLastCandidateSignalDetails(t *testing.T) {
 	candidate := nat.Candidate{
 		Type:    nat.CandidateTypeSrflx,
-		Address: &net.UDPAddr{IP: net.IPv4(117, 48, 146, 2), Port: 41000},
+		Address: &net.UDPAddr{IP: net.IPv4(198, 51, 100, 200), Port: 41000},
 	}
 	exec := newExecutor(Config{}, solver.SolveInput{
 		SessionID: "session/node-a/node-b",
@@ -1101,8 +1101,8 @@ func TestPublicDirectFailureIncludesLastCandidateSignalDetails(t *testing.T) {
 
 func TestPublicDirectFailureIncludesLastRemotePunchDetails(t *testing.T) {
 	candidates := []nat.Candidate{
-		{Type: nat.CandidateTypeSrflx, Address: &net.UDPAddr{IP: net.IPv4(117, 48, 146, 2), Port: 41000}, Foundation: "srflx-1"},
-		{Type: nat.CandidateTypeSrflx, Address: &net.UDPAddr{IP: net.IPv4(117, 48, 146, 2), Port: 41001}, Foundation: "srflx-2"},
+		{Type: nat.CandidateTypeSrflx, Address: &net.UDPAddr{IP: net.IPv4(198, 51, 100, 200), Port: 41000}, Foundation: "srflx-1"},
+		{Type: nat.CandidateTypeSrflx, Address: &net.UDPAddr{IP: net.IPv4(198, 51, 100, 200), Port: 41001}, Foundation: "srflx-2"},
 	}
 	agent := &recordingPunchICEAgent{local: &net.UDPAddr{IP: net.IPv4(192, 168, 1, 20), Port: 40000}}
 	exec := newExecutor(Config{}, solver.SolveInput{
@@ -1122,7 +1122,7 @@ func TestPublicDirectFailureIncludesLastRemotePunchDetails(t *testing.T) {
 	}
 	if obs.Details["last_punch_punch_local_addr"] != "192.168.1.20:40000" ||
 		obs.Details["last_punch_candidate_start"] != "1" ||
-		obs.Details["last_punch_candidate_first"] != "117.48.146.2:41001" ||
+		obs.Details["last_punch_candidate_first"] != "198.51.100.200:41001" ||
 		obs.Details["last_punch_candidate_port_min"] != "41000" ||
 		obs.Details["last_punch_candidate_port_max"] != "41001" ||
 		obs.Details["last_punch_packet_sent"] != strconv.Itoa(2*publicDirectRemotePunchBurst) ||
@@ -1140,7 +1140,7 @@ func TestPublicDirectFailureIncludesAgentDiagnostics(t *testing.T) {
 	}
 	remoteCandidate := nat.Candidate{
 		Type:    nat.CandidateTypeSrflx,
-		Address: &net.UDPAddr{IP: net.IPv4(210, 30, 106, 93), Port: 18981},
+		Address: &net.UDPAddr{IP: net.IPv4(198, 51, 100, 231), Port: 18981},
 	}
 	agent := &recordingICEAgent{
 		remoteCandidates: []nat.Candidate{remoteCandidate},
@@ -1167,7 +1167,7 @@ func TestPublicDirectFailureIncludesAgentDiagnostics(t *testing.T) {
 	if obs.Details["ice_remote_candidate_count"] != "1" ||
 		obs.Details["ice_selected_pair"] != "true" ||
 		obs.Details["ice_selected_pair_local"] != "host:192.168.50.10:40000" ||
-		obs.Details["ice_selected_pair_remote"] != "srflx:210.30.106.93:18981" {
+		obs.Details["ice_selected_pair_remote"] != "srflx:198.51.100.231:18981" {
 		t.Fatalf("candidate_failed details = %#v, want agent diagnostics", obs.Details)
 	}
 }
@@ -1178,7 +1178,7 @@ func TestPublicDirectCandidateSignalLimitCoversSymmetricHintWindow(t *testing.T)
 	for i := range candidates {
 		candidates[i] = nat.Candidate{
 			Type:    nat.CandidateTypeSrflx,
-			Address: &net.UDPAddr{IP: net.IPv4(117, 48, 146, 2), Port: 41000 + i},
+			Address: &net.UDPAddr{IP: net.IPv4(198, 51, 100, 200), Port: 41000 + i},
 		}
 	}
 	exec := newExecutor(Config{}, solver.SolveInput{
@@ -1209,7 +1209,7 @@ func TestPublicDirectCandidateSignalLimitCoversSymmetricHintWindow(t *testing.T)
 func TestPublicDirectEndpointHintPortWindowClipsPortBounds(t *testing.T) {
 	candidates, err := appendPublicEndpointHintCandidates(nil, executorConfig{
 		Mode:                         modePublicDirect,
-		PublicEndpointHints:          []string{"117.48.146.2:1"},
+		PublicEndpointHints:          []string{"198.51.100.200:1"},
 		PublicEndpointHintPortWindow: 2,
 	})
 	if err != nil {
@@ -1219,14 +1219,14 @@ func TestPublicDirectEndpointHintPortWindowClipsPortBounds(t *testing.T) {
 	for _, candidate := range candidates {
 		got = append(got, candidate.Address.String())
 	}
-	want := []string{"117.48.146.2:1", "117.48.146.2:2", "117.48.146.2:3"}
+	want := []string{"198.51.100.200:1", "198.51.100.200:2", "198.51.100.200:3"}
 	if !slices.Equal(got, want) {
 		t.Fatalf("low-port expanded hint candidates = %#v, want %#v", got, want)
 	}
 
 	candidates, err = appendPublicEndpointHintCandidates(nil, executorConfig{
 		Mode:                         modePublicDirect,
-		PublicEndpointHints:          []string{"117.48.146.2:65535"},
+		PublicEndpointHints:          []string{"198.51.100.200:65535"},
 		PublicEndpointHintPortWindow: 2,
 	})
 	if err != nil {
@@ -1236,7 +1236,7 @@ func TestPublicDirectEndpointHintPortWindowClipsPortBounds(t *testing.T) {
 	for _, candidate := range candidates {
 		got = append(got, candidate.Address.String())
 	}
-	want = []string{"117.48.146.2:65535", "117.48.146.2:65534", "117.48.146.2:65533"}
+	want = []string{"198.51.100.200:65535", "198.51.100.200:65534", "198.51.100.200:65533"}
 	if !slices.Equal(got, want) {
 		t.Fatalf("high-port expanded hint candidates = %#v, want %#v", got, want)
 	}
@@ -1254,7 +1254,7 @@ func TestPublicDirectAgentRequestUsesMappedHintLocalPort(t *testing.T) {
 			got = req
 			return agent, nil
 		},
-		PublicEndpointHints: []string{"117.48.146.2:41000/192.168.1.20:40000"},
+		PublicEndpointHints: []string{"198.51.100.200:41000/192.168.1.20:40000"},
 	}, solver.SolveInput{
 		SessionID: "session/node-a/node-b",
 		Initiator: true,
@@ -1265,7 +1265,7 @@ func TestPublicDirectAgentRequestUsesMappedHintLocalPort(t *testing.T) {
 	}, executorConfig{
 		Mode:                  modePublicDirect,
 		PublicDirectCandidate: true,
-		PublicEndpointHints:   []string{"117.48.146.2:41000/192.168.1.20:40000"},
+		PublicEndpointHints:   []string{"198.51.100.200:41000/192.168.1.20:40000"},
 	})
 
 	if _, err := exec.ensureAgent(context.Background()); err != nil {
@@ -1291,7 +1291,7 @@ func TestPublicDirectAgentRequestMergesMappedHintAndConfiguredCIDRInclude(t *tes
 			got = req
 			return agent, nil
 		},
-		PublicEndpointHints:  []string{"117.48.146.2:41000/192.168.1.20:40000"},
+		PublicEndpointHints:  []string{"198.51.100.200:41000/192.168.1.20:40000"},
 		CandidateCIDRInclude: []string{"10.6.22.0/24"},
 	}, solver.SolveInput{
 		SessionID: "session/node-a/node-b",
@@ -1303,7 +1303,7 @@ func TestPublicDirectAgentRequestMergesMappedHintAndConfiguredCIDRInclude(t *tes
 	}, executorConfig{
 		Mode:                  modePublicDirect,
 		PublicDirectCandidate: true,
-		PublicEndpointHints:   []string{"117.48.146.2:41000/192.168.1.20:40000"},
+		PublicEndpointHints:   []string{"198.51.100.200:41000/192.168.1.20:40000"},
 		CandidateCIDRInclude:  []string{"10.6.22.0/24"},
 	})
 
@@ -1366,7 +1366,7 @@ func TestPublicDirectTrustedCIDRAllowsEndpointHint(t *testing.T) {
 		t.Fatalf("trusted hint related addr = %#v, want 100.102.17.36:40000", candidate.RelatedAddr)
 	}
 
-	if _, err := publicEndpointHintCandidate("117.48.146.2:41000/100.102.17.36:40000", 0, nil); err == nil {
+	if _, err := publicEndpointHintCandidate("198.51.100.200:41000/100.102.17.36:40000", 0, nil); err == nil {
 		t.Fatal("publicEndpointHintCandidate() error = nil, want default rejection for 100.64/10 local base")
 	}
 }
@@ -1483,8 +1483,8 @@ func TestPublicDirectAgentRequestSkipsAmbiguousMappedHintPorts(t *testing.T) {
 			return agent, nil
 		},
 		PublicEndpointHints: []string{
-			"117.48.146.2:41000/192.168.1.20:40000",
-			"117.48.146.3:41001/192.168.1.20:40001",
+			"198.51.100.200:41000/192.168.1.20:40000",
+			"198.51.100.223:41001/192.168.1.20:40001",
 		},
 	}, solver.SolveInput{
 		SessionID: "session/node-a/node-b",
@@ -1497,8 +1497,8 @@ func TestPublicDirectAgentRequestSkipsAmbiguousMappedHintPorts(t *testing.T) {
 		Mode:                  modePublicDirect,
 		PublicDirectCandidate: true,
 		PublicEndpointHints: []string{
-			"117.48.146.2:41000/192.168.1.20:40000",
-			"117.48.146.3:41001/192.168.1.20:40001",
+			"198.51.100.200:41000/192.168.1.20:40000",
+			"198.51.100.223:41001/192.168.1.20:40001",
 		},
 	})
 
@@ -1524,13 +1524,13 @@ func TestPublicDirectSplitHintPlanConstrainsMappedHintPort(t *testing.T) {
 		Strategy: StrategyName,
 		Metadata: map[string]string{
 			"mode":                          string(modePublicDirect),
-			planMetadataPublicEndpointHints: "117.48.146.3:41001/192.168.1.20:40001",
+			planMetadataPublicEndpointHints: "198.51.100.223:41001/192.168.1.20:40001",
 		},
 	}
 	execCfg, err := executorConfigForPlan(plan, Config{
 		PublicEndpointHints: []string{
-			"117.48.146.2:41000/192.168.1.20:40000",
-			"117.48.146.3:41001/192.168.1.20:40001",
+			"198.51.100.200:41000/192.168.1.20:40000",
+			"198.51.100.223:41001/192.168.1.20:40001",
 		},
 	})
 	if err != nil {
@@ -1556,7 +1556,7 @@ func TestPublicDirectSplitHintPlanConstrainsMappedHintPort(t *testing.T) {
 	if len(got.CandidateCIDRInclude) != 1 || got.CandidateCIDRInclude[0] != "192.168.1.20/32" {
 		t.Fatalf("split hint candidate CIDR include = %#v, want mapped local base /32", got.CandidateCIDRInclude)
 	}
-	if len(execCfg.PublicEndpointHints) != 1 || execCfg.PublicEndpointHints[0] != "117.48.146.3:41001/192.168.1.20:40001" {
+	if len(execCfg.PublicEndpointHints) != 1 || execCfg.PublicEndpointHints[0] != "198.51.100.223:41001/192.168.1.20:40001" {
 		t.Fatalf("split hint executor hints = %#v, want only selected hint", execCfg.PublicEndpointHints)
 	}
 }
@@ -1572,13 +1572,13 @@ func TestPublicDirectSplitHintPlanConstrainsMappedHintLocalAddress(t *testing.T)
 		Strategy: StrategyName,
 		Metadata: map[string]string{
 			"mode":                          string(modePublicDirect),
-			planMetadataPublicEndpointHints: "117.48.146.3:41001/192.168.1.21:40000",
+			planMetadataPublicEndpointHints: "198.51.100.223:41001/192.168.1.21:40000",
 		},
 	}
 	execCfg, err := executorConfigForPlan(plan, Config{
 		PublicEndpointHints: []string{
-			"117.48.146.2:41000/192.168.1.20:40000",
-			"117.48.146.3:41001/192.168.1.21:40000",
+			"198.51.100.200:41000/192.168.1.20:40000",
+			"198.51.100.223:41001/192.168.1.21:40000",
 		},
 	})
 	if err != nil {
@@ -1604,13 +1604,13 @@ func TestPublicDirectSplitHintPlanConstrainsMappedHintLocalAddress(t *testing.T)
 	if len(got.CandidateCIDRInclude) != 1 || got.CandidateCIDRInclude[0] != "192.168.1.21/32" {
 		t.Fatalf("split hint candidate CIDR include = %#v, want selected mapped local base /32", got.CandidateCIDRInclude)
 	}
-	if len(execCfg.PublicEndpointHints) != 1 || execCfg.PublicEndpointHints[0] != "117.48.146.3:41001/192.168.1.21:40000" {
+	if len(execCfg.PublicEndpointHints) != 1 || execCfg.PublicEndpointHints[0] != "198.51.100.223:41001/192.168.1.21:40000" {
 		t.Fatalf("split hint executor hints = %#v, want only selected hint", execCfg.PublicEndpointHints)
 	}
 }
 
 func TestPublicDirectHintExecutorAcceptsPublicDirectPlanFamilyMessage(t *testing.T) {
-	publicCandidate := nat.Candidate{Type: nat.CandidateTypeSrflx, Address: &net.UDPAddr{IP: net.IPv4(117, 48, 146, 2), Port: 41000}}
+	publicCandidate := nat.Candidate{Type: nat.CandidateTypeSrflx, Address: &net.UDPAddr{IP: net.IPv4(198, 51, 100, 200), Port: 41000}}
 	agent := &recordingICEAgent{
 		connectErr:    context.Canceled,
 		connectCalled: make(chan struct{}),
@@ -1657,7 +1657,7 @@ func TestPublicDirectHintExecutorAcceptsPublicDirectPlanFamilyMessage(t *testing
 }
 
 func TestExecutorCandidateMessageWaitsForRemoteCredentials(t *testing.T) {
-	publicCandidate := nat.Candidate{Type: nat.CandidateTypeSrflx, Address: &net.UDPAddr{IP: net.IPv4(117, 48, 146, 2), Port: 41000}}
+	publicCandidate := nat.Candidate{Type: nat.CandidateTypeSrflx, Address: &net.UDPAddr{IP: net.IPv4(198, 51, 100, 200), Port: 41000}}
 	privateCandidate := nat.Candidate{Type: nat.CandidateTypeHost, Address: &net.UDPAddr{IP: net.IPv4(10, 0, 0, 1), Port: 1001}}
 	agent := &recordingICEAgent{
 		connectErr:    context.Canceled,
@@ -1732,7 +1732,7 @@ func TestExecutorCandidateMessageWaitsForRemoteCredentials(t *testing.T) {
 func TestExecutorPublicDirectPunchesEarlyCandidateBeforeCredentials(t *testing.T) {
 	publicCandidate := nat.Candidate{
 		Type:       nat.CandidateTypeSrflx,
-		Address:    &net.UDPAddr{IP: net.IPv4(117, 48, 146, 2), Port: 41000},
+		Address:    &net.UDPAddr{IP: net.IPv4(198, 51, 100, 200), Port: 41000},
 		Priority:   100,
 		Foundation: "remote-srflx",
 	}
@@ -1795,7 +1795,7 @@ func TestExecutorPublicDirectPunchesEarlyCandidateBeforeCredentials(t *testing.T
 func TestExecutorPublicDirectPunchesRemoteCandidatesAfterAnswer(t *testing.T) {
 	publicCandidate := nat.Candidate{
 		Type:       nat.CandidateTypeSrflx,
-		Address:    &net.UDPAddr{IP: net.IPv4(117, 48, 146, 2), Port: 41000},
+		Address:    &net.UDPAddr{IP: net.IPv4(198, 51, 100, 200), Port: 41000},
 		Priority:   100,
 		Foundation: "remote-srflx",
 	}
@@ -1874,7 +1874,7 @@ func TestExecutorPublicDirectPunchesRemoteCandidatesAfterAnswer(t *testing.T) {
 func TestExecutorPublicDirectRetriesRemoteCandidatePunchesAfterAnswer(t *testing.T) {
 	publicCandidate := nat.Candidate{
 		Type:       nat.CandidateTypeSrflx,
-		Address:    &net.UDPAddr{IP: net.IPv4(117, 48, 146, 2), Port: 41000},
+		Address:    &net.UDPAddr{IP: net.IPv4(198, 51, 100, 200), Port: 41000},
 		Priority:   100,
 		Foundation: "remote-srflx",
 	}
@@ -1950,7 +1950,7 @@ func TestExecutorPublicDirectPunchRoundResumesAtCandidateOffset(t *testing.T) {
 	for i := range candidates {
 		candidates[i] = nat.Candidate{
 			Type:       nat.CandidateTypeSrflx,
-			Address:    &net.UDPAddr{IP: net.IPv4(117, 48, 146, 2), Port: 41000 + i},
+			Address:    &net.UDPAddr{IP: net.IPv4(198, 51, 100, 200), Port: 41000 + i},
 			Foundation: "srflx-" + strconv.Itoa(i),
 		}
 	}
@@ -1967,7 +1967,7 @@ func TestExecutorPublicDirectPunchRoundResumesAtCandidateOffset(t *testing.T) {
 	if len(punched) == 0 {
 		t.Fatal("punch round did not punch any candidate")
 	}
-	if punched[0].Address.String() != "117.48.146.2:42024" {
+	if punched[0].Address.String() != "198.51.100.200:42024" {
 		t.Fatalf("first punched candidate = %v, want resume at offset %d", punched[0].Address, publicDirectCandidateSignalLimit)
 	}
 	if nextStart != publicDirectCandidateSignalLimit*2%len(candidates) {
@@ -1977,7 +1977,7 @@ func TestExecutorPublicDirectPunchRoundResumesAtCandidateOffset(t *testing.T) {
 	if obs == nil || obs.Details["candidate_start"] != strconv.Itoa(publicDirectCandidateSignalLimit) {
 		t.Fatalf("observations = %#v, want candidate_start=%d", io.Observations(), publicDirectCandidateSignalLimit)
 	}
-	if obs.Details["candidate_first"] != "117.48.146.2:42024" ||
+	if obs.Details["candidate_first"] != "198.51.100.200:42024" ||
 		obs.Details["candidate_next_start"] != strconv.Itoa(publicDirectCandidateSignalLimit*2%len(candidates)) ||
 		obs.Details["candidate_port_min"] != "41000" ||
 		obs.Details["candidate_port_max"] != "42025" {
@@ -1988,7 +1988,7 @@ func TestExecutorPublicDirectPunchRoundResumesAtCandidateOffset(t *testing.T) {
 func TestExecutorPublicDirectPunchCoversEndpointHintWindow(t *testing.T) {
 	candidates, err := appendPublicEndpointHintCandidates(nil, executorConfig{
 		Mode:                         modePublicDirect,
-		PublicEndpointHints:          []string{"210.30.106.93:50000/172.29.7.111:64779"},
+		PublicEndpointHints:          []string{"198.51.100.231:50000/172.29.7.111:64779"},
 		PublicEndpointHintPortWindow: 512,
 	})
 	if err != nil {
@@ -1996,7 +1996,7 @@ func TestExecutorPublicDirectPunchCoversEndpointHintWindow(t *testing.T) {
 	}
 	candidates = append(candidates, nat.Candidate{
 		Type:       nat.CandidateTypeSrflx,
-		Address:    &net.UDPAddr{IP: net.IPv4(210, 30, 106, 93), Port: 30000},
+		Address:    &net.UDPAddr{IP: net.IPv4(198, 51, 100, 231), Port: 30000},
 		Foundation: "srflx-current",
 	})
 	agent := &recordingPunchICEAgent{local: &net.UDPAddr{IP: net.IPv4(172, 29, 7, 111), Port: 64779}}
@@ -2026,7 +2026,7 @@ func TestExecutorPublicDirectPunchCoversEndpointHintWindow(t *testing.T) {
 }
 
 func TestExecutorAnswerWithoutUsableCandidatesWaitsForCandidateMessage(t *testing.T) {
-	publicCandidate := nat.Candidate{Type: nat.CandidateTypeSrflx, Address: &net.UDPAddr{IP: net.IPv4(117, 48, 146, 2), Port: 41000}}
+	publicCandidate := nat.Candidate{Type: nat.CandidateTypeSrflx, Address: &net.UDPAddr{IP: net.IPv4(198, 51, 100, 200), Port: 41000}}
 	privateCandidate := nat.Candidate{Type: nat.CandidateTypeHost, Address: &net.UDPAddr{IP: net.IPv4(10, 0, 0, 1), Port: 1001}}
 	agent := &recordingICEAgent{
 		connectErr:    context.Canceled,
@@ -2106,9 +2106,9 @@ func TestExecutorAnswerWithoutUsableCandidatesWaitsForCandidateMessage(t *testin
 
 func TestPublicDirectAgentRequestIncludesMultipleMappedHintLocalBases(t *testing.T) {
 	got := publicEndpointHintLocalBaseCIDRs([]string{
-		"117.48.146.3:41001/192.168.1.21:40000",
-		"117.48.146.2:41000/192.168.1.20:40000",
-		"117.48.146.2:41000/192.168.1.20:40000",
+		"198.51.100.223:41001/192.168.1.21:40000",
+		"198.51.100.200:41000/192.168.1.20:40000",
+		"198.51.100.200:41000/192.168.1.20:40000",
 	})
 	want := []string{"192.168.1.20/32", "192.168.1.21/32"}
 	if !slices.Equal(got, want) {
@@ -2119,8 +2119,8 @@ func TestPublicDirectAgentRequestIncludesMultipleMappedHintLocalBases(t *testing
 func TestExecutorFiltersRemoteCandidatesByPlanMode(t *testing.T) {
 	hostCandidate := nat.Candidate{Type: nat.CandidateTypeHost, Address: &net.UDPAddr{IP: net.IPv4(10, 0, 0, 1), Port: 1001}}
 	overlayCandidate := nat.Candidate{Type: nat.CandidateTypeHost, Address: &net.UDPAddr{IP: net.IPv4(100, 102, 17, 35), Port: 1002}}
-	publicCandidate := nat.Candidate{Type: nat.CandidateTypeSrflx, Address: &net.UDPAddr{IP: net.IPv4(117, 48, 146, 2), Port: 1003}}
-	relayCandidate := nat.Candidate{Type: nat.CandidateTypeRelay, Address: &net.UDPAddr{IP: net.IPv4(20, 0, 0, 1), Port: 2001}}
+	publicCandidate := nat.Candidate{Type: nat.CandidateTypeSrflx, Address: &net.UDPAddr{IP: net.IPv4(198, 51, 100, 200), Port: 1003}}
+	relayCandidate := nat.Candidate{Type: nat.CandidateTypeRelay, Address: &net.UDPAddr{IP: net.IPv4(198, 51, 100, 230), Port: 2001}}
 	mixedCandidates := []nat.Candidate{hostCandidate, overlayCandidate, publicCandidate, relayCandidate}
 
 	newExecutorWithAgent := func(planID string, mode executionMode) (*executor, *recordingICEAgent) {
@@ -2215,10 +2215,10 @@ func TestExecutorFiltersRemoteCandidatesByPlanMode(t *testing.T) {
 	if obs.Details["candidate_total"] != "4" || obs.Details["candidate_kept"] != "1" || obs.Details["candidate_rejected"] != "3" {
 		t.Fatalf("remote_candidates_filtered counts = %#v, want total=4 kept=1 rejected=3", obs.Details)
 	}
-	if !strings.Contains(obs.Details["candidate_kept_samples"], "srflx:117.48.146.2:1003") {
+	if !strings.Contains(obs.Details["candidate_kept_samples"], "srflx:198.51.100.200:1003") {
 		t.Fatalf("remote_candidates_filtered kept samples = %q, want public srflx sample", obs.Details["candidate_kept_samples"])
 	}
-	for _, want := range []string{"host:10.0.0.1:1001(remote_private_candidate)", "host:100.102.17.35:1002(remote_cgnat_or_overlay_candidate)", "relay:20.0.0.1:2001(remote_relay_candidate)"} {
+	for _, want := range []string{"host:10.0.0.1:1001(remote_private_candidate)", "host:100.102.17.35:1002(remote_cgnat_or_overlay_candidate)", "relay:198.51.100.230:2001(remote_relay_candidate)"} {
 		if !strings.Contains(obs.Details["candidate_rejected_samples"], want) {
 			t.Fatalf("remote_candidates_filtered rejected samples = %q, want %q", obs.Details["candidate_rejected_samples"], want)
 		}
@@ -2259,7 +2259,7 @@ func TestExecutorFiltersRemoteCandidatesByPlanMode(t *testing.T) {
 func TestPublicDirectEmptyRemoteCandidatesFailsPlanWithoutBubbling(t *testing.T) {
 	hostCandidate := nat.Candidate{Type: nat.CandidateTypeHost, Address: &net.UDPAddr{IP: net.IPv4(10, 0, 0, 1), Port: 1001}}
 	overlayCandidate := nat.Candidate{Type: nat.CandidateTypeHost, Address: &net.UDPAddr{IP: net.IPv4(100, 102, 17, 35), Port: 1002}}
-	relayCandidate := nat.Candidate{Type: nat.CandidateTypeRelay, Address: &net.UDPAddr{IP: net.IPv4(20, 0, 0, 1), Port: 2001}}
+	relayCandidate := nat.Candidate{Type: nat.CandidateTypeRelay, Address: &net.UDPAddr{IP: net.IPv4(198, 51, 100, 230), Port: 2001}}
 
 	exec, agent := newExecutorWithRecordingAgent(planIDPublicDirect, modePublicDirect, nil)
 	payload, err := marshalAnswerPayload(answerPayload{
@@ -2316,8 +2316,8 @@ func TestPublicDirectEmptyRemoteCandidatesFailsPlanWithoutBubbling(t *testing.T)
 }
 
 func TestExecutorSerializesConcurrentOfferHandling(t *testing.T) {
-	localCandidate := nat.Candidate{Type: nat.CandidateTypeSrflx, Address: &net.UDPAddr{IP: net.IPv4(117, 48, 146, 2), Port: 41000}}
-	remoteCandidate := nat.Candidate{Type: nat.CandidateTypeSrflx, Address: &net.UDPAddr{IP: net.IPv4(210, 30, 106, 93), Port: 18734}}
+	localCandidate := nat.Candidate{Type: nat.CandidateTypeSrflx, Address: &net.UDPAddr{IP: net.IPv4(198, 51, 100, 200), Port: 41000}}
+	remoteCandidate := nat.Candidate{Type: nat.CandidateTypeSrflx, Address: &net.UDPAddr{IP: net.IPv4(198, 51, 100, 231), Port: 18734}}
 	agent := &serializedGatherICEAgent{
 		gathered:     []nat.Candidate{localCandidate},
 		firstRelease: make(chan struct{}),

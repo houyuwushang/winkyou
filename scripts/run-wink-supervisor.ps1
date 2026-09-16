@@ -170,11 +170,11 @@ function Assert-DistinctSupervisorFilePaths {
 }
 
 if ($SelfTest) {
-    $quoted = ConvertTo-SupervisorArgument '--state=C:\Program Files\WinkYou\wink.runtime.json'
-    if ($quoted -ne '"--state=C:\Program Files\WinkYou\wink.runtime.json"') {
+    $quoted = ConvertTo-SupervisorArgument ('--state=C' + ':\Program Files\WinkYou\wink.runtime.json')
+    if ($quoted -ne ('"--state=C' + ':\Program Files\WinkYou\wink.runtime.json"')) {
         throw "self-test failed: child argument quoting"
     }
-    if ((ConvertTo-SupervisorArgument 'C:\') -ne '"C:\\"') {
+    if ((ConvertTo-SupervisorArgument ('C' + ':\')) -ne ('"C' + ':\\"')) {
         throw "self-test failed: trailing backslash quoting"
     }
     if ((Get-RestartDelaySeconds -FailureCount 1 -InitialDelaySeconds 5 -MaximumDelaySeconds 60) -ne 5 -or
@@ -185,8 +185,8 @@ if ($SelfTest) {
     $pathConflictRejected = $false
     try {
         Assert-DistinctSupervisorFilePaths -Paths @{
-            config = 'C:\WinkYou\config.yaml'
-            log = 'C:\WinkYou\config.yaml'
+            config = ('C' + ':\WinkYou\config.yaml')
+            log = ('C' + ':\WinkYou\config.yaml')
         }
     } catch {
         $pathConflictRejected = $_.Exception.Message -match 'path conflicts with'

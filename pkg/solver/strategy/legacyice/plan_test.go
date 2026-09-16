@@ -51,8 +51,8 @@ func TestStrategyPlanOmitsRelayWhenRelayDisabled(t *testing.T) {
 func TestStrategyPlanSplitsPublicEndpointHintsByLocalBase(t *testing.T) {
 	strategy := New(Config{
 		PublicEndpointHints: []string{
-			"117.48.146.2:41000/192.168.1.20:40000",
-			"117.48.146.3:41001/192.168.1.20:40001",
+			"198.51.100.200:41000/192.168.1.20:40000",
+			"198.51.100.223:41001/192.168.1.20:40001",
 		},
 	})
 
@@ -73,10 +73,10 @@ func TestStrategyPlanSplitsPublicEndpointHintsByLocalBase(t *testing.T) {
 	if !slices.Equal(planIDs(plans), wantIDs) {
 		t.Fatalf("plans = %v, want split public-direct hint plans %v", planIDs(plans), wantIDs)
 	}
-	if got := plans[1].Metadata[planMetadataPublicEndpointHints]; got != "117.48.146.2:41000/192.168.1.20:40000" {
+	if got := plans[1].Metadata[planMetadataPublicEndpointHints]; got != "198.51.100.200:41000/192.168.1.20:40000" {
 		t.Fatalf("first hint plan metadata = %q, want first local-base port hint", got)
 	}
-	if got := plans[2].Metadata[planMetadataPublicEndpointHints]; got != "117.48.146.3:41001/192.168.1.20:40001" {
+	if got := plans[2].Metadata[planMetadataPublicEndpointHints]; got != "198.51.100.223:41001/192.168.1.20:40001" {
 		t.Fatalf("second hint plan metadata = %q, want second local-base port hint", got)
 	}
 }
@@ -84,8 +84,8 @@ func TestStrategyPlanSplitsPublicEndpointHintsByLocalBase(t *testing.T) {
 func TestStrategyPlanSplitsPublicEndpointHintsByLocalBaseAddress(t *testing.T) {
 	strategy := New(Config{
 		PublicEndpointHints: []string{
-			"117.48.146.2:41000/192.168.1.20:40000",
-			"117.48.146.3:41001/192.168.1.21:40000",
+			"198.51.100.200:41000/192.168.1.20:40000",
+			"198.51.100.223:41001/192.168.1.21:40000",
 		},
 	})
 
@@ -106,10 +106,10 @@ func TestStrategyPlanSplitsPublicEndpointHintsByLocalBaseAddress(t *testing.T) {
 	if !slices.Equal(planIDs(plans), wantIDs) {
 		t.Fatalf("plans = %v, want split public-direct hint plans %v", planIDs(plans), wantIDs)
 	}
-	if got := plans[1].Metadata[planMetadataPublicEndpointHints]; got != "117.48.146.2:41000/192.168.1.20:40000" {
+	if got := plans[1].Metadata[planMetadataPublicEndpointHints]; got != "198.51.100.200:41000/192.168.1.20:40000" {
 		t.Fatalf("first hint plan metadata = %q, want first local-base address hint", got)
 	}
-	if got := plans[2].Metadata[planMetadataPublicEndpointHints]; got != "117.48.146.3:41001/192.168.1.21:40000" {
+	if got := plans[2].Metadata[planMetadataPublicEndpointHints]; got != "198.51.100.223:41001/192.168.1.21:40000" {
 		t.Fatalf("second hint plan metadata = %q, want second local-base address hint", got)
 	}
 }

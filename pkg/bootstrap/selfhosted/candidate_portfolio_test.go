@@ -15,7 +15,7 @@ func TestBuildCandidatePortfolioStableOrderingAndGrouping(t *testing.T) {
 		portfolioTestEndpoint("9.9.9.9:9000", base.Add(5*time.Hour), base.Add(3*time.Hour), recoverycard.PortPatternPreserving, 1, "nine"),
 		portfolioTestEndpoint("8.8.8.8:8001", base.Add(5*time.Hour), base.Add(3*time.Hour), recoverycard.PortPatternPreserving, 1, "eight-one"),
 		portfolioTestEndpoint("1.1.1.1:1000", base.Add(5*time.Hour), base.Add(4*time.Hour), recoverycard.PortPatternRandom, 1, "one"),
-		portfolioTestEndpoint("4.4.4.4:4000", base.Add(6*time.Hour), base.Add(time.Hour), recoverycard.PortPatternRandom, 1, "four"),
+		portfolioTestEndpoint("198.51.100.232:4000", base.Add(6*time.Hour), base.Add(time.Hour), recoverycard.PortPatternRandom, 1, "four"),
 		portfolioTestEndpoint("8.8.8.8:8000", base.Add(5*time.Hour), base.Add(3*time.Hour), recoverycard.PortPatternPreserving, 1, "eight-zero"),
 	}
 	shuffled := []recoverycard.Endpoint{endpoints[2], endpoints[4], endpoints[0], endpoints[3], endpoints[1]}
@@ -28,7 +28,7 @@ func TestBuildCandidatePortfolioStableOrderingAndGrouping(t *testing.T) {
 	if first.UsableEndpointCount != 5 || first.FilteredEndpointCount != 0 || first.DuplicateEndpointCount != 0 || first.TotalGroupCount != 4 {
 		t.Fatalf("unexpected portfolio counts: %#v", first)
 	}
-	if got, want := portfolioGroupIDs(first), []string{"4.4.4.4", "1.1.1.1", "8.8.8.8", "9.9.9.9"}; !reflect.DeepEqual(got, want) {
+	if got, want := portfolioGroupIDs(first), []string{"198.51.100.232", "1.1.1.1", "8.8.8.8", "9.9.9.9"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("group order = %v, want %v", got, want)
 	}
 	eight := first.Groups[2]
@@ -44,13 +44,13 @@ func TestBuildCandidatePortfolioRanksNATPredictability(t *testing.T) {
 	base := time.Date(2026, 7, 20, 8, 0, 0, 0, time.UTC)
 	peer := recoverycard.Peer{Endpoints: []recoverycard.Endpoint{
 		portfolioTestEndpoint("1.1.1.1:1000", base, base, recoverycard.PortPatternUnknown, 1, "unknown"),
-		portfolioTestEndpoint("4.4.4.4:1000", base, base, recoverycard.PortPatternRandom, 1, "random"),
+		portfolioTestEndpoint("198.51.100.232:1000", base, base, recoverycard.PortPatternRandom, 1, "random"),
 		portfolioTestEndpoint("9.9.9.9:1000", base, base, recoverycard.PortPatternSequential, 1, "sequential"),
 		portfolioTestEndpoint("8.8.8.8:1000", base, base, recoverycard.PortPatternPreserving, 1, "preserving"),
 	}}
 
 	portfolio := buildCandidatePortfolio(peer, false)
-	if got, want := portfolioGroupIDs(portfolio), []string{"8.8.8.8", "9.9.9.9", "1.1.1.1", "4.4.4.4"}; !reflect.DeepEqual(got, want) {
+	if got, want := portfolioGroupIDs(portfolio), []string{"8.8.8.8", "9.9.9.9", "1.1.1.1", "198.51.100.232"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("NAT predictability order = %v, want %v", got, want)
 	}
 }
@@ -63,7 +63,7 @@ func TestBuildCandidatePortfolioFiltersAndDeduplicates(t *testing.T) {
 		portfolioTestEndpoint("[::ffff:8.8.8.8]:1000", base.Add(2*time.Hour), base.Add(time.Hour), recoverycard.PortPatternUnknown, 0, "mapped"),
 		portfolioTestEndpoint("10.0.0.1:2000", base, base, recoverycard.PortPatternUnknown, 0, "private"),
 		portfolioTestEndpoint("127.0.0.1:3000", base, base, recoverycard.PortPatternUnknown, 0, "loopback"),
-		portfolioTestEndpoint("[2001:4860:4860::8888]:4000", base, base, recoverycard.PortPatternUnknown, 0, "ipv6"),
+		portfolioTestEndpoint("[2001:db8::88]:4000", base, base, recoverycard.PortPatternUnknown, 0, "ipv6"),
 		portfolioTestEndpoint("not-an-endpoint", base, base, recoverycard.PortPatternUnknown, 0, "malformed"),
 		portfolioTestEndpoint("0.0.0.0:5000", base, base, recoverycard.PortPatternUnknown, 0, "unspecified"),
 		portfolioTestEndpoint("224.0.0.1:6000", base, base, recoverycard.PortPatternUnknown, 0, "multicast"),
@@ -92,7 +92,7 @@ func TestBuildCandidatePortfolioBudgetsGroupsAndAnchors(t *testing.T) {
 	endpoints := make([]recoverycard.Endpoint, 0, 11)
 	for i := 0; i < 6; i++ {
 		endpoints = append(endpoints, portfolioTestEndpoint(
-			"11.0.0.1:"+strconv.Itoa(1000+i),
+			"198.51.100.222:"+strconv.Itoa(1000+i),
 			base.Add(time.Duration(200-i)*time.Minute),
 			base.Add(time.Duration(100-i)*time.Minute),
 			recoverycard.PortPatternPreserving, 1, "multi",
@@ -100,7 +100,7 @@ func TestBuildCandidatePortfolioBudgetsGroupsAndAnchors(t *testing.T) {
 	}
 	for i := 0; i < 5; i++ {
 		endpoints = append(endpoints, portfolioTestEndpoint(
-			strconv.Itoa(12+i)+".0.0.1:2000",
+			"198.51.100."+strconv.Itoa(226+i)+":2000",
 			base.Add(time.Duration(90-i)*time.Minute),
 			base.Add(time.Duration(80-i)*time.Minute),
 			recoverycard.PortPatternUnknown, 0, "single",
@@ -114,7 +114,7 @@ func TestBuildCandidatePortfolioBudgetsGroupsAndAnchors(t *testing.T) {
 	if len(portfolio.Groups) != maxCandidateGroups {
 		t.Fatalf("retained groups = %d, want %d", len(portfolio.Groups), maxCandidateGroups)
 	}
-	if got, want := portfolioGroupIDs(portfolio), []string{"11.0.0.1", "12.0.0.1", "13.0.0.1", "14.0.0.1"}; !reflect.DeepEqual(got, want) {
+	if got, want := portfolioGroupIDs(portfolio), []string{"198.51.100.222", "198.51.100.226", "198.51.100.227", "198.51.100.228"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("retained group IDs = %v, want %v", got, want)
 	}
 	first := portfolio.Groups[0]

@@ -20,7 +20,7 @@ func TestAddressClassesRedactRawAddresses(t *testing.T) {
 		testAddress("::1/128"),
 		testAddress("fd00::1/64"),
 		testAddress("fe80::1%Ethernet/64"),
-		testAddress("2001:4860:4860::8888/128"),
+		testAddress("2001:db8::88/128"),
 	}
 	want := []string{
 		"ipv4_global",

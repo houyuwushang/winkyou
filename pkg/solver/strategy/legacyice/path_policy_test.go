@@ -9,7 +9,7 @@ import (
 )
 
 func TestPathPolicyMetadata(t *testing.T) {
-	directRole, directDeps := pathPolicyMetadata("direct", candidatePair("117.48.146.2", "1.1.1.1"), modeDirectPrefer, nil, nil)
+	directRole, directDeps := pathPolicyMetadata("direct", candidatePair("198.51.100.200", "1.1.1.1"), modeDirectPrefer, nil, nil)
 	if directRole != solver.PathRoleProtectedDirect {
 		t.Fatalf("direct role = %q, want %q", directRole, solver.PathRoleProtectedDirect)
 	}
@@ -30,7 +30,7 @@ func TestPathPolicyMetadata(t *testing.T) {
 }
 
 func TestPathPolicyMetadataMarksOverlayCandidatesAsDependent(t *testing.T) {
-	role, deps := pathPolicyMetadata("direct", candidatePair("117.48.146.2", "100.102.17.35"), modeDirectPrefer, nil, nil)
+	role, deps := pathPolicyMetadata("direct", candidatePair("198.51.100.200", "100.102.17.35"), modeDirectPrefer, nil, nil)
 	if role == solver.PathRoleProtectedDirect {
 		t.Fatalf("direct role = %q, want non-protected role for overlay candidate", role)
 	}
@@ -46,7 +46,7 @@ func TestPathPolicyMetadataMarksOverlayCandidatesAsDependent(t *testing.T) {
 }
 
 func TestPathPolicyMetadataAllowsTrustedCIDRForDirectPrefer(t *testing.T) {
-	role, deps := pathPolicyMetadata("direct", candidatePair("117.48.146.2", "100.102.17.35"), modeDirectPrefer, nil, []string{"100.64.0.0/10"})
+	role, deps := pathPolicyMetadata("direct", candidatePair("198.51.100.200", "100.102.17.35"), modeDirectPrefer, nil, []string{"100.64.0.0/10"})
 	if role != solver.PathRoleProtectedDirect {
 		t.Fatalf("trusted direct role = %q, want %q", role, solver.PathRoleProtectedDirect)
 	}
@@ -56,7 +56,7 @@ func TestPathPolicyMetadataAllowsTrustedCIDRForDirectPrefer(t *testing.T) {
 }
 
 func TestPathPolicyMetadataMarksPrivateCandidatesAsDependent(t *testing.T) {
-	role, deps := pathPolicyMetadata("direct", candidatePair("10.6.22.2", "117.48.146.2"), modeDirectPrefer, nil, nil)
+	role, deps := pathPolicyMetadata("direct", candidatePair("10.6.22.2", "198.51.100.200"), modeDirectPrefer, nil, nil)
 	if role != solver.PathRolePrimaryCandidate {
 		t.Fatalf("direct role = %q, want %q", role, solver.PathRolePrimaryCandidate)
 	}
@@ -66,7 +66,7 @@ func TestPathPolicyMetadataMarksPrivateCandidatesAsDependent(t *testing.T) {
 }
 
 func TestPathPolicyMetadataAllowsSrflxBaseLocalHostForPublicDirect(t *testing.T) {
-	role, deps := pathPolicyMetadata("direct", candidatePairWithTypes(nat.CandidateTypeHost, "192.168.1.20", nat.CandidateTypeSrflx, "117.48.146.2"), modePublicDirect, map[string]struct{}{"192.168.1.20": {}}, nil)
+	role, deps := pathPolicyMetadata("direct", candidatePairWithTypes(nat.CandidateTypeHost, "192.168.1.20", nat.CandidateTypeSrflx, "198.51.100.200"), modePublicDirect, map[string]struct{}{"192.168.1.20": {}}, nil)
 	if role != solver.PathRoleProtectedDirect {
 		t.Fatalf("public direct role = %q, want %q", role, solver.PathRoleProtectedDirect)
 	}
@@ -76,7 +76,7 @@ func TestPathPolicyMetadataAllowsSrflxBaseLocalHostForPublicDirect(t *testing.T)
 }
 
 func TestPathPolicyMetadataKeepsUnadvertisedPrivateLocalDependentForPublicDirect(t *testing.T) {
-	role, deps := pathPolicyMetadata("direct", candidatePairWithTypes(nat.CandidateTypeHost, "192.168.1.20", nat.CandidateTypeSrflx, "117.48.146.2"), modePublicDirect, nil, nil)
+	role, deps := pathPolicyMetadata("direct", candidatePairWithTypes(nat.CandidateTypeHost, "192.168.1.20", nat.CandidateTypeSrflx, "198.51.100.200"), modePublicDirect, nil, nil)
 	if role != solver.PathRolePrimaryCandidate {
 		t.Fatalf("public direct private role = %q, want %q", role, solver.PathRolePrimaryCandidate)
 	}
@@ -86,7 +86,7 @@ func TestPathPolicyMetadataKeepsUnadvertisedPrivateLocalDependentForPublicDirect
 }
 
 func TestPathPolicyMetadataKeepsOverlayLocalDependentForPublicDirect(t *testing.T) {
-	role, deps := pathPolicyMetadata("direct", candidatePairWithTypes(nat.CandidateTypeHost, "100.102.17.35", nat.CandidateTypeSrflx, "117.48.146.2"), modePublicDirect, map[string]struct{}{"100.102.17.35": {}}, nil)
+	role, deps := pathPolicyMetadata("direct", candidatePairWithTypes(nat.CandidateTypeHost, "100.102.17.35", nat.CandidateTypeSrflx, "198.51.100.200"), modePublicDirect, map[string]struct{}{"100.102.17.35": {}}, nil)
 	if role != solver.PathRolePrimaryCandidate {
 		t.Fatalf("public direct overlay role = %q, want %q", role, solver.PathRolePrimaryCandidate)
 	}

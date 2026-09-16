@@ -97,7 +97,7 @@ func TestNormalizeVirtualTCPConfigUsesIPv6ULAAndExplicitRemote(t *testing.T) {
 
 func TestVirtualTCPConfigFingerprintIsCanonicalAndComplete(t *testing.T) {
 	base := []tcpForwardSpec{
-		{Listen: "[fd00:0:0:0:0:0:0:c]:443", RemoteID: " C ", VirtualIP: netip.MustParseAddr("fd00::c")},
+		{Listen: "[fd00:0:0:0:0:0:0:3]:443", RemoteID: " C ", VirtualIP: netip.MustParseAddr("fd00::3")},
 		{Listen: "[fd00::b]:22", RemoteID: "B", VirtualIP: netip.MustParseAddr("fd00::b")},
 		{Listen: "127.0.0.1:8080", RemoteID: "D"},
 	}
@@ -107,7 +107,7 @@ func TestVirtualTCPConfigFingerprintIsCanonicalAndComplete(t *testing.T) {
 	}
 	equivalent := []tcpForwardSpec{
 		{Listen: "[fd00:0:0:0:0:0:0:b]:22", RemoteID: " B ", VirtualIP: netip.MustParseAddr("fd00::b")},
-		{Listen: "[fd00::c]:443", RemoteID: "C", VirtualIP: netip.MustParseAddr("fd00::c")},
+		{Listen: "[fd00::3]:443", RemoteID: "C", VirtualIP: netip.MustParseAddr("fd00::3")},
 	}
 	if got, err := virtualTCPConfigFingerprint(equivalent); err != nil || got != want {
 		t.Fatalf("equivalent fingerprint = %q error=%v, want %q", got, err, want)
@@ -115,8 +115,8 @@ func TestVirtualTCPConfigFingerprintIsCanonicalAndComplete(t *testing.T) {
 
 	changes := map[string][]tcpForwardSpec{
 		"address": {{Listen: "[fd00::d]:443", RemoteID: "C", VirtualIP: netip.MustParseAddr("fd00::d")}, base[1]},
-		"port":    {{Listen: "[fd00::c]:444", RemoteID: "C", VirtualIP: netip.MustParseAddr("fd00::c")}, base[1]},
-		"remote":  {{Listen: "[fd00::c]:443", RemoteID: "D", VirtualIP: netip.MustParseAddr("fd00::c")}, base[1]},
+		"port":    {{Listen: "[fd00::3]:444", RemoteID: "C", VirtualIP: netip.MustParseAddr("fd00::3")}, base[1]},
+		"remote":  {{Listen: "[fd00::3]:443", RemoteID: "D", VirtualIP: netip.MustParseAddr("fd00::3")}, base[1]},
 		"removed": {base[1]},
 	}
 	for name, specs := range changes {

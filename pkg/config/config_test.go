@@ -157,12 +157,12 @@ func TestValidateNodeAdvertiseRoutes(t *testing.T) {
 		t.Fatalf("Validate() error = %v", err)
 	}
 
-	cfg.Node.AdvertiseRoutes = []string{"inner-gw"}
+	cfg.Node.AdvertiseRoutes = []string{"node-c"}
 	err := cfg.Validate()
 	if err == nil {
 		t.Fatal("Validate() should reject invalid advertised route")
 	}
-	if got := err.Error(); got != `invalid node.advertise_routes[0]: "inner-gw"` {
+	if got := err.Error(); got != `invalid node.advertise_routes[0]: "node-c"` {
 		t.Fatalf("Validate() error = %q, want invalid advertised route", got)
 	}
 }
@@ -299,7 +299,7 @@ func TestValidateNATPublicCandidateHints(t *testing.T) {
 	cfg.NAT.CandidatePortMax = 40100
 	cfg.NAT.NAT1To1CandidateType = "srflx"
 	cfg.NAT.NAT1To1IPs = []string{"203.0.113.10/192.168.0.10"}
-	cfg.NAT.PublicEndpointHints = []string{"117.48.146.2:41000", "117.48.146.3:41001/192.168.1.20:40000"}
+	cfg.NAT.PublicEndpointHints = []string{"198.51.100.200:41000", "198.51.100.223:41001/192.168.1.20:40000"}
 
 	if err := cfg.Validate(); err != nil {
 		t.Fatalf("Validate() error = %v", err)
@@ -355,12 +355,12 @@ func TestValidateNATPublicCandidateHints(t *testing.T) {
 	}
 
 	cfg = config.Default()
-	cfg.NAT.PublicEndpointHints = []string{"117.48.146.2:41000/100.102.17.35:40000"}
+	cfg.NAT.PublicEndpointHints = []string{"198.51.100.200:41000/100.102.17.35:40000"}
 	err = cfg.Validate()
 	if err == nil {
 		t.Fatal("Validate() should reject overlay local endpoint hint base")
 	}
-	if got := err.Error(); got != `invalid nat.public_endpoint_hints[0]: "117.48.146.2:41000/100.102.17.35:40000"` {
+	if got := err.Error(); got != `invalid nat.public_endpoint_hints[0]: "198.51.100.200:41000/100.102.17.35:40000"` {
 		t.Fatalf("Validate() error = %q, want invalid public endpoint hint local base", got)
 	}
 

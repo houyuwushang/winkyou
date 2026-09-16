@@ -22,8 +22,8 @@ func seqSamples(localBase, mappedBase, delta, n int, ip net.IP) []PortAllocation
 }
 
 func TestAnalyzePortAllocationSequential(t *testing.T) {
-	ip := net.ParseIP("210.30.106.93")
-	// Real observed inner-gw sequence: 23984,23985,23986,23987 (delta +1).
+	ip := net.ParseIP("198.51.100.231")
+	// Real observed node-c sequence: 23984,23985,23986,23987 (delta +1).
 	samples := []PortAllocationSample{
 		{Index: 0, LocalPort: 49053, MappedIP: ip, MappedPort: 23984},
 		{Index: 1, LocalPort: 49054, MappedIP: ip, MappedPort: 23985},

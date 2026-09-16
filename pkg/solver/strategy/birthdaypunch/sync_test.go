@@ -10,7 +10,7 @@ import (
 
 func TestPlanPunchSequentialTargetsPrediction(t *testing.T) {
 	plan := planPunch(peerEndpoint{
-		IP:           net.IPv4(210, 30, 106, 93),
+		IP:           net.IPv4(198, 51, 100, 231),
 		ObservedPort: 55161,
 		Pattern:      nat.PortAllocationSequential,
 		Delta:        1,

@@ -789,7 +789,7 @@ func TestUpsertPeerReconcilesAdvertisedRouteChanges(t *testing.T) {
 		peers: map[string]*PeerStatus{
 			"node-2": {
 				NodeID:           "node-2",
-				Name:             "chen-win",
+				Name:             "node-b",
 				PublicKey:        pub.String(),
 				VirtualIP:        net.ParseIP("10.77.0.2"),
 				State:            PeerStateConnected,
@@ -801,7 +801,7 @@ func TestUpsertPeerReconcilesAdvertisedRouteChanges(t *testing.T) {
 
 	eng.upsertPeer(&coordclient.PeerInfo{
 		NodeID:    "node-2",
-		Name:      "chen-win",
+		Name:      "node-b",
 		PublicKey: pub.String(),
 		VirtualIP: "10.77.0.2",
 		Online:    true,

@@ -188,7 +188,7 @@ func TestRecoveryCandidateScheduleCoversAsymmetricRanksAcrossRestart(t *testing.
 		portfolioTestEndpoint("8.8.8.8:8000", base.Add(4*time.Hour), base, recoverycard.PortPatternUnknown, 1, "first"),
 		portfolioTestEndpoint("9.9.9.9:9000", base.Add(3*time.Hour), base, recoverycard.PortPatternUnknown, 1, "second"),
 		portfolioTestEndpoint("1.1.1.1:1000", base.Add(2*time.Hour), base, recoverycard.PortPatternUnknown, 1, "third"),
-		portfolioTestEndpoint("4.4.4.4:4000", base.Add(time.Hour), base, recoverycard.PortPatternUnknown, 1, "fourth"),
+		portfolioTestEndpoint("198.51.100.232:4000", base.Add(time.Hour), base, recoverycard.PortPatternUnknown, 1, "fourth"),
 	}}, false)
 
 	for selectorCount := 1; selectorCount <= maxCandidateGroups; selectorCount++ {
