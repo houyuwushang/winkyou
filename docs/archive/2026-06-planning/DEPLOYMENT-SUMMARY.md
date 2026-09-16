@@ -1,3 +1,5 @@
+> 2026-06 历史规划归档：保留当时结论，不代表当前实现或现场运行授权；部署细节已脱敏。
+
 # Deployment Hardening Summary - 2026-04-15
 
 ## Completed Changes
@@ -66,7 +68,7 @@
 {
   "ice_state": "connected",
   "local_candidate": "relay:203.0.113.10:49152",
-  "remote_candidate": "host:192.168.1.100:51820"
+  "remote_candidate": "host:<EXAMPLE_IPV4_1>:51820"
 }
 ```
 

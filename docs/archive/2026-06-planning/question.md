@@ -1,7 +1,9 @@
+> 2026-06 历史规划归档：保留当时结论，不代表当前实现或现场运行授权；部署细节已脱敏。
+
 # WinkYou 项目待确认问题清单
 
 > [!IMPORTANT]
-> **Archive / Brainstorm**: This is an early question backlog. It is preserved for traceability and is not the active issue list. Use [`docs/CONNECTIVITY-SOLVER-BASELINE.md`](docs/CONNECTIVITY-SOLVER-BASELINE.md) as the current architecture authority.
+> **Archive / Brainstorm**: This is an early question backlog. It is preserved for traceability and is not the active issue list. Use [`docs/CONNECTIVITY-SOLVER-BASELINE.md`](../../CONNECTIVITY-SOLVER-BASELINE.md) as the current architecture authority.
 
 > 本文档汇总了项目文档审阅过程中发现的所有不确定性、待验证事项和待决策问题。
 > 

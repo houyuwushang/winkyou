@@ -1,7 +1,9 @@
+> 2026-06 历史规划归档：保留当时结论，不代表当前实现或现场运行授权；部署细节已脱敏。
+
 # WinkYou 问题解决方案与建议
 
 > [!IMPORTANT]
-> **Archive / Brainstorm**: This is an early answer/proposal document for the historical question backlog. It is preserved for traceability and is not the active roadmap. Use [`docs/CONNECTIVITY-SOLVER-BASELINE.md`](docs/CONNECTIVITY-SOLVER-BASELINE.md) as the current architecture authority.
+> **Archive / Brainstorm**: This is an early answer/proposal document for the historical question backlog. It is preserved for traceability and is not the active roadmap. Use [`docs/CONNECTIVITY-SOLVER-BASELINE.md`](../../CONNECTIVITY-SOLVER-BASELINE.md) as the current architecture authority.
 
 > 本文档针对 question.md 中提出的问题，经过调研后给出解决方案和建议。
 > 
@@ -359,7 +361,7 @@ storage:
   # SQLite
   sqlite_path: "/data/coordinator.db"
   # PostgreSQL
-  postgres_dsn: "postgres://user:pass@host/db"
+  postgres_dsn: "<DATABASE_DSN>"
 ```
 
 ---
@@ -370,7 +372,7 @@ storage:
 
 ```go
 type IPAllocator struct {
-    cidr      *net.IPNet    // 10.100.0.0/16
+    cidr      *net.IPNet    // <EXAMPLE_IPV4_1>/16
     allocated map[string]net.IP  // nodeID -> IP
     reserved  []net.IP      // 保留地址
     nextIP    net.IP        // 下一个可分配
@@ -415,7 +417,7 @@ func (a *IPAllocator) Allocate(nodeID string) (net.IP, error) {
 ```yaml
 # 用户配置
 network:
-  ip: "10.100.0.100"  # 请求特定 IP
+  ip: "<EXAMPLE_IPV4_2>"  # 请求特定 IP
   # 或
   ip: "auto"  # 自动分配
 ```
@@ -433,13 +435,13 @@ $ wink export-wg --peer laptop
 # 输出:
 [Interface]
 PrivateKey = <your-private-key>
-Address = 10.100.0.5/32
+Address = <EXAMPLE_IPV4_3>/32
 ListenPort = 51820
 
 [Peer]
 PublicKey = <peer-public-key>
-AllowedIPs = 10.100.0.2/32
-Endpoint = 1.2.3.4:51820
+AllowedIPs = <EXAMPLE_IPV4_4>/32
+Endpoint = <EXAMPLE_IPV4_5>:51820
 PersistentKeepalive = 25
 ```
 
@@ -611,7 +613,7 @@ services:
 # 使用 Let's Encrypt
 ./wink-coordinator \
   --domain coord.example.com \
-  --acme-email admin@example.com
+  --acme-email <ACME_EMAIL>
 ```
 
 ---

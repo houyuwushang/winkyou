@@ -260,7 +260,7 @@ const (
 > **抽象层设计要求**: 所有pion类型必须在封装层内完成转换，模块接口只暴露自定义类型。
 > STUN封装放在`stun_pion.go`，自研实现放在`stun_native.go`。ICE同理。
 > STUN协议非常简单（20字节头部+TLV属性），是自研路线中最容易启动的组件。
-> 详见 [selfhost.md](../../selfhost.md)
+> 详见 [selfhost.md](../archive/2026-06-planning/selfhost.md)
 
 ### 目录结构
 

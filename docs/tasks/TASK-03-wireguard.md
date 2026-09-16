@@ -179,7 +179,7 @@ func (t *wireguardTunnel) Events() <-chan TunnelEvent
 > **抽象层设计要求**: Tunnel接口定义不能包含任何wireguard-go的类型。
 > 第三方封装代码必须隔离在独立文件中（`tunnel_wggo.go`）。
 > `tunnel_native.go` / `tunnel_wink.go` 属于 post-MVP 轨道，不是当前任务交付物。
-> 详见 [selfhost.md](../../selfhost.md) 和 [wink-protocol-v1.md](../../wink-protocol-v1.md)（字节级协议设计）
+> 详见 [selfhost.md](../archive/2026-06-planning/selfhost.md) 和 [wink-protocol-v1.md](../archive/2026-06-planning/wink-protocol-v1.md)（字节级协议设计）
 
 ### 目录结构
 

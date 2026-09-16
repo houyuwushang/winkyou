@@ -1,7 +1,9 @@
+> 2026-06 历史规划归档：保留当时结论，不代表当前实现或现场运行授权；部署细节已脱敏。
+
 # WinkYou - P2P 内网穿透虚拟局域网项目规划
 
 > [!IMPORTANT]
-> **Deprecated / Archive**: This is an early long-range planning document and no longer matches the current code structure or architecture. Use [`docs/CONNECTIVITY-SOLVER-BASELINE.md`](docs/CONNECTIVITY-SOLVER-BASELINE.md) as the current architecture authority.
+> **Deprecated / Archive**: This is an early long-range planning document and no longer matches the current code structure or architecture. Use [`docs/CONNECTIVITY-SOLVER-BASELINE.md`](../../CONNECTIVITY-SOLVER-BASELINE.md) as the current architecture authority.
 
 > 说明：本文件保留项目长期规划与演进路线。
 > 对于当前 MVP 执行，如与 `docs/EXECUTION-BASELINE.md` 冲突，以执行基线为准。
@@ -336,7 +338,7 @@ WinkYou 采用**抽象接口 + 多后端**的设计，根据运行环境自动�
 │         │                        │                      │        │
 │   ┌─────▼─────┐            ┌─────▼─────┐          ┌─────▼─────┐  │
 │   │ NetIF抽象  │            │ NetIF抽象  │          │ NetIF抽象 │  │
-│   │ 10.100.0.1 │            │ 10.100.0.2 │          │10.100.0.3 │  │
+│   │ <EXAMPLE_IPV4_1> │            │ <EXAMPLE_IPV4_2> │          │<EXAMPLE_IPV4_3> │  │
 │   │(TUN/TAP/  │            │(TUN/TAP/  │          │(TUN/TAP/ │  │
 │   │ Netstack) │            │ Netstack) │          │ Netstack)│  │
 │   └───────────┘            └───────────┘          └───────────┘  │
@@ -416,15 +418,15 @@ winkyou/
 ┌─────────────────────────────────────────────────────┐
 │                 WinkYou 虚拟网络                     │
 ├─────────────────────────────────────────────────────┤
-│  网络地址空间: 10.100.0.0/16 (可配置)                 │
+│  网络地址空间: <EXAMPLE_IPV4_4>/16 (可配置)                 │
 │  子网分配:                                           │
-│    - 10.100.0.0/24  : 默认网络                       │
-│    - 10.100.1.0/24  : 网络组1                        │
-│    - 10.100.2.0/24  : 网络组2                        │
+│    - <EXAMPLE_IPV4_4>/24  : 默认网络                       │
+│    - <EXAMPLE_IPV4_5>/24  : 网络组1                        │
+│    - <EXAMPLE_IPV4_6>/24  : 网络组2                        │
 │    ...                                              │
 │  保留地址:                                           │
-│    - 10.100.0.1     : 网关(如需要)                   │
-│    - 10.100.0.254   : DNS服务器(如需要)              │
+│    - <EXAMPLE_IPV4_1>     : 网关(如需要)                   │
+│    - <EXAMPLE_IPV4_7>   : DNS服务器(如需要)              │
 └─────────────────────────────────────────────────────┘
 ```
 
@@ -753,10 +755,10 @@ coordinator:
 
 network:
   # 虚拟网络配置
-  ip: "auto"  # 或指定IP如 "10.100.0.5"
+  ip: "auto"  # 或指定IP如 "<EXAMPLE_IPV4_8>"
   dns: 
-    - "10.100.0.254"
-    - "8.8.8.8"
+    - "<EXAMPLE_IPV4_7>"
+    - "<DNS_RESOLVER>"
     
 nat:
   stun_servers:
