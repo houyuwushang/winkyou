@@ -46,9 +46,9 @@ Go 1.23.1，Windows。首次完整扩展扫描：文档 165 文件、257 条候�
   原日志 SHA-256：`82f88a6da2e09708b48d6c393dcfc8423299632b47fbefae927a462cd96a95cb`。
   源码扫描增加 IP 必需语法的预筛选，不少扫文件、不降低 count、不延长该超时；修改后的同一批次
   PASS409.559s，SHA-256：`68a8eddd4504d23f6b343ac2f99425cb5592f131481354d9b3113046e0abf007`。
-  此批次不包括尚待裁决的全量文档扫描，不能据此称完整架构门已绿。
+  此批次不包括当时尚待裁决的全量文档扫描，不能据此称完整架构门已绿。
 
-### 当前验证快照（未推送）
+### 裁决前本地快照（历史记录）
 
 | 项目 | 实测结果 |
 | --- | --- |
@@ -73,14 +73,52 @@ go test -race ./internal/architecture -run 'TestSourceTreePrivacy|TestPublicDocu
 go test ./internal/architecture -count=1
 ```
 
-### 待维护者确认的精确配置例外
+### 维护者批准的精确配置例外
 
 扩围后命中 quickstart 的现有 `WINK_NETWORK_CIDR` 默认配置：`.env.example` 第 6 行、
 `docker-compose.yml` 与 `start-coordinator.sh` 各第 20 行。它们未在旧门覆盖范围内，旧 #144
-白名单也未收录该精确 CIDR。当前未修改默认配置，未擅自扩充白名单或豁免这三个文件。
+白名单也未收录该精确 CIDR。首次扫描保留 RED 后暂停，未修改默认配置或豁免这三个文件。
 
-待确认方向：仅允许该默认 CIDR 的完整配置 token，仍拒绝其中的主机地址、其他掩码与伪装后缀；
-不把整个网段放行。维护者确认前保留 RED，不推送。完整架构日志 SHA-256：
+维护者随后明确同意：仅允许该默认 CIDR 的完整配置 token，仍拒绝其中的主机地址、其他掩码与
+伪装后缀，不把整个网段放行。新增 5 个精确 token 正例、12 个负例固定边界；旧规则下正例
+确实 RED，再实现这个窄例外。默认配置仍零差异。此前完整架构日志 SHA-256：
 `0a13a8421241c0afbf2a2b8a345a331ea52b5ec971dbe7829f37005fe711e04f`。
 
-后续验证与 CI 首跑另行补充；不覆盖上述首轮结果，不 rerun 求绿，不自行合并。
+### 裁决后正式本地验收
+
+仍为 Go 1.23.1 / Windows，串行执行。以下为该授权后批次的首次结果，不覆盖上面的开发 RED。
+时间为命令外层墙钟毫秒（包括工具启动），不是产品时限或新的预算。
+
+| 批次 | 结果 / 外层毫秒 | 日志 SHA-256 |
+| --- | --- | --- |
+| 全仓 vet | PASS / 13540，空诊断 | `e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855` |
+| 完整 architecture | 126 PASS / 0 FAIL / 0 SKIP，27989 | `5840f940327535c47f48ff4a37e03dda0735848e2d6180ed6149a4feebec4e68` |
+| 17 个受影响包 race×1 | 全 PASS / 38226 | `1c7eaefe1308886ee25be010b3b7b59f0066ed57f7b72be4b47abe7e27c818f3` |
+| 全仓 #116 主分区 | 88 个有测试的包 PASS / 291637 | `a7529ebb08de425fb061c67ec691d8f95fa6b9c00eb0e9e562e878e80b6d038a` |
+| #116 独立 relay×1 | PASS / 19458 | `7d1ccff95fd9743d4b99829a539b4a8163ef6e69c4ed33402ac6ccd5a5205b5e` |
+| 独立 relay race×20 | PASS / 179685 | `e961cfdcdeb5324bd9885b7a9f83873d66255fc5a973c7affcc52ec4ad3158dd` |
+| Python 离线输入契约 | 5 PASS / 489 | `1a575bac5f2bf48aa50adaa58b5be3afb6a9a9d90acc3b8cdffce57ce519e99a` |
+
+完整架构报告：文档扫描 167 文件 / 0 命中、源码扫描 829 文件 / 0 命中，两个 IncludesEveryFile
+门与规则正负例全部通过。没有整文件豁免，没有为了通过而减少测试次数或修改任何产品硬上限。
+当前批次未命中其它已登记 flake 签名。新增精确 CIDR 契约单独 race×20 PASS1.686s，
+日志 SHA-256：`b06f8350c20affd8970056410971bc6b7ceaca0e6a72a0697bcb68d04637f8b9`。
+
+窄 CIDR 例外的新增正例在旧规则下 RED 日志 SHA-256：
+`7f7478c1e0b634db88dff5f97bf5ec445fdefe799890407c6584973558925d6e`；
+实现后全量隐私门 GREEN 日志 SHA-256：
+`bfd297ee33733ee07fcbcdaea8afa4ac47a2995f758b4f4cee88c272450aa35c`。
+
+本阶段补充命令（受影响包完整命令见前表）：
+
+```text
+go vet ./...
+go test ./internal/architecture -count=1 -v
+go test ./... -count=1 -skip '^TestRelayWGGoTwoEnginesExchangeIPv4Packets$'
+go test ./pkg/client -run '^TestRelayWGGoTwoEnginesExchangeIPv4Packets$' -count=1
+go test -race ./pkg/client -run '^TestRelayWGGoTwoEnginesExchangeIPv4Packets$' -count=20
+go test -race ./internal/architecture -run '^TestPublicDocumentationPrivacyProductNetworkToken$' -count=20 -timeout=1m
+python -m unittest discover -s scripts -p test_field_script_inputs.py -v
+```
+
+CI 首跑结果记录于 PR，推送仅一次；不覆盖首轮结果、不 rerun 求绿、不自行合并。

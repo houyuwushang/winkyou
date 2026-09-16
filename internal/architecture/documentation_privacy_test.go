@@ -92,7 +92,9 @@ func docAllowedAddress(addr netip.Addr, suffix string) bool {
 		return true
 	}
 	// Exact prefix tokens only: this does NOT authorize addresses inside them.
-	for host, bits := range map[string]string{"10.0.0.0": "/24", "100.64.0.0": "/10", "198.18.0.0": "/15", "128." + "0.0.0": "/1"} {
+	// The additional product default is maintainer-approved as one exact CIDR
+	// token; no address inside that network is authorized by this exception.
+	for host, bits := range map[string]string{"10.0.0.0": "/24", "100.64.0.0": "/10", "198.18.0.0": "/15", "128." + "0.0.0": "/1", "10.42.0.0": "/24"} {
 		if addr.String() == host && strings.HasPrefix(suffix, bits) {
 			if len(suffix) == len(bits) {
 				return true
@@ -418,6 +420,42 @@ func TestPublicDocumentationPrivacySyntax(t *testing.T) {
 		t.Run(fmt.Sprintf("rejected-%02d", i), func(t *testing.T) {
 			if len(docPrivacyLine(line)) == 0 {
 				t.Fatal("privacy mutation escaped; input not echoed")
+			}
+		})
+	}
+}
+
+func TestPublicDocumentationPrivacyProductNetworkToken(t *testing.T) {
+	// This fixed product configuration token is not an endpoint or a subnet-wide
+	// exemption. Keep the value independent of runtime configuration loading.
+	const token = "10.42.0.0/24"
+	prefix := netip.MustParsePrefix(token)
+	if prefix != prefix.Masked() {
+		t.Fatal("product token must be a canonical network prefix")
+	}
+	good := []string{
+		token, "WINK_NETWORK_CIDR=" + token, "\"" + token + "\"",
+		"${WINK_NETWORK_CIDR:-" + token + "}", "`" + token + "`",
+	}
+	for i, line := range good {
+		t.Run(fmt.Sprintf("exact-%02d", i), func(t *testing.T) {
+			if len(docPrivacyLine(line)) != 0 {
+				t.Fatal("exact product prefix rejected; value withheld")
+			}
+		})
+	}
+	host := prefix.Addr().Next().String()
+	bad := []string{
+		prefix.Addr().String(), host, fmt.Sprintf("%s/%d", host, prefix.Bits()),
+		fmt.Sprintf("%s/%d", prefix.Addr(), prefix.Bits()-1),
+		fmt.Sprintf("%s/%d", prefix.Addr(), prefix.Bits()+1),
+		token + "0", token + "evil", token + ":22", token + "/24",
+		token + "%synthetic", token + ".", token + " " + host,
+	}
+	for i, line := range bad {
+		t.Run(fmt.Sprintf("reject-%02d", i), func(t *testing.T) {
+			if len(docPrivacyLine(line)) == 0 {
+				t.Fatal("product prefix exception widened; value withheld")
 			}
 		})
 	}
