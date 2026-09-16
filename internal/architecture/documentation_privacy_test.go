@@ -267,11 +267,32 @@ func docLiteralSSHHost(command string) bool {
 }
 
 func scanPublicDocs(tree fs.FS) ([]docPrivacyFinding, int, error) {
+	return scanPrivacyFiles(tree, []string{"docs", "deploy", "scripts", ".github"}, func(name string) bool {
+		return !strings.Contains(name, "/") && strings.HasSuffix(name, ".md")
+	}, docPrivacyLine)
+}
+
+// Roots are exhaustive, including hidden and future files. No historical-file
+// exemptions; findings never contain the matched text.
+func scanPrivacyFiles(tree fs.FS, roots []string, rootFile func(string) bool, check func(string) []string) ([]docPrivacyFinding, int, error) {
 	var findings []docPrivacyFinding
 	files := 0
-	err := fs.WalkDir(tree, "docs", func(name string, entry fs.DirEntry, walkErr error) error {
+	err := fs.WalkDir(tree, ".", func(name string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return fmt.Errorf("documentation walk failed")
+		}
+		if name == "." {
+			return nil
+		}
+		selected := rootFile(name)
+		for _, root := range roots {
+			selected = selected || name == root || strings.HasPrefix(name, root+"/")
+		}
+		if !selected {
+			if entry.IsDir() {
+				return fs.SkipDir
+			}
+			return nil
 		}
 		if entry.Type()&fs.ModeSymlink != 0 {
 			return fmt.Errorf("documentation symlink rejected")
@@ -285,7 +306,7 @@ func scanPublicDocs(tree fs.FS) ([]docPrivacyFinding, int, error) {
 		}
 		files++
 		for i, line := range strings.Split(strings.ReplaceAll(string(data), "\r\n", "\n"), "\n") {
-			for _, class := range docPrivacyLine(line) {
+			for _, class := range check(line) {
 				findings = append(findings, docPrivacyFinding{File: name, Line: i + 1, Class: class})
 			}
 		}
@@ -361,8 +382,8 @@ func TestPublicDocumentationPrivacySyntax(t *testing.T) {
 	}
 }
 
-func TestPublicDocumentationPrivacyIncludesEveryDocumentAndTemplate(t *testing.T) {
-	for _, name := range []string{"docs/old.md", "docs/legacy/deep/record.md", "docs/templates/new.json", "docs/future/schema.txt", "docs/.hidden.txt"} {
+func TestPublicDocumentationPrivacyIncludesEveryFile(t *testing.T) {
+	for _, name := range []string{"README.md", ".hidden.md", "future.md", "docs/old.md", "docs/archive/deep/record.md", "docs/templates/new.json", "docs/future/schema.txt", "docs/.hidden.txt", "deploy/future/nested.yaml", "scripts/future/tool.py", "scripts/.hidden", ".github/workflows/future.yml", ".github/future/nested.json"} {
 		t.Run(strings.ReplaceAll(name, "/", "-"), func(t *testing.T) {
 			tree := fstest.MapFS{name: &fstest.MapFile{Data: []byte("heading\r\nssh synthetic-host\r\n")}}
 			findings, files, err := scanPublicDocs(tree)
