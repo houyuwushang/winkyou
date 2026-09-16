@@ -677,6 +677,7 @@ artifact/fingerprint、public address、candidate port 或 WireGuard key。
 
 ### 10.3 Gate C1c disposable router
 
+- C1c-1 准备文档：[一次性路由器 mini-spec（Draft）](./ADR-N3C-GATE-C1C-DISPOSABLE-ROUTER.md)；仅模板与验收设计，不授权 C1c-2 实现或 C1c-3 运行。
 - exact field build/checksum、具名一次性路由器与 observer permission 先签发；
 - predictive APDM×APDM、asymmetric 两个 orientation、hard-16K near-tail 与 exhaustion 分别使用
   新 credential/窗口，绝不 reset ledger 赶进度；
