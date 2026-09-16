@@ -1067,3 +1067,99 @@ go test -race -tags=c1bproof ./internal/governor -run '^TestGateC1bMemoryFixture
 这项长时本地证据增强了原窗口在指定模型/负载下的可重复性，但仍不是历史 hosted RED
 的根因证明；#133 继续仅 `Refs`、保持开放。全仓与其它批次验证见
 [收尾证据](HARNESS-FLAKES-132-136-EVIDENCE.md)，Linux OS 矩阵须另看远端首次 CI。
+
+## 8. #146 job 预算（2026-09-16）
+
+只拆 CI 工作负载，不改变生产、夹具窗口、测试命令、count、test timeout 或环境。
+三条独立 leg 各保留两个 OS、`fail-fast: false`、required 名称和原 race 策略；
+既有独立 responder slow FINISH job 不动。原 consumer / slow-role 架构门把
+旧单 job 名称与 25m 写死，维护者已允许同步这两份测试的布局/预算表示及负向
+fixture；原测试覆盖、双角色、双 OS、并发约束与非 advisory 语义不变。
+
+### 8.1 原复审输入与重新取证口径
+
+以下保留复审提示词的原表（秒），不是把估计当成此次 API 实测：
+
+| 原步骤 | Windows | Linux |
+| --- | --- | --- |
+| checkout + setup-go | 60–75 | 15–25 |
+| 4 tagged vet | 17–24 | 10–11 |
+| 5 architecture | 5–10 | 4 |
+| 6 pipelines | 333–429 | 294–311 |
+| 7 consumer readiness | 48–50 | 45–46 |
+| 8 completion phase | 191–197 | 185–191 |
+| 9 slow FINISH | 348–365 | 327–335 |
+| 10 cancellation after FINISH | 76–89 | 68 |
+| 11 evidence/exhaustion | 61–91 | 48–49 |
+| 12 Fresh100 | 138–174 | 114–115 |
+| 成功 job 总墙钟 | 1273–1403 | 1116–1146 |
+
+本次固定取五个 run 的 **attempt 1**，每批两个 OS，共十个 job。
+API 秒级时间戳相减；setup 只计 checkout + setup-go 一次，整 job 墙钟另外保留。
+取消 step 的 200s 是截断观测，不纳入成功耗时最大值，也不丢弃其此前完成的步骤。
+不使用取消批次后来的 attempt 2 替换首跑。
+
+| run | Windows job / 墙钟秒 | Linux job / 墙钟秒 |
+| --- | --- | --- |
+| 34952709744 | [104327139720](https://github.com/houyuwushang/winkyou/actions/runs/34952709744/job/104327139720) / 1273 | [104327139825](https://github.com/houyuwushang/winkyou/actions/runs/34952709744/job/104327139825) / 1116 |
+| 34947582760 | [104310540798](https://github.com/houyuwushang/winkyou/actions/runs/34947582760/job/104310540798) / 1507（取消） | [104310540666](https://github.com/houyuwushang/winkyou/actions/runs/34947582760/job/104310540666) / 1126 |
+| 34944308513 | [104299976026](https://github.com/houyuwushang/winkyou/actions/runs/34944308513/job/104299976026) / 1375 | [104299975852](https://github.com/houyuwushang/winkyou/actions/runs/34944308513/job/104299975852) / 1146 |
+| 34941623543 | [104291394776](https://github.com/houyuwushang/winkyou/actions/runs/34941623543/job/104291394776) / 1403 | [104291395015](https://github.com/houyuwushang/winkyou/actions/runs/34941623543/job/104291395015) / 1144 |
+| 34938086844 | [104280310177](https://github.com/houyuwushang/winkyou/actions/runs/34938086844/job/104280310177) / 1447 | [104280310192](https://github.com/houyuwushang/winkyou/actions/runs/34938086844/job/104280310192) / 1144 |
+
+原取消样本从 checkout 开始至 Fresh100 前为 **1298s**，从 job started_at
+算为 **1300s**；Fresh100 跑了 200s 被 25m job 上限取消，含清理的 job 总墙钟
+1507s。这不是可认定的 #133 候选窗口失败，也不以重跑覆盖这条 RED。
+
+重新取证的全部成功 step 范围如下；Windows vet / completion / Fresh100 的上限
+高于原表，预算采用此次值，不能删掉较慢样本：
+
+| 原步骤 | Windows 秒 | Linux 秒 |
+| --- | --- | --- |
+| checkout + setup-go | 39–73 | 13–16 |
+| 4 tagged vet | 17–40 | 10–11 |
+| 5 architecture | 5–10 | 4 |
+| 6 pipelines | 333–429 | 294–311 |
+| 7 consumer readiness | 48–50 | 45–46 |
+| 8 completion phase | 191–203 | 185–191 |
+| 9 slow FINISH | 348–362 | 327–335 |
+| 10 cancellation after FINISH | 77–89 | 68 |
+| 11 evidence/exhaustion | 64–91 | 48–49 |
+| 12 Fresh100（成功） | 138–189 | 114–115 |
+| 成功 job 总墙钟 | 1273–1447 | 1116–1146 |
+
+### 8.2 拆分与算式
+
+`ceil(1.25 × (各完整 step 最大值之和 + setup 最大值) / 60)`，
+独立保留 25% runner 调度/清理余量；不是增加任何产品或测试超时。
+Fresh100 独立 job 不再继承上游编译缓存，实际冷启动成本仍以首跑验收，不能仅凭
+下表推导宣布通过。
+
+| leg / 原步骤 | OS | 输入秒之和 | 算式结果 min | job cap min | 首跑 80% 上限秒 |
+| --- | --- | --- | --- | --- | --- |
+| pipelines / 4,5,6 | Windows | 40+10+429+73=552 | 12 | 12 | 576 |
+| pipelines / 4,5,6 | Linux | 11+4+311+16=342 | 8 | 8 | 384 |
+| phases / 7,8,9,10,11 | Windows | 50+203+362+89+91+73=868 | 19 | 19 | 912 |
+| phases / 7,8,9,10,11 | Linux | 46+191+335+68+49+16=705 | 15 | 15 | 720 |
+| fresh100 / 12 | Windows | 189+73=262 | 6 | 6 | 288 |
+| fresh100 / 12 | Linux | 115+16=131 | 3 | 4 | 192 |
+
+Linux Fresh100 按维护者许可取 4m 而非算式的 3m，额外 1m 专门容纳独立
+setup 抖动。无其它额外预算；所有 `-timeout=...`、`-count=...`、命令顺序、
+`GORACE=halt_on_error=1` 与 Fresh100 的 `WINKYOU_GATE_C1B_REPEAT_REQUIRED=1`
+逐字不变。
+
+### 8.3 契约与验收计划
+
+先提交 YAML 契约并在旧 workflow 上保存 RED，再拆分 workflow。新契约必须拒绝：
+合回一个真实 job（保留全部九条命令）、丢命令、减少 count/test timeout、
+删 Fresh100 必跑开关、低于推导的任一 OS job cap、失去 required 名称、
+fail-fast / advisory / conditional / 依赖串行化。原 consumer AST 清单仍逐项
+证明每个旧回归只被选中一次；原 slow FINISH 的两个 role、两个 OS、并发、
+完整命令和负向门仍在。
+
+本地执行新契约及 race×20、`go vet ./...`、全量 architecture（含隐私门）、
+`git diff --check`。远端仅首次运行，六条新 leg 均须 SUCCESS 且墙钟不超过
+cap 的 80%；push / pull_request 各自的首跑都单列，不择绿、不 rerun。
+其它 job 的 RED 只登记、不混修；#133 夹具窗口保持不动。验证与首跑结果在
+完成后分别记录，不预填通过。
