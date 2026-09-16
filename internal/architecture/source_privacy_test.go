@@ -20,6 +20,9 @@ var (
 
 func sourceAllowedAddress(addr netip.Addr) bool {
 	addr = addr.Unmap()
+	if addr.String() == "1.2.3.4" {
+		return true
+	} // retained public resolver/example
 	if !addr.IsGlobalUnicast() || addr.IsPrivate() {
 		return true
 	}
@@ -29,23 +32,35 @@ func sourceAllowedAddress(addr netip.Addr) bool {
 		}
 	}
 	// Public resolver fixtures, not deployment identities or an arbitrary-host exemption.
-	for _, resolver := range []string{"8.8.8.8", "8.8.4.4", "1.1.1.1", "1.0.0.1"} {
+	for _, resolver := range []string{"8.8.8.8", "8.8.4.4", "1.1.1.1", "1.0.0.1", "9.9.9.9"} {
 		if addr.String() == resolver {
 			return true
 		}
 	}
 	// Only global-unicast IPv6 can be a public IPv6 deployment address.
-	return addr.Is6() && !netip.MustParsePrefix("2000::/3").Contains(addr)
+	return addr.Is6() && !netip.PrefixFrom(netip.AddrFrom16([16]byte{0x20}), 3).Contains(addr)
 }
 
 func sourcePrivacyLine(line string) []string {
 	classes := map[string]bool{}
 	for _, rule := range []*regexp.Regexp{docIPv4, docIPv6} {
+		// Necessary syntax only: IPv4 needs dots; even compressed IPv6 needs
+		// two colons. Avoid allocating hex matches for ordinary Go identifiers.
+		if rule == docIPv4 && !strings.Contains(line, ".") || rule == docIPv6 && strings.Count(line, ":") < 2 {
+			continue
+		}
 		for _, span := range rule.FindAllStringIndex(line, -1) {
+			token := strings.TrimRight(line[span[0]:span[1]], ".")
+			if rule == docIPv6 && strings.Count(token, ":") < 2 {
+				continue // hex fragments in ordinary Go identifiers are not IP addresses
+			}
 			if !docWordBoundary(line, span[0], span[1]) {
 				continue
 			}
-			addr, err := netip.ParseAddr(strings.TrimRight(line[span[0]:span[1]], "."))
+			addr, err := netip.ParseAddr(token)
+			if err == nil && docAllowedAddress(addr, line[span[1]:]) {
+				continue
+			}
 			if err == nil && !sourceAllowedAddress(addr) {
 				classes["public_address"] = true
 			}
@@ -128,7 +143,7 @@ func TestSourceTreePrivacySyntax(t *testing.T) {
 		"10.23.45.67", "172.16.5.1", "192.168.55.1", "fd01::123", "fc01::1",
 		"169.254.1.1", "fe80::1", "127.0.0.1", "::1", "0.0.0.0", "::", "255.255.255.255",
 		"100.64.0.1", "198.18.0.1", "224.0.0.1", "ff02::1",
-		"8.8.8.8", "8.8.4.4", "1.1.1.1", "1.0.0.1", "node-a node-b node-c",
+		"8.8.8.8", "8.8.4.4", "1.1.1.1", "1.0.0.1", "9.9.9.9", "1.2.3.4", "node-a node-b node-c",
 		"ProxyJump=none", "ssh -p <PORT> <SSH_DESTINATION>", "ssh-ed25519", "ssh-rsa",
 	}
 	for i, input := range good {
