@@ -95,17 +95,14 @@ type gateC1bCIStep struct {
 
 func gateC1bConsumerCIPartition(data []byte, tests []string) []string {
 	var workflow struct {
-		Jobs map[string]struct {
-			TimeoutMinutes int             `yaml:"timeout-minutes"`
-			Steps          []gateC1bCIStep `yaml:"steps"`
-		} `yaml:"jobs"`
+		Jobs map[string]gateC1bSlowCIJob `yaml:"jobs"`
 	}
 	if err := yaml.Unmarshal(data, &workflow); err != nil {
 		return []string{"invalid workflow"}
 	}
-	job, ok := workflow.Jobs["gate-c1b-memory-pipeline"]
-	if !ok || job.TimeoutMinutes != 25 {
-		return []string{"original required job or its 25m bound changed"}
+	job, ok := workflow.Jobs["gate-c1b-memory-phases"]
+	if !ok || !gateC1bPhaseCIBounds(job) {
+		return []string{"required phases job or its measured per-platform bounds changed"}
 	}
 	var selected [2]*regexp.Regexp
 	var excluded *regexp.Regexp
