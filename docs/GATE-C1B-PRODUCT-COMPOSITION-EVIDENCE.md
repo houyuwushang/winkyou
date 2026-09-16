@@ -1163,3 +1163,41 @@ fail-fast / advisory / conditional / 依赖串行化。原 consumer AST 清单�
 cap 的 80%；push / pull_request 各自的首跑都单列，不择绿、不 rerun。
 其它 job 的 RED 只登记、不混修；#133 夹具窗口保持不动。验证与首跑结果在
 完成后分别记录，不预填通过。
+
+### 8.4 本地首批结果
+
+Windows Go 1.23.1；基线 `ee79fd9`，docs `11032f8` → 红契约
+`f8965b3` → workflow/旧门迁移 `b6ba9dd`，各步独立提交。
+没有改产品/配置/其它工作流、测试 workload 或 responder-slow job。
+
+| 命令 / 检查 | 首次结果 |
+| --- | --- |
+| `go test ./test/natlab -run '^TestGateC1bMemoryCIContract$' -count=1 -v`（旧 workflow） | RED，exit 1，0.484s：legacy combined job + 三条 independent job 缺失 |
+| `go test ./test/natlab -run '^TestGateC1bMemoryCIContract' -count=1 -v` | GREEN，0.575s；3顶层、50负向变异、6预算用例 |
+| 同一新契约 `-race -count=20 -v` | PASS，71.365s；1000变异与120预算用例，无FAIL |
+| `go test -race ./internal/architecture -run '^TestGateC1b(Consumer\|Slow)CIPartition' -count=20 -v` | PASS，12.257s；80顶层、460原负向用例，无FAIL |
+| `go test ./internal/architecture -count=1 -v` | PASS，20.031s；121顶层，无FAIL/SKIP |
+| 完整架构中的文档隐私门 | 116文件，0 finding；独立分支不包含C1c新文档 |
+| `go vet ./...` | PASS；外层墙钟33.745s，无输出 |
+| `git diff --check` | PASS |
+
+表格中的 selector 分隔符反斜杠仅用于 Markdown 表格转义；实际 Go selector
+是 `^TestGateC1b(Consumer|Slow)CIPartition`，没有新增筛选。
+race 两项是独立的静态解析/AST 契约批次，不执行网络或受压管线。
+RED 日志为原终端测试输出的 LF 转录，未改诊断内容；其它日志保存原文件字节。
+新测试编写时曾有生成脚本转义错误并在 gofmt 阶段修正，发生在首次 Go 测试之前，
+不是被隐去的产品或契约运行失败。
+
+| 仓库外日志 | SHA-256 |
+| --- | --- |
+| 旧工作流契约 RED | `86ca98a7d9569e68098d20721d3f254f2090bf0ae71180c063f8854d7d851845` |
+| 新契约首批 GREEN | `98e39c33152a3f8ac505bb354ed1f509cdbda24f7c94e06572884c68f89d74df` |
+| 新契约 race×20 | `2535eafd7b0e000361e2d345a5452b92494ede4d861837472b7b3f2d06ca40c5` |
+| 原迁移门 race×20 | `885fd5d89be179d8b929b8017ffe095c584caa0a95cf68af8d8b29a0be467f6b` |
+| 完整 architecture | `307cc7a1cc954b3d1b0373ca8df8cdf7021cb87085e58cde9ab193d85060e36b` |
+
+**远端验收尚待一次推送后的首跑。** job总墙钟包含启动/清理，必须逐个与§8.2
+的80%上限比较；不能用step之和或SUCCESS代替这个独立门。首跑链接、秒数与
+任何RED登记在PR描述，不用追加源码推送或rerun覆盖证据。相关但独立的
+[文档分支首跑关联观察](https://github.com/houyuwushang/winkyou/issues/133#issuecomment-5692598077)
+只登记，不改变本PR窗口或断言。
