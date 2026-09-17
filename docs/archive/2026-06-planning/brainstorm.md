@@ -1,7 +1,9 @@
+> 2026-06 历史规划归档：保留当时结论，不代表当前实现或现场运行授权；部署细节已脱敏。
+
 # WireGuard协议分析与改进方案
 
 > [!IMPORTANT]
-> **Proposal / Brainstorm**: This document is retained as historical protocol brainstorming. It is not the active data-plane plan. Use [`docs/CONNECTIVITY-SOLVER-BASELINE.md`](docs/CONNECTIVITY-SOLVER-BASELINE.md) as the current architecture authority.
+> **Proposal / Brainstorm**: This document is retained as historical protocol brainstorming. It is not the active data-plane plan. Use [`docs/CONNECTIVITY-SOLVER-BASELINE.md`](../../CONNECTIVITY-SOLVER-BASELINE.md) as the current architecture authority.
 
 > 头脑风暴：WireGuard有什么可以改进的地方？如何在不牺牲安全性的前提下超越它？
 >

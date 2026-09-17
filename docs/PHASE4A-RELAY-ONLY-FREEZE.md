@@ -12,7 +12,7 @@ This document is a freeze gate for Phase 4A. It does not replace the active base
 
 - [`CONNECTIVITY-SOLVER-BASELINE.md`](./CONNECTIVITY-SOLVER-BASELINE.md)
 - [`../README.md`](../README.md)
-- [`../implementation_plan.md`](../implementation_plan.md)
+- [历史实施笔记](./archive/2026-06-planning/implementation_plan.md)
 
 If this document conflicts with the baseline, the baseline wins.
 

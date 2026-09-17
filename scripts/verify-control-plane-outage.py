@@ -81,25 +81,28 @@ def main() -> int:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--chen-host", default="chen-win", help="SSH host alias or hostname for chen-win")
-    parser.add_argument("--chen-user", default="", help="SSH user; defaults to OpenSSH config or chen")
+    parser.add_argument("--chen-host", required=True, help="explicit SSH host alias or hostname")
+    parser.add_argument("--chen-user", default="", help="SSH user; required here or in OpenSSH config")
     parser.add_argument("--password-env", default="WINKYOU_CHEN_PASSWORD", help="environment variable containing SSH password")
     parser.add_argument("--wink-path", default=str(pathlib.Path("dist") / "wink-windows-amd64.exe"))
     parser.add_argument("--config-path", default=str(DEFAULT_CONFIG))
     parser.add_argument("--state-path", default=str(DEFAULT_STATE))
-    parser.add_argument("--ping-target", default="10.88.0.1")
+    parser.add_argument("--ping-target", default="", help="explicit overlay target; required for icmp")
     parser.add_argument("--peer-target", default="", help="peer name/node_id/virtual_ip for wink ping; defaults to the bound peer")
     parser.add_argument("--ping-method", choices=("wink", "icmp"), default="wink", help="overlay probe method")
     parser.add_argument("--coordinator-process", default="wink-coordinator")
     parser.add_argument("--restart-task", default="WinkYouCoordinator")
     parser.add_argument("--observe-seconds", type=int, default=20)
-    return parser.parse_args()
+    args = parser.parse_args()
+    if args.ping_method == "icmp" and not args.ping_target.strip():
+        parser.error("--ping-method icmp requires --ping-target")
+    return args
 
 
 def resolve_ssh_config(host_alias: str, user_override: str) -> SSHConfig:
     host = host_alias
     port = 22
-    user = user_override.strip() or "chen"
+    user = user_override.strip()
 
     config_path = pathlib.Path.home() / ".ssh" / "config"
     if config_path.exists():
@@ -112,6 +115,8 @@ def resolve_ssh_config(host_alias: str, user_override: str) -> SSHConfig:
         if not user_override.strip():
             user = match.get("user", user)
 
+    if not user:
+        raise SystemExit("Supply --chen-user or an OpenSSH config User entry.")
     return SSHConfig(host=host, port=port, user=user)
 
 
@@ -121,7 +126,7 @@ def remote_password(env_name: str) -> str:
         return value
     if sys.stdin.isatty():
         return getpass.getpass(f"SSH password ({env_name}): ")
-    raise SystemExit(f"Set {env_name} to the chen-win SSH password or run interactively.")
+    raise SystemExit(f"Set {env_name} to the SSH password or run interactively.")
 
 
 def connect_ssh(cfg: SSHConfig, password: str) -> paramiko.SSHClient:

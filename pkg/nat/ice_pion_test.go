@@ -597,7 +597,7 @@ func TestICEPionAgentRemoteCandidateCount(t *testing.T) {
 
 	err = agent.SetRemoteCandidates([]Candidate{{
 		Type:       CandidateTypeSrflx,
-		Address:    &net.UDPAddr{IP: net.IPv4(210, 30, 106, 93), Port: 18981},
+		Address:    &net.UDPAddr{IP: net.IPv4(198, 51, 100, 231), Port: 18981},
 		Priority:   100,
 		Foundation: "remote-srflx",
 	}})
@@ -685,7 +685,7 @@ func TestPublicDirectMaxBindingRequestsScaleWithConnectTimeout(t *testing.T) {
 func TestCandidateToPionServerReflexiveAllowsMissingRelatedAddr(t *testing.T) {
 	candidate, err := candidateToPion(Candidate{
 		Type:       CandidateTypeSrflx,
-		Address:    &net.UDPAddr{IP: net.IPv4(117, 48, 146, 2), Port: 41000},
+		Address:    &net.UDPAddr{IP: net.IPv4(198, 51, 100, 200), Port: 41000},
 		Priority:   100,
 		Foundation: "public-hint-1",
 	})
@@ -742,7 +742,7 @@ func TestPublicDirectBindingRequestHandlerSwitchesOnlyPublicPairs(t *testing.T) 
 	})
 	publicPeerReflexive := mustPionCandidate(t, Candidate{
 		Type:       CandidateTypePrflx,
-		Address:    &net.UDPAddr{IP: net.IPv4(117, 48, 146, 2), Port: 41000},
+		Address:    &net.UDPAddr{IP: net.IPv4(198, 51, 100, 200), Port: 41000},
 		Priority:   200,
 		Foundation: "remote-prflx",
 	})
@@ -818,7 +818,7 @@ func TestPublicDirectBindingRequestHandlerSwitchesOnlyPublicPairs(t *testing.T) 
 
 	relay := mustPionCandidate(t, Candidate{
 		Type:       CandidateTypeRelay,
-		Address:    &net.UDPAddr{IP: net.IPv4(117, 48, 146, 3), Port: 41000},
+		Address:    &net.UDPAddr{IP: net.IPv4(198, 51, 100, 223), Port: 41000},
 		Priority:   200,
 		Foundation: "remote-relay",
 		RelatedAddr: &net.UDPAddr{

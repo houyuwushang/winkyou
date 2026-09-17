@@ -1,7 +1,9 @@
+> 2026-06 历史规划归档：保留当时结论，不代表当前实现或现场运行授权；部署细节已脱敏。
+
 # WinkYou 开发计划与管理文档
 
 > [!IMPORTANT]
-> **Archive / Brainstorm**: This is an early planning and management document. It is preserved for traceability and is not the active roadmap. Use [`docs/CONNECTIVITY-SOLVER-BASELINE.md`](docs/CONNECTIVITY-SOLVER-BASELINE.md) as the current architecture authority.
+> **Archive / Brainstorm**: This is an early planning and management document. It is preserved for traceability and is not the active roadmap. Use [`docs/CONNECTIVITY-SOLVER-BASELINE.md`](../../CONNECTIVITY-SOLVER-BASELINE.md) as the current architecture authority.
 
 > 说明：本文件保留项目开发管理与长期排期视角。
 > 对于当前 MVP 执行，如与 `docs/EXECUTION-BASELINE.md` 冲突，以执行基线为准。

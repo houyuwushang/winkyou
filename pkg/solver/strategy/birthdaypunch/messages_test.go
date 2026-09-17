@@ -11,7 +11,7 @@ func TestEndpointPayloadRoundTrip(t *testing.T) {
 	orig := endpointPayload{
 		SessionID:    "session/a/b",
 		PlanID:       "birthdaypunch/direct",
-		PublicIP:     "210.30.106.93",
+		PublicIP:     "198.51.100.231",
 		ObservedPort: 55161,
 		Pattern:      "sequential",
 		Delta:        1,

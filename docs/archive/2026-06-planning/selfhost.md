@@ -1,7 +1,9 @@
+> 2026-06 历史规划归档：保留当时结论，不代表当前实现或现场运行授权；部署细节已脱敏。
+
 # WinkYou 自研路线图
 
 > [!IMPORTANT]
-> **Proposal / Brainstorm**: This document is retained as historical self-host/self-developed roadmap material. It is not the active implementation plan. Use [`docs/CONNECTIVITY-SOLVER-BASELINE.md`](docs/CONNECTIVITY-SOLVER-BASELINE.md) as the current architecture authority.
+> **Proposal / Brainstorm**: This document is retained as historical self-host/self-developed roadmap material. It is not the active implementation plan. Use [`docs/CONNECTIVITY-SOLVER-BASELINE.md`](../../CONNECTIVITY-SOLVER-BASELINE.md) as the current architecture authority.
 
 > 核心原则：**先用别人的跑通，再用自己的替掉。但从第一天起，就必须把墙砌好——让替换是换一个零件，而不是拆一栋楼。**
 >

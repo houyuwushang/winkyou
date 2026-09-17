@@ -1,7 +1,9 @@
+> 2026-06 历史规划归档：保留当时结论，不代表当前实现或现场运行授权；部署细节已脱敏。
+
 # WinkYou 完全自研开发计划
 
 > [!IMPORTANT]
-> **Proposal / Brainstorm**: This document is retained as historical self-development planning. It is not the active implementation plan. Use [`docs/CONNECTIVITY-SOLVER-BASELINE.md`](docs/CONNECTIVITY-SOLVER-BASELINE.md) as the current architecture authority.
+> **Proposal / Brainstorm**: This document is retained as historical self-development planning. It is not the active implementation plan. Use [`docs/CONNECTIVITY-SOLVER-BASELINE.md`](../../CONNECTIVITY-SOLVER-BASELINE.md) as the current architecture authority.
 
 > 本文档描述：如果核心组件全部自己写，具体要写什么、怎么写、按什么顺序。
 > 

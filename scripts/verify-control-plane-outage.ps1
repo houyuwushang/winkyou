@@ -1,15 +1,19 @@
 param(
-    [string]$ChenHost = "chen-win",
+    [string]$ChenHost = "",
     [string]$CoordinatorProcessName = "wink-coordinator",
     [string]$RestartTaskName = "WinkYouCoordinator",
     [string]$WinkPath = "dist\wink-windows-amd64.exe",
     [string]$ConfigPath = "$env:LOCALAPPDATA\Temp\winkyou-p2p-test\local-a.yaml",
     [string]$StatePath = "$env:LOCALAPPDATA\Temp\winkyou-p2p-test\local.runtime.json",
-    [string]$PingTarget = "10.88.0.1",
+    [string]$PingTarget = "",
     [int]$ObserveSeconds = 20
 )
 
 $ErrorActionPreference = "Stop"
+
+if ([string]::IsNullOrWhiteSpace($ChenHost) -or [string]::IsNullOrWhiteSpace($PingTarget)) {
+    throw 'Explicit ChenHost and PingTarget parameters are required.'
+}
 
 function Invoke-Ssh {
     param(

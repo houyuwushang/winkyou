@@ -263,7 +263,7 @@ func TestReplacePeerUpdatesExistingPeer(t *testing.T) {
 	if err := replacer.ReplacePeer(&PeerConfig{
 		PublicKey:  pk,
 		AllowedIPs: []net.IPNet{{IP: net.IPv4(10, 0, 0, 22), Mask: net.CIDRMask(32, 32)}},
-		Endpoint:   &net.UDPAddr{IP: net.IPv4(5, 6, 7, 8), Port: 51821},
+		Endpoint:   &net.UDPAddr{IP: net.IPv4(198, 51, 100, 233), Port: 51821},
 	}); err != nil {
 		t.Fatalf("ReplacePeer() error: %v", err)
 	}
@@ -272,8 +272,8 @@ func TestReplacePeerUpdatesExistingPeer(t *testing.T) {
 	if len(peers) != 1 {
 		t.Fatalf("GetPeers() length = %d, want 1", len(peers))
 	}
-	if peers[0].Endpoint == nil || !peers[0].Endpoint.IP.Equal(net.IPv4(5, 6, 7, 8)) || peers[0].Endpoint.Port != 51821 {
-		t.Fatalf("endpoint = %+v, want 5.6.7.8:51821", peers[0].Endpoint)
+	if peers[0].Endpoint == nil || !peers[0].Endpoint.IP.Equal(net.IPv4(198, 51, 100, 233)) || peers[0].Endpoint.Port != 51821 {
+		t.Fatalf("endpoint = %+v, want 198.51.100.233:51821", peers[0].Endpoint)
 	}
 	if len(peers[0].AllowedIPs) != 1 || !peers[0].AllowedIPs[0].IP.Equal(net.IPv4(10, 0, 0, 22)) {
 		t.Fatalf("allowed IPs = %#v, want replaced /32", peers[0].AllowedIPs)
@@ -358,7 +358,7 @@ func TestUpdatePeerEndpoint(t *testing.T) {
 	})
 	_ = drainEvent(t, tun)
 
-	newEP := &net.UDPAddr{IP: net.IPv4(2, 2, 2, 2), Port: 2000}
+	newEP := &net.UDPAddr{IP: net.IPv4(198, 51, 100, 229), Port: 2000}
 	err := tun.UpdatePeerEndpoint(pk, newEP)
 	if err != nil {
 		t.Fatalf("UpdatePeerEndpoint() error: %v", err)
@@ -368,8 +368,8 @@ func TestUpdatePeerEndpoint(t *testing.T) {
 	if len(peers) != 1 {
 		t.Fatalf("GetPeers() length = %d, want 1", len(peers))
 	}
-	if !peers[0].Endpoint.IP.Equal(net.IPv4(2, 2, 2, 2)) {
-		t.Errorf("Endpoint IP = %v, want 2.2.2.2", peers[0].Endpoint.IP)
+	if !peers[0].Endpoint.IP.Equal(net.IPv4(198, 51, 100, 229)) {
+		t.Errorf("Endpoint IP = %v, want 198.51.100.229", peers[0].Endpoint.IP)
 	}
 	if peers[0].Endpoint.Port != 2000 {
 		t.Errorf("Endpoint Port = %d, want 2000", peers[0].Endpoint.Port)

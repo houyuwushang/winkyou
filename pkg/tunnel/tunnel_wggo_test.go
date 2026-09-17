@@ -153,12 +153,12 @@ func TestPeerTransportBindSendAndReceive(t *testing.T) {
 	}
 	defer bind.DetachTransport(publicKey)
 
-	bind.UpdateTransportEndpoint(publicKey, &net.UDPAddr{IP: net.IPv4(5, 6, 7, 8), Port: 51820})
-	if got := bind.TransportRemoteAddr(publicKey); got == nil || !got.IP.Equal(net.IPv4(5, 6, 7, 8)) || got.Port != 51820 {
-		t.Fatalf("TransportRemoteAddr() = %+v, want 5.6.7.8:51820", got)
+	bind.UpdateTransportEndpoint(publicKey, &net.UDPAddr{IP: net.IPv4(198, 51, 100, 233), Port: 51820})
+	if got := bind.TransportRemoteAddr(publicKey); got == nil || !got.IP.Equal(net.IPv4(198, 51, 100, 233)) || got.Port != 51820 {
+		t.Fatalf("TransportRemoteAddr() = %+v, want 198.51.100.233:51820", got)
 	}
-	if got := bind.ResolveEndpoint(endpointID); got == nil || !got.IP.Equal(net.IPv4(5, 6, 7, 8)) || got.Port != 51820 {
-		t.Fatalf("ResolveEndpoint(%q) = %+v, want 5.6.7.8:51820", endpointID, got)
+	if got := bind.ResolveEndpoint(endpointID); got == nil || !got.IP.Equal(net.IPv4(198, 51, 100, 233)) || got.Port != 51820 {
+		t.Fatalf("ResolveEndpoint(%q) = %+v, want 198.51.100.233:51820", endpointID, got)
 	}
 
 	endpoint, err := bind.ParseEndpoint(endpointID)

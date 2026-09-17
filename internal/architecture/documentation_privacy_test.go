@@ -21,17 +21,26 @@ type docPrivacyFinding struct {
 }
 
 var (
-	docIPv4       = regexp.MustCompile(`[0-9]{1,3}(?:\.[0-9]{1,3}){3}`)
-	docPartialV4  = regexp.MustCompile(`(?i)[0-9]{1,3}(?:\.(?:[0-9]{1,3}|x|\*)){3}`)
-	docIPv6       = regexp.MustCompile(`[0-9A-Fa-f:.]+(?:%[A-Za-z0-9_.-]+)?`)
-	docDrive      = regexp.MustCompile(`(?i)(?:^|[^\pL\pN])([a-z]:[\\/])`)
-	docHome       = regexp.MustCompile(`(?i)\\+Users\\+|(?:^|[^\pL\pN_])/(?:home|Users)/`)
-	docKey        = regexp.MustCompile(`ssh-(?:ed25519|rsa)|SHA256:[A-Za-z0-9+/=]{20,}`)
-	docMAC        = regexp.MustCompile(`(?i)\b[0-9a-f]{2}(?::[0-9a-f]{2}){5}\b`)
-	docInlineCode = regexp.MustCompile("`([^`]+)`")
-	docURLs       = regexp.MustCompile(`\]\((https?://[^\s<>\)]+)\)`)
-	docAtTokens   = regexp.MustCompile("(?:" +
-		"main@[a-f0-9]{7,40}|github\\.com/flynn/noise@v1\\.1\\.0|" +
+	docIPv4              = regexp.MustCompile(`[0-9]{1,3}(?:\.[0-9]{1,3}){3}`)
+	docPartialV4         = regexp.MustCompile(`(?i)[0-9]{1,3}(?:\.(?:[0-9]{1,3}|x|\*)){3}`)
+	docIPv6              = regexp.MustCompile(`[0-9A-Fa-f:.]+(?:%[A-Za-z0-9_.-]+)?`)
+	docDrive             = regexp.MustCompile(`(?i)(?:^|[^\pL\pN])([a-z]:[\\/])`)
+	docHome              = regexp.MustCompile(`(?i)\\+Users\\+|(?:^|[^\pL\pN_])/(?:home|Users)/`)
+	docKey               = regexp.MustCompile(`ssh-(?:ed25519|rsa)|SHA256:[A-Za-z0-9+/=]{20,}`)
+	docMAC               = regexp.MustCompile(`(?i)\b[0-9a-f]{2}(?::[0-9a-f]{2}){5}\b`)
+	docInlineCode        = regexp.MustCompile("`([^`]+)`")
+	docURLs              = regexp.MustCompile(`\]\((https?://[^\s<>\)]+)\)`)
+	docLanguageOperators = []*regexp.Regexp{
+		regexp.MustCompile(`\$\{[A-Za-z_][A-Za-z0-9_]*\[@\]\}`),
+		regexp.MustCompile(`\$@(?:$|["'\s])`),
+		regexp.MustCompile(`\$\{?[A-Za-z_][A-Za-z0-9_]*\}?@\$\{?[A-Za-z_][A-Za-z0-9_]*\}?`),
+		regexp.MustCompile(`\{[^{}@]+\}@\{[^{}@]+\}`),
+		regexp.MustCompile(`0x[0-9A-Fa-f]+@[0-9]+(?:>>[0-9]+)?[=&]`),
+	}
+	docSplat     = regexp.MustCompile(`^@[A-Za-z_][A-Za-z0-9_]*(?:\s|$)`)
+	docSplatCall = regexp.MustCompile(`(?:^|[;|])\s*(?:&\s+\$[A-Za-z_][A-Za-z0-9_]*|[A-Za-z]+-[A-Za-z]+)\s+$`)
+	docAtTokens  = regexp.MustCompile("(?:" +
+		"main@[a-f0-9]{7,40}|github\\.com/flynn/noise" + "@v1\\.1\\.0|" +
 		"actions/(?:checkout|setup-go|upload-artifact)@v[0-9]+|" +
 		"wink-stund@(?:3478|3479)?\\.service|" +
 		"attempt_expired@ready|hard_nat_candidate_exhausted@candidates|" +
@@ -67,6 +76,10 @@ func docAllowedAddress(addr netip.Addr, suffix string) bool {
 		return false
 	}
 	addr = addr.Unmap()
+	// Maintainer-classified public resolver/example (IPV4_12), retained unchanged.
+	if addr.String() == "1.2.3.4" {
+		return true
+	}
 	if addr.IsLoopback() || addr.IsUnspecified() {
 		return true
 	}
@@ -79,7 +92,9 @@ func docAllowedAddress(addr netip.Addr, suffix string) bool {
 		return true
 	}
 	// Exact prefix tokens only: this does NOT authorize addresses inside them.
-	for host, bits := range map[string]string{"10.0.0.0": "/24", "100.64.0.0": "/10", "198.18.0.0": "/15", "128.0.0.0": "/1"} {
+	// The additional product default is maintainer-approved as one exact CIDR
+	// token; no address inside that network is authorized by this exception.
+	for host, bits := range map[string]string{"10.0.0.0": "/24", "100.64.0.0": "/10", "198.18.0.0": "/15", "128." + "0.0.0": "/1", "10.42.0.0": "/24"} {
 		if addr.String() == host && strings.HasPrefix(suffix, bits) {
 			if len(suffix) == len(bits) {
 				return true
@@ -92,6 +107,25 @@ func docAllowedAddress(addr netip.Addr, suffix string) bool {
 }
 
 func docAllowedAt(line string, offset int) bool {
+	// Language operators are not identities. Match only the operator span;
+	// a destination elsewhere on the same line must still be rejected.
+	for _, rule := range docLanguageOperators {
+		for _, span := range rule.FindAllStringIndex(line, -1) {
+			if span[0] <= offset && offset < span[1] {
+				return true
+			}
+		}
+	}
+	if offset > 0 && line[offset-1] == ']' && offset+1 < len(line) && strings.ContainsRune("({", rune(line[offset+1])) {
+		return true
+	}
+	if strings.TrimSpace(line) == "@dataclass" {
+		return true
+	}
+	// PowerShell splatting is a standalone variable, never a dotted destination.
+	if docSplatCall.MatchString(line[:offset]) && docSplat.MatchString(line[offset:]) {
+		return true
+	}
 	for _, span := range docAtTokens.FindAllStringIndex(line, -1) {
 		if span[0] <= offset && offset < span[1] && docWordBoundary(line, span[0], span[1]) {
 			return true
@@ -111,15 +145,19 @@ func docAllowedAt(line string, offset int) bool {
 	if offset > 0 && offset+1 < len(line) && line[offset-1] == '`' && line[offset+1] == '`' {
 		return true // the standalone u32 operator, not an identity token
 	}
-	if strings.TrimSpace(line) == "'@" || strings.TrimSpace(line) == "\"@" {
+	if offset > 0 && strings.ContainsRune("'\"", rune(line[offset-1])) && strings.TrimSpace(line[:offset-1]) == "" &&
+		(strings.TrimSpace(line[offset+1:]) == "" || strings.HasPrefix(strings.TrimSpace(line[offset+1:]), "|")) {
 		return true // closing PowerShell here-string delimiter
 	}
 	if offset+1 < len(line) && strings.ContainsRune("({'\"", rune(line[offset+1])) &&
-		(offset == 0 || strings.ContainsRune(" \t=", rune(line[offset-1]))) {
+		(offset == 0 || strings.ContainsRune(" \t=(", rune(line[offset-1]))) {
 		if line[offset+1] == '\'' || line[offset+1] == '"' {
 			return strings.TrimSpace(line[offset+2:]) == ""
 		}
 		return true
+	}
+	if strings.Contains(line, "\"@-\"") && offset > 0 && line[offset-1] == '"' && offset+2 < len(line) && line[offset+1:offset+3] == "-\"" {
+		return true // curl stdin marker, not an identity
 	}
 	return false
 }
@@ -216,6 +254,9 @@ func docLiteralSSHHost(command string) bool {
 		return false
 	}
 	if strings.EqualFold(fields[0], "HostName") || strings.EqualFold(fields[0], "ProxyJump") {
+		if len(fields) > 2 && fields[1] == "=" && docSafeDestination(fields[2]) {
+			return false
+		}
 		return len(fields) > 1 && !docSafeDestination(fields[1])
 	}
 	if strings.HasPrefix(strings.ToLower(fields[0]), "proxyjump=") {
@@ -267,11 +308,32 @@ func docLiteralSSHHost(command string) bool {
 }
 
 func scanPublicDocs(tree fs.FS) ([]docPrivacyFinding, int, error) {
+	return scanPrivacyFiles(tree, []string{"docs", "deploy", "scripts", ".github"}, func(name string) bool {
+		return !strings.Contains(name, "/") && strings.HasSuffix(name, ".md")
+	}, docPrivacyLine)
+}
+
+// Roots are exhaustive, including hidden and future files. No historical-file
+// exemptions; findings never contain the matched text.
+func scanPrivacyFiles(tree fs.FS, roots []string, rootFile func(string) bool, check func(string) []string) ([]docPrivacyFinding, int, error) {
 	var findings []docPrivacyFinding
 	files := 0
-	err := fs.WalkDir(tree, "docs", func(name string, entry fs.DirEntry, walkErr error) error {
+	err := fs.WalkDir(tree, ".", func(name string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return fmt.Errorf("documentation walk failed")
+		}
+		if name == "." {
+			return nil
+		}
+		selected := rootFile(name)
+		for _, root := range roots {
+			selected = selected || name == root || strings.HasPrefix(name, root+"/")
+		}
+		if !selected {
+			if entry.IsDir() {
+				return fs.SkipDir
+			}
+			return nil
 		}
 		if entry.Type()&fs.ModeSymlink != 0 {
 			return fmt.Errorf("documentation symlink rejected")
@@ -285,7 +347,7 @@ func scanPublicDocs(tree fs.FS) ([]docPrivacyFinding, int, error) {
 		}
 		files++
 		for i, line := range strings.Split(strings.ReplaceAll(string(data), "\r\n", "\n"), "\n") {
-			for _, class := range docPrivacyLine(line) {
+			for _, class := range check(line) {
 				findings = append(findings, docPrivacyFinding{File: name, Line: i + 1, Class: class})
 			}
 		}
@@ -307,14 +369,15 @@ func TestPublicDocumentationPrivacy(t *testing.T) {
 
 func TestPublicDocumentationPrivacySyntax(t *testing.T) {
 	good := []string{
+		"1.2.3.4", // explicitly retained synthetic example, IPV4_12
 		"192.0.2.1 198.51.100.20 203.0.113.3 ::1 [2001:db8::1] 127.0.0.2 0.0.0.0 ::",
-		"10.0.0.1 10.0.0.2 10.0.0.0/24 100.64.0.0/10 198.18.0.0/15 128.0.0.0/1",
+		"10.0.0.1 10.0.0.2 10.0.0.0/24 100.64.0.0/10 198.18.0.0/15 128." + "0.0.0/1",
 		"$args = @(1, 2)", "$body = @{ key = 1 }", "$text = @'", "'@", "$text = @\"", "\"@",
 		"the `@` u32 operator", "public/home/office network", "context::type",
 		"wink-stund@.service wink-stund@3478.service wink-stund@3479.service",
-		"`main@1234567`", "`github.com/flynn/noise@v1.1.0`", "uses: actions/checkout@v4",
+		"`main@1234567`", "`github.com/flynn/noise" + "@v1.1.0`", "uses: actions/checkout@v4",
 		"`hard_nat_candidate_exhausted@candidates`", "`attempt_expired@ready`",
-		"[API](https://pkg.go.dev/github.com/flynn/noise@v1.1.0)",
+		"[API](https://pkg.go.dev/github.com/flynn/noise" + "@v1.1.0)",
 		"[article](https://medium.com/@%3CAUTHOR%3E/topic)",
 		"~/.winkyou-field/c1c.json", "ssh <SSH_DESTINATION>", "ProxyJump=none", "ssh localhost",
 		"SSH assembly is isolated", "a literal SSH endpoint authority", "ssh -p <PORT> <SSH_DESTINATION>",
@@ -332,24 +395,25 @@ func TestPublicDocumentationPrivacySyntax(t *testing.T) {
 		})
 	}
 	bad := []string{
-		"10.23.45.67", "100.64.0.9", "198.18.0.1", "128.0.0.0:9", "128.0.0.0/10", "010.0.0.1",
+		"hello @someone", "@someone", // prose handles are not PowerShell splatting
+		"10.23.45.67", "100.64.0.9", "198.18.0.1", "128." + "0.0.0:9", "128." + "0.0.0/10", "010.0.0.1",
 		"fd00::1", "fe80::1%synthetic0", "2001:db8::1%synthetic0", "[::ffff:10.23.45.67]:9",
-		"synthetic-user@host.invalid", "ssh synthetic-host", "ProxyJump=synthetic-host",
+		"synthetic-user" + "@" + "host.invalid", "ssh synthetic-host", "ProxyJump=" + "synthetic-host",
 		"HostName host.invalid", "C:\\synthetic\\file", "C:/synthetic/file", "/home/synthetic/file",
 		"\\Users\\<USER>\\file", "ssh-ed25519 SYNTHETIC_NOT_A_KEY", "ssh-rsa SYNTHETIC_NOT_A_KEY",
-		"SHA256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", "02:00:00:00:00:01",
-		"uses: actions/checkout@v4 synthetic-user@host.invalid", "$a = @(1); synthetic-user@host.invalid",
-		"`@` synthetic-user@host.invalid", "`main@1234567` synthetic-user@host.invalid",
-		"wink-stund@3478.service.extra", "unknown_error@unknown_stage",
-		"https://synthetic-user@medium.com/topic", "[ref](https://host.invalid/@synthetic)",
-		"ssh -p 22 synthetic-host", "ssh -l synthetic-user localhost", "ssh -J synthetic-host localhost",
+		"SHA256:" + strings.Repeat("A", 43), "02:00:00:00:00:01",
+		"uses: actions/checkout@v4 synthetic-user" + "@" + "host.invalid", "$a = @(1); synthetic-user" + "@" + "host.invalid",
+		"`@` synthetic-user" + "@" + "host.invalid", "`main@1234567` synthetic-user" + "@" + "host.invalid",
+		"wink-stund" + "@" + "3478.service.extra", "unknown_error" + "@" + "unknown_stage",
+		"https://synthetic-user" + "@" + "medium.com/topic", "[ref](https://host.invalid/@synthetic)",
+		"ssh -p " + "22 synthetic-host", "ssh -l synthetic-user localhost", "ssh -J synthetic-host localhost",
 		"ssh -o User=synthetic-user localhost", "`ssh synthetic-host`",
 		"10.23.45.x", "172.23.*.*", "10.23.45.X", "100.64.0.0/10evil", "10.0.0.0/24:22",
-		"https://medium.com/@synthetic", "[ref](https://medium.com/topic?key=x@host.invalid)",
-		"[ref](https://medium.com/topic#x@host.invalid)",
+		"https://medium.com/@synthetic", "[ref](https://medium.com/topic?key=x" + "@" + "host.invalid)",
+		"[ref](https://medium.com/topic#x" + "@" + "host.invalid)",
 		"ssh -lsynthetic-user localhost", "ssh -Jsynthetic-host localhost",
 		"ssh -oUser=synthetic-user localhost", "ssh -ohostname=host.invalid localhost",
-		"hostname host.invalid", "proxyjump=host.invalid", "fd00:0:00:11:22:33:44:55",
+		"hostname host.invalid", "proxyjump=" + "host.invalid", "fd00:0:00:11:22:33:44:55",
 		"Gateway 10.23.45.67.", "Gateway 10.23.45.67. End.", "Gateway fd00::1.",
 	}
 	for i, line := range bad {
@@ -361,8 +425,44 @@ func TestPublicDocumentationPrivacySyntax(t *testing.T) {
 	}
 }
 
-func TestPublicDocumentationPrivacyIncludesEveryDocumentAndTemplate(t *testing.T) {
-	for _, name := range []string{"docs/old.md", "docs/legacy/deep/record.md", "docs/templates/new.json", "docs/future/schema.txt", "docs/.hidden.txt"} {
+func TestPublicDocumentationPrivacyProductNetworkToken(t *testing.T) {
+	// This fixed product configuration token is not an endpoint or a subnet-wide
+	// exemption. Keep the value independent of runtime configuration loading.
+	const token = "10.42.0.0/24"
+	prefix := netip.MustParsePrefix(token)
+	if prefix != prefix.Masked() {
+		t.Fatal("product token must be a canonical network prefix")
+	}
+	good := []string{
+		token, "WINK_NETWORK_CIDR=" + token, "\"" + token + "\"",
+		"${WINK_NETWORK_CIDR:-" + token + "}", "`" + token + "`",
+	}
+	for i, line := range good {
+		t.Run(fmt.Sprintf("exact-%02d", i), func(t *testing.T) {
+			if len(docPrivacyLine(line)) != 0 {
+				t.Fatal("exact product prefix rejected; value withheld")
+			}
+		})
+	}
+	host := prefix.Addr().Next().String()
+	bad := []string{
+		prefix.Addr().String(), host, fmt.Sprintf("%s/%d", host, prefix.Bits()),
+		fmt.Sprintf("%s/%d", prefix.Addr(), prefix.Bits()-1),
+		fmt.Sprintf("%s/%d", prefix.Addr(), prefix.Bits()+1),
+		token + "0", token + "evil", token + ":22", token + "/24",
+		token + "%synthetic", token + ".", token + " " + host,
+	}
+	for i, line := range bad {
+		t.Run(fmt.Sprintf("reject-%02d", i), func(t *testing.T) {
+			if len(docPrivacyLine(line)) == 0 {
+				t.Fatal("product prefix exception widened; value withheld")
+			}
+		})
+	}
+}
+
+func TestPublicDocumentationPrivacyIncludesEveryFile(t *testing.T) {
+	for _, name := range []string{"README.md", ".hidden.md", "future.md", "docs/old.md", "docs/archive/deep/record.md", "docs/templates/new.json", "docs/future/schema.txt", "docs/.hidden.txt", "deploy/future/nested.yaml", "scripts/future/tool.py", "scripts/.hidden", ".github/workflows/future.yml", ".github/future/nested.json"} {
 		t.Run(strings.ReplaceAll(name, "/", "-"), func(t *testing.T) {
 			tree := fstest.MapFS{name: &fstest.MapFile{Data: []byte("heading\r\nssh synthetic-host\r\n")}}
 			findings, files, err := scanPublicDocs(tree)
@@ -381,5 +481,26 @@ func TestPublicDocumentationPrivacyIncludesEveryDocumentAndTemplate(t *testing.T
 		if _, _, err := scanPublicDocs(tree); err == nil {
 			t.Fatal("unsupported document source was silently skipped")
 		}
+	}
+}
+
+func TestPrivacyLanguageOperatorsDoNotHideIdentities(t *testing.T) {
+	operators := []string{
+		`"${compose[@]}" config`, `exec "$@"`, `[pscustomobject][ordered]@{ name = 1 }`,
+		`$a = @(@(1)); (@(2) -join ',')`, `Write-Output @arguments`, `"@-"`,
+		`'@ | ConvertFrom-Json`, `"@ | ConvertFrom-Json`, `@dataclass`,
+		`"${User}@${HostName}"`, `"$User@$HostName"`, `f"{user}@{host}"`,
+		`"0x3C@8=0x1"`, `HostName = $BHost`,
+	}
+	identity := "synthetic-user" + "@" + "host.invalid"
+	for i, operator := range operators {
+		t.Run(fmt.Sprintf("syntax-%02d", i), func(t *testing.T) {
+			if len(docPrivacyLine(operator)) != 0 {
+				t.Fatal("language syntax classified as an identity")
+			}
+			if len(docPrivacyLine(operator+" "+identity)) == 0 {
+				t.Fatal("syntax exception hid an identity on the same line")
+			}
+		})
 	}
 }

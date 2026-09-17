@@ -20,7 +20,7 @@ When documents disagree, treat `CONNECTIVITY-SOLVER-BASELINE.md` as the source o
 - Phase 3A strategy portfolio entry: [`PHASE3A-STRATEGY-PORTFOLIO.md`](./PHASE3A-STRATEGY-PORTFOLIO.md)
 - v0.1 freeze gate: [`V0.1-FREEZE.md`](./V0.1-FREEZE.md)
 - v0.2 multipath/bootstrap freeze gate: [`V0.2-MULTIPATH-FREEZE.md`](./V0.2-MULTIPATH-FREEZE.md)
-- Phase 3B+ working plan: [`../implementation_plan.md`](../implementation_plan.md)
+- Phase 3B+ working plan: [`./archive/2026-06-planning/implementation_plan.md`](./archive/2026-06-planning/implementation_plan.md)
 - Protected direct multipath goal: [`MULTIPATH-PROTECTED-DIRECT.md`](./MULTIPATH-PROTECTED-DIRECT.md)
 - Intermittent bootstrap broker: [`INTERMITTENT-BOOTSTRAP-BROKER.md`](./INTERMITTENT-BOOTSTRAP-BROKER.md)
 
@@ -95,19 +95,21 @@ These files are proposal/RFC material for future architecture work. They remain 
 - Historical task breakdowns: [`tasks/`](./tasks)
 - Peer relay notes: [`PEER-RELAY-DESIGN.md`](./PEER-RELAY-DESIGN.md)
 - Deployment questions log: [`DEPLOYMENT-QUESTIONS-2026-04-15.md`](./DEPLOYMENT-QUESTIONS-2026-04-15.md)
-- Deployment hardening summary: [`../DEPLOYMENT-SUMMARY.md`](../DEPLOYMENT-SUMMARY.md)
+- Deployment hardening summary: [`./archive/2026-06-planning/DEPLOYMENT-SUMMARY.md`](./archive/2026-06-planning/DEPLOYMENT-SUMMARY.md)
 
-Root-level archive/proposal documents:
+2026-06 archive/proposal documents:
 
-- [`../winkplan.md`](../winkplan.md)
-- [`../brainstorm.md`](../brainstorm.md)
-- [`../selfdev.md`](../selfdev.md)
-- [`../selfhost.md`](../selfhost.md)
-- [`../manage.md`](../manage.md)
-- [`../question.md`](../question.md)
-- [`../guess.md`](../guess.md)
-- [`../protocol.md`](../protocol.md)
-- [`../wink-protocol-v1.md`](../wink-protocol-v1.md)
-- [`../codex_summary.md`](../codex_summary.md)
+- [全仓隐私收口证据](./REPOSITORY-PRIVACY-EVIDENCE.md)
+- [历史实施笔记](./archive/2026-06-planning/implementation_plan.md)
+- [`./archive/2026-06-planning/winkplan.md`](./archive/2026-06-planning/winkplan.md)
+- [`./archive/2026-06-planning/brainstorm.md`](./archive/2026-06-planning/brainstorm.md)
+- [`./archive/2026-06-planning/selfdev.md`](./archive/2026-06-planning/selfdev.md)
+- [`./archive/2026-06-planning/selfhost.md`](./archive/2026-06-planning/selfhost.md)
+- [`./archive/2026-06-planning/manage.md`](./archive/2026-06-planning/manage.md)
+- [`./archive/2026-06-planning/question.md`](./archive/2026-06-planning/question.md)
+- [`./archive/2026-06-planning/guess.md`](./archive/2026-06-planning/guess.md)
+- [`./archive/2026-06-planning/protocol.md`](./archive/2026-06-planning/protocol.md)
+- [`./archive/2026-06-planning/wink-protocol-v1.md`](./archive/2026-06-planning/wink-protocol-v1.md)
+- [`./archive/2026-06-planning/codex_summary.md`](./archive/2026-06-planning/codex_summary.md)
 
 Archive and brainstorm documents are preserved for traceability. Do not treat them as current implementation instructions unless a current roadmap entry explicitly references them.

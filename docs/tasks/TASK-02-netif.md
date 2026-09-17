@@ -209,7 +209,7 @@ func New(cfg Config) (NetworkInterface, error) {
 
 > **抽象层设计要求**: 第三方库代码必须隔离在独立实现文件中。
 > TUN的MVP实现放在`tun_linux_wg.go`等文件，自研实现放在`tun_linux_native.go`，共用`NetworkInterface`接口和测试。
-> 详见 [selfhost.md](../../selfhost.md)
+> 详见 [selfhost.md](../archive/2026-06-planning/selfhost.md)
 
 ### 目录结构
 

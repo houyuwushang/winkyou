@@ -79,8 +79,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--state-path", default=str(DEFAULT_STATE))
     parser.add_argument("--peer-target", default="", help="peer name/node_id/virtual_ip for wink ping; defaults to protected peer")
     parser.add_argument("--local-node", default="local-a", help="topology label for this machine")
-    parser.add_argument("--bootstrap-node", default="chen-win", help="topology label for B")
-    parser.add_argument("--target-node", default="inner-gw", help="topology label for C")
+    parser.add_argument("--bootstrap-node", default="node-b", help="topology label for B")
+    parser.add_argument("--target-node", default="node-c", help="topology label for C")
     parser.add_argument("--post-ping-count", type=int, default=5)
     parser.add_argument("--post-ping-interval", type=float, default=2.0)
     parser.add_argument("--command-timeout", type=int, default=30)
@@ -94,9 +94,9 @@ def parse_args() -> argparse.Namespace:
     group.add_argument("--pause-primary-host", action="store_true", help="run --pause-primary-command on --primary-host")
 
     parser.add_argument("--ssh-user", default="", help="optional SSH user for remote fault commands")
-    parser.add_argument("--coordinator-host", default="chen-win")
-    parser.add_argument("--relay-host", default="chen-win")
-    parser.add_argument("--primary-host", default="chen-win")
+    parser.add_argument("--coordinator-host", default="")
+    parser.add_argument("--relay-host", default="")
+    parser.add_argument("--primary-host", default="")
     parser.add_argument("--coordinator-process", default="wink-coordinator")
     parser.add_argument("--relay-process", default="wink-relay")
     parser.add_argument("--pause-primary-command", default="", help="explicit remote command for --pause-primary-host")
@@ -294,6 +294,8 @@ def run_remote_powershell(host: str, user: str, script: str, timeout: int) -> su
 
 
 def run_remote_shell(host: str, user: str, command: str, timeout: int) -> subprocess.CompletedProcess[str]:
+    if not host.strip() or "<" in host:
+        raise ValueError("An explicit remote host parameter is required.")
     target = host if not user.strip() else f"{user.strip()}@{host}"
     return run_command(["ssh", target, command], timeout)
 

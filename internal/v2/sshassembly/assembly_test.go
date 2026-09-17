@@ -627,7 +627,7 @@ func testLocalSSHConfig(t *testing.T) gatecrequest.SSHConfig {
 	if err := pairgen.WritePrivateFileExclusive(identity, []byte("synthetic-test-key-material")); err != nil {
 		t.Fatalf("write identity: %v", err)
 	}
-	if err := pairgen.WritePrivateFileExclusive(knownHosts, []byte("[127.0.0.1]:22 ssh-ed25519 AAAAC3NzaSyntheticTestOnly")); err != nil {
+	if err := pairgen.WritePrivateFileExclusive(knownHosts, []byte("[127.0.0.1]:22 ssh-ed25519 "+"AAAAC3NzaSyntheticTestOnly")); err != nil {
 		t.Fatalf("write known_hosts: %v", err)
 	}
 	return gatecrequest.SSHConfig{

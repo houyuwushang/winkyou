@@ -101,7 +101,7 @@ func TestExecuteInitiatorProtectedDirect(t *testing.T) {
 	// Feed the peer's endpoint: predictable sequential NAT at port 6000.
 	ep, err := marshalEndpoint(endpointPayload{
 		SessionID:    "s/a/b",
-		PublicIP:     "9.8.7.6",
+		PublicIP:     "198.51.100.234",
 		ObservedPort: 6000,
 		Pattern:      "sequential",
 		Delta:        1,
@@ -125,7 +125,7 @@ func TestExecuteInitiatorProtectedDirect(t *testing.T) {
 			"local_public_ip":            "1.2.3.4",
 			"local_observed_port":        "5000",
 			"local_nat_pattern":          "preserving",
-			"remote_public_ip":           "9.8.7.6",
+			"remote_public_ip":           "198.51.100.234",
 			"remote_observed_port":       "6000",
 			"remote_nat_pattern":         "sequential",
 			"remote_nat_delta":           "1",
@@ -162,8 +162,8 @@ func TestExecuteInitiatorProtectedDirect(t *testing.T) {
 	if gotCfg.Binding == nil || gotCfg.Binding.InterfaceName != "Ethernet-test" || !gotCfg.Binding.LocalIP.Equal(net.IPv4(192, 0, 2, 50)) {
 		t.Fatalf("punch binding = %+v, want resolved Ethernet-test/192.0.2.50", gotCfg.Binding)
 	}
-	if gotCfg.RemoteIP.String() != "9.8.7.6" {
-		t.Fatalf("punch RemoteIP = %v, want 9.8.7.6", gotCfg.RemoteIP)
+	if gotCfg.RemoteIP.String() != "198.51.100.234" {
+		t.Fatalf("punch RemoteIP = %v, want 198.51.100.234", gotCfg.RemoteIP)
 	}
 	found := false
 	for _, p := range gotCfg.TargetPorts {
@@ -222,7 +222,7 @@ func TestExecuteRejectsClosed(t *testing.T) {
 func TestHandleMessageRejectsForeignSession(t *testing.T) {
 	s := New(Config{})
 	_, _ = s.Plan(context.Background(), solver.SolveInput{SessionID: "s/a/b"})
-	ep, _ := marshalEndpoint(endpointPayload{SessionID: "other", PublicIP: "9.8.7.6", ObservedPort: 6000, Pattern: "sequential"})
+	ep, _ := marshalEndpoint(endpointPayload{SessionID: "other", PublicIP: "198.51.100.234", ObservedPort: 6000, Pattern: "sequential"})
 	if err := s.HandleMessage(context.Background(), &mockSessionIO{}, NewMessage(MessageTypeEndpoint, ep, time.Now())); err != nil {
 		t.Fatal(err)
 	}

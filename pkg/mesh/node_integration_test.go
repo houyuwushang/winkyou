@@ -33,7 +33,7 @@ func TestAutonomousTopologyLearnsRouteAndWithdrawsOnEdgeClose(t *testing.T) {
 		},
 	})
 	nodeC = mustNode(t, NodeConfig{
-		NodeID: "C", VirtualIP: "fd00::c", Lease: 5 * time.Second, RefreshInterval: 100 * time.Millisecond,
+		NodeID: "C", VirtualIP: "fd00::3", Lease: 5 * time.Second, RefreshInterval: 100 * time.Millisecond,
 		OnMessage: func(messageCtx context.Context, msg peercontrol.Message) error {
 			if msg.Type != peercontrol.TypeControlEchoRequest || msg.ControlEcho == nil {
 				return nil
@@ -57,7 +57,7 @@ func TestAutonomousTopologyLearnsRouteAndWithdrawsOnEdgeClose(t *testing.T) {
 		member, memberOK := nodeA.Member("C")
 		forward, forwardOK := nodeA.Route("C")
 		reverse, reverseOK := nodeC.Route("A")
-		return memberOK && member.VirtualIP == "fd00::c" && forwardOK && reverseOK &&
+		return memberOK && member.VirtualIP == "fd00::3" && forwardOK && reverseOK &&
 			forward.NextHop == "B" && forward.HopCount == 2 &&
 			slices.Equal(forward.Path, []string{"A", "B", "C"}) &&
 			slices.Equal(reverse.Path, []string{"C", "B", "A"})

@@ -278,11 +278,11 @@ func TestObservedPublicEndpointHintsIncludeUsableLocalBase(t *testing.T) {
 		NATType: nat.NATTypeUnknown,
 		Probes: []nat.STUNMappingProbe{{
 			LocalAddr:  &net.UDPAddr{IP: net.ParseIP("192.168.1.20"), Port: 50000},
-			MappedAddr: &net.UDPAddr{IP: net.ParseIP("117.48.146.2"), Port: 41000},
+			MappedAddr: &net.UDPAddr{IP: net.ParseIP("198.51.100.200"), Port: 41000},
 			ServerAddr: &net.UDPAddr{IP: net.ParseIP("8.8.8.8"), Port: 19302},
 		}},
 	}, config.Default().NAT)
-	if len(hints) != 1 || hints[0] != "117.48.146.2:41000/192.168.1.20:50000" {
+	if len(hints) != 1 || hints[0] != "198.51.100.200:41000/192.168.1.20:50000" {
 		t.Fatalf("observedPublicEndpointHints() = %#v, want mapped public/local hint", hints)
 	}
 }
@@ -292,11 +292,11 @@ func TestObservedPublicEndpointHintsSkipOverlayLocalBase(t *testing.T) {
 		NATType: nat.NATTypeUnknown,
 		Probes: []nat.STUNMappingProbe{{
 			LocalAddr:  &net.UDPAddr{IP: net.ParseIP("100.102.17.35"), Port: 50000},
-			MappedAddr: &net.UDPAddr{IP: net.ParseIP("117.48.146.2"), Port: 41000},
+			MappedAddr: &net.UDPAddr{IP: net.ParseIP("198.51.100.200"), Port: 41000},
 			ServerAddr: &net.UDPAddr{IP: net.ParseIP("8.8.8.8"), Port: 19302},
 		}},
 	}, config.Default().NAT)
-	if len(hints) != 1 || hints[0] != "117.48.146.2:41000" {
+	if len(hints) != 1 || hints[0] != "198.51.100.200:41000" {
 		t.Fatalf("observedPublicEndpointHints() = %#v, want public-only hint when local base is overlay-like", hints)
 	}
 }
@@ -417,7 +417,7 @@ func TestDoctorCandidateFilterAllowsRuntimeCandidate(t *testing.T) {
 }
 
 func TestDoctorCandidateFilterSummaryIncludesPublicCandidateHints(t *testing.T) {
-	configPath := writeDoctorConfigWithNATExtra(t, "  candidate_port_min: 40000\n  candidate_port_max: 40100\n  nat1to1_candidate_type: srflx\n  nat1to1_ips:\n    - 203.0.113.10/192.168.0.10\n  public_endpoint_hints:\n    - 117.48.146.2:41000/192.168.1.20:40000\n  auto_public_endpoint_hints: true\n  public_endpoint_hint_port_window: 2\n  direct_trusted_cidrs:\n    - 100.64.0.0/10\n  public_direct_trusted_cidrs:\n    - 198.18.0.0/15\n")
+	configPath := writeDoctorConfigWithNATExtra(t, "  candidate_port_min: 40000\n  candidate_port_max: 40100\n  nat1to1_candidate_type: srflx\n  nat1to1_ips:\n    - 203.0.113.10/192.168.0.10\n  public_endpoint_hints:\n    - 198.51.100.200:41000/192.168.1.20:40000\n  auto_public_endpoint_hints: true\n  public_endpoint_hint_port_window: 2\n  direct_trusted_cidrs:\n    - 100.64.0.0/10\n  public_direct_trusted_cidrs:\n    - 198.18.0.0/15\n")
 
 	result := runDoctor(context.Background(), &Options{ConfigPath: configPath}, doctorFlags{}, healthyDoctorProbes())
 	check := findDoctorCheck(result, "nat", "candidate filters")
@@ -425,7 +425,7 @@ func TestDoctorCandidateFilterSummaryIncludesPublicCandidateHints(t *testing.T) 
 		!strings.Contains(check.Message, "port_range=40000-40100") ||
 		!strings.Contains(check.Message, "nat1to1_candidate_type=srflx") ||
 		!strings.Contains(check.Message, "nat1to1_ips=203.0.113.10/192.168.0.10") ||
-		!strings.Contains(check.Message, "public_endpoint_hints=117.48.146.2:41000/192.168.1.20:40000") ||
+		!strings.Contains(check.Message, "public_endpoint_hints=198.51.100.200:41000/192.168.1.20:40000") ||
 		!strings.Contains(check.Message, "auto_public_endpoint_hints=true") ||
 		!strings.Contains(check.Message, "public_endpoint_hint_port_window=2") ||
 		!strings.Contains(check.Message, "direct_trusted_cidrs=100.64.0.0/10") ||
@@ -441,7 +441,7 @@ func TestDoctorCandidateFilterSummaryIncludesEffectiveSymmetricWindow(t *testing
 		NATType: nat.NATTypeSymmetric,
 		Probes: []nat.STUNMappingProbe{{
 			LocalAddr:  &net.UDPAddr{IP: net.ParseIP("192.168.1.20"), Port: 50000},
-			MappedAddr: &net.UDPAddr{IP: net.ParseIP("117.48.146.2"), Port: 41000},
+			MappedAddr: &net.UDPAddr{IP: net.ParseIP("198.51.100.200"), Port: 41000},
 			ServerAddr: &net.UDPAddr{IP: net.ParseIP("8.8.8.8"), Port: 19302},
 		}},
 	}
@@ -461,7 +461,7 @@ func TestDoctorCandidateFilterSummaryIncludesEffectiveUnknownWindow(t *testing.T
 		NATType: nat.NATTypeUnknown,
 		Probes: []nat.STUNMappingProbe{{
 			LocalAddr:  &net.UDPAddr{IP: net.ParseIP("192.168.1.20"), Port: 50000},
-			MappedAddr: &net.UDPAddr{IP: net.ParseIP("117.48.146.2"), Port: 41000},
+			MappedAddr: &net.UDPAddr{IP: net.ParseIP("198.51.100.200"), Port: 41000},
 			ServerAddr: &net.UDPAddr{IP: net.ParseIP("8.8.8.8"), Port: 19302},
 		}},
 	}
@@ -477,7 +477,7 @@ func TestDoctorCandidateFilterSummaryIncludesEffectiveUnknownWindow(t *testing.T
 func TestDoctorCandidateFilterSummaryHonorsEffectiveWindowOptOut(t *testing.T) {
 	cfg := config.Default()
 	cfg.NAT.PublicEndpointHintPortWindow = 0
-	cfg.NAT.PublicEndpointHints = []string{"117.48.146.2:41000/192.168.1.20:40000"}
+	cfg.NAT.PublicEndpointHints = []string{"198.51.100.200:41000/192.168.1.20:40000"}
 	report := nat.STUNMappingReport{NATType: nat.NATTypeSymmetric}
 
 	summary := candidateFilterSummary(&cfg, &report)
@@ -488,7 +488,7 @@ func TestDoctorCandidateFilterSummaryHonorsEffectiveWindowOptOut(t *testing.T) {
 
 func TestPublicEndpointHintLocalBaseCheckOK(t *testing.T) {
 	check := publicEndpointHintLocalBaseCheck(
-		[]string{"117.48.146.2:41000/192.168.1.20:40000"},
+		[]string{"198.51.100.200:41000/192.168.1.20:40000"},
 		[]net.IP{net.ParseIP("192.168.1.20")},
 	)
 	if check == nil || check.Status != doctorOK || !strings.Contains(check.Message, "192.168.1.20") {
@@ -498,7 +498,7 @@ func TestPublicEndpointHintLocalBaseCheckOK(t *testing.T) {
 
 func TestPublicEndpointHintLocalBaseCheckWarnsForMissingBase(t *testing.T) {
 	check := publicEndpointHintLocalBaseCheck(
-		[]string{"117.48.146.2:41000/192.168.1.20:40000"},
+		[]string{"198.51.100.200:41000/192.168.1.20:40000"},
 		[]net.IP{net.ParseIP("192.168.1.21")},
 	)
 	if check == nil || check.Status != doctorWarn ||
@@ -628,7 +628,7 @@ func TestDoctorPublicDirectEvidenceFailureIncludesCandidateDiagnostics(t *testin
 				"candidate_side":         "local",
 				"candidate_total":        "2",
 				"candidate_kept":         "1",
-				"candidate_kept_samples": "srflx:117.48.146.2:41000<-192.168.1.20:50000",
+				"candidate_kept_samples": "srflx:198.51.100.200:41000<-192.168.1.20:50000",
 			},
 			Timestamp: time.Now(),
 		},
@@ -661,7 +661,7 @@ func TestDoctorPublicDirectEvidenceFailureIncludesCandidateDiagnostics(t *testin
 		!strings.Contains(check.Message, "public direct attempt failed") ||
 		!strings.Contains(check.Message, "local_gather(candidate_total=2,candidate_kept=1") ||
 		!strings.Contains(check.Message, "remote_filter(candidate_total=2,candidate_kept=1") ||
-		!strings.Contains(check.Message, "srflx:117.48.146.2:41000") ||
+		!strings.Contains(check.Message, "srflx:198.51.100.200:41000") ||
 		!strings.Contains(check.Suggestion, "both sides had public-direct candidates") {
 		t.Fatalf("public direct evidence check = %#v, want failure with local/remote candidate diagnostics", check)
 	}
@@ -822,7 +822,7 @@ func TestDoctorAdvertisedRoutes(t *testing.T) {
 	probes := healthyDoctorProbes()
 	writeDoctorRuntimeState(t, configPath, []winkclient.RuntimePeerStatus{{
 		NodeID:             "node-b",
-		Name:               "chen-win",
+		Name:               "node-b",
 		VirtualIP:          "10.77.0.2",
 		State:              winkclient.PeerStateConnected.String(),
 		DataState:          winkclient.PeerDataStateBound.String(),
@@ -842,7 +842,7 @@ func TestDoctorAdvertisedRoutes(t *testing.T) {
 		t.Fatalf("backend return path check = %#v, want SNAT/return-route warning", returnPath)
 	}
 	remote := findDoctorCheck(result, "routing", "peer advertised routes")
-	if remote.Status != doctorOK || !strings.Contains(remote.Message, "chen-win=10.7.0.0/24") {
+	if remote.Status != doctorOK || !strings.Contains(remote.Message, "node-b=10.7.0.0/24") {
 		t.Fatalf("peer advertised routes check = %#v, want active peer route summary", remote)
 	}
 	osRoute := findDoctorCheck(result, "routing", "os route table")
@@ -859,7 +859,7 @@ func TestDoctorAdvertisedRoutesFailWhenRouteTableIsWrong(t *testing.T) {
 	}
 	writeDoctorRuntimeState(t, configPath, []winkclient.RuntimePeerStatus{{
 		NodeID:             "node-b",
-		Name:               "chen-win",
+		Name:               "node-b",
 		VirtualIP:          "10.77.0.2",
 		State:              winkclient.PeerStateConnected.String(),
 		DataState:          winkclient.PeerDataStateBound.String(),

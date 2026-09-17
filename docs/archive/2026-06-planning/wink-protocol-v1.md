@@ -1,7 +1,9 @@
+> 2026-06 历史规划归档：保留当时结论，不代表当前实现或现场运行授权；部署细节已脱敏。
+
 # Wink Protocol v1 — 详细设计
 
 > [!IMPORTANT]
-> **Proposal / Brainstorm**: This document is retained as a historical self-designed protocol proposal. It is not the active implementation plan. Use [`docs/CONNECTIVITY-SOLVER-BASELINE.md`](docs/CONNECTIVITY-SOLVER-BASELINE.md) as the current architecture authority.
+> **Proposal / Brainstorm**: This document is retained as a historical self-designed protocol proposal. It is not the active implementation plan. Use [`docs/CONNECTIVITY-SOLVER-BASELINE.md`](../../CONNECTIVITY-SOLVER-BASELINE.md) as the current architecture authority.
 
 > 本文档是 brainstorm.md 第一版方案的完整展开。
 > 精确到字节级的消息格式、精确到每一步的密钥派生、可以直接写代码的骨架。

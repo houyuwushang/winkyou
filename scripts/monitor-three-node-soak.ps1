@@ -8,7 +8,7 @@ Observes the A/B/C WinkYou direct triangle without repairing or changing it.
 The default run lasts two hours. Every 10 seconds it samples /v1/status on
 all three nodes. Every 30 seconds it sends the six directed control pings, and
 every 60 seconds it opens a fresh A-to-B SSH connection through the routed TCP
-listener on 127.0.0.1:22024.
+listener at the explicitly supplied BHost/BPort.
 
 Only these remote operations are used:
   * GET  /v1/status
@@ -63,10 +63,10 @@ param(
     [string]$AApiBase = "http://127.0.0.1:32110",
     [string]$RemoteApiBase = "http://127.0.0.1:32110",
 
-    [string]$BUser = "node-b-user",
-    [string]$BHost = "127.0.0.1",
+    [string]$BUser = "",
+    [string]$BHost = "",
     [ValidateRange(1, 65535)]
-    [int]$BPort = 22024,
+    [int]$BPort = 22,
     [string]$BProxyCommand = "",
     [string]$BRemoteCurl = "curl.exe",
     [string]$BExpectedHostname = "",
@@ -86,10 +86,10 @@ param(
     [string]$BExpectedStartedAt = "",
     [string]$CExpectedStartedAt = "",
 
-    [string]$CUser = "node-c-user",
-    [string]$CHost = "127.0.0.1",
+    [string]$CUser = "",
+    [string]$CHost = "",
     [ValidateRange(1, 65535)]
-    [int]$CPort = 22022,
+    [int]$CPort = 22,
     [string]$CProxyCommand = "",
     [string]$CRemoteCurl = "curl",
     [string]$CAskPassPath = "",
@@ -1872,12 +1872,15 @@ function Invoke-SelfTest {
     Assert-SelfTest ($distribution.p50 -eq 20 -and $distribution.p95 -eq 40) "percentile calculation"
     Assert-SelfTest ((ConvertTo-NativeArgument "two words") -eq '"two words"') "native argument quoting"
 
-    $directSshArguments = @(New-SshArguments -User "node-b-user" -HostName "127.0.0.1" -Port 22024 -RemoteCommand "hostname")
-    Assert-SelfTest ($directSshArguments[-2] -eq "node-b-user@127.0.0.1" -and $directSshArguments[-1] -eq "hostname") "direct SSH destination uses the configured host"
+    $fixtureUser = 'fixture-user'
+    $fixtureHost = '192.0.2.20'
+    $fixtureDestination = $fixtureUser + [char]64 + $fixtureHost
+    $directSshArguments = @(New-SshArguments -User $fixtureUser -HostName $fixtureHost -Port 2222 -RemoteCommand "hostname")
+    Assert-SelfTest ($directSshArguments[-2] -eq $fixtureDestination -and $directSshArguments[-1] -eq "hostname") "direct SSH destination uses the configured host"
     Assert-SelfTest ($directSshArguments -contains "ProxyJump=none" -and @($directSshArguments | Where-Object { $_ -like "ProxyCommand=*" }).Count -eq 0) "direct SSH explicitly disables inherited ProxyJump"
     Assert-SelfTest ($directSshArguments -contains "BatchMode=yes" -and $directSshArguments -contains "PreferredAuthentications=publickey") "unconfigured SSH retains public-key BatchMode behavior"
 
-    $askPassArguments = @(New-SshArguments -User "node-b-user" -HostName "127.0.0.1" -Port 22024 -RemoteCommand "hostname" -UseAskPass)
+    $askPassArguments = @(New-SshArguments -User $fixtureUser -HostName $fixtureHost -Port 2222 -RemoteCommand "hostname" -UseAskPass)
     Assert-SelfTest ($askPassArguments -contains "BatchMode=no" -and $askPassArguments -contains "PreferredAuthentications=password,keyboard-interactive" -and $askPassArguments -contains "PubkeyAuthentication=no") "configured SSH enables forced askpass-compatible authentication"
 
     $selfTestPasswordName = "WINKYOU_SOAK_SELFTEST_PASSWORD"
@@ -1893,14 +1896,14 @@ function Invoke-SelfTest {
     Assert-SelfTest ($askPassConfiguration.EnvironmentVariables[$selfTestPasswordName] -eq $selfTestPassword -and ($askPassArguments -join ' ') -notlike "*$selfTestPassword*") "password is carried only in the child environment"
     [void]$script:SensitiveValues.Remove($selfTestPassword)
 
-    $syntheticProxyCommand = 'ssh.exe -T -p 22024 node-b-user@127.0.0.1 ncat.exe 10.20.0.1 22'
-    $proxiedSshArguments = @(New-SshArguments -User "node-c-user" -HostName "10.20.0.1" -Port 22 -ProxyCommand $syntheticProxyCommand -RemoteCommand "hostname")
-    Assert-SelfTest ($proxiedSshArguments[-2] -eq "node-c-user@10.20.0.1" -and $proxiedSshArguments[-1] -eq "hostname") "proxied SSH destination uses the configured host"
+    $syntheticProxyCommand = 'ssh.exe -T -p 2222 ' + $fixtureDestination + ' ncat.exe 192.0.2.21 22'
+    $proxiedSshArguments = @(New-SshArguments -User $fixtureUser -HostName '192.0.2.21' -Port 22 -ProxyCommand $syntheticProxyCommand -RemoteCommand "hostname")
+    Assert-SelfTest ($proxiedSshArguments[-2] -eq ($fixtureUser + [char]64 + '192.0.2.21') -and $proxiedSshArguments[-1] -eq "hostname") "proxied SSH destination uses the configured host"
     Assert-SelfTest ($proxiedSshArguments -contains "ProxyCommand=$syntheticProxyCommand" -and $proxiedSshArguments -notcontains "ProxyJump=none") "ProxyCommand remains one argv item and does not compete with ProxyJump"
 
     $rejectedLineBreak = $false
     try {
-        [void](New-SshArguments -User "node-c-user" -HostName "10.20.0.1" -Port 22 -ProxyCommand "unsafe`ncommand" -RemoteCommand "hostname")
+        [void](New-SshArguments -User $fixtureUser -HostName '192.0.2.21' -Port 22 -ProxyCommand "unsafe`ncommand" -RemoteCommand "hostname")
     } catch {
         $rejectedLineBreak = $true
     }
@@ -2023,6 +2026,13 @@ function Invoke-SelfTest {
 if ($SelfTest) {
     Invoke-SelfTest | ConvertTo-Json -Depth 4
     exit 0
+}
+
+# Deployment identities are supplied only by the caller, never by repository defaults.
+foreach ($value in @($BUser, $BHost, $CUser, $CHost)) {
+    if ([string]::IsNullOrWhiteSpace($value) -or $value.Contains('<')) {
+        throw 'Explicit BUser, BHost, CUser and CHost parameters are required.'
+    }
 }
 
 [void](Get-SshAuthenticationConfiguration -AskPassPath $BAskPassPath -PasswordEnvironmentVariable $BPasswordEnvironmentVariable)

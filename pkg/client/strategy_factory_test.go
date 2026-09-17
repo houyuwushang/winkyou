@@ -513,7 +513,7 @@ func TestLegacyICEStrategyConfigPropagatesCandidateFilters(t *testing.T) {
 				CandidateCIDRExclude:         []string{"100.64.0.0/10"},
 				NAT1To1IPs:                   []string{"203.0.113.10/192.168.0.10"},
 				NAT1To1CandidateType:         "srflx",
-				PublicEndpointHints:          []string{"117.48.146.2:41000/192.168.1.20:40000"},
+				PublicEndpointHints:          []string{"198.51.100.200:41000/192.168.1.20:40000"},
 				PublicEndpointHintPortWindow: 2,
 				DirectTrustedCIDRs:           []string{"100.64.0.0/10"},
 				PublicDirectTrustedCIDRs:     []string{"198.18.0.0/15"},
@@ -544,7 +544,7 @@ func TestLegacyICEStrategyConfigPropagatesCandidateFilters(t *testing.T) {
 	if len(got.NAT1To1IPs) != 1 || got.NAT1To1IPs[0] != "203.0.113.10/192.168.0.10" || got.NAT1To1CandidateType != "srflx" {
 		t.Fatalf("nat1to1 hints = ips=%#v type=%q, want configured hints", got.NAT1To1IPs, got.NAT1To1CandidateType)
 	}
-	if len(cfg.PublicEndpointHints) != 1 || cfg.PublicEndpointHints[0] != "117.48.146.2:41000/192.168.1.20:40000" {
+	if len(cfg.PublicEndpointHints) != 1 || cfg.PublicEndpointHints[0] != "198.51.100.200:41000/192.168.1.20:40000" {
 		t.Fatalf("legacy public endpoint hints = %#v, want configured hint", cfg.PublicEndpointHints)
 	}
 	if cfg.PublicEndpointHintPortWindow != 2 {
@@ -586,19 +586,19 @@ func TestLegacyICEStrategyConfigPropagatesCandidateFilters(t *testing.T) {
 
 func TestLegacyICEStrategyConfigMergesRuntimePublicEndpointHints(t *testing.T) {
 	cfg := config.Default()
-	cfg.NAT.PublicEndpointHints = []string{"117.48.146.2:41000/192.168.1.20:40000"}
+	cfg.NAT.PublicEndpointHints = []string{"198.51.100.200:41000/192.168.1.20:40000"}
 	eng := &engine{
 		cfg: cfg,
 		runtimePublicEndpointHints: []string{
-			"117.48.146.2:41000/192.168.1.20:40000",
-			"117.48.146.3:41001/192.168.1.20:40001",
+			"198.51.100.200:41000/192.168.1.20:40000",
+			"198.51.100.223:41001/192.168.1.20:40001",
 		},
 	}
 
 	legacyCfg := eng.legacyICEStrategyConfig()
 	want := []string{
-		"117.48.146.2:41000/192.168.1.20:40000",
-		"117.48.146.3:41001/192.168.1.20:40001",
+		"198.51.100.200:41000/192.168.1.20:40000",
+		"198.51.100.223:41001/192.168.1.20:40001",
 	}
 	if !slices.Equal(legacyCfg.PublicEndpointHints, want) {
 		t.Fatalf("PublicEndpointHints = %#v, want %#v", legacyCfg.PublicEndpointHints, want)
@@ -711,15 +711,15 @@ func TestStrategyResolverBuildUsesCurrentRuntimePublicEndpointHints(t *testing.T
 	eng := &engine{
 		cfg: cfg,
 		runtimePublicEndpointHints: []string{
-			"117.48.146.2:41000/192.168.1.20:40000",
-			"117.48.146.3:41001/192.168.1.20:40001",
+			"198.51.100.200:41000/192.168.1.20:40000",
+			"198.51.100.223:41001/192.168.1.20:40001",
 		},
 	}
 	resolver := eng.newStrategyResolver()
 
 	eng.runtimePublicEndpointHints = []string{
-		"117.48.146.4:41002/192.168.1.21:40000",
-		"117.48.146.5:41003/192.168.1.22:40000",
+		"198.51.100.224:41002/192.168.1.21:40000",
+		"198.51.100.225:41003/192.168.1.22:40000",
 	}
 	strategy, _, err := resolver.Resolve(rproto.Capability{Strategies: []string{legacyice.StrategyName}}, true)
 	if err != nil {
@@ -734,8 +734,8 @@ func TestStrategyResolverBuildUsesCurrentRuntimePublicEndpointHints(t *testing.T
 	}
 	hints := publicEndpointHintPlanMetadata(plans)
 	want := []string{
-		"117.48.146.4:41002/192.168.1.21:40000",
-		"117.48.146.5:41003/192.168.1.22:40000",
+		"198.51.100.224:41002/192.168.1.21:40000",
+		"198.51.100.225:41003/192.168.1.22:40000",
 	}
 	if !slices.Equal(hints, want) {
 		t.Fatalf("planned public endpoint hints = %#v, want current runtime hints %#v", hints, want)
@@ -750,7 +750,7 @@ func TestLegacyICEStrategyConfigWidensEndpointHintWindowForSymmetricNAT(t *testi
 			NATType: nat.NATTypeSymmetric.String(),
 		},
 		runtimePublicEndpointHints: []string{
-			"117.48.146.2:41000/192.168.1.20:40000",
+			"198.51.100.200:41000/192.168.1.20:40000",
 		},
 	}
 
@@ -768,7 +768,7 @@ func TestLegacyICEStrategyConfigWidensEndpointHintWindowForUnknownNAT(t *testing
 			NATType: nat.NATTypeUnknown.String(),
 		},
 		runtimePublicEndpointHints: []string{
-			"117.48.146.2:41000/192.168.1.20:40000",
+			"198.51.100.200:41000/192.168.1.20:40000",
 		},
 	}
 
@@ -786,7 +786,7 @@ func TestLegacyICEStrategyConfigKeepsEndpointHintWindowForNoNAT(t *testing.T) {
 			NATType: nat.NATTypeNone.String(),
 		},
 		runtimePublicEndpointHints: []string{
-			"117.48.146.2:41000/192.168.1.20:40000",
+			"198.51.100.200:41000/192.168.1.20:40000",
 		},
 	}
 
@@ -805,7 +805,7 @@ func TestLegacyICEStrategyConfigHonorsEndpointHintWindowOptOut(t *testing.T) {
 			NATType: nat.NATTypeSymmetric.String(),
 		},
 		runtimePublicEndpointHints: []string{
-			"117.48.146.2:41000/192.168.1.20:40000",
+			"198.51.100.200:41000/192.168.1.20:40000",
 		},
 	}
 
@@ -824,7 +824,7 @@ func TestLegacyICEStrategyConfigKeepsLargerEndpointHintWindow(t *testing.T) {
 			NATType: nat.NATTypeSymmetric.String(),
 		},
 		runtimePublicEndpointHints: []string{
-			"117.48.146.2:41000/192.168.1.20:40000",
+			"198.51.100.200:41000/192.168.1.20:40000",
 		},
 	}
 
@@ -852,7 +852,7 @@ func TestRefreshRuntimePublicEndpointHintsUpdatesRuntimeState(t *testing.T) {
 		status: EngineStatus{
 			NATType: nat.NATTypeSymmetric.String(),
 		},
-		runtimePublicEndpointHints: []string{"117.48.146.2:41000/192.168.1.20:40000"},
+		runtimePublicEndpointHints: []string{"198.51.100.200:41000/192.168.1.20:40000"},
 	}
 
 	eng.refreshRuntimePublicEndpointHints(context.Background(), "test")
@@ -880,7 +880,7 @@ func TestRefreshRuntimePublicEndpointHintsPreservesHintsOnError(t *testing.T) {
 		status: EngineStatus{
 			NATType: nat.NATTypeSymmetric.String(),
 		},
-		runtimePublicEndpointHints: []string{"117.48.146.2:41000/192.168.1.20:40000"},
+		runtimePublicEndpointHints: []string{"198.51.100.200:41000/192.168.1.20:40000"},
 	}
 
 	eng.refreshRuntimePublicEndpointHints(context.Background(), "test")
@@ -888,7 +888,7 @@ func TestRefreshRuntimePublicEndpointHintsPreservesHintsOnError(t *testing.T) {
 	if recorder.detectCalls != 1 {
 		t.Fatalf("DetectSTUNMapping calls = %d, want 1", recorder.detectCalls)
 	}
-	want := []string{"117.48.146.2:41000/192.168.1.20:40000"}
+	want := []string{"198.51.100.200:41000/192.168.1.20:40000"}
 	if !slices.Equal(eng.runtimePublicEndpointHints, want) {
 		t.Fatalf("runtimePublicEndpointHints = %#v, want preserved hints %#v", eng.runtimePublicEndpointHints, want)
 	}
@@ -908,7 +908,7 @@ func TestRefreshRuntimePublicEndpointHintsPreservesHintsOnEmptyResult(t *testing
 		status: EngineStatus{
 			NATType: nat.NATTypeSymmetric.String(),
 		},
-		runtimePublicEndpointHints: []string{"117.48.146.2:41000/192.168.1.20:40000"},
+		runtimePublicEndpointHints: []string{"198.51.100.200:41000/192.168.1.20:40000"},
 	}
 
 	eng.refreshRuntimePublicEndpointHints(context.Background(), "test")
@@ -916,7 +916,7 @@ func TestRefreshRuntimePublicEndpointHintsPreservesHintsOnEmptyResult(t *testing
 	if recorder.detectCalls != 1 {
 		t.Fatalf("DetectSTUNMapping calls = %d, want 1", recorder.detectCalls)
 	}
-	want := []string{"117.48.146.2:41000/192.168.1.20:40000"}
+	want := []string{"198.51.100.200:41000/192.168.1.20:40000"}
 	if !slices.Equal(eng.runtimePublicEndpointHints, want) {
 		t.Fatalf("runtimePublicEndpointHints = %#v, want preserved hints %#v", eng.runtimePublicEndpointHints, want)
 	}
@@ -934,7 +934,7 @@ func TestRefreshRuntimePublicEndpointHintsHonorsOptOut(t *testing.T) {
 	eng := &engine{
 		cfg:                        cfg,
 		nat:                        recorder,
-		runtimePublicEndpointHints: []string{"117.48.146.2:41000/192.168.1.20:40000"},
+		runtimePublicEndpointHints: []string{"198.51.100.200:41000/192.168.1.20:40000"},
 	}
 
 	eng.refreshRuntimePublicEndpointHints(context.Background(), "test")

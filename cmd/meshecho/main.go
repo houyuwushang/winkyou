@@ -133,7 +133,7 @@ func runShortcut(ctx context.Context, payload []byte) (result, error) {
 	}
 	defer nodeB.Close()
 	nodeC, err := mesh.NewNode(mesh.NodeConfig{
-		NodeID: "C", VirtualIP: "fd00::c", Lease: 5 * time.Second, RefreshInterval: 50 * time.Millisecond,
+		NodeID: "C", VirtualIP: "fd00::3", Lease: 5 * time.Second, RefreshInterval: 50 * time.Millisecond,
 	})
 	if err != nil {
 		return result{}, err
@@ -283,8 +283,8 @@ func runShortcut(ctx context.Context, payload []byte) (result, error) {
 
 // runRejoin proves that an offline node can use a temporary underlay to join an
 // existing two-node mesh, then replace that dependency without ever
-// disconnecting the graph. The field topology is A=local, B=chen-win and
-// C=inner-gw:
+// disconnecting the graph. The role topology is A=local, B=<NODE_B_HOST> and
+// C=<NODE_C_HOST>:
 //
 //	A--C + C~~B  ->  A--B (coordinated by C)  ->  remove C~~B
 //	              ->  B--C (coordinated by A)
@@ -331,7 +331,7 @@ func runRejoin(ctx context.Context, payload []byte) (result, error) {
 	}
 	defer nodeB.Close()
 	nodeC, err := mesh.NewNode(mesh.NodeConfig{
-		NodeID: "C", VirtualIP: "fd00::c", Lease: 5 * time.Second, RefreshInterval: 50 * time.Millisecond,
+		NodeID: "C", VirtualIP: "fd00::3", Lease: 5 * time.Second, RefreshInterval: 50 * time.Millisecond,
 		OnEvent: shortcutSignalCounter(&solverSignalsByC), OnDataEvent: dataCounter(&dataForwardedByC),
 	})
 	if err != nil {
@@ -621,7 +621,7 @@ func runData(ctx context.Context, payload []byte) (result, error) {
 	}
 	defer nodeB.Close()
 	nodeC, err := mesh.NewNode(mesh.NodeConfig{
-		NodeID: "C", VirtualIP: "fd00::c", Lease: 5 * time.Second, RefreshInterval: 100 * time.Millisecond,
+		NodeID: "C", VirtualIP: "fd00::3", Lease: 5 * time.Second, RefreshInterval: 100 * time.Millisecond,
 	})
 	if err != nil {
 		return result{}, err
@@ -963,7 +963,7 @@ func runDynamic(ctx context.Context, payload []byte) (result, error) {
 	}
 	defer nodeB.Close()
 	nodeC, err = mesh.NewNode(mesh.NodeConfig{
-		NodeID: "C", VirtualIP: "fd00::c", Lease: 5 * time.Second, RefreshInterval: 100 * time.Millisecond,
+		NodeID: "C", VirtualIP: "fd00::3", Lease: 5 * time.Second, RefreshInterval: 100 * time.Millisecond,
 		OnMessage: func(messageCtx context.Context, msg peercontrol.Message) error {
 			if msg.Type != peercontrol.TypeControlEchoRequest || msg.ControlEcho == nil {
 				return nil
@@ -996,7 +996,7 @@ func runDynamic(ctx context.Context, payload []byte) (result, error) {
 		member, memberOK := nodeA.Member("C")
 		forward, forwardOK := nodeA.Route("C")
 		reverse, reverseOK := nodeC.Route("A")
-		if memberOK && member.VirtualIP == "fd00::c" && forwardOK && reverseOK &&
+		if memberOK && member.VirtualIP == "fd00::3" && forwardOK && reverseOK &&
 			forward.NextHop == "B" && slices.Equal(reverse.Path, []string{"C", "B", "A"}) {
 			learned = forward
 			return true
