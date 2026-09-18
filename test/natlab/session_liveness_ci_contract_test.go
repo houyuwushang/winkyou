@@ -100,11 +100,25 @@ func livenessCISplitViolations(workflow livenessCIWorkflow) []string {
 		if len(job.Strategy.Matrix.OS) != 0 || len(job.Strategy.Matrix.Include) != 2 || !reflect.DeepEqual(actual, want) {
 			violations = append(violations, name+" exact two OS and measured ceilings")
 		}
-		if !reflect.DeepEqual(job.Env, map[string]string{"GORACE": "halt_on_error=1"}) {
+		wantEnv := map[string]string{"GORACE": "halt_on_error=1"}
+		if name == "owner" {
+			wantEnv["WINKYOU_FIXTURE_TIMING_DIR"] = "${{ runner.temp }}/fixture-timing"
+		}
+		if !reflect.DeepEqual(job.Env, wantEnv) {
 			violations = append(violations, name+" original race environment")
 		}
 		actualCommands := []string{}
-		for _, step := range job.Steps {
+		captureCount := 0
+		for index, step := range job.Steps {
+			if name == "owner" && step.Uses == "./.github/actions/fixture-timing" {
+				want := livenessCIStep{Name: "Preserve numeric fixture timing", Uses: "./.github/actions/fixture-timing", If: "always()",
+					With: map[string]string{"artifact-name": "fixture-timing-owner-${{ matrix.os }}"}}
+				if !reflect.DeepEqual(step, want) || index != len(job.Steps)-1 {
+					violations = append(violations, "owner bounded numeric capture changed")
+				}
+				captureCount++
+				continue
+			}
 			if step.Run != "" {
 				actualCommands = append(actualCommands, step.Run)
 			}
@@ -116,7 +130,11 @@ func livenessCISplitViolations(workflow livenessCIWorkflow) []string {
 			{Uses: "actions/checkout@v4"},
 			{Uses: "actions/setup-go@v5", With: map[string]string{"go-version-file": "go.mod"}},
 		}
-		if !reflect.DeepEqual(actualCommands, commands[name]) || len(job.Steps) != len(commands[name])+2 ||
+		wantCapture := 0
+		if name == "owner" {
+			wantCapture = 1
+		}
+		if captureCount != wantCapture || !reflect.DeepEqual(actualCommands, commands[name]) || len(job.Steps) != len(commands[name])+2+wantCapture ||
 			len(job.Steps) < 2 || !reflect.DeepEqual(job.Steps[:2], wantSetup) {
 			violations = append(violations, name+" exact original commands and setup")
 		}

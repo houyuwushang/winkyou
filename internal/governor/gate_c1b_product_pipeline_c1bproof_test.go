@@ -224,6 +224,7 @@ func runGateC1bMemoryProductProfile(t *testing.T, label string, test gateC1bMemo
 	// FINISH regressions. Retain its prefix even when failure precedes FINISH
 	// or liveness arming; a liveness-only observer missed that distinction.
 	phases := newGateC1bMemoryPhaseWitness()
+	t.Cleanup(func() { phases.persistTiming(t, test, windows) })
 	defer func() {
 		if t.Failed() {
 			phases.report(t)

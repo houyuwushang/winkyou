@@ -59,6 +59,7 @@ jobs:
     timeout-minutes: ${{ matrix.timeout_minutes }}
     env:
       GORACE: halt_on_error=1
+      WINKYOU_FIXTURE_TIMING_DIR: ${{ runner.temp }}/fixture-timing
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -70,6 +71,11 @@ jobs:
         run: go test -race -tags=c1bproof ./internal/governor -run '^TestSessionLivenessBusinessCoexistsWithTap$' -count=20 -timeout=8m
       - name: Same artifact after owner restart is rejected before all I/O
         run: go test -race -tags=c1bproof ./internal/governor -run '^TestSessionLivenessRestartRejectsSpentArtifactBeforeIO$' -count=1 -timeout=2m
+      - name: Preserve numeric fixture timing
+        if: always()
+        uses: ./.github/actions/fixture-timing
+        with:
+          artifact-name: fixture-timing-owner-${{ matrix.os }}
 
   real-wireguard:
     name: Liveness real WireGuard (ubuntu-latest)
@@ -79,6 +85,7 @@ jobs:
     timeout-minutes: 14
     env:
       GORACE: halt_on_error=1
+      WINKYOU_FIXTURE_TIMING_DIR: ${{ runner.temp }}/fixture-timing
       WINKYOU_LIVENESS_IDLE_REQUIRED: '1'
       WINKYOU_LIVENESS_BLACKHOLE_REQUIRED: '1'
     steps:
@@ -93,6 +100,11 @@ jobs:
       - name: Persistent-timer counterexample - continuous one-way business and WG control without PONG
         # Four serial 65s proofs; no change to any session/search/drain bound.
         run: go test -race -tags=c1bproof ./internal/governor -run '^TestSessionLivenessOneWayTrafficCannotReplaceProofRequired$' -count=1 -v -timeout=6m
+      - name: Preserve numeric fixture timing
+        if: always()
+        uses: ./.github/actions/fixture-timing
+        with:
+          artifact-name: fixture-timing-liveness-ubuntu-latest
 
   real-wireguard-windows:
     name: Liveness real WireGuard (windows-latest, ${{ matrix.case }})
@@ -121,6 +133,7 @@ jobs:
     timeout-minutes: ${{ matrix.timeout_minutes }}
     env:
       GORACE: halt_on_error=1
+      WINKYOU_FIXTURE_TIMING_DIR: ${{ runner.temp }}/fixture-timing
       WINKYOU_LIVENESS_IDLE_REQUIRED: '1'
       WINKYOU_LIVENESS_BLACKHOLE_REQUIRED: '1'
     steps:
@@ -130,6 +143,11 @@ jobs:
           go-version-file: go.mod
       - name: Required real WireGuard proof (${{ matrix.case }})
         run: go test -race -tags=c1bproof ./internal/governor -run '^${{ matrix.test }}$' -count=1 -v -timeout=${{ matrix.test_timeout }}
+      - name: Preserve numeric fixture timing
+        if: always()
+        uses: ./.github/actions/fixture-timing
+        with:
+          artifact-name: fixture-timing-liveness-windows-latest-${{ matrix.case }}
 
   fresh100:
     name: Liveness 100 fresh lifecycles

@@ -436,6 +436,7 @@ jobs:
     timeout-minutes: ${{ matrix.timeout_minutes }}
     env:
       GORACE: halt_on_error=1
+      WINKYOU_FIXTURE_TIMING_DIR: ${{ runner.temp }}/fixture-timing
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
@@ -461,6 +462,12 @@ jobs:
           -run '^TestGateC1b(MemoryProductPipelineReachesPostOOBEcho|MemoryCLIAndClaimedChildPipeline|GateBProductHandoffRetainsOwnershipUntilFinish)$'
           -count=20 -timeout=12m
 
+      - name: Preserve numeric fixture timing
+        if: always()
+        uses: ./.github/actions/fixture-timing
+        with:
+          artifact-name: fixture-timing-pipelines-${{ matrix.os }}
+
   # #146: ceil(1.25*(50+203+362+89+91+73)/60)=19m Windows;
   # ceil(1.25*(46+191+335+68+49+16)/60)=15m Linux.
   # First-attempt step maxima and 80% acceptance: C1b evidence section 8.
@@ -478,6 +485,7 @@ jobs:
     timeout-minutes: ${{ matrix.timeout_minutes }}
     env:
       GORACE: halt_on_error=1
+      WINKYOU_FIXTURE_TIMING_DIR: ${{ runner.temp }}/fixture-timing
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
@@ -518,6 +526,12 @@ jobs:
           -run '^TestGateC1bMemoryCLIEvidenceDriftAndExhaustionAreOneShot$'
           -count=20 -timeout=3m
 
+      - name: Preserve numeric fixture timing
+        if: always()
+        uses: ./.github/actions/fixture-timing
+        with:
+          artifact-name: fixture-timing-phases-${{ matrix.os }}
+
   # #146: ceil(1.25*(189+73)/60)=6m Windows;
   # ceil(1.25*(115+16)/60)=3m Linux, plus 1m authorized setup jitter.
   # First-attempt step maxima and 80% acceptance: C1b evidence section 8.
@@ -535,6 +549,7 @@ jobs:
     timeout-minutes: ${{ matrix.timeout_minutes }}
     env:
       GORACE: halt_on_error=1
+      WINKYOU_FIXTURE_TIMING_DIR: ${{ runner.temp }}/fixture-timing
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
@@ -551,6 +566,12 @@ jobs:
           go test -tags=c1bproof ./internal/governor
           -run '^TestGateC1bMemoryProductPipelineFresh100$'
           -v -count=1 -timeout=9m
+
+      - name: Preserve numeric fixture timing
+        if: always()
+        uses: ./.github/actions/fixture-timing
+        with:
+          artifact-name: fixture-timing-fresh100-${{ matrix.os }}
 
   # ADR 19.11: isolate test-profile contention without changing any attempt
   # window, injected FINISH delay, packet allowance, or in-pair concurrency.
