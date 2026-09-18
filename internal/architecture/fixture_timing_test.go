@@ -13,16 +13,17 @@ import (
 	"testing"
 )
 
-// Baseline 97c3750 job bodies, ignoring blank lines/indentation only. Removing
-// exactly the authorized env/collector must recover the original complete job:
-// all test commands, counts, env, timeouts, selection and setup stay frozen.
+// Baseline 97c3750 plus #150's reviewed collector-inclusive cap recomputation,
+// ignoring blank lines/indentation only. Removing exactly the authorized env
+// and collector must recover these complete job bodies: proof commands, counts,
+// test timeouts, selection and setup stay frozen; only measured job caps change.
 var fixtureTimingJobs = []struct{ file, job, artifact, digest string }{
-	{"ci.yml", "gate-c1b-memory-pipelines", "fixture-timing-pipelines-${{ matrix.os }}", "c8753ea561dc5e92652f36f3beb6672911aec5b80a1c997833b23c2589a37f72"},
-	{"ci.yml", "gate-c1b-memory-phases", "fixture-timing-phases-${{ matrix.os }}", "e9d96820f6ce840c59e59a3a37b918d2ef80b1feca1807346139d942d5a236c3"},
-	{"ci.yml", "gate-c1b-memory-fresh100", "fixture-timing-fresh100-${{ matrix.os }}", "ed010cf64c468c66e08751c2059a802a8855d8dd957905bff307175758f3b63b"},
-	{"session-liveness.yml", "owner", "fixture-timing-owner-${{ matrix.os }}", "1fe56af339d19f1e6f3d76a45223a697e53fdb66ccb047b50ea0c9569f7dbd5f"},
-	{"session-liveness.yml", "real-wireguard", "fixture-timing-liveness-ubuntu-latest", "bfa2703e31a45df40a0d3b3dd7a964ce940eb1f8dde3d5e8a44f8eb3f03d6ddd"},
-	{"session-liveness.yml", "real-wireguard-windows", "fixture-timing-liveness-windows-latest-${{ matrix.case }}", "ca0b6aacc7e23398b33a8e2e0d008bb33e610984c46c428c1f345afef8d25c3a"},
+	{"ci.yml", "gate-c1b-memory-pipelines", "fixture-timing-pipelines-${{ matrix.os }}", "2692cd2f133a7bce1f2f191439a86391d8b0ca855ca6b522668e4ffb5efd912b"},
+	{"ci.yml", "gate-c1b-memory-phases", "fixture-timing-phases-${{ matrix.os }}", "b8235449403663bda754d796d2c73e1617a9c22beae747a164e851fda7577238"},
+	{"ci.yml", "gate-c1b-memory-fresh100", "fixture-timing-fresh100-${{ matrix.os }}", "ee6e84bf68a0bd809aa684c12cd8ec086461305871acaf02f3333fb159e1dcdb"},
+	{"session-liveness.yml", "owner", "fixture-timing-owner-${{ matrix.os }}", "f80a8a5a35e08d402705aac78ad4db2d732a0347ef93fe3cfd5060be07bc4587"},
+	{"session-liveness.yml", "real-wireguard", "fixture-timing-liveness-ubuntu-latest", "82150b64ca01bd6338d0ba67aab8af6fcc77fcd8c247e2fbe7c9213f66c6b071"},
+	{"session-liveness.yml", "real-wireguard-windows", "fixture-timing-liveness-windows-latest-${{ matrix.case }}", "ce16b1c0ada1eeca77add3df885edc760acc0aea6146d5abc2783618719f74d0"},
 }
 
 func fixtureTimingJobValid(data []byte, job, artifact, digest string) bool {

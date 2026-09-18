@@ -66,7 +66,7 @@ var livenessCISplitBudgets = []struct {
 	{"model", "ubuntu-latest", 17, []int{11, 257, 156, 1}, 10},
 	{"model", "windows-latest", 93, []int{38, 300, 190, 5}, 14},
 	{"owner", "ubuntu-latest", 17, []int{286, 240, 15}, 12},
-	{"owner", "windows-latest", 93, []int{363, 266, 22}, 16},
+	{"owner", "windows-latest", 93, []int{363, 266, 27}, 16},
 }
 
 func livenessCISplitViolations(workflow livenessCIWorkflow) []string {
@@ -153,9 +153,9 @@ func livenessCIContractViolations(payload []byte) []string {
 		violations = append(violations, "Windows independent jobs")
 	}
 	want := map[string]string{
-		"idle":       "TestSessionLivenessMemoryIdle180Required/6m/7",
+		"idle":       "TestSessionLivenessMemoryIdle180Required/6m/8",
 		"blackholes": "TestSessionLivenessMemoryBlackholesRequired/4m/6",
-		"nonproof":   "TestSessionLivenessOneWayTrafficCannotReplaceProofRequired/6m/8",
+		"nonproof":   "TestSessionLivenessOneWayTrafficCannotReplaceProofRequired/6m/9",
 	}
 	actual := map[string]string{}
 	for _, leg := range windows.Strategy.Matrix.Include {
@@ -308,6 +308,9 @@ func TestSessionLivenessCIContractBudget(t *testing.T) {
 	for _, budget := range livenessCISplitBudgets {
 		t.Run(budget.job+"-"+budget.os, func(t *testing.T) {
 			seconds := budget.setupSeconds
+			if budget.job == "owner" {
+				seconds += fixtureTimingCollectorMaxSeconds
+			}
 			for _, step := range budget.stepSeconds {
 				seconds += step
 			}
@@ -319,6 +322,73 @@ func TestSessionLivenessCIContractBudget(t *testing.T) {
 			}
 			t.Logf("LIVENESS_CI_BUDGET job=%s os=%s measured_seconds=%d timeout_minutes=%d first_run_limit_seconds=%d",
 				budget.job, budget.os, seconds, minutes, 48*minutes)
+		})
+	}
+}
+
+func TestSessionLivenessCIContractCaptureBudgets(t *testing.T) {
+	// Timing evidence §5: historical complete-step maxima union first-run
+	// observations, never double-counting cold start already in a proof step.
+	for _, budget := range []struct {
+		job, leg    string
+		setup, post int
+		steps       []int
+		want        int
+	}{
+		{"real-wireguard-windows", "idle", 73, 6, []int{255}, 8},
+		{"real-wireguard-windows", "blackholes", 57, 6, []int{207}, 6},
+		{"real-wireguard-windows", "nonproof", 57, 6, []int{320}, 9},
+		// Whole-job residual 16s = 643 - 204 - 155 - 267 - 1 capture.
+		// It includes setup/post/gaps once, conservatively above old 631s.
+		{"real-wireguard", "linux", 16, 0, []int{204, 155, 267}, 14},
+	} {
+		t.Run(budget.leg, func(t *testing.T) {
+			seconds := budget.setup + budget.post + fixtureTimingCollectorMaxSeconds
+			for _, step := range budget.steps {
+				seconds += step
+			}
+			minutes := (5*seconds + 239) / 240
+			if minutes != budget.want {
+				t.Fatal("collector ceiling arithmetic changed")
+			}
+			data, err := os.ReadFile(filepath.Join("..", "..", ".github", "workflows", "session-liveness.yml"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			var workflow livenessCIWorkflow
+			if err := yaml.Unmarshal(data, &workflow); err != nil {
+				t.Fatal(err)
+			}
+			job := workflow.Jobs[budget.job]
+			found := false
+			if budget.leg == "linux" {
+				found = job.TimeoutMinutes == fmt.Sprint(minutes)
+				job.TimeoutMinutes = fmt.Sprint(minutes - 1)
+			} else {
+				for i := range job.Strategy.Matrix.Include {
+					leg := &job.Strategy.Matrix.Include[i]
+					if leg.Case == budget.leg {
+						found = leg.TimeoutMinutes == minutes
+						leg.TimeoutMinutes = minutes - 1
+					}
+				}
+			}
+			if !found {
+				t.Fatal("workflow differs from collector-inclusive formula")
+			}
+			workflow.Jobs[budget.job] = job
+			changed, err := yaml.Marshal(workflow)
+			if err != nil {
+				t.Fatal(err)
+			}
+			cause := "Windows exact three proofs and measured ceilings"
+			if budget.leg == "linux" {
+				cause = "Linux original three commands"
+			}
+			if !livenessCIHasViolation(livenessCIContractViolations(changed), cause) {
+				t.Fatal("below-formula ceiling mutation escaped")
+			}
+			t.Logf("LIVENESS_CAPTURE_BUDGET leg=%s measured_seconds=%d timeout_minutes=%d first_run_limit_seconds=%d", budget.leg, seconds, minutes, 48*minutes)
 		})
 	}
 }

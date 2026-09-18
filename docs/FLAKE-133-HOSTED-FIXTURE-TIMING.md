@@ -143,3 +143,80 @@ python -B scripts/test_ci_fixture_timing.py
 修正后新增架构/表达式变异 race×20 PASS 4.741s，natlab CI 契约 race×20
 PASS 67.458s，双隐私门 PASS 1.842s。原六个 job 的基线摘要、全部 proof 命令与
 时间上限仍通过精确契约核对；未改数字采集代码与产品代码。
+
+## 5. 复审后的 collector-inclusive cap 重算
+
+[复审裁决](https://github.com/houyuwushang/winkyou/pull/150#issuecomment-5725750653)
+接受本 PR 为测量前置，要求追加采集成本重算；这不是夹具窗口校准。
+§4 的“预算未改”描述对应当时提交，本节是随后单独授权的 CI job cap delta。
+`memoryFixtureWindows`、快照、proof 命令、count、测试 `-timeout`、生产预算均不改。
+#133 保持开放；后续独立校准 PR 至少收集 10 次 main push-run artifact，成功分布与
+失败截断分开，不要求重新制造四个历史失败。
+
+### 5.1 首跑事实与公式
+
+`ab5e5e3` 的 push [35308116233](https://github.com/houyuwushang/winkyou/actions/runs/35308116233)、
+PR [35308117631](https://github.com/houyuwushang/winkyou/actions/runs/35308117631) 及
+Liveness [35308117620](https://github.com/houyuwushang/winkyou/actions/runs/35308117620)
+都是 attempt 1；68/68 检查成功，18 个 artifact 含 1680 次调用、3360 个端点。
+但三个首跑 job 超过旧 cap 的 80%，所以“全绿”不等于预算验收：
+
+| job | 墙钟 s | 旧 cap min / 80% s | capture s | 预算门 |
+| --- | ---: | ---: | ---: | --- |
+| Windows Phases，105484387468 | 962 | 19 / 912 | 11 | RED |
+| Windows idle，105484390906 | 342 | 7 / 336 | 9 | RED |
+| Windows nonproof，105484390975 | 386 | 8 / 384 | 12 | RED |
+
+原始首跑继续保留于 [#151](https://github.com/houyuwushang/winkyou/issues/151)，不 rerun。
+18 个采集步骤实测 1–12s，**每个有采集的 leg 都加入同一最大值 12s**。
+公式仍是 `ceil(1.25 × (完整 proof step 最大值之和 + setup + capture) / 60)`。
+取历史证据与以上三次首跑的逐步骤最大值之并集，不丢掉慢步骤，也不把取消步骤算完整。
+
+C1b 的 setup 仍按 checkout + setup-go 之和一次计入：新最大 Windows 83s
+（14+69）、Linux 18s（2+16）。新步骤最大：Windows Phases 118/193/389/84/81s，
+与历史 50/203/362/89/91s 合并为 118/203/389/89/91s；Linux slow-FINISH 从 335
+变为 341s，pipelines vet 从 11 变为 12s，Fresh100 从 115 变为 117s。
+因此不能只机械采用评论中示例的 20m，Windows Phases 实际公式是 21m。
+
+| leg / OS | 合并后的算式 s（末项为 capture） | ×1.25 后 ceil min | 旧→新 cap min | 新 80% s |
+| --- | --- | ---: | --- | ---: |
+| pipelines / Windows | 40+10+429+83+12=574 | 12 | 12→12 | 576 |
+| pipelines / Linux | 12+4+311+18+12=357 | 8 | 8→8 | 384 |
+| phases / Windows | 118+203+389+89+91+83+12=985 | 21 | 19→21 | 1008 |
+| phases / Linux | 46+191+341+68+49+18+12=725 | 16 | 15→16 | 768 |
+| fresh100 / Windows | 189+83+12=284 | 6 | 6→6 | 288 |
+| fresh100 / Linux | 117+18+12=147 | 4，另保留原授权 1m | 4→5 | 240 |
+| owner / Windows | 363+266+27+93+12=761 | 16 | 16→16 | 768 |
+| owner / Linux | 286+240+15+17+12=570 | 12 | 12→12 | 576 |
+| idle / Windows | 255+73+6+12=346 | 8 | 7→8 | 384 |
+| blackholes / Windows | 207+57+6+12=282 | 6 | 6→6 | 288 |
+| nonproof / Windows | 320+57+6+12=395 | 9 | 8→9 | 432 |
+| real-wireguard / Linux | 204+155+267+16+12=654 | 14 | 14→14 | 672 |
+
+Owner setup 沿用历史 93/17s 最大值；Windows restart 新最大 27s 替代 22s。
+Windows idle 的 setup 是 job 开始至首 proof 的 73s（原 57s），post 沿用较大历史 6s；
+blackholes/nonproof 的新完整 proof 为 201/316s，未超过历史冷启动折算 162+45=207s /
+275+45=320s，不重复加 45s。Linux real-wireguard 的新 proof 为 204/155/267s，
+整 job 643s，扣这三步及当次 capture 1s 后的 setup/post/间隙合计 16s；完整非采集
+642s 超过原 631s 基准。无采集的 model 10/14m 原样保留。
+
+### 5.2 契约与验收
+
+`TestGateC1bMemoryCIContractBudget` 与 `TestSessionLivenessCIContractCaptureBudgets`
+在旧 cap 下首跑 RED（0.512s）：五个算式变化 leg 均拒绝，未变化 leg 通过。
+测试先于 workflow 修改执行，原始日志在仓库外。Linux 汇总项随后修正一处注释/算式
+加法 17→16s（cap 仍 14m）；不把该编辑前结果冒充最终 GREEN。
+两个契约锁定各算式与 workflow，并把每个 cap 减至公式值以下作负向变异；原删步骤、
+缩 count、缩测试 timeout 变异仍保留。架构的完整 job 摘要只重新冻结本节批准的注释与
+cap delta，原 proof 命令逐字节比较不放宽。
+
+推送后新 SHA 的首跑单独记录。三个原 RED leg 必须全部在新 cap 的 80% 内，才可按
+复审要求将 #151 标为闭合；未拿到该证据前使用 Refs #151 / Refs #133。
+
+本地追加 commit 验证：Go 1.23.1，natlab 两组 cap/变异契约 race×20 PASS 84.017s；
+定向架构与双隐私门 PASS 2.312s；`go vet ./...` PASS。完整架构首跑 RED 11.485s，
+发现 consumer/slow-FINISH 共用的 `gateC1bPhaseCIBounds` 尚写死旧 15/19m；这是本次
+cap delta 的遗漏，并非其它 issue 的 flake。只把该共用门对齐 16/21m，proof 命令、
+独立 responder job 15m、其 `-timeout=10m` 均不变；首次 RED 日志原样保留。
+对齐后的完整架构 PASS 13.246s；采集/consumer/slow-FINISH 架构及变异 race×20
+PASS 11.715s，未减少次数。`git diff --check` 通过；生产/配置/依赖 delta 为零。

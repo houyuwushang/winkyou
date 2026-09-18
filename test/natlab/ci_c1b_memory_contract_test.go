@@ -60,8 +60,8 @@ var c1bMemoryCIGroups = []struct {
 	linux, windows int
 }{
 	{"pipelines", "Pipelines", 0, 3, 8, 12},
-	{"phases", "Phases", 3, 8, 15, 19},
-	{"fresh100", "Fresh100", 8, 9, 4, 6},
+	{"phases", "Phases", 3, 8, 16, 21},
+	{"fresh100", "Fresh100", 8, 9, 5, 6},
 }
 
 func c1bMemoryCISetup() []c1bMemoryCIStep {
@@ -72,7 +72,7 @@ func c1bMemoryCISetup() []c1bMemoryCIStep {
 }
 
 // Numeric capture is the only new step: all original proof commands above and
-// their budgets stay byte-for-byte unchanged, including failure behavior.
+// their test-runner timeouts stay unchanged, including failure behavior.
 func c1bMemoryCICapture(group string) c1bMemoryCIStep {
 	return c1bMemoryCIStep{
 		Name: "Preserve numeric fixture timing", Uses: "./.github/actions/fixture-timing", If: "always()",
@@ -258,28 +258,34 @@ func c1bMemoryCIReject(t *testing.T, workflow c1bMemoryCIWorkflow, cause string)
 	}
 	t.Fatalf("mutation missed its specific invariant %q: %v", cause, violations)
 }
+
+// Run 35308117620 measured a 12-second collector maximum. Every capturing
+// leg reserves that same maximum; model/non-capturing jobs reserve zero.
+const fixtureTimingCollectorMaxSeconds = 12
+
 func TestGateC1bMemoryCIContractBudget(t *testing.T) {
-	// Evidence §8: complete step maxima from five first attempts, setup once.
+	// Union of evidence §8 and PR #150's first push/PR attempts. Checkout +
+	// setup-go maxima are 83s/18s, counted once per job. See timing evidence §5.
 	for _, budget := range []struct {
 		key, os     string
 		setup       int
 		steps       []int
 		extra, want int
 	}{
-		{"pipelines", "windows-latest", 73, []int{40, 10, 429}, 0, 12},
-		{"pipelines", "ubuntu-latest", 16, []int{11, 4, 311}, 0, 8},
-		{"phases", "windows-latest", 73, []int{50, 203, 362, 89, 91}, 0, 19},
-		{"phases", "ubuntu-latest", 16, []int{46, 191, 335, 68, 49}, 0, 15},
-		{"fresh100", "windows-latest", 73, []int{189}, 0, 6},
-		{"fresh100", "ubuntu-latest", 16, []int{115}, 1, 4},
+		{"pipelines", "windows-latest", 83, []int{40, 10, 429}, 0, 12},
+		{"pipelines", "ubuntu-latest", 18, []int{12, 4, 311}, 0, 8},
+		{"phases", "windows-latest", 83, []int{118, 203, 389, 89, 91}, 0, 21},
+		{"phases", "ubuntu-latest", 18, []int{46, 191, 341, 68, 49}, 0, 16},
+		{"fresh100", "windows-latest", 83, []int{189}, 0, 6},
+		{"fresh100", "ubuntu-latest", 18, []int{117}, 1, 5},
 	} {
 		t.Run(budget.key+"/"+budget.os, func(t *testing.T) {
-			seconds := budget.setup
+			seconds := budget.setup + fixtureTimingCollectorMaxSeconds
 			for _, step := range budget.steps {
 				seconds += step
 			}
 			// Exact ceil(1.25 * seconds / 60). Only Linux Fresh100 has the
-			// expressly authorized extra setup minute (3m -> 4m).
+			// expressly authorized extra setup minute (now 4m -> 5m).
 			minutes := (5*seconds+239)/240 + budget.extra
 			if minutes != budget.want {
 				t.Fatal("measured ceiling arithmetic changed")
@@ -300,6 +306,14 @@ func TestGateC1bMemoryCIContractBudget(t *testing.T) {
 			if !found {
 				t.Fatal("measured budget has no matching job/platform")
 			}
+			job := workflow.Jobs["gate-c1b-memory-"+budget.key]
+			for i := range job.Strategy.Matrix.Include {
+				if job.Strategy.Matrix.Include[i].OS == budget.os {
+					job.Strategy.Matrix.Include[i].TimeoutMinutes = minutes - 1
+				}
+			}
+			workflow.Jobs["gate-c1b-memory-"+budget.key] = job
+			c1bMemoryCIReject(t, workflow, budget.key+" exact OS, required name and measured ceilings")
 			t.Logf("C1B_MEMORY_CI_BUDGET leg=%s os=%s measured_seconds=%d timeout_minutes=%d first_run_limit_seconds=%d", budget.key, budget.os, seconds, minutes, 48*minutes)
 		})
 	}

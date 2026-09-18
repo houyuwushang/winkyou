@@ -173,8 +173,8 @@ func validateGateC1bSlowCI(workflow gateC1bSlowCIWorkflow) string {
 	return ""
 }
 
-// #146 relocates the initiator and consumer groups, without changing their
-// commands, concurrency, selection or test-runner timeouts.
+// #146 relocates the initiator and consumer groups; #150 recomputes job caps
+// including numeric capture. Commands, selection and test timeouts stay fixed.
 func gateC1bPhaseCIBounds(job gateC1bSlowCIJob) bool {
 	legs := job.Strategy.Matrix.Include
 	return job.TimeoutMinutes == "${{ matrix.timeout_minutes }}" &&
@@ -183,6 +183,6 @@ func gateC1bPhaseCIBounds(job gateC1bSlowCIJob) bool {
 		job.If == nil && job.ContinueOnError == nil && job.Needs == nil &&
 		job.Strategy.FailFast != nil && !*job.Strategy.FailFast &&
 		len(job.Strategy.Matrix.OS) == 0 && len(job.Strategy.Matrix.Exclude) == 0 &&
-		len(legs) == 2 && legs[0].OS == "ubuntu-latest" && legs[0].TimeoutMinutes == 15 &&
-		legs[1].OS == "windows-latest" && legs[1].TimeoutMinutes == 19
+		len(legs) == 2 && legs[0].OS == "ubuntu-latest" && legs[0].TimeoutMinutes == 16 &&
+		legs[1].OS == "windows-latest" && legs[1].TimeoutMinutes == 21
 }
