@@ -7,6 +7,9 @@ inputs:
 runs:
   using: composite
   steps:
+    - name: Prove numeric schema and privacy mutations
+      shell: bash
+      run: python -B scripts/test_ci_fixture_timing.py
     - name: Validate numeric samples and derive timing summary
       shell: bash
       run: >-

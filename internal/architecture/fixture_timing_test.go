@@ -94,7 +94,7 @@ func fixtureTimingActionValid(data []byte) bool {
 	}
 	// Exact approved validate-then-upload action; no raw logs, broad glob,
 	// success-only condition, ignored errors or hidden proof command allowed.
-	return fmt.Sprintf("%x", sha256.Sum256([]byte(strings.Join(lines, "\n")))) == "6b3381504dfeaf572a291eb0cc451475af81edecb1e83a38af2df3dff8302767"
+	return fmt.Sprintf("%x", sha256.Sum256([]byte(strings.Join(lines, "\n")))) == "c84e70c15224a13bbf8bf87c288e87f1987cae272fef6ee7857981552e1580a9"
 }
 
 func TestGateC1bFixtureTimingArtifactMutations(t *testing.T) {
@@ -123,8 +123,30 @@ func fixtureTimingCaptureValid(source []byte) bool {
 	registrations, captures := 0, 0
 	for _, decl := range f.Decls {
 		fn, ok := decl.(*ast.FuncDecl)
-		if !ok || fn.Name.Name != "runGateC1bMemoryProductProfile" {
+		if !ok || fn.Name.Name != "runGateC1bMemoryProductProfile" || fn.Body == nil {
 			continue
+		}
+		createdAt, creations := -2, 0
+		for index, stmt := range fn.Body.List {
+			assignment, ok := stmt.(*ast.AssignStmt)
+			if !ok || len(assignment.Lhs) != 1 || len(assignment.Rhs) != 1 {
+				continue
+			}
+			name, ok := assignment.Lhs[0].(*ast.Ident)
+			if !ok || name.Name != "phases" {
+				continue
+			}
+			call, ok := assignment.Rhs[0].(*ast.CallExpr)
+			if !ok {
+				continue
+			}
+			factory, ok := call.Fun.(*ast.Ident)
+			if ok && factory.Name == "newGateC1bMemoryPhaseWitness" {
+				createdAt, creations = index, creations+1
+			}
+		}
+		if creations != 1 {
+			return false
 		}
 		ast.Inspect(fn, func(n ast.Node) bool {
 			if call, ok := n.(*ast.CallExpr); ok {
@@ -134,7 +156,10 @@ func fixtureTimingCaptureValid(source []byte) bool {
 			}
 			return true
 		})
-		for _, stmt := range fn.Body.List {
+		for index, stmt := range fn.Body.List {
+			if index != createdAt+1 {
+				continue // Early fixture failures must also reach capture.
+			}
 			expr, ok := stmt.(*ast.ExprStmt)
 			if !ok {
 				continue
@@ -186,7 +211,7 @@ func TestGateC1bFixtureTimingCaptureContract(t *testing.T) {
 
 func TestGateC1bFixtureTimingCaptureMutations(t *testing.T) {
 	const registration = "t.Cleanup(func() { phases.persistTiming(t, test, windows) })"
-	const source = "package fixture; func runGateC1bMemoryProductProfile() { " + registration + " }"
+	const source = "package fixture; func runGateC1bMemoryProductProfile() { phases := newGateC1bMemoryPhaseWitness(); " + registration + " }"
 	if !fixtureTimingCaptureValid([]byte(source)) {
 		t.Fatal("valid capture contract rejected")
 	}
@@ -194,6 +219,7 @@ func TestGateC1bFixtureTimingCaptureMutations(t *testing.T) {
 		"", "if t.Failed() { " + registration + " }",
 		"t.Cleanup(func() { if t.Failed() { phases.persistTiming(t, test, windows) } })",
 		"defer phases.persistTiming(t, test, windows)",
+		"workMayFail(); " + registration,
 		"t.Cleanup(func() { phases.persistTiming(t, test, replacement) })",
 		registration + "; " + registration,
 	} {
