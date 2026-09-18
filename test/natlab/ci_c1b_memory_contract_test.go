@@ -70,6 +70,16 @@ func c1bMemoryCISetup() []c1bMemoryCIStep {
 		{Name: "Set up Go", Uses: "actions/setup-go@v5", With: map[string]string{"go-version-file": "go.mod"}},
 	}
 }
+
+// Numeric capture is the only new step: all original proof commands above and
+// their budgets stay byte-for-byte unchanged, including failure behavior.
+func c1bMemoryCICapture(group string) c1bMemoryCIStep {
+	return c1bMemoryCIStep{
+		Name: "Preserve numeric fixture timing", Uses: "./.github/actions/fixture-timing", If: "always()",
+		With: map[string]string{"artifact-name": "fixture-timing-" + group + "-${{ matrix.os }}"},
+	}
+}
+
 func c1bMemoryCIContractViolations(payload []byte) []string {
 	var workflow c1bMemoryCIWorkflow
 	if err := yaml.Unmarshal(payload, &workflow); err != nil {
@@ -95,10 +105,13 @@ func c1bMemoryCIContractViolations(payload []byte) []string {
 			job.Strategy.FailFast == nil || *job.Strategy.FailFast {
 			violations = append(violations, group.key+" independent non-advisory fail-fast-false")
 		}
-		if !reflect.DeepEqual(job.Env, map[string]string{"GORACE": "halt_on_error=1"}) {
+		if !reflect.DeepEqual(job.Env, map[string]string{
+			"GORACE": "halt_on_error=1", "WINKYOU_FIXTURE_TIMING_DIR": "${{ runner.temp }}/fixture-timing",
+		}) {
 			violations = append(violations, group.key+" original race environment")
 		}
 		wantSteps := append(c1bMemoryCISetup(), c1bMemoryCICommands[group.begin:group.end]...)
+		wantSteps = append(wantSteps, c1bMemoryCICapture(group.key))
 		if !reflect.DeepEqual(job.Steps, wantSteps) {
 			violations = append(violations, group.key+" exact commands, order, setup and step environment")
 		}
@@ -129,9 +142,12 @@ func TestGateC1bMemoryCIContractMutations(t *testing.T) {
 			name, cause string
 			change      func(*c1bMemoryCIJob)
 		}{
-			{"drop-command", "exact commands, order, setup and step environment", func(j *c1bMemoryCIJob) { j.Steps = j.Steps[:len(j.Steps)-1] }},
+			{"drop-command", "exact commands, order, setup and step environment", func(j *c1bMemoryCIJob) {
+				i := len(j.Steps) - 2 // Last original proof, not numeric capture.
+				j.Steps = append(j.Steps[:i], j.Steps[i+1:]...)
+			}},
 			{"shorten-test-timeout", "exact commands, order, setup and step environment", func(j *c1bMemoryCIJob) {
-				i := len(j.Steps) - 1
+				i := len(j.Steps) - 2
 				switch group.key {
 				case "pipelines":
 					j.Steps[i].Run = strings.Replace(j.Steps[i].Run, "-timeout=12m", "-timeout=11m", 1)
@@ -142,7 +158,7 @@ func TestGateC1bMemoryCIContractMutations(t *testing.T) {
 				}
 			}},
 			{"lower-count", "exact commands, order, setup and step environment", func(j *c1bMemoryCIJob) {
-				i := len(j.Steps) - 1
+				i := len(j.Steps) - 2
 				if group.key == "fresh100" {
 					j.Steps[i].Run = strings.Replace(j.Steps[i].Run, "-count=1", "-count=0", 1)
 				} else {
@@ -159,9 +175,20 @@ func TestGateC1bMemoryCIContractMutations(t *testing.T) {
 			{"advisory", "independent non-advisory fail-fast-false", func(j *c1bMemoryCIJob) { j.ContinueOnError = true }},
 			{"dependent", "independent non-advisory fail-fast-false", func(j *c1bMemoryCIJob) { j.Needs = "another-job" }},
 			{"race-env", "original race environment", func(j *c1bMemoryCIJob) { j.Env["GORACE"] = "halt_on_error=0" }},
+			{"missing-capture-env", "original race environment", func(j *c1bMemoryCIJob) { delete(j.Env, "WINKYOU_FIXTURE_TIMING_DIR") }},
+			{"changed-capture-env", "original race environment", func(j *c1bMemoryCIJob) { j.Env["WINKYOU_FIXTURE_TIMING_DIR"] += "/other" }},
 			{"conditional-step", "exact commands, order, setup and step environment", func(j *c1bMemoryCIJob) { j.Steps[2].If = false }},
 			{"advisory-step", "exact commands, order, setup and step environment", func(j *c1bMemoryCIJob) { j.Steps[2].ContinueOnError = true }},
-			{"flag-override", "exact commands, order, setup and step environment", func(j *c1bMemoryCIJob) { j.Steps[len(j.Steps)-1].Run += " -count=1" }},
+			{"flag-override", "exact commands, order, setup and step environment", func(j *c1bMemoryCIJob) { j.Steps[len(j.Steps)-2].Run += " -count=1" }},
+			{"missing-capture", "exact commands, order, setup and step environment", func(j *c1bMemoryCIJob) { j.Steps = j.Steps[:len(j.Steps)-1] }},
+			{"capture-success-only", "exact commands, order, setup and step environment", func(j *c1bMemoryCIJob) { j.Steps[len(j.Steps)-1].If = "success()" }},
+			{"capture-bypasses-validation", "exact commands, order, setup and step environment", func(j *c1bMemoryCIJob) { j.Steps[len(j.Steps)-1].Uses = "actions/upload-artifact@v4" }},
+			{"capture-advisory", "exact commands, order, setup and step environment", func(j *c1bMemoryCIJob) { j.Steps[len(j.Steps)-1].ContinueOnError = true }},
+			{"capture-wrong-artifact", "exact commands, order, setup and step environment", func(j *c1bMemoryCIJob) { j.Steps[len(j.Steps)-1].With["artifact-name"] = "other" }},
+			{"capture-before-proof", "exact commands, order, setup and step environment", func(j *c1bMemoryCIJob) {
+				i := len(j.Steps) - 1
+				j.Steps[i], j.Steps[i-1] = j.Steps[i-1], j.Steps[i]
+			}},
 		} {
 			t.Run(group.key+"/"+mutation.name, func(t *testing.T) {
 				var workflow c1bMemoryCIWorkflow
@@ -202,7 +229,11 @@ func TestGateC1bMemoryCIContractMutations(t *testing.T) {
 		combined.Steps = c1bMemoryCISetup()
 		for _, group := range c1bMemoryCIGroups {
 			key := "gate-c1b-memory-" + group.key
-			combined.Steps = append(combined.Steps, workflow.Jobs[key].Steps[2:]...)
+			steps := workflow.Jobs[key].Steps
+			if !reflect.DeepEqual(steps[len(steps)-1], c1bMemoryCICapture(group.key)) {
+				t.Fatal("numeric capture baseline changed")
+			}
+			combined.Steps = append(combined.Steps, steps[2:len(steps)-1]...)
 			delete(workflow.Jobs, key)
 		}
 		if !reflect.DeepEqual(combined.Steps[2:], c1bMemoryCICommands) {
