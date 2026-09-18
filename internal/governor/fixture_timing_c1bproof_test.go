@@ -106,6 +106,10 @@ func (w *gateC1bMemoryPhaseWitness) persistTiming(t *testing.T, profile gateC1bM
 }
 
 func TestGateC1bFixtureTimingFiles(t *testing.T) {
+	wantStages := []string{"preflight", "ssh_spawn", "oob_adopt", "present", "burned", "activated", "handshake", "prepare", "sockets", "fresh_evidence", "plan_committed", "ready", "fire", "candidates", "winner", "verify", "transport_lease", "handoff", "data_plane_challenge", "finish_recorded", "oob_drained", "data_plane_ready", "terminal"}
+	if !reflect.DeepEqual(gatecorchestrator.ProductProgressSequence, wantStages) {
+		t.Fatal("numeric timing stage schema drifted")
+	}
 	w := newGateC1bMemoryPhaseWitness()
 	profile := gateC1bMemoryProfiles[0]
 	windows := memoryFixtureWindows(profile.profile)
