@@ -37,7 +37,7 @@ func fixtureTimingJobValid(data []byte, job, artifact, digest string) bool {
 			end = starts[index+1][0]
 		}
 		block := text[start[0]:end]
-		const env = "      WINKYOU_FIXTURE_TIMING_DIR: ${{ runner.temp }}/fixture-timing\n"
+		const env = "      WINKYOU_FIXTURE_TIMING_DIR: ${{ github.workspace }}/../fixture-timing\n"
 		capture := "      - name: Preserve numeric fixture timing\n        if: always()\n        uses: ./.github/actions/fixture-timing\n        with:\n          artifact-name: " + artifact + "\n"
 		if strings.Count(block, env) != 1 || strings.Count(block, capture) != 1 {
 			return false
@@ -64,6 +64,7 @@ func TestGateC1bFixtureTimingPreservesCI(t *testing.T) {
 		for _, mutation := range [][2]string{
 			{"if: always()", "if: success()"},
 			{"WINKYOU_FIXTURE_TIMING_DIR", "REMOVED_TIMING_DIR"},
+			{"${{ github.workspace }}/../fixture-timing", "${{ runner.temp }}/fixture-timing"},
 			{fixture.artifact, "fixture-timing-incorrect"},
 		} {
 			// Mutate all occurrences so the same invariant is exercised for
@@ -80,6 +81,27 @@ func TestGateC1bFixtureTimingPreservesCI(t *testing.T) {
 			changed := strings.ReplaceAll(string(data), mutation[0], mutation[1])
 			if fixtureTimingJobValid([]byte(changed), fixture.job, fixture.artifact, fixture.digest) {
 				t.Fatal("proof command or frozen budget mutation was accepted")
+			}
+		}
+	}
+}
+
+func TestGateC1bFixtureTimingJobEnvContext(t *testing.T) {
+	// Job env is evaluated before runner.* is an available expression context.
+	// Keep capture outside the checkout using the supported github context;
+	// step-level upload may still use runner.temp. YAML parsing alone misses it.
+	for _, name := range []string{"ci.yml", "session-liveness.yml"} {
+		data, err := os.ReadFile(filepath.Join(repositoryRoot(t), ".github", "workflows", name))
+		if err != nil {
+			t.Fatal("workflow unavailable")
+		}
+		lines := regexp.MustCompile(`(?m)^\s+WINKYOU_FIXTURE_TIMING_DIR: (.+)\r?$`).FindAllStringSubmatch(string(data), -1)
+		if len(lines) != 3 {
+			t.Fatal("numeric capture job count changed")
+		}
+		for _, line := range lines {
+			if strings.TrimSpace(line[1]) != "${{ github.workspace }}/../fixture-timing" {
+				t.Fatal("job env must use a supported context and keep samples outside checkout")
 			}
 		}
 	}

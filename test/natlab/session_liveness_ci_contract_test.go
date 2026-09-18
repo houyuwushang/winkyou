@@ -102,7 +102,7 @@ func livenessCISplitViolations(workflow livenessCIWorkflow) []string {
 		}
 		wantEnv := map[string]string{"GORACE": "halt_on_error=1"}
 		if name == "owner" {
-			wantEnv["WINKYOU_FIXTURE_TIMING_DIR"] = "${{ runner.temp }}/fixture-timing"
+			wantEnv["WINKYOU_FIXTURE_TIMING_DIR"] = "${{ github.workspace }}/../fixture-timing"
 		}
 		if !reflect.DeepEqual(job.Env, wantEnv) {
 			violations = append(violations, name+" original race environment")

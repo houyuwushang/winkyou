@@ -106,7 +106,7 @@ func c1bMemoryCIContractViolations(payload []byte) []string {
 			violations = append(violations, group.key+" independent non-advisory fail-fast-false")
 		}
 		if !reflect.DeepEqual(job.Env, map[string]string{
-			"GORACE": "halt_on_error=1", "WINKYOU_FIXTURE_TIMING_DIR": "${{ runner.temp }}/fixture-timing",
+			"GORACE": "halt_on_error=1", "WINKYOU_FIXTURE_TIMING_DIR": "${{ github.workspace }}/../fixture-timing",
 		}) {
 			violations = append(violations, group.key+" original race environment")
 		}
@@ -177,6 +177,7 @@ func TestGateC1bMemoryCIContractMutations(t *testing.T) {
 			{"race-env", "original race environment", func(j *c1bMemoryCIJob) { j.Env["GORACE"] = "halt_on_error=0" }},
 			{"missing-capture-env", "original race environment", func(j *c1bMemoryCIJob) { delete(j.Env, "WINKYOU_FIXTURE_TIMING_DIR") }},
 			{"changed-capture-env", "original race environment", func(j *c1bMemoryCIJob) { j.Env["WINKYOU_FIXTURE_TIMING_DIR"] += "/other" }},
+			{"unavailable-runner-context", "original race environment", func(j *c1bMemoryCIJob) { j.Env["WINKYOU_FIXTURE_TIMING_DIR"] = "${{ runner.temp }}/fixture-timing" }},
 			{"conditional-step", "exact commands, order, setup and step environment", func(j *c1bMemoryCIJob) { j.Steps[2].If = false }},
 			{"advisory-step", "exact commands, order, setup and step environment", func(j *c1bMemoryCIJob) { j.Steps[2].ContinueOnError = true }},
 			{"flag-override", "exact commands, order, setup and step environment", func(j *c1bMemoryCIJob) { j.Steps[len(j.Steps)-2].Run += " -count=1" }},

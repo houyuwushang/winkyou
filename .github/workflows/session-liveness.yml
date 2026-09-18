@@ -59,7 +59,7 @@ jobs:
     timeout-minutes: ${{ matrix.timeout_minutes }}
     env:
       GORACE: halt_on_error=1
-      WINKYOU_FIXTURE_TIMING_DIR: ${{ runner.temp }}/fixture-timing
+      WINKYOU_FIXTURE_TIMING_DIR: ${{ github.workspace }}/../fixture-timing
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -85,7 +85,7 @@ jobs:
     timeout-minutes: 14
     env:
       GORACE: halt_on_error=1
-      WINKYOU_FIXTURE_TIMING_DIR: ${{ runner.temp }}/fixture-timing
+      WINKYOU_FIXTURE_TIMING_DIR: ${{ github.workspace }}/../fixture-timing
       WINKYOU_LIVENESS_IDLE_REQUIRED: '1'
       WINKYOU_LIVENESS_BLACKHOLE_REQUIRED: '1'
     steps:
@@ -133,7 +133,7 @@ jobs:
     timeout-minutes: ${{ matrix.timeout_minutes }}
     env:
       GORACE: halt_on_error=1
-      WINKYOU_FIXTURE_TIMING_DIR: ${{ runner.temp }}/fixture-timing
+      WINKYOU_FIXTURE_TIMING_DIR: ${{ github.workspace }}/../fixture-timing
       WINKYOU_LIVENESS_IDLE_REQUIRED: '1'
       WINKYOU_LIVENESS_BLACKHOLE_REQUIRED: '1'
     steps:

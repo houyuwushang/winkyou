@@ -436,7 +436,7 @@ jobs:
     timeout-minutes: ${{ matrix.timeout_minutes }}
     env:
       GORACE: halt_on_error=1
-      WINKYOU_FIXTURE_TIMING_DIR: ${{ runner.temp }}/fixture-timing
+      WINKYOU_FIXTURE_TIMING_DIR: ${{ github.workspace }}/../fixture-timing
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
@@ -485,7 +485,7 @@ jobs:
     timeout-minutes: ${{ matrix.timeout_minutes }}
     env:
       GORACE: halt_on_error=1
-      WINKYOU_FIXTURE_TIMING_DIR: ${{ runner.temp }}/fixture-timing
+      WINKYOU_FIXTURE_TIMING_DIR: ${{ github.workspace }}/../fixture-timing
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
@@ -549,7 +549,7 @@ jobs:
     timeout-minutes: ${{ matrix.timeout_minutes }}
     env:
       GORACE: halt_on_error=1
-      WINKYOU_FIXTURE_TIMING_DIR: ${{ runner.temp }}/fixture-timing
+      WINKYOU_FIXTURE_TIMING_DIR: ${{ github.workspace }}/../fixture-timing
     steps:
       - name: Check out repository
         uses: actions/checkout@v4

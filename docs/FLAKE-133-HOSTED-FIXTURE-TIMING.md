@@ -39,7 +39,7 @@ Refs #133；采集成功不等于四种历史失败已修复。
 
 ## 3. CI 与隐私
 
-相关 memory、owner、idle/blackholes/nonproof job 使用各自 runner 临时目录。
+相关 memory、owner、idle/blackholes/nonproof job 使用各自托管 runner 的 checkout 外采集目录。
 追加 `always()` 的验证/摘要与 artifact 上传，测试命令原样保留。
 上传仅包括通过严格 schema 校验的数字文件和数字摘要，不包含原始 job 日志。
 禁止未知字段、字符串值、非法 profile/槽数、除 -1 缺失标记外的负时间、
@@ -124,3 +124,22 @@ python -B scripts/test_ci_fixture_timing.py
 第二条启用 `WINKYOU_GATE_C1B_REPEAT_REQUIRED=1`；本地 Go 批次使用 `GOMAXPROCS=4`。
 带 `-tags=natlab,c1bproof` 的 vet 命令使用 `GOOS=linux CGO_ENABLED=0`。仅夹具采样批次设置
 `WINKYOU_FIXTURE_TIMING_DIR`，指向仓库外的独立目录，不随文档发布具体路径。
+
+### 4.2 首次托管配置 RED 与修正
+
+提交 `2cc8e5a` 的首跑在测试启动前失败：
+[CI run 35307714096](https://github.com/houyuwushang/winkyou/actions/runs/35307714096) 与
+[Session Liveness run 35307713113](https://github.com/houyuwushang/winkyou/actions/runs/35307713113)
+均为 attempt 1，workflow 配置被拒，不能计为执行过测试或生成过样本。
+本次新增 job env 误用了 `runner.temp`；该上下文可在相应 step 位置使用，
+不在 job env 的可用集合中。依据 [GitHub 上下文规则](https://docs.github.com/en/actions/reference/workflows-and-actions/contexts#context-availability)，
+仅把采集目录表达式改为支持的 `github.workspace` 的 checkout 外同级目录。
+上传仍发生于 step，使用 `runner.temp` 的摘要目录不变；所有原命令、次数、预算不变。
+
+新增 job-env 回归在旧表达式下 RED（0.593s），日志 SHA-256
+`d97c87826267bda7101c65f28cf4af8aee81b8705ae8dae676377577b83ebb8f`；
+架构和 CI 精确契约增加此表达式回退的拒绝变异。首次 workflow RED 永久单列，
+修正提交触发新 revision 的 CI，不使用 rerun API，不把后续结果替代首跑。
+修正后新增架构/表达式变异 race×20 PASS 4.741s，natlab CI 契约 race×20
+PASS 67.458s，双隐私门 PASS 1.842s。原六个 job 的基线摘要、全部 proof 命令与
+时间上限仍通过精确契约核对；未改数字采集代码与产品代码。
