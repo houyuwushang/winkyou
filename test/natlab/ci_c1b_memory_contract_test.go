@@ -60,8 +60,8 @@ var c1bMemoryCIGroups = []struct {
 	linux, windows int
 }{
 	{"pipelines", "Pipelines", 0, 3, 8, 12},
-	{"phases", "Phases", 3, 8, 15, 19},
-	{"fresh100", "Fresh100", 8, 9, 4, 6},
+	{"phases", "Phases", 3, 8, 16, 21},
+	{"fresh100", "Fresh100", 8, 9, 5, 6},
 }
 
 func c1bMemoryCISetup() []c1bMemoryCIStep {
@@ -70,6 +70,16 @@ func c1bMemoryCISetup() []c1bMemoryCIStep {
 		{Name: "Set up Go", Uses: "actions/setup-go@v5", With: map[string]string{"go-version-file": "go.mod"}},
 	}
 }
+
+// Numeric capture is the only new step: all original proof commands above and
+// their test-runner timeouts stay unchanged, including failure behavior.
+func c1bMemoryCICapture(group string) c1bMemoryCIStep {
+	return c1bMemoryCIStep{
+		Name: "Preserve numeric fixture timing", Uses: "./.github/actions/fixture-timing", If: "always()",
+		With: map[string]string{"artifact-name": "fixture-timing-" + group + "-${{ matrix.os }}"},
+	}
+}
+
 func c1bMemoryCIContractViolations(payload []byte) []string {
 	var workflow c1bMemoryCIWorkflow
 	if err := yaml.Unmarshal(payload, &workflow); err != nil {
@@ -95,10 +105,13 @@ func c1bMemoryCIContractViolations(payload []byte) []string {
 			job.Strategy.FailFast == nil || *job.Strategy.FailFast {
 			violations = append(violations, group.key+" independent non-advisory fail-fast-false")
 		}
-		if !reflect.DeepEqual(job.Env, map[string]string{"GORACE": "halt_on_error=1"}) {
+		if !reflect.DeepEqual(job.Env, map[string]string{
+			"GORACE": "halt_on_error=1", "WINKYOU_FIXTURE_TIMING_DIR": "${{ github.workspace }}/../fixture-timing",
+		}) {
 			violations = append(violations, group.key+" original race environment")
 		}
 		wantSteps := append(c1bMemoryCISetup(), c1bMemoryCICommands[group.begin:group.end]...)
+		wantSteps = append(wantSteps, c1bMemoryCICapture(group.key))
 		if !reflect.DeepEqual(job.Steps, wantSteps) {
 			violations = append(violations, group.key+" exact commands, order, setup and step environment")
 		}
@@ -129,9 +142,12 @@ func TestGateC1bMemoryCIContractMutations(t *testing.T) {
 			name, cause string
 			change      func(*c1bMemoryCIJob)
 		}{
-			{"drop-command", "exact commands, order, setup and step environment", func(j *c1bMemoryCIJob) { j.Steps = j.Steps[:len(j.Steps)-1] }},
+			{"drop-command", "exact commands, order, setup and step environment", func(j *c1bMemoryCIJob) {
+				i := len(j.Steps) - 2 // Last original proof, not numeric capture.
+				j.Steps = append(j.Steps[:i], j.Steps[i+1:]...)
+			}},
 			{"shorten-test-timeout", "exact commands, order, setup and step environment", func(j *c1bMemoryCIJob) {
-				i := len(j.Steps) - 1
+				i := len(j.Steps) - 2
 				switch group.key {
 				case "pipelines":
 					j.Steps[i].Run = strings.Replace(j.Steps[i].Run, "-timeout=12m", "-timeout=11m", 1)
@@ -142,7 +158,7 @@ func TestGateC1bMemoryCIContractMutations(t *testing.T) {
 				}
 			}},
 			{"lower-count", "exact commands, order, setup and step environment", func(j *c1bMemoryCIJob) {
-				i := len(j.Steps) - 1
+				i := len(j.Steps) - 2
 				if group.key == "fresh100" {
 					j.Steps[i].Run = strings.Replace(j.Steps[i].Run, "-count=1", "-count=0", 1)
 				} else {
@@ -159,9 +175,21 @@ func TestGateC1bMemoryCIContractMutations(t *testing.T) {
 			{"advisory", "independent non-advisory fail-fast-false", func(j *c1bMemoryCIJob) { j.ContinueOnError = true }},
 			{"dependent", "independent non-advisory fail-fast-false", func(j *c1bMemoryCIJob) { j.Needs = "another-job" }},
 			{"race-env", "original race environment", func(j *c1bMemoryCIJob) { j.Env["GORACE"] = "halt_on_error=0" }},
+			{"missing-capture-env", "original race environment", func(j *c1bMemoryCIJob) { delete(j.Env, "WINKYOU_FIXTURE_TIMING_DIR") }},
+			{"changed-capture-env", "original race environment", func(j *c1bMemoryCIJob) { j.Env["WINKYOU_FIXTURE_TIMING_DIR"] += "/other" }},
+			{"unavailable-runner-context", "original race environment", func(j *c1bMemoryCIJob) { j.Env["WINKYOU_FIXTURE_TIMING_DIR"] = "${{ runner.temp }}/fixture-timing" }},
 			{"conditional-step", "exact commands, order, setup and step environment", func(j *c1bMemoryCIJob) { j.Steps[2].If = false }},
 			{"advisory-step", "exact commands, order, setup and step environment", func(j *c1bMemoryCIJob) { j.Steps[2].ContinueOnError = true }},
-			{"flag-override", "exact commands, order, setup and step environment", func(j *c1bMemoryCIJob) { j.Steps[len(j.Steps)-1].Run += " -count=1" }},
+			{"flag-override", "exact commands, order, setup and step environment", func(j *c1bMemoryCIJob) { j.Steps[len(j.Steps)-2].Run += " -count=1" }},
+			{"missing-capture", "exact commands, order, setup and step environment", func(j *c1bMemoryCIJob) { j.Steps = j.Steps[:len(j.Steps)-1] }},
+			{"capture-success-only", "exact commands, order, setup and step environment", func(j *c1bMemoryCIJob) { j.Steps[len(j.Steps)-1].If = "success()" }},
+			{"capture-bypasses-validation", "exact commands, order, setup and step environment", func(j *c1bMemoryCIJob) { j.Steps[len(j.Steps)-1].Uses = "actions/upload-artifact@v4" }},
+			{"capture-advisory", "exact commands, order, setup and step environment", func(j *c1bMemoryCIJob) { j.Steps[len(j.Steps)-1].ContinueOnError = true }},
+			{"capture-wrong-artifact", "exact commands, order, setup and step environment", func(j *c1bMemoryCIJob) { j.Steps[len(j.Steps)-1].With["artifact-name"] = "other" }},
+			{"capture-before-proof", "exact commands, order, setup and step environment", func(j *c1bMemoryCIJob) {
+				i := len(j.Steps) - 1
+				j.Steps[i], j.Steps[i-1] = j.Steps[i-1], j.Steps[i]
+			}},
 		} {
 			t.Run(group.key+"/"+mutation.name, func(t *testing.T) {
 				var workflow c1bMemoryCIWorkflow
@@ -202,7 +230,11 @@ func TestGateC1bMemoryCIContractMutations(t *testing.T) {
 		combined.Steps = c1bMemoryCISetup()
 		for _, group := range c1bMemoryCIGroups {
 			key := "gate-c1b-memory-" + group.key
-			combined.Steps = append(combined.Steps, workflow.Jobs[key].Steps[2:]...)
+			steps := workflow.Jobs[key].Steps
+			if !reflect.DeepEqual(steps[len(steps)-1], c1bMemoryCICapture(group.key)) {
+				t.Fatal("numeric capture baseline changed")
+			}
+			combined.Steps = append(combined.Steps, steps[2:len(steps)-1]...)
 			delete(workflow.Jobs, key)
 		}
 		if !reflect.DeepEqual(combined.Steps[2:], c1bMemoryCICommands) {
@@ -226,28 +258,34 @@ func c1bMemoryCIReject(t *testing.T, workflow c1bMemoryCIWorkflow, cause string)
 	}
 	t.Fatalf("mutation missed its specific invariant %q: %v", cause, violations)
 }
+
+// Run 35308117620 measured a 12-second collector maximum. Every capturing
+// leg reserves that same maximum; model/non-capturing jobs reserve zero.
+const fixtureTimingCollectorMaxSeconds = 12
+
 func TestGateC1bMemoryCIContractBudget(t *testing.T) {
-	// Evidence §8: complete step maxima from five first attempts, setup once.
+	// Union of evidence §8 and PR #150's first push/PR attempts. Checkout +
+	// setup-go maxima are 83s/18s, counted once per job. See timing evidence §5.
 	for _, budget := range []struct {
 		key, os     string
 		setup       int
 		steps       []int
 		extra, want int
 	}{
-		{"pipelines", "windows-latest", 73, []int{40, 10, 429}, 0, 12},
-		{"pipelines", "ubuntu-latest", 16, []int{11, 4, 311}, 0, 8},
-		{"phases", "windows-latest", 73, []int{50, 203, 362, 89, 91}, 0, 19},
-		{"phases", "ubuntu-latest", 16, []int{46, 191, 335, 68, 49}, 0, 15},
-		{"fresh100", "windows-latest", 73, []int{189}, 0, 6},
-		{"fresh100", "ubuntu-latest", 16, []int{115}, 1, 4},
+		{"pipelines", "windows-latest", 83, []int{40, 10, 429}, 0, 12},
+		{"pipelines", "ubuntu-latest", 18, []int{12, 4, 311}, 0, 8},
+		{"phases", "windows-latest", 83, []int{118, 203, 389, 89, 91}, 0, 21},
+		{"phases", "ubuntu-latest", 18, []int{46, 191, 341, 68, 49}, 0, 16},
+		{"fresh100", "windows-latest", 83, []int{189}, 0, 6},
+		{"fresh100", "ubuntu-latest", 18, []int{117}, 1, 5},
 	} {
 		t.Run(budget.key+"/"+budget.os, func(t *testing.T) {
-			seconds := budget.setup
+			seconds := budget.setup + fixtureTimingCollectorMaxSeconds
 			for _, step := range budget.steps {
 				seconds += step
 			}
 			// Exact ceil(1.25 * seconds / 60). Only Linux Fresh100 has the
-			// expressly authorized extra setup minute (3m -> 4m).
+			// expressly authorized extra setup minute (now 4m -> 5m).
 			minutes := (5*seconds+239)/240 + budget.extra
 			if minutes != budget.want {
 				t.Fatal("measured ceiling arithmetic changed")
@@ -268,6 +306,14 @@ func TestGateC1bMemoryCIContractBudget(t *testing.T) {
 			if !found {
 				t.Fatal("measured budget has no matching job/platform")
 			}
+			job := workflow.Jobs["gate-c1b-memory-"+budget.key]
+			for i := range job.Strategy.Matrix.Include {
+				if job.Strategy.Matrix.Include[i].OS == budget.os {
+					job.Strategy.Matrix.Include[i].TimeoutMinutes = minutes - 1
+				}
+			}
+			workflow.Jobs["gate-c1b-memory-"+budget.key] = job
+			c1bMemoryCIReject(t, workflow, budget.key+" exact OS, required name and measured ceilings")
 			t.Logf("C1B_MEMORY_CI_BUDGET leg=%s os=%s measured_seconds=%d timeout_minutes=%d first_run_limit_seconds=%d", budget.key, budget.os, seconds, minutes, 48*minutes)
 		})
 	}

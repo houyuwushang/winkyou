@@ -47,9 +47,9 @@ jobs:
       fail-fast: false
       matrix:
         # Same measured-ceiling rule as model; no test -timeout changes.
-        # Linux: (286+240+15+17)=558s -> ceil(1.25*558/60)=12m.
-        # Windows: (363+266+22+93)=744s -> ceil(1.25*744/60)=16m.
-        # Source: docs/GATE-C-LIVENESS-EVIDENCE.md section 11.2-11.3.
+        # Linux: (286+240+15+17+12)=570s -> 12m, including capture.
+        # Windows: (363+266+27+93+12)=761s -> 16m, including capture.
+        # Source: docs/FLAKE-133-HOSTED-FIXTURE-TIMING.md section 5.
         include:
           - os: ubuntu-latest
             timeout_minutes: 12
@@ -59,6 +59,7 @@ jobs:
     timeout-minutes: ${{ matrix.timeout_minutes }}
     env:
       GORACE: halt_on_error=1
+      WINKYOU_FIXTURE_TIMING_DIR: ${{ github.workspace }}/../fixture-timing
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -70,15 +71,21 @@ jobs:
         run: go test -race -tags=c1bproof ./internal/governor -run '^TestSessionLivenessBusinessCoexistsWithTap$' -count=20 -timeout=8m
       - name: Same artifact after owner restart is rejected before all I/O
         run: go test -race -tags=c1bproof ./internal/governor -run '^TestSessionLivenessRestartRejectsSpentArtifactBeforeIO$' -count=1 -timeout=2m
+      - name: Preserve numeric fixture timing
+        if: always()
+        uses: ./.github/actions/fixture-timing
+        with:
+          artifact-name: fixture-timing-owner-${{ matrix.os }}
 
   real-wireguard:
     name: Liveness real WireGuard (ubuntu-latest)
     runs-on: ubuntu-latest
-    # Same ceiling rule as the Windows legs below: measured whole-job wall
-    # clock 628-631s over six runs (#128-#131), ceil(1.25 * 631 / 60) = 14.
+    # Same ceiling rule: (204+155+267+16+12)=654s including capture,
+    # exceeding the old whole-job maximum 631s; ceil(1.25*654/60)=14.
     timeout-minutes: 14
     env:
       GORACE: halt_on_error=1
+      WINKYOU_FIXTURE_TIMING_DIR: ${{ github.workspace }}/../fixture-timing
       WINKYOU_LIVENESS_IDLE_REQUIRED: '1'
       WINKYOU_LIVENESS_BLACKHOLE_REQUIRED: '1'
     steps:
@@ -93,22 +100,27 @@ jobs:
       - name: Persistent-timer counterexample - continuous one-way business and WG control without PONG
         # Four serial 65s proofs; no change to any session/search/drain bound.
         run: go test -race -tags=c1bproof ./internal/governor -run '^TestSessionLivenessOneWayTrafficCannotReplaceProofRequired$' -count=1 -v -timeout=6m
+      - name: Preserve numeric fixture timing
+        if: always()
+        uses: ./.github/actions/fixture-timing
+        with:
+          artifact-name: fixture-timing-liveness-ubuntu-latest
 
   real-wireguard-windows:
     name: Liveness real WireGuard (windows-latest, ${{ matrix.case }})
     strategy:
       fail-fast: false
       matrix:
-        # Issue #126: completed step wall clocks are 232s / 162s / 275s.
-        # Measured setup/post: 57s / 6s. Fresh legs also reserve the measured
-        # 45s first-test compile/start cost already included in idle's 232s.
-        # ceil(1.25 * (step + 57 + 6 + cold-start-if-needed) / 60): 7 / 6 / 8.
-        # Sources and unchanged proof counts: docs/GATE-C-LIVENESS-EVIDENCE.md §10.
+        # #150: union historical and new first-attempt maxima, plus 12s capture.
+        # idle (255+73+6+12)=346s -> 8m; blackholes (207+57+6+12)=282s -> 6m;
+        # nonproof (320+57+6+12)=395s -> 9m, all ceil(1.25*seconds/60).
+        # 207/320 include #126's 45s cold start once, not added again.
+        # Source: docs/FLAKE-133-HOSTED-FIXTURE-TIMING.md section 5.
         include:
           - case: idle
             test: TestSessionLivenessMemoryIdle180Required
             test_timeout: 6m
-            timeout_minutes: 7
+            timeout_minutes: 8
           - case: blackholes
             test: TestSessionLivenessMemoryBlackholesRequired
             test_timeout: 4m
@@ -116,11 +128,12 @@ jobs:
           - case: nonproof
             test: TestSessionLivenessOneWayTrafficCannotReplaceProofRequired
             test_timeout: 6m
-            timeout_minutes: 8
+            timeout_minutes: 9
     runs-on: windows-latest
     timeout-minutes: ${{ matrix.timeout_minutes }}
     env:
       GORACE: halt_on_error=1
+      WINKYOU_FIXTURE_TIMING_DIR: ${{ github.workspace }}/../fixture-timing
       WINKYOU_LIVENESS_IDLE_REQUIRED: '1'
       WINKYOU_LIVENESS_BLACKHOLE_REQUIRED: '1'
     steps:
@@ -130,6 +143,11 @@ jobs:
           go-version-file: go.mod
       - name: Required real WireGuard proof (${{ matrix.case }})
         run: go test -race -tags=c1bproof ./internal/governor -run '^${{ matrix.test }}$' -count=1 -v -timeout=${{ matrix.test_timeout }}
+      - name: Preserve numeric fixture timing
+        if: always()
+        uses: ./.github/actions/fixture-timing
+        with:
+          artifact-name: fixture-timing-liveness-windows-latest-${{ matrix.case }}
 
   fresh100:
     name: Liveness 100 fresh lifecycles
