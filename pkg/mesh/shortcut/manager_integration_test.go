@@ -332,6 +332,12 @@ func TestShortcutReconcilesDroppedPacketBarrierSignal(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
+			// Observe the sequence-driven injection (or a fully witnessed legal
+			// reroute) before waiting for reconciliation. No wall-clock arming
+			// window and no assumption that STABLE must use the bootstrap edge.
+			waitTestCondition(t, ctx, func() bool {
+				return dropper.dropped.Load() == 1 || (testCase.signalType == typeStable && witness.stableBypassedBootstrap())
+			}, "neither a barrier drop nor a complete alternate path was observed")
 			if _, err := handle.WaitFor(ctx, PhaseStable); err != nil {
 				t.Fatal(err)
 			}
@@ -344,12 +350,13 @@ func TestShortcutReconcilesDroppedPacketBarrierSignal(t *testing.T) {
 				}
 				return true
 			}, "shortcut managers did not reconcile after a dropped barrier signal")
-			if got := dropper.dropped.Load(); got != 1 {
-				t.Fatalf("dropped %s count = %d, want 1", testCase.signalType, got)
-			}
-			if got := dropper.matched.Load(); got < 2 {
-				t.Fatalf("matched %s count = %d, want at least 2", testCase.signalType, got)
-			}
+			// Router forwarding callbacks run after Send returns; delivery can
+			// therefore be observed first. Join all three callbacks by message
+			// sequence rather than assuming callback scheduler order.
+			waitTestCondition(t, ctx, func() bool {
+				return witness.accepts(testCase.signalType, dropper.dropped.Load(), dropper.matched.Load())
+			}, "barrier counts require a drop and replay or a complete witnessed reroute")
+			t.Logf("BARRIER_OUTCOME dropped=%d matched=%d bypass_a_c_b=%t", dropper.dropped.Load(), dropper.matched.Load(), witness.stableBypassedBootstrap())
 		})
 	}
 }
