@@ -250,13 +250,15 @@ func TestShortcutReportsInstalledOnlyAfterPacketNeighborReady(t *testing.T) {
 func TestShortcutReconcilesDroppedPacketBarrierSignal(t *testing.T) {
 	startShortcutBarrierStress(t)
 	testCases := []struct {
-		name       string
-		signalType string
-		dropAt     string
-		probation  time.Duration
+		name                 string
+		signalType           string
+		dropAt               string
+		probation            time.Duration
+		cutBootstrapAtStable bool
 	}{
 		{name: "first commit", signalType: typeCommit, dropAt: "B", probation: 150 * time.Millisecond},
 		{name: "first stable after initial delivery window", signalType: typeStable, dropAt: "A", probation: 1500 * time.Millisecond},
+		{name: "stable through new direct edge", signalType: typeStable, dropAt: "A", probation: 1500 * time.Millisecond, cutBootstrapAtStable: true},
 	}
 	for _, testCase := range testCases {
 		t.Run(testCase.name, func(t *testing.T) {
@@ -302,6 +304,22 @@ func TestShortcutReconcilesDroppedPacketBarrierSignal(t *testing.T) {
 			base := Config{
 				StrategyName: fakeEdgeStrategyName, Probation: testCase.probation, SolveTimeout: time.Second,
 				PacketNeighbor: packetConfig, OnEvent: witness.manager,
+			}
+			if testCase.cutBootstrapAtStable {
+				// PhaseStable is emitted after the A-C edge is promoted but before
+				// A sends STABLE. Remove only the old test edge at that exact event,
+				// exercising a legal alternate path without a wall-clock sleep.
+				var cutOnce sync.Once
+				base.OnEvent = func(event Event) {
+					witness.manager(event)
+					if event.NodeID == "A" && event.Status.Phase == PhaseStable {
+						cutOnce.Do(func() {
+							witness.record("cut_bootstrap", typeStable, "A", "", "B")
+							_ = nodeA.RemoveNeighbor("B")
+							_ = nodeB.RemoveNeighbor("A")
+						})
+					}
+				}
 			}
 			base.Node, base.StrategyFactory = nodeA, factory
 			managerA := newTestManager(t, base)
