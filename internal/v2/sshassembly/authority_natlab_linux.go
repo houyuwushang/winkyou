@@ -23,9 +23,8 @@ var (
 	natlabRightEndpoint = netip.MustParseAddrPort("198.51.100.1:22")
 )
 
-type natlabAuthority struct {
+type natlabScope struct {
 	namespace string
-	endpoint  netip.AddrPort
 }
 
 // NewNATLabAuthority is absent from ordinary builds. It accepts no endpoint:
@@ -33,22 +32,20 @@ type natlabAuthority struct {
 // proves that the caller is already inside the named network namespace.
 func NewNATLabAuthority(namespace string, side NATLabSide) (SSHEndpointAuthority, error) {
 	if validateNATLabNamespace(namespace) != nil {
-		return nil, ErrAuthorityInvalid
+		return SSHEndpointAuthority{}, ErrAuthorityInvalid
 	}
 	endpoint := natlabRightEndpoint
 	if side == NATLabRight {
 		endpoint = natlabLeftEndpoint
 	} else if side != NATLabLeft {
-		return nil, ErrAuthorityInvalid
+		return SSHEndpointAuthority{}, ErrAuthorityInvalid
 	}
-	return natlabAuthority{namespace: namespace, endpoint: endpoint}, nil
+	return SSHEndpointAuthority{endpoint: endpoint, scope: natlabScope{namespace: namespace}}, nil
 }
 
-func (authority natlabAuthority) Endpoint() netip.AddrPort { return authority.endpoint }
-func (natlabAuthority) sshEndpointAuthority()              {}
-func (authority natlabAuthority) validate() error {
-	if validateNATLabNamespace(authority.namespace) != nil ||
-		(authority.endpoint != natlabLeftEndpoint && authority.endpoint != natlabRightEndpoint) {
+func (scope natlabScope) validateEndpoint(endpoint netip.AddrPort) error {
+	if validateNATLabNamespace(scope.namespace) != nil ||
+		(endpoint != natlabLeftEndpoint && endpoint != natlabRightEndpoint) {
 		return ErrAuthorityInvalid
 	}
 	return nil

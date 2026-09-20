@@ -59,7 +59,8 @@ var sshUserPattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9._-]{0,63}$`)
 // endpoint to a separately constructed sealed authority. The request endpoint
 // never becomes authority on its own.
 func BindClientConfig(authority SSHEndpointAuthority, local gatecrequest.SSHConfig) (ClientConfig, error) {
-	if authority == nil || authority.validate() != nil || canonicalEndpoint(local.Endpoint) != authority.Endpoint() ||
+	endpoint, err := authority.validatedEndpoint()
+	if err != nil || canonicalEndpoint(local.Endpoint) != endpoint ||
 		!sshUserPattern.MatchString(local.User) || !filepath.IsAbs(local.IdentityFile) || !filepath.IsAbs(local.KnownHostsFile) {
 		return ClientConfig{}, ErrProfileInvalid
 	}
@@ -67,7 +68,7 @@ func BindClientConfig(authority SSHEndpointAuthority, local gatecrequest.SSHConf
 		return ClientConfig{}, err
 	}
 	return ClientConfig{
-		authority: authority, endpoint: authority.Endpoint(), user: local.User,
+		authority: authority, endpoint: endpoint, user: local.User,
 		identityFile: local.IdentityFile, knownHostsFile: local.KnownHostsFile,
 	}, nil
 }
@@ -134,11 +135,11 @@ func fixedEnvironment(platform Platform) ([]string, error) {
 }
 
 func buildArguments(config ClientConfig) ([]string, error) {
-	if config.authority == nil || config.authority.validate() != nil || config.endpoint != config.authority.Endpoint() ||
+	endpoint, err := config.authority.validatedEndpoint()
+	if err != nil || config.endpoint != endpoint ||
 		canonicalEndpoint(config.endpoint) != config.endpoint || !sshUserPattern.MatchString(config.user) {
 		return nil, ErrProfileInvalid
 	}
-	endpoint := config.authority.Endpoint()
 	options := []string{
 		"BatchMode=yes", "NumberOfPasswordPrompts=0", "PasswordAuthentication=no",
 		"KbdInteractiveAuthentication=no", "GSSAPIAuthentication=no", "PubkeyAuthentication=yes",

@@ -121,8 +121,8 @@ func openClient(ctx context.Context, config Config, deps dependencies) (*Stream,
 	if config.Lease == nil {
 		lease = config.testLease
 	}
-	if lease == nil || config.Client.authority == nil || config.Client.authority.validate() != nil ||
-		config.Client.endpoint != config.Client.authority.Endpoint() || ExactAssemblyCost != (SSHAssemblyCost{1, 1, 0, 0, 0}) {
+	endpoint, err := config.Client.authority.validatedEndpoint()
+	if lease == nil || err != nil || config.Client.endpoint != endpoint || ExactAssemblyCost != (SSHAssemblyCost{1, 1, 0, 0, 0}) {
 		return nil, ErrProfileInvalid
 	}
 	active, err := activeDuration(config.PlannerProfile, config.ResourceClass)
@@ -162,7 +162,8 @@ func openClient(ctx context.Context, config Config, deps dependencies) (*Stream,
 	}
 	// Revalidate every local input and the sealed endpoint immediately before
 	// the sole process creation boundary.
-	if config.Client.authority.validate() != nil || config.Client.authority.Endpoint() != config.Client.endpoint ||
+	endpoint, err = config.Client.authority.validatedEndpoint()
+	if err != nil || endpoint != config.Client.endpoint ||
 		validatePrivateClientFiles(config.Client.identityFile, config.Client.knownHostsFile) != nil ||
 		deps.validateExecutable(executable) != nil {
 		return failBeforeSpawn(ErrProfileInvalid)

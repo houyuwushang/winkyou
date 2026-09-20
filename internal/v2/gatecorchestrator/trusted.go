@@ -30,13 +30,13 @@ func resolveTrustedPeer(input preparedInput) (trustedPeer, error) {
 		return trustedPeer{}, ErrRequestInvalid
 	}
 	if input.request.Role == directattempt.RoleInitiator {
-		if input.request.SSH == nil || input.sshAuthority == nil || input.stream != nil || input.childInput != nil || input.childOutput != nil {
+		if input.request.SSH == nil || input.sshAuthority.IsZero() || input.stream != nil || input.childInput != nil || input.childOutput != nil {
 			return trustedPeer{}, ErrRequestInvalid
 		}
 	} else if input.request.Role == directattempt.RoleResponder {
 		hasChildStream := input.childInput != nil && input.childOutput != nil
 		partialChildStream := (input.childInput == nil) != (input.childOutput == nil)
-		if input.request.SSH != nil || input.sshAuthority != nil || partialChildStream || (input.stream != nil) == hasChildStream {
+		if input.request.SSH != nil || !input.sshAuthority.IsZero() || partialChildStream || (input.stream != nil) == hasChildStream {
 			return trustedPeer{}, ErrRequestInvalid
 		}
 	} else {
