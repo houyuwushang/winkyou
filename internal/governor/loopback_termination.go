@@ -49,6 +49,16 @@ func (p *PeerLease) AcquireLoopbackAttempt(ctx context.Context, request AttemptR
 	return p.acquireAttempt(ctx, request, true)
 }
 
+// ProbeRevocation separates permission revocation from final resource release
+// only for the opt-in lifecycle. Ordinary leases preserve their original Done
+// signal. probeio is the sole consumer; this is not a physical drain witness.
+func (a *AttemptLease) ProbeRevocation() <-chan struct{} {
+	if a != nil && a.terminal != nil {
+		return a.Stopping()
+	}
+	return a.Done()
+}
+
 func (g *Governor) loopbackAdmissionBlockedLocked() error {
 	if g.finalizationFault != nil {
 		return g.finalizationFault

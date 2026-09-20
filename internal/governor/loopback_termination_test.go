@@ -325,8 +325,25 @@ func TestLoopbackTwoPhaseHookOnceExpiryAndAdmissionFailure(t *testing.T) {
 func TestLoopbackTwoPhaseCannotOptOrdinaryAuthorizationIn(t *testing.T) {
 	env := newTestPairingGateEnvironment(t, "ordinary-hook", OperationConnectTest)
 	_, auth := commitLoopbackTermination(t, env)
+	if env.attempt.ProbeRevocation() != env.attempt.Done() {
+		t.Fatal("ordinary governor probe signal changed")
+	}
 	if err := auth.RegisterLoopbackPreFinish(func() error { return nil }); !errors.Is(err, ErrCommittedAttemptInvalid) {
 		t.Fatal("ordinary lifecycle gained loopback hook")
+	}
+	if err := auth.Finish(PairingTerminalCancelled); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestLoopbackTwoPhaseRevocationDoesNotForgePhysicalDone(t *testing.T) {
+	env := newLoopbackTerminationEnvironment(t)
+	_, auth := commitLoopbackTermination(t, env)
+	if env.attempt.ProbeRevocation() != env.attempt.Stopping() {
+		t.Fatal("loopback probe signal is not synchronous revocation")
+	}
+	if env.attempt.ProbeRevocation() == env.attempt.Done() {
+		t.Fatal("logical revocation replaced physical release witness")
 	}
 	if err := auth.Finish(PairingTerminalCancelled); err != nil {
 		t.Fatal(err)

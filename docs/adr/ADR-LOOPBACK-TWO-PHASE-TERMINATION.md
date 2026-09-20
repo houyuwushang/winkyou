@@ -1,5 +1,5 @@
 # 回环 attempt 两阶段终止
-
+	
 Status: Draft implementation design (2026-09-20)。维护者已授权方案 2 的设计与实现；具体实现仍须独立复审，
 不得据此合并、推进 Gate C1c 或运行现场网络。
 
@@ -35,6 +35,10 @@ Active -> Stopping (立即撤销新网络权限)
   不跳过 FINISH。注册与 controller 发布的竞态由终局 slot 关闭，不能漏掉后来构造的 controller。
 - 网络排水超限仍持久 cancellation_timeout；记账超限为 terminal_finalization_timeout，
   写入失败为 terminal_finalization_failed。不得用后两者伪造网络 trip 或成功结果。
+  这些是内部错误身份，不增加或改写 stdio v1/v2 schema，既有 adapter 仍负责脱敏。
+- probeio 的同步操作 guard 使用 governor 的 ProbeRevocation 信号：新模式返回 Stopping，
+  普通 lease 返回原 Done。未改变 Done 的物理/记账含义，也不依赖 watcher 何时获得调度。
+  此只读接口仅 probeio 的精确 adapter 消费，调用者不能注入或替换该信号。
 
 ## 3. 磁盘阻塞、占用与关闭
 
@@ -56,6 +60,8 @@ Active -> Stopping (立即撤销新网络权限)
 
 只允许 loopbackcarrier 注册 pre-finish hook、选择新 lifecycle；architecture 精确锁定
 调用点，包含方法值绕过的负向用例。probeio RevokeForTerminal 实现保持不变。
+共享 probeio 仅增加上述操作拒绝信号选择，普通 attempt 获得同一条原 Done channel；
+新模式在该 signal 已关闭、socket 尚未物理 Close 时，Open/Write/Register 必须全部拒绝。
 Gate A/B/C、handoff、默认缺席测试、冻结数字、配置和工作流均不修改。
 
 验收包括：原 R1/R2；R3 first-emission expiry +2.5s FINISH；R4 caller cancel +10s FINISH；

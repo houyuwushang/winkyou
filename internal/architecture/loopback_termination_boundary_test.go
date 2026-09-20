@@ -33,6 +33,10 @@ func loopbackTerminationReferences(path string, file *ast.File) error {
 			if path != loopbackTerminationProducer && path != "internal/governor/pairing_gate.go" {
 				violation = fmt.Errorf("unreviewed accounting drain: %s", path)
 			}
+		case "ProbeRevocation":
+			if path != loopbackTerminationProducer && path != "internal/probeio/terminal_revocation_signal.go" {
+				violation = fmt.Errorf("unreviewed permission-revocation consumer: %s", path)
+			}
 		}
 		return true
 	})
@@ -193,7 +197,7 @@ func TestLoopbackTwoPhaseOrderAndMutations(t *testing.T) {
 		})
 	}
 	for _, path := range []string{"cmd/wink/main.go", "internal/solverstdio/handler.go", "internal/v2/directconnect/gateb/connect.go", "internal/v2/directconnect/gatea/connect.go", "pkg/meshruntime/runtime.go", "internal/v2/loopbackcarrier/other.go"} {
-		for _, body := range []string{"peer.AcquireLoopbackAttempt(ctx, request)", "f := auth.RegisterLoopbackPreFinish; _ = f", "f := (*governor.CommittedCarrierAuthorization).RegisterLoopbackPreFinish; _ = f"} {
+		for _, body := range []string{"peer.AcquireLoopbackAttempt(ctx, request)", "f := auth.RegisterLoopbackPreFinish; _ = f", "f := (*governor.CommittedCarrierAuthorization).RegisterLoopbackPreFinish; _ = f", "f := attempt.ProbeRevocation; _ = f"} {
 			file, err := parser.ParseFile(token.NewFileSet(), "mutation.go", "package mutation; func f(){"+body+"}", 0)
 			if err != nil {
 				t.Fatal(err)
