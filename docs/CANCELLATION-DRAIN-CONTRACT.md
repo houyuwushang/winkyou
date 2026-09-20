@@ -44,6 +44,13 @@ ignores both cancellation and `Close`. Forced `Done` is logical revocation, not
 proof that hostile code disappeared. After a cancellation timeout, an operator
 must verify the recorded process is gone before resetting the latch.
 
+The opt-in loopback lifecycle now has a separately owned accounting phase;
+see [two-phase termination](adr/ADR-LOOPBACK-TWO-PHASE-TERMINATION.md).
+Its network drains retain this original timeout. Only the pairing journal's
+private drain is classified as finalization, with a separate bounded verdict.
+A stalled writer retains the attempt and machine owner even after that verdict;
+it is not physical drain completion. Ordinary attempts and Gate B/C are unchanged.
+
 ## `probeio` witness
 
 Every controller registers `probeio-controller` before it can open a Datagram.

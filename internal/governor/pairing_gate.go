@@ -65,7 +65,7 @@ func (gate *PairingAdmissionGate) Commit(ctx context.Context, attempt *AttemptLe
 		return nil, errors.Join(ErrPairingAdmissionRejected, err)
 	}
 
-	drain, err := attempt.RegisterDrain(pairingAdmissionGateDrainName)
+	drain, err := attempt.registerPairingDrain()
 	if err != nil {
 		return nil, errors.Join(ErrPairingAdmissionRejected, err)
 	}
@@ -78,10 +78,22 @@ func (gate *PairingAdmissionGate) Commit(ctx context.Context, attempt *AttemptLe
 
 	receipt, err := ledger.Admit(request)
 	if err != nil {
+		if attempt.terminal != nil && errors.Is(err, ErrPairingLedgerIndeterminate) {
+			attempt.recordLoopbackFinishError(err)
+		}
 		return nil, errors.Join(ErrPairingAdmissionRejected, err)
 	}
 	failAfterCommit := func(primary error) (*CommittedAttempt, error) {
 		reason := pairingTerminalReasonForGateError(primary)
+		if attempt.terminal != nil {
+			committed := &CommittedAttempt{
+				attempt: attempt, ledger: ledger, receipt: receipt, drain: drain,
+				finished: make(chan struct{}), writerDone: make(chan struct{}),
+			}
+			drainTransferred = true
+			finishErr := committed.finish(reason)
+			return nil, pairingFailureAfterFinish(attempt, errors.Join(ErrPairingAdmissionRejected, primary), finishErr)
+		}
 		finishErr := ledger.Finish(receipt, reason)
 		return nil, pairingFailureAfterFinish(attempt, errors.Join(ErrPairingAdmissionRejected, primary), finishErr)
 	}
@@ -115,6 +127,7 @@ func (gate *PairingAdmissionGate) Commit(ctx context.Context, attempt *AttemptLe
 		context:         ctx,
 		now:             ledger.now,
 		finished:        make(chan struct{}),
+		writerDone:      make(chan struct{}),
 	}
 	drainTransferred = true
 	go committed.watchInvalidation()
@@ -170,7 +183,7 @@ func inspectPairingAttempt(ctx context.Context, attempt *AttemptLease, expectedO
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	if g.scope != ScopeMachine || !pairingOperationAllowed(g.profile, attempt.request.Operation) ||
-		g.owner == nil || g.owner.Scope() != ScopeMachine {
+		g.owner == nil || g.ownerInfo.Scope != ScopeMachine {
 		return "", ErrPairingMachineScopeRequired
 	}
 	if g.trip.BlocksActiveWork {
@@ -185,7 +198,7 @@ func inspectPairingAttempt(ctx context.Context, attempt *AttemptLease, expectedO
 	if g.closed || g.closing || attempt.closed || attempt.stoppingStarted || g.attempts[attempt.request.ID] != attempt {
 		return "", ErrLeaseClosed
 	}
-	owner := g.owner.Info()
+	owner := g.ownerInfo
 	if owner.InstanceID == "" || owner.Scope != ScopeMachine {
 		return "", ErrPairingMachineScopeRequired
 	}
@@ -234,6 +247,9 @@ type CommittedAttempt struct {
 	terminalReason PairingTerminalReason
 	terminalErr    error
 	finished       chan struct{}
+	preFinishHook  func() error
+	writerDone     chan struct{}
+	writerErr      error
 }
 
 // ConsumeForCarrier consumes the token exactly once and returns another
@@ -372,6 +388,9 @@ func (committed *CommittedAttempt) finish(reason PairingTerminalReason) error {
 	committed.terminalChosen = true
 	committed.terminalReason = reason
 	committed.mu.Unlock()
+	if committed.attempt.terminal != nil {
+		return committed.finishLoopback(reason)
+	}
 
 	err := committed.ledger.Finish(committed.receipt, reason)
 	if committed.drain != nil {

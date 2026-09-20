@@ -60,8 +60,8 @@ func TestTerminalRevokeHasOnlyExactLoopbackConsumer(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if references != 2 {
-		t.Fatalf("terminal API declarations/references=%d, want one of each", references)
+	if references != 3 {
+		t.Fatalf("terminal API declarations/references=%d, want producer plus loopback defer and hook", references)
 	}
 }
 
@@ -77,7 +77,7 @@ func terminalRevokeReferences(path string, parsed *ast.File) error {
 }
 
 // These small reviewed bodies deliberately have no extensibility point. A
-// callback, early return, reordered FINISH, lease.Close, refund, or handoff
+// early return, reordered FINISH, lease.Close, refund, or handoff
 // capability here requires a new review, not a looser source gate. Formatting
 // and comments are irrelevant; the comparison is of parsed statement trees.
 const terminalRevokeBody = `{

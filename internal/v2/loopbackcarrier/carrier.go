@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/netip"
+	"sync"
 	"time"
 
 	"winkyou/internal/governor"
@@ -95,7 +96,7 @@ func Connect(ctx context.Context, machine *governor.Governor, payload []byte, bu
 	}
 	defer func() { err = errors.Join(err, peer.Close()) }()
 	cost := AttemptCost()
-	attempt, err := peer.AcquireAttempt(ctx, governor.AttemptRequest{
+	attempt, err := peer.AcquireLoopbackAttempt(ctx, governor.AttemptRequest{
 		ID:        bundle.attemptID,
 		Operation: governor.OperationConnectTest,
 		Cost:      cost,
@@ -154,6 +155,7 @@ func (carrier *admittedCarrier) run(ctx context.Context) (result Result, err err
 	defer cancelRun()
 	reason := governor.PairingTerminalCarrierError
 	var controller *probeio.Controller
+	var terminal terminalControllerSlot
 	defer func() {
 		if controller != nil {
 			err = errors.Join(err, controller.RevokeForTerminal())
@@ -166,6 +168,13 @@ func (carrier *admittedCarrier) run(ctx context.Context) (result Result, err err
 			err = errors.Join(err, controller.Close())
 		}
 	}()
+	// Fakes retain the same terminal-defer contract. Production authority is
+	// exclusively governor-owned and registers before constructing any I/O.
+	if authorization, ok := carrier.authorization.(*governor.CommittedCarrierAuthorization); ok {
+		if err := authorization.RegisterLoopbackPreFinish(terminal.revoke); err != nil {
+			return Result{}, errors.Join(ErrCarrierUnavailable, err)
+		}
+	}
 
 	factory, err := probeio.NewUDPFactory(probeio.UDPFactoryConfig{
 		LocalAddr:          carrier.bundle.local,
@@ -183,6 +192,9 @@ func (carrier *admittedCarrier) run(ctx context.Context) (result Result, err err
 		BuildVersion:       carrier.buildVersion,
 	})
 	if err != nil {
+		return Result{}, errors.Join(ErrCarrierUnavailable, err)
+	}
+	if err := terminal.publish(controller); err != nil {
 		return Result{}, errors.Join(ErrCarrierUnavailable, err)
 	}
 	socket, err := controller.OpenProbeSocket(ctx)
@@ -259,6 +271,36 @@ func (carrier *admittedCarrier) run(ctx context.Context) (result Result, err err
 		OutboundPackets:   outbound,
 		WorstCaseEnvelope: governor.PairingEnvelopeFromAttemptCost(AttemptCost()),
 	}, nil
+}
+
+// A terminal hook may win while probeio.New is running. Publication and revoke
+// are serialized, so a late controller can never escape the revocation slot.
+// No raw socket, attempt Close or pairing-drain authority is stored here.
+type terminalControllerSlot struct {
+	mu         sync.Mutex
+	controller *probeio.Controller
+	revoked    bool
+}
+
+func (slot *terminalControllerSlot) publish(controller *probeio.Controller) error {
+	slot.mu.Lock()
+	defer slot.mu.Unlock()
+	if slot.revoked {
+		return probeio.ErrLeaseClosed
+	}
+	slot.controller = controller
+	return nil
+}
+
+func (slot *terminalControllerSlot) revoke() error {
+	slot.mu.Lock()
+	slot.revoked = true
+	controller := slot.controller
+	slot.mu.Unlock()
+	if controller == nil {
+		return nil
+	}
+	return controller.RevokeForTerminal()
 }
 
 func (carrier *admittedCarrier) handshake(ctx context.Context, socket *probeio.ProbeSocket, session *noisecore.Session) (int, *noisecore.PacketCipher, error) {

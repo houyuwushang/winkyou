@@ -566,3 +566,9 @@ loopback 仍为 15s 全额 admission、2s terminal margin、3 packets / 3 PPS；
 FINISH 移出其探测 duration 绊线不等于增加探测时间、退款或允许重试。
 共享授权层可能更早选择 FINISH 的既有支路另在 #111 登记，不用本节的 run defer
 证明冒充其已闭合。本节不授权现场、产品新入口、Gate B/C 变更或新恢复机制。
+
+2026-09-20 补充：loopback 的共享 gate 提前终局按
+[两阶段终止裁决](ADR-LOOPBACK-TWO-PHASE-TERMINATION.md)实现。RevokeForTerminal
+的生产消费者仍只有 loopbackcarrier/carrier.go，允许其终局 defer 与一次性 pre-finish
+hook 使用；hook 不关闭 attempt，也不完成 pairing drain。新 lifecycle 仅 loopback 显式选择，
+本 ADR 的 Gate A/B/C、FINISH-before-release、handoff 与 §19.9 完成阶段完全不变。

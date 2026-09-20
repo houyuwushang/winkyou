@@ -934,3 +934,11 @@ build/nm 均退出0，5,442ms；natlab/c1bproof 符号命中0。
 原始 nm 输出 SHA-256：`7a6ce5c19cbc28b4f0d0cd551f87862f271ca4802f19fdca5eb0fbe2daa94f27`。
 本地必跑动态批次均通过，但 §9.6/§9.9 的单独范围限制与 §9.14 的首次命令配置 RED 均保留。
 本 PR 使用 Refs #111，等待独立复审，不合并、不推进现场权限。
+
+### 9.16 caller cancellation 与两阶段终止裁决（2026-09-20）
+
+共享 gate 的提前 FINISH 不能仅靠 run defer 撤销；caller cancellation 还会先启动 governor
+的 2s drain，等待 pairing FINISH，导致已排空网络仍报 cancellation_timeout。
+维护者已选择方案 2，契约见[回环两阶段终止 ADR](ADR-LOOPBACK-TWO-PHASE-TERMINATION.md)。
+网络门不变，独立有界记账阶段由 governor 持有；磁盘超时不退款、不释放未排空 owner，
+也不等同于网络安全 clear。先前 RED 与范围限制保留，后续实测另列。

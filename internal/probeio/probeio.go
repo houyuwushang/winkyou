@@ -186,6 +186,7 @@ type Controller struct {
 	mu sync.Mutex
 
 	lease              AttemptLease
+	probeRevoked       <-chan struct{}
 	generation         GenerationSource
 	expectedGeneration uint64
 	factory            Factory
@@ -323,6 +324,7 @@ func New(config Config) (*Controller, error) {
 	close(pendingDone)
 	controller := &Controller{
 		lease:              config.Lease,
+		probeRevoked:       probeRevocationForLease(config.Lease),
 		generation:         config.Generation,
 		expectedGeneration: config.ExpectedGeneration,
 		factory:            config.Factory,
@@ -941,7 +943,7 @@ func (c *Controller) guardViolationLocked(now time.Time) *safetyViolation {
 		return &safetyViolation{cause: ErrLeaseClosed}
 	}
 	select {
-	case <-c.lease.Done():
+	case <-c.probeRevoked:
 		return &safetyViolation{cause: ErrLeaseClosed}
 	default:
 	}

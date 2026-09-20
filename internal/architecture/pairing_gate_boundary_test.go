@@ -161,6 +161,9 @@ func TestPairingAdmissionGateApprovalIsExact(t *testing.T) {
 }
 
 func approvedPairingGateReference(relative, identifier string) bool {
+	if relative == "internal/governor/loopback_termination.go" {
+		return identifier == "CommittedAttempt" || identifier == "CommittedCarrierAuthorization"
+	}
 	loopback := filepath.ToSlash(filepath.Join("internal", "v2", "loopbackcarrier", "carrier.go"))
 	if relative == loopback {
 		_, approved := unconnectedPairingGateIdentifiers[identifier]
