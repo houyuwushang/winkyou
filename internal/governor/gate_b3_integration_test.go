@@ -317,7 +317,8 @@ func runGateB3SafetyRegression(t testing.TB, mode string) []gateB3Outcome {
 	t.Helper()
 	left, right, closeFixture := newGateB3NATSimFixtureFor(t, "safety-"+mode, 11, 29)
 	t.Cleanup(closeFixture)
-	leftClock, rightClock := newGateB2ManualClock(left.now), newGateB2ManualClock(right.now)
+	schedule := newGateB2PairedSchedule()
+	leftClock, rightClock := schedule.clock(left.now, left.network, 0), schedule.clock(right.now, right.network, 1)
 	baseContext, cancelAll := context.WithCancel(context.Background())
 	defer cancelAll()
 	results := make(chan gateB3Outcome, 2)
@@ -360,10 +361,10 @@ func runGateB3SafetyRegression(t testing.TB, mode string) []gateB3Outcome {
 			return nil
 		}
 	}
-	run := func(side *gateB3Side, clock *gateB2ManualClock, randomSeed byte, role string) {
+	run := func(side *gateB3Side, clock *gateB2ManualClock, randomSeed byte, role string, sideIndex int) {
 		result, err := gateb.Run(baseContext, gateb.Config{
 			Machine: side.machine, Ledger: side.ledger, Artifact: side.artifact, Stream: side.stream,
-			ObserverTopology: side.topology, BuildVersion: "gate-b3-safety", ProbeFactory: side.factory,
+			ObserverTopology: side.topology, BuildVersion: "gate-b3-safety", ProbeFactory: schedule.factory(side.factory, sideIndex),
 			Progress: progress(clock), Harness: &gateb.HarnessHooks{
 				NoiseRandom: gateB2ObservationRandom(randomSeed + 40), ObservationRandom: gateB2ObservationRandom(randomSeed),
 				Now: clock.Now, NewTimer: clock.NewTimer, Wait: clock.Wait, ActiveEnvelope: 6 * time.Second, CandidateWindow: 2 * time.Second,
@@ -371,8 +372,8 @@ func runGateB3SafetyRegression(t testing.TB, mode string) []gateB3Outcome {
 		})
 		results <- gateB3Outcome{result: result, err: err, role: role}
 	}
-	go run(left, leftClock, 3, "initiator")
-	go run(right, rightClock, 97, "responder")
+	go run(left, leftClock, 3, "initiator", 0)
+	go run(right, rightClock, 97, "responder", 1)
 	outcomes := make([]gateB3Outcome, 0, 2)
 	for range 2 {
 		select {
@@ -390,6 +391,7 @@ type gateB3Side struct {
 	ledger   *governor.PairingAdmissionLedger
 	artifact []byte
 	factory  probeio.Factory
+	network  *natsim.Network
 	stream   net.Conn
 	topology hardnatobserve.Topology
 	witness  *candidateWitness
@@ -470,9 +472,9 @@ func newGateB3NATSimFixtureFor(t testing.TB, label string, leftSeed, rightSeed u
 	}
 	leftStream, rightStream := net.Pipe()
 	leftWitness, rightWitness := newCandidateWitness(), newCandidateWitness()
-	left := &gateB3Side{machine: leftMachine, ledger: leftLedger, artifact: set.Initiator, stream: leftStream, topology: topology, witness: leftWitness, now: now,
+	left := &gateB3Side{machine: leftMachine, ledger: leftLedger, artifact: set.Initiator, stream: leftStream, topology: topology, witness: leftWitness, now: now, network: network,
 		factory: &natSimProbeFactory{network: network, nat: leftNAT, localAddress: netip.MustParseAddr("192.0.2.60"), basePort: 30000, plannerRole: hardnatplan.RoleInitiator, witness: leftWitness}}
-	right := &gateB3Side{machine: rightMachine, ledger: rightLedger, artifact: set.Responder, stream: rightStream, topology: topology, witness: rightWitness, now: now,
+	right := &gateB3Side{machine: rightMachine, ledger: rightLedger, artifact: set.Responder, stream: rightStream, topology: topology, witness: rightWitness, now: now, network: network,
 		factory: &natSimProbeFactory{network: network, nat: rightNAT, localAddress: netip.MustParseAddr("192.0.2.70"), basePort: 31000, plannerRole: hardnatplan.RoleResponder, witness: rightWitness}}
 	closeFixture := func() {
 		_ = leftStream.Close()
@@ -494,20 +496,21 @@ func newGateB3NATSimFixtureFor(t testing.TB, label string, leftSeed, rightSeed u
 func runGateB3Pair(t testing.TB, left, right *gateB3Side, active, candidates time.Duration) []gateB3Outcome {
 	t.Helper()
 	results := make(chan gateB3Outcome, 2)
-	run := func(side *gateB3Side, randomSeed byte, role string) {
-		clock := newGateB2ManualClock(side.now)
+	schedule := newGateB2PairedSchedule()
+	run := func(side *gateB3Side, randomSeed byte, role string, sideIndex int) {
+		clock := schedule.clock(side.now, side.network, sideIndex)
 		var stages []string
 		result, err := gateb.Run(context.Background(), gateb.Config{
 			Machine: side.machine, Ledger: side.ledger, Artifact: side.artifact, Stream: side.stream,
-			ObserverTopology: side.topology, BuildVersion: "gate-b3-natsim", ProbeFactory: side.factory,
+			ObserverTopology: side.topology, BuildVersion: "gate-b3-natsim", ProbeFactory: schedule.factory(side.factory, sideIndex),
 			Progress: func(stage string, _ bool) error { stages = append(stages, stage); return nil },
 			Harness: &gateb.HarnessHooks{NoiseRandom: gateB2ObservationRandom(randomSeed + 40), ObservationRandom: gateB2ObservationRandom(randomSeed),
 				Now: clock.Now, NewTimer: clock.NewTimer, Wait: clock.Wait, ActiveEnvelope: active, CandidateWindow: candidates},
 		})
 		results <- gateB3Outcome{result: result, err: err, stages: stages, role: role}
 	}
-	go run(left, 3, "initiator")
-	go run(right, 97, "responder")
+	go run(left, 3, "initiator", 0)
+	go run(right, 97, "responder", 1)
 	outcomes := make([]gateB3Outcome, 0, 2)
 	for range 2 {
 		select {
