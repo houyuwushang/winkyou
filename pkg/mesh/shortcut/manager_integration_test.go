@@ -248,6 +248,7 @@ func TestShortcutReportsInstalledOnlyAfterPacketNeighborReady(t *testing.T) {
 }
 
 func TestShortcutReconcilesDroppedPacketBarrierSignal(t *testing.T) {
+	startShortcutBarrierStress(t)
 	testCases := []struct {
 		name       string
 		signalType string
@@ -261,12 +262,14 @@ func TestShortcutReconcilesDroppedPacketBarrierSignal(t *testing.T) {
 		t.Run(testCase.name, func(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
-			nodeA := newTestNode(t, mesh.NodeConfig{NodeID: "A", Lease: 5 * time.Second, RefreshInterval: 50 * time.Millisecond})
-			nodeB := newTestNode(t, mesh.NodeConfig{NodeID: "B", Lease: 5 * time.Second, RefreshInterval: 50 * time.Millisecond})
-			nodeC := newTestNode(t, mesh.NodeConfig{NodeID: "C", Lease: 5 * time.Second, RefreshInterval: 50 * time.Millisecond})
+			witness := newShortcutBarrierWitness(t)
+			nodeA := newTestNode(t, mesh.NodeConfig{NodeID: "A", Lease: 5 * time.Second, RefreshInterval: 50 * time.Millisecond, OnEvent: witness.route})
+			nodeB := newTestNode(t, mesh.NodeConfig{NodeID: "B", Lease: 5 * time.Second, RefreshInterval: 50 * time.Millisecond, OnEvent: witness.route})
+			nodeC := newTestNode(t, mesh.NodeConfig{NodeID: "C", Lease: 5 * time.Second, RefreshInterval: 50 * time.Millisecond, OnEvent: witness.route})
 
 			packetA, packetB := newShortcutMemoryPacketPair()
-			dropper := &dropFirstShortcutSignalTransport{signalType: testCase.signalType}
+			dropper := &dropFirstShortcutSignalTransport{signalType: testCase.signalType, witness: witness, hop: testCase.dropAt}
+			witness.record("armed", testCase.signalType, testCase.dropAt, "", "")
 			var transportA transport.PacketTransport = packetA
 			var transportB transport.PacketTransport = packetB
 			if testCase.dropAt == "A" {
@@ -298,7 +301,7 @@ func TestShortcutReconcilesDroppedPacketBarrierSignal(t *testing.T) {
 			factory := func(spec AttemptSpec) (solver.Strategy, error) { return newFakeEdgeStrategy(spec, broker), nil }
 			base := Config{
 				StrategyName: fakeEdgeStrategyName, Probation: testCase.probation, SolveTimeout: time.Second,
-				PacketNeighbor: packetConfig,
+				PacketNeighbor: packetConfig, OnEvent: witness.manager,
 			}
 			base.Node, base.StrategyFactory = nodeA, factory
 			managerA := newTestManager(t, base)
@@ -417,12 +420,16 @@ type dropFirstShortcutSignalTransport struct {
 	signalType string
 	matched    atomic.Int32
 	dropped    atomic.Int32
+	witness    *shortcutBarrierWitness
+	hop        string
 }
 
 func (t *dropFirstShortcutSignalTransport) WritePacket(ctx context.Context, packet []byte) error {
 	if isShortcutControlSignal(packet, t.signalType) {
 		t.matched.Add(1)
+		t.witness.record("matched", t.signalType, t.hop, "", "")
 		if t.dropped.CompareAndSwap(0, 1) {
+			t.witness.record("injected_drop", t.signalType, t.hop, "", "")
 			return nil
 		}
 	}
