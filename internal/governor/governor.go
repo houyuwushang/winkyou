@@ -624,8 +624,9 @@ func (a *AttemptLease) Stopping() <-chan struct{} {
 	return a.stopping
 }
 
-// Done closes only after registered drains complete or the governor has
-// persisted a fail-closed timeout trip and forcibly revoked the attempt.
+// Done closes only after registered drains complete or, for ordinary leases,
+// a persistent timeout trip forcibly revokes the attempt. Two-phase loopback
+// leases instead retain ownership on a failed verdict until quiescent Close.
 func (a *AttemptLease) Done() <-chan struct{} {
 	if a == nil {
 		return closedChannel()

@@ -1,6 +1,6 @@
 # 回环 attempt 两阶段终止
 
-Status: Accepted for implementation (2026-09-20)。维护者选择方案 2；实现仍须独立复审，
+Status: Draft implementation design (2026-09-20)。维护者已授权方案 2 的设计与实现；具体实现仍须独立复审，
 不得据此合并、推进 Gate C1c 或运行现场网络。
 
 ## 1. 问题与裁决

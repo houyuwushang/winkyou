@@ -226,6 +226,11 @@ func (c *CommittedAttempt) finishLoopback(reason PairingTerminalReason) error {
 		if c.preFinishHook != nil {
 			hookErr = c.preFinishHook()
 		}
+		// Preserve an already-known revocation error even if the subsequent
+		// disk call outlives the bounded verdict. No late result can rewrite it.
+		c.mu.Lock()
+		c.writerErr = hookErr
+		c.mu.Unlock()
 		networkErr := c.attempt.awaitLoopbackNetwork()
 		finishErr := c.ledger.Finish(c.receipt, reason)
 		c.attempt.recordLoopbackFinishError(finishErr)
@@ -241,22 +246,11 @@ func (c *CommittedAttempt) finishLoopback(reason PairingTerminalReason) error {
 	}()
 	// Begin stopping even if the hook or the storage worker is blocked.
 	result := c.attempt.closeLoopbackAttempt()
-	select {
-	case <-c.writerDone:
-		c.mu.Lock()
-		result = errors.Join(result, c.writerErr)
-		c.mu.Unlock()
-	default:
-		// Drain Complete precedes the tiny writer epilogue. A successful
-		// verdict is safe to join; failed verdicts must never wait on I/O.
-		if result == nil {
-			<-c.writerDone
-			c.mu.Lock()
-			result = c.writerErr
-			c.mu.Unlock()
-		}
+	if result == nil {
+		<-c.writerDone
 	}
 	c.mu.Lock()
+	result = errors.Join(result, c.writerErr)
 	c.terminalErr = result
 	close(c.finished)
 	c.mu.Unlock()

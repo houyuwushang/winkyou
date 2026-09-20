@@ -139,7 +139,8 @@ func TestLoopbackTwoPhaseStalledFinishHasBoundedVerdictAndRetainsOwner(t *testin
 		return nil
 	}
 	committed, auth := commitLoopbackTermination(t, env)
-	if err := auth.RegisterLoopbackPreFinish(func() error { return nil }); err != nil {
+	hookErr := errors.New("synthetic revoke error before stalled FINISH")
+	if err := auth.RegisterLoopbackPreFinish(func() error { return hookErr }); err != nil {
 		t.Fatal(err)
 	}
 	started := time.Now()
@@ -156,7 +157,7 @@ func TestLoopbackTwoPhaseStalledFinishHasBoundedVerdictAndRetainsOwner(t *testin
 	case <-time.After(LoopbackFinalizationTimeout + 5*time.Second):
 		t.Fatal("storage timeout failed to publish verdict")
 	}
-	if !errors.Is(finishErr, ErrTerminalFinalizationTimeout) || time.Since(started) < LoopbackFinalizationTimeout {
+	if !errors.Is(finishErr, ErrTerminalFinalizationTimeout) || !errors.Is(finishErr, hookErr) || time.Since(started) < LoopbackFinalizationTimeout {
 		t.Fatalf("incorrect timeout verdict: %v", finishErr)
 	}
 	if err := env.governor.Close(); !errors.Is(err, ErrTerminalFinalizationTimeout) {
