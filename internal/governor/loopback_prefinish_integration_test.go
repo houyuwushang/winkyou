@@ -18,7 +18,7 @@ func TestLoopbackCarrierPreFinishInvalidation(t *testing.T) {
 		delay        time.Duration
 		cancelCaller bool
 	}{
-		{"R3_expiry_2500ms", 2500 * time.Millisecond, false},
+		{"carrier_deadline_2500ms", 2500 * time.Millisecond, false},
 		{"R4_cancel_10000ms", 10 * time.Second, true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
