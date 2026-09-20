@@ -1,5 +1,5 @@
 # 回环 attempt 两阶段终止
-	
+
 Status: Draft implementation design (2026-09-20)。维护者已授权方案 2 的设计与实现；具体实现仍须独立复审，
 不得据此合并、推进 Gate C1c 或运行现场网络。
 
@@ -30,7 +30,9 @@ Active -> Stopping (立即撤销新网络权限)
   10s 磁盘停顿给出 50% 余量，不允许网络继续运行，也不增加任何 socket/packet 额度。
 - pairing gate 的 drain 在此模式单独归类为记账见证。全部普通 RegisterDrain 仍是网络/
   worker 排空见证；调用者不能自行把普通 drain 改成记账类。
-- 第一个终局选择即停止 attempt；零新 Open/Write/Register。单次 pre-finish hook 撤销
+- 第一个终局选择启动停止 attempt；权限撤销的线性化点是 governor 关闭 Stopping，
+  此后零新 Open/Write/Register。已经准入的在途操作仍须在原 2s 内真实排空，
+  不把 caller 调用 cancel 的墙钟时刻或内部终局选举当成物理排空见证。单次 pre-finish hook 撤销
   probe controller，任何 FINISH 都须在网络排水的成功或超限判决之后。hook 错误加入返回值，
   不跳过 FINISH。注册与 controller 发布的竞态由终局 slot 关闭，不能漏掉后来构造的 controller。
 - 网络排水超限仍持久 cancellation_timeout；记账超限为 terminal_finalization_timeout，
@@ -49,7 +51,8 @@ Active -> Stopping (立即撤销新网络权限)
 - FINISH 写失败或超时在该 governor 生命周期内锁存记账故障。迟到的成功不能清除此判决。
   Snapshot 不等待 writer 持有的 owner mutex；机器元数据在创建时取不可变副本。
 - Governor.Close 在 writer/网络 worker 未真正退出时返回有类型的故障并保留 owner，
-  不无限等待，也不假装 Closed。worker 实际退出后可再次 Close，才释放 owner。
+  不无限等待，也不把错误返回当成释放锁。Snapshot.Closed 沿用原有 closing-or-closed
+  口径，不能用它推导 owner 已释放。worker 实际退出后可再次 Close，才释放 owner。
   该进程内仍不允许新 admission；重新取得 owner 必须经过原有 ledger 检查。
 - 完整 FINISH 之前进程崩溃仍是 BURN 无 FINISH；沿用原未完成记账/不退款规则。
   半写或无法确认的记录仍 ledger_indeterminate；不新增修复或自动重启机制。

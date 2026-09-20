@@ -29,6 +29,7 @@ When documents disagree, treat `CONNECTIVITY-SOLVER-BASELINE.md` as the source o
 - Phase 1a machine-wide governor namespace and setup command: [`MACHINE-SAFETY-NAMESPACE.md`](./MACHINE-SAFETY-NAMESPACE.md)
 - Phase 1a explicit, lower per-user scope boundary: [`USER-ACKNOWLEDGED-SCOPE.md`](./USER-ACKNOWLEDGED-SCOPE.md)
 - Phase 1a bounded cancellation and I/O drain contract: [`CANCELLATION-DRAIN-CONTRACT.md`](./CANCELLATION-DRAIN-CONTRACT.md)
+- Loopback two-phase termination design and validation: [`ADR`](./adr/ADR-LOOPBACK-TWO-PHASE-TERMINATION.md), [`evidence`](./LOOPBACK-TWO-PHASE-TERMINATION-EVIDENCE.md)
 - Phase 1a default no-packet report and explicit bounded STUN mode: [`PASSIVE-DIAGNOSE.md`](./PASSIVE-DIAGNOSE.md)
 - Phase 1a local JSON-RPC v1 stdio API: [`STDIO-API-V1.md`](./STDIO-API-V1.md)
 - Phase 1a merged literal-loopback connect-test and reproducible proof: [`LOOPBACK-CONNECT-TEST.md`](./LOOPBACK-CONNECT-TEST.md)
