@@ -4,7 +4,7 @@
 
 基线为 `50c10e0177c5c481eb66a826b8d4ff276d13cfa1`。本批只改测试与本文档，不修改生产代码、配置、工作流或任何冻结窗口；独立复审前保持 Draft，不合并。
 
-当前状态：#154 定向修复已得到 RED→GREEN 与整包验证；#155 的队列等待方案仍保留为 RED，维护者随后授权配对虚拟调度，正在验证。下面保留首次失败及测量限制，未改断言掩盖失败。
+当前状态：#154 定向修复已得到 RED→GREEN 与整包验证；#155 经维护者授权的配对虚拟调度已通过压力 `50/50` 与范围收窄后的整包 race×20。全仓分区、独立 relay、vet 与 architecture 均通过。此前队列方案和整包首次失败仍保留，不改断言掩盖失败；CI 首跑单独记录在 PR，不由本地结果推导。
 
 ## 原始失败与假设
 
@@ -64,7 +64,7 @@ natsim 的入队在发送调用中同步发生，并不存在独立的投递后�
 | 旧固定 `2ms`，正确读取断言 | 49 / 1 | 149.827 / 154.804s | 两端读取 `0/0`，双方 `hard_nat_candidate_exhausted`；有效 RED |
 | 第一版：`Gosched` 后检查队列，`20ms` 上限 | 44 / 6 | 146.874 / 152.216s | 同签名；不能作为修复 |
 
-第一版实际去掉了旧有定时等待。当前工作稿恢复 `2ms` 定时采样，只有队列非空才继续等，仍受单一绝对 `20ms` 上限约束；保留 `>=7s` 的 `100ms` 分支及不绑定 network 的 C1b 时钟路径。该稿也未达到成功门槛。
+第一版实际去掉了旧有定时等待。第二版恢复 `2ms` 定时采样，只有队列非空才继续等，仍受单一绝对 `20ms` 上限约束；保留 `>=7s` 的 `100ms` 分支及不绑定 network 的 C1b 时钟路径。该稿也未达到成功门槛。
 
 原始日志 SHA-256：
 
@@ -119,8 +119,24 @@ arrived_after_empty_read_cancel=1
 
 这一失败保留为首跑 RED；后续验证对应范围收窄后的不同 tree，不替换原日志、不修改 `250ms` 或任何生产窗口、不弱化成功断言。
 
+该新签名已单独登记为 [#156](https://github.com/houyuwushang/winkyou/issues/156)，保持开放。范围收窄后的 tree 为 `2cc4dfd`：同一命令、Go `1.23.1`、Windows、`GOMAXPROCS=2`，首批 PASS，测试/子测试 PASS 事件 `780`、FAIL `0`。package `507.001s`、墙钟 `511.392s`；新增单元契约和 burst 压力回归也包含在选择器中。相对基线 package `470.528s` 增加 `7.75%`，小于 `25%` 上限。原始日志 SHA-256：`aa9eca90493e8968fcb9a01c831926978f7232fb22e8163689d0c15ca24777ab`。
+
 ### 其余验收
 
-已执行：当前队列单元契约 `-race -count=20` PASS（`4.469s`）；将队列观察移回旧固定等待的变异被确定性拒绝（`queue reads=0`，RED `0.828s`）；`go vet ./...` PASS；architecture（含隐私门）PASS（`11.216s`）；`git diff --check` 干净。上述单元/静态结果不能覆盖压力批次的反例。
+队列稿当时的检查：队列单元契约 `-race -count=20` PASS（`4.469s`）；将队列观察移回旧固定等待的变异被确定性拒绝（`queue reads=0`，RED `0.828s`）；`go vet ./...` PASS；architecture（含隐私门）PASS（`11.216s`）；`git diff --check` 干净。上述单元/静态结果不能覆盖该稿压力批次的反例。
 
-完整新值 Gate B2/B3 race×20 耗时验收、全仓 #116 分区、独立 relay 与 CI 未执行；#155 已有反例，不能声称本批通过。上述定向数据不代替最终整包与 CI 验收。
+最终范围的验证：
+
+| 命令 / 批次 | 结果 | 时间口径 |
+| --- | --- | --- |
+| selfhosted `-race -count=100` | PASS，代码与上述 #154 已验证版本一致 | package `961.743s` |
+| governor `-race -run 'GateB2\|GateB3' -count=20` | PASS，首个扩大接线 tree 的 RED 另列在上节 | package `507.001s` |
+| `go vet ./...` | PASS | 墙钟 `12.143s` |
+| `go test ./internal/architecture -count=1`（含隐私门） | PASS | package `11.007s` |
+| `go test ./... -count=1 -skip '^TestRelayWGGoTwoEnginesExchangeIPv4Packets$'` | PASS，88 个包，FAIL `0` | 墙钟 `304.439s` |
+| `go test -race ./pkg/client -run '^TestRelayWGGoTwoEnginesExchangeIPv4Packets$' -count=20` | PASS，`20/20` | package `165.199s`，墙钟 `178.954s` |
+| CI 首跑 | 推送后在 PR 单独记录，不 rerun | 不以本地结果代替 |
+
+全仓原始日志 SHA-256：`f551356035cab6f980dc77c0c93ee974a369d4110572d3d26ae741eb072a7278`。architecture 原始日志 SHA-256：`aa2611bddeda78084d9df9abf245588113ac7ac47d091a9bd4a8ea0f77a8c16c`。全部原始日志留在仓库外，仅公开计数与哈希。
+
+所有变更限定本文档与 `_test.go` 文件；生产、配置、工作流 delta 为零。未修改 C1b timing policy、任何冻结窗口、成功断言、现场网络或主机配置；历史任务保持 Disabled。基线已有 required-only / OS 专属测试的默认 gating 未变，本地普通批次不声称执行了 Linux netns 或 required Fresh100，须以对应 CI 首跑为准。#156 保持开放，不由本 PR 顺带关闭。
