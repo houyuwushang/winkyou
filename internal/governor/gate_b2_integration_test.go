@@ -241,7 +241,7 @@ func TestGateB2PredictiveCandidateExhaustionIsCleanAndDoesNotRetry(t *testing.T)
 	}
 	defer set.Close()
 	leftStream, rightStream := net.Pipe()
-	leftClock, rightClock := newGateB2NATSimClock(artifactNow, network), newGateB2NATSimClock(artifactNow, network)
+	leftClock, rightClock := newGateB2ManualClock(artifactNow), newGateB2ManualClock(artifactNow)
 	type outcome struct {
 		result gateb.Result
 		err    error
@@ -452,7 +452,7 @@ func runGateB2SafetyRegression(t testing.TB, mode string, hooks ...gateB2SafetyT
 	}
 	defer set.Close()
 	leftStream, rightStream := net.Pipe()
-	leftClock, rightClock := newGateB2NATSimClock(artifactNow, network), newGateB2NATSimClock(artifactNow, network)
+	leftClock, rightClock := newGateB2ManualClock(artifactNow), newGateB2ManualClock(artifactNow)
 	for _, hook := range hooks {
 		if hook.streams != nil {
 			leftStream, rightStream = hook.streams(leftMachine, rightMachine, leftStream, rightStream)
@@ -618,7 +618,7 @@ func runGateB2AsymmetricCase(t *testing.T, initiatorRole, responderRole hardnatp
 	}
 	defer set.Close()
 	leftStream, rightStream := net.Pipe()
-	leftClock, rightClock := newGateB2NATSimClock(artifactNow, network), newGateB2NATSimClock(artifactNow, network)
+	leftClock, rightClock := newGateB2ManualClock(artifactNow), newGateB2ManualClock(artifactNow)
 	type outcome struct {
 		result gateb.Result
 		err    error
@@ -934,8 +934,8 @@ func (clock *gateB2ManualClock) Wait(ctx context.Context, duration time.Duration
 			timer.Reset(min(2*time.Millisecond, time.Until(deadline)))
 		}
 	}
-	// Preserve the seven-second role lead and the separate C1b clock's legacy
-	// fallback; only explicitly network-bound B2/B3 fixtures use queue drain.
+	// Preserve B2's role-separated pacing and the separate C1b clock's legacy
+	// fallback; only explicitly paired Hard16 fixtures bind queue drain.
 	delay := 2 * time.Millisecond
 	if duration >= 7*time.Second {
 		delay = 100 * time.Millisecond

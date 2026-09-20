@@ -103,9 +103,21 @@ arrived_after_empty_read_cancel=1
 2. clock 在推进虚拟时间之前等待对端完成至少同样长的候选前缀，且对端不处于 Write 调用中。零候选的前置步骤不建立配对屏障。最后一批后的接收等待因此不能越过对端尚未结束的候选 schedule。
 3. 配对等待只使用原 caller/candidate context，不创建新窗口或定时器、不延长 `8s/12s`、不补发、不修改 NAT 模型。对端失败导致既有 context 取消后退出；虚拟时间不再推进。
 4. 此后才推进原虚拟间隔并做队列采样；真实 `2ms` 调度轮、单次 `20ms` 队列排水上限以及 `>=7s` 的 `100ms` 分支保持不变。配对调度不等同于协议成功，仍由真实 adapter reads、原加密协议及双端结果判断。
-5. 只有 Hard16 的配对 helper 接入新屏障。B2 的既有非对称角色先后规则仅获得队列观察；C1b 使用不绑定 network 的旧构造器，其独立 timing policy 不变。
+5. 只有 Hard16 的配对 helper 接入新屏障和队列观察。B2 与 C1b 都使用不绑定 network 的旧构造器，其既有 timing policy 不变。不能把 Hard16 的配对规则或队列等待直接套到 B2 非对称角色先后规则上。
 
 新增确定性回归观察屏障本身：本侧完成、对端仍在发送且队列为空时不得推进时钟；完成后只前进原间隔，取消则不前进。另测跨 fixture 不借用进度、丢弃/短写/错误/非 candidate 的计数规则。压力回归已入库，沿用上述两个 worker 与真实读取断言，并纳入完整 `GateB2|GateB3` 验收选择器，不隐去其时间成本。
+
+新设计首轮压力 `-race -count=50` 全部通过（`50/50`，原断言之外还核对 governor 无残留）；每端实际 candidate 数保持 `16,384`，双端均成功并有 FINISH。package `182.313s`、墙钟 `186.943s`，原始日志 SHA-256：`2e1b64a451983c778a63551ecefb9d8d30f9fcc280dac07ea87914cfffa31e97`。与有效旧值 `49/50` 使用同一负载、seed、窗口和实际读取判据；不以这个成功批次替代前述失败批次。
+
+将 `clock.beforeAdvance` 接线删除的独立虚拟时钟变异，在“对端未完成”“前缀完成但另一次 Write 在途”“caller 取消”三个子例均被确定性拒绝：`clock crossed an empty queue while peer send was unfinished`。变异测试保持 vet 开启，package `0.488s`、退出码 `1`；日志 SHA-256：`bb42ae74405c4f317e8795ab948cb8143daba669e51cac0ee0f1aa059a824a8b`。它证明新增测试能拒绝原独立时钟语义，不意味着改变任何生产协议。
+
+### 整包首跑 RED 与范围收窄
+
+首次新值整包 `GateB2|GateB3 -race -count=20` 完整执行后退出码 `1`，package `551.918s`、墙钟 `557.615s`。Hard16 原成功用例 `20/20`，新增 burst 压力用例 `20/20`；唯一失败子例为 `TestGateB2AsymmetricEIMEDMNATSimBothCarrierRoleAssignments/mapping_initiates`，不是 #155 的零读取候选耗尽。记录：target-set 已发 `512`、两端读取 `0/1`、winner `0`、`attempt_expired` / `context deadline exceeded`、FINISH 已落盘且 safety clear。原始日志 SHA-256：`4e0277a639169c96a668e89579bd11f4e4bebf6a55e99fc6f3ef9c6f3714e7cd`。
+
+源码显示该 B2 夹具使用真实 `250ms` candidate context，mapping lead 和 winner wait 仍压为各 `100ms`。本批曾将它及其他 B2 手动时钟接到新队列等待，单次最多 `20ms`，改变了原压缩调度。现撤回 B2 三处构造器接线，逐处恢复基线调用，仅 Hard16 opt-in。此举限制本批改动面，不据此声称已证明这次超时的完整因果链，也不把它当成已修复的 B2 缺陷。
+
+这一失败保留为首跑 RED；后续验证对应范围收窄后的不同 tree，不替换原日志、不修改 `250ms` 或任何生产窗口、不弱化成功断言。
 
 ### 其余验收
 
