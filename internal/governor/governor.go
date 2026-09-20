@@ -59,16 +59,19 @@ type Snapshot struct {
 type Governor struct {
 	mu sync.Mutex
 
-	owner            *Owner
-	profile          Profile
-	scope            Scope
-	limits           Limits
-	trip             SafetyTripStatus
-	closing          bool
-	closed           bool
-	closeDone        chan struct{}
-	closeErr         error
-	tripDrainStarted bool
+	owner              *Owner
+	ownerInfo          OwnerInfo // immutable; never waits behind a journal fsync
+	profile            Profile
+	scope              Scope
+	limits             Limits
+	trip               SafetyTripStatus
+	closing            bool
+	closed             bool
+	closeDone          chan struct{}
+	closeErr           error
+	tripDrainStarted   bool
+	loopbackFinalizing int
+	finalizationFault  error
 
 	peers               map[string]*PeerLease
 	attempts            map[string]*AttemptLease
@@ -123,6 +126,7 @@ func newGovernor(owner *Owner, profile Profile, requested *Limits) (*Governor, e
 
 	return &Governor{
 		owner:     owner,
+		ownerInfo: owner.Info(),
 		profile:   profile,
 		scope:     scope,
 		limits:    limits,
@@ -146,6 +150,9 @@ func (g *Governor) AcquirePeer(peerID string) (*PeerLease, error) {
 	defer g.mu.Unlock()
 	if g.closed || g.closing {
 		return nil, ErrGovernorClosed
+	}
+	if err := g.loopbackAdmissionBlockedLocked(); err != nil {
+		return nil, err
 	}
 	if g.trip.BlocksActiveWork {
 		return nil, &SafetyTripError{Status: g.trip}
@@ -177,7 +184,7 @@ func (g *Governor) Snapshot() Snapshot {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	return Snapshot{
-		Owner:               g.owner.Info(),
+		Owner:               g.ownerInfo,
 		Profile:             g.profile,
 		Scope:               g.scope,
 		Limits:              g.limits,
@@ -216,6 +223,17 @@ func (g *Governor) Close() error {
 	drainErr := g.drainAttempts(attempts)
 
 	g.mu.Lock()
+	if g.loopbackWorkOutstandingLocked() {
+		// A deadline verdict is not a stopped disk syscall. Keep the owner
+		// and reservations; Close can be tried again after actual settlement.
+		result := errors.Join(drainErr, g.finalizationFault, ErrTerminalFinalizing)
+		g.closeErr = result
+		g.closing = false
+		close(g.closeDone)
+		g.closeDone = make(chan struct{})
+		g.mu.Unlock()
+		return result
+	}
 	g.stopActiveLocked()
 	g.closed = true
 	owner := g.owner
@@ -248,6 +266,10 @@ func (p *PeerLease) PeerID() string {
 // AcquireAttempt atomically reserves the complete declared cost. Cancellation
 // releases the lease even when the caller forgets to close it.
 func (p *PeerLease) AcquireAttempt(ctx context.Context, request AttemptRequest) (*AttemptLease, error) {
+	return p.acquireAttempt(ctx, request, false)
+}
+
+func (p *PeerLease) acquireAttempt(ctx context.Context, request AttemptRequest, loopback bool) (*AttemptLease, error) {
 	if p == nil || p.governor == nil {
 		return nil, ErrLeaseClosed
 	}
@@ -260,6 +282,14 @@ func (p *PeerLease) AcquireAttempt(ctx context.Context, request AttemptRequest) 
 
 	g := p.governor
 	g.mu.Lock()
+	if err := g.loopbackAdmissionBlockedLocked(); err != nil {
+		g.mu.Unlock()
+		return nil, err
+	}
+	if loopback && (g.profile != ProfilePhase1Machine || request.Operation != OperationConnectTest) {
+		g.mu.Unlock()
+		return nil, ErrNotAllowed
+	}
 	if g.trip.BlocksActiveWork {
 		g.mu.Unlock()
 		return nil, &SafetyTripError{Status: g.trip}
@@ -294,6 +324,9 @@ func (p *PeerLease) AcquireAttempt(ctx context.Context, request AttemptRequest) 
 		done:            make(chan struct{}),
 		drains:          make(map[uint64]*attemptDrain),
 		exclusiveClaims: make(map[string]struct{}),
+	}
+	if loopback {
+		lease.terminal = newLoopbackTerminal()
 	}
 	p.attempts[request.ID] = lease
 	g.attempts[request.ID] = lease
@@ -444,7 +477,7 @@ func (p *PeerLease) Close() error {
 
 	err := g.drainAttempts(attempts)
 	g.mu.Lock()
-	if g.peers[p.peerID] == p {
+	if g.peers[p.peerID] == p && len(p.attempts) == 0 {
 		delete(g.peers, p.peerID)
 	}
 	g.mu.Unlock()
@@ -472,13 +505,15 @@ type AttemptLease struct {
 	drainedClosed   bool
 	closed          bool
 	closeErr        error
+	terminal        *loopbackTerminal // immutable mode, selected before reservation
 }
 
 type attemptDrain struct {
-	attempt *AttemptLease
-	id      uint64
-	name    string
-	once    sync.Once
+	attempt    *AttemptLease
+	id         uint64
+	name       string
+	once       sync.Once
+	accounting bool
 }
 
 func (a *AttemptLease) Request() AttemptRequest {
@@ -545,6 +580,10 @@ func (a *AttemptLease) Trip(event SafetyTripEvent) (SafetyTripStatus, error) {
 // must finish after Stopping closes and before Done closes. Registration is
 // rejected once cancellation begins.
 func (a *AttemptLease) RegisterDrain(name string) (DrainHandle, error) {
+	return a.registerDrain(name, false)
+}
+
+func (a *AttemptLease) registerDrain(name string, accounting bool) (DrainHandle, error) {
 	if a == nil || a.governor == nil {
 		return nil, ErrLeaseClosed
 	}
@@ -557,6 +596,9 @@ func (a *AttemptLease) RegisterDrain(name string) (DrainHandle, error) {
 	if g.closed || g.closing || a.closed || a.stoppingStarted {
 		return nil, ErrLeaseClosed
 	}
+	if accounting && (a.terminal == nil || a.terminal.accountingRegistered) {
+		return nil, ErrInvalidRequest
+	}
 	if len(a.drains) >= maxAttemptDrainRegistrations {
 		return nil, &LimitError{
 			Field:     "attempt_drains",
@@ -565,8 +607,11 @@ func (a *AttemptLease) RegisterDrain(name string) (DrainHandle, error) {
 		}
 	}
 	a.nextDrainID++
-	drain := &attemptDrain{attempt: a, id: a.nextDrainID, name: name}
+	drain := &attemptDrain{attempt: a, id: a.nextDrainID, name: name, accounting: accounting}
 	a.drains[drain.id] = drain
+	if accounting {
+		a.terminal.accountingRegistered = true
+	}
 	return drain, nil
 }
 
@@ -591,6 +636,9 @@ func (a *AttemptLease) Done() <-chan struct{} {
 func (a *AttemptLease) Close() error {
 	if a == nil || a.governor == nil {
 		return nil
+	}
+	if a.terminal != nil {
+		return a.closeLoopbackAttempt()
 	}
 	g := a.governor
 	g.mu.Lock()
@@ -626,6 +674,7 @@ func (drain *attemptDrain) Complete() error {
 			if attempt.stoppingStarted && len(attempt.drains) == 0 {
 				g.closeAttemptDrainedLocked(attempt)
 			}
+			g.maybeCloseLoopbackNetworkLocked(attempt)
 		}
 		g.mu.Unlock()
 	})
@@ -633,6 +682,30 @@ func (drain *attemptDrain) Complete() error {
 }
 
 func (g *Governor) drainAttempts(attempts []*AttemptLease) error {
+	var ordinary []*AttemptLease
+	var phased []*AttemptLease
+	for _, attempt := range attempts {
+		if attempt.terminal == nil {
+			ordinary = append(ordinary, attempt)
+		} else {
+			phased = append(phased, attempt)
+		}
+	}
+	// Start every stop before waiting on either lifecycle. The ordinary path
+	// and its original cancellation budget are otherwise unchanged.
+	g.mu.Lock()
+	for _, attempt := range phased {
+		g.beginAttemptStoppingLocked(attempt)
+	}
+	g.mu.Unlock()
+	result := g.drainOrdinaryAttempts(ordinary)
+	for _, attempt := range phased {
+		result = errors.Join(result, attempt.closeLoopbackAttempt())
+	}
+	return result
+}
+
+func (g *Governor) drainOrdinaryAttempts(attempts []*AttemptLease) error {
 	if len(attempts) == 0 {
 		return nil
 	}
@@ -729,6 +802,12 @@ func (g *Governor) beginAttemptStoppingLocked(attempt *AttemptLease) {
 	close(attempt.stopping)
 	if len(attempt.drains) == 0 {
 		g.closeAttemptDrainedLocked(attempt)
+	}
+	g.maybeCloseLoopbackNetworkLocked(attempt)
+	if attempt.terminal != nil {
+		attempt.terminal.stoppedAt = time.Now()
+		g.loopbackFinalizing++
+		go g.runLoopbackTermination(attempt)
 	}
 }
 
