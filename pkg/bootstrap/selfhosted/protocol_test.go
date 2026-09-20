@@ -67,12 +67,15 @@ func TestAuthenticatePeerOnPunchedConnection(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 	errors := make(chan error, 2)
+	// Interval also bounds each UDP Write. Keep a scheduler-tolerant write
+	// deadline in this successful loopback fixture, independent of its shorter
+	// settle period; the three-second caller context remains the outer bound.
 	leftConfig := helloConfig{
-		Interval: 10 * time.Millisecond, Settle: 50 * time.Millisecond,
+		Interval: 200 * time.Millisecond, Settle: 50 * time.Millisecond,
 		Rand: bytes.NewReader(bytes.Repeat([]byte{1}, helloNonceSize)),
 	}
 	rightConfig := helloConfig{
-		Interval: 10 * time.Millisecond, Settle: 50 * time.Millisecond,
+		Interval: 200 * time.Millisecond, Settle: 50 * time.Millisecond,
 		Rand: bytes.NewReader(bytes.Repeat([]byte{2}, helloNonceSize)),
 	}
 	go func() { errors <- authenticatePeer(ctx, left, "A", "B", key, session, leftConfig) }()

@@ -878,11 +878,22 @@ func planEndpoint(endpoint netip.AddrPort) hardnatplan.AddressPort {
 }
 
 type gateB2ManualClock struct {
-	mu  sync.Mutex
-	now time.Time
+	mu            sync.Mutex
+	now           time.Time
+	queuedPackets func() int                  // Bound to this fixture's network before any worker starts.
+	beforeAdvance func(context.Context) error // Optional fixture-local paired send barrier.
 }
 
 func newGateB2ManualClock(now time.Time) *gateB2ManualClock { return &gateB2ManualClock{now: now} }
+
+func newGateB2NATSimClock(now time.Time, network *natsim.Network) *gateB2ManualClock {
+	clock := newGateB2ManualClock(now)
+	clock.queuedPackets = func() int { return network.Snapshot().QueuedPackets }
+	return clock
+}
+
+const gateB2QueueDrainLimit = 20 * time.Millisecond
+
 func (clock *gateB2ManualClock) Now() time.Time {
 	clock.mu.Lock()
 	defer clock.mu.Unlock()
@@ -892,11 +903,39 @@ func (clock *gateB2ManualClock) Wait(ctx context.Context, duration time.Duration
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+	if clock.beforeAdvance != nil {
+		if err := clock.beforeAdvance(ctx); err != nil {
+			return err
+		}
+	}
 	clock.mu.Lock()
 	clock.now = clock.now.Add(duration)
 	clock.mu.Unlock()
-	// Preserve the real scheduler's cross-peer batch interleaving while
-	// compressing each one-second governed interval.
+	if duration < 7*time.Second && clock.queuedPackets != nil {
+		// Retain the original scheduling turn before sampling the queue. A
+		// Gosched-only empty check can run ahead of the peer's polling timer.
+		// Continue only while packets remain, up to one absolute 20ms cap.
+		// This observes dequeue, never protocol acceptance, and consumes nothing.
+		deadline := time.Now().Add(gateB2QueueDrainLimit)
+		timer := time.NewTimer(2 * time.Millisecond)
+		defer timer.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-timer.C:
+			}
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			if clock.queuedPackets() == 0 || !time.Now().Before(deadline) {
+				return nil
+			}
+			timer.Reset(min(2*time.Millisecond, time.Until(deadline)))
+		}
+	}
+	// Preserve B2's role-separated pacing and the separate C1b clock's legacy
+	// fallback; only explicitly paired Hard16 fixtures bind queue drain.
 	delay := 2 * time.Millisecond
 	if duration >= 7*time.Second {
 		delay = 100 * time.Millisecond
