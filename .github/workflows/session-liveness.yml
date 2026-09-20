@@ -112,7 +112,7 @@ jobs:
       fail-fast: false
       matrix:
         # #150: union historical and new first-attempt maxima, plus 12s capture.
-        # idle (255+73+6+12)=346s -> 8m; blackholes (207+57+6+12)=282s -> 6m;
+        # idle (255+73+6+12)=346s -> 8m; blackholes (207+73+6+12)=298s -> 7m;
         # nonproof (320+57+6+12)=395s -> 9m, all ceil(1.25*seconds/60).
         # 207/320 include #126's 45s cold start once, not added again.
         # Source: docs/FLAKE-133-HOSTED-FIXTURE-TIMING.md section 5.
@@ -124,7 +124,7 @@ jobs:
           - case: blackholes
             test: TestSessionLivenessMemoryBlackholesRequired
             test_timeout: 4m
-            timeout_minutes: 6
+            timeout_minutes: 7
           - case: nonproof
             test: TestSessionLivenessOneWayTrafficCannotReplaceProofRequired
             test_timeout: 6m

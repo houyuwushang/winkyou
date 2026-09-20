@@ -23,7 +23,7 @@ var fixtureTimingJobs = []struct{ file, job, artifact, digest string }{
 	{"ci.yml", "gate-c1b-memory-fresh100", "fixture-timing-fresh100-${{ matrix.os }}", "ee6e84bf68a0bd809aa684c12cd8ec086461305871acaf02f3333fb159e1dcdb"},
 	{"session-liveness.yml", "owner", "fixture-timing-owner-${{ matrix.os }}", "f80a8a5a35e08d402705aac78ad4db2d732a0347ef93fe3cfd5060be07bc4587"},
 	{"session-liveness.yml", "real-wireguard", "fixture-timing-liveness-ubuntu-latest", "82150b64ca01bd6338d0ba67aab8af6fcc77fcd8c247e2fbe7c9213f66c6b071"},
-	{"session-liveness.yml", "real-wireguard-windows", "fixture-timing-liveness-windows-latest-${{ matrix.case }}", "ce16b1c0ada1eeca77add3df885edc760acc0aea6146d5abc2783618719f74d0"},
+	{"session-liveness.yml", "real-wireguard-windows", "fixture-timing-liveness-windows-latest-${{ matrix.case }}", "11d7fc9fa20b620e4c651ede79d0c887c3856570fef245c604933a77ec436a0d"},
 }
 
 func fixtureTimingJobValid(data []byte, job, artifact, digest string) bool {

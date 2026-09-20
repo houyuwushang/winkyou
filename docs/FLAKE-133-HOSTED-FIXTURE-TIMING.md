@@ -189,7 +189,7 @@ C1b 的 setup 仍按 checkout + setup-go 之和一次计入：新最大 Windows 
 | owner / Windows | 363+266+27+93+12=761 | 16 | 16→16 | 768 |
 | owner / Linux | 286+240+15+17+12=570 | 12 | 12→12 | 576 |
 | idle / Windows | 255+73+6+12=346 | 8 | 7→8 | 384 |
-| blackholes / Windows | 207+57+6+12=282 | 6 | 6→6 | 288 |
+| blackholes / Windows | 207+73+6+12=298 | 7 | 6→7 | 336 |
 | nonproof / Windows | 320+57+6+12=395 | 9 | 8→9 | 432 |
 | real-wireguard / Linux | 204+155+267+16+12=654 | 14 | 14→14 | 672 |
 

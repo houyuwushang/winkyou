@@ -154,7 +154,7 @@ func livenessCIContractViolations(payload []byte) []string {
 	}
 	want := map[string]string{
 		"idle":       "TestSessionLivenessMemoryIdle180Required/6m/8",
-		"blackholes": "TestSessionLivenessMemoryBlackholesRequired/4m/6",
+		"blackholes": "TestSessionLivenessMemoryBlackholesRequired/4m/7",
 		"nonproof":   "TestSessionLivenessOneWayTrafficCannotReplaceProofRequired/6m/9",
 	}
 	actual := map[string]string{}
@@ -336,7 +336,7 @@ func TestSessionLivenessCIContractCaptureBudgets(t *testing.T) {
 		want        int
 	}{
 		{"real-wireguard-windows", "idle", 73, 6, []int{255}, 8},
-		{"real-wireguard-windows", "blackholes", 57, 6, []int{207}, 6},
+		{"real-wireguard-windows", "blackholes", 73, 6, []int{207}, 7},
 		{"real-wireguard-windows", "nonproof", 57, 6, []int{320}, 9},
 		// Whole-job residual 16s = 643 - 204 - 155 - 267 - 1 capture.
 		// It includes setup/post/gaps once, conservatively above old 631s.
