@@ -188,6 +188,7 @@ func memoryFixtureWindowSourceValid(source []byte, ownsHook bool) bool {
 }
 
 func testGateC1bMemoryFixtureWindowSource(t *testing.T) {
+	t.Run("timing-capture", TestGateC1bFixtureTimingFiles)
 	t.Run("role-ordering-clock", TestGateC1bMemoryClockPreservesSubsecondRoleLead)
 	t.Run("phase-witness", TestGateC1bMemoryPhaseWitnessIsBoundedFirstObservation)
 	floors := []memoryFixtureWindow{{time.Second, 10 * time.Second}, {1500 * time.Millisecond, 10 * time.Second}, {4 * time.Second, 12 * time.Second}}

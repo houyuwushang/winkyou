@@ -419,9 +419,9 @@ jobs:
           -count=1
           -timeout=8m
 
-  # #146: ceil(1.25*(40+10+429+73)/60)=12m Windows;
-  # ceil(1.25*(11+4+311+16)/60)=8m Linux.
-  # First-attempt step maxima and 80% acceptance: C1b evidence section 8.
+  # #150: ceil(1.25*(40+10+429+83+12)/60)=12m Windows;
+  # ceil(1.25*(12+4+311+18+12)/60)=8m Linux (includes capture).
+  # First-attempt maxima and 80% acceptance: fixture timing evidence section 5.
   gate-c1b-memory-pipelines:
     name: Gate C1b Memory Pipelines (${{ matrix.os }}, required)
     strategy:
@@ -436,6 +436,7 @@ jobs:
     timeout-minutes: ${{ matrix.timeout_minutes }}
     env:
       GORACE: halt_on_error=1
+      WINKYOU_FIXTURE_TIMING_DIR: ${{ github.workspace }}/../fixture-timing
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
@@ -461,9 +462,15 @@ jobs:
           -run '^TestGateC1b(MemoryProductPipelineReachesPostOOBEcho|MemoryCLIAndClaimedChildPipeline|GateBProductHandoffRetainsOwnershipUntilFinish)$'
           -count=20 -timeout=12m
 
-  # #146: ceil(1.25*(50+203+362+89+91+73)/60)=19m Windows;
-  # ceil(1.25*(46+191+335+68+49+16)/60)=15m Linux.
-  # First-attempt step maxima and 80% acceptance: C1b evidence section 8.
+      - name: Preserve numeric fixture timing
+        if: always()
+        uses: ./.github/actions/fixture-timing
+        with:
+          artifact-name: fixture-timing-pipelines-${{ matrix.os }}
+
+  # #150: ceil(1.25*(118+203+389+89+91+83+12)/60)=21m Windows;
+  # ceil(1.25*(46+191+341+68+49+18+12)/60)=16m Linux.
+  # First-attempt maxima and 80% acceptance: fixture timing evidence section 5.
   gate-c1b-memory-phases:
     name: Gate C1b Memory Phases (${{ matrix.os }}, required)
     strategy:
@@ -471,13 +478,14 @@ jobs:
       matrix:
         include:
           - os: ubuntu-latest
-            timeout_minutes: 15
+            timeout_minutes: 16
           - os: windows-latest
-            timeout_minutes: 19
+            timeout_minutes: 21
     runs-on: ${{ matrix.os }}
     timeout-minutes: ${{ matrix.timeout_minutes }}
     env:
       GORACE: halt_on_error=1
+      WINKYOU_FIXTURE_TIMING_DIR: ${{ github.workspace }}/../fixture-timing
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
@@ -518,9 +526,15 @@ jobs:
           -run '^TestGateC1bMemoryCLIEvidenceDriftAndExhaustionAreOneShot$'
           -count=20 -timeout=3m
 
-  # #146: ceil(1.25*(189+73)/60)=6m Windows;
-  # ceil(1.25*(115+16)/60)=3m Linux, plus 1m authorized setup jitter.
-  # First-attempt step maxima and 80% acceptance: C1b evidence section 8.
+      - name: Preserve numeric fixture timing
+        if: always()
+        uses: ./.github/actions/fixture-timing
+        with:
+          artifact-name: fixture-timing-phases-${{ matrix.os }}
+
+  # #150: ceil(1.25*(189+83+12)/60)=6m Windows;
+  # ceil(1.25*(117+18+12)/60)=4m Linux, plus 1m authorized setup jitter.
+  # First-attempt maxima and 80% acceptance: fixture timing evidence section 5.
   gate-c1b-memory-fresh100:
     name: Gate C1b Memory Fresh100 (${{ matrix.os }}, required)
     strategy:
@@ -528,13 +542,14 @@ jobs:
       matrix:
         include:
           - os: ubuntu-latest
-            timeout_minutes: 4
+            timeout_minutes: 5
           - os: windows-latest
             timeout_minutes: 6
     runs-on: ${{ matrix.os }}
     timeout-minutes: ${{ matrix.timeout_minutes }}
     env:
       GORACE: halt_on_error=1
+      WINKYOU_FIXTURE_TIMING_DIR: ${{ github.workspace }}/../fixture-timing
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
@@ -551,6 +566,12 @@ jobs:
           go test -tags=c1bproof ./internal/governor
           -run '^TestGateC1bMemoryProductPipelineFresh100$'
           -v -count=1 -timeout=9m
+
+      - name: Preserve numeric fixture timing
+        if: always()
+        uses: ./.github/actions/fixture-timing
+        with:
+          artifact-name: fixture-timing-fresh100-${{ matrix.os }}
 
   # ADR 19.11: isolate test-profile contention without changing any attempt
   # window, injected FINISH delay, packet allowance, or in-pair concurrency.

@@ -1,0 +1,25 @@
+name: Numeric fixture timing
+description: Validate and preserve success and failure measurements without raw logs
+inputs:
+  artifact-name:
+    description: Fixed job and matrix labels only
+    required: true
+runs:
+  using: composite
+  steps:
+    - name: Prove numeric schema and privacy mutations
+      shell: bash
+      run: python -B scripts/test_ci_fixture_timing.py
+    - name: Validate numeric samples and derive timing summary
+      shell: bash
+      run: >-
+        python scripts/ci-fixture-timing.py summarize
+        --input "$WINKYOU_FIXTURE_TIMING_DIR"
+        --output "$RUNNER_TEMP/fixture-timing-export"
+    - uses: actions/upload-artifact@v4
+      with:
+        name: ${{ inputs.artifact-name }}
+        path: ${{ runner.temp }}/fixture-timing-export/*.json
+        if-no-files-found: error
+        compression-level: 0
+        retention-days: 14
