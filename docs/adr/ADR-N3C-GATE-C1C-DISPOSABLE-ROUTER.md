@@ -191,6 +191,8 @@ governor namespace 路径。本端只读核对自身引用；对端引用来自�
   session 到实例窗口末端即取消，drain 仍只用原 2s；不提高既有 session absolute ceiling。
 - 原始证据在私有目录 O_EXCL 创建；stdout 仅 §6 白名单。网络身份、文件路径、PID、
   原始错误、attempt/credential/scope 标识不进入公开 summary。未知外部残留保持 unknown。
+  field 预检拒绝继承的 WireGuard verbose / TUN packet-trace 开关为 `1` 的环境；不静默
+  修改环境，也不改变普通构建的调试行为，避免绕过现场输出白名单。
 
 ### 4.3 三项硬化处置与验收
 
