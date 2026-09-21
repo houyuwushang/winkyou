@@ -69,7 +69,7 @@ nm 门显式列举 `fieldc1c.Load`、`sshassembly.NewFieldAuthority`、
 | 命令 | 首跑状态 |
 | --- | --- |
 | `go vet ./...` | 首次 PASS；墙钟 23.302s；最终代码复核 PASS，8.984s |
-| `go test ./internal/architecture -count=20 -timeout=60m` | 首跑两类边界 RED 已修；修后 120s 符号构建超时 #162，未满足全绿 |
+| `go test ./internal/architecture -count=20 -timeout=60m` | 首跑两类边界 RED 已修；修后 120s 符号构建超时 #162；TUN 修后 `fc6af31` 新代码批次再命中 natlab build 120s 超时（无输出），包 641.217s / 墙钟 643.957s、全程 HEAD 不变，未满足全绿 |
 | 受影响包 `-race -tags=fieldc1c -count=20 -timeout=90m` | 首跑 9/9 PASS；墙钟 241.249s |
 | `go test ./... -count=1 -skip '^TestRelayWGGoTwoEnginesExchangeIPv4Packets$'` | #116 分区首跑 PASS，墙钟 273.620s；其中 architecture 单轮 34.230s |
 | `go test -race ./pkg/client -run '^TestRelayWGGoTwoEnginesExchangeIPv4Packets$' -count=20` | 独立首跑 PASS；包 164.688s，墙钟 174.218s |
@@ -117,6 +117,18 @@ workflow 与契约测试同时锁定 9min job、4min matrix、count=1、REQUIRED
 CI 实际首跑用时与结果另列，代理测量不得标作 CI 已通过。
 
 ## 5. 交付边界
+
+### 5.2 新 field 宿主的退出等待
+
+`fc6af31` 的 push run `35625875888` 与 PR run `35625884449` 已越过原绑定失败：predictive 两端
+达到 data-plane ready，真实 kernel ICMP 成功；随后在复用的 C1b 宿主 3s 等待处 RED（push 8.69s）。
+新 fixture 有两层串行退出的 race 进程（field binary 与宿主 test binary），而原 C1b helper 内直接调用产品。
+
+仅为新 field fixture 冻结退出结果等待：既有 liveness CLOSE 1s 窗口 + 既有 session drain 2s +
+两层 race 默认退出等待共 2s，乘 1.25、向上取整到秒，得 7s。
+[Go race 文档](https://go.dev/doc/articles/race_detector) 规定 `atexit_sleep_ms` 默认 1000ms；不关闭该等待。
+测试锁定三个来源和公式，并记录 SIGINT 请求到宿主退出的实际纳秒数。原 C1b helper 的 3s、产品排水
+时限及 liveness 参数全部不改。此测试等待推导仍不代替终局与各层零残留实证。
 
 ### 5.0 TUN 初始化顺序的源码缺陷
 
