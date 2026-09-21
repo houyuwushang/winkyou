@@ -116,6 +116,12 @@ C1c-2 必须在普通构建执行 `go tool nm <ORDINARY_BINARY>` 并断言受审
 `wink solver direct child --stdio` 从本地 slot 选择 responder 实例。没有实例时拒绝，不能
 退回其它权限。普通构建的固定 child 仍保留原行为。
 
+部署安装中的固定 wrapper 路径和固定 wink 路径使用同一 exact-SHA field binary 的副本。
+仅当进程由冻结 wrapper 路径进入时，field-only dispatcher 调用现有 UID 0 安装/原命令
+校验，然后以既有 Execution 的固定 argv/env 替换本进程；没有新 fork、额外 SSH child、
+shell 拼接或可变 executable。普通 main 不包含此 dispatcher 的实现；私有 netns 证明必须
+执行真实 field binary 的 wrapper/child 两个路径，不能拿注入 runner 代替本次验收。
+
 实例 revision 固定为 `winkyou-gate-c1c-authorization/1`，上限 64 KiB，UTF-8 单个 JSON
 object。顶层与空模板的 **88 个字段逐一对应且全部必须出现**；未知、重复字段、尾随第二个
 值、错误类型和不支持的 revision 一律拒绝。字符串不作 trim/coercion。预检字段不得 null
