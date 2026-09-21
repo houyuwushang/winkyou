@@ -20,6 +20,7 @@ import (
 	"winkyou/internal/v2/gatecstage"
 	"winkyou/internal/v2/sshchildwrapper"
 	"winkyou/pkg/netif"
+	"winkyou/pkg/tunnel"
 )
 
 const fieldC1cHostEnv = "WINKYOU_C1C_HOST_CONFIG"
@@ -95,6 +96,17 @@ func testFieldC1cProfile(t *testing.T, profile gateC1bProfile, binary string) {
 					transport := witness.Handoff.Transport
 					t.Logf("C1C_WAIT side=%d class=%s last_work_stage=%s interface_closed=%t tunnel_stopped=%t consumer_ready=%t readiness_out=%d readiness_in=%d wg_out=%d wg_in=%d finish=%t", index, snapshot.Class, fieldC1cLastStage(cfg.Evidence),
 						witness.InterfaceClosed, witness.TunnelStopped, transport.ConsumerReady, transport.ReadinessWrites, transport.ReadinessReads, len(transport.Outbound), len(transport.Inbound), witness.Handoff.FinishRecorded)
+					t.Logf("C1C_BIND side=%d failure_stage=%s start_called=%t start_ok=%t peer_called=%t peer_ok=%t tun_reader_failed=%t", index, snapshot.FailureStage,
+						snapshot.FieldWireGuard.StartCalled, snapshot.FieldWireGuard.StartSucceeded, snapshot.FieldWireGuard.PeerCalled, snapshot.FieldWireGuard.PeerSucceeded, snapshot.Interface.ReaderFailedBeforeClose)
+					fieldC1cLines(cfg.Evidence, func(data []byte) {
+						var point struct {
+							Stage string `json:"stage"`
+							AtNS  int64  `json:"at_ns"`
+						}
+						if json.Unmarshal(data, &point) == nil && (point.Stage == "handoff" || point.Stage == gatecorchestrator.StageTerminal) {
+							t.Logf("C1C_TIMING side=%d stage=%s at_ns=%d", index, point.Stage, point.AtNS)
+						}
+					})
 				}
 				t.Fatal("C1c endpoint did not reach data-plane ready")
 			}
@@ -254,9 +266,11 @@ func TestFieldC1cHostProcess(t *testing.T) {
 }
 
 type fieldC1cTerminal struct {
-	Result    gatecorchestrator.Result    `json:"result"`
-	Class     string                      `json:"class"`
-	Interface netif.FieldInterfaceWitness `json:"interface"`
+	Result         gatecorchestrator.Result     `json:"result"`
+	Class          string                       `json:"class"`
+	FailureStage   string                       `json:"failure_stage"`
+	Interface      netif.FieldInterfaceWitness  `json:"interface"`
+	FieldWireGuard tunnel.FieldWireGuardWitness `json:"field_wireguard"`
 }
 
 func fieldC1cLines(path string, visit func([]byte)) {

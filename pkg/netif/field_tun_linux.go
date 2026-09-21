@@ -31,14 +31,16 @@ type FieldInterface struct {
 	closeOnce               sync.Once
 	closeErr                error
 	kernelRead, kernelWrite atomic.Uint64
+	readerFailedBeforeClose atomic.Bool
 }
 
 type FieldInterfaceWitness struct {
-	KernelPacketsRead    uint64 `json:"kernel_packets_read"`
-	KernelPacketsWritten uint64 `json:"kernel_packets_written"`
-	Closed               bool   `json:"closed"`
-	InterfaceAbsent      bool   `json:"interface_absent"`
-	InterfaceChecked     bool   `json:"interface_checked"`
+	KernelPacketsRead       uint64 `json:"kernel_packets_read"`
+	KernelPacketsWritten    uint64 `json:"kernel_packets_written"`
+	Closed                  bool   `json:"closed"`
+	InterfaceAbsent         bool   `json:"interface_absent"`
+	InterfaceChecked        bool   `json:"interface_checked"`
+	ReaderFailedBeforeClose bool   `json:"reader_failed_before_close"`
 }
 
 // PreflightFieldInterface observes existing owners but never changes them.
@@ -185,6 +187,11 @@ func (f *FieldInterface) readKernel() {
 	for {
 		n, err := f.file.Read(buffer)
 		if err != nil {
+			select {
+			case <-f.done:
+			default:
+				f.readerFailedBeforeClose.Store(true)
+			}
 			return
 		}
 		if n <= 0 {
@@ -326,7 +333,7 @@ func drainFieldQueue(queue chan []byte) {
 }
 
 func (f *FieldInterface) Witness() FieldInterfaceWitness {
-	result := FieldInterfaceWitness{KernelPacketsRead: f.kernelRead.Load(), KernelPacketsWritten: f.kernelWrite.Load()}
+	result := FieldInterfaceWitness{KernelPacketsRead: f.kernelRead.Load(), KernelPacketsWritten: f.kernelWrite.Load(), ReaderFailedBeforeClose: f.readerFailedBeforeClose.Load()}
 	select {
 	case <-f.done:
 		result.Closed = true

@@ -14,3 +14,20 @@ func TestFieldWireGuardRejectsUnownedInterfaceAndNativeBind(t *testing.T) {
 		}
 	}
 }
+
+func TestFieldWireGuardEvidenceDoesNotChangeErrorsOrInterfaces(t *testing.T) {
+	field := &fieldWGGoTunnel{wggoTunnel: newWGGoTunnel(Config{})}
+	if field.Start() == nil || field.AddPeer(nil) == nil {
+		t.Fatal("diagnostic wrapper suppressed rejection")
+	}
+	witness := FieldWireGuardSnapshot(field)
+	if !witness.StartCalled || witness.StartSucceeded || !witness.PeerCalled || witness.PeerSucceeded {
+		t.Fatal("diagnostic outcomes changed")
+	}
+	if FieldWireGuardSnapshot(nil) != (FieldWireGuardWitness{}) {
+		t.Fatal("missing owner invented evidence")
+	}
+	if _, ok := any(field).(OneShotHandshakeInitiator); !ok {
+		t.Fatal("field wrapper lost the existing one-shot handshake interface")
+	}
+}

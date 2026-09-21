@@ -130,6 +130,12 @@ predictive 场景失败（总测试均 57.28s）：两端 `wireguard_binding_fai
 不增加产品 hook、不打印原始证据/身份/地址、不改失败条件或时限；不是同一代码 rerun。
 根因目前未定位，不猜测，也不把本轮失败归入旧 flake。
 
+诊断提交 `038d1e5` 的 push run `35623758358` 再现同一失败（57.17s）：两端接口均已关闭、
+tunnel 均已停止，consumer-ready 为 false，readiness 与 WireGuard 收发计数全为零，FINISH 为 true。
+这证明接口创建与 WireGuard Start 已走过，不证明错误落在其中。后续仅为新 field 对象增加私有
+操作结果见证：Start/AddPeer 是否调用及成功、TUN reader 是否在 close 前失败、失败的原有阶段。
+不收集底层错误原文或密钥；包装只透传既有返回值，保留 one-shot handshake 接口，不改协议与时限。
+
 两份首次完整下载日志仅留仓库外，SHA-256（push / PR）分别为
 `9c0efb7af8ec2d7c3ec98fb6732c56829c2876f06f1943b2b9c838a7544576bc` /
 `4af58bbb91e827746eb374e53feeb2bb83732441eb94a3dc93b7fdaa547c21ee`。

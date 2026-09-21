@@ -127,6 +127,7 @@ func runFieldPrepared(ctx context.Context, instance fieldc1c.Instance, request g
 	}
 	started := time.Now()
 	var ownedInterface *netif.FieldInterface
+	var ownedTunnel tunnel.Tunnel
 	var result Result
 	defer func() {
 		summary.DurationNS = time.Since(started).Nanoseconds()
@@ -144,10 +145,12 @@ func runFieldPrepared(ctx context.Context, instance fieldc1c.Instance, request g
 			interfaceWitness = ownedInterface.Witness()
 		}
 		if err := evidence.Append(struct {
-			Result    Result `json:"result"`
-			Class     string `json:"class"`
-			Interface any    `json:"interface"`
-		}{result, summary.Class, interfaceWitness}); err != nil {
+			Result         Result                       `json:"result"`
+			Class          string                       `json:"class"`
+			FailureStage   string                       `json:"failure_stage"`
+			Interface      any                          `json:"interface"`
+			FieldWireGuard tunnel.FieldWireGuardWitness `json:"field_wireguard"`
+		}{result, summary.Class, summary.Stage, interfaceWitness, tunnel.FieldWireGuardSnapshot(ownedTunnel)}); err != nil {
 			summary.Class = ClassRequestInvalid
 			runErr = errors.Join(runErr, fieldc1c.ErrInvalid)
 		}
@@ -194,7 +197,11 @@ func runFieldPrepared(ctx context.Context, instance fieldc1c.Instance, request g
 		ownedInterface, err = netif.NewFieldInterface(fieldCtx, authority)
 		return ownedInterface, err
 	}
-	deps.newTunnel = tunnel.NewFieldWireGuard
+	deps.newTunnel = func(configuration tunnel.Config) (tunnel.Tunnel, error) {
+		var err error
+		ownedTunnel, err = tunnel.NewFieldWireGuard(configuration)
+		return ownedTunnel, err
+	}
 	result, runErr = runPrepared(fieldCtx, input, deps)
 	return summary, runErr
 }
