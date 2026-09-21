@@ -152,6 +152,15 @@ revision。`debug.ReadBuildInfo` 缺少 VCS 见证或 `vcs.modified=true` 均拒
 artifact/manifest、双方 scope、角色、材料原始时效、session liveness 与 cost 全部交叉核对。
 任何失败在 SSH child、UDP socket 或 TUN 创建前统一为 `gate_c_request_invalid`。
 
+固定 SSH child 环境不包含 HOME。Linux 实例定位只读取受 root 所有、不可被其它用户写入的
+本地 passwd 文件中唯一 UID 0 项；不调用 NSS、DNS，不增加 SSH argv/env。实例及其父目录
+不允许 symlink 或其它用户写入。`*_machine_scope_reference` 是
+`machine-scope-sha256/1:<SHA256>`：摘要输入为 UTF-8
+`winkyou-c1c-machine-scope/1\n`、去掉末尾换行的本地 machine-id、一个换行及 canonical
+governor namespace 路径。本端只读核对自身引用；对端引用来自双签实例和相同材料摘要，
+不是从 peer report 获得的新身份权限。machine-id 缺失或不合法即拒绝，不创建/重置身份。
+`exact_cost_reference` 固定为 `gate-c/` 加完整 resource class 字符串。
+
 ### 4.2 不透明 capability 与所有权
 
 - SSH 使用 #161 的 concrete token；`NewFieldAuthority(instance)` 是第三个私有
@@ -167,6 +176,10 @@ artifact/manifest、双方 scope、角色、材料原始时效、session livenes
   runtime/key/interface/route ownership，再创建一个 non-persistent、IPv4-only TUN 与唯一
   peer `/32` 路由。只新增而不 replace 已有对象；失败回滚和最终关闭只删除本次拥有对象。
   WireGuard native bind 保持禁用，业务始终通过 Promote 后的唯一 transport。
+  配置使用本地 AF_NETLINK/NETLINK_ROUTE 内核控制 fd（单个、有 deadline、无 IP 收发），
+  不启动额外 `ip` 子进程，不使用 AF_INET raw socket；该 fd 不冒充 UDP 探测 socket，
+  在预检/配置完成即关闭并单独见证。non-persistent TUN 的最后 fd 关闭时内核删除本次
+  interface/address/route；正常终局另核对缺失，崩溃由进程外 netns 见证核对。
 - 外层入口沿用 SIGINT/SIGTERM/SIGHUP 取消语义、原 completion 与 FINISH-before-release；
   不给 WireGuard、默认 `wink up`、stdio、legacy、scheduler 或 runtime 新增构造权。
   session 到实例窗口末端即取消，drain 仍只用原 2s；不提高既有 session absolute ceiling。
