@@ -102,6 +102,91 @@ C1c-2 必须在普通构建执行 `go tool nm <ORDINARY_BINARY>` 并断言受审
 同时验证 architecture/mutation、默认入口与非回环负面回归。符号集合不得用空正则或一次字符串
 查找代替能力门。C1c-1 不运行构建，也不将这条未来验收写作已完成。
 
+### 4.1 C1c-2 冻结（端点实现；2026-09-21）
+
+实现基线为 `9b74fe61fe56384b0eb78dfd1d4d95e4a38fd37a`；本节只消费已授权的 C1c-2a，
+不是 C1c-3 签发。专用标签为 `fieldc1c`。普通、单独 `c1bproof`、单独 `natlab` 构建不得
+包含现场构造器、现场命令或现场权限；组合标签的测试能力也不能成为现场的依赖。
+
+私有实例位置固定为 `~/.winkyou-field/c1c/<instance_id>.json`，证据位置为
+`~/.winkyou-field/c1c/evidence/<instance_id>/`。`instance_id` 是本地材料的 attempt ID，
+只用于从已 claim 的本地 responder slot 定位**唯一**实例，不扫描目录、不排队、不从报文
+或环境变量取得实例路径。artifact、local request、SSH argv 和原有 staging schema 不变。
+`wink gate-c1c run --instance <PRIVATE_INSTANCE>` 只启动 initiator；field 构建的固定
+`wink solver direct child --stdio` 从本地 slot 选择 responder 实例。没有实例时拒绝，不能
+退回其它权限。普通构建的固定 child 仍保留原行为。
+
+实例 revision 固定为 `winkyou-gate-c1c-authorization/1`，上限 64 KiB，UTF-8 单个 JSON
+object。顶层与空模板的 **88 个字段逐一对应且全部必须出现**；未知、重复字段、尾随第二个
+值、错误类型和不支持的 revision 一律拒绝。字符串不作 trim/coercion。预检字段不得 null
+或空字符串；布尔许可必须 true。`mapping_set_role` 仅非 asymmetric 时为 null，
+`containment_authorization` 可以 null。以下运行后字段在签发时必须 null，不能伪造未来
+成功：`tuple_observations`、`raw_evidence_references`、`evidence_sha256`、
+`terminal_result_by_role`、`durable_finish_and_circuit_evidence`、`owned_residue_by_layer`、
+`ledger_sealed_before_destruction`、`cloud_teardown_evidence`、`independent_management_preserved`、
+`redacted_summary_review`、`authorization_closed_at`、`teardown_operator_signature`、
+`teardown_reviewer_signature`。实际结果另写证据文件，不覆盖已签实例。
+
+| 复合字段 | 冻结的形状与校验 |
+| --- | --- |
+| `devices` | 恰好 initiator/responder 两项；每项 `role`、`os`、`request_reference`、`configuration_reference`、`configuration_sha256`、`management_reference`。只接受 Linux；路径为本地私有引用，不来自 peer。 |
+| `router_resource_inventory` / `endpoint_resource_inventory` | 分别一项 / 两项；每项 `role`、`reference`、`teardown_reference`，角色无重复。引用是私有记录，不触发云 API。 |
+| `observer_topology` | `primary`、`alternate_port`、`alternate_address`、`alternate_address_port`；四个 canonical literal AddrPort，严格双地址/双端口，同族；与本地 request 逐项相等。 |
+| 三个 `hardening_*` | `status`、`reason`、`risk`、`evidence_reference`；必须与本节实际实现状态相符，不以任意 true 代替证据。 |
+| `interface_route_address_authority` | initiator/responder 各一项：`interface`、`local_address`、`peer_address`、`mtu`；只能与 trusted config 精确比对，不把实例值写回 config。路由仅该 peer 的 IPv4 `/32`，无默认路由或任意前缀列表。 |
+| `owned_stop_target_identity` | `kind`、`verification_reference`；kind 固定为 `owned-foreground-and-child/1`，不接受 PID 或任意命令作为杀进程权限。 |
+| `expected_terminal_and_fault_stage` | `terminal`、`stage`、`injection_reference`；只绑定本场景受审证据，不在端点实现故障注入开关。 |
+| `witness_plan` | `packet`、`socket`、`process`、`conntrack`、`child`、`ledger`、`transport_lease`、`wireguard`、`interface_route_address`；每项为非空私有采集计划引用。外部见证缺失不可写为零。 |
+
+首轮 layout 固定 `disposable-endpoints-and-router/1`。两人身份必须不同且签字、运行许可、
+observer 运营者许可、root 风险接受和主机配置授权都不可缺失。这是 owner-only 本地签发
+记录的严格检查，**不是新增数字签名协议**；实现不能证明自然语言签字者真实在场，仍须
+独立人工核验。一个实例只允许一次 claim；未 burn 的失败也不自动 re-arm。
+
+exact SHA 由 `-ldflags -X` 注入；必须等于实例的完整小写提交 SHA，并等于非空的 VCS
+revision。`debug.ReadBuildInfo` 缺少 VCS 见证或 `vcs.modified=true` 均拒绝。运行时读取
+`os.Executable` 并计算 SHA-256，与对应角色的 binary digest 精确比对；不接受 caller 提供
+自检结果。当前进程角色由固定入口选择，不由实例或远端选择。依赖/配置摘要绑定构建中的
+依赖列表及两份 config digest；读取本地 config 后还须逐字节核对其角色对应 digest。
+窗口采用 RFC3339 UTC，`signed_at <= not_before <= now < not_after`；profile/resource、
+artifact/manifest、双方 scope、角色、材料原始时效、session liveness 与 cost 全部交叉核对。
+任何失败在 SSH child、UDP socket 或 TUN 创建前统一为 `gate_c_request_invalid`。
+
+### 4.2 不透明 capability 与所有权
+
+- SSH 使用 #161 的 concrete token；`NewFieldAuthority(instance)` 是第三个私有
+  `endpointScope` 实现 `fieldScope` 的唯一签发点，所有 token 字段继续私有，零值无效。
+  Bind、argv 与 spawn 前仍经 `validatedEndpoint()`；每次复核相同 endpoint 和实例窗口。
+  host-key pin 与专用 key 只能使用实例所指的本地受保护文件，0 DNS、0 retry。
+- UDP 使用仅在 `fieldc1c` 可构造的 `AllowedTargetScopeFieldSingleAddress`，factory 只由
+  gatecorchestrator 创建。它不冒充 `IsolatedNATLabFactory`，也不继承测试 namespace 能力。
+  仅 wildcard/ephemeral；先允许四个 observer，独立重算并双边承诺后仅允许本地 plan 的
+  socket-slot/port；认证 winner 后只允许该 fixed endpoint。第二地址、未计划 port、CIDR、
+  DNS、固定 bind、raw factory 注入均拒绝，headroom 不可消费。
+- Linux TUN 构造器接受独立不透明本地 authority。仅消费已绑定的 trusted config；先检查
+  runtime/key/interface/route ownership，再创建一个 non-persistent、IPv4-only TUN 与唯一
+  peer `/32` 路由。只新增而不 replace 已有对象；失败回滚和最终关闭只删除本次拥有对象。
+  WireGuard native bind 保持禁用，业务始终通过 Promote 后的唯一 transport。
+- 外层入口沿用 SIGINT/SIGTERM/SIGHUP 取消语义、原 completion 与 FINISH-before-release；
+  不给 WireGuard、默认 `wink up`、stdio、legacy、scheduler 或 runtime 新增构造权。
+  session 到实例窗口末端即取消，drain 仍只用原 2s；不提高既有 session absolute ceiling。
+- 原始证据在私有目录 O_EXCL 创建；stdout 仅 §6 白名单。网络身份、文件路径、PID、
+  原始错误、attempt/credential/scope 标识不进入公开 summary。未知外部残留保持 unknown。
+
+### 4.3 三项硬化处置与验收
+
+| 项 | 本批处置 | 原因与残余风险 |
+| --- | --- | --- |
+| drop privileges | 未实现；实例必须如实登记 | 仍消费 §18 的 UID 0 单 owner/同进程 handoff。没有已审查的降权后 TUN/ledger 清理模型；所有 parser 漏洞仍可能影响 root。 |
+| seccomp/landlock | 未实现；实例必须如实登记 | 尚无冻结 syscall/filesystem allowlist 与 SSH/WireGuard 平台矩阵；不把固定 argv 当作内核 sandbox，文件和系统调用攻击面仍存在。 |
+| 低权限 parser | 未实现；实例必须如实登记 | 需要另行设计进程边界和资源归属；本批不增加子进程、fd 传递或 IPC，网络解析仍在 UID 0 中。 |
+
+以上不是豁免其它 fail-closed 门。三项未做的原因、风险与两人接受必须在每个实例中出现；
+不同用户或不可信 peer 不在本次 threat model 内。C1c-2a 的交付仍须 docs → RED → 实现 →
+mutation → 验收，普通构建的显式非空 nm 符号集零命中、field 构建正向命中、严格解析与
+权限旁路变异、race×20、原全仓回归，以及 required TEST-NET netns predictive/asymmetric
+完整实例、kill switch 与零残留证据。当前文本冻结**不预填任何实现或测试通过结果**。
+
 ## 5. M/E 现场记录字段（本提案固定）
 
 每个实际命中的 tuple 单独记录，记录名称与含义如下；原始 tuple 仅在私有文件中关联。
