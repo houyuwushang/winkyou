@@ -118,6 +118,22 @@ CI 实际首跑用时与结果另列，代理测量不得标作 CI 已通过。
 
 ## 5. 交付边界
 
+### 5.1 首轮隔离 CI 的 RED（2026-09-22）
+
+提交 `496ec4a` 的 push run `35622299123` 与 PR run `35622347468` 均在真实 field proof 的
+predictive 场景失败（总测试均 57.28s）：两端 `wireguard_binding_failed`，未达到 data-plane ready。
+此前该 job 的 Linux vet、专用单元 race×20、架构/符号门及 exact binary 构建均已通过。
+不能把这些前置成功写成端到端成功；asymmetric 未执行，完整残留见证也尚未成立。
+
+原日志只输出终局 stage，掩盖了失败前的阶段。下一诊断提交仅在测试失败报告中输出已有证据的
+最后非 terminal 阶段、接口/tunnel 关闭布尔值、WireGuard readiness/消息计数与 FINISH 布尔值。
+不增加产品 hook、不打印原始证据/身份/地址、不改失败条件或时限；不是同一代码 rerun。
+根因目前未定位，不猜测，也不把本轮失败归入旧 flake。
+
+两份首次完整下载日志仅留仓库外，SHA-256（push / PR）分别为
+`9c0efb7af8ec2d7c3ec98fb6732c56829c2876f06f1943b2b9c838a7544576bc` /
+`4af58bbb91e827746eb374e53feeb2bb83732441eb94a3dc93b7fdaa547c21ee`。
+
 只交 C1c-2a Draft PR，等待独立复审、不合并。C1c-2b 本轮未实施，C1c-3/C2 未授权。
 未连接现场地址、未创建云资源、未部署 server、未改宿主网络/防火墙/服务/计划任务。
 安全任务保持 Disabled；仅既有 loopback 测试与 required TEST-NET netns 可以产生测试报文。

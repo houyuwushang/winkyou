@@ -91,7 +91,10 @@ func testFieldC1cProfile(t *testing.T, profile gateC1bProfile, binary string) {
 			if !time.Now().Before(deadline) {
 				for index, cfg := range configs {
 					snapshot := readFieldC1cTerminal(cfg.Evidence)
-					t.Logf("C1C_WAIT side=%d class=%s stage=%s", index, snapshot.Class, fieldC1cLastStage(cfg.Evidence))
+					witness := snapshot.Result.Witness
+					transport := witness.Handoff.Transport
+					t.Logf("C1C_WAIT side=%d class=%s last_work_stage=%s interface_closed=%t tunnel_stopped=%t consumer_ready=%t readiness_out=%d readiness_in=%d wg_out=%d wg_in=%d finish=%t", index, snapshot.Class, fieldC1cLastStage(cfg.Evidence),
+						witness.InterfaceClosed, witness.TunnelStopped, transport.ConsumerReady, transport.ReadinessWrites, transport.ReadinessReads, len(transport.Outbound), len(transport.Inbound), witness.Handoff.FinishRecorded)
 				}
 				t.Fatal("C1c endpoint did not reach data-plane ready")
 			}
@@ -286,7 +289,7 @@ func fieldC1cLastStage(path string) string {
 		var row struct {
 			Stage string `json:"stage"`
 		}
-		if json.Unmarshal(data, &row) == nil && row.Stage != "" {
+		if json.Unmarshal(data, &row) == nil && row.Stage != "" && row.Stage != gatecorchestrator.StageTerminal {
 			stage = row.Stage
 		}
 	})
