@@ -118,12 +118,19 @@ func NewFieldInterface(ctx context.Context, authority FieldInterfaceAuthority) (
 	if ctx == nil || ctx.Err() != nil || PreflightFieldInterface(authority) != nil || !authority.state.used.CompareAndSwap(false, true) {
 		return nil, ErrFieldInterface
 	}
-	fd, err := unix.Open("/dev/net/tun", unix.O_RDWR|unix.O_NONBLOCK|unix.O_CLOEXEC, 0)
+	fd, err := unix.Open("/dev/net/tun", unix.O_RDWR|unix.O_CLOEXEC, 0)
 	if err != nil {
 		return nil, ErrFieldInterface
 	}
-	file := os.NewFile(uintptr(fd), "owned-field-tun")
-	fail := func() (*FieldInterface, error) { _ = file.Close(); return nil, ErrFieldInterface }
+	var file *os.File
+	fail := func() (*FieldInterface, error) {
+		if file == nil {
+			_ = unix.Close(fd)
+		} else {
+			_ = file.Close()
+		}
+		return nil, ErrFieldInterface
+	}
 	request, err := unix.NewIfreq(authority.state.name)
 	if err != nil {
 		return fail()
@@ -135,6 +142,13 @@ func NewFieldInterface(ctx context.Context, authority FieldInterfaceAuthority) (
 	if request.Name() != authority.state.name {
 		return fail()
 	}
+	if unix.SetNonblock(fd, true) != nil {
+		return fail()
+	}
+	// TUN must be configured before os.NewFile registers it with netpoll.
+	// An unattached TUN can latch a poll error and kill the first reader.
+	// From this point only os.File owns close, including every failure path.
+	file = os.NewFile(uintptr(fd), "owned-field-tun")
 	indexBytes, err := os.ReadFile("/sys/class/net/" + authority.state.name + "/ifindex")
 	if err != nil || len(indexBytes) > 16 {
 		return fail()
