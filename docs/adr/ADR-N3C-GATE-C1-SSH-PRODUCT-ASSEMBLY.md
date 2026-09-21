@@ -307,7 +307,8 @@ socket、不取得 active governor、不 burn credential。规则：
 - **C1c exact field build** 才允许从一个私有 authorization instance 构造恰好一个非回环
   endpoint authority；spawn 前 assembly 必须对 authority 再次核验 endpoint、地址族与端口，
   第二 endpoint、attempt 中地址变化、raw config/argv 直达 `exec.Command` 全部 fail-closed；
-- authority 是 value-sealed capability（unexported marker method），product caller、request
+- authority 是 opaque concrete token（所有字段私有，零值无效；#160 裁决取代原
+  unexported marker interface，见 [封装修复契约](../SSH-AUTHORITY-TOKEN-160.md)），product caller、request
   parser 与 orchestrator 都不能自行合成；local request 的 `ssh.endpoint` 字段只被用来与
   已签发 authority 精确比对，不再直接成为 spawn 参数。
 

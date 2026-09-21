@@ -82,7 +82,7 @@ func natlabProofDependencies(proof NATLabProofOptions) (dependencies, error) {
 		}
 		authority, err := sshassembly.NewNATLabAuthority(proof.Namespace, proof.SSHSide)
 		if err != nil || authority.Endpoint() != endpoint {
-			return nil, ErrPeerUnauthorized
+			return sshassembly.SSHEndpointAuthority{}, ErrPeerUnauthorized
 		}
 		return authority, nil
 	}

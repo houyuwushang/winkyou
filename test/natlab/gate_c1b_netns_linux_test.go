@@ -57,6 +57,23 @@ func TestLinuxGateC1bProductProof(t *testing.T) {
 	}
 	requireGateB3Environment(t)
 	requireGateB3HostConntrackGuard(t)
+	// Keep the concrete authority's external negative contract inside the
+	// existing required entry point, alongside its real namespace success cases.
+	if !t.Run("ssh-authority-unproven-namespace", func(t *testing.T) {
+		rejected := 0
+		for _, namespace := range []string{"", ".."} {
+			for _, side := range []sshassembly.NATLabSide{sshassembly.NATLabLeft, sshassembly.NATLabRight} {
+				authority, err := sshassembly.NewNATLabAuthority(namespace, side)
+				if err != sshassembly.ErrAuthorityInvalid || !authority.IsZero() {
+					t.Fatal("unproven namespace returned SSH authority")
+				}
+				rejected++
+			}
+		}
+		t.Logf("SSH_AUTHORITY_UNPROVEN_NAMESPACE rejected=%d", rejected)
+	}) {
+		t.FailNow()
+	}
 	for _, path := range []string{"/usr/bin/ssh", gateC1bSSHDPath(t), "/usr/libexec"} {
 		if _, err := os.Stat(path); err != nil {
 			t.Fatal("required isolated SSH tools or privilege-separation directory are unavailable")
