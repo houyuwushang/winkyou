@@ -25,6 +25,16 @@ import (
 
 const fieldC1cHostEnv = "WINKYOU_C1C_HOST_CONFIG"
 
+// The field image and its host are separate race binaries. The old C1b
+// helper ran the product in-process; its 3s result wait excludes one exit.
+// Frozen CLOSE + drain + both Go race exits, with 25% scheduling margin.
+const (
+	fieldC1cCloseAllowance    = time.Second
+	fieldC1cRaceExitAllowance = 2 * time.Second
+	fieldC1cStopBase          = fieldC1cCloseAllowance + gatecorchestrator.SessionDrainTimeout + fieldC1cRaceExitAllowance
+	fieldC1cStopResultLimit   = (fieldC1cStopBase*5/4 + time.Second - 1) / time.Second * time.Second
+)
+
 func fieldC1cRepositoryRoot(t *testing.T) string {
 	t.Helper()
 	_, filename, _, ok := runtime.Caller(0)
@@ -118,10 +128,13 @@ func testFieldC1cProfile(t *testing.T, profile gateC1bProfile, binary string) {
 	if _, err := runNamespaced(topology.clientA, "ping", nil, "-n", "-c", "1", "-W", "2", "192.0.2.101"); err != nil {
 		t.Fatal("C1c kernel data-plane packet failed")
 	}
+	t.Logf("C1C_READY profile=%s endpoints=2 kernel_echo=1", profile.name)
+	stopStarted := time.Now()
 	if os.WriteFile(configs[0].Host.StopFile, []byte("owned-sigint\n"), 0o600) != nil {
 		t.Fatal("C1c kill-switch request failed")
 	}
-	client.wait(t)
+	waitFieldC1cEndpoint(t, client, configs)
+	t.Logf("C1C_STOP result_wait_ns=%d limit_ns=%d", time.Since(stopStarted).Nanoseconds(), fieldC1cStopResultLimit.Nanoseconds())
 	var terminals [2]fieldC1cTerminal
 	for side, cfg := range configs {
 		deadline := time.Now().Add(5 * time.Second)
@@ -160,6 +173,25 @@ func testFieldC1cProfile(t *testing.T, profile gateC1bProfile, binary string) {
 	}
 	assertGateB2NoResidue(t, topology, observer, left, right, filepath.Join(configs[0].Host.MachineBase, "winkyou-safety-v2"), filepath.Join(configs[1].Host.MachineBase, "winkyou-safety-v2"))
 	t.Logf("C1C_PROOF profile=%s exact_binary=true kill_switch=true kernel_business=true residue=0", profile.name)
+}
+
+func waitFieldC1cEndpoint(t *testing.T, process *gateC1bHostProcess, configs [2]fieldC1cHostConfig) {
+	t.Helper()
+	select {
+	case <-process.done:
+	case <-time.After(fieldC1cStopResultLimit):
+		for side, config := range configs {
+			terminal := readFieldC1cTerminal(config.Evidence)
+			t.Logf("C1C_EXIT side=%d class=%s stage=%s ready=%t finish=%t interface_closed=%t", side,
+				terminal.Class, fieldC1cLastStage(config.Evidence), terminal.Result.DataPlaneReady, terminal.Result.FinishRecorded, terminal.Interface.Closed)
+		}
+		t.Fatal("C1c owned endpoint result deadline exceeded")
+	}
+	process.mu.Lock()
+	defer process.mu.Unlock()
+	if process.waitErr != nil {
+		t.Fatal("C1c owned endpoint exited unsuccessfully")
+	}
 }
 
 func startFieldC1cHost(t *testing.T, cfg fieldC1cHostConfig) *gateC1bHostProcess {
