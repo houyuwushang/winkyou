@@ -39,3 +39,38 @@ func TestFieldC1cRequiredCIBudgetAndAuthority(t *testing.T) {
 		}
 	}
 }
+
+func TestFieldC1cExitWaitOwnsBothRaceProcesses(t *testing.T) {
+	const closeWindow = time.Second
+	const drain = 2 * time.Second
+	const twoRaceExits = 2 * time.Second
+	limit := ((closeWindow+drain+twoRaceExits)*5/4 + time.Second - 1) / time.Second * time.Second
+	if limit != 7*time.Second {
+		t.Fatal("field exit wait derivation changed")
+	}
+	read := func(relative string) string {
+		data, err := os.ReadFile(filepath.Join(repositoryRoot(t), filepath.FromSlash(relative)))
+		if err != nil {
+			t.Fatal("field exit contract source unavailable")
+		}
+		return strings.Join(strings.Fields(string(data)), " ")
+	}
+	if !strings.Contains(read("internal/v2/gatecorchestrator/liveness_clock.go"), "livenessWriteWindow = time.Second") ||
+		!strings.Contains(read("internal/v2/gatecorchestrator/types.go"), "SessionDrainTimeout = 2 * time.Second") {
+		t.Fatal("frozen field exit budget source changed")
+	}
+	harness := read("test/natlab/field_c1c_netns_linux_test.go")
+	for _, required := range []string{
+		"fieldC1cCloseAllowance = time.Second", "fieldC1cRaceExitAllowance = 2 * time.Second",
+		"fieldC1cStopBase = fieldC1cCloseAllowance + gatecorchestrator.SessionDrainTimeout + fieldC1cRaceExitAllowance",
+		"fieldC1cStopResultLimit = (fieldC1cStopBase*5/4 + time.Second - 1) / time.Second * time.Second",
+		"case <-time.After(fieldC1cStopResultLimit):", "waitFieldC1cEndpoint(t, client, configs)",
+	} {
+		if !strings.Contains(harness, required) {
+			t.Fatalf("missing field exit contract %s", required)
+		}
+	}
+	if strings.Contains(harness, "client.wait(t)") {
+		t.Fatal("field reused single-process C1b wait")
+	}
+}
