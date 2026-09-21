@@ -118,6 +118,20 @@ CI 实际首跑用时与结果另列，代理测量不得标作 CI 已通过。
 
 ## 5. 交付边界
 
+### 5.0 TUN 初始化顺序的源码缺陷
+
+`6d06933` 的隔离见证进一步确认：两端 Start 成功、AddPeer 已调用但失败，TUN reader 在 close 前失败；
+handoff 到 terminal 分别约 11ms / 12ms，非时限耗尽。新 field 实现把 `os.NewFile` 放在
+`TUNSETIFF` 前，过早把尚未配置的 TUN fd 交给 Go netpoll。
+[WireGuard 上游实现](https://github.com/WireGuard/wireguard-go/blob/master/tun/tun_linux.go) 明确把
+open、ioctl、nonblock 全部放在 `os.NewFile` 前；[Go #30426](https://github.com/golang/go/issues/30426)
+记录了 TUN 与 netpoll 的初始化问题。本仓库使用的依赖源码具有同一顺序要求。
+
+修复限定在新增 field TUN：完成 exclusive ioctl、置 nonblock 后才创建 `os.File`；此前失败只关闭原始
+fd，此后由 `os.File` 独占关闭。增加 AST 顺序红回归与提前 wrapping 的变异自检；不改 read 重试、
+任何预算、协议、原有 TUN 或 Gate B/C 完成阶段。是否闭合 #164 仍须修后真实 netns 原场景证明，
+不能仅凭源码比对或静态测试宣布运行时根因闭合。
+
 ### 5.1 首轮隔离 CI 的 RED（2026-09-22）
 
 提交 `496ec4a` 的 push run `35622299123` 与 PR run `35622347468` 均在真实 field proof 的
