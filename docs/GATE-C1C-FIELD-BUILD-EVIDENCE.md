@@ -93,9 +93,33 @@ exec、真实 SSH child、governed UDP、Promote、真实 WireGuard 和 owned TU
 
 | 场景 | 必过见证 | 当前状态 |
 | --- | --- | --- |
-| predictive APDM × APDM | 真实双端字段校验、密文打洞、TUN kernel ICMP 往返、单次 SIGINT 与全部 owned drain | 待 CI 首跑 |
-| asymmetric initiator mapping-set | 同一完整实例链；原预算与 plan 不变 | 待 CI 首跑 |
-| 两场景公共残留门 | packet 计费与进程外计数相等；接口/地址/路由、socket、进程、conntrack、governor lock 归零 | 待 CI 首跑 |
+| predictive APDM × APDM | 真实双端字段校验、密文打洞、TUN kernel ICMP 往返、单次 SIGINT 与全部 owned drain | `04944a4` push / PR 首跑均 PASS |
+| asymmetric initiator mapping-set | 同一完整实例链；原预算与 plan 不变 | `04944a4` push / PR 首跑均 PASS |
+| 两场景公共残留门 | packet 计费与进程外计数相等；接口/地址/路由、socket、进程、conntrack、governor lock 归零 | 两份 job 均 PASS；conntrack 为 owned namespace 显式清理后归零，不声称自然过期 |
+
+### 4.1 修后实际 OS 结果（2026-09-22）
+
+实测提交 `04944a43080bfc9a7b7bb38fb822225af49d4a30`，两份新提交首跑、均非 rerun：
+[PR job](https://github.com/houyuwushang/winkyou/actions/runs/35627752122/job/106426172016)
+与 [push job](https://github.com/houyuwushang/winkyou/actions/runs/35627746948/job/106426156293)。
+矩阵测试总用时分别 27.71s / 27.65s；此前各次 RED 仍单列于 §5，不被本次 PASS 覆盖。
+
+| 场景 | evidence I/R | candidate I/R | winner I/R | kernel read/write（每端） | PR 退出等待 ns | push 退出等待 ns |
+| --- | --- | --- | --- | --- | --- | --- |
+| predictive | 13 / 13 | 31 / 32 | 1 / 0 | 2 / 1 | 3032792540 | 3038286802 |
+| asymmetric | 13 / 13 | 64 / 512 | 0 / 1 | 2 / 1 | 3043580764 | 3033991355 |
+
+上述计数是本次实际发射量，不是提高后的上限。两场景均报告 `endpoints=2 kernel_echo=1`；
+外部 UDP 计数与逐端计费量精确相等，随后 packet counters 保持稳定、socket=0、process=0。
+owned conntrack 清理前 predictive=168、asymmetric=1194，清理后均为 0（两份 job 一致）。
+TUN/route 缺席断言、durable journal 完整性、重新取得机器锁以及 namespace/veth 清理门均通过。
+最终两场景均报告 `exact_binary=true kill_switch=true kernel_business=true residue=0`。
+真实退出时间均略高于原测试宿主 3s 等待，支持 §5.1 的夹具修复；产品 drain 预算没有改动。
+
+完整下载日志只留仓库外。SHA-256（PR / push）为
+`60273849d569370594411c30285868746d907b6ec8de68d5942f014f8f52c881` /
+`c8c182d231f9c8996ec465fe78e1667763fcfc8ff71b4992160db16090888fa6`。
+这是 required field job 的通过，不代表整套 CI 已完成，也不满足仍 RED 的本地 architecture×20（#162）。
 
 所有地址来自仓库已冻结 TEST-NET topology；配置、密钥、实例与原始 evidence 只在测试私有
 临时目录。job 只发布固定 stage/class、计数与布尔见证，不上传这些文件。REQUIRED 开关缺
@@ -118,7 +142,7 @@ CI 实际首跑用时与结果另列，代理测量不得标作 CI 已通过。
 
 ## 5. 交付边界
 
-### 5.2 新 field 宿主的退出等待
+### 5.1 新 field 宿主的退出等待
 
 `fc6af31` 的 push run `35625875888` 与 PR run `35625884449` 已越过原绑定失败：predictive 两端
 达到 data-plane ready，真实 kernel ICMP 成功；随后在复用的 C1b 宿主 3s 等待处 RED（push 8.69s）。
@@ -130,7 +154,7 @@ CI 实际首跑用时与结果另列，代理测量不得标作 CI 已通过。
 测试锁定三个来源和公式，并记录 SIGINT 请求到宿主退出的实际纳秒数。原 C1b helper 的 3s、产品排水
 时限及 liveness 参数全部不改。此测试等待推导仍不代替终局与各层零残留实证。
 
-### 5.0 TUN 初始化顺序的源码缺陷
+### 5.2 TUN 初始化顺序的源码缺陷
 
 `6d06933` 的隔离见证进一步确认：两端 Start 成功、AddPeer 已调用但失败，TUN reader 在 close 前失败；
 handoff 到 terminal 分别约 11ms / 12ms，非时限耗尽。新 field 实现把 `os.NewFile` 放在
@@ -141,10 +165,10 @@ open、ioctl、nonblock 全部放在 `os.NewFile` 前；[Go #30426](https://gith
 
 修复限定在新增 field TUN：完成 exclusive ioctl、置 nonblock 后才创建 `os.File`；此前失败只关闭原始
 fd，此后由 `os.File` 独占关闭。增加 AST 顺序红回归与提前 wrapping 的变异自检；不改 read 重试、
-任何预算、协议、原有 TUN 或 Gate B/C 完成阶段。是否闭合 #164 仍须修后真实 netns 原场景证明，
-不能仅凭源码比对或静态测试宣布运行时根因闭合。
+任何预算、协议、原有 TUN 或 Gate B/C 完成阶段。修后真实 netns 两场景结果见 §4.1；
+#164 保留供独立评审，不仅凭源码比对或静态测试关闭问题。
 
-### 5.1 首轮隔离 CI 的 RED（2026-09-22）
+### 5.3 首轮隔离 CI 的 RED（2026-09-22）
 
 提交 `496ec4a` 的 push run `35622299123` 与 PR run `35622347468` 均在真实 field proof 的
 predictive 场景失败（总测试均 57.28s）：两端 `wireguard_binding_failed`，未达到 data-plane ready。
@@ -154,7 +178,7 @@ predictive 场景失败（总测试均 57.28s）：两端 `wireguard_binding_fai
 原日志只输出终局 stage，掩盖了失败前的阶段。下一诊断提交仅在测试失败报告中输出已有证据的
 最后非 terminal 阶段、接口/tunnel 关闭布尔值、WireGuard readiness/消息计数与 FINISH 布尔值。
 不增加产品 hook、不打印原始证据/身份/地址、不改失败条件或时限；不是同一代码 rerun。
-根因目前未定位，不猜测，也不把本轮失败归入旧 flake。
+在该阶段根因尚未定位，未把失败归入旧 flake；后续定位与修复单列于 §5.2。
 
 诊断提交 `038d1e5` 的 push run `35623758358` 再现同一失败（57.17s）：两端接口均已关闭、
 tunnel 均已停止，consumer-ready 为 false，readiness 与 WireGuard 收发计数全为零，FINISH 为 true。
