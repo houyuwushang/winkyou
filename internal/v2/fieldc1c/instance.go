@@ -96,7 +96,7 @@ type WitnessPlan struct {
 	Conntrack             string `json:"conntrack"`
 	Child                 string `json:"child"`
 	Ledger                string `json:"ledger"`
-	TransportLease        string `json:"transport_lease"`
+	TransportLeaseRecord  string `json:"transport_lease"`
 	WireGuard             string `json:"wireguard"`
 	InterfaceRouteAddress string `json:"interface_route_address"`
 }

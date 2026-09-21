@@ -27,6 +27,67 @@ var fieldC1cImportFiles = map[string]bool{
 	"cmd/wink/cmd/gate_c1c_fieldc1c.go":                        true,
 }
 
+// The field adapter may reject a non-nil test factory; it cannot construct,
+// assign, return, or otherwise consume that factory's namespace authority.
+func approvedFieldC1cNATLabExclusion(root, relative string, file *ast.File, identifier *ast.Ident) bool {
+	if relative != "internal/v2/directconnect/gateb/deployment_fieldc1c.go" {
+		return false
+	}
+	data, err := os.ReadFile(filepath.Join(root, relative))
+	if err != nil || !strings.HasPrefix(strings.ReplaceAll(string(data), "\r\n", "\n"), "//go:build fieldc1c\n") {
+		return false
+	}
+	allowed := false
+	for _, declaration := range file.Decls {
+		fn, ok := declaration.(*ast.FuncDecl)
+		if !ok || fn.Name.Name != "validate" || fn.Recv == nil || len(fn.Recv.List) != 1 {
+			continue
+		}
+		receiver, ok := fn.Recv.List[0].Type.(*ast.Ident)
+		if !ok || receiver.Name != "deploymentAuthority" {
+			continue
+		}
+		ast.Inspect(fn.Body, func(node ast.Node) bool {
+			expr, ok := node.(*ast.BinaryExpr)
+			if !ok || expr.Op != token.NEQ {
+				return true
+			}
+			left, ok := expr.X.(*ast.SelectorExpr)
+			if !ok || left.Sel != identifier {
+				return true
+			}
+			owner, ownerOK := left.X.(*ast.Ident)
+			right, rightOK := expr.Y.(*ast.Ident)
+			if ownerOK && owner.Name == "config" && rightOK && right.Name == "nil" {
+				allowed = true
+			}
+			return true
+		})
+	}
+	return allowed
+}
+
+func TestFieldC1cNATLabExclusionDoesNotGrantConsumption(t *testing.T) {
+	relative := "internal/v2/directconnect/gateb/deployment_fieldc1c.go"
+	for _, tc := range []struct {
+		body     string
+		rejected bool
+	}{
+		{"if config.HardNATLabFactory != nil { return invalid }; return nil", false},
+		{"if config.HardNATLabFactory == nil { return invalid }; return nil", true},
+		{"return config.HardNATLabFactory", true},
+		{"config.HardNATLabFactory = other; return nil", true},
+		{"if config.HardNATLabFactory != other { return invalid }; return nil", true},
+	} {
+		root := t.TempDir()
+		writeArchitectureMutation(t, root, relative, "//go:build fieldc1c\n\npackage gateb\nfunc (a deploymentAuthority) validate(config Config) error {"+tc.body+"}\n")
+		violations, err := gateB3AuthorityViolations(root)
+		if err != nil || (len(violations) != 0) != tc.rejected {
+			t.Fatalf("natlab exclusion mutation: %v %v", violations, err)
+		}
+	}
+}
+
 func TestFieldC1cCapabilitiesStaySealed(t *testing.T) {
 	violations, err := fieldC1cViolations(repositoryRoot(t))
 	if err != nil || len(violations) > 0 {

@@ -4,11 +4,27 @@ package netif
 
 import (
 	"context"
+	"encoding/binary"
 	"net/netip"
 	"testing"
 	"time"
 	"winkyou/internal/v2/fieldc1c"
 )
+
+func TestFieldKernelDumpCompletionIsAnExplicitSuccessWitness(t *testing.T) {
+	for _, valid := range [][]byte{nil, make([]byte, 4)} {
+		if fieldDumpDone(valid) != nil {
+			t.Fatal("valid dump completion rejected")
+		}
+	}
+	failure := make([]byte, 4)
+	binary.NativeEndian.PutUint32(failure, ^uint32(0))
+	for _, invalid := range [][]byte{{0}, failure, make([]byte, 8)} {
+		if fieldDumpDone(invalid) == nil {
+			t.Fatal("failed or unknown kernel dump accepted as absence")
+		}
+	}
+}
 
 func TestFieldInterfaceNoUnsignedAuthorityOrSetter(t *testing.T) {
 	if _, err := NewFieldInterfaceAuthority(fieldc1c.Instance{}, "synthetic", 1280, netip.MustParseAddr("192.0.2.100"), netip.MustParseAddr("192.0.2.101"), nil); err == nil {

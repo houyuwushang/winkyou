@@ -172,7 +172,7 @@ func fieldC1cFixture(t *testing.T, original [2]gateC1bHostConfig, profile gateC1
 	document["interface_route_address_authority"] = fieldc1c.Interfaces{Initiator: fieldc1c.Interface{Name: "wink-c1b-proof", LocalAddress: "192.0.2.100", PeerAddress: "192.0.2.101", MTU: 1280}, Responder: fieldc1c.Interface{Name: "wink-c1b-proof", LocalAddress: "192.0.2.101", PeerAddress: "192.0.2.100", MTU: 1280}}
 	document["owned_stop_target_identity"] = fieldc1c.StopIdentity{Kind: "owned-foreground-and-child/1", VerificationReference: "synthetic-owned-signal"}
 	document["expected_terminal_and_fault_stage"] = fieldc1c.ExpectedTerminal{Terminal: "success", Stage: "terminal", InjectionReference: "synthetic-owned-signal"}
-	document["witness_plan"] = fieldc1c.WitnessPlan{Packet: "synthetic", Socket: "synthetic", Process: "synthetic", Conntrack: "synthetic", Child: "synthetic", Ledger: "synthetic", TransportLease: "synthetic", WireGuard: "synthetic", InterfaceRouteAddress: "synthetic"}
+	document["witness_plan"] = fieldc1c.WitnessPlan{Packet: "synthetic", Socket: "synthetic", Process: "synthetic", Conntrack: "synthetic", Child: "synthetic", Ledger: "synthetic", TransportLeaseRecord: "synthetic", WireGuard: "synthetic", InterfaceRouteAddress: "synthetic"}
 	payload, err := json.Marshal(document)
 	if err != nil {
 		t.Fatal("C1c synthetic instance encode failed")

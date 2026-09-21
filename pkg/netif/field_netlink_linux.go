@@ -61,7 +61,7 @@ func (control *fieldKernelControl) rejectAddressConflict(local, peer [4]byte) er
 				return ErrFieldInterface
 			}
 			if message.Header.Type == unix.NLMSG_DONE {
-				return nil
+				return fieldDumpDone(message.Data)
 			}
 			if message.Header.Type != unix.RTM_NEWADDR || len(message.Data) < 8 || message.Data[0] != unix.AF_INET {
 				return ErrFieldInterface
@@ -140,7 +140,7 @@ func (control *fieldKernelControl) rejectExistingWireGuard() error {
 				return ErrFieldInterface
 			}
 			if message.Header.Type == unix.NLMSG_DONE {
-				return nil
+				return fieldDumpDone(message.Data)
 			}
 			if message.Header.Type != unix.RTM_NEWLINK || len(message.Data) < 16 {
 				return ErrFieldInterface
@@ -188,6 +188,15 @@ func newFieldKernelControl() (*fieldKernelControl, error) {
 		return nil, ErrFieldInterface
 	}
 	return control, nil
+}
+
+// A multipart dump can end with an error status. DONE is not by itself a
+// successful absence witness; unknown or nonzero payloads fail closed.
+func fieldDumpDone(data []byte) error {
+	if len(data) == 0 || len(data) == 4 && binary.NativeEndian.Uint32(data) == 0 {
+		return nil
+	}
+	return ErrFieldInterface
 }
 
 func (control *fieldKernelControl) close() error { return unix.Close(control.fd) }
