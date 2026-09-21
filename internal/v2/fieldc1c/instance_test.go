@@ -210,3 +210,19 @@ func TestInstanceOpaqueZeroAndBoundary(t *testing.T) {
 		}
 	}
 }
+
+func TestFieldEnvironmentCannotEnableRawTunnelDiagnostics(t *testing.T) {
+	t.Setenv("WINKYOU_TUNNEL_DEBUG", "")
+	t.Setenv("WINKYOU_TRACE_TUN_PACKETS", "")
+	if !fieldEnvironmentSafe() {
+		t.Fatal("silent default rejected")
+	}
+	for _, key := range []string{"WINKYOU_TUNNEL_DEBUG", "WINKYOU_TRACE_TUN_PACKETS"} {
+		t.Run(key, func(t *testing.T) {
+			t.Setenv(key, "1")
+			if fieldEnvironmentSafe() {
+				t.Fatal("raw diagnostic environment accepted")
+			}
+		})
+	}
+}

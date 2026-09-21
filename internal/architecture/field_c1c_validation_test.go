@@ -22,12 +22,16 @@ var fieldValidationGuards = map[string][]string{
 		"doc.DependencyAndConfigurationSHA256 != dependencyDigest(build, doc.Devices)",
 	},
 	"internal/v2/fieldc1c/instance.go": {
+		"!fieldEnvironmentSafe()",
 		"type Instance struct{ value *validated }", "runtime.GOOS != \"linux\"", "safeParents(filepath.Dir(path)) != nil",
 		"validate(payload, role, time.Now().UTC(), build)", "path != expected", "scope != wantScope",
 		"debug.ReadBuildInfo()", "os.Executable()", "sha256.New()", "io.Copy(hash, file)",
 		"now.Before(instance.value.notBefore)", "!now.Before(instance.value.notAfter)",
 		"netip.ParseAddr(value)", "netip.ParseAddrPort(value)", "!address.IsGlobalUnicast()",
 		"decoder.DisallowUnknownFields()", "visitJSON(decoder, 0)",
+	},
+	"internal/v2/directconnect/gateb/deployment_fieldc1c.go": {
+		"factory.BindAttempt(runtime.attempt)", "factory.AuthorizePlan(runtime.localPlan)",
 	},
 	"internal/probeio/field_factory_fieldc1c.go": {
 		"netip.AddrPortFrom(netip.IPv4Unspecified(), 0)", "ctx.Value(deploymentLeaseKey{}) != factory.lease",

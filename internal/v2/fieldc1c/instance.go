@@ -212,7 +212,7 @@ type Instance struct{ value *validated }
 // Load performs only private-file reads. The opaque value cannot be issued
 // from a caller-supplied build witness, clock, raw document, or environment.
 func Load(path, role string) (Instance, error) {
-	if runtime.GOOS != "linux" || (role != "initiator" && role != "responder") {
+	if runtime.GOOS != "linux" || (role != "initiator" && role != "responder") || !fieldEnvironmentSafe() {
 		return Instance{}, ErrInvalid
 	}
 	if safeParents(filepath.Dir(path)) != nil {
@@ -244,6 +244,12 @@ func Load(path, role string) (Instance, error) {
 		return Instance{}, ErrInvalid
 	}
 	return Instance{value: value}, nil
+}
+
+// These legacy debug switches print raw tunnel metadata. The field entry
+// rejects them instead of changing the process environment or the legacy path.
+func fieldEnvironmentSafe() bool {
+	return os.Getenv("WINKYOU_TUNNEL_DEBUG") != "1" && os.Getenv("WINKYOU_TRACE_TUN_PACKETS") != "1"
 }
 
 func InstancePath(id string) (string, error) {
