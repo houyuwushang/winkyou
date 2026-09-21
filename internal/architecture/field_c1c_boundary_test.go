@@ -2,6 +2,7 @@ package architecture
 
 import (
 	"context"
+	"crypto/sha256"
 	"go/ast"
 	"go/parser"
 	"go/token"
@@ -182,6 +183,22 @@ func fieldC1cViolations(root string) ([]string, error) {
 				violations = append(violations, "field kernel fd escaped exact local family")
 			}
 		}
+		if fieldFile {
+			rawCalls := 0
+			ast.Inspect(file, func(node ast.Node) bool {
+				if selector, ok := node.(*ast.SelectorExpr); ok {
+					switch selector.Sel.Name {
+					case "Syscall", "Syscall6", "RawSyscall", "RawSyscall6":
+						rawCalls++
+					}
+				}
+				return true
+			})
+			if rawCalls != 0 && (relative != "pkg/netif/field_tun_linux.go" || rawCalls != 1 ||
+				!strings.Contains(source, "unix.Syscall(unix.SYS_IOCTL, uintptr(fd), uintptr(unix.TUNSETIFF), uintptr(unsafe.Pointer(request)))")) {
+				violations = append(violations, relative+" raw syscall escaped exact TUN ioctl")
+			}
+		}
 		return nil
 	})
 	sort.Strings(violations)
@@ -196,6 +213,7 @@ func TestFieldC1cMutationRejectsTagAndConsumerEscapes(t *testing.T) {
 		"internal/probeio/escape.go":            "package probeio\nimport \"winkyou/internal/v2/hardnatplan\"\nvar _ hardnatplan.Plan\n",
 		"cmd/wink/deployment_fieldc1c_linux.go": "package main\nfunc f(){ _=ExecFieldRoot }\n",
 		"pkg/netif/field_netlink_linux.go":      "//go:build linux && fieldc1c\n\npackage netif\nfunc openFieldKernelControl(){ unix.Socket(unix.AF_INET, unix.SOCK_RAW, 0) }\n",
+		"pkg/netif/field_tun_linux.go":          "//go:build linux && fieldc1c\n\npackage netif\nfunc bypass(){ unix.Syscall(unix.SYS_SOCKET, 0, 0, 0) }\n",
 		"pkg/client/escape.go":                  "package client\nfunc f(){_=NewFieldAuthority;_=NewFieldUDPFactory;_=ConfigureFieldAttempt;_=NewFieldInterface;_=NewFieldWireGuard}\n",
 	}
 	for relative, source := range mutants {
@@ -239,13 +257,15 @@ func TestFieldC1cBinarySymbolIsolation(t *testing.T) {
 				}
 			}
 			build.Env = append(build.Env, "GOOS=linux", "CGO_ENABLED=0")
-			if _, err := build.CombinedOutput(); err != nil {
-				t.Fatal("symbol witness build failed")
+			started := time.Now()
+			if data, err := build.CombinedOutput(); err != nil {
+				fieldSymbolFailure(t, ctx, "build", started, data)
 			}
 			nm := exec.CommandContext(ctx, "go", "tool", "nm", output)
+			started = time.Now()
 			data, err := nm.CombinedOutput()
 			if err != nil {
-				t.Fatal("symbol witness unavailable")
+				fieldSymbolFailure(t, ctx, "nm", started, data)
 			}
 			for _, pattern := range fieldC1cSymbolPatterns {
 				found := regexp.MustCompile(pattern).Match(data)
@@ -255,4 +275,16 @@ func TestFieldC1cBinarySymbolIsolation(t *testing.T) {
 			}
 		})
 	}
+}
+
+func fieldSymbolFailure(t *testing.T, ctx context.Context, phase string, started time.Time, data []byte) {
+	t.Helper()
+	class := "tool_failed"
+	if ctx.Err() != nil {
+		class = "deadline"
+	}
+	// Tool diagnostics may contain local paths. Publish only a stable class,
+	// elapsed time and evidence digest, never the command/output text.
+	digest := sha256.Sum256(data)
+	t.Fatalf("symbol witness phase=%s class=%s wall_ms=%d diagnostic_bytes=%d diagnostic_sha256=%x", phase, class, time.Since(started).Milliseconds(), len(data), digest)
 }
