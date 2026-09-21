@@ -61,7 +61,8 @@ var sshUserPattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9._-]{0,63}$`)
 func BindClientConfig(authority SSHEndpointAuthority, local gatecrequest.SSHConfig) (ClientConfig, error) {
 	endpoint, err := authority.validatedEndpoint()
 	if err != nil || canonicalEndpoint(local.Endpoint) != endpoint ||
-		!sshUserPattern.MatchString(local.User) || !filepath.IsAbs(local.IdentityFile) || !filepath.IsAbs(local.KnownHostsFile) {
+		!sshUserPattern.MatchString(local.User) || !filepath.IsAbs(local.IdentityFile) || !filepath.IsAbs(local.KnownHostsFile) ||
+		validateAuthorityFiles(authority, local.IdentityFile, local.KnownHostsFile) != nil {
 		return ClientConfig{}, ErrProfileInvalid
 	}
 	if err := validatePrivateClientFiles(local.IdentityFile, local.KnownHostsFile); err != nil {
@@ -137,7 +138,8 @@ func fixedEnvironment(platform Platform) ([]string, error) {
 func buildArguments(config ClientConfig) ([]string, error) {
 	endpoint, err := config.authority.validatedEndpoint()
 	if err != nil || config.endpoint != endpoint ||
-		canonicalEndpoint(config.endpoint) != config.endpoint || !sshUserPattern.MatchString(config.user) {
+		canonicalEndpoint(config.endpoint) != config.endpoint || !sshUserPattern.MatchString(config.user) ||
+		validateAuthorityFiles(config.authority, config.identityFile, config.knownHostsFile) != nil {
 		return nil, ErrProfileInvalid
 	}
 	options := []string{
