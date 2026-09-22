@@ -6,6 +6,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"go/ast"
+	"go/parser"
+	"go/token"
+	"os"
+	"strings"
 	"testing"
 )
 
@@ -111,4 +116,112 @@ func TestTerminalErrorClassMappingUnchanged(t *testing.T) {
 		errorClass(errors.Join(ErrOwnership, ErrDrain)) != "c1c_router_drain_failed" {
 		t.Fatal("existing error precedence or fallback changed")
 	}
+}
+
+func TestTerminalGuardianSingleResolverContract(t *testing.T) {
+	source, err := os.ReadFile("command_linux.go")
+	if err != nil {
+		t.Fatal("guardian source unavailable")
+	}
+	if violations := terminalGuardianViolations(string(source)); len(violations) != 0 {
+		t.Fatalf("terminal guardian contract: %v", violations)
+	}
+	mutants := []struct{ name, old, replacement string }{
+		{"missing_resolver", "resolveTerminalClass(in)", "otherTerminalClass(in)"},
+		{"second_resolver", "resolveTerminalClass(in)", "resolveTerminalClass(in)\n\t_ = resolveTerminalClass(in)"},
+		{"io_literal", "summary.Class = r.TerminalClass", `summary.Class = "c1c_router_io_failed"`},
+		{"drain_literal", "summary.Class = r.TerminalClass", `summary.Class = "c1c_router_drain_failed"`},
+		{"no_private_resolution", `"terminal-resolution.json"`, `"other-result.json"`},
+		{"write_failure_not_io", "// failure, irrespective of the private writer's underlying error class.\n\t\tsummary.Class = errorClass(errIO)", "// failure ignored\n\t\tsummary.Class = r.TerminalClass"},
+	}
+	normalized := strings.ReplaceAll(string(source), "\r\n", "\n")
+	for _, mutant := range mutants {
+		t.Run(mutant.name, func(t *testing.T) {
+			changed := strings.Replace(normalized, mutant.old, mutant.replacement, 1)
+			if changed == normalized {
+				t.Fatal("terminal mutation did not change source")
+			}
+			if violations := terminalGuardianViolations(changed); len(violations) == 0 {
+				t.Fatal("terminal mutation escaped contract")
+			}
+		})
+	}
+}
+
+func terminalGuardianViolations(source string) []string {
+	var violations []string
+	if strings.Count(source, "resolveTerminalClass(") != 1 {
+		violations = append(violations, "resolver occurrence count")
+	}
+	for _, forbidden := range []string{`"c1c_router_io_failed"`, `"c1c_router_drain_failed"`} {
+		if strings.Contains(source, forbidden) {
+			violations = append(violations, "inline terminal class")
+		}
+	}
+	set := token.NewFileSet()
+	file, err := parser.ParseFile(set, "guardian.go", source, 0)
+	if err != nil {
+		return append(violations, "invalid guardian source")
+	}
+	resolvers, writes, writeFailures := 0, 0, 0
+	ast.Inspect(file, func(node ast.Node) bool {
+		if call, ok := node.(*ast.CallExpr); ok {
+			if name, ok := call.Fun.(*ast.Ident); ok && name.Name == "resolveTerminalClass" {
+				resolvers++
+			}
+			if terminalResolutionWrite(call) {
+				writes++
+			}
+		}
+		if statement, ok := node.(*ast.IfStmt); ok {
+			assignment, ok := statement.Init.(*ast.AssignStmt)
+			if !ok || len(assignment.Rhs) != 1 {
+				return true
+			}
+			call, ok := assignment.Rhs[0].(*ast.CallExpr)
+			if !ok || !terminalResolutionWrite(call) {
+				return true
+			}
+			condition, ok := statement.Cond.(*ast.BinaryExpr)
+			if ok && condition.Op == token.NEQ && terminalIdentifier(condition.X, "e") && terminalIdentifier(condition.Y, "nil") &&
+				terminalWriteFailureBody(statement.Body) && statement.Else == nil {
+				writeFailures++
+			}
+		}
+		return true
+	})
+	if resolvers != 1 || writes != 1 || writeFailures != 1 {
+		violations = append(violations, "single resolver/private write/rule 7")
+	}
+	return violations
+}
+
+func terminalIdentifier(expr ast.Expr, name string) bool {
+	id, ok := expr.(*ast.Ident)
+	return ok && id.Name == name
+}
+
+func terminalWriteFailureBody(body *ast.BlockStmt) bool {
+	if len(body.List) != 1 {
+		return false
+	}
+	assignment, ok := body.List[0].(*ast.AssignStmt)
+	if !ok || assignment.Tok != token.ASSIGN || len(assignment.Lhs) != 1 || len(assignment.Rhs) != 1 {
+		return false
+	}
+	left, ok := assignment.Lhs[0].(*ast.SelectorExpr)
+	if !ok || !terminalIdentifier(left.X, "summary") || left.Sel.Name != "Class" {
+		return false
+	}
+	right, ok := assignment.Rhs[0].(*ast.CallExpr)
+	return ok && terminalIdentifier(right.Fun, "errorClass") && len(right.Args) == 1 && terminalIdentifier(right.Args[0], "errIO")
+}
+
+func terminalResolutionWrite(call *ast.CallExpr) bool {
+	name, ok := call.Fun.(*ast.Ident)
+	if !ok || name.Name != "writePrivateJSON" || len(call.Args) != 3 {
+		return false
+	}
+	literal, ok := call.Args[1].(*ast.BasicLit)
+	return ok && literal.Value == `"terminal-resolution.json"`
 }
