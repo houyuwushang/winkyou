@@ -41,20 +41,30 @@ func TestLinuxC1cRouterFullInstances(t *testing.T) {
 	if !filepath.IsAbs(fieldBinary) || !filepath.IsAbs(routerBinary) {
 		t.Fatal("router proof images unavailable")
 	}
+	seenInstances := make(map[string]bool)
 	for sample := 1; sample <= 3; sample++ {
-		if !t.Run(fmt.Sprintf("fresh-%d", sample), func(t *testing.T) { testC1cRouterFullInstance(t, fieldBinary, routerBinary) }) {
+		if !t.Run(fmt.Sprintf("fresh-%d", sample), func(t *testing.T) { testC1cRouterFullInstance(t, fieldBinary, routerBinary, seenInstances) }) {
 			t.FailNow()
 		}
 	}
 }
 
-func testC1cRouterFullInstance(t *testing.T, fieldBinary, routerBinary string) {
+func testC1cRouterFullInstance(t *testing.T, fieldBinary, routerBinary string, seenInstances map[string]bool) {
 	armGateB3KernelReleaseMargin(t)
 	topology := c1cRouterAnchors(t)
 	t.Cleanup(func() { cleanupGateC1bEndpointProcesses(t, topology) })
 	profile := gateC1bProfiles[0]
+	// The fixture's label seeds its synthetic credential/attempt/channel IDs.
+	// Keep the frozen predictive profile and cost but allocate a distinct set
+	// for each fresh namespace; no ledger reset or artifact reuse proves a run.
+	profile.name += "-router-" + topology.clientA
 	configs := fieldC1cFixture(t, gateC1bFixture(t, topology, c1cRouterObserverTopology(), profile, false), profile, fieldBinary)
 	router := c1cRouterFixture(t, topology, configs, routerBinary)
+	instance := filepath.Base(router.Instance)
+	if seenInstances[instance] {
+		t.Fatal("router fresh proof reused an authorization instance")
+	}
+	seenInstances[instance] = true
 	routerDone := startC1cRouterHost(t, router)
 	c1cRouterWaitFile(t, filepath.Join(router.Evidence, "ready.json"), 20*time.Second, routerDone)
 	server := startFieldC1cHost(t, configs[1])

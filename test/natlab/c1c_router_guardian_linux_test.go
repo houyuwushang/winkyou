@@ -42,6 +42,7 @@ func TestLinuxC1cRouterGuardianCrash(t *testing.T) {
 	})
 	topology := c1cRouterAnchors(t)
 	profile := gateC1bProfiles[0]
+	profile.name += "-router-guardian-" + topology.clientA
 	configs := fieldC1cFixture(t, gateC1bFixture(t, topology, c1cRouterObserverTopology(), profile, false), profile, os.Getenv("WINKYOU_FIELD_C1C_BINARY"))
 	router := c1cRouterFixtureMode(t, topology, configs, os.Getenv("WINKYOU_C1C_ROUTER_BINARY"), true)
 	done := startC1cRouterHost(t, router)
