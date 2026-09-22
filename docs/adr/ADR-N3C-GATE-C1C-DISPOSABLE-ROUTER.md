@@ -300,6 +300,33 @@ io_failed、teardown success、六项残留均零。原始 RED 保留，后者�
 cleanup 覆盖 worker 失败的结果，不把这一推断冒充原始故障逐项定因；修后同一矩阵须
 严格零残留且不得 rerun 求绿。本机缺少 Linux，要求的本地两项各五次仍未执行。
 
+针对 [#171](https://github.com/houyuwushang/winkyou/issues/171) 与
+[见证 job 106771779879](https://github.com/houyuwushang/winkyou/actions/runs/35735562171/job/106771779879)
+的 run io_failed、teardown success、六项残留为零记录，2026-09-23 冻结以下 terminal
+优先级：class 说明实例未成功的权威原因，六项计数说明最终资源状态；兜底 cleanup 成功
+不能抹掉 worker 的失败。`reported` 须为存在且通过 `Summary.Encode()` 校验的 worker
+报告；`clean` 取子进程退出时 journal 值（不能用兜底后值），`childErr` 表示 Wait 非 nil，
+`residueZero` 表示最终六项均非 nil 且为零；平稳类为 `success/cancelled/expired`。
+
+| 行 | 条件（1–5 按优先级首次命中，6 为收尾） | terminal class |
+| --- | --- | --- |
+| 1 | backstop 为 failed(c) | c；guardian 的失败不被残留规则降级。 |
+| 2 | 否则没有合法 worker 报告 | `c1c_router_io_failed`。 |
+| 3 | 否则 worker 为平稳类且未 clean 或 childErr | `c1c_router_io_failed`，自述平稳与 journal/退出码不一致。 |
+| 4 | 否则 worker 为平稳类 | 保留 worker class。 |
+| 5 | 否则 worker 为失败类 | 保留 worker class，不论兜底是否发生或成功。 |
+| 6 | 收尾 class 为平稳类且非 residueZero | `c1c_router_drain_failed`；不覆写任何失败类。 |
+| 7 | 私有 terminal resolution 写入失败 | `c1c_router_io_failed`，这是 guardian 新发生的 I/O 故障。 |
+
+guardian 在应用最终计数后只调用一次纯 resolver，并用既有 0600、O_EXCL 私有写入器
+一次性记录 `terminal-resolution.json`：`schema=winkyou-router-terminal-resolution/1`、
+`worker_reported`、`worker_class`（未报告为空）、`clean_at_exit`、`child_exit_error`、
+`backstop_cleanup`（not_needed/success/failed）、`backstop_class`（非 failed 为空）、
+`terminal_class`、`rule`（1–6）。第 7 行不能伪造一个已成功持久化的文件。该记录及其路径
+不进入 stdout 或公开 artifact；公开 Summary 结构、class 枚举、授权 `/2`、预算与 workflow
+不变，TMPDIR 观察项不在此次修复范围。原 job 未保留 worker 原始判定，覆盖原因仍是结合
+源码的推断；新记录为后续实例直接区分 worker 决策与 guardian 兜底提供证据，不回填历史。
+
 ## 5. M/E 现场记录字段（本提案固定）
 
 每个实际命中的 tuple 单独记录，记录名称与含义如下；原始 tuple 仅在私有文件中关联。
