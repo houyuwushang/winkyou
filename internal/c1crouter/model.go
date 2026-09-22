@@ -31,6 +31,16 @@ var ErrOwnership = errors.New("c1c_router_ownership_invalid")
 var ErrDrain = errors.New("c1c_router_drain_failed")
 var ErrCommandUnavailable = errors.New("c1c_router_command_unavailable")
 var ErrQuery = errors.New("c1c_router_query_failed")
+var errIO = errors.New("c1c_router_io_failed")
+
+func errorClass(e error) string {
+	for _, candidate := range []error{ErrDrain, ErrOwnership, ErrResource, ErrQuery, ErrCommandUnavailable, ErrInvalid, errIO} {
+		if errors.Is(e, candidate) {
+			return candidate.Error()
+		}
+	}
+	return "c1c_router_io_failed"
+}
 
 // No string originating in a packet, filename, namespace or raw error can be
 // inserted into this public shape. Unknown external witnesses stay null.
