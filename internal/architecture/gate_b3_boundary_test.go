@@ -340,6 +340,19 @@ func gateB3ConntrackAuthorityViolations(root string) ([]string, error) {
 			return err
 		}
 		relative = filepath.ToSlash(relative)
+		// C1c-2b is a separately sealed, explicitly authorized field tool.
+		// This exact tag/file exception grants nothing to Gate B, ordinary
+		// builds or a renamed helper; its permission/consumer gate is separate.
+		if tag, ok := map[string]string{
+			"internal/c1crouter/guardian_linux.go":          "//go:build linux && fieldc1c\n",
+			"test/natlab/c1c_router_guardian_linux_test.go": "//go:build linux && natlab && c1bproof && fieldc1c\n",
+		}[relative]; ok {
+			if strings.HasPrefix(strings.ReplaceAll(string(payload), "\r\n", "\n"), tag) {
+				return nil
+			}
+			violations = append(violations, relative+" lost sealed C1c ceiling constraint")
+			return nil
+		}
 		if _, ok := allowed[relative]; !ok {
 			violations = append(violations, relative+" controls the Gate B3 host conntrack ceiling")
 		}
@@ -368,6 +381,26 @@ func gateB3ConntrackAuthorityViolations(root string) ([]string, error) {
 	}
 	sort.Strings(violations)
 	return violations, nil
+}
+
+func TestGateB3ConntrackC1cExceptionRequiresExactFileAndTag(t *testing.T) {
+	for _, tc := range []struct {
+		path, tag string
+		allowed   bool
+	}{
+		{"internal/c1crouter/guardian_linux.go", "//go:build linux && fieldc1c\n", true},
+		{"internal/c1crouter/guardian_linux.go", "", false},
+		{"internal/c1crouter/escape_linux.go", "//go:build linux && fieldc1c\n", false},
+		{"test/natlab/c1c_router_guardian_linux_test.go", "//go:build linux && natlab && c1bproof && fieldc1c\n", true},
+		{"test/natlab/c1c_router_guardian_linux_test.go", "//go:build linux && fieldc1c\n", false},
+	} {
+		root := t.TempDir()
+		writeArchitectureMutation(t, root, tc.path, tc.tag+"\npackage fixture\nconst ceiling=\"net.netfilter.nf_conntrack_max\"\n")
+		bad, e := gateB3ConntrackAuthorityViolations(root)
+		if e != nil || (len(bad) == 0) != tc.allowed {
+			t.Fatalf("C1c ceiling exception: %v %v", bad, e)
+		}
+	}
 }
 
 func gateB3SelectorCount(filename, selectorName string) (int, error) {
