@@ -205,6 +205,7 @@ type validated struct {
 	device    Device
 	iface     Interface
 	digest    [32]byte
+	router    *RouterConfiguration
 }
 
 type Instance struct{ value *validated }

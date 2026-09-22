@@ -1,0 +1,25 @@
+{
+  "template_schema": "winkyou-c1c-router-field-catalog/1",
+  "extends": "gate-c1c-authorization.template.json",
+  "authority_schema_revision": "winkyou-gate-c1c-authorization/2",
+  "purpose": "空字段目录，不是可执行授权；原模板的 88 项仍全部必填，另加 router 对象。",
+  "router": {
+    "schema": {"type": "string", "fixed": "winkyou-c1c-router/1", "value": null},
+    "machine_scope_reference": {"type": "string", "value": null},
+    "dependency_and_configuration_sha256": {"type": "lowercase-sha256", "value": null},
+    "anchors": {
+      "type": "array[3]",
+      "order": ["initiator", "transit", "responder"],
+      "entry": {"role": "string", "name": "owned-attachment-namespace-name", "inode": "positive-uint64"},
+      "value": null
+    },
+    "domains": {
+      "type": "array[2]",
+      "order": ["initiator", "responder"],
+      "entry": {"role": "string", "mode": "profile-selected-mode", "endpoint_prefix": "canonical-ipv4-prefix", "gateway_prefix": "canonical-ipv4-prefix", "public_prefix": "canonical-ipv4-prefix", "transit_prefix": "canonical-ipv4-prefix"},
+      "value": null
+    },
+    "allow_global_conntrack_ceiling": {"type": "boolean", "description": "明确 false 或明确 true；缺失、null、字符串均拒绝。", "value": null},
+    "disposable_environment_reference": {"type": "string", "value": null}
+  }
+}

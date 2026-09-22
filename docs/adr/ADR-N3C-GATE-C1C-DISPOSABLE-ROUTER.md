@@ -261,6 +261,29 @@ journal 记录先于资源操作，记录身份与完成见证；清理仅匹配
 精确键 GET 与 #129 分类，查询中断/失败不是 absent。stdout 只有 §6 白名单及资源计数，
 未知残留不是零。清理核对表保留第二人签字空栏，程序不能代签。
 
+工具自身的编译期上限（不是端点 budget）：两域合计最多 40,000 个 UDP mapping；每方向
+每域最多 65,536 个已转发 datagram；每个有界队列最多 16,398 项，单 payload 最多
+9,216 bytes；observer 每实例最多接收/回复 64 个报文。socket 额度在 open 前扣除，
+bind 失败不退款、不重试。hard 模型对 observer 与 peer 使用相同的 14-bit permutation
+分配机制：按远端独立计数、空间固定 49152–65535；仅不同远端的 connected UDP socket
+可复用 public port，同一远端内不得重复。这是可重复 NAT 模型，不是新的加密协议，
+不把一个受控模型的成功率冒充真实网络分布。端点的所有冻结常量和协议不变。
+
+`run --instance <PLACEHOLDER>` 的父进程是 guardian；工作进程只接受父进程私有 pipe、
+继承的 ownership lock 和 journal 中精确 PID/start identity。初始 namespace 的 ceiling
+只有明确 true 时才保存、回读、恢复；false 路径不写初始 namespace。guardian 本身被
+不可捕获信号终止时，自动恢复不能得到保证：由独立 `teardown --instance <PLACEHOLDER>`
+按私有 journal 重新取得同一锁恢复；若 ceiling 已被第三方改动则拒绝覆盖并保留证据。
+PID 信号使用 pidfd，不以同名进程或重新出现的数字 PID 作为所有权。
+
+探测/observer 关闭采用原 2s drain 上界；之后只做 owned 资源清理，独立 20s 工具清理
+上界不延长端点 attempt/session 或恢复收发。NAT namespace 的 inode 先持久化，再通过
+O_TMPFILE 预留的 mountpoint 发布；清理须同时核对 instance、inode、socket、process、
+conntrack、nft、veth，不把删除 namespace 名称等同于所有 fd 已消失。普通构建不编译
+router 包/命令，端点也不能 import 此工具。新增
+[空 `/2` router 字段目录](../templates/gate-c1c-router-v2.template.json)只用于填写审查，
+本身不是可运行授权。
+
 ## 5. M/E 现场记录字段（本提案固定）
 
 每个实际命中的 tuple 单独记录，记录名称与含义如下；原始 tuple 仅在私有文件中关联。

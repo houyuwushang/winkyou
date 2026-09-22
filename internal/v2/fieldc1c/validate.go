@@ -22,30 +22,38 @@ var postRunFields = []string{
 	"redacted_summary_review", "authorization_closed_at", "teardown_operator_signature", "teardown_reviewer_signature",
 }
 
-func validate(payload []byte, role string, now time.Time, build buildWitness) (*validated, error) {
+func validateV1(payload []byte, role string, now time.Time, build buildWitness) (*validated, error) {
 	if len(payload) == 0 || len(payload) > MaxInstanceBytes || !utf8.Valid(payload) || now.IsZero() ||
 		(role != "initiator" && role != "responder") {
 		return nil, ErrInvalid
 	}
+	doc, err := decodeDocument(payload)
+	if err != nil || doc.AuthoritySchemaRevision != Schema {
+		return nil, ErrInvalid
+	}
+	return validateCommon(payload, doc, role, now, build, "")
+}
+
+func decodeDocument(payload []byte) (document, error) {
 	var raw map[string]json.RawMessage
 	var doc document
 	if strictJSON(payload, &raw) != nil || strictJSON(payload, &doc) != nil || len(raw) != 88 {
-		return nil, ErrInvalid
+		return document{}, ErrInvalid
 	}
 	typeOf := reflect.TypeOf(doc)
 	if typeOf.NumField() != 88 {
-		return nil, ErrInvalid
+		return document{}, ErrInvalid
 	}
 	for index := 0; index < typeOf.NumField(); index++ {
 		name := typeOf.Field(index).Tag.Get("json")
 		value, present := raw[name]
 		if !present {
-			return nil, ErrInvalid
+			return document{}, ErrInvalid
 		}
 		isNull := bytes.Equal(bytes.TrimSpace(value), []byte("null"))
 		if slices.Contains(postRunFields, name) {
 			if !isNull {
-				return nil, ErrInvalid
+				return document{}, ErrInvalid
 			}
 			continue
 		}
@@ -53,10 +61,16 @@ func validate(payload []byte, role string, now time.Time, build buildWitness) (*
 			continue
 		}
 		if isNull || !filled(reflect.ValueOf(doc).Field(index)) {
-			return nil, ErrInvalid
+			return document{}, ErrInvalid
 		}
 	}
-	if doc.AuthoritySchemaRevision != Schema || doc.Layout != Layout || !attemptID(doc.InstanceID) ||
+	return doc, nil
+}
+
+// Shared semantic checks retain /1's exact endpoint contract. /2 is selected
+// explicitly before entering here; only its router role supplies routerDeps.
+func validateCommon(payload []byte, doc document, role string, now time.Time, build buildWitness, routerDeps string) (*validated, error) {
+	if doc.Layout != Layout || !attemptID(doc.InstanceID) ||
 		doc.Operator == doc.IndependentReviewer || doc.InitiatorRole != "initiator" || doc.ResponderRole != "responder" ||
 		!hexValue(doc.ExactSHA, 20) || doc.ExactSHA != build.sha || doc.ExactSHA != build.revision || build.modified ||
 		doc.Toolchain != build.toolchain || !slices.Equal(doc.BuildTags, []string{"fieldc1c"}) ||
@@ -79,6 +93,9 @@ func validate(payload []byte, role string, now time.Time, build buildWitness) (*
 	}
 	if role == "responder" {
 		binaryHash = doc.ResponderBinarySHA256
+	}
+	if role == "router" {
+		binaryHash = doc.RouterBinarySHA256
 	}
 	if binaryHash != build.binaryHash {
 		return nil, ErrInvalid
@@ -109,7 +126,10 @@ func validate(payload []byte, role string, now time.Time, build buildWitness) (*
 			return nil, ErrInvalid
 		}
 	}
-	if doc.DependencyAndConfigurationSHA256 != dependencyDigest(build, doc.Devices) {
+	if role != "router" && doc.DependencyAndConfigurationSHA256 != dependencyDigest(build, doc.Devices) {
+		return nil, ErrInvalid
+	}
+	if role == "router" && routerDeps != dependencyDigest(build, doc.Devices) {
 		return nil, ErrInvalid
 	}
 	for _, path := range []string{doc.CredentialReference, doc.HostKeyPinReference, doc.SSHIdentityReference} {
