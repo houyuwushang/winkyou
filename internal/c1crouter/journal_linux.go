@@ -92,11 +92,15 @@ func (j *journal) save() error {
 		return errIO
 	}
 	defer clear(b)
-	tmp := filepath.Join(j.dir, "ownership.pending")
-	f, e := os.OpenFile(tmp, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+	// A killed writer may leave an incomplete temporary record. Never parse
+	// it as authority, overwrite it, or let it block the guardian's cleanup:
+	// each update claims a fresh 0600 O_EXCL file. The last durable rename is
+	// the only recovery authority; interrupted bytes remain private evidence.
+	f, e := os.CreateTemp(j.dir, "ownership.pending-")
 	if e != nil {
 		return ErrOwnership
 	}
+	tmp := f.Name()
 	n, e := f.Write(b)
 	syncErr := f.Sync()
 	closeErr := f.Close()

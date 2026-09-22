@@ -11,9 +11,34 @@ import (
 	"testing"
 	"time"
 
+	"golang.org/x/sys/unix"
 	"winkyou/internal/v2/fieldc1c"
 	"winkyou/internal/v2/hardnatplan"
 )
+
+func TestRouterInheritedBlockingPipeHasBoundedAdoption(t *testing.T) {
+	for _, valid := range []bool{true, false} {
+		fds := make([]int, 2)
+		if unix.Pipe2(fds, unix.O_CLOEXEC) != nil {
+			t.Fatal("pipe fixture unavailable")
+		}
+		digest := strings.Repeat("a", 64)
+		token := digest
+		if !valid {
+			token = token[:32]
+		}
+		_, writeErr := unix.Write(fds[1], []byte(token))
+		_ = unix.Close(fds[1])
+		if writeErr != nil {
+			_ = unix.Close(fds[0])
+			t.Fatal("pipe fixture write failed")
+		}
+		err := readAdoptionToken(fds[0], digest)
+		if (err == nil) != valid {
+			t.Fatal("inherited pipe was unpollable or partial adoption accepted")
+		}
+	}
+}
 
 func TestRouterUnknownResidueCannotPass(t *testing.T) {
 	base := Counts{SocketResidue: zero(), ProcessResidue: zero(), ConntrackResidue: zero(), NamespaceResidue: zero(), VethResidue: zero(), NFTResidue: zero()}

@@ -191,26 +191,14 @@ func worker(ctx context.Context, path string) Summary {
 	}
 	// The hidden entry is unusable without both inherited descriptors and
 	// this exact parent/child start identity in the one-shot private journal.
-	control := os.NewFile(3, "owned-control")
 	lock := os.NewFile(4, "owned-lock")
-	if control == nil || lock == nil {
+	if lock == nil {
 		return summary
 	}
-	defer control.Close()
 	defer lock.Close()
-	if control.SetReadDeadline(time.Now().Add(DrainTimeout)) != nil {
+	if readAdoptionToken(3, s.Digest) != nil {
 		return summary
 	}
-	var st unix.Stat_t
-	if unix.Fstat(3, &st) != nil || st.Mode&unix.S_IFMT != unix.S_IFIFO {
-		return summary
-	}
-	token, e := io.ReadAll(io.LimitReader(control, 65))
-	if e != nil || string(token) != s.Digest {
-		clear(token)
-		return summary
-	}
-	clear(token)
 	value, e := readOwnership(s)
 	start, e2 := processStart(os.Getpid())
 	parent, e3 := processStart(os.Getppid())
@@ -229,6 +217,33 @@ func worker(ctx context.Context, path string) Summary {
 		summary.Class = errorClass(e)
 	}
 	return summary
+}
+
+func readAdoptionToken(fd int, digest string) error {
+	var st unix.Stat_t
+	if unix.Fstat(fd, &st) != nil || st.Mode&unix.S_IFMT != unix.S_IFIFO {
+		return ErrOwnership
+	}
+	// ExtraFiles crosses exec as a blocking fd. NewFile only joins the Go
+	// poller for an already nonblocking inherited descriptor; otherwise its
+	// deadline is unsupported and the supposedly bounded adoption cannot run.
+	if unix.SetNonblock(fd, true) != nil {
+		return ErrOwnership
+	}
+	control := os.NewFile(uintptr(fd), "owned-control")
+	if control == nil {
+		return ErrOwnership
+	}
+	defer control.Close()
+	if control.SetReadDeadline(time.Now().Add(DrainTimeout)) != nil {
+		return ErrOwnership
+	}
+	token, e := io.ReadAll(io.LimitReader(control, 65))
+	defer clear(token)
+	if e != nil || len(digest) != 64 || string(token) != digest {
+		return ErrOwnership
+	}
+	return nil
 }
 
 func readPrivateJSON(dir, name string, maximum int) ([]byte, error) {

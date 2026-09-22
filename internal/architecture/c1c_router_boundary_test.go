@@ -194,7 +194,7 @@ func TestC1cRouterAuthorityMutations(t *testing.T) {
 }
 
 func routerCleanupContract(source string) bool {
-	for _, fragment := range []string{"current != t.journal.value.Namespaces[i]", "\"ss\"", "\"conntrack\"", "\"-F\"", "\"-C\"", "\"netns\", \"pids\"", "\"delete\", \"table\", \"ip\", \"wycrouter\"", "unix.Unmount(path, 0)", "os.Remove(path)", "!onlyLoopback(data)", "result == nil"} {
+	for _, fragment := range []string{"current != t.journal.value.Namespaces[i]", "\"link\", \"set\", link.Name, \"down\"", "\"ss\"", "\"conntrack\"", "\"-F\"", "\"-C\"", "\"netns\", \"pids\"", "\"delete\", \"table\", \"ip\", \"wycrouter\"", "unix.Unmount(path, 0)", "os.Remove(path)", "!onlyLoopback(data)", "result == nil"} {
 		if !strings.Contains(source, fragment) {
 			return false
 		}
@@ -210,7 +210,7 @@ func TestC1cRouterCleanupMutationContract(t *testing.T) {
 	if !routerCleanupContract(s) {
 		t.Fatal("router cleanup contract missing")
 	}
-	for _, fragment := range []string{"\"ss\"", "\"-F\"", "\"netns\", \"pids\"", "unix.Unmount(path, 0)", "os.Remove(path)", "!onlyLoopback(data)"} {
+	for _, fragment := range []string{"\"link\", \"set\", link.Name, \"down\"", "\"ss\"", "\"-F\"", "\"netns\", \"pids\"", "unix.Unmount(path, 0)", "os.Remove(path)", "!onlyLoopback(data)"} {
 		if routerCleanupContract(strings.ReplaceAll(s, fragment, "omitted")) {
 			t.Fatalf("cleanup omission escaped: %s", fragment)
 		}

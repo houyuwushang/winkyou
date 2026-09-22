@@ -25,6 +25,7 @@ type c1cRouterHost struct {
 	Host                                                                              gateC1bHostConfig
 	Binary, Instance, MachineIDFile, Evidence, Summary, Inspect, Inspection, Teardown string
 	Owned                                                                             [2]string
+	Anchors                                                                           [3]string
 	GuardianCrash                                                                     bool
 }
 
@@ -162,6 +163,7 @@ func c1cRouterFixtureMode(t *testing.T, topology *n2dTopology, configs [2]fieldC
 	stem := "wycr" + hex.EncodeToString(ownedHash[:6])
 	result := c1cRouterHost{Host: host, Binary: binary, Instance: configs[0].Instance, MachineIDFile: filepath.Join(base, "machine-id"), Evidence: filepath.Join(instances, "evidence", id, "router"), Summary: filepath.Join(base, "router-summary.json"), Inspect: filepath.Join(base, "inspect"), Inspection: filepath.Join(base, "inspection.json"), Teardown: filepath.Join(base, "teardown.json"), Owned: [2]string{stem + "a", stem + "b"}}
 	result.GuardianCrash = guardianCrash
+	result.Anchors = [3]string{topology.clientA, topology.public, topology.clientB}
 	topology.natA, topology.natB = result.Owned[0], result.Owned[1]
 	if pairgen.WritePrivateFileExclusive(result.MachineIDFile, []byte(strings.Repeat("3", 32)+"\n")) != nil {
 		t.Fatal("router machine witness write failed")

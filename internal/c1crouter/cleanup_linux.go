@@ -67,6 +67,27 @@ func (t *topology) cleanup(counts *Counts) error {
 			result = errors.Join(result, ErrOwnership)
 			continue
 		}
+		// Quiesce only owned interfaces before flushing kernel flow state.
+		// Otherwise a late forwarded TCP close could recreate a flow between
+		// the exact namespace flush and the residue readback.
+		if data, err := runCommand(ctx, name, "ip", nil, "-j", "link", "show"); err != nil {
+			result = errors.Join(result, ErrDrain)
+		} else {
+			var links []struct {
+				Name string `json:"ifname"`
+			}
+			if json.Unmarshal(data, &links) != nil {
+				result = errors.Join(result, ErrDrain)
+			} else {
+				for _, link := range links {
+					if link.Name == "lan0" || link.Name == "wan0" {
+						if _, err := runCommand(ctx, name, "ip", nil, "link", "set", link.Name, "down"); err != nil {
+							result = errors.Join(result, ErrDrain)
+						}
+					}
+				}
+			}
+		}
 		// Read the OS before destroying the namespace, rather than treating
 		// disappearance of a name as proof that a referenced namespace died.
 		if data, err := runCommand(ctx, name, "ss", nil, "-H", "-n", "-a", "-u", "-t"); err != nil || strings.TrimSpace(string(data)) != "" {

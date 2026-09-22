@@ -374,7 +374,7 @@ func c1cRouterInspect(t *testing.T, cfg c1cRouterHost, after bool) c1cRouterInsp
 	}
 	result.CountsPresent = !after
 	if after {
-		for _, ns := range []string{cfg.Host.HostNamespace} {
+		for _, ns := range cfg.Anchors {
 			data, e := runNamespaced(ns, "ip", nil, "-j", "link", "show")
 			if e != nil {
 				t.Fatal("router external link read failed")
