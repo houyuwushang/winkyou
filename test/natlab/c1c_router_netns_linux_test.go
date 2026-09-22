@@ -354,6 +354,30 @@ func testC1cRouterFullInstance(t *testing.T, fieldBinary, routerBinary string, s
 	if terminal.Counts.Queries == 0 || terminal.Counts.ObserverReplies == 0 || terminal.Counts.Outbound != inspection.Out[0]+inspection.Out[1] {
 		t.Fatal("router sampling/OS accounting not witnessed")
 	}
+	var resolution struct {
+		Schema         string `json:"schema"`
+		WorkerReported bool   `json:"worker_reported"`
+		WorkerClass    string `json:"worker_class"`
+		CleanAtExit    bool   `json:"clean_at_exit"`
+		ChildExitError bool   `json:"child_exit_error"`
+		Backstop       string `json:"backstop_cleanup"`
+		BackstopClass  string `json:"backstop_class"`
+		TerminalClass  string `json:"terminal_class"`
+		Rule           int    `json:"rule"`
+	}
+	resolutionPath := filepath.Join(router.Evidence, "terminal-resolution.json")
+	c1cRouterRead(t, resolutionPath, &resolution)
+	if stat, err := os.Stat(resolutionPath); err != nil || !stat.Mode().IsRegular() || stat.Mode().Perm() != 0o600 {
+		t.Fatal("router terminal resolution is not a private regular file")
+	}
+	if resolution.Schema != "winkyou-router-terminal-resolution/1" || !resolution.WorkerReported ||
+		resolution.WorkerClass != "cancelled" || !resolution.CleanAtExit || resolution.ChildExitError ||
+		resolution.Backstop != "not_needed" || resolution.BackstopClass != "" ||
+		resolution.TerminalClass != "cancelled" || resolution.Rule != 4 || terminal.Class != resolution.TerminalClass {
+		t.Fatal("router full-instance terminal resolution mismatch")
+	}
+	// Only already-validated fixed labels leave the private evidence boundary.
+	t.Logf("ROUTER_RESOLUTION scenario=full worker_reported=%t worker_class=%s clean_at_exit=%t child_exit_error=%t backstop_cleanup=%s backstop_class=empty terminal_class=%s rule=%d", resolution.WorkerReported, resolution.WorkerClass, resolution.CleanAtExit, resolution.ChildExitError, resolution.Backstop, resolution.TerminalClass, resolution.Rule)
 	c1cRouterRead(t, router.Inspection+".after", &inspection)
 	if inspection.ResidualLinks != 0 || inspection.ResidualNamespaces != 0 {
 		t.Fatal("external router residue")
