@@ -93,3 +93,50 @@ func TestRouterV1RemainsEndpointOnly(t *testing.T) {
 		t.Fatal("v1 granted router authority")
 	}
 }
+
+func TestRouterV2CleanupTokenCannotGrantRun(t *testing.T) {
+	doc, build, now := routerV2Fixture(t)
+	v, e := validate(encodeFixture(t, doc), "router", now, build)
+	if e != nil {
+		t.Fatal(e)
+	}
+	a := RouterAuthority{value: v}
+	if a.Check(now) != nil {
+		t.Fatal("active token rejected")
+	}
+	for _, stamp := range []time.Time{{}, v.notBefore.Add(-time.Nanosecond), v.notAfter} {
+		if !errors.Is(a.Check(stamp), ErrInvalid) {
+			t.Fatal("router window escaped")
+		}
+	}
+	a.cleanupOnly = true
+	if !errors.Is(a.Check(now), ErrInvalid) {
+		t.Fatal("cleanup token activated")
+	}
+	if !errors.Is((RouterAuthority{}).Check(now), ErrInvalid) {
+		t.Fatal("zero router authority activated")
+	}
+}
+
+func TestRouterV2NestedNullOrMissingRejected(t *testing.T) {
+	for _, kind := range []string{"anchors", "domains"} {
+		original, _, _ := routerV2Fixture(t)
+		entries := original["router"].(map[string]any)[kind].([]any)
+		for index, entry := range entries {
+			for member := range entry.(map[string]any) {
+				for _, null := range []bool{false, true} {
+					value, build, now := routerV2Fixture(t)
+					target := value["router"].(map[string]any)[kind].([]any)[index].(map[string]any)
+					if null {
+						target[member] = nil
+					} else {
+						delete(target, member)
+					}
+					if _, e := validate(encodeFixture(t, value), "router", now, build); !errors.Is(e, ErrInvalid) {
+						t.Fatalf("nested required member accepted: %s", member)
+					}
+				}
+			}
+		}
+	}
+}

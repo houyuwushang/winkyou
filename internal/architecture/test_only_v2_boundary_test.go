@@ -1182,6 +1182,7 @@ func approvedLoopbackPrimitiveImporter(importer, imported string) bool {
 
 func approvedHardNATPlannerImporter(importer string) bool {
 	approved := map[string]struct{}{
+		modulePath + "/internal/c1crouter":              {}, // field-only RFC 5780 codec; exact source/symbol gate
 		modulePath + "/internal/probeio":                {}, // field_factory_fieldc1c.go only; separate source gate
 		modulePath + "/internal/v2/hardnatplan":         {},
 		modulePath + "/internal/v2/hardnatbudget":       {},

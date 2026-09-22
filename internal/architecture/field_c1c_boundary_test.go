@@ -26,6 +26,12 @@ var fieldC1cImportFiles = map[string]bool{
 	"internal/v2/gatecorchestrator/field_entry_unsupported.go": true,
 	"pkg/netif/field_authority_fieldc1c.go":                    true,
 	"cmd/wink/cmd/gate_c1c_fieldc1c.go":                        true,
+	"internal/c1crouter/nat_linux.go":                          true,
+	"internal/c1crouter/journal_linux.go":                      true,
+	"internal/c1crouter/topology_linux.go":                     true,
+	"internal/c1crouter/guardian_linux.go":                     true,
+	"internal/c1crouter/runtime_linux.go":                      true,
+	"internal/c1crouter/command_linux.go":                      true,
 }
 
 // The field adapter may reject a non-nil test factory; it cannot construct,
