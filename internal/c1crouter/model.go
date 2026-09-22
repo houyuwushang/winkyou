@@ -69,7 +69,6 @@ func resolveTerminalClass(in terminalInput) terminalResolution {
 	r := terminalResolution{
 		Schema: "winkyou-router-terminal-resolution/1", WorkerReported: in.Reported,
 		CleanAtExit: in.Clean, ChildExitError: in.ChildErr, Backstop: in.Backstop,
-		TerminalClass: in.WorkerClass, Rule: 5,
 	}
 	if in.Reported {
 		r.WorkerClass = in.WorkerClass
@@ -77,32 +76,23 @@ func resolveTerminalClass(in terminalInput) terminalResolution {
 	if in.Backstop == "failed" {
 		r.BackstopClass = errorClass(in.BackstopErr)
 	}
-	if oneOf(r.TerminalClass, "cancelled", "expired", "success") {
-		r.Rule = 4
+	peaceful := oneOf(in.WorkerClass, "success", "cancelled", "expired")
+	// ADR §4.4: successful cleanup never erases an authoritative failure.
+	switch {
+	case in.Backstop == "failed":
+		r.TerminalClass, r.Rule = r.BackstopClass, 1
+	case !in.Reported:
+		r.TerminalClass, r.Rule = errorClass(errIO), 2
+	case peaceful && (!in.Clean || in.ChildErr):
+		r.TerminalClass, r.Rule = errorClass(errIO), 3
+	case peaceful:
+		r.TerminalClass, r.Rule = in.WorkerClass, 4
+	default:
+		r.TerminalClass, r.Rule = in.WorkerClass, 5
 	}
-	// Reproduce the original guardian decision order for the RED commit.
-	if !in.Reported {
-		r.TerminalClass = "c1c_router_io_failed"
-		r.Rule = 2
-	}
-	if !in.Clean {
-		if in.BackstopErr != nil {
-			r.TerminalClass = errorClass(in.BackstopErr)
-			r.Rule = 1
-		} else {
-			r.TerminalClass = "c1c_router_io_failed"
-			if in.Reported {
-				r.Rule = 3
-			}
-		}
-	}
-	if in.ChildErr && oneOf(r.TerminalClass, "cancelled", "expired", "success") {
-		r.TerminalClass = "c1c_router_io_failed"
-		r.Rule = 3
-	}
-	if !in.ResidueZero {
-		r.TerminalClass = "c1c_router_drain_failed"
-		r.Rule = 6
+	// Counts describe final residue; they do not replace an existing cause.
+	if oneOf(r.TerminalClass, "success", "cancelled", "expired") && !in.ResidueZero {
+		r.TerminalClass, r.Rule = errorClass(ErrDrain), 6
 	}
 	return r
 }
