@@ -57,7 +57,9 @@ jobs:
           go build -race -buildvcs=true -tags=fieldc1c -ldflags "-X winkyou/internal/v2/fieldc1c.BuildSHA=${router_sha}" -o "${RUNNER_TEMP}/c1crouter" ./cmd/c1crouter
           go tool nm "${RUNNER_TEMP}/c1crouter" > "${RUNNER_TEMP}/router-symbols"
           grep -q 'winkyou/internal/c1crouter.runGuardian' "${RUNNER_TEMP}/router-symbols"
-          grep -q 'winkyou/internal/v2/fieldc1c.LoadRouter' "${RUNNER_TEMP}/router-symbols"
+          # The exported one-line wrapper may be inlined; the validating
+          # implementation must remain reachable in the optimized field image.
+          grep -q 'winkyou/internal/v2/fieldc1c\.loadRouter' "${RUNNER_TEMP}/router-symbols"
           go test -race -c -tags=natlab,c1bproof,fieldc1c -o "${RUNNER_TEMP}/router-proof.test" ./test/natlab
       - name: Three fresh exact-SHA endpoint plus real router instances
         run: |

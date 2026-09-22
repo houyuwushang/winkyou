@@ -24,7 +24,7 @@ func TestC1cRouterRequiredCIBudget(t *testing.T) {
 		t.Fatal(e)
 	}
 	s := string(b)
-	for _, want := range []string{"timeout-minutes: 15", "WINKYOU_C1C_ROUTER_REQUIRED=1", "-test.timeout=7m", "-test.count=1", "go-version-file: go.mod", "-race -buildvcs=true -tags=fieldc1c", "./cmd/c1crouter", "run_gate_b3_required_linux.sh", "nftables", "WINKYOU_GATE_B3_DISPOSABLE_RUNNER=github-hosted", "-count=20 -failfast", "TestLinuxC1cRouterGuardianCrash", "-test.timeout=1m"} {
+	for _, want := range []string{"timeout-minutes: 15", "WINKYOU_C1C_ROUTER_REQUIRED=1", "-test.timeout=7m", "-test.count=1", "go-version-file: go.mod", "-race -buildvcs=true -tags=fieldc1c", "./cmd/c1crouter", "run_gate_b3_required_linux.sh", "nftables", "WINKYOU_GATE_B3_DISPOSABLE_RUNNER=github-hosted", "-count=20 -failfast", "TestLinuxC1cRouterGuardianCrash", "-test.timeout=1m", `winkyou/internal/v2/fieldc1c\.loadRouter`} {
 		if !strings.Contains(s, want) {
 			t.Fatalf("router CI missing %s", want)
 		}
