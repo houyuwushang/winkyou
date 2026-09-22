@@ -284,6 +284,16 @@ router 包/命令，端点也不能 import 此工具。新增
 [空 `/2` router 字段目录](../templates/gate-c1c-router-v2.template.json)只用于填写审查，
 本身不是可运行授权。
 
+[#169](https://github.com/houyuwushang/winkyou/issues/169) 的 teardown 首跑失败尚无 terminal
+class，不能据此确认根因。先保留私有原始 summary、区分 host 的 teardown/run/wait 结果，
+再采集两份 summary、清理前后计数和三个 anchor 的固定 ifname；公开仅脱敏 class/stage/
+计数，失败 artifact 必须通过文档与源码同款隐私检查。复现按原顺序 down → OS 回读 →
+关闭 fd → Unmount/Remove → 立即检查 anchor；只有观察到异步 peer 残留，才允许在
+Unmount 前显式删除 owned lan0/wan0，同步移除 peer，删除失败仍为 ErrDrain；不增加
+sleep、重试或放宽 onlyLoopback。guardian 已 Clean 后 teardown 的第二次 cleanup 必须
+保持六项残留为零，除恢复已记录 ip_forward 外不能改写 anchor 配置；幂等性发现问题即
+停止，不顺带修复。Windows 交叉检查不能替代 Linux root-netns 的重复实证。
+
 ## 5. M/E 现场记录字段（本提案固定）
 
 每个实际命中的 tuple 单独记录，记录名称与含义如下；原始 tuple 仅在私有文件中关联。
