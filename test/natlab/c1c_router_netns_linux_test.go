@@ -4,12 +4,15 @@ package natlab
 
 import (
 	"bufio"
+	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"syscall"
 	"testing"
@@ -23,12 +26,197 @@ import (
 const c1cRouterHostEnv = "WINKYOU_C1C_ROUTER_HOST"
 
 type c1cRouterInspection struct {
-	Out                [2]uint64 `json:"out"`
-	In                 [2]uint64 `json:"in"`
-	Sockets            [2]int    `json:"sockets"`
-	CountsPresent      bool      `json:"counts_present"`
-	ResidualNamespaces int       `json:"residual_namespaces"`
-	ResidualLinks      int       `json:"residual_links"`
+	Out                [2]uint64   `json:"out"`
+	In                 [2]uint64   `json:"in"`
+	Sockets            [2]int      `json:"sockets"`
+	CountsPresent      bool        `json:"counts_present"`
+	ResidualNamespaces int         `json:"residual_namespaces"`
+	ResidualLinks      int         `json:"residual_links"`
+	AnchorLinks        [3][]string `json:"anchor_links"`
+}
+
+// Only this derived, fixed-vocabulary shape may leave the private fixture.
+// Missing/invalid observations remain null, not a fabricated zero residue.
+type c1cRouterFailureSummary struct {
+	Source    string  `json:"source"`
+	Stage     string  `json:"stage"`
+	Class     string  `json:"class"`
+	Socket    *uint64 `json:"socket_residue"`
+	Process   *uint64 `json:"process_residue"`
+	Conntrack *uint64 `json:"conntrack_residue"`
+	Namespace *uint64 `json:"namespace_residue"`
+	Veth      *uint64 `json:"veth_residue"`
+	NFT       *uint64 `json:"nft_residue"`
+}
+
+type c1cRouterHostStatus struct {
+	TeardownExit int    `json:"teardown_exit"`
+	RunExit      int    `json:"run_exit"`
+	Wait         string `json:"wait"`
+}
+
+func c1cRouterSummaryWitness(source, path string) c1cRouterFailureSummary {
+	w := c1cRouterFailureSummary{Source: source, Stage: "unknown", Class: "unavailable"}
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return w
+	}
+	var s c1crouter.Summary
+	if json.Unmarshal(b, &s) != nil {
+		w.Class = "invalid"
+		return w
+	}
+	if _, err := s.Encode(); err != nil {
+		w.Class = "invalid"
+		return w
+	}
+	w.Stage, w.Class = s.Stage, s.Class
+	w.Socket, w.Process, w.Conntrack = s.Counts.SocketResidue, s.Counts.ProcessResidue, s.Counts.ConntrackResidue
+	w.Namespace, w.Veth, w.NFT = s.Counts.NamespaceResidue, s.Counts.VethResidue, s.Counts.NFTResidue
+	return w
+}
+
+func c1cRouterCount(p *uint64) string {
+	if p == nil {
+		return "unknown"
+	}
+	return fmt.Sprintf("%d", *p)
+}
+
+func c1cRouterLinkNames(namespace string) ([]string, error) {
+	// Diagnostics are read-only and bounded even after a failed teardown.
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	b, err := exec.CommandContext(ctx, "ip", "netns", "exec", namespace, "ip", "-j", "link", "show").Output()
+	if err != nil {
+		return nil, err
+	}
+	var links []struct {
+		Name string `json:"ifname"`
+	}
+	if err := json.Unmarshal(b, &links); err != nil {
+		return nil, err
+	}
+	names := make([]string, 0, len(links))
+	for _, link := range links {
+		switch link.Name {
+		case "lo", "wyca", "wycb", "wycta", "wyctb":
+			names = append(names, link.Name)
+		default:
+			names = append(names, "other") // never publish an arbitrary interface identity
+		}
+	}
+	sort.Strings(names)
+	return names, nil
+}
+
+func c1cRouterPublishFailure(t *testing.T, cfg c1cRouterHost) {
+	t.Helper()
+	var status c1cRouterHostStatus
+	status.TeardownExit, status.RunExit, status.Wait = -1, -1, "unknown"
+	if b, err := os.ReadFile(cfg.Summary + ".host-status.json"); err == nil {
+		var saved c1cRouterHostStatus
+		if json.Unmarshal(b, &saved) == nil && saved.TeardownExit >= -1 && saved.TeardownExit <= 255 && saved.RunExit >= -1 && saved.RunExit <= 255 && (saved.Wait == "done" || saved.Wait == "timeout" || saved.Wait == "not_waited") {
+			status = saved
+		}
+	}
+	t.Logf("ROUTER_HOST teardown_exit=%d run_exit=%d wait=%s", status.TeardownExit, status.RunExit, status.Wait)
+	witnesses := []c1cRouterFailureSummary{c1cRouterSummaryWitness("summary", cfg.Summary), c1cRouterSummaryWitness("teardown", cfg.Teardown)}
+	for i, path := range []string{cfg.Inspection, cfg.Inspection + ".after"} {
+		w := c1cRouterFailureSummary{Source: []string{"inspection", "after"}[i], Stage: []string{"before", "after"}[i], Class: "unavailable"}
+		var value c1cRouterInspection
+		if b, err := os.ReadFile(path); err == nil {
+			if json.Unmarshal(b, &value) == nil {
+				w.Class = "available"
+				if i == 1 && value.ResidualNamespaces >= 0 && value.ResidualLinks >= 0 {
+					n, v := uint64(value.ResidualNamespaces), uint64(value.ResidualLinks)
+					w.Namespace, w.Veth = &n, &v
+				} else if i == 0 && value.CountsPresent && value.Sockets[0] >= 0 && value.Sockets[1] >= 0 {
+					n := uint64(value.Sockets[0]) + uint64(value.Sockets[1])
+					w.Socket = &n
+				}
+			} else {
+				w.Class = "invalid"
+			}
+		}
+		witnesses = append(witnesses, w)
+	}
+	for _, w := range witnesses {
+		t.Logf("ROUTER_FAILURE source=%s stage=%s class=%s sockets=%s processes=%s conntrack=%s namespaces=%s veth=%s nft=%s", w.Source, w.Stage, w.Class, c1cRouterCount(w.Socket), c1cRouterCount(w.Process), c1cRouterCount(w.Conntrack), c1cRouterCount(w.Namespace), c1cRouterCount(w.Veth), c1cRouterCount(w.NFT))
+		if err := c1cRouterWritePublicFailure(w); err != nil {
+			t.Error("router derived failure evidence unavailable")
+		}
+	}
+	for i, ns := range cfg.Anchors {
+		names, err := c1cRouterLinkNames(ns)
+		t.Logf("ROUTER_ANCHOR side=%d available=%t ifnames=%v", i, err == nil, names)
+	}
+}
+
+func c1cRouterWritePublicFailure(w c1cRouterFailureSummary) error {
+	// A new exclusive file per observation prevents stale artifacts from being
+	// overwritten. Root fixtures explicitly make only sanitized files readable
+	// by the unprivileged CI upload step; private evidence stays mode 0600.
+	dir := filepath.Join(os.TempDir(), "winkyou-c1c-router-failure")
+	if err := os.Mkdir(dir, 0o755); err != nil && !os.IsExist(err) {
+		return err
+	}
+	info, err := os.Lstat(dir)
+	if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("failure evidence directory invalid")
+	}
+	b, err := json.Marshal(w)
+	if err != nil {
+		return err
+	}
+	f, err := os.CreateTemp(dir, "failure-*.json")
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	if _, err = f.Write(append(b, '\n')); err != nil {
+		return err
+	}
+	return f.Chmod(0o644)
+}
+
+func c1cRouterHostFailure(t *testing.T, cfg c1cRouterHost, status c1cRouterHostStatus) {
+	t.Helper()
+	if err := c1cRouterSaveHostFailure(cfg, status); err != nil {
+		t.Error("router private failure copy unavailable")
+	}
+	t.Fatalf("ROUTER_HOST teardown_exit=%d run_exit=%d wait=%s", status.TeardownExit, status.RunExit, status.Wait)
+}
+
+func c1cRouterSaveHostFailure(cfg c1cRouterHost, status c1cRouterHostStatus) error {
+	// Preserve the exact stdout bytes, including an empty/partial summary.
+	b, err := os.ReadFile(cfg.Summary)
+	if err != nil {
+		return err
+	}
+	f, err := os.OpenFile(filepath.Join(filepath.Dir(cfg.Summary), "host-failure.json"), os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+	if err != nil {
+		return err
+	}
+	_, writeErr := f.Write(b)
+	closeErr := f.Close()
+	if writeErr != nil {
+		return writeErr
+	}
+	if closeErr != nil {
+		return closeErr
+	}
+	return writeN1JSON(cfg.Summary+".host-status.json", status)
+}
+
+func c1cRouterExit(err error) int {
+	if err == nil {
+		return 0
+	}
+	if e, ok := err.(*exec.ExitError); ok && e.ExitCode() >= 0 {
+		return e.ExitCode()
+	}
+	return -1
 }
 
 func TestLinuxC1cRouterFullInstances(t *testing.T) {
@@ -37,6 +225,9 @@ func TestLinuxC1cRouterFullInstances(t *testing.T) {
 	}
 	requireGateB3Environment(t)
 	requireGateB3HostConntrackGuard(t)
+	if !t.Run("failure-summary-contract", TestC1cRouterFailureSummaryProjection) || !t.Run("host-failure-contract", TestC1cRouterHostFailureCopy) {
+		t.FailNow()
+	}
 	fieldBinary, routerBinary := os.Getenv("WINKYOU_FIELD_C1C_BINARY"), os.Getenv("WINKYOU_C1C_ROUTER_BINARY")
 	if !filepath.IsAbs(fieldBinary) || !filepath.IsAbs(routerBinary) {
 		t.Fatal("router proof images unavailable")
@@ -60,6 +251,11 @@ func testC1cRouterFullInstance(t *testing.T, fieldBinary, routerBinary string, s
 	profile.name += "-router-" + topology.clientA
 	configs := fieldC1cFixture(t, gateC1bFixture(t, topology, c1cRouterObserverTopology(), profile, false), profile, fieldBinary)
 	router := c1cRouterFixture(t, topology, configs, routerBinary)
+	defer func() {
+		if t.Failed() {
+			c1cRouterPublishFailure(t, router)
+		}
+	}()
 	instance := filepath.Base(router.Instance)
 	if seenInstances[instance] {
 		t.Fatal("router fresh proof reused an authorization instance")
@@ -309,18 +505,18 @@ func TestC1cRouterHostProcess(t *testing.T) {
 				}
 				teardown := exec.Command(cfg.Binary, "teardown", "--instance", cfg.Instance)
 				teardown.Stdout, teardown.Stderr = teardownOutput, io.Discard
-				if teardown.Run() != nil {
+				if err := teardown.Run(); err != nil {
 					_ = teardownOutput.Close()
-					t.Fatal("router owned teardown failed")
+					c1cRouterHostFailure(t, cfg, c1cRouterHostStatus{TeardownExit: c1cRouterExit(err), RunExit: -1, Wait: "not_waited"})
 				}
 				_ = teardownOutput.Close()
 				select {
 				case e := <-done:
 					if e != nil {
-						t.Fatal("router drain exit failed")
+						c1cRouterHostFailure(t, cfg, c1cRouterHostStatus{TeardownExit: 0, RunExit: c1cRouterExit(e), Wait: "done"})
 					}
 				case <-time.After(3 * time.Second):
-					t.Fatal("router guardian did not exit")
+					c1cRouterHostFailure(t, cfg, c1cRouterHostStatus{TeardownExit: 0, RunExit: -1, Wait: "timeout"})
 				}
 				if writeN1JSON(cfg.Inspection+".after", c1cRouterInspect(t, cfg, true)) != nil {
 					t.Fatal("router residue witness write failed")
@@ -384,7 +580,7 @@ func c1cRouterInspect(t *testing.T, cfg c1cRouterHost, after bool) c1cRouterInsp
 	}
 	result.CountsPresent = !after
 	if after {
-		for _, ns := range cfg.Anchors {
+		for i, ns := range cfg.Anchors {
 			data, e := runNamespaced(ns, "ip", nil, "-j", "link", "show")
 			if e != nil {
 				t.Fatal("router external link read failed")
@@ -400,7 +596,59 @@ func c1cRouterInspect(t *testing.T, cfg c1cRouterHost, after bool) c1cRouterInsp
 					result.ResidualLinks++
 				}
 			}
+			result.AnchorLinks[i], e = c1cRouterLinkNames(ns)
+			if e != nil {
+				t.Fatal("router anchor names unavailable")
+			}
 		}
 	}
 	return result
+}
+
+func TestC1cRouterFailureSummaryProjection(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "summary.json")
+	unknown := c1cRouterSummaryWitness("summary", path)
+	if unknown.Class != "unavailable" || unknown.Socket != nil {
+		t.Fatal("missing witness fabricated zero")
+	}
+	raw := []byte(`{"profile":"predictive_edm/1","stage":"terminal","class":"c1c_router_drain_failed","counts":{"socket_residue":0},"private":"synthetic-private-marker"}`)
+	if os.WriteFile(path, raw, 0o600) != nil {
+		t.Fatal("fixture write failed")
+	}
+	w := c1cRouterSummaryWitness("summary", path)
+	b, err := json.Marshal(w)
+	if err != nil || w.Class != "c1c_router_drain_failed" || w.Socket == nil || *w.Socket != 0 || w.Veth != nil || bytes.Contains(b, []byte("synthetic-private-marker")) {
+		t.Fatal("summary projection violated evidence or privacy")
+	}
+	if os.WriteFile(path, []byte(`{"class":"synthetic-private-marker"}`), 0o600) != nil {
+		t.Fatal("fixture write failed")
+	}
+	w = c1cRouterSummaryWitness("summary", path)
+	if w.Class != "invalid" || w.Socket != nil {
+		t.Fatal("untrusted summary escaped projection")
+	}
+}
+
+func TestC1cRouterHostFailureCopy(t *testing.T) {
+	for _, raw := range [][]byte{nil, []byte(`{"partial":`), []byte("{\"class\":\"c1c_router_drain_failed\"}\n")} {
+		dir := t.TempDir()
+		cfg := c1cRouterHost{Summary: filepath.Join(dir, "summary.json")}
+		if os.WriteFile(cfg.Summary, raw, 0o600) != nil {
+			t.Fatal("fixture write failed")
+		}
+		status := c1cRouterHostStatus{TeardownExit: 0, RunExit: 1, Wait: "done"}
+		if c1cRouterSaveHostFailure(cfg, status) != nil {
+			t.Fatal("host failure copy failed")
+		}
+		copyPath := filepath.Join(dir, "host-failure.json")
+		got, err := os.ReadFile(copyPath)
+		info, statErr := os.Stat(copyPath)
+		if err != nil || statErr != nil || info.Mode().Perm() != 0o600 || !bytes.Equal(raw, got) {
+			t.Fatal("raw failure bytes or private mode changed")
+		}
+		if c1cRouterSaveHostFailure(cfg, status) == nil {
+			t.Fatal("first failure evidence overwritten")
+		}
+	}
 }

@@ -88,3 +88,15 @@ jobs:
             GITHUB_ACTIONS=true RUNNER_ENVIRONMENT=github-hosted \
             bash -c 'ulimit -n 65536; exec env GORACE=halt_on_error=1 "$1" -test.v -test.run "^TestLinuxC1cRouterGuardianCrash$" -test.count=1 -test.timeout=1m' \
             router-guardian-proof "${RUNNER_TEMP}/router-proof.test"
+      - name: Validate redacted router failure evidence
+        id: router-failure-privacy
+        if: failure()
+        run: go test ./internal/architecture -run '^TestC1cRouterFailureEvidencePrivacy$' -count=1
+      - name: Upload redacted router failure evidence
+        if: failure() && steps.router-failure-privacy.outcome == 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: router-failure-summary
+          path: /tmp/winkyou-c1c-router-failure/*.json
+          if-no-files-found: ignore
+          retention-days: 7
