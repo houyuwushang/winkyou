@@ -208,6 +208,82 @@ mutation → 验收，普通构建的显式非空 nm 符号集零命中、field 
 权限旁路变异、race×20、原全仓回归，以及 required TEST-NET netns predictive/asymmetric
 完整实例、kill switch 与零残留证据。当前文本冻结**不预填任何实现或测试通过结果**。
 
+### 4.4 C1c-2b 统一实例裁决（2026-09-22）
+
+维护者针对 [#167](https://github.com/houyuwushang/winkyou/issues/167) 确认采用统一 `/2`，
+并授权本 PR 增加 field-only 端点解析支持。基线 `efc160e`。此裁决只扩展实现范围，
+不签发现场实例；§4.1 的 `/1` 解析、端点行为与原回归继续保留，不能自动升级或 fallback。
+
+新 revision 为 `winkyou-gate-c1c-authorization/2`：保留原 88 个顶层字段，另加必填的
+`router` 对象，恰好 89 字段。端点显式按 revision 分流，router 只接受 `/2`。三角色读取
+同一份不可变实例，核验完整格式、SHA、窗口、profile 与两人许可；各角色只取得自己的
+不透明 capability。router 不读取 artifact、PSK、SSH key 或 endpoint 配置原文。
+
+| `router` 字段 | 冻结语义 |
+| --- | --- |
+| `schema` | 固定 `winkyou-c1c-router/1`。 |
+| `machine_scope_reference` | router 本机的 `machine-scope-sha256/1` 引用；同 §4.1 派生，不创建 governor 或重置身份。 |
+| `dependency_and_configuration_sha256` | router 自身构建依赖与原两端 config digest 的摘要；原顶层摘要仍由端点按原规则验证。不同二进制不能伪装成相同依赖闭包。 |
+| `anchors` | 三项，role 按 `initiator/transit/responder` 排列；每项 `role/name/inode`。已具名、专属、non-init 的本机 attachment namespace；工具逐一核对并持有 namespace fd，不创建/删除这些外层资源。 |
+| `domains` | 恰好 initiator/responder 两项；每项 `role/mode/endpoint_prefix/gateway_prefix/public_prefix/transit_prefix`。IPv4 canonical literal prefix，同一 link 两地址同网段且不同；仅该实例两个 peer 地址与 observer 地址。无 DNS/任意命令/任意 sysctl。 |
+| `allow_global_conntrack_ceiling` | 必须出现的 boolean；只有 true 才可能执行共同 ceiling 路径。false 不写 init namespace；null/缺失/字符串均拒绝。它不由任何非空引用或一般 root 风险接受推导。 |
+| `disposable_environment_reference` | 专属一次性环境的双人核验引用；不触发云 API。true ceiling 路径另须 init 身份、独占 guard、原值/headroom、保存及回读恢复见证。 |
+
+所有复合字段完整、无未知或重复成员。namespace 与接口/表名仅作本机作用域绑定，不进入
+stdout。新建两 NAT namespace 的名字由 instance 摘要确定，O_EXCL 式占用，不接管同名资源。
+四个 veth pair 直接创建在获准 namespace 内，从不短暂暴露在 init namespace。只 add 本次
+路由/规则，冲突即失败，不能 replace/flush 既有配置。外层 attachment 的跨 VM 接线由独立
+主机配置授权负责；本工具不创建管理链路、不改变宿主默认路由、不修改 SSH 服务。
+
+`predictive_edm/1` 固定两侧 `apdm_sequential/1`；asymmetric 的 mapping-set 侧为
+`apdm_sequential/1`、另一侧为 `eim/1`；hard profile 两侧为 `apdm_uniform16/1`。
+模型不冒充全部真实 NAT；hard 的可观测结果不得写成已完成 near-tail 证明。allocation 与
+过滤独立：APDM 按 internal endpoint + destination 建 mapping，EIM 仅按 internal endpoint；
+入站必须命中已出站登记的远端五元组。observer 的 CHANGE-REQUEST 不扩张 peer 权限。
+
+采用 **TUN + 受限 UDP mapping allocator + nftables**：复用既有 B2/B3 参考的 IPv4/UDP
+转发与确定性 allocation 语义；nft 仅负责 owned 域的过滤与固定 SSH TCP NAT。理由是仅靠
+kernel SNAT 无法承诺 sequential APDM，不能把 random-fully 误称为 EIM；无需修改既有
+`tc nat`/NOTRACK 回归。四端口 observer 复用 RFC 5780 codec，response-only，不主动探测。
+每 NAT mapping 上限仍 40,000，先检查后开 socket；工具独立的有界队列、采样和公开输出
+不能兑换或提高 endpoint 的任何已冻结预算。无 mapping 重试、attempt 重试或 fallback。
+
+`c1crouter run --instance <PRIVATE_INSTANCE>` 为一次前台运行，
+`c1crouter teardown --instance <PRIVATE_INSTANCE>` 只消费该实例的持久 owned journal。
+run 的 claim 永不删除；teardown 可以在窗口过期后清理，但不能签发新的建网/发包能力。
+journal 记录先于资源操作，记录身份与完成见证；清理仅匹配 instance、namespace inode、
+接口与进程启动身份的本次资源。SIGINT/TERM/HUP、父退出与窗口终止走同一排水路径。
+共同 ceiling 必须由独立 guardian 在 worker 崩溃后恢复，不以 worker defer 代替该证明。
+
+私有输出位于 `~/.winkyou-field/c1c/evidence/<instance_id>/router/`；每个观测产出 §5 全字段，
+未认证关联的 hit、未发生的 winner/VERIFY 或不可比较的时钟保持 null + 分字段 reason。
+只见到明文 frame header 不等于端点已认证，不据此伪造 hit/VERIFY。conntrack 采样沿用
+精确键 GET 与 #129 分类，查询中断/失败不是 absent。stdout 只有 §6 白名单及资源计数，
+未知残留不是零。清理核对表保留第二人签字空栏，程序不能代签。
+
+工具自身的编译期上限（不是端点 budget）：两域合计最多 40,000 个 UDP mapping；每方向
+每域最多 65,536 个已转发 datagram；每个有界队列最多 16,398 项，单 payload 最多
+9,216 bytes；observer 每实例最多接收/回复 64 个报文。socket 额度在 open 前扣除，
+bind 失败不退款、不重试。hard 模型对 observer 与 peer 使用相同的 14-bit permutation
+分配机制：按远端独立计数、空间固定 49152–65535；仅不同远端的 connected UDP socket
+可复用 public port，同一远端内不得重复。这是可重复 NAT 模型，不是新的加密协议，
+不把一个受控模型的成功率冒充真实网络分布。端点的所有冻结常量和协议不变。
+
+`run --instance <PLACEHOLDER>` 的父进程是 guardian；工作进程只接受父进程私有 pipe、
+继承的 ownership lock 和 journal 中精确 PID/start identity。初始 namespace 的 ceiling
+只有明确 true 时才保存、回读、恢复；false 路径不写初始 namespace。guardian 本身被
+不可捕获信号终止时，自动恢复不能得到保证：由独立 `teardown --instance <PLACEHOLDER>`
+按私有 journal 重新取得同一锁恢复；若 ceiling 已被第三方改动则拒绝覆盖并保留证据。
+PID 信号使用 pidfd，不以同名进程或重新出现的数字 PID 作为所有权。
+
+探测/observer 关闭采用原 2s drain 上界；之后只做 owned 资源清理，独立 20s 工具清理
+上界不延长端点 attempt/session 或恢复收发。NAT namespace 的 inode 先持久化，再通过
+O_TMPFILE 预留的 mountpoint 发布；清理须同时核对 instance、inode、socket、process、
+conntrack、nft、veth，不把删除 namespace 名称等同于所有 fd 已消失。普通构建不编译
+router 包/命令，端点也不能 import 此工具。新增
+[空 `/2` router 字段目录](../templates/gate-c1c-router-v2.template.json)只用于填写审查，
+本身不是可运行授权。
+
 ## 5. M/E 现场记录字段（本提案固定）
 
 每个实际命中的 tuple 单独记录，记录名称与含义如下；原始 tuple 仅在私有文件中关联。
