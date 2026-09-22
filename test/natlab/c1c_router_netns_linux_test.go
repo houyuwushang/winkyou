@@ -12,8 +12,10 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -228,6 +230,7 @@ func TestLinuxC1cRouterFullInstances(t *testing.T) {
 	if !t.Run("failure-summary-contract", TestC1cRouterFailureSummaryProjection) || !t.Run("host-failure-contract", TestC1cRouterHostFailureCopy) {
 		t.FailNow()
 	}
+	c1cRouterCleanupReproductionBatches(t)
 	fieldBinary, routerBinary := os.Getenv("WINKYOU_FIELD_C1C_BINARY"), os.Getenv("WINKYOU_C1C_ROUTER_BINARY")
 	if !filepath.IsAbs(fieldBinary) || !filepath.IsAbs(routerBinary) {
 		t.Fatal("router proof images unavailable")
@@ -320,6 +323,7 @@ func testC1cRouterFullInstance(t *testing.T, fieldBinary, routerBinary string, s
 		}
 		t.Logf("ROUTER_ACCOUNTING side=%d actual=%d charged=%d candidates=%d winner=%d", side, inspection.Out[side], charged, w.GateB.Emissions.CandidatePackets, w.GateB.Emissions.WinnerPackets)
 	}
+	anchorConfiguration := c1cRouterProtectedAnchorConfiguration(t, router)
 	if os.WriteFile(router.Host.StopFile, []byte("owned-teardown\n"), 0o600) != nil {
 		t.Fatal("router teardown request failed")
 	}
@@ -351,6 +355,21 @@ func testC1cRouterFullInstance(t *testing.T, fieldBinary, routerBinary string, s
 	if inspection.ResidualLinks != 0 || inspection.ResidualNamespaces != 0 {
 		t.Fatal("external router residue")
 	}
+	// run's zero-residue summary precedes teardown's second cleanup. Both
+	// summaries above must independently prove all six zeros. Also protect the
+	// surviving loopback/rules/nft configuration; only owned veth resources and
+	// the recorded ip_forward restoration are excluded from this comparison.
+	if after := c1cRouterProtectedAnchorConfiguration(t, router); after != anchorConfiguration {
+		t.Fatal("router second cleanup changed protected anchor configuration")
+	}
+	var ownership struct {
+		Clean bool `json:"clean"`
+	}
+	c1cRouterRead(t, filepath.Join(router.Evidence, "ownership.json"), &ownership)
+	if !ownership.Clean {
+		t.Fatal("router clean journal witness absent")
+	}
+	t.Log("ROUTER_IDEMPOTENCE run_zero=1 teardown_zero=1 anchor_config_unchanged=1")
 	f, e := os.Open(filepath.Join(router.Evidence, "router.jsonl"))
 	if e != nil {
 		t.Fatal("router evidence absent")
@@ -373,6 +392,21 @@ func testC1cRouterFullInstance(t *testing.T, fieldBinary, routerBinary string, s
 		t.Fatal("router §5 observations absent")
 	}
 	t.Logf("ROUTER_PROOF fresh=1 endpoint_success=2 kernel_echo=1 queries=%d observation_rows=%d sockets=0 processes=0 conntrack=0 namespaces=0 veth=0 nft=0", terminal.Counts.Queries, rows)
+}
+
+func c1cRouterProtectedAnchorConfiguration(t *testing.T, cfg c1cRouterHost) [3][3]string {
+	t.Helper()
+	var configuration [3][3]string
+	for i, ns := range cfg.Anchors {
+		for j, argv := range [][]string{{"ip", "-j", "address", "show", "dev", "lo"}, {"ip", "-j", "rule", "show"}, {"nft", "-j", "list", "tables"}} {
+			b, err := runNamespaced(ns, argv[0], nil, argv[1:]...)
+			if err != nil || !json.Valid([]byte(b)) {
+				t.Fatal("router protected anchor read unavailable")
+			}
+			configuration[i][j] = b
+		}
+	}
+	return configuration
 }
 
 func c1cRouterRead(t *testing.T, path string, v any) {
@@ -650,5 +684,162 @@ func TestC1cRouterHostFailureCopy(t *testing.T) {
 		if c1cRouterSaveHostFailure(cfg, status) == nil {
 			t.Fatal("first failure evidence overwritten")
 		}
+	}
+}
+
+// The minimal reproducer runs before the endpoint matrix, under its existing
+// root/isolation authorization. It neither changes the workflow's required
+// command/count/cap nor creates a route, address, socket or packet.
+func c1cRouterCleanupReproductionBatches(t *testing.T) {
+	t.Helper()
+	for _, mode := range []string{"idle", "busy"} {
+		cmd := exec.Command(os.Args[0], "-test.v", "-test.run=^TestC1cRouterCleanupReproduction$", "-test.count=200", "-test.timeout=2m")
+		cmd.Env = append(os.Environ(), "WINKYOU_C1C_ROUTER_REPRO="+mode, "GOMAXPROCS=2")
+		cmd.SysProcAttr = &syscall.SysProcAttr{Cloneflags: unix.CLONE_NEWNS | unix.CLONE_NEWNET, Pdeathsig: syscall.SIGKILL}
+		start := time.Now()
+		output, err := cmd.CombinedOutput()
+		// Do not publish raw child output (testing's source paths are private).
+		var samples, hits, failures int
+		for _, line := range strings.Split(string(output), "\n") {
+			if strings.HasPrefix(line, "--- FAIL: TestC1cRouterCleanupReproduction ") {
+				failures++
+			}
+			if index := strings.Index(line, "ROUTER_REPRO peer_residue="); index >= 0 {
+				var n int
+				if _, e := fmt.Sscanf(line[index:], "ROUTER_REPRO peer_residue=%d", &n); e == nil && (n == 0 || n == 1) {
+					samples++
+					hits += n
+				}
+			}
+		}
+		t.Logf("ROUTER_REPRO_BATCH mode=%s samples=%d hits=%d child_exit=%d duration_ns=%d", mode, samples, hits, c1cRouterExit(err), time.Since(start).Nanoseconds())
+		// An observed residual is this observational batch's expected RED,
+		// not a passing cleanup proof. It never authorizes a speculative fix.
+		if samples != 200 || failures != hits || (err != nil) != (hits != 0) {
+			t.Fatal("router reproduction incomplete or unexpected failure")
+		}
+	}
+}
+
+func TestC1cRouterCleanupReproduction(t *testing.T) {
+	mode := os.Getenv("WINKYOU_C1C_ROUTER_REPRO")
+	if mode == "" {
+		t.Skip("isolated cleanup reproduction subprocess only")
+	}
+	var current, initial unix.Stat_t
+	if (mode != "idle" && mode != "busy") || os.Getenv("WINKYOU_C1C_ROUTER_REQUIRED") != "1" || os.Geteuid() != 0 || unix.Stat("/proc/self/ns/net", &current) != nil || unix.Stat("/proc/1/ns/net", &initial) != nil || current.Ino == initial.Ino {
+		t.Fatal("router reproduction isolation missing")
+	}
+	if unix.Mount("", "/", "", unix.MS_REC|unix.MS_PRIVATE, "") != nil {
+		t.Fatal("router reproduction mount isolation failed")
+	}
+	registry := t.TempDir()
+	if unix.Mount(registry, "/var/run/netns", "", unix.MS_BIND, "") != nil {
+		t.Fatal("router reproduction registry failed")
+	}
+	defer func() {
+		if unix.Unmount("/var/run/netns", 0) != nil {
+			t.Error("router reproduction registry residue")
+		}
+	}()
+	if mode == "busy" {
+		if runtime.GOMAXPROCS(0) != 2 {
+			t.Fatal("router stress CPU contract changed")
+		}
+		stop := make(chan struct{})
+		var workers sync.WaitGroup
+		for i := 0; i < 2; i++ {
+			workers.Add(1)
+			go func() {
+				defer workers.Done()
+				for {
+					select {
+					case <-stop:
+						return
+					default:
+					}
+				}
+			}()
+		}
+		defer func() { close(stop); workers.Wait() }()
+	}
+	const owned, anchor = "wy169owned", "wy169anchor"
+	for _, ns := range []string{owned, anchor} {
+		if _, err := runCommand("ip", "netns", "add", ns); err != nil {
+			t.Fatal("router reproduction namespace creation failed")
+		}
+		name := ns
+		defer func() {
+			if _, err := os.Lstat(filepath.Join("/var/run/netns", name)); !os.IsNotExist(err) {
+				if _, err := runCommand("ip", "netns", "del", name); err != nil {
+					t.Error("router reproduction namespace residue")
+				}
+			}
+		}()
+	}
+	ownedFile, err := os.Open(filepath.Join("/var/run/netns", owned))
+	if err != nil {
+		t.Fatal("router reproduction owned reference failed")
+	}
+	defer ownedFile.Close()
+	anchorFile, err := os.Open(filepath.Join("/var/run/netns", anchor))
+	if err != nil {
+		t.Fatal("router reproduction anchor reference failed")
+	}
+	defer anchorFile.Close()
+	if _, err := runNamespaced(owned, "ip", nil, "link", "add", "lan0", "type", "veth", "peer", "name", "peer0", "netns", anchor); err != nil {
+		t.Fatal("router reproduction veth creation failed")
+	}
+	// Match the old production order, including readback/flush latency. No
+	// held extra reference, artificial cleanup delay or polling manufactures a
+	// residual. There is no packet source and no configured address/route.
+	if _, err := runNamespaced(owned, "ip", nil, "-j", "link", "show"); err != nil {
+		t.Fatal("router reproduction link read failed")
+	}
+	if _, err := runNamespaced(owned, "ip", nil, "link", "set", "lan0", "down"); err != nil {
+		t.Fatal("router reproduction down failed")
+	}
+	if b, err := runNamespaced(owned, "ss", nil, "-H", "-n", "-a", "-u", "-t"); err != nil || strings.TrimSpace(b) != "" {
+		t.Fatal("router reproduction socket residue")
+	}
+	if b, err := runCommand("ip", "netns", "pids", owned); err != nil || strings.TrimSpace(b) != "" {
+		t.Fatal("router reproduction process residue")
+	}
+	if _, err := runNamespaced(owned, "conntrack", nil, "-F"); err != nil {
+		t.Fatal("router reproduction flush failed")
+	}
+	if b, err := runNamespaced(owned, "conntrack", nil, "-C"); err != nil || strings.TrimSpace(b) != "0" {
+		t.Fatal("router reproduction conntrack residue")
+	}
+	for i := 0; i < 2; i++ {
+		if _, err := runNamespaced(owned, "nft", nil, "-j", "list", "tables"); err != nil {
+			t.Fatal("router reproduction nft read failed")
+		}
+	}
+	if ownedFile.Close() != nil {
+		t.Fatal("router reproduction close failed")
+	}
+	path := filepath.Join("/var/run/netns", owned)
+	if unix.Unmount(path, 0) != nil || os.Remove(path) != nil {
+		t.Fatal("router reproduction namespace removal failed")
+	}
+	data, err := runNamespaced(anchor, "ip", nil, "-j", "link", "show")
+	var links []struct {
+		Name string `json:"ifname"`
+	}
+	if err != nil || json.Unmarshal([]byte(data), &links) != nil {
+		t.Fatal("router reproduction peer read failed")
+	}
+	residual := 0
+	for _, link := range links {
+		if link.Name == "peer0" {
+			residual++
+		} else if link.Name != "lo" {
+			t.Fatal("router reproduction unexpected link")
+		}
+	}
+	t.Logf("ROUTER_REPRO peer_residue=%d", residual)
+	if residual != 0 {
+		t.Error("router asynchronous peer residue observed")
 	}
 }
