@@ -180,7 +180,8 @@ type Config struct {
 	// compiled 49152-65535 target universe.
 	HardNATLabFactory probeio.HardNATCampaignNATLabFactory
 
-	Harness *HarnessHooks
+	Harness    *HarnessHooks
+	deployment deploymentAuthority
 }
 
 // ProductHandoff is an opaque, single-owner continuation returned only after

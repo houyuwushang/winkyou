@@ -1,0 +1,69 @@
+name: Field C1c Build Proof
+
+on:
+  pull_request:
+  push:
+
+permissions:
+  contents: read
+
+jobs:
+  field-c1c:
+    name: Field C1c Exact Build (required)
+    runs-on: ubuntu-latest
+    # ceil((63 baseline prep + 56 symbol proof + 23 second build +
+    #       21 focused race + 240 isolated matrix) * 1.25 / 60) = 9.
+    timeout-minutes: 9
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Prepare disposable isolated witness tools
+        run: |
+          test -x /usr/bin/ssh
+          test -d /usr/libexec
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq iproute2 iptables conntrack iputils-ping
+          if test -x /usr/sbin/sshd; then
+            echo 'WINKYOU_C1B_SSHD_BINARY=/usr/sbin/sshd' >> "$GITHUB_ENV"
+          else
+            field_tools="$(mktemp -d "${RUNNER_TEMP}/field-sshd.XXXXXX")"
+            (
+              cd "$field_tools"
+              apt-get download openssh-server
+              dpkg-deb --extract openssh-server_*.deb extracted
+            )
+            test -x "$field_tools/extracted/usr/sbin/sshd"
+            echo "WINKYOU_C1B_SSHD_BINARY=$field_tools/extracted/usr/sbin/sshd" >> "$GITHUB_ENV"
+          fi
+          sudo modprobe tun || true
+          test -c /dev/net/tun
+
+      - name: Vet the sealed build and prove field-only unit boundaries
+        run: |
+          go vet -tags=fieldc1c,natlab,c1bproof ./...
+          go test -race -tags=fieldc1c ./internal/v2/fieldc1c ./internal/probeio ./internal/v2/sshassembly ./pkg/netif ./pkg/tunnel -run '^Test(Instance|Field)' -count=20
+          go test ./internal/architecture -run '^TestFieldC1c' -count=1
+
+      - name: Build exact field image and isolated race harness
+        run: |
+          field_sha="$(git rev-parse HEAD)"
+          go build -race -buildvcs=true -tags=fieldc1c -ldflags "-X winkyou/internal/v2/fieldc1c.BuildSHA=${field_sha}" -o "${RUNNER_TEMP}/wink-field" ./cmd/wink
+          go test -race -c -tags=natlab,c1bproof,fieldc1c -o "${RUNNER_TEMP}/wink-field-proof.test" ./test/natlab
+
+      - name: Prove real exact-SHA wrapper child UDP TUN and owned kill switch
+        run: |
+          sudo env \
+            WINKYOU_FIELD_C1C_REQUIRED=1 \
+            WINKYOU_FIELD_C1C_BINARY="${RUNNER_TEMP}/wink-field" \
+            WINKYOU_C1B_SSHD_BINARY="$WINKYOU_C1B_SSHD_BINARY" \
+            WINKYOU_GATE_B3_REQUIRED=1 \
+            WINKYOU_GATE_B3_DISPOSABLE_RUNNER=github-hosted \
+            GITHUB_ACTIONS=true \
+            RUNNER_ENVIRONMENT=github-hosted \
+            bash test/natlab/run_gate_b3_required_linux.sh \
+            env GORACE=halt_on_error=1 \
+            "${RUNNER_TEMP}/wink-field-proof.test" \
+            -test.v -test.run '^TestLinuxFieldC1cExactBuildProof$' -test.count=1 -test.timeout=4m

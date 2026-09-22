@@ -759,6 +759,7 @@ func v2RestrictedDependencyViolations(result scanResult) []string {
 		hardNATPlan:                      {},
 	}
 	allowedGateBImports := map[string]struct{}{
+		modulePath + "/internal/v2/fieldc1c":       {}, // exact field-only files are checked independently
 		modulePath + "/internal/governor":          {},
 		modulePath + "/internal/probeio":           {},
 		directAttempt:                              {},
@@ -1181,6 +1182,7 @@ func approvedLoopbackPrimitiveImporter(importer, imported string) bool {
 
 func approvedHardNATPlannerImporter(importer string) bool {
 	approved := map[string]struct{}{
+		modulePath + "/internal/probeio":                {}, // field_factory_fieldc1c.go only; separate source gate
 		modulePath + "/internal/v2/hardnatplan":         {},
 		modulePath + "/internal/v2/hardnatbudget":       {},
 		modulePath + "/internal/v2/hardnatattempt":      {},
@@ -1201,7 +1203,7 @@ func approvedHardNATB2Importer(importer, imported string) bool {
 	gateB := modulePath + "/internal/v2/directconnect/gateb"
 	switch imported {
 	case modulePath + "/internal/v2/hardnatbudget":
-		return importer == gateB || importer == modulePath+"/internal/v2/hardnatattempt" ||
+		return importer == modulePath+"/internal/probeio" || importer == gateB || importer == modulePath+"/internal/v2/hardnatattempt" ||
 			importer == modulePath+"/internal/v2/hardnatobserve" || importer == modulePath+"/internal/v2/oobcarrier" ||
 			importer == modulePath+"/internal/v2/gatecattempt" || importer == modulePath+"/internal/v2/sshassembly" ||
 			importer == modulePath+"/internal/v2/gatecorchestrator"

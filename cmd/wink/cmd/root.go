@@ -53,5 +53,6 @@ func newRootCmdWithGateC(product gateCProductRunner) *cobra.Command {
 		newVersionCmd(),
 	)
 
+	addDeploymentCommands(cmd, opts)
 	return cmd
 }

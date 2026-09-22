@@ -164,6 +164,7 @@ func openClient(ctx context.Context, config Config, deps dependencies) (*Stream,
 	// the sole process creation boundary.
 	endpoint, err = config.Client.authority.validatedEndpoint()
 	if err != nil || endpoint != config.Client.endpoint ||
+		validateAuthorityFiles(config.Client.authority, config.Client.identityFile, config.Client.knownHostsFile) != nil ||
 		validatePrivateClientFiles(config.Client.identityFile, config.Client.knownHostsFile) != nil ||
 		deps.validateExecutable(executable) != nil {
 		return failBeforeSpawn(ErrProfileInvalid)

@@ -344,7 +344,8 @@ func gateC1bDependencyViolations(repository scanResult) []string {
 	gateB := modulePath + "/internal/v2/directconnect/gateb"
 	gateCArtifact := modulePath + "/internal/v2/gatecattempt"
 	allowedOrchestratorImports := map[string]struct{}{
-		modulePath + "/internal/governor": {}, modulePath + "/internal/probeio": {},
+		modulePath + "/internal/v2/fieldc1c": {}, // exact tagged field entry, enforced separately
+		modulePath + "/internal/governor":    {}, modulePath + "/internal/probeio": {},
 		modulePath + "/internal/v2/directattempt": {}, gateB: {}, gateCArtifact: {}, child: {},
 		modulePath + "/internal/v2/gatecrequest": {}, modulePath + "/internal/v2/gatecstage": {},
 		modulePath + "/internal/v2/hardnatbudget": {}, modulePath + "/internal/v2/hardnatobserve": {},
@@ -602,7 +603,7 @@ func gateC1bAuthorityUseViolations(root string) ([]string, error) {
 			"internal/v2/gatecorchestrator/types.go": {}, "internal/v2/gatecorchestrator/entry.go": {},
 			"internal/v2/gatecorchestrator/orchestrator.go": {}, "internal/v2/gatecorchestrator/natlab_proof_linux.go": {},
 		},
-		"PrepareRootExecution":    {"internal/v2/sshchildwrapper/root_linux.go": {}, "internal/v2/sshchildwrapper/root_unsupported.go": {}},
+		"PrepareRootExecution":    {"internal/v2/sshchildwrapper/root_linux.go": {}, "internal/v2/sshchildwrapper/root_unsupported.go": {}, "internal/v2/sshchildwrapper/exec_fieldc1c_linux.go": {}},
 		"RunMemoryInitiator":      {"internal/v2/gatecorchestrator/memory_proof_c1bproof.go": {}, "cmd/wink/cmd/gate_c1b_memory_proof.go": {}},
 		"RunMemoryResponder":      {"internal/v2/gatecorchestrator/memory_proof_c1bproof.go": {}, "cmd/wink/cmd/gate_c1b_memory_proof.go": {}},
 		"OpenMemoryProofClient":   {"internal/v2/gatecorchestrator/memory_proof_c1bproof.go": {}, "internal/v2/sshassembly/memory_c1bproof.go": {}},
@@ -657,7 +658,8 @@ func gateC1bAuthorityUseViolations(root string) ([]string, error) {
 			"internal/v2/gatecorchestrator/entry.go": {}, "cmd/wink/cmd/solver.go": {},
 		},
 		"configureGateB": {
-			"internal/v2/gatecorchestrator/types.go": {}, "internal/v2/gatecorchestrator/orchestrator.go": {},
+			"internal/v2/gatecorchestrator/field_entry_linux.go": {},
+			"internal/v2/gatecorchestrator/types.go":             {}, "internal/v2/gatecorchestrator/orchestrator.go": {},
 			"internal/v2/gatecorchestrator/memory_proof_c1bproof.go": {}, "internal/v2/gatecorchestrator/natlab_proof_linux.go": {},
 		},
 		"TakePSK": {

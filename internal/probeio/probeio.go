@@ -432,6 +432,7 @@ func (c *Controller) OpenProbeSocket(ctx context.Context) (*ProbeSocket, error) 
 
 	openCtx, cancelOpen := mergeContext(ctx, c.lifecycleCtx)
 	openCtx = authorizeFactoryOpen(openCtx)
+	openCtx = authorizeAdditionalFactoryScope(openCtx, c.factory, c.lease)
 	datagram, openErr := c.factory.Open(openCtx)
 	cancelOpen()
 	c.mu.Lock()
@@ -478,6 +479,9 @@ func (socket *ProbeSocket) RegisterTarget(target netip.AddrPort) error {
 	}
 	c, state, err := socket.parts()
 	if err != nil {
+		return err
+	}
+	if err := validateAdditionalTargetScope(state.datagram, canonical); err != nil {
 		return err
 	}
 	c.mu.Lock()

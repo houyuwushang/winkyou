@@ -198,7 +198,7 @@ func prepare(ctx context.Context, config Config, product bool) (*runtime, error)
 		return fail(err)
 	}
 	factoryCount := 0
-	for _, present := range []bool{config.ProbeFactory != nil, config.NATLabFactory != nil, config.HardNATLabFactory != nil} {
+	for _, present := range []bool{config.ProbeFactory != nil, config.NATLabFactory != nil, config.HardNATLabFactory != nil, config.deployment.present()} {
 		if present {
 			factoryCount++
 		}
@@ -222,12 +222,15 @@ func prepare(ctx context.Context, config Config, product bool) (*runtime, error)
 	if _, rawOSFactory := config.ProbeFactory.(*probeio.UDPFactory); rawOSFactory {
 		return fail(oobcarrier.ErrInvalidConfig)
 	}
+	if err := config.deployment.validate(config); err != nil {
+		return fail(err)
+	}
 	expectedGovernor, err := hardnatbudget.GovernorProfile(artifact.GateBPlannerProfile(), artifact.GateBResourceClass())
 	if err != nil || config.Machine.Snapshot().Profile != expectedGovernor {
 		return fail(governor.ErrNotAllowed)
 	}
 	if hardnatbudget.IsHardCampaign(artifact.GateBPlannerProfile(), artifact.GateBResourceClass()) {
-		if config.NATLabFactory != nil || (config.ProbeFactory == nil && config.HardNATLabFactory == nil) {
+		if config.NATLabFactory != nil || (config.ProbeFactory == nil && config.HardNATLabFactory == nil && !config.deployment.present()) {
 			return fail(oobcarrier.ErrInvalidConfig)
 		}
 	} else if config.HardNATLabFactory != nil {
@@ -685,6 +688,9 @@ func (runtime *runtime) openSockets(ctx context.Context, envelope hardnatbudget.
 }
 
 func (runtime *runtime) probeFactory() (probeio.Factory, error) {
+	if runtime.config.deployment.present() {
+		return runtime.deploymentFactory()
+	}
 	if runtime.config.HardNATLabFactory != nil {
 		endpoints, err := validateTopology(runtime.config.ObserverTopology, topologyNATLab)
 		if err != nil || runtime.config.HardNATLabFactory.ValidateObserverEndpoints(endpoints) != nil {
@@ -722,9 +728,13 @@ const (
 	topologyLoopback topologyAuthority = iota
 	topologySimulation
 	topologyNATLab
+	topologyDeployment
 )
 
 func topologyAuthorityFor(config Config) topologyAuthority {
+	if config.deployment.present() {
+		return topologyDeployment
+	}
 	if config.NATLabFactory != nil || config.HardNATLabFactory != nil {
 		return topologyNATLab
 	}
@@ -872,6 +882,12 @@ func (runtime *runtime) validateExecutionAddresses(localAddress, peerAddress har
 	}
 	if runtime.product && peer != runtime.config.ExpectedPeerAddress {
 		return oobcarrier.ErrInvalidConfig
+	}
+	if runtime.config.deployment.present() {
+		if !local.IsGlobalUnicast() || local.IsLoopback() || !peer.IsGlobalUnicast() || peer.IsLoopback() {
+			return oobcarrier.ErrInvalidConfig
+		}
+		return runtime.config.deployment.validate(runtime.config)
 	}
 	if runtime.config.NATLabFactory != nil || runtime.config.HardNATLabFactory != nil {
 		var localErr, peerErr error
@@ -1054,6 +1070,9 @@ type registeredTuple struct {
 }
 
 func (runtime *runtime) registerCandidateTargets() error {
+	if err := runtime.authorizeDeploymentPlan(); err != nil {
+		return err
+	}
 	peerAddress, err := fromPlanAddress(runtime.peerPublic)
 	if err != nil {
 		return err

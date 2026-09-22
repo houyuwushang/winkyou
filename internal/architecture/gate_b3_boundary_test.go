@@ -213,6 +213,9 @@ func scanGateB3Identifiers(root string, identifiers map[string]struct{}, allowed
 				(identifier.Name == "NewGateB3NATLabFactory" || identifier.Name == "HardNATLabFactory") {
 				return true
 			}
+			if identifier.Name == "HardNATLabFactory" && approvedFieldC1cNATLabExclusion(root, relative, parsed, identifier) {
+				return true
+			}
 			if names := allowed[relative]; names != nil {
 				if _, approved := names[identifier.Name]; approved {
 					return true

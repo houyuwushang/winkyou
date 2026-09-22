@@ -155,7 +155,7 @@ func gateC1aDependencyViolations(result scanResult) []string {
 		gateCRequest: {gateCStage: {}, assembly: {}, orchestrator: {}},
 		gateCStage:   {command: {}, orchestrator: {}},
 		assembly:     {orchestrator: {}},
-		wrapper:      {},
+		wrapper:      {modulePath + "/cmd/wink": {}}, // exact field dispatcher is independently sealed
 	}
 	labels := map[string]string{
 		gateCAttempt: "C1a product artifact", gateCRequest: "C1a local request", gateCStage: "C1a responder staging",
@@ -228,6 +228,7 @@ func gateC1aCapabilityViolations(root string) ([]string, error) {
 				forbidden = true
 			}
 			if imported == "syscall" && relative != "internal/v2/sshchildwrapper/validate_linux.go" &&
+				relative != "internal/v2/sshchildwrapper/exec_fieldc1c_linux.go" &&
 				relative != "internal/v2/sshassembly/process_linux.go" && relative != "internal/v2/sshassembly/process_windows.go" {
 				forbidden = true
 			}
@@ -321,7 +322,9 @@ func gateC1aShapeViolations(root string) ([]string, error) {
 				}
 				return true
 			})
-			if returnsAuthority && function.Name.Name != "NewLoopbackAuthority" && function.Name.Name != "NewNATLabAuthority" {
+			fieldIssuer := relative == "internal/v2/sshassembly/authority_fieldc1c.go" && function.Name.Name == "NewFieldAuthority" &&
+				strings.HasPrefix(strings.ReplaceAll(text, "\r\n", "\n"), "//go:build fieldc1c\n")
+			if returnsAuthority && function.Name.Name != "NewLoopbackAuthority" && function.Name.Name != "NewNATLabAuthority" && !fieldIssuer {
 				violations = append(violations, relative+" defines unreviewed exported SSH authority constructor "+function.Name.Name)
 			}
 		}

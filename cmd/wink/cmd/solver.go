@@ -161,6 +161,9 @@ func newSolverDirectChildCmd(options *Options, runner gateCProductRunner) *cobra
 			if runner == nil || !stdio {
 				return gatecorchestrator.ErrRequestInvalid
 			}
+			if handled, err := tryDeploymentChild(command, options, runner); handled {
+				return err
+			}
 			configPath := ""
 			if options != nil {
 				configPath = options.ConfigPath

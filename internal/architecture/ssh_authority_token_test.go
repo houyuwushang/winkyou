@@ -126,7 +126,9 @@ func sshAuthorityTokenViolations(sources map[string]string) []string {
 					}
 					ordinary := path == sshAuthorityDirectory+"authority.go" && owner == "NewLoopbackAuthority"
 					natlab := path == sshAuthorityDirectory+"authority_natlab_linux.go" && owner == "NewNATLabAuthority"
-					if !ordinary && !natlab {
+					field := path == sshAuthorityDirectory+"authority_fieldc1c.go" && owner == "NewFieldAuthority" &&
+						strings.HasPrefix(source, "//go:build fieldc1c\n")
+					if !ordinary && !natlab && !field {
 						violations = append(violations, path+" constructs authority outside exact issuer")
 					}
 				}
