@@ -292,7 +292,13 @@ class，不能据此确认根因。先保留私有原始 summary、区分 host �
 Unmount 前显式删除 owned lan0/wan0，同步移除 peer，删除失败仍为 ErrDrain；不增加
 sleep、重试或放宽 onlyLoopback。guardian 已 Clean 后 teardown 的第二次 cleanup 必须
 保持六项残留为零，除恢复已记录 ip_forward 外不能改写 anchor 配置；幂等性发现问题即
-停止，不顺带修复。Windows 交叉检查不能替代 Linux root-netns 的重复实证。
+停止，不顺带修复。Windows 交叉检查不能替代 Linux root-netns 的重复实证。2026-09-22
+首轮见证版本 `3c0a043` 的隔离 CI：push 空闲/压力分别命中 200/200、196/200，PR 事件
+分别命中 199/200、196/200；因此满足显式删链路的实施前提。同轮 push 的三次组合及
+二次 cleanup 检查通过，但 guardian crash 为 drain_failed；PR 的第三次组合为 run
+io_failed、teardown success、六项残留均零。原始 RED 保留，后者可能是 guardian 兜底
+cleanup 覆盖 worker 失败的结果，不把这一推断冒充原始故障逐项定因；修后同一矩阵须
+严格零残留且不得 rerun 求绿。本机缺少 Linux，要求的本地两项各五次仍未执行。
 
 ## 5. M/E 现场记录字段（本提案固定）
 
