@@ -230,6 +230,9 @@ func TestLinuxC1cRouterFullInstances(t *testing.T) {
 	if !t.Run("failure-summary-contract", TestC1cRouterFailureSummaryProjection) || !t.Run("host-failure-contract", TestC1cRouterHostFailureCopy) {
 		t.FailNow()
 	}
+	if !t.Run("synchronous-delete-contract", TestC1cRouterSynchronousDeleteContract) {
+		t.FailNow()
+	}
 	c1cRouterCleanupReproductionBatches(t)
 	fieldBinary, routerBinary := os.Getenv("WINKYOU_FIELD_C1C_BINARY"), os.Getenv("WINKYOU_C1C_ROUTER_BINARY")
 	if !filepath.IsAbs(fieldBinary) || !filepath.IsAbs(routerBinary) {
@@ -713,10 +716,11 @@ func c1cRouterCleanupReproductionBatches(t *testing.T) {
 			}
 		}
 		t.Logf("ROUTER_REPRO_BATCH mode=%s samples=%d hits=%d child_exit=%d duration_ns=%d", mode, samples, hits, c1cRouterExit(err), time.Since(start).Nanoseconds())
-		// An observed residual is this observational batch's expected RED,
-		// not a passing cleanup proof. It never authorizes a speculative fix.
-		if samples != 200 || failures != hits || (err != nil) != (hits != 0) {
-			t.Fatal("router reproduction incomplete or unexpected failure")
+		// The preceding witness-only commit retained the original RED batches.
+		// After explicit link deletion every sample is a required zero-residue
+		// regression; an observed hit must fail the enclosing required job too.
+		if samples != 200 || failures != 0 || hits != 0 || err != nil {
+			t.Fatal("router synchronous cleanup regression failed")
 		}
 	}
 }
@@ -790,7 +794,7 @@ func TestC1cRouterCleanupReproduction(t *testing.T) {
 	if _, err := runNamespaced(owned, "ip", nil, "link", "add", "lan0", "type", "veth", "peer", "name", "peer0", "netns", anchor); err != nil {
 		t.Fatal("router reproduction veth creation failed")
 	}
-	// Match the old production order, including readback/flush latency. No
+	// Match production order, including readback/flush latency. No
 	// held extra reference, artificial cleanup delay or polling manufactures a
 	// residual. There is no packet source and no configured address/route.
 	if _, err := runNamespaced(owned, "ip", nil, "-j", "link", "show"); err != nil {
@@ -798,6 +802,9 @@ func TestC1cRouterCleanupReproduction(t *testing.T) {
 	}
 	if _, err := runNamespaced(owned, "ip", nil, "link", "set", "lan0", "down"); err != nil {
 		t.Fatal("router reproduction down failed")
+	}
+	if _, err := runNamespaced(owned, "ip", nil, "link", "del", "lan0"); err != nil {
+		t.Fatal("router reproduction synchronous delete failed")
 	}
 	if b, err := runNamespaced(owned, "ss", nil, "-H", "-n", "-a", "-u", "-t"); err != nil || strings.TrimSpace(b) != "" {
 		t.Fatal("router reproduction socket residue")
@@ -841,5 +848,35 @@ func TestC1cRouterCleanupReproduction(t *testing.T) {
 	t.Logf("ROUTER_REPRO peer_residue=%d", residual)
 	if residual != 0 {
 		t.Error("router asynchronous peer residue observed")
+	}
+}
+
+func TestC1cRouterSynchronousDeleteContract(t *testing.T) {
+	_, source, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("router cleanup source unavailable")
+	}
+	b, err := os.ReadFile(filepath.Join(filepath.Dir(source), "..", "..", "internal", "c1crouter", "cleanup_linux.go"))
+	if err != nil {
+		t.Fatal("router cleanup source unavailable")
+	}
+	valid := func(s string) bool {
+		down := strings.Index(s, `"link", "set", link.Name, "down"`)
+		del := strings.Index(s, `"link", "del", link.Name`)
+		readback := strings.Index(s, `"ss", nil, "-H"`)
+		unmount := strings.Index(s, "unix.Unmount(path, 0)")
+		return down >= 0 && del > down && readback > del && unmount > readback && strings.Contains(s[del:readback], "result = errors.Join(result, ErrDrain)")
+	}
+	s := string(b)
+	if !valid(s) {
+		t.Fatal("owned synchronous deletion is not before namespace destruction")
+	}
+	if valid(strings.ReplaceAll(s, `"link", "del", link.Name`, `"link", "set", link.Name, "down"`)) {
+		t.Fatal("missing synchronous delete mutation accepted")
+	}
+	start, end := strings.Index(s, `"link", "del", link.Name`), strings.Index(s, `"ss", nil, "-H"`)
+	mutation := s[:start] + strings.Replace(s[start:end], "errors.Join(result, ErrDrain)", "result", 1) + s[end:]
+	if valid(mutation) {
+		t.Fatal("ignored delete error mutation accepted")
 	}
 }

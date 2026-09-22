@@ -84,6 +84,12 @@ func (t *topology) cleanup(counts *Counts) error {
 						if _, err := runCommand(ctx, name, "ip", nil, "link", "set", link.Name, "down"); err != nil {
 							result = errors.Join(result, ErrDrain)
 						}
+						// Last-reference namespace destruction is asynchronous.
+						// Delete the owned veth under RTNL while this namespace
+						// still exists, so its anchor peer is gone synchronously.
+						if _, err := runCommand(ctx, name, "ip", nil, "link", "del", link.Name); err != nil {
+							result = errors.Join(result, ErrDrain)
+						}
 					}
 				}
 			}
