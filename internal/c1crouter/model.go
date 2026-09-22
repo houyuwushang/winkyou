@@ -42,6 +42,71 @@ func errorClass(e error) string {
 	return "c1c_router_io_failed"
 }
 
+type terminalInput struct {
+	Reported    bool
+	WorkerClass string
+	Clean       bool
+	ChildErr    bool
+	Backstop    string // not_needed, success, or failed
+	BackstopErr error  // non-nil only for failed
+	ResidueZero bool
+}
+
+// terminalResolution is private evidence, not an extension of public Summary.
+type terminalResolution struct {
+	Schema         string `json:"schema"`
+	WorkerReported bool   `json:"worker_reported"`
+	WorkerClass    string `json:"worker_class"`
+	CleanAtExit    bool   `json:"clean_at_exit"`
+	ChildExitError bool   `json:"child_exit_error"`
+	Backstop       string `json:"backstop_cleanup"`
+	BackstopClass  string `json:"backstop_class"`
+	TerminalClass  string `json:"terminal_class"`
+	Rule           int    `json:"rule"`
+}
+
+func resolveTerminalClass(in terminalInput) terminalResolution {
+	r := terminalResolution{
+		Schema: "winkyou-router-terminal-resolution/1", WorkerReported: in.Reported,
+		CleanAtExit: in.Clean, ChildExitError: in.ChildErr, Backstop: in.Backstop,
+		TerminalClass: in.WorkerClass, Rule: 5,
+	}
+	if in.Reported {
+		r.WorkerClass = in.WorkerClass
+	}
+	if in.Backstop == "failed" {
+		r.BackstopClass = errorClass(in.BackstopErr)
+	}
+	if oneOf(r.TerminalClass, "cancelled", "expired", "success") {
+		r.Rule = 4
+	}
+	// Reproduce the original guardian decision order for the RED commit.
+	if !in.Reported {
+		r.TerminalClass = "c1c_router_io_failed"
+		r.Rule = 2
+	}
+	if !in.Clean {
+		if in.BackstopErr != nil {
+			r.TerminalClass = errorClass(in.BackstopErr)
+			r.Rule = 1
+		} else {
+			r.TerminalClass = "c1c_router_io_failed"
+			if in.Reported {
+				r.Rule = 3
+			}
+		}
+	}
+	if in.ChildErr && oneOf(r.TerminalClass, "cancelled", "expired", "success") {
+		r.TerminalClass = "c1c_router_io_failed"
+		r.Rule = 3
+	}
+	if !in.ResidueZero {
+		r.TerminalClass = "c1c_router_drain_failed"
+		r.Rule = 6
+	}
+	return r
+}
+
 // No string originating in a packet, filename, namespace or raw error can be
 // inserted into this public shape. Unknown external witnesses stay null.
 type Summary struct {
