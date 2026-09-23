@@ -225,12 +225,11 @@ func TestLinuxC1cRouterFullInstances(t *testing.T) {
 	if os.Getenv("WINKYOU_C1C_ROUTER_REQUIRED") != "1" {
 		t.Skip("requires isolated router proof job")
 	}
-	requireGateB3Environment(t)
-	requireGateB3HostConntrackGuard(t)
-	if !t.Run("failure-summary-contract", TestC1cRouterFailureSummaryProjection) || !t.Run("host-failure-contract", TestC1cRouterHostFailureCopy) {
+	guard := requireC1cProofEnvironment(t)
+	if !t.Run("failure-summary-contract", guard(TestC1cRouterFailureSummaryProjection)) || !t.Run("host-failure-contract", guard(TestC1cRouterHostFailureCopy)) {
 		t.FailNow()
 	}
-	if !t.Run("synchronous-delete-contract", TestC1cRouterSynchronousDeleteContract) {
+	if !t.Run("synchronous-delete-contract", guard(TestC1cRouterSynchronousDeleteContract)) {
 		t.FailNow()
 	}
 	c1cRouterCleanupReproductionBatches(t)
@@ -240,7 +239,7 @@ func TestLinuxC1cRouterFullInstances(t *testing.T) {
 	}
 	seenInstances := make(map[string]bool)
 	for sample := 1; sample <= 3; sample++ {
-		if !t.Run(fmt.Sprintf("fresh-%d", sample), func(t *testing.T) { testC1cRouterFullInstance(t, fieldBinary, routerBinary, seenInstances) }) {
+		if !t.Run(fmt.Sprintf("fresh-%d", sample), guard(func(t *testing.T) { testC1cRouterFullInstance(t, fieldBinary, routerBinary, seenInstances) })) {
 			t.FailNow()
 		}
 	}

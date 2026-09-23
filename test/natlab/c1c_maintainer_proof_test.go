@@ -3,6 +3,7 @@ package natlab
 import (
 	"errors"
 	"io/fs"
+	"path"
 	"strings"
 	"testing"
 )
@@ -32,7 +33,60 @@ type c1cProofTempStat struct {
 }
 
 func c1cHostProofMode(in c1cProofInput) (string, error) {
-	return "", errors.New("c1c_proof_unimplemented")
+	value, maintainer := in.Env[c1cMaintainerProofEnv]
+	for key, expected := range c1cCIAttestations {
+		actual, present := in.Env[key]
+		if maintainer && present {
+			return "", errors.New("c1c_proof_mixed_attestation")
+		}
+		if !maintainer && (!present || actual != expected) {
+			return "", errors.New("c1c_proof_attestation")
+		}
+	}
+	if !maintainer {
+		return "ci", nil
+	}
+	if value != "1" {
+		return "", errors.New("c1c_proof_attestation")
+	}
+	if in.EUID != 0 {
+		return "", errors.New("c1c_proof_root")
+	}
+	if in.SelfNet == 0 || in.InitNet == 0 || in.SelfMount == 0 || in.InitMount == 0 ||
+		in.SelfNet == in.InitNet || in.SelfMount == in.InitMount {
+		return "", errors.New("c1c_proof_namespace")
+	}
+	found := false
+	for _, line := range strings.Split(in.MountInfo, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 10 || fields[4] != in.Registry {
+			continue
+		}
+		// Registry is resolved by the read-only collector; do not assume that
+		// an unrelated /run/netns mount proves a /var/run/netns symlink.
+		if in.Registry != "/var/run/netns" && in.Registry != "/run/netns" {
+			continue
+		}
+		separator := 6
+		for separator < len(fields) && fields[separator] != "-" {
+			if strings.HasPrefix(fields[separator], "shared:") || strings.HasPrefix(fields[separator], "master:") {
+				return "", errors.New("c1c_proof_registry")
+			}
+			separator++
+		}
+		if separator+4 != len(fields) {
+			return "", errors.New("c1c_proof_registry")
+		}
+		found = true
+	}
+	if !found {
+		return "", errors.New("c1c_proof_registry")
+	}
+	if !path.IsAbs(in.Env["TMPDIR"]) || !in.Temp.Exists || !in.Temp.Directory ||
+		in.Temp.UID != 0 || in.Temp.Mode != fs.ModeDir|0o700 {
+		return "", errors.New("c1c_proof_tmpdir")
+	}
+	return "maintainer", nil
 }
 
 func c1cValidProofInput() c1cProofInput {
