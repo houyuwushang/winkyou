@@ -265,3 +265,29 @@ func TestC1cReviewSnapshotContractAndPrivacy(t *testing.T) {
 		}
 	}
 }
+
+func TestC1cReviewSnapshotCeilingExceptionIsReadOnly(t *testing.T) {
+	b, err := os.ReadFile(filepath.Join(repositoryRoot(t), "scripts/c1c-review-snapshot.sh"))
+	if err != nil {
+		t.Fatal("snapshot unavailable")
+	}
+	source := strings.ReplaceAll(string(b), "\r\n", "\n")
+	for _, tc := range []struct {
+		name, path, source string
+		allowed            bool
+	}{
+		{"exact_read_only", "scripts/c1c-review-snapshot.sh", source, true},
+		{"write", "scripts/c1c-review-snapshot.sh", strings.Replace(source, `"/usr/sbin/sysctl", "-n"`, `"/usr/sbin/sysctl", "-w"`, 1), false},
+		{"renamed", "scripts/renamed-snapshot.sh", source, false},
+		{"lost_init", "scripts/c1c-review-snapshot.sh", strings.Replace(source, `"--net=/proc/1/ns/net", `, "", 1), false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			writeArchitectureMutation(t, root, tc.path, tc.source)
+			violations, err := gateB3ConntrackAuthorityViolations(root)
+			if err != nil || (len(violations) == 0) != tc.allowed {
+				t.Fatal("snapshot ceiling exception escaped read-only boundary")
+			}
+		})
+	}
+}
