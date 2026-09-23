@@ -1,6 +1,8 @@
 # Gate C1c 一次性路由器 mini-spec
 
-状态：**Draft 基线已接受；C1c-2 实现已授权（2026-09-18），C1c-3 未授权。** 基线 `ee79fd9`，接受 SHA `abe7ccc`。
+状态：**Draft 基线已接受；C1c-2 实现已授权（2026-09-18）并已合入；C1c-3 首轮运行已授权
+（2026-09-23，范围与偏离见 §7）；Windows field 端点 C1c-2c/2d 实现已授权，Windows 实例未签发。**
+基线 `ee79fd9`，接受 SHA `abe7ccc`。
 本文、空模板、CI 通过或合并均不签发能力。C1c-2 实现与 exact-SHA field build、
 C1c-3 一次性环境创建/运行分别需要维护者另行授权与独立复审；之后仍不能自动进入 C2。
 
@@ -395,4 +397,5 @@ credential/attempt/machine 标识、云账号/区域、设备属性或原始日�
 | root 风险与三项硬化登记 | **接受登记**：Gate C1 §18.1 风险由实例中两人签字承担；三项硬化（drop privileges、seccomp/landlock、低权限 parser）在 C1c-2 逐项给出"已做证据"或"未做原因"，不以本栏代替。 |
 | 是否接受本 mini-spec；SHA/日期 | **接受为 Draft 基线**，`abe7ccc`（PR #147 合入），2026-09-18。 |
 | C1c-2 实现授权；范围/SHA | **授权**（2026-09-18）：基线 `58663e8`。范围 = 端点 field build（tag、实例解析器、sealed SSH/UDP/TUN authority、`wink` 现场子命令、kill switch、nm 门）与 router/observer 工具（两套 owned NAT 域、RFC 5780 观察者、conntrack 见证、销毁核对），两个独立 PR；**无现场 I/O**，全部验证在 memory/netns。 |
-| C1c-3 运行授权；私有instance引用 | 未授权。待 C1c-2 独立复审通过后另行签发。 |
+| C1c-3 运行授权；私有instance引用 | **授权**（维护者 2026-09-23，基线 `1386c36`）。范围：§3 七个场景全部授权，仍逐实例签发、两人签字、每个场景单独闭合；hard-16K 保持一次/24h 与 circuit 约束。**首轮布局修正**（对 §2 与本表首行的显式偏离）：单机三 namespace——router 与两端点全部位于维护者控制的一台 Linux 主机，形态同 `C1c Router Composition Proof`；跨机接线不在本轮。该主机为**非一次性共享主机**（承载其他服务、不重装）；补偿控制：`allow_global_conntrack_ceiling` 一律 false，全部实例运行于专用非 init 外层 network namespace，不修改主机 sshd/默认路由/全局 sysctl，kill switch 仅限 owned PID，第二人在开始前后各取一次主机状态快照且 diff 为空方可记"完好退出"；§4.3 三项硬化未做的 root 残余风险由此落在有其他服务的主机上，两人签字接受。**内核**：目标机 Ubuntu 22.04（5.15），CI 未实证；签发任何实例前须先在该主机、非 init netns 下以不改全局 ceiling 的维护者主机证明模式跑通现有完整实例证明（test-only 变更，另行 PR 复审），GuardianCrash 证明仍限 CI。**角色**：执行者为维护者授权的代理经 SSH 逐步执行，每步停在"复核通过"门；第二人为独立评审，凭只读访问核验并在私有 checklist 签字。SSH 目标、凭证、地址等私有值不进入仓库。 |
+| Windows 端点优先级；C1c-2c/2d 实现授权 | **授权实现**（维护者 2026-09-23）：维护者明确产品目标是 Windows 端点的 P2P 直连，Windows 不能缺席现场；§2 首轮 Linux 基线不再是唯一路线。授权两个实现子阶段（均无现场 I/O）：**C1c-2c** Windows field 端点——密封 Wintun capability（实例绑定、独占适配器）、地址/路由精确回滚、Job Object kill switch、Windows 残留见证（无 conntrack 记 null+reason，不填 0）、Windows field 入口、普通 Windows 构建 nm 零命中；**C1c-2d** 远端端点接入 router anchor 的跨机接线（先设计后实现，设计经独立复审）。Wintun 真实适配器证明：先尝试 GitHub 托管 windows-latest；不可行时允许在维护者 Windows PC 本地证明并私有归档，不接 self-hosted runner。两者各自 docs → RED → 实现 → 变异 → 复审；Windows 实例仍须另行签发。 |
