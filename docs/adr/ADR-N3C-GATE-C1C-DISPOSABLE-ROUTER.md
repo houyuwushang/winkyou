@@ -397,6 +397,10 @@ Linux TUN_EXCL 的同一接口，独占性必须以并发占名/占 GUID 的负�
 
 #### 4.5.3 地址/路由方案：提议 A，类型化 IP Helper
 
+> 复审裁决（§4.5.8）：接受"类型化 IP Helper、逐项 row、禁 Flush/DNS/netsh"的方案本体；
+> 打包裁定为 **A′ 仓库内最小子集**，不新增 go.mod 模块。下文对 v0.5.3 的依赖核对保留为
+> 参考实现与风险记录，不再是 B1 的引入指令。
+
 | 候选 | 取舍 |
 | --- | --- |
 | A：仅 `winipcfg` 的逐项 IP Helper 调用 | 提议采用。按 LUID、typed prefix/row 做精确比对，无额外配置 child、无本地化输出解析；更适合 sealed authority 和可验证回滚。 |
@@ -588,17 +592,17 @@ profile/stage/class、counts、duration/residue、SHA-256 与审查结论，原�
 路径和日志不上 CI artifact。本地 PASS 不改写托管 RED；由独立复审确认替代验收，
 否则 Windows 现场签发仍阻断。
 
-#### 4.5.8 B0 复审栏（本 PR 不自我批准）
+#### 4.5.8 B0 复审栏（独立评审裁决 2026-09-23）
 
 | 项目 | 冻结提案 / 接受结果 |
 | --- | --- |
-| preflight 只读 OS 查询；无效授权零能力 I/O | 维护者已澄清；实现与负面门待 B1/B2。 |
-| A：winipcfg v0.5.3、逐项 IP Helper、禁止 Flush/DNS fallback | 待独立复审；不升级 Go，不引入本 PR。 |
-| identity 投影/GUID 与 Windows scope/路径、claim 持久化 | 待独立复审及 golden/crash 实证。 |
-| Windows initiator 优先；responder 和跨 OS 统一实例不冒充已闭合 | 待独立复审；C1c-2d 处理异构路径/依赖/schema。 |
-| B1/B2 精确文件增补、Windows nm/Job/残留门 | 待逐项接受；没有通配生产授权。 |
-| 托管 proof / 不可行时同测试本地替代 | 沿用 §7 授权；结果和所需主机动作仍须独立核验。 |
-| B0 接受 SHA / 复核日期 | 待填写。 |
+| preflight 只读 OS 查询；无效授权零能力 I/O | **接受**。零能力 I/O 的定义按 §4.5.1：读授权文件、构建见证、machine scope 与只读 OS 冲突查询属必要本地读取；DLL 加载、适配器枚举之外的驱动调用、地址/路由写入、child/socket 创建都在有效 authority 之后。 |
+| A：winipcfg v0.5.3、逐项 IP Helper、禁止 Flush/DNS fallback | **接受"类型化 IP Helper、逐项 row、禁 Flush/SetRoutes/DNS/netsh"的方案本体；打包方式裁定为 A′：仓库内最小类型化子集**（`pkg/netif/field_iphlpapi_windows.go`，仅本节所需的 LUID/GUID 转换、单地址 Create/Get/Delete、单路由 Create/Get/Delete、接口 row 的 get/compare/set/restore 与 FreeMibTable），不新增 go.mod 模块。理由：与 Linux 侧自实现 netlink 而不引入库的先例一致；不存在的调用无需证明不可达（v0.5.3 包内 `os/exec` DNS/netsh fallback 与 Flush 系列从代码层面消失）；避免 Go 1.25 约束、旧版本安全审查与模块图膨胀。允许以 v0.5.3 的 `winipcfg` 为参考实现，逐 struct/函数记录上游文件与 commit，复制代码保留 MIT 版权声明；每个 struct 须有 `unsafe.Sizeof`/字段偏移 golden 对照 Microsoft 文档。若移植子集在实现中显著超出上述清单，先报数量与原因再定，不自行切回引入模块。 |
+| identity 投影/GUID 与 Windows scope/路径、claim 持久化 | **接受**：`winkyou-c1c-wintun-identity/1` 投影、15 字符名、GUID 规范字符串往返与双 role golden；MachineGuid（64-bit view）+ canonical namespace 路径 + 独立 domain 的 Windows machine scope；KnownFolder Profile 定位、owner+SYSTEM DACL、reparse 拒绝、独占创建的 one-shot claim；golden/crash 实证在 B2。MachineGuid 不是密码学身份，该限制按原文登记。 |
+| Windows initiator 优先；responder 和跨 OS 统一实例不冒充已闭合 | **接受**：本轮只做 Windows initiator；`RunFieldResponder` 在 Windows 保持拒绝；异构（Windows initiator + Linux responder）实例的路径归属、逐角色依赖摘要与是否需要 `/3`，连同跨机 attachment 一起归 C1c-2d 设计。**由此 Windows 现场实例的关键路径 = B1 + B2 + C1c-2d（设计与实现）**，§7 签发以此为前提。 |
+| B1/B2 精确文件增补、Windows nm/Job/残留门 | **逐项接受 §4.5.5 表列出的文件**（B1 主体、B1 必要增补、B2 原清单、B2 parser/path 增补、B2 持久化增补、B2 WG 增补），无通配授权；A′ 使 B1 的 `go.mod`/`go.sum` 项失效，改为 `field_iphlpapi_windows.go`。修改共享的 `field_authority_fieldc1c.go`、`instance.go`、`validate.go` 时 Linux `/1`、`/2` golden 与拒绝回归逐项不变。`missing_reasons` 作为固定词表的可选公开字段接受，Linux 省略，须纳入 summary 白名单测试。Wintun DLL：B1 须写明所用 Go 模块的实际加载机制（嵌入内存加载还是磁盘文件），记录模块版本与嵌入 DLL 哈希；嵌入即由 exact-SHA 二进制覆盖。 |
+| 托管 proof / 不可行时同测试本地替代 | **接受并补充合并纪律**：若托管 `windows-latest` 无法创建适配器，required job **收窄**为编译、nm、纯逻辑与 fake 配置事务（不创建适配器）并保持绿色；真实适配器矩阵改为维护者 PC 本地证明（同 SHA、同测试、同显式门控），私有归档，公开证据文档记一次托管 RED 的阶段与 error code 类别。main 不得长期携带必红的 required job；本地 PASS 不改写托管 RED 的记录，替代验收由独立评审确认。 |
+| B0 接受 SHA / 复核日期 | **接受**：head `69d98e4`，2026-09-23；设计门关闭，B1 可开工；B1/B2/C1c-3 各自仍须独立复审。 |
 
 本节不签发 Windows 实例，不做 SSH assembly/跨机 attachment，不改协议、冻结数字、
 Governor/Promote/FINISH、loopback/stdio、service/firewall/scheduled task；NO-GO 继续有效。
