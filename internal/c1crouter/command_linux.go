@@ -157,24 +157,27 @@ func runGuardian(ctx context.Context, path string) (summary Summary) {
 		}
 		clear(data)
 	}
-	if !reportedResult {
-		summary.Class = "c1c_router_io_failed"
+	in := terminalInput{
+		Reported: reportedResult, WorkerClass: summary.Class, Clean: j.value.Clean,
+		ChildErr: childErr != nil, Backstop: "not_needed",
 	}
-	if !j.value.Clean {
+	if !in.Clean {
 		t := &topology{snapshot: s, journal: j}
 		if e = t.cleanup(&summary.Counts); e != nil {
-			summary.Class = errorClass(e)
+			in.Backstop, in.BackstopErr = "failed", e
 		} else {
-			summary.Class = "c1c_router_io_failed"
+			in.Backstop = "success"
 		}
-	}
-	if childErr != nil && oneOf(summary.Class, "cancelled", "expired", "success") {
-		summary.Class = "c1c_router_io_failed"
 	}
 	summary.Stage = "terminal"
 	summary.Counts.ProcessResidue = zero() // exact child Wait completed above
-	if !residueZero(summary.Counts) {
-		summary.Class = "c1c_router_drain_failed"
+	in.ResidueZero = residueZero(summary.Counts)
+	r := resolveTerminalClass(in)
+	summary.Class = r.TerminalClass
+	if e = writePrivateJSON(s.Directory, "terminal-resolution.json", r); e != nil {
+		// ADR §4.4 rule 7: inability to persist the resolution is a new I/O
+		// failure, irrespective of the private writer's underlying error class.
+		summary.Class = errorClass(errIO)
 	}
 	return summary
 }

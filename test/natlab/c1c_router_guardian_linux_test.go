@@ -67,6 +67,29 @@ func TestLinuxC1cRouterGuardianCrash(t *testing.T) {
 			t.Fatal("router crash residue unknown or nonzero")
 		}
 	}
+	var resolution struct {
+		Schema         string `json:"schema"`
+		WorkerReported bool   `json:"worker_reported"`
+		WorkerClass    string `json:"worker_class"`
+		CleanAtExit    bool   `json:"clean_at_exit"`
+		ChildExitError bool   `json:"child_exit_error"`
+		Backstop       string `json:"backstop_cleanup"`
+		BackstopClass  string `json:"backstop_class"`
+		TerminalClass  string `json:"terminal_class"`
+		Rule           int    `json:"rule"`
+	}
+	resolutionPath := filepath.Join(router.Evidence, "terminal-resolution.json")
+	c1cRouterRead(t, resolutionPath, &resolution)
+	if stat, err := os.Stat(resolutionPath); err != nil || !stat.Mode().IsRegular() || stat.Mode().Perm() != 0o600 {
+		t.Fatal("router crash terminal resolution is not a private regular file")
+	}
+	if resolution.Schema != "winkyou-router-terminal-resolution/1" || resolution.WorkerReported ||
+		resolution.WorkerClass != "" || resolution.CleanAtExit || !resolution.ChildExitError ||
+		resolution.Backstop != "success" || resolution.BackstopClass != "" ||
+		resolution.TerminalClass != "c1c_router_io_failed" || resolution.Rule != 2 || summary.Class != resolution.TerminalClass {
+		t.Fatal("router crash terminal resolution mismatch")
+	}
+	t.Logf("ROUTER_RESOLUTION scenario=crash worker_reported=%t worker_class=empty clean_at_exit=%t child_exit_error=%t backstop_cleanup=%s backstop_class=empty terminal_class=%s rule=%d", resolution.WorkerReported, resolution.CleanAtExit, resolution.ChildExitError, resolution.Backstop, resolution.TerminalClass, resolution.Rule)
 	t.Log("ROUTER_GUARDIAN worker_killed=1 saved=1 readback=1 restored=1 residue=0")
 }
 

@@ -31,6 +31,71 @@ var ErrOwnership = errors.New("c1c_router_ownership_invalid")
 var ErrDrain = errors.New("c1c_router_drain_failed")
 var ErrCommandUnavailable = errors.New("c1c_router_command_unavailable")
 var ErrQuery = errors.New("c1c_router_query_failed")
+var errIO = errors.New("c1c_router_io_failed")
+
+func errorClass(e error) string {
+	for _, candidate := range []error{ErrDrain, ErrOwnership, ErrResource, ErrQuery, ErrCommandUnavailable, ErrInvalid, errIO} {
+		if errors.Is(e, candidate) {
+			return candidate.Error()
+		}
+	}
+	return "c1c_router_io_failed"
+}
+
+type terminalInput struct {
+	Reported    bool
+	WorkerClass string
+	Clean       bool
+	ChildErr    bool
+	Backstop    string // not_needed, success, or failed
+	BackstopErr error  // non-nil only for failed
+	ResidueZero bool
+}
+
+// terminalResolution is private evidence, not an extension of public Summary.
+type terminalResolution struct {
+	Schema         string `json:"schema"`
+	WorkerReported bool   `json:"worker_reported"`
+	WorkerClass    string `json:"worker_class"`
+	CleanAtExit    bool   `json:"clean_at_exit"`
+	ChildExitError bool   `json:"child_exit_error"`
+	Backstop       string `json:"backstop_cleanup"`
+	BackstopClass  string `json:"backstop_class"`
+	TerminalClass  string `json:"terminal_class"`
+	Rule           int    `json:"rule"`
+}
+
+func resolveTerminalClass(in terminalInput) terminalResolution {
+	r := terminalResolution{
+		Schema: "winkyou-router-terminal-resolution/1", WorkerReported: in.Reported,
+		CleanAtExit: in.Clean, ChildExitError: in.ChildErr, Backstop: in.Backstop,
+	}
+	if in.Reported {
+		r.WorkerClass = in.WorkerClass
+	}
+	if in.Backstop == "failed" {
+		r.BackstopClass = errorClass(in.BackstopErr)
+	}
+	peaceful := oneOf(in.WorkerClass, "success", "cancelled", "expired")
+	// ADR §4.4: successful cleanup never erases an authoritative failure.
+	switch {
+	case in.Backstop == "failed":
+		r.TerminalClass, r.Rule = r.BackstopClass, 1
+	case !in.Reported:
+		r.TerminalClass, r.Rule = errorClass(errIO), 2
+	case peaceful && (!in.Clean || in.ChildErr):
+		r.TerminalClass, r.Rule = errorClass(errIO), 3
+	case peaceful:
+		r.TerminalClass, r.Rule = in.WorkerClass, 4
+	default:
+		r.TerminalClass, r.Rule = in.WorkerClass, 5
+	}
+	// Counts describe final residue; they do not replace an existing cause.
+	if oneOf(r.TerminalClass, "success", "cancelled", "expired") && !in.ResidueZero {
+		r.TerminalClass, r.Rule = errorClass(ErrDrain), 6
+	}
+	return r
+}
 
 // No string originating in a packet, filename, namespace or raw error can be
 // inserted into this public shape. Unknown external witnesses stay null.

@@ -17,8 +17,6 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-var errIO = errors.New("c1c_router_io_failed")
-
 func inode(path string) (uint64, error) {
 	var st unix.Stat_t
 	if unix.Stat(path, &st) != nil {

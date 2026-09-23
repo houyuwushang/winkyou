@@ -194,11 +194,3 @@ func writePrivateJSON(dir, name string, value any) error {
 	}
 	return syncDir(dir)
 }
-func errorClass(e error) string {
-	for _, candidate := range []error{ErrDrain, ErrOwnership, ErrResource, ErrQuery, ErrCommandUnavailable, ErrInvalid, errIO} {
-		if errors.Is(e, candidate) {
-			return candidate.Error()
-		}
-	}
-	return "c1c_router_io_failed"
-}
