@@ -329,6 +329,285 @@ guardian 在应用最终计数后只调用一次纯 resolver，并用既有 0600
 不变，TMPDIR 观察项不在此次修复范围。原 job 未保留 worker 原始判定，覆盖原因仍是结合
 源码的推断；新记录为后续实例直接区分 worker 决策与 guardian 兜底提供证据，不回填历史。
 
+### 4.5 Windows field 端点 mini-spec（B0，待独立复审）
+
+本节是 2026-09-23 的 **设计提案，不是实现验收或 Windows 实例签发**。目标是在维护者
+自己的 Windows 端点上保留同一 sealed authority、单次直连和 WireGuard 数据面，并证明
+创建、配置、退出、崩溃后的 owned 状态；不借平台移植增加目标、子进程、预算或管理能力。
+B0 单独 docs-only PR；接受后才进入 B1（Wintun capability）和 B2（入口及证明），跨机
+attachment 仍属另行复审的 C1c-2d。Linux 首轮 A0 的合入门与本节互不替代。
+
+维护者已澄清两项设计前提：preflight 可以读取本机 OS 状态，但不能发网络包或修改配置；
+本节可以列出原 B2 文件清单遗漏的 Windows 实例、路径校验依赖。后者须随本节一起复审，
+不是任意扩展生产文件的授权；下面标为待决的闭包不得在 B1/B2 中自行补齐。
+
+#### 4.5.1 现状、平台边界与拒绝顺序
+
+基线 `bf8ba21` 的实际限制如下，不以现有 memory/CI 测试冒充 Wintun 证明：
+
+| 现有文件 | 已核对的限制 / 本节处理 |
+| --- | --- |
+| `internal/v2/gatecorchestrator/field_entry_unsupported.go` | `!linux && fieldc1c` 始终拒绝；新增 Windows 专用入口，unsupported 收窄。 |
+| `internal/v2/fieldc1c/instance.go`、`validate.go`、`path_unsupported.go` | Load、device OS 与私有路径都只支持 Linux；必须显式处理，不能只改入口 tag。 |
+| `pkg/netif/field_tun_linux.go`、`field_netlink_linux.go` | 只有 Linux sealed interface 与本地 netlink；Windows 不调用或模拟这些 syscall。 |
+| `pkg/netif/tun_windows_wg.go` | 普通路径实际使用 `wgtun.CreateTUN` 与 PowerShell 脚本，不是受限 field adapter；不改它，也不复用其可变名称/地址/路由配置。 |
+| `pkg/tunnel/fieldc1c_linux.go` | field WG 封装仅 Linux；Windows 需要同等 `memoryOnly`、唯一 promoted transport 与 Start/AddPeer 见证，不能回落普通 native bind。 |
+| `internal/v2/sshassembly/process_windows.go` | 已有 suspended-start、单 child、kill-on-close Job Object；复用原路径，保留 `Killed=true` 预期。 |
+
+拒绝顺序固定：严格解析及本地私有材料/构建/角色/时效核验 → 生成不透明 authority →
+只读 OS 冲突预检 → 原 machine governor/admission/claim 流程 → 原协议与 field interface
+创建。无效 authority 在适配器枚举、地址/路由查询、DLL 加载、child/socket/interface
+创建前拒绝。读取授权文件、构建见证和受保护 machine scope 仍是既有必要本地读取；
+“零 I/O 拒绝”指零能力 I/O，不能解释为不读输入即可核验材料或发现系统路由冲突。
+
+preflight 的唯一新增 OS 能力是只读的管理员 token、adapter、地址、路由、owned process
+状态查询；无 DNS、IPC 探测、ping、powershell、netsh、配置写入或驱动安装。无法可靠
+读取时拒绝，不把 unknown 当作无冲突。接口创建前须再次验证实例窗口和冲突快照。
+
+#### 4.5.2 不透明 Wintun authority 与身份派生
+
+保留 `FieldInterfaceAuthority` → `PreflightFieldInterface` / `NewFieldInterface` /
+`FieldInterfaceWitness` API。token 字段私有、零值无效、单次 CAS 消费，绑定本地实例、
+role、MTU、local/peer IPv4 和唯一 peer `/32`；不暴露 Wintun handle、LUID、raw Device
+或通用 IP 配置器。创建后的 `SetIP`、`AddRoute`、`RemoveRoute` 恒为 `ErrFieldInterface`。
+close 后 Read/Write/Inject/Receive 全部拒绝；Close 幂等并等待 owned reader 结束。
+
+名称摘要不能直接采用“包含接口名称的完整 JSON 摘要”，否则出现名称与摘要的循环依赖。
+本节定义独立、secret-free 的实例身份投影：
+
+```text
+D = SHA256(UTF8("winkyou-c1c-wintun-identity/1\n") ||
+           BASE64URL_DECODE(instance_id) || 0x00 || UTF8(role))
+name = "wcf" || LOWER_HEX(D[0:6])
+requested_guid = D[16:32] 按字节顺序分组为 8-4-4-4-12 个小写 hex 字符
+```
+
+instance ID 解码必须恰好 16 bytes，role 只能是本地受审入口选定的角色。名称恰好 15 个
+ASCII 字符，满足现有命名限制。GUID 从上述规范字符串解析为 Windows GUID，禁止把
+16-byte slice 直接 unsafe-cast 成混合字节序结构。identity 投影、GUID 字段与字符串往返
+须有双 role golden。trusted config 与实例中的名称都必须已等于派生值，不能运行时改写
+config 或制造新实例；完整实例摘要继续承担原有材料绑定，不能被 D 替代。
+
+preflight 枚举已存在及可见的残留适配器：同名 **或** 同 GUID 即拒绝，不调用 OpenAdapter
+接管，不按名称先删后建。仅一次 `CreateTUNWithRequestedGUID`，不修改上游全局 GUID/
+tunnel-type，不走“创建失败再打开”的回退。创建后按 handle 的 LUID 回读 GUID、名称与
+接口身份，必须全等；检查与创建间冲突也必须拒绝，不能重试换名。Windows PnP 不提供
+Linux TUN_EXCL 的同一接口，独占性必须以并发占名/占 GUID 的负面 OS 测试证明，不能
+仅凭上游 API 名称或注释宣称成立。任何句柄归属不确定时不得删除他人对象。
+
+#### 4.5.3 地址/路由方案：提议 A，类型化 IP Helper
+
+> 复审裁决（§4.5.8）：接受"类型化 IP Helper、逐项 row、禁 Flush/DNS/netsh"的方案本体；
+> 打包裁定为 **A′ 仓库内最小子集**，不新增 go.mod 模块。下文对 v0.5.3 的依赖核对保留为
+> 参考实现与风险记录，不再是 B1 的引入指令。
+
+| 候选 | 取舍 |
+| --- | --- |
+| A：仅 `winipcfg` 的逐项 IP Helper 调用 | 提议采用。按 LUID、typed prefix/row 做精确比对，无额外配置 child、无本地化输出解析；更适合 sealed authority 和可验证回滚。 |
+| B：固定系统目录的 netsh + typed argv | 不采用。即使固定 executable、无 shell，仍新增 child/输出解析/退出排水责任，与既有一个 SSH child 的计费边界不合；不是因实现工作量而舍弃。不得作为 A 失败时的 runtime fallback。 |
+
+2026-09-23 依赖核对：项目固定 Go 1.23.1。上游
+[v1.0.1 go.mod](https://raw.githubusercontent.com/WireGuard/wireguard-windows/v1.0.1/go.mod)
+要求 Go 1.25.0，不能顺手升级工具链。提议固定
+[v0.5.3](https://raw.githubusercontent.com/WireGuard/wireguard-windows/v0.5.3/go.mod)
+（声明 Go 1.18），只引入 `golang.zx2c4.com/wireguard/windows/tunnel/winipcfg`。
+仓库外依赖检查已用 Go 1.23.1、现有 `x/sys v0.32.0` 完成 `go list -deps -export`：
+非标准库 package 闭包仅 winipcfg、`x/sys/windows`、`x/sys/windows/registry`。
+这只是编译/闭包证据，不是驱动、漏洞审查或运行验收。
+
+模块图与链接包闭包须分开报告：该版本 go.mod 还声明 lxn walk/win、x/crypto、x/net、
+x/text、x/mod、x/tools、x/xerrors；仅导入上述包不意味着链接 GUI/service/tunnel manager。
+未来 go.mod/go.sum 只准加入审核后的必需差异，不复制依赖模块的 replace，不降低已有
+x/* 版本；B1 重算 MVS 与链接闭包，漂移则停。v0.5.3 是旧版本，更新维护和安全审查是
+显式代价，不能把 Go 兼容性写成安全保证；版本裁决随 B0 复审，不能自动取 latest。
+
+[上游 LUID 实现](https://raw.githubusercontent.com/WireGuard/wireguard-windows/v0.5.3/tunnel/winipcfg/luid.go)
+的 `SetIPAddresses` 会先 Flush，故 **不调用**。仅允许新建 owned LUID 的单条地址 Create/
+AddIPAddress、单条 AddRoute、对应精确 Get/Delete，以及本接口 MTU 等必要 row 的
+get/compare/set/restore。禁止 Flush*、SetRoutes*、SetDNS/FlushDNS、注册自动重配回调。
+v0.5.3 包内还含 `os/exec` 的 DNS/netsh fallback，package import 本身不是零 child 证明；
+B1 必须给出受审调用子集及链接符号检查，禁止该 fallback 从 field 路径可达。
+
+配置事务只作用于本次新建适配器：保存创建前全局只读快照、创建后的 owned row 初值；
+只加本地 `/32` 和唯一 peer `/32` on-link route，保存每个成功动作和完整键值。每次写后
+逐值回读（LUID/GUID、地址/prefix、route/next-hop/metric、MTU），错误即停止收发。
+不设置系统 DNS、默认路由、全局 metric、forwarding、防火墙或他人接口。与既有地址或
+会被新 peer host route 遮蔽的非默认路由冲突即拒绝；默认出口不能被此路由替换。
+
+回滚按逆序 compare-and-delete/restore，只撤销本次成功新增且身份/值仍匹配的对象。
+外部已改值时保留冲突/失败见证，不强行覆盖；仍关闭自己的 handle 并检查残留。无关
+接口/地址/路由不得变化，不能用全表 restore 抹掉并发变化。Close 返回不是残留为零的
+证据，必须独立枚举；部分创建、每个配置步骤失败与 crash 都须覆盖。不改变原 2s drain，
+超过即 RED，不能以 Windows 系统调用慢为由延长产品上限。
+
+Wintun DLL 沿用现有 Go wrapper，取自
+[官方签名分发](https://www.wintun.net/)的固定版本；B1/B2 私有构建记录保留分发包、DLL
+哈希与签名校验结果。只从受保护的受审安装位置加载，禁止工作目录/PATH 搜索降级、
+运行时下载或自动换驱动。上游日志须在任何 driver 调用前进入私有受限记录，不能泄漏到
+公开 stdout/stderr。首次 driver 安装或遗留 driver-store 状态与 owned adapter 清理分列；
+本节不授权主机安装/卸载驱动，更不允许删除别的软件使用的驱动来凑零残留。
+
+#### 4.5.4 kill switch、进程身份与残留见证
+
+复用原 SSH child Job Object 的 suspended-start → assign → resume 和 active-process=1，
+不允许 breakaway，不为 field 新建管理 daemon。controller 身份为持有的 process handle
+加 PID 和 `GetProcessTimes` creation time；停止前复核相同实例/身份，随后针对该 handle
+终止，不能按进程名或重新查询出来的 PID 杀进程。父退出使 owned child Job 关闭，再
+等待各 owned process 的退出 handle；Job 句柄关闭本身不能冒充 Wait 完成。
+[进程创建时间](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-getprocesstimes)
+与 [Job Object](https://learn.microsoft.com/en-us/windows/win32/procthread/job-objects) 是
+两种不同见证。外部测试/维护者持有 controller 的停止权，不给 endpoint 添加第二 child。
+Windows 原有 `Killed=true` 是该取消路径的预期，仍需 class、FINISH 和 drain 共同判定。
+
+| 层 | 必需 Windows 见证 / unknown 规则 |
+| --- | --- |
+| UDP socket | `GetExtendedUdpTable` 的 OWNER_PID 表覆盖 IPv4/IPv6；运行中将行与仍持有的进程身份关联，退出后核对 owned 端点消失。查询失败、PID 复用无法排除、快照不完整记 null/reason，不按 PID 数字单独归属。 |
+| interface/address/route | 回读 owned GUID/LUID，正常/异常关闭后适配器不存在、owned 地址/路由为零；前后无关配置 diff 为空。设备暂不可见/枚举失败不是 absent。 |
+| process/child | retained process handle Wait、Job 关闭/成员退出、owned child 计数归零；无关管理通道不在 Job 中。 |
+| conntrack | terminal/peak/residue 均 null，reason 固定 `windows_no_conntrack`；绝不借 UDP 表或 router 的 conntrack 填本机 0。 |
+| packet/lease/ledger/WG | 保留现有 actual/charged 分账、TransportLease ownership、BURN/FINISH/circuit、challenge 与 post-OOB 数据；不从应用帧反推 OS TCP 包。 |
+
+[UDP endpoint 表接口](https://learn.microsoft.com/en-us/windows/win32/api/iphlpapi/nf-iphlpapi-getextendedudptable)
+不是 flow/conntrack 表。原公开 `counts` 中 Windows conntrack 项为 null；提议新增可选
+`missing_reasons`（仅固定 key/reason 白名单、Linux 省略保持原输出），禁止 raw OS error、
+PID、GUID、地址/路径进入 summary。Windows substitute witness 可证明 owned socket 与
+配置排空，不能宣称本机 NAT 状态归零；§7 签发须单列接受这一平台证据限制。
+
+#### 4.5.5 入口、实例与平台路径的最小闭包
+
+新增 `field_entry_windows.go`，tag 精确为 `windows && fieldc1c`；unsupported 为
+`!linux && !windows && fieldc1c`。双门、exact SHA、VCS clean、二进制/依赖/config hash、
+单次 claim、原 64 KiB、未知/重复字段拒绝与 timeout/circuit 全部保留。不接默认 `wink up`，
+不改变 ordinary child、stdio v1/v2、Linux forced-command wrapper 或 router。
+
+本节先提出 **Windows initiator 的本机能力和入口证明**；responder 组合通过受审隔离
+fixture 验证协议，不据此宣称已完成 Windows SSH 服务/forced-command 安装。Windows
+`RunFieldResponder` 在平台部署闭包另行冻结前保持拒绝；不把 Linux UID 0 wrapper 改成
+任意 Windows command。该角色边界须在 B0 复审明确接受，不能在实现中默默决定。
+
+机器 governor 路径直接调用 [namespace.go](../../internal/governor/namespace.go) 的
+`MachineNamespacePath`，Windows 来源是
+[namespace_windows.go](../../internal/governor/namespace_windows.go) 中 KnownFolder
+ProgramData 与固定 `WinkYou-SafetyV2` 子目录；不能采用环境变量 override、临时目录或
+user-acknowledged scope。只核对已准备的 scope，不自动创建/reset ledger。
+
+Windows machine-reference 派生不是现有 Linux machine-id 实现已支持的功能。提案是在
+field-only `path_windows.go` 中只读受保护本机 registry 的 MachineGuid（64-bit view，
+严格 GUID 格式，规范为不带分隔符的小写 32 hex），与 OS 解析的 canonical machine
+namespace 路径、独立 `winkyou-c1c-machine-scope/windows/1\n` domain 一起 SHA-256，
+输出仍为 `machine-scope-sha256/1:<SHA256>`。路径采用 OS 回读的卷身份与相对路径规范
+表示，拒绝 reparse/UNC/device/alternate-stream/相对路径，不使用 hostname、用户名或
+随机 owner instance ID。读取失败/标识漂移/克隆冲突 fail-closed，不创建替代标识。
+这个新派生规则须有路径大小写、同机器不同用户、重启一致性与克隆风险 golden/测试；
+不能声称 MachineGuid 是密码学身份或能抵抗管理员克隆。
+
+实例树从当前受审 token 的 KnownFolder Profile 定位，不读取 HOME/USERPROFILE/PATH。
+沿用约定私有树及一个 exact instance ID，不扫描候选。文件用现有 pairgen Windows
+owner+SYSTEM protected DACL、single-link、reparse 拒绝约束；父目录逐级核验无非授权
+写权限，私有子树不得继承宽松 ACL，不能用 chmod 数字假装 DACL。创建证据/claim 必须
+采用受保护的独占创建并持久记录 one-shot claim；不得把现有 directory Sync 在 Windows
+报错改成无条件成功。未完成 claim 的崩溃仍不得自动重用实例。
+
+必须保留两类设计前置，不能由平台移植私下改 schema：
+
+- `/1` 的 Linux 行为和拒绝 golden 保留；Windows OS 分支只能在显式 `/2` 下提议扩展，
+  当前 `/2` 仍有共享私有路径和共同 endpoint dependency digest。异构构建可能有不同
+  linked module 集合，跨 OS 的路径语法也不相同；不能跳过任一 digest 或按本机规则改写
+  对端路径。本机 Wintun proof 不依赖真实异构实例；跨机统一实例的路径归属、逐角色依赖
+  与是否需要 `/3` 留给 C1c-2d 设计，闭合前真实异构实例仍拒绝。
+- 名称/GUID 的 secret-free 派生、Windows 证据持久化与 field WG 封装是必要依赖，不是
+  原 B2 两个入口文件能实现的功能。下表是送审的精确增补清单，未接受前不写实现。
+
+| 阶段 | 拟允许文件（含同名专用测试） | 唯一用途 / 不可越界 |
+| --- | --- | --- |
+| B1 | `pkg/netif/field_tun_windows.go`、`field_ipcfg_windows.go`；`go.mod`、`go.sum`；原 architecture 精确登记 | sealed Wintun、typed owned IP rows、回滚、固定依赖；不改普通 Windows adapter。 |
+| B1 必要增补 | `internal/v2/fieldc1c/identity_fieldc1c.go`、`pkg/netif/field_authority_fieldc1c.go` | 从有效 Instance 暴露仅派生身份的窄方法、Windows token 的精确比对；不暴露完整文档或可伪造构造器，不改 Linux 名称规则。 |
+| B2 原清单 | `internal/v2/gatecorchestrator/field_entry_windows.go`、`field_entry_unsupported.go`、`field_summary_fieldc1c.go`；`.github/workflows/field-c1c-windows.yml`；`internal/architecture/` 专用测试；`docs/GATE-C1C-WINDOWS-FIELD-EVIDENCE.md` | 显式入口、固定 null/reason、required proof；不修改生产预算。 |
+| B2 已获准列入设计的 parser/path 增补 | `internal/v2/fieldc1c/instance.go`、`validate.go`、`path_windows.go`、`path_unsupported.go` | 平台/role 分流、Windows 本机 scope 与私有路径；unsupported tag 收窄，Linux parser 逐项回归；不是跨机 schema 重设计。 |
+| B2 另需本节接受的持久化增补 | `internal/v2/fieldc1c/evidence.go`、`evidence_windows.go`、`evidence_nonwindows.go` | 把现有 Linux 路径原样保留在非 Windows helper，Windows 使用持久 one-shot claim 与精确 DACL，补 crash 证明；不改 governor journal/recovery。 |
+| B2 另需本节接受的 WG 增补 | `pkg/tunnel/fieldc1c_windows.go` | 与 Linux field WG 封装等价，仍禁 native bind；不动 Gate B/C handoff/completion。 |
+
+若实施需要再动 `gatecstage`、`sshchildwrapper`、普通 `cmd/wink` dispatcher、系统安装器或
+表外生产文件，先提交精确缺口复审，不以“移植闭包”无限扩张。Windows responder 服务、
+全机状态恢复器、通用 netsh/registry 写能力和跨机接线不在此表。
+
+#### 4.5.6 architecture、nm 与变异门
+
+在 `internal/architecture/field_c1c_boundary_test.go` 中按文件名添加 Windows importer/
+constructor 点；只准本节受审入口签发 authority。显式允许 `windows && fieldc1c` 与
+`!linux && !windows && fieldc1c`，不得把检查改成“含 fieldc1c 就行”。新本地 DLL/syscall
+调用只登记 exact file + function；不准整个 netif/fieldc1c 包获得 raw 网络/exec 权限。
+
+普通 Windows 构建 `GOOS=windows go build -buildvcs=true ./cmd/wink`、单独 natlab 和单独
+c1bproof 的 field 符号为零；Windows `fieldc1c` positive set 至少逐一命中：
+
+```text
+winkyou/internal/v2/fieldc1c.Load
+winkyou/internal/v2/sshassembly.NewFieldAuthority
+winkyou/internal/probeio.NewFieldUDPFactory
+winkyou/pkg/netif.NewFieldInterface
+winkyou/pkg/tunnel.NewFieldWireGuard
+winkyou/internal/v2/gatecorchestrator.RunFieldInitiator
+```
+
+Linux 原 positive set（含 ExecFieldRoot）和 golden 不变；Windows 不为了凑相同符号而
+引入 Linux wrapper。禁 inlining 的辅助 nm 构建可逐函数见证，但 ordinary release 构建
+仍独立检查，不用空集合、仅 -run 编译或无关二进制充数。依赖 netsh/DNS fallback 的
+不可达证明与本节 field 符号门分开，不能混淆“包可链接”与“调用被授权”。
+
+必有 RED→GREEN/变异：无/过期 token 仍枚举或创建；同名/同 GUID 接管；绕过单用 CAS；
+raw handle 泄漏；SetIP 后门；Flush/DNS/netsh；跳过逐项 readback/rollback；错误 PID
+创建时间仍 kill；conntrack 填 0；Windows responder 意外启用；普通构建可达 field；
+claim 崩溃后再用。测试缺权限不能声称变异已被 OS 证据拒绝。
+
+#### 4.5.7 实证计划、预算与停止门
+
+新 required workflow 名为 `Field C1c Windows Build Proof`，运行于管理员
+`windows-latest`。真实测试须显式 `WINKYOU_FIELD_WINTUN_PROOF=1`；普通本地测试在
+无门控/非管理员时干净 skip，required job 缺门控/权限必须 RED，不能静默 skip 或
+continue-on-error。B1 先 pure RED→GREEN 与 fake 配置事务，再在获准环境运行相同真实
+Wintun 测试；本 B0 不运行适配器创建、驱动安装或现场二进制部署；既有 architecture 的
+离线构建/nm 检查不等于平台运行证明。
+
+证明至少包含：独占 create/config/readback、authority 拒绝矩阵、部分配置失败回滚、
+真实 kernel echo、一个预先指定的 owned controller kill、child 排水、Close 幂等与
+全部 owned residue。每条终局失败也运行残留门；保留首个 RED，不 rerun 求绿。
+
+**kernel echo 与合成控制报文是两条路径。** Linux `controlPacket` 当前识别固定 UDP
+control tuple，不是 ICMP。Windows 保持同一合成 control 语义与 challenge 预算；测试
+ICMP echo 走真实 Wintun kernel read/write、原 WireGuard 数据面与受控 test transport，
+由 kernel 收到并返回，再以外部 witness 核对。不能让 `controlPacket` 伪造 echo success，
+不能用 MemoryTestInterface 替代 kernel，也不授权对现场 peer 发送额外 ICMP。
+
+先以独立、私有记录的校准首跑得到完整矩阵时长 T；冻结 workflow/harness budget 为
+`ceil(1.25 * T)`（单位秒），后续 CI 首跑实测不得大于该 budget 的 80%。尚无 T，本节
+不虚构数字。构建、driver readiness、矩阵/cleanup 分别计时并声明 T 的覆盖范围；预算
+只属于测试外壳，绝不放宽 2s drain、candidate/active、3 datagram/3s 或 liveness 常量。
+
+若托管 runner 不能创建适配器，保留确切 OS error code、失败阶段与全部 cleanup 结果在
+私有归档；CI 首跑仍记录 RED，不改成 success。允许维护者 Windows PC 用**同一 SHA、
+同一测试、同一显式门控**本地证明，不引入 self-hosted runner、不自动安装驱动；需主机
+准备动作时先另行确认。公开只在后续 `docs/GATE-C1C-WINDOWS-FIELD-EVIDENCE.md` 发布
+profile/stage/class、counts、duration/residue、SHA-256 与审查结论，原始错误/设备标识/
+路径和日志不上 CI artifact。本地 PASS 不改写托管 RED；由独立复审确认替代验收，
+否则 Windows 现场签发仍阻断。
+
+#### 4.5.8 B0 复审栏（独立评审裁决 2026-09-23）
+
+| 项目 | 冻结提案 / 接受结果 |
+| --- | --- |
+| preflight 只读 OS 查询；无效授权零能力 I/O | **接受**。零能力 I/O 的定义按 §4.5.1：读授权文件、构建见证、machine scope 与只读 OS 冲突查询属必要本地读取；DLL 加载、适配器枚举之外的驱动调用、地址/路由写入、child/socket 创建都在有效 authority 之后。 |
+| A：winipcfg v0.5.3、逐项 IP Helper、禁止 Flush/DNS fallback | **接受"类型化 IP Helper、逐项 row、禁 Flush/SetRoutes/DNS/netsh"的方案本体；打包方式裁定为 A′：仓库内最小类型化子集**（`pkg/netif/field_iphlpapi_windows.go`，仅本节所需的 LUID/GUID 转换、单地址 Create/Get/Delete、单路由 Create/Get/Delete、接口 row 的 get/compare/set/restore 与 FreeMibTable），不新增 go.mod 模块。理由：与 Linux 侧自实现 netlink 而不引入库的先例一致；不存在的调用无需证明不可达（v0.5.3 包内 `os/exec` DNS/netsh fallback 与 Flush 系列从代码层面消失）；避免 Go 1.25 约束、旧版本安全审查与模块图膨胀。允许以 v0.5.3 的 `winipcfg` 为参考实现，逐 struct/函数记录上游文件与 commit，复制代码保留 MIT 版权声明；每个 struct 须有 `unsafe.Sizeof`/字段偏移 golden 对照 Microsoft 文档。若移植子集在实现中显著超出上述清单，先报数量与原因再定，不自行切回引入模块。 |
+| identity 投影/GUID 与 Windows scope/路径、claim 持久化 | **接受**：`winkyou-c1c-wintun-identity/1` 投影、15 字符名、GUID 规范字符串往返与双 role golden；MachineGuid（64-bit view）+ canonical namespace 路径 + 独立 domain 的 Windows machine scope；KnownFolder Profile 定位、owner+SYSTEM DACL、reparse 拒绝、独占创建的 one-shot claim；golden/crash 实证在 B2。MachineGuid 不是密码学身份，该限制按原文登记。 |
+| Windows initiator 优先；responder 和跨 OS 统一实例不冒充已闭合 | **接受**：本轮只做 Windows initiator；`RunFieldResponder` 在 Windows 保持拒绝；异构（Windows initiator + Linux responder）实例的路径归属、逐角色依赖摘要与是否需要 `/3`，连同跨机 attachment 一起归 C1c-2d 设计。**由此 Windows 现场实例的关键路径 = B1 + B2 + C1c-2d（设计与实现）**，§7 签发以此为前提。 |
+| B1/B2 精确文件增补、Windows nm/Job/残留门 | **逐项接受 §4.5.5 表列出的文件**（B1 主体、B1 必要增补、B2 原清单、B2 parser/path 增补、B2 持久化增补、B2 WG 增补），无通配授权；A′ 使 B1 的 `go.mod`/`go.sum` 项失效，改为 `field_iphlpapi_windows.go`。修改共享的 `field_authority_fieldc1c.go`、`instance.go`、`validate.go` 时 Linux `/1`、`/2` golden 与拒绝回归逐项不变。`missing_reasons` 作为固定词表的可选公开字段接受，Linux 省略，须纳入 summary 白名单测试。Wintun DLL：B1 须写明所用 Go 模块的实际加载机制（嵌入内存加载还是磁盘文件），记录模块版本与嵌入 DLL 哈希；嵌入即由 exact-SHA 二进制覆盖。 |
+| 托管 proof / 不可行时同测试本地替代 | **接受并补充合并纪律**：若托管 `windows-latest` 无法创建适配器，required job **收窄**为编译、nm、纯逻辑与 fake 配置事务（不创建适配器）并保持绿色；真实适配器矩阵改为维护者 PC 本地证明（同 SHA、同测试、同显式门控），私有归档，公开证据文档记一次托管 RED 的阶段与 error code 类别。main 不得长期携带必红的 required job；本地 PASS 不改写托管 RED 的记录，替代验收由独立评审确认。 |
+| B0 接受 SHA / 复核日期 | **接受**：head `69d98e4`，2026-09-23；设计门关闭，B1 可开工；B1/B2/C1c-3 各自仍须独立复审。 |
+
+本节不签发 Windows 实例，不做 SSH assembly/跨机 attachment，不改协议、冻结数字、
+Governor/Promote/FINISH、loopback/stdio、service/firewall/scheduled task；NO-GO 继续有效。
+设计 PR 通过只关闭 B0 文档门，不代表 B1/B2 或 C1c-3 已通过。
+
 ## 5. M/E 现场记录字段（本提案固定）
 
 每个实际命中的 tuple 单独记录，记录名称与含义如下；原始 tuple 仅在私有文件中关联。
