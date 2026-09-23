@@ -18,4 +18,30 @@
 
 ## 实测结果
 
-待填写；没有执行共享主机证明，没有实例签发或现场 I/O。
+Go 1.23.1，GOMAXPROCS=4；本机只运行无 namespace 的测试，Linux tagged vet 为交叉检查，
+不等同于 Linux OS 证明。没有执行共享主机证明，没有实例签发或现场 I/O。
+
+| 批次 | 原始结果 |
+| --- | --- |
+| `16af272` 纯函数未实现，36 行表驱动用例 | RED 36/36；统一断言位于 `c1c_maintainer_proof_test.go:124`，class=`c1c_proof_unimplemented`。 |
+| 同表实现后 `-count=1` / `-race -count=20 -failfast` | GREEN 36/36 / 720/720。 |
+| 固定快照无主机 I/O 模拟 | 13 条命令，11 项 nonvolatile、2 项 volatile；拒绝非 root/读取失败；真实主机调用 0。 |
+| `bash -n scripts/c1c-review-snapshot.sh` | PASS，仅语法检查，不执行快照。 |
+| 首次 `go test ./internal/architecture -count=1` | RED：既有 Gate B3 文本扫描把新快照脚本及其契约测试中的 ceiling key 判为 writer。原日志保留。 |
+| 只读例外修复后的 focused architecture | GREEN；仅允许精确脚本路径且固定只读 argv 契约成立。改为 `sysctl -w`、移除 init 约束、改名均仍拒绝。原 writer 权限和 CI wrapper 不变。 |
+| `go vet ./...` | PASS。 |
+| 最终 `go test ./internal/architecture -count=1` | PASS，命令墙钟 51.665s。 |
+| 最终 focused attestation/architecture `-race -count=20 -failfast` | PASS，命令墙钟 12.235s；36 行表与 17 个负向变异各重复 20 次。 |
+| 最终 `GOOS=linux CGO_ENABLED=0 go vet -tags=fieldc1c,natlab,c1bproof ./...` | PASS，命令墙钟 14.404s。 |
+
+纯函数首 RED 日志 SHA-256：
+`f6a6685f9fc61d64d94960c281e44d53a69902bb30b1e7596ae296df330f95fb`。
+首次 architecture RED 日志 SHA-256：
+`e732b5ee608c96f95948259e7301719e4113617bf98f9b047c92844b29895f30`。
+
+本地 tagged vet 首次采集遇到空输出日志处理错误，不能当成有记录的验收；修正私有采集器后
+重新执行并记录 exit=0。另一次 shell 语法检查因工具定位失败未执行，按实际安装位置调用后
+PASS；两者都不是测试 flake 或 CI rerun。首次失败没有覆盖或删除。
+
+CI 首跑在 PR 验证表单列；CI 未完成时不得把待跑项目写为通过。两项 required OS 证明仍须
+走原 CI attestation 路径，GuardianCrash 未放宽。

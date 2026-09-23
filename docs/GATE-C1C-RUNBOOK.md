@@ -61,7 +61,7 @@ private mount propagation、独立挂载的 namespace 注册表，以及绝对�
 
 第二人使用 `scripts/c1c-review-snapshot.sh` 取得开始前/结束后的只读主机快照。脚本不接受
 参数，以固定系统命令在 init net/mount namespace 内采集，输出一个 JSON；需要受审路径的
-`nsenter`、`python3`、`ip`、`nft`、`sysctl`、`lsmod`、`ss`，缺失即停止，不自动安装。
+`nsenter`、`python3`、`ip`、`nft`、`sysctl`、`lsmod`、`find`、`ss`，缺失即停止，不自动安装。
 原始快照可能含真实身份，只能进入仓库外受控目录，不得粘贴 PR、日志或 CI artifact。
 仅 `ss` 项标为 volatile；其余字段 diff 必须为空才能记“完好退出”。共享业务造成的差异也须
 保留并停止复核，不能自行忽略、归因或改写快照。账号/sudoers 与证据读取权限另行确认；
