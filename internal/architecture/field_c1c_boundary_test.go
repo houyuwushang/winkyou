@@ -1,9 +1,11 @@
 package architecture
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"go/ast"
+	"go/format"
 	"go/parser"
 	"go/token"
 	"io/fs"
@@ -17,6 +19,13 @@ import (
 	"testing"
 	"time"
 )
+
+// B1 grants exactly these files, never a generic Windows field capability.
+var fieldWindowsFiles = map[string]bool{
+	"pkg/netif/field_tun_windows.go":      true,
+	"pkg/netif/field_ipcfg_windows.go":    true,
+	"pkg/netif/field_iphlpapi_windows.go": true,
+}
 
 var fieldC1cImportFiles = map[string]bool{
 	"internal/probeio/field_factory_fieldc1c.go":               true,
@@ -132,7 +141,12 @@ func fieldC1cViolations(root string) ([]string, error) {
 			return err
 		}
 		fieldFile := strings.Contains(relative, "fieldc1c") || strings.HasPrefix(filepath.Base(relative), "field_")
-		if fieldFile && !strings.HasPrefix(source, "//go:build fieldc1c\n") && !strings.HasPrefix(source, "//go:build linux && fieldc1c\n") && !strings.HasPrefix(source, "//go:build !linux && fieldc1c\n") {
+		if fieldWindowsFiles[relative] {
+			if !strings.HasPrefix(source, "//go:build windows && fieldc1c\n") {
+				violations = append(violations, relative+" missing exact Windows field constraint")
+			}
+			violations = append(violations, fieldWindowsFileViolations(relative, file)...)
+		} else if fieldFile && !strings.HasPrefix(source, "//go:build fieldc1c\n") && !strings.HasPrefix(source, "//go:build linux && fieldc1c\n") && !strings.HasPrefix(source, "//go:build !linux && fieldc1c\n") {
 			violations = append(violations, relative+" missing exact field constraint")
 		}
 		for _, imported := range file.Imports {
@@ -155,10 +169,16 @@ func fieldC1cViolations(root string) ([]string, error) {
 			"NewFieldUDPFactory":         {"internal/probeio/field_factory_fieldc1c.go": true, "internal/v2/gatecorchestrator/field_entry_linux.go": true},
 			"ConfigureFieldAttempt":      {"internal/v2/directconnect/gateb/deployment_fieldc1c.go": true, "internal/v2/gatecorchestrator/field_entry_linux.go": true},
 			"NewFieldInterfaceAuthority": {"pkg/netif/field_authority_fieldc1c.go": true, "internal/v2/gatecorchestrator/field_entry_linux.go": true},
-			"NewFieldInterface":          {"pkg/netif/field_tun_linux.go": true, "internal/v2/gatecorchestrator/field_entry_linux.go": true},
+			"NewFieldInterface":          {"pkg/netif/field_tun_linux.go": true, "pkg/netif/field_tun_windows.go": true, "internal/v2/gatecorchestrator/field_entry_linux.go": true},
 			"NewFieldWireGuard":          {"pkg/tunnel/fieldc1c_linux.go": true, "internal/v2/gatecorchestrator/field_entry_linux.go": true},
 			"ExecFieldRoot":              {"internal/v2/sshchildwrapper/exec_fieldc1c_linux.go": true, "cmd/wink/deployment_fieldc1c_linux.go": true},
 			"AuthorizePlan":              {"internal/probeio/field_factory_fieldc1c.go": true, "internal/v2/directconnect/gateb/deployment_fieldc1c.go": true},
+			"WintunIdentity":             {"internal/v2/fieldc1c/identity_fieldc1c.go": true, "pkg/netif/field_authority_fieldc1c.go": true},
+			"fieldWindowsPermit":         {"pkg/netif/field_tun_windows.go": true},
+			"newFieldWindowsInterface":   {"pkg/netif/field_tun_windows.go": true},
+			"fieldNativeWintun":          {"pkg/netif/field_tun_windows.go": true},
+			"fieldIPHelper":              {"pkg/netif/field_tun_windows.go": true, "pkg/netif/field_iphlpapi_windows.go": true},
+			"configureFieldIP":           {"pkg/netif/field_tun_windows.go": true, "pkg/netif/field_ipcfg_windows.go": true},
 		}
 		ast.Inspect(file, func(node ast.Node) bool {
 			if literal, ok := node.(*ast.CompositeLit); ok && len(literal.Elts) != 0 && strings.HasPrefix(relative, "internal/v2/fieldc1c/") {
@@ -209,6 +229,321 @@ func fieldC1cViolations(root string) ([]string, error) {
 	})
 	sort.Strings(violations)
 	return violations, err
+}
+
+// The fifteen local IP Helper procedures are a closed set. Enumeration and
+// FreeMibTable are read-only witness plumbing, not a Flush or table setter.
+var fieldWindowsIPProcs = map[string]string{
+	"fieldProcIfTable": "GetIfTable2Ex", "fieldProcIfEntry": "GetIfEntry2",
+	"fieldProcLUIDGUID": "ConvertInterfaceLuidToGuid", "fieldProcGUIDLUID": "ConvertInterfaceGuidToLuid",
+	"fieldProcAddressTable": "GetUnicastIpAddressTable", "fieldProcRouteTable": "GetIpForwardTable2",
+	"fieldProcFreeTable": "FreeMibTable", "fieldProcGetInterface": "GetIpInterfaceEntry",
+	"fieldProcSetInterface": "SetIpInterfaceEntry", "fieldProcGetAddress": "GetUnicastIpAddressEntry",
+	"fieldProcCreateAddress": "CreateUnicastIpAddressEntry", "fieldProcDeleteAddress": "DeleteUnicastIpAddressEntry",
+	"fieldProcGetRoute": "GetIpForwardEntry2", "fieldProcCreateRoute": "CreateIpForwardEntry2", "fieldProcDeleteRoute": "DeleteIpForwardEntry2",
+}
+
+func fieldWindowsFileViolations(relative string, file *ast.File) []string {
+	var bad []string
+	reject := func(reason string) { bad = append(bad, relative+" "+reason) }
+	aliases := map[string]string{}
+	procCounts := map[string]int{}
+	for _, spec := range file.Imports {
+		path, _ := strconv.Unquote(spec.Path.Value)
+		alias := filepath.Base(path)
+		if spec.Name != nil {
+			alias = spec.Name.Name
+		}
+		aliases[alias] = path
+		if alias == "." || path == "os/exec" || strings.Contains(path, "winipcfg") {
+			reject("unapproved import")
+		}
+	}
+	owner := func(pos token.Pos) string {
+		for _, decl := range file.Decls {
+			if fn, ok := decl.(*ast.FuncDecl); ok && fn.Pos() <= pos && pos < fn.End() {
+				return fn.Name.Name
+			}
+		}
+		return ""
+	}
+	for _, decl := range file.Decls {
+		if fn, ok := decl.(*ast.FuncDecl); ok {
+			if fn.Name.Name == "init" {
+				reject("eager OS capability")
+			}
+			if fn.Recv == nil && fn.Name.IsExported() && fn.Name.Name != "NewFieldInterface" && fn.Name.Name != "PreflightFieldInterface" {
+				reject("exported capability constructor")
+			}
+		}
+		if group, ok := decl.(*ast.GenDecl); ok {
+			for _, spec := range group.Specs {
+				if row, ok := spec.(*ast.TypeSpec); ok && row.Name.Name == "FieldInterface" {
+					fields, ok := row.Type.(*ast.StructType)
+					if !ok {
+						reject("interface ownership type escaped")
+						continue
+					}
+					for _, field := range fields.Fields.List {
+						if len(field.Names) == 0 {
+							reject("public embedded raw device")
+						}
+						for _, name := range field.Names {
+							if name.IsExported() {
+								reject("public raw interface member")
+							}
+						}
+					}
+				}
+				if value, ok := spec.(*ast.ValueSpec); ok && relative == "pkg/netif/field_iphlpapi_windows.go" {
+					for index, name := range value.Names {
+						if !strings.HasPrefix(name.Name, "fieldProc") {
+							continue
+						}
+						want, exists := fieldWindowsIPProcs[name.Name]
+						if !exists || index >= len(value.Values) {
+							reject("unapproved DLL procedure")
+							continue
+						}
+						call, ok := value.Values[index].(*ast.CallExpr)
+						if !ok || len(call.Args) != 1 {
+							reject("unapproved DLL procedure")
+							continue
+						}
+						literal, ok := call.Args[0].(*ast.BasicLit)
+						if !ok || literal.Value != strconv.Quote(want) {
+							reject("unapproved DLL procedure")
+						}
+					}
+				}
+			}
+		}
+	}
+	ast.Inspect(file, func(node ast.Node) bool {
+		if literal, ok := node.(*ast.CompositeLit); ok && len(literal.Elts) > 0 {
+			if name, ok := literal.Type.(*ast.Ident); ok && (name.Name == "fieldWindowsPermit" || name.Name == "fieldWindowsBinding") && owner(literal.Pos()) != "fieldPermit" {
+				reject("forged private permit")
+			}
+		}
+		if fn, ok := node.(*ast.FuncDecl); ok && fn.Recv != nil {
+			var recv bytes.Buffer
+			_ = format.Node(&recv, token.NewFileSet(), fn.Recv.List[0].Type)
+			if recv.String() == "*FieldInterface" {
+				allowed := map[string]bool{"Name": true, "Type": true, "MTU": true, "SetIP": true, "AddRoute": true, "RemoveRoute": true, "ValidTransport": true, "Read": true, "Write": true, "InjectPacket": true, "ReceivePacket": true, "Close": true, "Witness": true}
+				if fn.Name.IsExported() && !allowed[fn.Name.Name] {
+					reject("raw device accessor")
+				}
+				if fn.Name.Name == "SetIP" || fn.Name.Name == "AddRoute" || fn.Name.Name == "RemoveRoute" {
+					var body bytes.Buffer
+					_ = format.Node(&body, token.NewFileSet(), fn.Body)
+					if strings.Join(strings.Fields(body.String()), " ") != "{ return ErrFieldInterface }" {
+						reject("arbitrary configuration setter")
+					}
+				}
+			}
+		}
+		call, ok := node.(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+		selector, ok := call.Fun.(*ast.SelectorExpr)
+		if !ok {
+			return true
+		}
+		name := selector.Sel.Name
+		if strings.HasPrefix(name, "Flush") || strings.HasPrefix(name, "SetDNS") || strings.HasPrefix(name, "SetRoutes") || name == "OpenAdapter" || name == "DeleteDriver" {
+			reject("forbidden bulk, DNS or takeover capability")
+		}
+		base, ok := selector.X.(*ast.Ident)
+		if !ok {
+			return true
+		}
+		path := aliases[base.Name]
+		if (path == "net" && (strings.HasPrefix(name, "Dial") || strings.HasPrefix(name, "Listen"))) || path == "os/exec" {
+			reject("network or child capability")
+		}
+		if name == "NewProc" && (relative != "pkg/netif/field_iphlpapi_windows.go" || base.Name != "fieldIPDLL") {
+			reject("unapproved procedure factory")
+		}
+		if name == "NewProc" {
+			value := ""
+			if len(call.Args) == 1 {
+				if literal, ok := call.Args[0].(*ast.BasicLit); ok {
+					value, _ = strconv.Unquote(literal.Value)
+				}
+			}
+			approved := false
+			for _, expected := range fieldWindowsIPProcs {
+				if value == expected {
+					approved = true
+				}
+			}
+			if !approved {
+				reject("unapproved procedure name")
+			}
+			procCounts[value]++
+		}
+		if name == "Call" {
+			if _, ok := fieldWindowsIPProcs[base.Name]; relative != "pkg/netif/field_iphlpapi_windows.go" || !ok {
+				reject("unapproved local syscall")
+			}
+			functions := map[string]string{"fieldProcIfTable": "snapshot", "fieldProcAddressTable": "snapshot", "fieldProcRouteTable": "snapshot", "fieldProcFreeTable": "snapshot", "fieldProcIfEntry": "identity", "fieldProcLUIDGUID": "identity", "fieldProcGUIDLUID": "identity", "fieldProcGetInterface": "getInterface", "fieldProcSetInterface": "setInterface", "fieldProcGetAddress": "getAddress", "fieldProcCreateAddress": "createAddress", "fieldProcDeleteAddress": "deleteAddress", "fieldProcGetRoute": "getRoute", "fieldProcCreateRoute": "createRoute", "fieldProcDeleteRoute": "deleteRoute"}
+			if functions[base.Name] != owner(call.Pos()) {
+				reject("syscall escaped owned operation")
+			}
+		}
+		if path == "golang.zx2c4.com/wireguard/tun" && (relative != "pkg/netif/field_tun_windows.go" || name != "CreateTUNWithRequestedGUID" || owner(call.Pos()) != "create") {
+			reject("unapproved Wintun factory")
+		}
+		if path == "golang.org/x/sys/windows" && name == "NewLazySystemDLL" {
+			if relative != "pkg/netif/field_iphlpapi_windows.go" || len(call.Args) != 1 {
+				reject("unapproved system DLL")
+			} else if value, ok := call.Args[0].(*ast.BasicLit); !ok || value.Value != `"iphlpapi.dll"` {
+				reject("unapproved system DLL")
+			}
+		}
+		if path == "golang.org/x/sys/windows" {
+			functions := map[string]string{"GetAce": "fieldInstallationACL", "UTF16PtrFromString": "fieldSealDLL|fieldWintunUnloaded", "CreateFile": "fieldSealDLL", "GetFileInformationByHandle": "fieldSealDLL", "GetSecurityInfo": "fieldSealDLL", "GetModuleHandleEx": "fieldWintunUnloaded", "GetCurrentProcessToken": "preflight|create", "FreeLibrary": "Close|create", "LoadLibraryEx": "create", "GetModuleFileName": "create", "UTF16ToString": "create|snapshot|identity", "NewLazySystemDLL": ""}
+			want, found := functions[name]
+			if !found || !strings.Contains("|"+want+"|", "|"+owner(call.Pos())+"|") {
+				reject("unapproved Windows API call")
+			}
+		}
+		return true
+	})
+	if relative == "pkg/netif/field_iphlpapi_windows.go" {
+		for _, expected := range fieldWindowsIPProcs {
+			if procCounts[expected] != 1 {
+				reject("procedure declaration count changed")
+			}
+		}
+	}
+	return bad
+}
+
+// Bearing guards supplement executable fake-negative tests. Parse without
+// comments first: a comment containing an old check is not implementation.
+var fieldWindowsGuards = map[string][]string{
+	"pkg/netif/field_authority_fieldc1c.go": {"runtime.GOOS == \"windows\"", "instance.WintunIdentity()", "derivedName != name", "binding.Role != \"initiator\"", "device.OS != \"windows\""},
+	"pkg/netif/field_tun_windows.go": {
+		"!authority.valid()", "authority.state.used.Load()", "!permit.valid()", "permit.used.Load()", "!permit.used.CompareAndSwap(false, true)",
+		"fieldRejectConflicts(permit.binding, before)", "id.guid != permit.binding.guid", "id.name != permit.binding.name",
+		"configureFieldIP(ctx, api, permit.binding, id)", "f.txn.rollback(ctx)", "f.device.Close()", "f.api.snapshot()",
+		"!w.InterfaceChecked", "!w.InterfaceAbsent", "!w.AddressesAbsent", "!w.RoutesAbsent", "!w.UnrelatedUnchanged",
+		"2*time.Second", "fieldDriverOwner.TryLock()", "!fieldWintunUnloaded()", "windows.OPEN_EXISTING", "windows.FILE_FLAG_OPEN_REPARSE_POINT",
+		"info.NumberOfLinks != 1", "fieldInstallationACL(sd, index <= 0)", "hex.EncodeToString(hash.Sum(nil)) != fieldDLLHash(runtime.GOARCH)",
+		"log.SetOutput(record)", "windows.LoadLibraryEx(seal.path, 0, windows.LOAD_LIBRARY_SEARCH_SYSTEM32)",
+		"wgtun.CreateTUNWithRequestedGUID(binding.name, &binding.guid, int(binding.mtu))",
+	},
+	"pkg/netif/field_ipcfg_windows.go": {
+		"strings.EqualFold(adapter.name, binding.name) || adapter.guid == binding.guid", "address == binding.local || address == binding.peer",
+		"prefix.Bits() != 0", "txn.applied = txn.before", "txn.applied.DadTransmits = 0", "txn.applied.MTU = binding.mtu",
+		"fieldSameInterface(readInterface, txn.applied)", "fieldSameAddress(readAddress, txn.address)", "fieldSameRoute(readRoute, txn.route)", "fieldIdentityMatches(api, identity)",
+		"fieldSameRoute(row, transaction.route)", "fieldSameAddress(row, transaction.address)", "fieldSameInterface(row, transaction.applied)",
+		"api.deleteRoute(row)", "api.deleteAddress(row)", "api.setInterface(restore)", "errors.Is(err, windows.ERROR_NOT_FOUND)",
+	},
+}
+
+func fieldWindowsGuardViolations(relative, source string) []string {
+	var bad []string
+	file, err := parser.ParseFile(token.NewFileSet(), relative, source, 0)
+	if err != nil {
+		return []string{relative + " invalid source"}
+	}
+	var rendered bytes.Buffer
+	_ = format.Node(&rendered, token.NewFileSet(), file)
+	text := rendered.String()
+	for _, guard := range fieldWindowsGuards[relative] {
+		if !strings.Contains(text, guard) {
+			bad = append(bad, relative+" lacks Windows bearing guard")
+		}
+	}
+	return bad
+}
+
+func TestFieldWindowsB1BearingGuardsAndMutations(t *testing.T) {
+	for relative, guards := range fieldWindowsGuards {
+		payload, err := os.ReadFile(filepath.Join(repositoryRoot(t), relative))
+		if err != nil {
+			t.Fatal("source missing")
+		}
+		source := strings.ReplaceAll(string(payload), "\r\n", "\n")
+		if bad := fieldWindowsGuardViolations(relative, source); len(bad) != 0 {
+			t.Fatal(bad)
+		}
+		for _, guard := range guards {
+			t.Run(filepath.Base(relative)+"/"+guard, func(t *testing.T) {
+				mutant := strings.ReplaceAll(source, guard, "/* removed bearing guard */ false")
+				if len(fieldWindowsGuardViolations(relative, mutant)) == 0 {
+					t.Fatal("bearing deletion escaped")
+				}
+			})
+		}
+	}
+}
+
+func TestFieldWindowsB1CapabilityMutations(t *testing.T) {
+	for name, source := range map[string]string{
+		"tag":           "//go:build fieldc1c\n\npackage netif\n",
+		"raw_handle":    "//go:build windows && fieldc1c\n\npackage netif\ntype FieldInterface struct{Raw any}",
+		"export_getter": "//go:build windows && fieldc1c\n\npackage netif\nfunc(f *FieldInterface)Raw()any{return f.device}",
+		"setter":        "//go:build windows && fieldc1c\n\npackage netif\nfunc(f *FieldInterface)SetIP()error{return nil}",
+		"fake_issuer":   "//go:build windows && fieldc1c\n\npackage netif\nfunc forge(){_ = fieldWindowsPermit{valid:yes}}",
+		"dns":           "//go:build windows && fieldc1c\n\npackage netif\nfunc f(){x.SetDNS(nil)}",
+		"flush":         "//go:build windows && fieldc1c\n\npackage netif\nfunc f(){x.FlushRoutes()}",
+		"takeover":      "//go:build windows && fieldc1c\n\npackage netif\nfunc f(){x.OpenAdapter(\"other\")}",
+		"child":         "//go:build windows && fieldc1c\n\npackage netif\nimport e \"os/exec\"\nfunc f(){e.Command(\"tool\")}",
+		"proc":          "//go:build windows && fieldc1c\n\npackage netif\nfunc f(){dll.NewProc(\"SetDNS\")}",
+		"eager":         "//go:build windows && fieldc1c\n\npackage netif\nfunc init(){}",
+	} {
+		t.Run(name, func(t *testing.T) {
+			root := t.TempDir()
+			writeArchitectureMutation(t, root, "pkg/netif/field_tun_windows.go", source)
+			bad, err := fieldC1cViolations(root)
+			if err != nil || len(bad) == 0 {
+				t.Fatal("capability mutation escaped")
+			}
+		})
+	}
+	for _, relative := range []string{"pkg/netif/bypass.go", "pkg/client/field_windows.go", "internal/v2/gatecorchestrator/field_entry_windows.go"} {
+		t.Run(relative, func(t *testing.T) {
+			root := t.TempDir()
+			writeArchitectureMutation(t, root, relative, "//go:build fieldc1c\n\npackage bypass\nfunc f(){_ = newFieldWindowsInterface;_ = NewFieldInterface}")
+			bad, err := fieldC1cViolations(root)
+			if err != nil || len(bad) == 0 {
+				t.Fatal("unapproved consumer escaped")
+			}
+		})
+	}
+}
+
+func TestFieldWindowsB1OrdinaryBinaryHasNoCapability(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	output := filepath.Join(t.TempDir(), "wink.exe")
+	build := exec.CommandContext(ctx, "go", "build", "-buildvcs=true", "-gcflags=all=-l", "-o", output, "./cmd/wink")
+	build.Dir = repositoryRoot(t)
+	for _, entry := range os.Environ() {
+		if !strings.HasPrefix(entry, "GOOS=") && !strings.HasPrefix(entry, "CGO_ENABLED=") {
+			build.Env = append(build.Env, entry)
+		}
+	}
+	build.Env = append(build.Env, "GOOS=windows", "CGO_ENABLED=0")
+	started := time.Now()
+	if data, err := build.CombinedOutput(); err != nil {
+		fieldSymbolFailure(t, ctx, "windows_build", started, data)
+	}
+	nm := exec.CommandContext(ctx, "go", "tool", "nm", output)
+	started = time.Now()
+	data, err := nm.CombinedOutput()
+	if err != nil {
+		fieldSymbolFailure(t, ctx, "windows_nm", started, data)
+	}
+	for _, pattern := range []string{`winkyou/pkg/netif\.(?:NewFieldInterface|fieldIP|fieldNative|fieldSealDLL|fieldPermit)`, `winkyou/internal/v2/fieldc1c\..*WintunIdentity`} {
+		if regexp.MustCompile(pattern).Match(data) {
+			t.Fatal("ordinary Windows binary linked field capability")
+		}
+	}
 }
 
 func TestFieldC1cMutationRejectsTagAndConsumerEscapes(t *testing.T) {
