@@ -3,14 +3,18 @@
 package netif
 
 import (
+	"bytes"
 	"context"
 	"encoding/binary"
+	"encoding/hex"
 	"net"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"golang.org/x/sys/windows"
 	"winkyou/internal/v2/fieldc1c"
 )
 
@@ -48,12 +52,167 @@ func (d *fieldFakeTun) Write(bufs [][]byte, offset int) (int, error) {
 type fieldFakeDriver struct {
 	preflights, creates int
 	device              *fieldFakeTun
+	onPreflight         func()
+	failCreate          bool
 }
 
-func (d *fieldFakeDriver) preflight() error { d.preflights++; return nil }
+func (d *fieldFakeDriver) preflight() error {
+	d.preflights++
+	if d.onPreflight != nil {
+		d.onPreflight()
+	}
+	return nil
+}
 func (d *fieldFakeDriver) create(fieldWindowsBinding) (fieldTunDevice, error) {
 	d.creates++
+	if d.failCreate {
+		return nil, ErrFieldInterface
+	}
 	return d.device, nil
+}
+
+func TestFieldWindowsRevalidateAndPartialFailure(t *testing.T) {
+	for _, mode := range []string{"expires_during_preflight", "cancel_during_preflight", "create_failure", "identity", "interface.set", "address.create", "route.create"} {
+		t.Run(mode, func(t *testing.T) {
+			p, api, driver := fieldFakeFixture()
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			valid := true
+			p.valid = func() bool { return valid }
+			switch mode {
+			case "expires_during_preflight":
+				driver.onPreflight = func() { valid = false }
+			case "cancel_during_preflight":
+				driver.onPreflight = cancel
+			case "create_failure":
+				driver.failCreate = true
+			case "identity":
+				api.id.guid.Data1++
+			default:
+				api.fail = mode
+			}
+			if f, err := newFieldWindowsInterface(ctx, p, api, driver); err == nil || f != nil {
+				t.Fatal("fault returned a usable interface")
+			}
+			if strings.Contains(mode, "preflight") {
+				if driver.creates != 0 || p.used.Load() {
+					t.Fatal("preflight invalidation reached creation")
+				}
+			} else if driver.creates != 1 || !p.used.Load() {
+				t.Fatal("failed creation retried or refunded authority")
+			}
+			if api.address != nil || api.route != nil || api.row.MTU != 1500 {
+				t.Fatal("partial transaction leaked rows")
+			}
+			if !strings.Contains(mode, "preflight") && mode != "create_failure" {
+				select {
+				case <-driver.device.done:
+				default:
+					t.Fatal("owned device not closed on failure")
+				}
+			}
+		})
+	}
+}
+
+func TestFieldWindowsFakeConcurrentCloseUnblocksEveryQueue(t *testing.T) {
+	p, api, driver := fieldFakeFixture()
+	f, err := newFieldWindowsInterface(context.Background(), p, api, driver)
+	if err != nil {
+		t.Fatal("fake creation failed")
+	}
+	defer f.Close()
+	var workers sync.WaitGroup
+	for i := 0; i < 8; i++ {
+		workers.Add(2)
+		go func() { defer workers.Done(); _, _ = f.Read(make([]byte, 1280)) }()
+		go func() { defer workers.Done(); _, _ = f.ReceivePacket(make([]byte, 1280)) }()
+	}
+	if f.Close() != nil {
+		t.Fatal("concurrent drain failed")
+	}
+	done := make(chan struct{})
+	go func() { workers.Wait(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("reader or receiver remained blocked")
+	}
+	if len(f.kernel) != 0 || len(f.injected) != 0 || len(f.echo) != 0 {
+		t.Fatal("queue residue")
+	}
+}
+
+func TestFieldWindowsUnknownResidueIsNotAbsence(t *testing.T) {
+	p, api, driver := fieldFakeFixture()
+	f, err := newFieldWindowsInterface(context.Background(), p, api, driver)
+	if err != nil {
+		t.Fatal("fake creation failed")
+	}
+	api.fail = "snapshot"
+	if f.Close() == nil {
+		t.Fatal("failed independent enumeration was called clean")
+	}
+	api.failed = false
+	w := f.Witness()
+	if !w.Closed || w.InterfaceChecked || w.InterfaceAbsent || w.AddressesAbsent || w.RoutesAbsent {
+		t.Fatal("unknown fabricated a zero residue")
+	}
+}
+
+func TestFieldWindowsDLLSealPureContracts(t *testing.T) {
+	seen := map[string]bool{}
+	for _, arch := range []string{"386", "amd64", "arm", "arm64"} {
+		value := fieldDLLHash(arch)
+		data, err := hex.DecodeString(value)
+		if err != nil || len(data) != 32 || seen[value] {
+			t.Fatal("missing or duplicate official DLL pin")
+		}
+		seen[value] = true
+	}
+	if fieldDLLHash("unknown") != "" {
+		t.Fatal("unknown architecture selected a DLL")
+	}
+	for _, path := range []string{"wintun.dll", `\\server\share\wintun.dll`, `C:\sealed\..\wintun.dll`, `C:\sealed\wintun.dll:stream`, `C:/sealed/wintun.dll`, `C:\sealed.\wintun.dll`, `C:\sealed \wintun.dll`} {
+		if fieldLocalInstallation(path) {
+			t.Fatal("noncanonical installation path accepted")
+		}
+	}
+	if !fieldLocalInstallation(`C:\sealed\wintun.dll`) {
+		t.Fatal("canonical local path rejected")
+	}
+	// All SIDs below are well-known principals, never host/user identities.
+	for _, tc := range []struct {
+		name, sddl string
+		leaf, want bool
+	}{
+		{"protected", "O:BAG:BAD:P(A;;FA;;;BA)(A;;FA;;;SY)(A;;FR;;;BU)", true, true},
+		{"world_writable", "O:BAG:BAD:P(A;;FA;;;WD)", true, false},
+		{"no_dacl", "O:BAG:BA", true, false},
+		{"untrusted_owner", "O:BUG:BAD:P(A;;FA;;;BA)", true, false},
+		{"generic_write", "O:BAG:BAD:P(A;;GW;;;BU)", true, false},
+		{"delete_child", "O:BAG:BAD:P(A;;0x00000040;;;BU)", false, false},
+		{"sibling_creation", "O:BAG:BAD:P(A;;0x00000004;;;BU)", false, true},
+		{"leaf_creation", "O:BAG:BAD:P(A;;0x00000004;;;BU)", true, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			sd, err := windows.SecurityDescriptorFromString(tc.sddl)
+			if err != nil {
+				t.Fatal("synthetic security descriptor invalid")
+			}
+			if fieldInstallationACL(sd, tc.leaf) != tc.want {
+				t.Fatal("installation ACL classification mismatch")
+			}
+		})
+	}
+	record := &fieldDriverLog{}
+	input := bytes.Repeat([]byte("synthetic driver log\n"), 8192)
+	if n, err := record.Write(input); err != nil || n != len(input) || len(record.data) != 64*1024 {
+		t.Fatal("driver capture is not bounded")
+	}
+	if n, err := record.Write(input); err != nil || n != len(input) || len(record.data) != 64*1024 {
+		t.Fatal("driver capture overflow")
+	}
 }
 func fieldFakeFixture() (fieldWindowsPermit, *fieldFakeIP, *fieldFakeDriver) {
 	permit := fieldWindowsPermit{binding: fieldSyntheticBinding(), valid: func() bool { return true }, used: new(atomic.Bool)}

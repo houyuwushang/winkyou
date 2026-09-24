@@ -22,7 +22,12 @@
 
 package netif
 
-import "golang.org/x/sys/windows"
+import (
+	"syscall"
+	"unsafe"
+
+	"golang.org/x/sys/windows"
+)
 
 // Reference for every ABI row below: wireguard-windows v0.5.3, commit
 // 28e903804aa1302b791c24093dd7f42f0c7d0952, tunnel/winipcfg. Explicit padding
@@ -180,4 +185,159 @@ type fieldRouteTable struct {
 	Count uint32
 	_     [4]byte
 	Rows  [1]fieldRouteRow
+}
+
+// fieldIPHelper adapts the ten narrow transaction operations; no exported raw
+// row API exists. The names below are the complete DLL procedure allowlist.
+// Wrapper signatures derive from zwinipcfg_windows.go at the reference commit.
+type fieldIPHelper struct{}
+
+var (
+	fieldIPDLL             = windows.NewLazySystemDLL("iphlpapi.dll")
+	fieldProcIfTable       = fieldIPDLL.NewProc("GetIfTable2Ex")
+	fieldProcIfEntry       = fieldIPDLL.NewProc("GetIfEntry2")
+	fieldProcLUIDGUID      = fieldIPDLL.NewProc("ConvertInterfaceLuidToGuid")
+	fieldProcGUIDLUID      = fieldIPDLL.NewProc("ConvertInterfaceGuidToLuid")
+	fieldProcAddressTable  = fieldIPDLL.NewProc("GetUnicastIpAddressTable")
+	fieldProcRouteTable    = fieldIPDLL.NewProc("GetIpForwardTable2")
+	fieldProcFreeTable     = fieldIPDLL.NewProc("FreeMibTable")
+	fieldProcGetInterface  = fieldIPDLL.NewProc("GetIpInterfaceEntry")
+	fieldProcSetInterface  = fieldIPDLL.NewProc("SetIpInterfaceEntry")
+	fieldProcGetAddress    = fieldIPDLL.NewProc("GetUnicastIpAddressEntry")
+	fieldProcCreateAddress = fieldIPDLL.NewProc("CreateUnicastIpAddressEntry")
+	fieldProcDeleteAddress = fieldIPDLL.NewProc("DeleteUnicastIpAddressEntry")
+	fieldProcGetRoute      = fieldIPDLL.NewProc("GetIpForwardEntry2")
+	fieldProcCreateRoute   = fieldIPDLL.NewProc("CreateIpForwardEntry2")
+	fieldProcDeleteRoute   = fieldIPDLL.NewProc("DeleteIpForwardEntry2")
+)
+
+// fieldIPStatus: zwinipcfg_windows.go error conversion at the reference commit.
+func fieldIPStatus(code uintptr) error {
+	if code != 0 {
+		return syscall.Errno(code)
+	}
+	return nil
+}
+
+// snapshot: winipcfg.go GetIfTable2Ex/GetUnicastIPAddressTable/GetIPForwardTable2
+// plus types.go table get/free at the reference commit. Read-only, one call per
+// table, no retry. OS buffers are copied before FreeMibTable, never exposed.
+func (fieldIPHelper) snapshot() (fieldIPSnapshot, error) {
+	var result fieldIPSnapshot
+	var adapters *fieldIfTable
+	code, _, _ := fieldProcIfTable.Call(2, uintptr(unsafe.Pointer(&adapters))) // MibIfTableRaw
+	if code != 0 {
+		return result, fieldIPStatus(code)
+	}
+	if adapters == nil {
+		return result, ErrFieldInterface
+	}
+	defer fieldProcFreeTable.Call(uintptr(unsafe.Pointer(adapters)))
+	if adapters.Count > 16384 {
+		return result, ErrFieldInterface
+	}
+	for _, row := range unsafe.Slice(&adapters.Rows[0], int(adapters.Count)) {
+		result.adapters = append(result.adapters, fieldAdapterIdentity{luid: row.LUID, index: row.Index, guid: row.GUID, name: windows.UTF16ToString(row.Alias[:])})
+	}
+	var addresses *fieldAddressTable
+	code, _, _ = fieldProcAddressTable.Call(windows.AF_INET, uintptr(unsafe.Pointer(&addresses)))
+	if code != 0 {
+		return fieldIPSnapshot{}, fieldIPStatus(code)
+	}
+	if addresses == nil {
+		return fieldIPSnapshot{}, ErrFieldInterface
+	}
+	defer fieldProcFreeTable.Call(uintptr(unsafe.Pointer(addresses)))
+	if addresses.Count > 16384 {
+		return fieldIPSnapshot{}, ErrFieldInterface
+	}
+	result.addresses = append(result.addresses, unsafe.Slice(&addresses.Rows[0], int(addresses.Count))...)
+	var routes *fieldRouteTable
+	code, _, _ = fieldProcRouteTable.Call(windows.AF_INET, uintptr(unsafe.Pointer(&routes)))
+	if code != 0 {
+		return fieldIPSnapshot{}, fieldIPStatus(code)
+	}
+	if routes == nil {
+		return fieldIPSnapshot{}, ErrFieldInterface
+	}
+	defer fieldProcFreeTable.Call(uintptr(unsafe.Pointer(routes)))
+	if routes.Count > 16384 {
+		return fieldIPSnapshot{}, ErrFieldInterface
+	}
+	result.routes = append(result.routes, unsafe.Slice(&routes.Rows[0], int(routes.Count))...)
+	return result, nil
+}
+
+// identity: luid.go Interface/GUID/LUIDFromGUID at the reference commit.
+// Both conversion directions and the returned row must agree with the handle.
+func (fieldIPHelper) identity(luid uint64) (fieldAdapterIdentity, error) {
+	row := fieldIfRow{LUID: luid}
+	code, _, _ := fieldProcIfEntry.Call(uintptr(unsafe.Pointer(&row)))
+	if code != 0 {
+		return fieldAdapterIdentity{}, fieldIPStatus(code)
+	}
+	var guid windows.GUID
+	code, _, _ = fieldProcLUIDGUID.Call(uintptr(unsafe.Pointer(&luid)), uintptr(unsafe.Pointer(&guid)))
+	if code != 0 {
+		return fieldAdapterIdentity{}, fieldIPStatus(code)
+	}
+	var actual uint64
+	code, _, _ = fieldProcGUIDLUID.Call(uintptr(unsafe.Pointer(&guid)), uintptr(unsafe.Pointer(&actual)))
+	if code != 0 {
+		return fieldAdapterIdentity{}, fieldIPStatus(code)
+	}
+	if actual != luid || row.LUID != luid || row.GUID != guid || row.Index == 0 {
+		return fieldAdapterIdentity{}, ErrFieldInterface
+	}
+	return fieldAdapterIdentity{luid: luid, index: row.Index, guid: guid, name: windows.UTF16ToString(row.Alias[:])}, nil
+}
+
+// getInterface: luid.go IPInterface and zwinipcfg_windows.go getIPInterfaceEntry.
+// Source commit 28e903804aa1302b791c24093dd7f42f0c7d0952.
+func (fieldIPHelper) getInterface(luid uint64) (fieldIPInterfaceRow, error) {
+	row := fieldIPInterfaceRow{Family: windows.AF_INET, LUID: luid}
+	code, _, _ := fieldProcGetInterface.Call(uintptr(unsafe.Pointer(&row)))
+	return row, fieldIPStatus(code)
+}
+
+// setInterface: zwinipcfg_windows.go setIPInterfaceEntry at the reference commit.
+func (fieldIPHelper) setInterface(row fieldIPInterfaceRow) error {
+	code, _, _ := fieldProcSetInterface.Call(uintptr(unsafe.Pointer(&row)))
+	return fieldIPStatus(code)
+}
+
+// getAddress: zwinipcfg_windows.go getUnicastIPAddressEntry at the reference commit.
+func (fieldIPHelper) getAddress(row fieldAddressRow) (fieldAddressRow, error) {
+	code, _, _ := fieldProcGetAddress.Call(uintptr(unsafe.Pointer(&row)))
+	return row, fieldIPStatus(code)
+}
+
+// createAddress: zwinipcfg_windows.go createUnicastIPAddressEntry at the reference commit.
+func (fieldIPHelper) createAddress(row fieldAddressRow) error {
+	code, _, _ := fieldProcCreateAddress.Call(uintptr(unsafe.Pointer(&row)))
+	return fieldIPStatus(code)
+}
+
+// deleteAddress: zwinipcfg_windows.go deleteUnicastIPAddressEntry at the reference commit.
+func (fieldIPHelper) deleteAddress(row fieldAddressRow) error {
+	code, _, _ := fieldProcDeleteAddress.Call(uintptr(unsafe.Pointer(&row)))
+	return fieldIPStatus(code)
+}
+
+// getRoute: zwinipcfg_windows.go getIPForwardEntry2 at the reference commit.
+func (fieldIPHelper) getRoute(row fieldRouteRow) (fieldRouteRow, error) {
+	code, _, _ := fieldProcGetRoute.Call(uintptr(unsafe.Pointer(&row)))
+	return row, fieldIPStatus(code)
+}
+
+// createRoute: zwinipcfg_windows.go createIPForwardEntry2 at the reference commit.
+func (fieldIPHelper) createRoute(row fieldRouteRow) error {
+	code, _, _ := fieldProcCreateRoute.Call(uintptr(unsafe.Pointer(&row)))
+	return fieldIPStatus(code)
+}
+
+// deleteRoute: zwinipcfg_windows.go deleteIPForwardEntry2 at the reference commit.
+func (fieldIPHelper) deleteRoute(row fieldRouteRow) error {
+	code, _, _ := fieldProcDeleteRoute.Call(uintptr(unsafe.Pointer(&row)))
+	return fieldIPStatus(code)
 }
