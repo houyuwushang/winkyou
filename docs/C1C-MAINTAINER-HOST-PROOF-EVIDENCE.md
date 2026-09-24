@@ -57,3 +57,28 @@ CI 首跑在 PR 验证表单列；CI 未完成时不得把待跑项目写为通�
 race×20 → vet/architecture/隐私/语法与相对链接 → 原两个隔离证明首跑 CI。使用模拟命令
 和内存文件树测试读取器，不执行主机快照、不读取真实私有证据。此前首跑记录不覆盖。
 本节不授权 A1、账号或 sudoers；生产、workflow、原 netns budget/场景均不变。
+
+### 修订实测
+
+Go 1.23.1，GOMAXPROCS=4。全部本机验证仅运行纯函数、合成命令/内存文件树与静态检查。
+
+| 批次 | 首次结果 / 修复后结果 |
+| --- | --- |
+| 旧脚本 + 新契约 | RED：`snapshot_bucket_regression`，证据读取器缺失，精确只读例外拒绝旧契约。11.360s。 |
+| 首次实现后 focused | RED：两组语义已通过，但变异暴露多处 `Lstat`/nofollow 的字面量检查只保证“至少一处”。3.676s；补精确调用数检查，未放宽变异。 |
+| 同一 focused 回归 | GREEN，3.846s。快照 13 条固定命令、10/3 分类；证据读取器原样文本、4 MiB 边界、SHA-256、排除目录、symlink/hardlink/替换/读失败与 fd 归零。 |
+| `go test -race ./internal/architecture ./test/natlab -run '^TestC1c(MaintainerProofBoundary\|Review\|HostProofAttestation)' -count=20 -failfast` | PASS，21.271s。36 行 attestation 表；35 项源变异/负向只读例外各重复 20 次；两组 Python 纯语义各 20 次。 |
+| `go test ./internal/architecture -count=1` | PASS，54.723s；含仓库隐私与能力边界。 |
+| `go vet ./...` | PASS，22.168s。 |
+| `GOOS=linux CGO_ENABLED=0 go vet -tags=fieldc1c,natlab,c1bproof ./...` | PASS，28.797s；交叉静态检查，不是 Linux OS 实证。 |
+| 两个脚本 `bash -n`、`git diff --check`、变更文档相对链接 | PASS；2 个脚本、4 个相对文件链接。 |
+
+本轮旧实现首 RED 日志 SHA-256：
+`1c70d0cabdcbaf32e874062f06ed8ba1dc2560788b5f378187404cb0c8087304`。
+首次实现后变异 RED 日志 SHA-256：
+`3a05929b74890955ba2d7104b6119923da8c96d49ed3089a0cce825d7fd3d998`。
+race×20 日志 SHA-256：
+`584b7b116ff80c6cb649dc5684ded867cba9393d0391afc3897e661333bb5dfa`。
+
+这些结果不含真实主机快照/证据读取，未创建账号或 sudoers。两个隔离证明仍由原 CI
+attestation 执行；固定提交的 CI 首跑状态在 PR 评论单列，不以本地静态检查替代。
