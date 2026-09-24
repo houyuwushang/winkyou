@@ -125,6 +125,10 @@ func newFieldWindowsInterface(ctx context.Context, permit fieldWindowsPermit, ap
 	}
 	device, err := driver.create(permit.binding)
 	if err != nil || device == nil {
+		if device != nil {
+			_ = device.Close()
+			_, _ = api.snapshot()
+		}
 		return nil, ErrFieldInterface
 	}
 	failed := func() (*FieldInterface, error) {
@@ -671,6 +675,9 @@ func (*fieldNativeWintun) create(binding fieldWindowsBinding) (fieldTunDevice, e
 	// One creation only. No OpenAdapter/retry/global GUID override exists.
 	device, err := wgtun.CreateTUNWithRequestedGUID(binding.name, &binding.guid, int(binding.mtu))
 	if err != nil {
+		if device != nil {
+			_ = device.Close()
+		}
 		return failed()
 	}
 	native, ok := device.(fieldTunDevice)

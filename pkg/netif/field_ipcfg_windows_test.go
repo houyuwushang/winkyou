@@ -71,6 +71,29 @@ func TestFieldWindowsConflictPreflight(t *testing.T) {
 	}
 }
 
+func TestFieldWindowsUnrelatedSnapshotComparison(t *testing.T) {
+	b := fieldSyntheticBinding()
+	before := fieldIPSnapshot{adapters: []fieldAdapterIdentity{{luid: 44, index: 8, name: "synthetic"}},
+		addresses: []fieldAddressRow{{LUID: 44, Address: fieldIPv4(b.local), PrefixLength: 32, CreationTimestamp: 100}},
+		routes:    []fieldRouteRow{{LUID: 44, Destination: fieldIPPrefix{Address: fieldIPv4(b.peer), Bits: 32}, Age: 10}}}
+	after := fieldIPSnapshot{adapters: append([]fieldAdapterIdentity(nil), before.adapters...), addresses: append([]fieldAddressRow(nil), before.addresses...), routes: append([]fieldRouteRow(nil), before.routes...)}
+	after.addresses[0].CreationTimestamp++
+	after.routes[0].Age++
+	if !fieldUnrelatedUnchanged(before, after, 99) {
+		t.Fatal("OS-derived time is not configuration")
+	}
+	after.adapters = append(after.adapters, fieldAdapterIdentity{luid: 99})
+	after.addresses = append(after.addresses, fieldAddressRow{LUID: 99})
+	after.routes = append(after.routes, fieldRouteRow{LUID: 99})
+	if !fieldUnrelatedUnchanged(before, after, 99) {
+		t.Fatal("owned rows are not an unrelated mutation")
+	}
+	after.routes[0].Metric++
+	if fieldUnrelatedUnchanged(before, after, 99) {
+		t.Fatal("unrelated write went unnoticed")
+	}
+}
+
 type fieldFakeIP struct {
 	id      fieldAdapterIdentity
 	row     fieldIPInterfaceRow

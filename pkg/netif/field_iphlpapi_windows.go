@@ -225,7 +225,7 @@ func fieldIPStatus(code uintptr) error {
 func (fieldIPHelper) snapshot() (fieldIPSnapshot, error) {
 	var result fieldIPSnapshot
 	var adapters *fieldIfTable
-	code, _, _ := fieldProcIfTable.Call(2, uintptr(unsafe.Pointer(&adapters))) // MibIfTableRaw
+	code, _, _ := fieldProcIfTable.Call(1, uintptr(unsafe.Pointer(&adapters))) // MibIfTableRaw (netioapi.h)
 	if code != 0 {
 		return result, fieldIPStatus(code)
 	}
