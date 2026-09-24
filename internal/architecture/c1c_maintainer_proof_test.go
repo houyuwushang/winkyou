@@ -216,7 +216,12 @@ func c1cSnapshotValid(source string) bool {
 		`if [ "$#" -ne 0 ]; then`, "exec /usr/bin/python3 -I -B - <<'PY'",
 		`NSENTER = "/usr/bin/nsenter"`, `PREFIX = [NSENTER, "--net=/proc/1/ns/net", "--mount=/proc/1/ns/mnt", "--"]`,
 		`PREFIX + command, stdin=subprocess.DEVNULL`, `stderr=subprocess.DEVNULL, check=True, timeout=10`,
-		`bucket = "volatile" if name in ("ss_udp", "ss_tcp") else "nonvolatile"`,
+		`bucket = "volatile" if name in ("ss_udp", "ss_tcp", "conntrack_count") else "nonvolatile"`,
+		`"addresses": ("valid_life_time", "preferred_life_time"),`,
+		`"routes": ("expires",),`, `"nft": ("packets", "bytes"),`,
+		`"links": ("operstate", "flags", "txqlen"),`,
+		`value = normalize(value, DYNAMIC_KEYS.get(name, ()))`,
+		`value = sorted(line.split()[0] for line in value.splitlines()`,
 		`info.st_uid != 0 or info.st_mode & 0o022`, `"class": "snapshot_read_failed"`,
 	} {
 		if !strings.Contains(source, literal) {
@@ -257,7 +262,13 @@ func TestC1cReviewSnapshotContractAndPrivacy(t *testing.T) {
 		{`"--net=/proc/1/ns/net", `, ""},
 		{`"--mount=/proc/1/ns/mnt", `, ""},
 		{`if [ "$#" -ne 0 ]; then`, `if false; then`},
-		{`("ss_udp", "ss_tcp") else "nonvolatile"`, `("ss_udp", "ss_tcp", "conntrack_count") else "nonvolatile"`},
+		{`("ss_udp", "ss_tcp", "conntrack_count") else "nonvolatile"`, `("ss_udp", "ss_tcp") else "nonvolatile"`},
+		{`"addresses": ("valid_life_time", "preferred_life_time"),`, `"addresses": (),`},
+		{`"routes": ("expires",),`, `"routes": ("expires", "dst"),`},
+		{`"nft": ("packets", "bytes"),`, `"nft": ("packets", "bytes", "handle"),`},
+		{`"links": ("operstate", "flags", "txqlen"),`, `"links": ("operstate", "flags", "txqlen", "mtu"),`},
+		{`value = normalize(value, DYNAMIC_KEYS.get(name, ()))`, `value = value`},
+		{`value = sorted(line.split()[0] for line in value.splitlines()`, `value = sorted(line for line in value.splitlines()`},
 		{`check=True, timeout=10`, `check=False, timeout=10`},
 	} {
 		if c1cSnapshotValid(strings.Replace(source, mutation[0], mutation[1], 1)) {
