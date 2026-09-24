@@ -309,9 +309,10 @@ func gateB3CallShapeViolations(root string) ([]string, error) {
 func gateB3ConntrackAuthorityViolations(root string) ([]string, error) {
 	const key = "net.netfilter.nf_conntrack_max"
 	allowed := map[string]struct{}{
-		"internal/architecture/gate_b3_boundary_test.go": {},
-		"test/natlab/gate_b3_netns_linux_test.go":        {},
-		"test/natlab/run_gate_b3_required_linux.sh":      {},
+		"internal/architecture/gate_b3_boundary_test.go":     {},
+		"internal/architecture/c1c_maintainer_proof_test.go": {},
+		"test/natlab/gate_b3_netns_linux_test.go":            {},
+		"test/natlab/run_gate_b3_required_linux.sh":          {},
 	}
 	var violations []string
 	err := filepath.WalkDir(root, func(filename string, entry fs.DirEntry, walkErr error) error {
@@ -340,6 +341,12 @@ func gateB3ConntrackAuthorityViolations(root string) ([]string, error) {
 			return err
 		}
 		relative = filepath.ToSlash(relative)
+		// This is a read-only snapshot, not a ceiling writer. The exception
+		// requires the exact file AND its fixed command/argument contract;
+		// changing sysctl -n to a writer or renaming it must still fail.
+		if relative == "scripts/c1c-review-snapshot.sh" && c1cSnapshotValid(strings.ReplaceAll(string(payload), "\r\n", "\n")) {
+			return nil
+		}
 		// C1c-2b is a separately sealed, explicitly authorized field tool.
 		// This exact tag/file exception grants nothing to Gate B, ordinary
 		// builds or a renamed helper; its permission/consumer gate is separate.
