@@ -90,7 +90,7 @@ def snapshot_checks(scope):
 
 
 class FakeOS:
-    O_RDONLY, O_NOFOLLOW, O_DIRECTORY = 0, 1, 2
+    O_RDONLY, O_NOFOLLOW, O_DIRECTORY, O_NONBLOCK = 0, 1, 2, 4
     path = posixpath
     def __init__(self):
         self.nodes, self.fds, self.opened, self.reads = {}, {}, [], []
@@ -114,7 +114,7 @@ class FakeOS:
         return copy.copy(self.nodes[path])
     def open(self, name, flags, dir_fd=None):
         path = self.resolve(name, dir_fd)
-        check(flags in (self.O_NOFOLLOW, self.O_NOFOLLOW | self.O_DIRECTORY), "read_only_nofollow_flags")
+        check(flags in (self.O_NOFOLLOW | self.O_NONBLOCK, self.O_NOFOLLOW | self.O_DIRECTORY), "read_only_nofollow_flags")
         if self.race == path:
             self.nodes[path].st_ino += 100
         node = self.nodes[path]
@@ -149,7 +149,7 @@ def evidence_checks(scope, tree):
     check({n.names[0].name for n in tree.body if isinstance(n, ast.Import)} == {"hashlib", "json", "os", "stat", "sys"}, "read_only_import_allowlist")
     # No arbitrary import, attribute indirection, process launch, or write call.
     allowed_calls = {
-        "ValueError", "FileNotFoundError", "len", "min", "sorted", "format", "print",
+        "ValueError", "FileNotFoundError", "len", "min", "sorted", "format", "print", "bytearray",
         "executable", "same_file", "open_directory", "read_file", "walk", "allowed", "evidence",
         "os.geteuid", "os.stat", "os.lstat", "os.fstat", "os.open", "os.close", "os.read", "os.scandir",
         "stat.S_ISREG", "stat.S_ISDIR", "stat.S_ISLNK", "stat.S_IMODE", "hashlib.sha256",

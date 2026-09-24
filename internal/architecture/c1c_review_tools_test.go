@@ -42,7 +42,8 @@ func c1cEvidenceValid(source string) bool {
 			return false
 		}
 	}
-	return true
+	return strings.Count(source, "os.lstat(name, dir_fd=parent)") == 2 &&
+		strings.Count(source, "os.O_RDONLY | os.O_NOFOLLOW") == 3
 }
 
 func TestC1cReviewEvidenceContractAndMutations(t *testing.T) {
@@ -59,7 +60,7 @@ func TestC1cReviewEvidenceContractAndMutations(t *testing.T) {
 			t.Fatal("evidence reader source privacy rejected; values withheld")
 		}
 	}
-	for _, mutation := range [][2]string{
+	for index, mutation := range [][2]string{
 		{`if [ "$#" -ne 0 ]; then`, `if false; then`},
 		{`ROOT = "/root/.winkyou-field/"`, `ROOT = "/root/"`},
 		{`"c1c/material", `, ""},
@@ -75,7 +76,7 @@ func TestC1cReviewEvidenceContractAndMutations(t *testing.T) {
 	} {
 		changed := strings.Replace(source, mutation[0], mutation[1], 1)
 		if changed == source || c1cEvidenceValid(changed) {
-			t.Fatal("unsafe evidence reader mutation accepted")
+			t.Fatalf("unsafe evidence reader mutation %d accepted", index)
 		}
 	}
 }

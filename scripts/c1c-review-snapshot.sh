@@ -31,6 +31,22 @@ COMMANDS = (
     ("ss_udp", ["/usr/bin/ss", "-H", "-nup"], False),
     ("ss_tcp", ["/usr/bin/ss", "-H", "-ntp"], False),
 )
+DYNAMIC_KEYS = {
+    "addresses": ("valid_life_time", "preferred_life_time"),
+    "routes": ("expires",),
+    "nft": ("packets", "bytes"),
+    "links": ("operstate", "flags", "txqlen"),
+}
+
+
+def normalize(value, omitted):
+    # Omit only the named category's dynamic keys, at every nesting depth.
+    # Unknown keys, structural values and array order remain strict evidence.
+    if isinstance(value, dict):
+        return {key: normalize(item, omitted) for key, item in value.items() if key not in omitted}
+    if isinstance(value, list):
+        return [normalize(item, omitted) for item in value]
+    return value
 
 
 def executable(path):
@@ -55,13 +71,14 @@ def snapshot():
             encoding="utf-8", errors="strict",
         )
         value = json.loads(completed.stdout) if decode_json else completed.stdout.strip()
+        value = normalize(value, DYNAMIC_KEYS.get(name, ()))
         if name == "modules":
-            value = sorted(line for line in value.splitlines() if line.split() and (line.split()[0].startswith("nf_") or line.split()[0] == "tun"))
+            value = sorted(line.split()[0] for line in value.splitlines() if line.split() and (line.split()[0].startswith("nf_") or line.split()[0] == "tun"))
         elif name in ("namespaces", "registry"):
             value = sorted(value.splitlines())
         elif name in ("conntrack_max", "conntrack_count", "ip_forward"):
             value = int(value)
-        bucket = "volatile" if name in ("ss_udp", "ss_tcp") else "nonvolatile"
+        bucket = "volatile" if name in ("ss_udp", "ss_tcp", "conntrack_count") else "nonvolatile"
         result[bucket][name] = value
     return result
 
