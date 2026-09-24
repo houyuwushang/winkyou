@@ -63,9 +63,30 @@ private mount propagation、独立挂载的 namespace 注册表，以及绝对�
 参数，以固定系统命令在 init net/mount namespace 内采集，输出一个 JSON；需要受审路径的
 `nsenter`、`python3`、`ip`、`nft`、`sysctl`、`lsmod`、`find`、`ss`，缺失即停止，不自动安装。
 原始快照可能含真实身份，只能进入仓库外受控目录，不得粘贴 PR、日志或 CI artifact。
-仅 `ss` 项标为 volatile；其余字段 diff 必须为空才能记“完好退出”。共享业务造成的差异也须
-保留并停止复核，不能自行忽略、归因或改写快照。账号/sudoers 与证据读取权限另行确认；
-A0 不创建账号，不授权自由参数或任意文件读取。
+`ss_udp`、`ss_tcp` 和主机 `conntrack_count` 标为 volatile；主机其它业务的连接计数不是本次
+owned flow 见证，后者仍由 owned namespace 内原残留门证明。输出前仅按以下类别递归
+删除动态键：addresses 的 `valid_life_time`/`preferred_life_time`、routes 的 `expires`、
+nft 的 `packets`/`bytes`、links 的 `operstate`/`flags`/`txqlen`；modules 只保留排序后的
+模块名。其它键、嵌套规则、数组顺序均保留，不把结构字段一并丢弃。归一化后的 nonvolatile
+字段 diff 必须为空才能记“完好退出”，不能自行忽略剩余差异。
+
+第二人用 `scripts/c1c-review-evidence.sh` 独立读取私有日志与证据。脚本无参数、固定根，
+只遍历 `c1c/*.json`、`c1c/evidence/**`、`log/**`；材料、二进制、工具链、源码、临时目录
+和其它路径全部排除。每个普通文件提供相对路径、size/mode/uid 和 SHA-256；指定文本
+后缀且不超过 4 MiB 时附原始内容，较大文件只给元数据与哈希。symlink 只记
+`symlink_skipped`，不跟随；硬链接/不稳定文件失败即停止，不借路径别名读取被排除材料。
+哈希在进程内计算，没有子进程或写入。输出仅供私下复核，不进入 PR、公开日志或 artifact。
+二进制哈希须先由执行者写进获准证据/日志文件，读取器不获得 `bin/` 的直接访问权限。
+
+拟定 sudoers 权限仅允许两个受保护的固定脚本、各自空参数：
+
+```text
+<REVIEW_ACCOUNT> <HOST_SCOPE>=(root) NOPASSWD: <FIXED_SNAPSHOT_SCRIPT> "", <FIXED_EVIDENCE_SCRIPT> ""
+```
+
+拒绝通配参数、自由 `cat`/`sha256sum`、任意解释器和 `--evidence` 扩展；两个脚本都只读，
+解释器为固定 `python3 -I -B`。A1 能力检查须核对 python3 存在且受保护，缺失即停，不安装。
+账号创建、脚本安装和 sudoers 修改仍须维护者逐项确认；A0 不执行这些主机动作。
 
 ## 3. Kill switch 契约
 

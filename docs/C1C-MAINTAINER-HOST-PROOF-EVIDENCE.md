@@ -45,3 +45,15 @@ PASS；两者都不是测试 flake 或 CI rerun。首次失败没有覆盖或删
 
 CI 首跑在 PR 验证表单列；CI 未完成时不得把待跑项目写为通过。两项 required OS 证明仍须
 走原 CI attestation 路径，GuardianCrash 未放宽。
+
+## 2026-09-24 复审修订（两项 must-fix）
+
+依据 [独立评审](https://github.com/houyuwushang/winkyou/pull/173#issuecomment-5794396105)：
+原 11/2 快照口径把主机连接数、倒计时和流量计数作为严格结构，可能因无关业务变化误报。
+修订为 10 项 nonvolatile / 3 项 volatile，并按类别递归剔除精确动态键；所有其它结构保留。
+第二人证据读取独立为无参数脚本，固定目录白名单、nofollow、进程内哈希与 4 MiB 文本上限。
+
+验证顺序：更新契约并在旧实现记录首 RED → 修复两个脚本 → 同一回归 GREEN、变异、
+race×20 → vet/architecture/隐私/语法与相对链接 → 原两个隔离证明首跑 CI。使用模拟命令
+和内存文件树测试读取器，不执行主机快照、不读取真实私有证据。此前首跑记录不覆盖。
+本节不授权 A1、账号或 sudoers；生产、workflow、原 netns budget/场景均不变。
