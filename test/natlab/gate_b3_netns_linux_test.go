@@ -41,6 +41,11 @@ const (
 	gateB3ConntrackTransientAllowance = 1
 	gateB3HostConntrackCapEnv         = "WINKYOU_GATE_B3_HOST_CONNTRACK_CAP"
 	gateB3DisposableRunnerEnv         = "WINKYOU_GATE_B3_DISPOSABLE_RUNNER"
+	// #177, first hosted calibration (job 108832288612): maximum across
+	// legacy/proc and idle/busy2, 50 samples per cell. The reviewed rule is
+	// ceil(max*1.5/0.5s)*0.5s, minimum 0.5s. Freeze it, never autotune at runtime.
+	gateB3ConntrackCalibrationMaximum = 15_702_868 * time.Nanosecond
+	gateB3ConntrackRestoreLimit       = 500 * time.Millisecond
 	gateB3PortMin                     = uint16(hardnatplan.DynamicPortMin)
 	gateB3PortMax                     = uint16(hardnatplan.DynamicPortMax)
 	// The test-only TUN router may trail the endpoint process on a loaded CI
@@ -1124,7 +1129,8 @@ func setGateB3HostConntrackCapForSubtest(t *testing.T, value int) {
 }
 
 func waitGateB3ConntrackMax(t *testing.T, value int) bool {
-	return waitGateB3ConntrackMaxUsing(t, value, 250*time.Millisecond, func() (int, error) { return readGateB3ConntrackMax("") })
+	t.Helper()
+	return waitGateB3ConntrackMaxUsing(t, value, gateB3ConntrackRestoreLimit, func() (int, error) { return readGateB3ConntrackMax("") })
 }
 
 func waitGateB3ConntrackMaxUsing(t *testing.T, value int, limit time.Duration, readValue func() (int, error)) bool {
@@ -1252,6 +1258,12 @@ func parseGateB3SysctlValue(payload []byte) (int, error) {
 }
 
 func TestGateB3SysctlValueContract(t *testing.T) {
+	const step = 500 * time.Millisecond
+	// Integer ceiling avoids rounding down the 1.5 multiplier at a boundary.
+	derived := max(step, ((gateB3ConntrackCalibrationMaximum*3+2*step-1)/(2*step))*step)
+	if gateB3ConntrackRestoreLimit != derived || gateB3ConntrackRestoreLimit != step {
+		t.Fatal("conntrack restoration window no longer matches recorded calibration")
+	}
 	for _, sample := range []struct {
 		text string
 		want int
@@ -1379,7 +1391,9 @@ func testGateB3ConntrackRestoreMeasurement(t *testing.T) {
 			t.Logf("GATE_B3_CONNTRACK_RESTORE path=%s elapsed_ns=%d write_class=%s proc_value=%d proc_class=%s", path, elapsed, writeClass, value, readClass)
 		}
 		t.Logf("GATE_B3_CONNTRACK_REPRO path=%s pressure=busy2 count=%d failures=%d class=%s", path, observed, failures, gateB3SysctlErrorClass(err))
-		if observed != 20 || (err != nil && (path != "legacy" || failures == 0 || gateB3SysctlErrorClass(err) != "process_exit")) || (path == "proc" && failures != 0) {
+		var childExit *exec.ExitError
+		legacyAssertionFailure := path == "legacy" && failures > 0 && errors.As(err, &childExit) && childExit.ExitCode() == 1
+		if observed != 20 || (err != nil && !legacyAssertionFailure) || (path == "proc" && failures != 0) {
 			t.Fatal("conntrack reproduction batch did not satisfy its contract")
 		}
 	}
@@ -1457,7 +1471,9 @@ func measureGateB3ConntrackRestore(t *testing.T, path string) (time.Duration, bo
 	}
 	readValue := func() (int, error) { return readGateB3ConntrackMax("") }
 	writeValue := writeGateB3HostConntrackMax
+	readbackLimit := gateB3ConntrackRestoreLimit
 	if path == "legacy" {
+		readbackLimit = 250 * time.Millisecond
 		readValue = func() (int, error) {
 			output, err := runCommand("sysctl", "-n", "net.netfilter.nf_conntrack_max")
 			if err != nil {
@@ -1474,7 +1490,7 @@ func measureGateB3ConntrackRestore(t *testing.T, path string) (time.Duration, bo
 	}
 	started := time.Now()
 	err = writeValue(gateB3ConntrackCap)
-	ok := err == nil && waitGateB3ConntrackMaxUsing(t, gateB3ConntrackCap, 250*time.Millisecond, readValue)
+	ok := err == nil && waitGateB3ConntrackMaxUsing(t, gateB3ConntrackCap, readbackLimit, readValue)
 	elapsed := time.Since(started)
 	if !ok {
 		current, readErr := readGateB3ConntrackMax("")
