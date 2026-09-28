@@ -48,14 +48,13 @@ func TestLinuxFieldC1cExactBuildProof(t *testing.T) {
 	if os.Getenv("WINKYOU_FIELD_C1C_REQUIRED") != "1" {
 		t.Skip("C1c requires explicitly isolated Linux proof job")
 	}
-	requireGateB3Environment(t)
-	requireGateB3HostConntrackGuard(t)
+	guard := requireC1cProofEnvironment(t)
 	binary := os.Getenv("WINKYOU_FIELD_C1C_BINARY")
 	if !filepath.IsAbs(binary) {
 		t.Fatal("C1c exact field binary unavailable")
 	}
 	for _, profile := range gateC1bProfiles[:2] {
-		if !t.Run(profile.name, func(t *testing.T) { testFieldC1cProfile(t, profile, binary) }) {
+		if !t.Run(profile.name, guard(func(t *testing.T) { testFieldC1cProfile(t, profile, binary) })) {
 			t.FailNow()
 		}
 	}
