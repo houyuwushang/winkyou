@@ -12,6 +12,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -93,6 +95,8 @@ func TestGateB3EndpointParentProcess(t *testing.T) {
 func TestLinuxGateB3Hard16Proof(t *testing.T) {
 	requireGateB3Environment(t)
 	requireGateB3HostConntrackGuard(t)
+	t.Run("sysctl_value_contract", TestGateB3SysctlValueContract)
+	t.Run("conntrack_restore_measurement", testGateB3ConntrackRestoreMeasurement)
 	t.Run("conntrack_counter_boundary", testGateB3ConntrackCounterBoundary)
 	t.Run("topology_setup_error_redaction", testGateB3TopologySetupErrorRedaction)
 	t.Run("router_mapping_cap_pre_io", testGateB3RouterMappingCapPreIO)
@@ -1120,9 +1124,13 @@ func setGateB3HostConntrackCapForSubtest(t *testing.T, value int) {
 }
 
 func waitGateB3ConntrackMax(t *testing.T, value int) bool {
+	return waitGateB3ConntrackMaxUsing(t, value, 250*time.Millisecond, func() (int, error) { return readGateB3ConntrackMax("") })
+}
+
+func waitGateB3ConntrackMaxUsing(t *testing.T, value int, limit time.Duration, readValue func() (int, error)) bool {
 	t.Helper()
 	started := time.Now()
-	deadline := started.Add(250 * time.Millisecond)
+	deadline := started.Add(limit)
 	type readWitness struct {
 		start, end time.Duration
 		value      int
@@ -1132,7 +1140,7 @@ func waitGateB3ConntrackMax(t *testing.T, value int) bool {
 	consecutive := 0
 	for {
 		readStarted := time.Since(started)
-		current, err := readGateB3ConntrackMax("")
+		current, err := readValue()
 		reads = append(reads, readWitness{readStarted, time.Since(started), current, gateB3SysctlErrorClass(err)})
 		if err == nil && current == value {
 			consecutive++
@@ -1273,13 +1281,206 @@ func TestGateB3SysctlValueContract(t *testing.T) {
 		{errGateB3SysctlValue, "parse"}, {&exec.ExitError{}, "process_exit"},
 		{errors.New("untrusted command output"), "io"},
 	} {
-		if gateB3SysctlErrorClass(fmt.Errorf("untrusted wrapper: %w", sample.err)) != sample.class && sample.err != nil {
+		if sample.err != nil && gateB3SysctlErrorClass(fmt.Errorf("untrusted wrapper: %w", sample.err)) != sample.class {
 			t.Fatal("sysctl error class changed")
 		}
 		if gateB3SysctlErrorClass(sample.err) != sample.class {
 			t.Fatal("sysctl error class changed")
 		}
 	}
+}
+
+const gateB3ConntrackRepeatEnv = "WINKYOU_GATE_B3_CONNTRACK_REPEAT"
+
+// This runs only inside the existing disposable-runner guard, before a NAT
+// topology exists. It does not launch traffic or change either reviewed cap.
+// Keep the historical command path here for measurement, never for fixture I/O.
+func testGateB3ConntrackRestoreMeasurement(t *testing.T) {
+	for _, pressure := range []bool{false, true} {
+		name := "idle"
+		if pressure {
+			name = "busy2"
+		}
+		t.Run(name, func(t *testing.T) {
+			if pressure {
+				stop := startGateB3SysctlCPULoad()
+				defer stop()
+			}
+			for _, path := range []string{"legacy", "proc"} {
+				var samples []time.Duration
+				failures := 0
+				for index := 0; index < 50; index++ {
+					elapsed, ok := measureGateB3ConntrackRestore(t, path)
+					samples = append(samples, elapsed)
+					if !ok {
+						failures++
+					}
+				}
+				sort.Slice(samples, func(i, j int) bool { return samples[i] < samples[j] })
+				t.Logf("GATE_B3_CONNTRACK_LATENCY path=%s pressure=%s n=50 gomaxprocs=%d failures=%d p50_ns=%d p95_ns=%d p100_ns=%d",
+					path, name, runtime.GOMAXPROCS(0), failures, samples[24].Nanoseconds(), samples[47].Nanoseconds(), samples[49].Nanoseconds())
+				if path == "proc" && failures != 0 {
+					t.Error("in-process conntrack restoration measurement failed")
+				}
+			}
+		})
+	}
+	for _, path := range []string{"legacy", "proc"} {
+		// Use a real test-binary count=20 batch, not twenty retries of one failed
+		// assertion. Historical failures are retained as reproduction evidence;
+		// a new-path failure makes this required parent test RED.
+		ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+		command := exec.CommandContext(ctx, os.Args[0],
+			"-test.run=^TestGateB3ConntrackRestoreRepeat$", "-test.count=20", "-test.v", "-test.timeout=80s")
+		command.Env = append(os.Environ(), gateB3ConntrackRepeatEnv+"="+path)
+		output, err := command.CombinedOutput()
+		cancel()
+		observed, failures := 0, 0
+		for _, line := range strings.Split(string(output), "\n") {
+			index := strings.Index(line, "GATE_B3_CONNTRACK_REPEAT ")
+			if index < 0 {
+				continue
+			}
+			var reportedPath string
+			var passed int
+			var elapsed int64
+			if count, scanErr := fmt.Sscanf(line[index:], "GATE_B3_CONNTRACK_REPEAT path=%s passed=%d elapsed_ns=%d", &reportedPath, &passed, &elapsed); scanErr != nil || count != 3 || reportedPath != path || passed < 0 || passed > 1 || elapsed < 0 {
+				t.Fatal("conntrack reproduction summary rejected")
+			}
+			observed++
+			failures += 1 - passed
+			t.Logf("GATE_B3_CONNTRACK_REPEAT path=%s passed=%d elapsed_ns=%d", path, passed, elapsed)
+		}
+		// Only re-emit the bounded numeric read witnesses, never child output.
+		for _, line := range strings.Split(string(output), "\n") {
+			index := strings.Index(line, "GATE_B3_CONNTRACK_READ ")
+			if index < 0 {
+				continue
+			}
+			var ordinal, value, expected int
+			var start, end int64
+			var class string
+			if count, scanErr := fmt.Sscanf(line[index:], "GATE_B3_CONNTRACK_READ index=%d start_ns=%d end_ns=%d value=%d class=%s expected=%d", &ordinal, &start, &end, &value, &class, &expected); scanErr != nil || count != 6 || !gateB3SysctlClassAllowed(class) {
+				t.Fatal("conntrack reproduction read witness rejected")
+			}
+			t.Logf("GATE_B3_CONNTRACK_READ index=%d start_ns=%d end_ns=%d value=%d class=%s expected=%d", ordinal, start, end, value, class, expected)
+		}
+		for _, line := range strings.Split(string(output), "\n") {
+			index := strings.Index(line, "GATE_B3_CONNTRACK_RESTORE ")
+			if index < 0 {
+				continue
+			}
+			var reportedPath, writeClass, readClass string
+			var elapsed int64
+			var value int
+			if count, scanErr := fmt.Sscanf(line[index:], "GATE_B3_CONNTRACK_RESTORE path=%s elapsed_ns=%d write_class=%s proc_value=%d proc_class=%s", &reportedPath, &elapsed, &writeClass, &value, &readClass); scanErr != nil || count != 5 || reportedPath != path || !gateB3SysctlClassAllowed(writeClass) || !gateB3SysctlClassAllowed(readClass) {
+				t.Fatal("conntrack reproduction restore witness rejected")
+			}
+			t.Logf("GATE_B3_CONNTRACK_RESTORE path=%s elapsed_ns=%d write_class=%s proc_value=%d proc_class=%s", path, elapsed, writeClass, value, readClass)
+		}
+		t.Logf("GATE_B3_CONNTRACK_REPRO path=%s pressure=busy2 count=%d failures=%d class=%s", path, observed, failures, gateB3SysctlErrorClass(err))
+		if observed != 20 || (err != nil && (path != "legacy" || failures == 0 || gateB3SysctlErrorClass(err) != "process_exit")) || (path == "proc" && failures != 0) {
+			t.Fatal("conntrack reproduction batch did not satisfy its contract")
+		}
+	}
+}
+
+func gateB3SysctlClassAllowed(class string) bool {
+	switch class {
+	case "ok", "deadline", "cancelled", "permission", "not_found", "parse", "process_exit", "io":
+		return true
+	default:
+		return false
+	}
+}
+
+func TestGateB3ConntrackRestoreRepeat(t *testing.T) {
+	path := os.Getenv(gateB3ConntrackRepeatEnv)
+	if path == "" {
+		return
+	}
+	if path != "legacy" && path != "proc" {
+		t.Fatal("conntrack reproduction path rejected")
+	}
+	requireGateB3Environment(t)
+	requireGateB3HostConntrackGuard(t)
+	stop := startGateB3SysctlCPULoad()
+	defer stop()
+	elapsed, ok := measureGateB3ConntrackRestore(t, path)
+	passed := 0
+	if ok {
+		passed = 1
+	}
+	t.Logf("GATE_B3_CONNTRACK_REPEAT path=%s passed=%d elapsed_ns=%d", path, passed, elapsed)
+	if !ok {
+		t.Error("conntrack restoration reproduction failed")
+	}
+}
+
+func startGateB3SysctlCPULoad() func() {
+	var stop atomic.Bool
+	var ready, workers sync.WaitGroup
+	ready.Add(2)
+	workers.Add(2)
+	for index := 0; index < 2; index++ {
+		go func() {
+			defer workers.Done()
+			ready.Done()
+			for !stop.Load() {
+			}
+		}()
+	}
+	ready.Wait()
+	return func() { stop.Store(true); workers.Wait() }
+}
+
+func measureGateB3ConntrackRestore(t *testing.T, path string) (time.Duration, bool) {
+	t.Helper()
+	// Preserve the same init-namespace headroom rule as the fault case. Always
+	// restore, including Fatal/panic; the unchanged outer shell guard is final.
+	hostCount, err := readGateB3ConntrackCount("")
+	if err != nil || hostCount*2 >= gateB3ConntrackFaultCap {
+		t.Fatalf("conntrack measurement headroom rejected: value=%d class=%s", hostCount, gateB3SysctlErrorClass(err))
+	}
+	defer func() {
+		if err := writeGateB3HostConntrackMax(gateB3ConntrackCap); err != nil {
+			t.Errorf("conntrack measurement cleanup write failed: class=%s", gateB3SysctlErrorClass(err))
+		} else if !waitGateB3ConntrackMax(t, gateB3ConntrackCap) {
+			t.Error("conntrack measurement cleanup readback failed")
+		}
+	}()
+	if err := writeGateB3HostConntrackMax(gateB3ConntrackFaultCap); err != nil {
+		t.Fatalf("conntrack measurement preparation failed: class=%s", gateB3SysctlErrorClass(err))
+	}
+	if !waitGateB3ConntrackMax(t, gateB3ConntrackFaultCap) {
+		t.Fatal("conntrack measurement fault cap was not observed")
+	}
+	readValue := func() (int, error) { return readGateB3ConntrackMax("") }
+	writeValue := writeGateB3HostConntrackMax
+	if path == "legacy" {
+		readValue = func() (int, error) {
+			output, err := runCommand("sysctl", "-n", "net.netfilter.nf_conntrack_max")
+			if err != nil {
+				return 0, err
+			}
+			return strconv.Atoi(strings.TrimSpace(output))
+		}
+		writeValue = func(value int) error {
+			_, err := runCommand("sysctl", "-qw", "net.netfilter.nf_conntrack_max="+strconv.Itoa(value))
+			return err
+		}
+	} else if path != "proc" {
+		t.Fatal("conntrack measurement path rejected")
+	}
+	started := time.Now()
+	err = writeValue(gateB3ConntrackCap)
+	ok := err == nil && waitGateB3ConntrackMaxUsing(t, gateB3ConntrackCap, 250*time.Millisecond, readValue)
+	elapsed := time.Since(started)
+	if !ok {
+		current, readErr := readGateB3ConntrackMax("")
+		t.Logf("GATE_B3_CONNTRACK_RESTORE path=%s elapsed_ns=%d write_class=%s proc_value=%d proc_class=%s", path, elapsed.Nanoseconds(), gateB3SysctlErrorClass(err), current, gateB3SysctlErrorClass(readErr))
+	}
+	return elapsed, ok
 }
 
 func testGateB3RouterMappingCapPreIO(t *testing.T) {
