@@ -720,3 +720,22 @@ u32 的 `@` 按可变 IPv4 IHL 跳转，跳过 UDP header 后读取冻结头部�
 路径同样先读取再走原清理。接线门要求 INPUT/RETURN/两端安装和观察先于清理。
 此自查修订首批 `^TestGateB3LifetimeTail` race×20 PASS（1.846s）；本机没有执行
 iptables/netns，内核计数的可用性与结果仍由 Linux required CI 首跑给出。
+
+### 11.10 #177：host conntrack 恢复观察（先见证，后校准）
+
+基线 `7202544`，保留 [main 首跑 RED](https://github.com/houyuwushang/winkyou/actions/runs/36389108110/job/108820770271)：
+`conntrack_full` 恢复读回失败，后续四项报 `guard drifted before subtest`。
+原日志不含读回值，不能区分子进程观察延迟/错误与上限未恢复；
+不将此次失败宣称为已证明的调度 flake。保留的原始日志 SHA-256：
+`896965229f354fe0f81f1f2029bb690555be56eba4c5b4a42f7ed546c43fd245`。
+
+第一步仅增观察：250ms 窗口失败时逐次报告读取开始/结束的相对纳秒、
+值和固定错误类；所有前置 guard 及最终恢复检查同样附数值/错误类。
+不打印命令输出、路径或任意错误文本，不改 40000/1024、16K 或生产语义。
+后续仅 host 分支改直接访问固定 proc sysctl；namespace 分支继续原命令以保持
+原 namespace 选择语义，不引入 setns 线程归属变化。
+
+本机 Windows 不作 host sysctl 修改；旧/新路径实测由已授权的一次性 Linux CI
+守卫执行，工作流和 shell 恢复守卫不动。新窗口须等待测量后按
+`ceil(max * 1.5 / 0.5s) * 0.5s` 冻结，最小 0.5s，保留两次连续一致读回。
+原因未证明前仅 `Refs #177`；不 rerun 求绿、不混入 B2。

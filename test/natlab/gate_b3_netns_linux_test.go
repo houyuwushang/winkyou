@@ -1076,11 +1076,11 @@ func requireGateB3HostConntrackGuard(t *testing.T) {
 		t.Fatal("Gate B3 host conntrack guard authorization is absent")
 	}
 	if current, err := readGateB3ConntrackMax(""); err != nil || current != gateB3ConntrackCap {
-		t.Fatal("Gate B3 host conntrack guard is not active")
+		t.Fatalf("Gate B3 host conntrack guard is not active: value=%d class=%s", current, gateB3SysctlErrorClass(err))
 	}
 	t.Cleanup(func() {
 		if current, err := readGateB3ConntrackMax(""); err != nil || current != gateB3ConntrackCap {
-			t.Error("Gate B3 host conntrack cap was not restored after the matrix")
+			t.Errorf("Gate B3 host conntrack cap was not restored after the matrix: value=%d class=%s", current, gateB3SysctlErrorClass(err))
 		}
 	})
 }
@@ -1092,7 +1092,7 @@ func setGateB3HostConntrackCapForSubtest(t *testing.T, value int) {
 	}
 	current, err := readGateB3ConntrackMax("")
 	if err != nil || current != gateB3ConntrackCap {
-		t.Fatal("Gate B3 host conntrack guard drifted before subtest")
+		t.Fatalf("Gate B3 host conntrack guard drifted before subtest: value=%d class=%s", current, gateB3SysctlErrorClass(err))
 	}
 	if value == gateB3ConntrackCap {
 		return
@@ -1104,7 +1104,7 @@ func setGateB3HostConntrackCapForSubtest(t *testing.T, value int) {
 	if err := writeGateB3HostConntrackMax(value); err != nil {
 		t.Fatal("Gate B3 conntrack fault cap could not be installed")
 	}
-	if !waitGateB3ConntrackMax(value) {
+	if !waitGateB3ConntrackMax(t, value) {
 		_ = writeGateB3HostConntrackMax(gateB3ConntrackCap)
 		t.Fatal("Gate B3 conntrack fault cap verification failed")
 	}
@@ -1113,17 +1113,27 @@ func setGateB3HostConntrackCapForSubtest(t *testing.T, value int) {
 			t.Error("Gate B3 conntrack fault cap restoration failed")
 			return
 		}
-		if !waitGateB3ConntrackMax(gateB3ConntrackCap) {
+		if !waitGateB3ConntrackMax(t, gateB3ConntrackCap) {
 			t.Error("Gate B3 conntrack fault cap restoration could not be verified")
 		}
 	})
 }
 
-func waitGateB3ConntrackMax(value int) bool {
-	deadline := time.Now().Add(250 * time.Millisecond)
+func waitGateB3ConntrackMax(t *testing.T, value int) bool {
+	t.Helper()
+	started := time.Now()
+	deadline := started.Add(250 * time.Millisecond)
+	type readWitness struct {
+		start, end time.Duration
+		value      int
+		class      string
+	}
+	var reads []readWitness
 	consecutive := 0
 	for {
+		readStarted := time.Since(started)
 		current, err := readGateB3ConntrackMax("")
+		reads = append(reads, readWitness{readStarted, time.Since(started), current, gateB3SysctlErrorClass(err)})
 		if err == nil && current == value {
 			consecutive++
 			if consecutive == 2 {
@@ -1133,9 +1143,38 @@ func waitGateB3ConntrackMax(value int) bool {
 			consecutive = 0
 		}
 		if !time.Now().Before(deadline) {
+			for index, read := range reads {
+				t.Logf("GATE_B3_CONNTRACK_READ index=%d start_ns=%d end_ns=%d value=%d class=%s expected=%d",
+					index, read.start.Nanoseconds(), read.end.Nanoseconds(), read.value, read.class, value)
+			}
 			return false
 		}
 		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// Never include command output, arguments, filesystem paths or arbitrary error
+// text in a public witness. A value is meaningful only when class=ok.
+func gateB3SysctlErrorClass(err error) string {
+	var parseError *strconv.NumError
+	var exitError *exec.ExitError
+	switch {
+	case err == nil:
+		return "ok"
+	case errors.Is(err, context.DeadlineExceeded):
+		return "deadline"
+	case errors.Is(err, context.Canceled):
+		return "cancelled"
+	case errors.Is(err, os.ErrPermission):
+		return "permission"
+	case errors.Is(err, os.ErrNotExist):
+		return "not_found"
+	case errors.As(err, &parseError):
+		return "parse"
+	case errors.As(err, &exitError):
+		return "process_exit"
+	default:
+		return "io"
 	}
 }
 
