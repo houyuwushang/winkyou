@@ -1169,6 +1169,8 @@ func gateB3SysctlErrorClass(err error) string {
 		return "permission"
 	case errors.Is(err, os.ErrNotExist):
 		return "not_found"
+	case errors.Is(err, errGateB3SysctlValue):
+		return "parse"
 	case errors.As(err, &parseError):
 		return "parse"
 	case errors.As(err, &exitError):
@@ -1189,13 +1191,15 @@ func verifyGateB3NamespacedConntrackCap(leftNamespace, rightNamespace string, va
 }
 
 func readGateB3ConntrackMax(namespace string) (int, error) {
-	var output string
-	var err error
 	if namespace == "" {
-		output, err = runCommand("sysctl", "-n", "net.netfilter.nf_conntrack_max")
-	} else {
-		output, err = runNamespaced(namespace, "sysctl", nil, "-n", "net.netfilter.nf_conntrack_max")
+		payload, err := os.ReadFile("/proc/sys/net/netfilter/nf_conntrack_max")
+		if err != nil {
+			return 0, err
+		}
+		return parseGateB3SysctlValue(payload)
 	}
+	// Keep namespace selection explicit; do not move a Go thread with setns.
+	output, err := runNamespaced(namespace, "sysctl", nil, "-n", "net.netfilter.nf_conntrack_max")
 	if err != nil {
 		return 0, err
 	}
@@ -1203,23 +1207,79 @@ func readGateB3ConntrackMax(namespace string) (int, error) {
 }
 
 func writeGateB3HostConntrackMax(value int) error {
-	argument := "net.netfilter.nf_conntrack_max=" + strconv.Itoa(value)
-	_, err := runCommand("sysctl", "-qw", argument)
-	return err
+	if value <= 0 || value > gateB3ConntrackCap {
+		return errGateB3SysctlValue
+	}
+	return os.WriteFile("/proc/sys/net/netfilter/nf_conntrack_max", []byte(strconv.Itoa(value)+"\n"), 0)
 }
 
 func readGateB3ConntrackCount(namespace string) (int, error) {
-	var read string
-	var err error
 	if namespace == "" {
-		read, err = runCommand("sysctl", "-n", "net.netfilter.nf_conntrack_count")
-	} else {
-		read, err = runNamespaced(namespace, "sysctl", nil, "-n", "net.netfilter.nf_conntrack_count")
+		payload, err := os.ReadFile("/proc/sys/net/netfilter/nf_conntrack_count")
+		if err != nil {
+			return 0, err
+		}
+		return parseGateB3SysctlValue(payload)
 	}
+	read, err := runNamespaced(namespace, "sysctl", nil, "-n", "net.netfilter.nf_conntrack_count")
 	if err != nil {
 		return 0, err
 	}
 	return strconv.Atoi(strings.TrimSpace(read))
+}
+
+var errGateB3SysctlValue = errors.New("Gate B3 sysctl value is not an unsigned decimal integer")
+
+func parseGateB3SysctlValue(payload []byte) (int, error) {
+	text := strings.TrimSuffix(string(payload), "\n")
+	if text == "" {
+		return 0, errGateB3SysctlValue
+	}
+	for _, digit := range text {
+		if digit < '0' || digit > '9' {
+			return 0, errGateB3SysctlValue
+		}
+	}
+	return strconv.Atoi(text)
+}
+
+func TestGateB3SysctlValueContract(t *testing.T) {
+	for _, sample := range []struct {
+		text string
+		want int
+	}{{"0\n", 0}, {"1024\n", gateB3ConntrackFaultCap}, {"40000\n", gateB3ConntrackCap}, {"40000", gateB3ConntrackCap}} {
+		value, err := parseGateB3SysctlValue([]byte(sample.text))
+		if err != nil || value != sample.want {
+			t.Fatal("valid fixed sysctl decimal rejected")
+		}
+	}
+	for _, sample := range []string{"", "\n", "-1\n", "+1\n", " 1\n", "1 \n", "1\r\n", "1\n2\n", "1\n\n", "0x10\n", "999999999999999999999999999999999999"} {
+		_, err := parseGateB3SysctlValue([]byte(sample))
+		if err == nil || gateB3SysctlErrorClass(err) != "parse" {
+			t.Fatal("invalid sysctl decimal was accepted or exposed raw text")
+		}
+	}
+	for _, value := range []int{-1, 0, gateB3ConntrackCap + 1} {
+		if !errors.Is(writeGateB3HostConntrackMax(value), errGateB3SysctlValue) {
+			t.Fatal("out-of-range write reached sysctl")
+		}
+	}
+	for _, sample := range []struct {
+		err   error
+		class string
+	}{
+		{nil, "ok"}, {context.DeadlineExceeded, "deadline"}, {context.Canceled, "cancelled"},
+		{os.ErrPermission, "permission"}, {os.ErrNotExist, "not_found"},
+		{errGateB3SysctlValue, "parse"}, {&exec.ExitError{}, "process_exit"},
+		{errors.New("untrusted command output"), "io"},
+	} {
+		if gateB3SysctlErrorClass(fmt.Errorf("untrusted wrapper: %w", sample.err)) != sample.class && sample.err != nil {
+			t.Fatal("sysctl error class changed")
+		}
+		if gateB3SysctlErrorClass(sample.err) != sample.class {
+			t.Fatal("sysctl error class changed")
+		}
+	}
 }
 
 func testGateB3RouterMappingCapPreIO(t *testing.T) {
