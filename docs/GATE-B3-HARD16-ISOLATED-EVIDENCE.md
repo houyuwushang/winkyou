@@ -720,3 +720,57 @@ u32 的 `@` 按可变 IPv4 IHL 跳转，跳过 UDP header 后读取冻结头部�
 路径同样先读取再走原清理。接线门要求 INPUT/RETURN/两端安装和观察先于清理。
 此自查修订首批 `^TestGateB3LifetimeTail` race×20 PASS（1.846s）；本机没有执行
 iptables/netns，内核计数的可用性与结果仍由 Linux required CI 首跑给出。
+
+### 11.10 #177：host conntrack 恢复观察（先见证，后校准）
+
+基线 `7202544`，保留 [main 首跑 RED](https://github.com/houyuwushang/winkyou/actions/runs/36389108110/job/108820770271)：
+`conntrack_full` 恢复读回失败，后续四项报 `guard drifted before subtest`。
+原日志不含读回值，不能区分子进程观察延迟/错误与上限未恢复；
+不将此次失败宣称为已证明的调度 flake。保留的原始日志 SHA-256：
+`896965229f354fe0f81f1f2029bb690555be56eba4c5b4a42f7ed546c43fd245`。
+
+第一步仅增观察：250ms 窗口失败时逐次报告读取开始/结束的相对纳秒、
+值和固定错误类；所有前置 guard 及最终恢复检查同样附数值/错误类。
+不打印命令输出、路径或任意错误文本，不改 40000/1024、16K 或生产语义。
+后续仅 host 分支改直接访问固定 proc sysctl；namespace 分支继续原命令以保持
+原 namespace 选择语义，不引入 setns 线程归属变化。
+
+本机 Windows 不作 host sysctl 修改；旧/新路径实测由已授权的一次性 Linux CI
+守卫执行，工作流和 shell 恢复守卫不动。新窗口须等待测量后按
+`ceil(max * 1.5 / 0.5s) * 0.5s` 冻结，最小 0.5s，保留两次连续一致读回。
+原因未证明前仅 `Refs #177`；不 rerun 求绿、不混入 B2。
+
+采样接入已有 required Hard16 矩阵的首个 OS 子测试：旧/新路径分别在空闲及两个 busy
+goroutine 下测 50 次（每路径共 100 次），报告 nearest-rank p50/p95/p100 和失败数。
+测量区间为恢复写入开始到两次读回完成；准备阶段先确认 1024，区间外再恢复核验
+40000。压力 worker 全部 join 后才进入原 NAT 矩阵。另起两个同一 race 测试二进制的
+`-test.count=20` 批次，对旧/新路径分别重复相同压力恢复，保留旧路径 RED 而要求新路径
+零失败。只转写固定数字/枚举见证，不公开子进程任意输出。
+
+此测量提交仍用原 250ms；不是提前指定新窗口，也不是在运行时自动调大上限。
+实测及按公式冻结窗口的后续提交待首次 hosted 结果；本机交叉 vet 不能替代 OS 证明。
+
+#### 11.10.1 首次实测与冻结窗口
+
+测量提交 `e91a3ab` 的 [push 首跑 required job](https://github.com/houyuwushang/winkyou/actions/runs/36392827774/job/108832288612)
+PASS：完整 Hard16 矩阵 373.93s，测量子测试 10.58s，原有
+`prefire_fresh_namespace_teardown_100` 的 100 次 fresh namespace 残留为 0。
+Go 1.23.1、race 二进制、GOMAXPROCS=4；每格 50 次，单位 ms，nearest-rank 分位数：
+
+| 路径 | 压力 | p50 | p95 | p100 | 失败 |
+| --- | --- | ---: | ---: | ---: | ---: |
+| legacy 子进程 | idle | 14.008131 | 14.680527 | 14.771081 | 0/50 |
+| proc 进程内 | idle | 10.331454 | 10.534443 | 13.413298 | 0/50 |
+| legacy 子进程 | busy2 | 14.631490 | 15.093000 | 15.702868 | 0/50 |
+| proc 进程内 | busy2 | 10.318774 | 10.377246 | 12.464071 | 0/50 |
+
+独立子进程压力 `-test.count=20`：旧路径 0/20 失败，新路径 0/20 失败。
+这些是 write→两次读回（含既有 10ms 采样间隔）的耗时，**不是**单次 proc syscall 的耗时。
+四格最坏值 15.702868ms：`ceil(15.702868ms * 1.5 / 500ms) * 500ms = 500ms`，
+也满足 max 小于 50ms 时的 500ms 下限。冻结测试观察窗口为 500ms，并以编译期记录值及
+整数上取整契约锁定；不会依据后续运行自动扩窗。旧路径对照仍固定 250ms。
+不增加 sleep 兜底；原来的 10ms 校验间隔、两次连续一致语义均保持。
+
+测量日志 SHA-256：`0f92f403f3c7e627979e6ddfce6fb7897ba5a2261ad6dccdf7b08e4fa5542b5e`。
+当前未复现旧路径 RED，不能用本次通过解释最初四项 guard drifted，故维持 `Refs #177`。
+本结果也不能替代新窗口提交的首次 CI；后者另行记录，不 rerun。
