@@ -33,6 +33,7 @@ var fieldC1cImportFiles = map[string]bool{
 	"internal/v2/sshassembly/authority_fieldc1c.go":            true,
 	"internal/v2/gatecorchestrator/field_entry_linux.go":       true,
 	"internal/v2/gatecorchestrator/field_entry_unsupported.go": true,
+	"internal/v2/gatecorchestrator/field_tools_fieldc1c.go":    true,
 	"pkg/netif/field_authority_fieldc1c.go":                    true,
 	"cmd/wink/cmd/gate_c1c_fieldc1c.go":                        true,
 	"internal/c1crouter/nat_linux.go":                          true,
@@ -140,6 +141,7 @@ func fieldC1cViolations(root string) ([]string, error) {
 		if err != nil {
 			return err
 		}
+		violations = append(violations, fieldReadOnlyToolViolations(relative, file)...)
 		fieldFile := strings.Contains(relative, "fieldc1c") || strings.HasPrefix(filepath.Base(relative), "field_")
 		if fieldWindowsFiles[relative] {
 			if !strings.HasPrefix(source, "//go:build windows && fieldc1c\n") {
@@ -165,20 +167,26 @@ func fieldC1cViolations(root string) ([]string, error) {
 			}
 		}
 		allowedUses := map[string]map[string]bool{
-			"NewFieldAuthority":          {"internal/v2/sshassembly/authority_fieldc1c.go": true, "internal/v2/gatecorchestrator/field_entry_linux.go": true},
-			"NewFieldUDPFactory":         {"internal/probeio/field_factory_fieldc1c.go": true, "internal/v2/gatecorchestrator/field_entry_linux.go": true},
-			"ConfigureFieldAttempt":      {"internal/v2/directconnect/gateb/deployment_fieldc1c.go": true, "internal/v2/gatecorchestrator/field_entry_linux.go": true},
-			"NewFieldInterfaceAuthority": {"pkg/netif/field_authority_fieldc1c.go": true, "internal/v2/gatecorchestrator/field_entry_linux.go": true},
-			"NewFieldInterface":          {"pkg/netif/field_tun_linux.go": true, "pkg/netif/field_tun_windows.go": true, "internal/v2/gatecorchestrator/field_entry_linux.go": true},
-			"NewFieldWireGuard":          {"pkg/tunnel/fieldc1c_linux.go": true, "internal/v2/gatecorchestrator/field_entry_linux.go": true},
-			"ExecFieldRoot":              {"internal/v2/sshchildwrapper/exec_fieldc1c_linux.go": true, "cmd/wink/deployment_fieldc1c_linux.go": true},
-			"AuthorizePlan":              {"internal/probeio/field_factory_fieldc1c.go": true, "internal/v2/directconnect/gateb/deployment_fieldc1c.go": true},
-			"WintunIdentity":             {"internal/v2/fieldc1c/identity_fieldc1c.go": true, "pkg/netif/field_authority_fieldc1c.go": true},
-			"fieldWindowsPermit":         {"pkg/netif/field_tun_windows.go": true},
-			"newFieldWindowsInterface":   {"pkg/netif/field_tun_windows.go": true},
-			"fieldNativeWintun":          {"pkg/netif/field_tun_windows.go": true},
-			"fieldIPHelper":              {"pkg/netif/field_tun_windows.go": true, "pkg/netif/field_iphlpapi_windows.go": true},
-			"configureFieldIP":           {"pkg/netif/field_tun_windows.go": true, "pkg/netif/field_ipcfg_windows.go": true},
+			"InspectFieldPairingLedger":     {"internal/governor/field_inspect_fieldc1c.go": true, "internal/v2/gatecorchestrator/field_tools_fieldc1c.go": true},
+			"DependencyConfigurationDigest": {"internal/v2/fieldc1c/tools_fieldc1c.go": true, "internal/v2/gatecorchestrator/field_tools_fieldc1c.go": true},
+			"MachineScopeReference":         {"internal/v2/fieldc1c/tools_fieldc1c.go": true, "internal/v2/gatecorchestrator/field_tools_fieldc1c.go": true, "internal/v2/fieldc1c/router_v2.go": true},
+			"VerifyFieldSSHD":               {"internal/v2/gatecorchestrator/field_tools_fieldc1c.go": true, "cmd/wink/cmd/gate_c1c_fieldc1c.go": true},
+			"InspectFieldLedger":            {"internal/v2/gatecorchestrator/field_tools_fieldc1c.go": true, "cmd/wink/cmd/gate_c1c_fieldc1c.go": true},
+			"DeriveFieldTools":              {"internal/v2/gatecorchestrator/field_tools_fieldc1c.go": true, "cmd/wink/cmd/gate_c1c_fieldc1c.go": true},
+			"NewFieldAuthority":             {"internal/v2/sshassembly/authority_fieldc1c.go": true, "internal/v2/gatecorchestrator/field_entry_linux.go": true},
+			"NewFieldUDPFactory":            {"internal/probeio/field_factory_fieldc1c.go": true, "internal/v2/gatecorchestrator/field_entry_linux.go": true},
+			"ConfigureFieldAttempt":         {"internal/v2/directconnect/gateb/deployment_fieldc1c.go": true, "internal/v2/gatecorchestrator/field_entry_linux.go": true},
+			"NewFieldInterfaceAuthority":    {"pkg/netif/field_authority_fieldc1c.go": true, "internal/v2/gatecorchestrator/field_entry_linux.go": true},
+			"NewFieldInterface":             {"pkg/netif/field_tun_linux.go": true, "pkg/netif/field_tun_windows.go": true, "internal/v2/gatecorchestrator/field_entry_linux.go": true},
+			"NewFieldWireGuard":             {"pkg/tunnel/fieldc1c_linux.go": true, "internal/v2/gatecorchestrator/field_entry_linux.go": true},
+			"ExecFieldRoot":                 {"internal/v2/sshchildwrapper/exec_fieldc1c_linux.go": true, "cmd/wink/deployment_fieldc1c_linux.go": true},
+			"AuthorizePlan":                 {"internal/probeio/field_factory_fieldc1c.go": true, "internal/v2/directconnect/gateb/deployment_fieldc1c.go": true},
+			"WintunIdentity":                {"internal/v2/fieldc1c/identity_fieldc1c.go": true, "pkg/netif/field_authority_fieldc1c.go": true},
+			"fieldWindowsPermit":            {"pkg/netif/field_tun_windows.go": true},
+			"newFieldWindowsInterface":      {"pkg/netif/field_tun_windows.go": true},
+			"fieldNativeWintun":             {"pkg/netif/field_tun_windows.go": true},
+			"fieldIPHelper":                 {"pkg/netif/field_tun_windows.go": true, "pkg/netif/field_iphlpapi_windows.go": true},
+			"configureFieldIP":              {"pkg/netif/field_tun_windows.go": true, "pkg/netif/field_ipcfg_windows.go": true},
 		}
 		ast.Inspect(file, func(node ast.Node) bool {
 			if literal, ok := node.(*ast.CompositeLit); ok && len(literal.Elts) != 0 && strings.HasPrefix(relative, "internal/v2/fieldc1c/") {
@@ -570,6 +578,11 @@ func TestFieldC1cMutationRejectsTagAndConsumerEscapes(t *testing.T) {
 }
 
 var fieldC1cSymbolPatterns = []string{
+	`winkyou/internal/v2/gatecorchestrator\.VerifyFieldSSHD`,
+	`winkyou/internal/v2/gatecorchestrator\.InspectFieldLedger`,
+	`winkyou/internal/v2/gatecorchestrator\.DeriveFieldTools`,
+	`winkyou/internal/governor\.InspectFieldPairingLedger`,
+	`winkyou/internal/v2/fieldc1c\.DependencyConfigurationDigest`,
 	`winkyou/internal/v2/fieldc1c\.Load`,
 	`winkyou/internal/v2/sshassembly\.NewFieldAuthority`,
 	`winkyou/internal/probeio\.NewFieldUDPFactory`,
@@ -577,6 +590,110 @@ var fieldC1cSymbolPatterns = []string{
 	`winkyou/pkg/tunnel\.NewFieldWireGuard`,
 	`winkyou/internal/v2/gatecorchestrator\.RunFieldInitiator`,
 	`winkyou/internal/v2/sshchildwrapper\.ExecFieldRoot`,
+}
+
+// A closed import set plus operation guards protects even function-value
+// aliases; scanning only CallExpr would miss `f := os.WriteFile; f(...)`.
+func fieldReadOnlyToolViolations(relative string, file *ast.File) []string {
+	if relative != "internal/v2/gatecorchestrator/field_tools_fieldc1c.go" &&
+		relative != "internal/governor/field_inspect_fieldc1c.go" &&
+		relative != "internal/v2/fieldc1c/tools_fieldc1c.go" {
+		return nil
+	}
+	var bad []string
+	reject := func() { bad = append(bad, relative+" read-only tool capability escape") }
+	allowed := map[string]bool{}
+	for _, path := range []string{"bytes", "crypto/sha256", "debug/buildinfo", "encoding/hex", "encoding/json", "errors", "io", "os", "path/filepath", "runtime/debug", "strings", "sort", "time", "unicode/utf8",
+		modulePath + "/internal/governor", modulePath + "/internal/v2/fieldc1c", modulePath + "/internal/v2/gatecrequest", modulePath + "/internal/v2/sshchildwrapper"} {
+		allowed[path] = true
+	}
+	aliases := map[string]string{}
+	for _, spec := range file.Imports {
+		path, _ := strconv.Unquote(spec.Path.Value)
+		alias := filepath.Base(path)
+		if spec.Name != nil {
+			alias = spec.Name.Name
+		}
+		if !allowed[path] || alias == "." || alias == "_" {
+			reject()
+		}
+		aliases[alias] = path
+	}
+	for _, declaration := range file.Decls {
+		if fn, ok := declaration.(*ast.FuncDecl); ok && fn.Name.Name == "init" {
+			reject()
+		}
+	}
+	ast.Inspect(file, func(node ast.Node) bool {
+		if _, ok := node.(*ast.GoStmt); ok {
+			reject()
+		}
+		if identifier, ok := node.(*ast.Ident); ok {
+			switch identifier.Name {
+			case "AcquireMachine", "AcquirePreparedNamespace", "SetupMachineNamespace", "OpenMachinePairingLedger", "Admit", "Preflight", "holdOwner", "claim", "appendPairingJournal", "createPairingLedgerFile", "ResetCircuit", "ResetMachineSafetyTrip", "RunFieldInitiator", "RunFieldResponder", "Load", "LoadRouter", "ClaimPending", "Stage", "Cleanup":
+				reject()
+			}
+		}
+		selector, ok := node.(*ast.SelectorExpr)
+		if !ok {
+			return true
+		}
+		switch selector.Sel.Name {
+		case "Create", "WriteFile", "Mkdir", "MkdirAll", "OpenFile", "Remove", "RemoveAll", "Rename", "Link", "Symlink", "Chmod", "Chown", "Truncate", "Write", "WriteAt", "WriteString", "Sync", "Command", "CommandContext", "Start", "Dial", "Listen", "ListenPacket", "NewProc":
+			reject()
+		}
+		if base, ok := selector.X.(*ast.Ident); ok && aliases[base.Name] == "os" {
+			switch selector.Sel.Name {
+			case "Open", "Lstat", "SameFile", "ErrNotExist", "File", "ModeSymlink":
+			default:
+				reject()
+			}
+		}
+		return true
+	})
+	return bad
+}
+
+func TestFieldC1cReadOnlyToolCapabilityMutations(t *testing.T) {
+	for _, body := range []string{
+		`import "os"; func f(){os.Create("x")}`, `import x "os"; var f=x.WriteFile`,
+		`import "os"; func f(){os.Mkdir("x",0700)}`, `import "net"; var f=net.Dial`,
+		`import "os/exec"; var f=exec.Command`, `import "unsafe"; var _ unsafe.Pointer`,
+		`func f(){file.Write(nil)}`, `func f(){go f()}`, `func init(){}`, `func f(){SetupMachineNamespace()}`,
+		`func f(){ledger.holdOwner()}`, `func f(){fieldc1c.Load("x","initiator")}`,
+	} {
+		t.Run(fmtMutationName(body), func(t *testing.T) {
+			file, err := parser.ParseFile(token.NewFileSet(), "fixture.go", "package fixture\n"+body, 0)
+			if err != nil || len(fieldReadOnlyToolViolations("internal/v2/gatecorchestrator/field_tools_fieldc1c.go", file)) == 0 {
+				t.Fatal("read-only capability mutant escaped")
+			}
+		})
+	}
+	for _, path := range []string{"pkg/client/tool.go", "cmd/wink/cmd/unsealed.go"} {
+		root := t.TempDir()
+		writeArchitectureMutation(t, root, path, "package escaped\nfunc f(){_=InspectFieldLedger;_=InspectFieldPairingLedger}\n")
+		if bad, err := fieldC1cViolations(root); err != nil || len(bad) == 0 {
+			t.Fatal("unapproved tool consumer escaped")
+		}
+	}
+}
+
+func fmtMutationName(body string) string {
+	digest := sha256.Sum256([]byte(body))
+	return strconv.FormatUint(uint64(digest[0])<<8|uint64(digest[1]), 16)
+}
+
+// No workflow delta: the existing required architecture job executes these
+// field-tagged offline unit cases as well as its symbol/mutation checks.
+func TestFieldC1cReadOnlyToolUnitProof(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	command := exec.CommandContext(ctx, "go", "test", "-race", "-tags=fieldc1c", "./cmd/wink/cmd", "./internal/governor", "./internal/v2/gatecorchestrator", "./internal/v2/fieldc1c", "-run", "^TestFieldTools", "-count=1")
+	command.Dir = repositoryRoot(t)
+	start := time.Now()
+	if output, err := command.CombinedOutput(); err != nil {
+		fieldSymbolFailure(t, ctx, "read_only_units", start, output)
+	}
 }
 
 func TestFieldC1cBinarySymbolIsolation(t *testing.T) {
