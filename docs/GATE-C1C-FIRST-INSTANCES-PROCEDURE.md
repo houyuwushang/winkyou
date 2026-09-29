@@ -10,6 +10,9 @@ Stage I 独立复审接受后仍需另发 Stage II 任务书；Stage II 只做�
 Stage III 才可能签发首个负面实例。§9 的相应未决项未闭合时，不把命令片段拼成运行脚本。
 模板里的 `<PLACEHOLDER>` 不是已核实值；任何签字、布尔许可和测量结果都不能预填成功。
 
+§2–§3 保留 Stage I 的问题发现过程；当前裁决与工具实现状态以 §9.1 为准。
+新增脚本仅完成离线实现，不代表 Stage II/III 已获执行授权。
+
 ## 1. 范围、依据与命令勘误
 
 本轮是共享 Linux 主机内的隔离 router/端点组合，不是跨设备、LAN 或公网穿透证明。
@@ -111,6 +114,19 @@ mount view 分别核验。**U2 未决：现有实现只在 test helper 里组合
 只在首次另行批准的端点初始化中运行产品 `setup-machine-scope`（可创建 namespace/ledger），
 后续每实例只用 `--check`。machine-id/var-lib/home 永不按场景删除重建；销毁前封存，不能换
 scope 绕过 hard-16K 一次/24h、失败 circuit 或其他 admission 限制。
+
+U2 的初始化模板现由 [init 脚本](../scripts/c1c-endpoint-init.sh) 实现；只在另行授权后使用：
+
+```sh
+<FIXED_C1C_ENDPOINT_INIT_SCRIPT> initiator
+<FIXED_C1C_ENDPOINT_INIT_SCRIPT> responder
+```
+
+固定根下 `endpoints/` 与 `bin/wink-field` 须事前具名准备并核对 owner/mode/hash。
+角色目录已存在即退出 65，零写入；中途失败目录保留，不自动修复。只有复制 hash 不符时，
+按创建清单与 inode 核验逆序删除本次刚创建的项，不递归删除已有目录。
+init 仅建外层 `var-lib`，内层 canonical namespace 由产品 setup 独占创建；输出只有角色和
+scope 摘要前缀。私有 shadow 与 evidence 父目录绑定的修订见 §9.1。
 
 ## 3. 每实例操作规程：runbook 步 4–12
 
@@ -457,9 +473,15 @@ readlink /proc/<EXACT_PID>/exe
 ```
 
 第二人核对 PID/starttime/executable/namespace 与已登记本次对象，不按名称杀进程。
-停止动作模板 `kill -TERM -- <EXACT_OWNED_PID>` 仅在身份复核后执行；PID 复用或归属不明即
-停止，不升级为 `pkill`。shell“检查后 kill”并非原子 pidfd 保证，现场 supervisor/停止工具的
-精确调用随 U2 复审；不能冒充 [router 的 pidfd 身份保护](../internal/c1crouter/command_linux.go)。
+停止动作由 [owned-stop 脚本](../scripts/c1c-owned-stop.sh) 实现：
+
+```sh
+<FIXED_C1C_OWNED_STOP_SCRIPT> <EXACT_OWNED_PID> <RECORDED_STARTTIME> <RECORDED_EXE_SHA256>
+```
+
+先取得 pidfd，再核对括号安全解析的 stat 第 22 字段与实际 exe hash，只对同一进程发 TERM；
+PID 复用、身份不符、内核/Python 缺 pidfd API 都拒绝，不按名称停止，也不降级为检查后 kill。
+2s 内最多每 100ms 等待退出；仍存活返回非零，不升级 KILL，不代替签发的 containment。
 
 验证原 **2s I/O drain**、packet 不再增长、owned socket/child/lock 排空。router 随后的 OS
 cleanup 另有现存 **20s** `cleanupTimeout`；它不是把 2s 延长到 20s，也不能用 cleanup 成功
@@ -482,16 +504,30 @@ U3 裁决后在 responder mount/net view 前台运行私有 sshd（peer-absent �
 验证监听；SSH literal endpoint 是 responder NAT 地址与签发端口，非 responder 内网地址。
 固定 TCP DNAT 由 router 建立，不改宿主 firewall。
 
-initiator 的**最后一跳**命令已知；省略部分 U2 仍未决，故下面不是现在可运行的完整命令：
+initiator 通过受审 launcher 组合最后一跳。下列仍是未来具名窗口中的占位模板，
+不因工具实现而获得执行授权：
 
 ```text
-ip netns exec <INITIATOR_ANCHOR> <UNRESOLVED_REVIEWED_PRIVATE_MOUNT_LAUNCHER> /usr/libexec/winkyou/wink gate-c1c run --instance <INITIATOR_CANONICAL_INSTANCE>
+<FIXED_C1C_ENDPOINT_LAUNCH_SCRIPT> initiator <ATTEMPT_ID> <INITIATOR_ANCHOR>
 ```
 
-禁止删掉 launcher 占位符直接运行。responder 不另启一次 `run`，由唯一 SSH child 从 pending
+launcher 自行验证非 init netns、精确派生 anchor、角色初始化、只读实例/材料绑定和证据独占性，
+不得再拼接任意命令。responder 不另启一次 `run`，由唯一 SSH child 从 pending
 slot 领取请求。field stdout 只有 profile/stage/class/duration_ns/counts/evidence_sha256；
 progress 与详细 witness 在私有 endpoint.jsonl。对 stdout 不作“有输出即成功”的判断。
 任一前置失败不允许第二 invocation、切 profile、fallback 或调整窗口。
+
+Stage II 的无材料演练模板（同样须另行授权）：
+
+```sh
+<FIXED_C1C_ENDPOINT_LAUNCH_SCRIPT> <ROLE> <DRILL_ID> <ROLE_ANCHOR> --payload version
+```
+
+`DRILL_ID` 是规范的 16 字节 base64url 22 字符演练标识，不是 credential；角色只允许两个
+固定值，anchor 严格按 §9.1 派生。evidence 源目录必须已存在，version 不读取 instance/material。
+见证只接受实际目标 exec 的 PID/starttime/net/mount inode/hash，不把中间解释器算成功。
+version 过快退出而未被观测时为 `exec_witness_unavailable`；本轮离线测试不证明现场演练
+成功，也不自动重启短进程取得见证。父进程前台等待 child，并保留其退出码。
 
 ### 3.6 步 9–10：终局、drain、teardown 与 after 快照
 
@@ -553,6 +589,18 @@ sudo -- <FIXED_SNAPSHOT_SCRIPT>
 保存。真实文件不可读不是零残留。第二人逐一填 teardown/terminal/ledger/管理通道/隐私栏并
 签字；实际结果另写 evidence checklist，**不补写签发原件内原来为 null 的 post-run 字段**。
 公开只能发 §6 的白名单摘要。任一门未满足，本实例保持 RED/unknown，不能靠下一实例覆盖。
+
+U9 的事后只读投影模板由 [correlate 脚本](../scripts/c1c-me-correlate.sh) 实现：
+
+```sh
+<FIXED_C1C_ME_CORRELATE_SCRIPT> <INITIATOR_RAW_ENDPOINT_JSONL> <RESPONDER_RAW_ENDPOINT_JSONL> <RAW_ROUTER_JSONL>
+```
+
+三路径必须在固定 evidence 根的同一 attempt 下；端点原件为
+`endpoint-<role>/<ATTEMPT_ID>/endpoint.jsonl`，router 为 `router/router.jsonl`。
+逐级 fd-relative/no-follow 打开，拒绝 hardlink、可写父链、超长与重复 JSON key；只输出
+`C1C_ME` 固定字段，不输出原始地址/路径/tuple。当前 producer 缺认证关联键与同域时间戳，
+相关测量明确为 null，不能把 router observation 计数当作认证命中数。
 
 ## 4. `/2` 全字段模板与派生值
 
@@ -940,12 +988,33 @@ U9 在首个 `predictive_apdm_pair` 发布摘要前合入即可。
 #### 工具测试顺序与证据
 
 先提交不存在脚本/缺少白名单时的 RED 契约，再实现脚本、fake 文件系统/命令语义与变异。
-测试只编译/提取 Python 定义，不调用顶层入口；system mount、ptrace、signal、进程与文件写入
+测试只编译/提取 Python 定义，不调用顶层入口；system mount、signal、进程与文件写入
 在纯语义测试中全部由 fake 接管。shell 的语法检查也不执行脚本。
 启动见证须在本次 child 的目标 exec 边界取得，不能把中间解释器的 hash 当作 WinkYou；
-version 短进程也不能以轮询竞争冒充稳定见证。任何权限/见证失败都拒绝，不重试实例。
+version 短进程如在实际采样前退出，返回 `exec_witness_unavailable`，不输出伪造的身份见证；
+不把中间解释器的 hash 当作成功，不自动重启。任何权限/见证失败都拒绝，不重试实例。
 M/E 关联只消费实际存在的字段：当前 endpoint 没有认证 tuple 摘要或同域里程碑，
 相关值保持 null + 固定 reason；不从 progress 墙钟或 router 本地时钟拼出认证测量。
+
+本地 Go 1.23.1 的首次结果分别保留：
+
+- `a5d3fc9`：四个新增脚本尚不存在，四项契约 RED；这是实现前回归。
+- 实现阶段第一次 reader 变异第 14 项 RED：宽松子串匹配未识别 shadow 例外；
+  改为精确整句契约，未放宽读取器。
+- 新脚本/读取器聚焦 `-race -count=20` PASS（14.471s），`go vet ./...` PASS。
+- 全量 architecture 首跑 RED（43.438s）：launcher 的角色相对目录字符串被旧隐私门识别为
+  `personal_directory`；改为结构化路径拼接，同一物理路径不变，隐私门零修改。
+- 修正后同一批验证：聚焦 race×20 PASS（15.416s）、`go vet ./...` PASS、全量
+  architecture PASS（36.135s）。文档/脚本 193 文件、source 923 文件，均 0 finding；
+  五脚本 `bash -n`、相对链接与 `git diff --check` 通过。
+
+全量 architecture 首次 RED 原日志保留在仓库外，SHA-256：
+`67d88adf97362f576076545d3bf545fc1c49c865876064e36ee11df55f20f397`。
+
+四脚本字面量/禁用能力变异数分别为 init 18、launch 26、stop 18、correlate 18；
+读取器共 15 项变异。纯语义断言数分别为 201、172、103、147（含共同导入与零能力检查，
+不是相互独立的场景数），所有脚本入口调用和真实 host 调用均为 0。
+M/E golden 仅含合成 producer 形态，读取侧归一化 CRLF。CI 首跑另列，尚不视为现场证明。
 
 ## 10. 本 PR 的验收口径
 
