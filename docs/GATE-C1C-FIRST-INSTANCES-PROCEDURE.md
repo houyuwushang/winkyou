@@ -899,6 +899,14 @@ Stage II 失败保留首个输出；不能用再跑一次掩盖。通过后亦�
 **Stage II 前置**：U1、U2、U4 的工具 PR 合入。**Stage III 前置**：U5、U8 合入；每实例仍单独两段签字。
 U9 在首个 `predictive_apdm_pair` 发布摘要前合入即可。
 
+#### U5 实现前核对修订（2026-09-29，维护者同意）
+
+现有 journal 与 `InspectMachinePairingLedger` 不包含每条的 role/profile/材料指纹，
+campaign 的现有对象方法又要求 owner。本轮允许在 governor 增加 `fieldc1c` 专用的只读 API，
+复用既有 journal parser 与两类判定，不改 journal 格式、不获取 owner、不写文件。
+未记录字段输出 `null` 与 `not_recorded`；无锁快照仅用于前检诊断，不替代正式 admission。
+三个只读命令的边界与验收见[工具契约](GATE-C1C-FIELD-BUILD-EVIDENCE.md#6-c1c-3-只读准备工具契约2026-09-29)。
+
 ## 10. 本 PR 的验收口径
 
 只改本文和 C1c ADR §7 一行。验证命令为 `go test ./internal/architecture -run 'Privacy'`、
