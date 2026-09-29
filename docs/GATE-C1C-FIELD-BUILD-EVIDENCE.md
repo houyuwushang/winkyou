@@ -223,3 +223,34 @@ Go 1.23.1，`go test -tags=fieldc1c ./cmd/wink/cmd -run '^TestFieldTools' -count
 命令 golden RED（缺子命令时返回帮助，469 bytes，而非固定 JSON）；九个全局 flag 存在性用例
 均未得到 `ErrInvalid`，RED。`go test -tags=fieldc1c ./internal/v2/fieldc1c
 -run '^TestFieldToolsDependency' -count=1`：窄复用函数尚不存在，编译 RED；此项不是行为失败。
+
+### 6.2 本地实现与验收边界（尚未提交 PR）
+
+提交 `9183b28` 的 Go 1.23.1 本地首批结果：
+
+| 命令/检查 | 结果 |
+| --- | --- |
+| `go test -race -tags=fieldc1c ./cmd/wink/... ./internal/v2/gatecorchestrator ./internal/v2/fieldc1c -count=20 -timeout=30m -json` | PASS；三个有测试包分别 114.618s / 210.695s / 41.368s |
+| `go vet ./...` | PASS |
+| field 工具能力与隐私 focused architecture | PASS；未代替全量 architecture |
+| `go test ./internal/architecture -count=1` | RED，94.386s；B3 只读投影的 campaign 常量引用，以及 C1a/C1b 对新增 validator 消费边的拒绝 |
+
+race 原始日志留仓库外，SHA-256 为
+`b200b4169da13db3590bbfb392efda6d413c7ca69e42c14a91f7e52784e0a28a`。
+其中实际二进制测试的 20 个样本均进入拒绝分支，日志原文为 `build_pair=dirty_rejected`；
+不能将其计作 clean pair 的成功推导。独立核对确认 Go 1.23.1 的 `cmd/go/internal/vcs`
+只把目录形式 `.git` 当作 Git root，本地 linked worktree 的 `.git` 是文件；即使
+`-buildvcs=true`，生成物也未包含 `vcs.*`。此处原日志标签不精确，实质是缺 VCS 元数据拒绝，
+不是已证实工作树有未提交改动。clean pair 的独立 Git checkout 正向验收仍待完成，
+不得放宽产品的 revision / modified / tag 校验来获得通过。
+
+B3 投影改为直接输出经现有 parser 校验的 record class，空值映射 ordinary，
+不再由显示层解释 campaign 权限；既有 B3 门本身不改。修改后
+`go test -race -tags=fieldc1c ./internal/governor -run '^TestFieldTools' -count=20`
+PASS（3.442s），`TestGateB3BoundaryIsSealedAndDisconnected` PASS（0.959s）。
+C1a/C1b 仍需裁决允许额外修改两个旧架构测试文件：只登记新 field-only 文件调用
+`sshchildwrapper.ValidateRootSSHDResolvedConfig` 的窄边，并在精确文件/符号门中拒绝
+其他 wrapper 消费。原任务文件清单仅列 field 门，当前没有自行扩展清单。
+
+未推送、未创建 PR、无远端 CI 结果。工具未在现场执行，不运行 field 二进制，
+未生成配对材料或实例；这不是 Stage II/III 或端到端现场验收。

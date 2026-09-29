@@ -54,13 +54,16 @@ func inspectFieldPairingAt(path string, now time.Time, validator pairingLedgerFi
 	report.Pairing.Detail, report.Campaign.Detail = "", ""
 	for _, admission := range snapshot.admissionOrder {
 		record := admission.record
-		entry := FieldPairingEntry{RecordClass: "ordinary", State: "burned_unfinished", BurnedAt: record.RecordedAt,
+		entry := FieldPairingEntry{RecordClass: string(record.RecordClass), State: "burned_unfinished", BurnedAt: record.RecordedAt,
 			ExpiresAt: record.ExpiresAt, MissingReason: "not_recorded"}
+		// The existing journal parser has already validated the record class.
+		// Project its value; interpreting campaign authority belongs to the
+		// existing status calculation above, never this read-only formatter.
+		if entry.RecordClass == "" {
+			entry.RecordClass = "ordinary"
+		}
 		if len(record.AttemptID) >= 8 {
 			entry.AttemptPrefix = record.AttemptID[:8]
-		}
-		if record.RecordClass == PairingRecordClassHardNATCampaign {
-			entry.RecordClass = string(record.RecordClass)
 		}
 		if admission.finish != nil {
 			entry.State, entry.Reason = "finish_recorded", admission.finish.Reason

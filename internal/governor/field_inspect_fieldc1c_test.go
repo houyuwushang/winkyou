@@ -67,7 +67,8 @@ func TestFieldToolsLedgerMissingCorruptUnfinishedAndCampaign(t *testing.T) {
 	}
 	before, _ := os.ReadFile(path)
 	report := inspectFieldPairingAt(path, *clock, validateTestPairingLedgerFile)
-	if !report.Campaign.BlocksCampaign || report.EntryCount != 1 || report.Entries[0].State != "burned_unfinished" || report.Entries[0].FinishedAt != nil {
+	if !report.Campaign.BlocksCampaign || report.EntryCount != 1 || report.Entries[0].State != "burned_unfinished" || report.Entries[0].FinishedAt != nil ||
+		report.Entries[0].RecordClass != string(PairingRecordClassHardNATCampaign) {
 		t.Fatal("unfinished burn was advertised as ready")
 	}
 	if err := os.WriteFile(path, append(before, 0), 0600); err != nil {
