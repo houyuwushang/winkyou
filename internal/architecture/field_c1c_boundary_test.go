@@ -162,6 +162,9 @@ func fieldC1cViolations(root string) ([]string, error) {
 			if strings.HasPrefix(relative, "cmd/wink/") && value == modulePath+"/internal/v2/sshchildwrapper" && relative != "cmd/wink/deployment_fieldc1c_linux.go" {
 				violations = append(violations, relative+" unapproved wrapper import")
 			}
+			if strings.HasPrefix(relative, "internal/v2/gatecorchestrator/") && value == modulePath+"/internal/v2/sshchildwrapper" && relative != "internal/v2/gatecorchestrator/field_tools_fieldc1c.go" {
+				violations = append(violations, relative+" unapproved read-only wrapper import")
+			}
 			if strings.HasPrefix(relative, "internal/v2/fieldc1c/") && (value == "net" || value == "os/exec" || value == "syscall" && filepath.Base(relative) != "path_linux.go") {
 				violations = append(violations, relative+" raw authorization capability")
 			}
@@ -649,6 +652,9 @@ func fieldReadOnlyToolViolations(relative string, file *ast.File) []string {
 				reject()
 			}
 		}
+		if base, ok := selector.X.(*ast.Ident); ok && aliases[base.Name] == modulePath+"/internal/v2/sshchildwrapper" && selector.Sel.Name != "ValidateRootSSHDResolvedConfig" {
+			reject()
+		}
 		return true
 	})
 	return bad
@@ -661,6 +667,9 @@ func TestFieldC1cReadOnlyToolCapabilityMutations(t *testing.T) {
 		`import "os/exec"; var f=exec.Command`, `import "unsafe"; var _ unsafe.Pointer`,
 		`func f(){file.Write(nil)}`, `func f(){go f()}`, `func init(){}`, `func f(){SetupMachineNamespace()}`,
 		`func f(){ledger.holdOwner()}`, `func f(){fieldc1c.Load("x","initiator")}`,
+		`import "winkyou/internal/v2/sshchildwrapper"; var f=sshchildwrapper.ExecFieldRoot`,
+		`import w "winkyou/internal/v2/sshchildwrapper"; var f=w.PrepareRootExecution`,
+		`import . "winkyou/internal/v2/sshchildwrapper"; var f=ValidateRootSSHDResolvedConfig`,
 	} {
 		t.Run(fmtMutationName(body), func(t *testing.T) {
 			file, err := parser.ParseFile(token.NewFileSet(), "fixture.go", "package fixture\n"+body, 0)
@@ -674,6 +683,17 @@ func TestFieldC1cReadOnlyToolCapabilityMutations(t *testing.T) {
 		writeArchitectureMutation(t, root, path, "package escaped\nfunc f(){_=InspectFieldLedger;_=InspectFieldPairingLedger}\n")
 		if bad, err := fieldC1cViolations(root); err != nil || len(bad) == 0 {
 			t.Fatal("unapproved tool consumer escaped")
+		}
+	}
+	for _, tc := range []struct{ path, prefix string }{
+		{"internal/v2/gatecorchestrator/other_fieldc1c.go", "//go:build fieldc1c\n\n"},
+		{"internal/v2/gatecorchestrator/field_tools_fieldc1c.go", ""},
+		{"internal/v2/gatecorchestrator/ordinary.go", ""},
+	} {
+		root := t.TempDir()
+		writeArchitectureMutation(t, root, tc.path, tc.prefix+"package escaped\nimport \"winkyou/internal/v2/sshchildwrapper\"\nvar f=sshchildwrapper.ValidateRootSSHDResolvedConfig\n")
+		if bad, err := fieldC1cViolations(root); err != nil || len(bad) == 0 {
+			t.Fatal("validator file/tag mutation escaped")
 		}
 	}
 }

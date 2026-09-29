@@ -344,8 +344,9 @@ func gateC1bDependencyViolations(repository scanResult) []string {
 	gateB := modulePath + "/internal/v2/directconnect/gateb"
 	gateCArtifact := modulePath + "/internal/v2/gatecattempt"
 	allowedOrchestratorImports := map[string]struct{}{
-		modulePath + "/internal/v2/fieldc1c": {}, // exact tagged field entry, enforced separately
-		modulePath + "/internal/governor":    {}, modulePath + "/internal/probeio": {},
+		modulePath + "/internal/v2/sshchildwrapper": {}, // only the field-only pure validator; exact file/symbol gate
+		modulePath + "/internal/v2/fieldc1c":        {}, // exact tagged field entry, enforced separately
+		modulePath + "/internal/governor":           {}, modulePath + "/internal/probeio": {},
 		modulePath + "/internal/v2/directattempt": {}, gateB: {}, gateCArtifact: {}, child: {},
 		modulePath + "/internal/v2/gatecrequest": {}, modulePath + "/internal/v2/gatecstage": {},
 		modulePath + "/internal/v2/hardnatbudget": {}, modulePath + "/internal/v2/hardnatobserve": {},

@@ -237,9 +237,9 @@ func TestFieldToolsBuiltBinaryAndConfigurationHashes(t *testing.T) {
 	}
 }
 
-// Build both real entry packages into temporary files but never run them.
-// A dirty development checkout must be rejected; a clean committed tree must
-// succeed, using its actual VCS/dependency tables (not fabricated metadata).
+// Build the committed source in an independent local Git checkout; Go 1.23.1
+// does not stamp linked worktrees. Never execute either resulting binary.
+// Metadata rejection has separate negative cases; this case MUST derive.
 func TestFieldToolsDeriveActualBuildPair(t *testing.T) {
 	root, err := filepath.Abs(filepath.Join("..", "..", ".."))
 	if err != nil {
@@ -249,9 +249,25 @@ func TestFieldToolsDeriveActualBuildPair(t *testing.T) {
 	field, router := filepath.Join(dir, "field.exe"), filepath.Join(dir, "router.exe")
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
+	checkout := filepath.Join(dir, "checkout")
+	head := exec.CommandContext(ctx, "git", "rev-parse", "HEAD")
+	head.Dir = root
+	revision, err := head.Output()
+	if err != nil || !fieldToolHex(strings.TrimSpace(string(revision)), 20) {
+		t.Fatal("committed fixture revision unavailable")
+	}
+	for _, args := range [][]string{
+		{"clone", "--quiet", "--local", "--shared", "--no-checkout", "--", root, checkout},
+		{"-C", checkout, "checkout", "--quiet", "--detach", strings.TrimSpace(string(revision))},
+	} {
+		command := exec.CommandContext(ctx, "git", args...)
+		if output, err := command.CombinedOutput(); err != nil {
+			t.Fatalf("local checkout fixture failed bytes=%d sha256=%x", len(output), sha256.Sum256(output))
+		}
+	}
 	for _, target := range []struct{ out, pkg string }{{field, "./cmd/wink"}, {router, "./cmd/c1crouter"}} {
 		command := exec.CommandContext(ctx, "go", "build", "-buildvcs=true", "-tags=fieldc1c", "-o", target.out, target.pkg)
-		command.Dir = root
+		command.Dir = checkout
 		for _, entry := range os.Environ() {
 			if !strings.HasPrefix(entry, "GOOS=") && !strings.HasPrefix(entry, "CGO_ENABLED=") {
 				command.Env = append(command.Env, entry)
@@ -279,11 +295,7 @@ func TestFieldToolsDeriveActualBuildPair(t *testing.T) {
 	paths := FieldDerivePaths{field, router, configI, configR}
 	result, err := deriveFieldTools(paths, func() (string, error) { return "machine-scope-sha256/1:" + strings.Repeat("a", 64), nil })
 	if _, valid := fieldToolBuildPair(fieldInfo, routerInfo); !valid {
-		if !errors.Is(err, fieldc1c.ErrInvalid) || result.Class != "build_mismatch" {
-			t.Fatal("dirty build did not fail closed")
-		}
-		t.Log("build_pair=dirty_rejected")
-		return
+		t.Fatal("clean compiled fixture lacks required build metadata")
 	}
 	if err != nil || !result.OK || result.InitiatorBinarySHA256 != fieldHash || result.ResponderBinarySHA256 != fieldHash || result.RouterBinarySHA256 != routerHash {
 		t.Fatal("actual compiled pair failed derive")

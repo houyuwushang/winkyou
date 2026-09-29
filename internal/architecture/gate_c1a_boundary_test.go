@@ -155,7 +155,7 @@ func gateC1aDependencyViolations(result scanResult) []string {
 		gateCRequest: {gateCStage: {}, assembly: {}, orchestrator: {}},
 		gateCStage:   {command: {}, orchestrator: {}},
 		assembly:     {orchestrator: {}},
-		wrapper:      {modulePath + "/cmd/wink": {}}, // exact field dispatcher is independently sealed
+		wrapper:      {modulePath + "/cmd/wink": {}, orchestrator: {}}, // exact field dispatcher / read-only validator, separately sealed
 	}
 	labels := map[string]string{
 		gateCAttempt: "C1a product artifact", gateCRequest: "C1a local request", gateCStage: "C1a responder staging",

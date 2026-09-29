@@ -248,9 +248,11 @@ B3 投影改为直接输出经现有 parser 校验的 record class，空值映�
 不再由显示层解释 campaign 权限；既有 B3 门本身不改。修改后
 `go test -race -tags=fieldc1c ./internal/governor -run '^TestFieldTools' -count=20`
 PASS（3.442s），`TestGateB3BoundaryIsSealedAndDisconnected` PASS（0.959s）。
-C1a/C1b 仍需裁决允许额外修改两个旧架构测试文件：只登记新 field-only 文件调用
+C1a/C1b 的额外文件范围已由维护者于 2026-09-29 同意：修改两个旧架构测试文件，只登记新 field-only 文件调用
 `sshchildwrapper.ValidateRootSSHDResolvedConfig` 的窄边，并在精确文件/符号门中拒绝
-其他 wrapper 消费。原任务文件清单仅列 field 门，当前没有自行扩展清单。
+其他 wrapper 消费。新增 alias/函数值/点导入/错误文件/缺 tag 变异，不授予其他 wrapper 权限。
+实际二进制正向测试改在独立本地 Git checkout 构建当前提交：不使用网络，不执行产物，
+必须成功推导，不能把缺 metadata 的负向分支当作正向通过。
 
 未推送、未创建 PR、无远端 CI 结果。工具未在现场执行，不运行 field 二进制，
 未生成配对材料或实例；这不是 Stage II/III 或端到端现场验收。
