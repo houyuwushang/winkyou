@@ -270,3 +270,19 @@ orchestrator 328.999s RED。失败项是本批新增的
 配置原字节、缺 stamp 拒绝、目录拒绝断言，不再为这组重复断言启动额外构建。
 独立 clean checkout 的真实 field/router 构建与成功 derive 测试仍逐次执行，
 没有放宽 timeout、产品校验或减少 count。后续批次另列，不覆盖该次 RED。
+
+### 6.4 收敛后本地验收
+
+`9b9aac8`，Go 1.23.1：上述完整 field race×20 PASS；cmd 74.122s、
+orchestrator 230.845s、fieldc1c 31.466s，真实 clean binary pair 成功推导 **20/20**。
+本批 JSONL SHA-256 为
+`06d7d3e19a377333a3d62d59ba0a3a4f793896521171d4124d6bb7c7e14a6a16`。
+`go vet ./...` 与 Linux/CGO=0 的 field-tagged 受影响包 vet 均 PASS。
+
+全量 `go test ./internal/architecture -count=1 -v` PASS（62.350s）；日志 SHA-256
+`2e10a8e9b1eab2870575ae74f10d562d2ee2b18a087b1862299d9dd904ccf77c`。
+新增工具能力/消费变异 20 项全部拒绝。nm 门在普通、c1bproof、natlab 三构建中
+检查以下新增符号零命中，在 fieldc1c 构建中逐项正向命中：
+`VerifyFieldSSHD`、`InspectFieldLedger`、`DeriveFieldTools`、`InspectFieldPairingLedger`、
+`DependencyConfigurationDigest`；原有七项 field 符号断言不变。
+这些是编译、只读和 fake/unit 证据，不是工具现场运行证据。CI 首跑另在 PR 记录。
