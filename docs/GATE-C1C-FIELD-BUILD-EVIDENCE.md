@@ -256,3 +256,17 @@ C1a/C1b 的额外文件范围已由维护者于 2026-09-29 同意：修改两个
 
 未推送、未创建 PR、无远端 CI 结果。工具未在现场执行，不运行 field 二进制，
 未生成配对材料或实例；这不是 Stage II/III 或端到端现场验收。
+
+### 6.3 加强后的首批 RED 与夹具收敛
+
+`ea1a792` 的 clean-checkout race×20 首批：cmd 77.870s、fieldc1c 32.160s PASS；
+orchestrator 328.999s RED。失败项是本批新增的
+`TestFieldToolsBuiltBinaryAndConfigurationHashes`：独立小程序的嵌套 `go build`
+在 60.01s 截止退出，诊断 bytes=0；不能凭此断定磁盘或调度根因。
+该批原始日志 SHA-256 为
+`a323299cd0050b1abcc947b7bdbd73ca6f3957218363ee47b36d1748ccd7ef5f`。
+
+哈希/缺 VCS 的负向单测改为只读本次已经编译的默认 test image，保留全部哈希、
+配置原字节、缺 stamp 拒绝、目录拒绝断言，不再为这组重复断言启动额外构建。
+独立 clean checkout 的真实 field/router 构建与成功 derive 测试仍逐次执行，
+没有放宽 timeout、产品校验或减少 count。后续批次另列，不覆盖该次 RED。
