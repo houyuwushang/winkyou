@@ -914,6 +914,29 @@ Stage II 失败保留首个输出；不能用再跑一次掩盖。通过后亦�
 **Stage II 前置**：U1、U2、U4 的工具 PR 合入。**Stage III 前置**：U5、U8 合入；每实例仍单独两段签字。
 U9 在首个 `predictive_apdm_pair` 发布摘要前合入即可。
 
+#### U1/U2 实现核对：待裁决，不构成启动授权（2026-09-29）
+
+除已同意的开工修订外，源码核对发现以下两处不能同时逐字满足；脚本实现暂停，
+没有通过改动产品或执行现场命令绕过。以下均是建议，尚未生效：
+
+1. **evidence 挂载与原子 claim 冲突。** U1 要求将预先存在的源目录绑定到
+   `.winkyou-field/c1c/evidence/<ATTEMPT_ID>/`；但 `fieldc1c.ClaimEvidence`
+   在 `internal/v2/fieldc1c/evidence.go` 用独占 `Mkdir` 认领同一个目录，已存在即拒绝。
+   建议只把挂载目标提升到角色 home 内的 `.winkyou-field/c1c/evidence/` 父目录，
+   源仍为 `c1c/evidence/<ATTEMPT_ID>/endpoint-<role>/`，由产品独占创建下层 attempt。
+   读取器可见的原件随之为
+   `c1c/evidence/<ATTEMPT_ID>/endpoint-<role>/<ATTEMPT_ID>/endpoint.jsonl`；
+   launcher 见证仍在源目录下的 `launch.json`。不改产品 claim、不覆盖旧证据、不放宽重复运行。
+2. **锁定 shadow 与公钥登录冲突。** 脚本任务要求 `root:!:`，本规程固定 `UsePAM no`。
+   OpenSSH 的 [allowed_user](https://github.com/openssh/openssh-portable/blob/master/auth.c)
+   在此配置下拒绝 locked account；[Linux 配置](https://github.com/openssh/openssh-portable/blob/master/configure.ac)
+   将 `!` 定义为锁定前缀，[platform_locked_account](https://github.com/openssh/openssh-portable/blob/master/platform.c)
+   读取 shadow 后据此判定。建议与既有 `runGateC1bPrivateSSHD` 一致，使用
+   `root:x:19000:0:99999:7:::` 的不可用密码占位；保持 password / keyboard-interactive
+   认证禁用、公钥与 forced-command 限制。仅作用于未来角色私有 mount view，绝不修改宿主 shadow。
+
+上述 SSH 结论来自源码核对，不是本批主机登录测试。批准前不回填“已实现”，不签发实例。
+
 ## 10. 本 PR 的验收口径
 
 只改本文和 C1c ADR §7 一行。验证命令为 `go test ./internal/architecture -run 'Privacy'`、
