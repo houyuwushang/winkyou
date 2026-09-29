@@ -193,3 +193,26 @@ tunnel 均已停止，consumer-ready 为 false，readiness 与 WireGuard 收发�
 只交 C1c-2a Draft PR，等待独立复审、不合并。C1c-2b 本轮未实施，C1c-3/C2 未授权。
 未连接现场地址、未创建云资源、未部署 server、未改宿主网络/防火墙/服务/计划任务。
 安全任务保持 Disabled；仅既有 loopback 测试与 required TEST-NET netns 可以产生测试报文。
+
+## 6. C1c-3 只读准备工具契约（2026-09-29）
+
+本节落实首批实例规程 §9.1 U4/U5/U8；仅新增 `fieldc1c` 构建中的三个只读命令。
+不改变 `run`、端点/router 协议、预算、实例 `/1`/`/2` 或工作流。工具不会签发实例、
+打开 governor owner、执行子进程、访问网络或写文件；唯一输出为 stdout 上的固定 JSON。
+参数错误（包括显式空 `--config`/`--state` 与 `--verbose=false`）在读取输入前拒绝。
+
+| 命令 | 输入与边界 | 输出与失败 |
+| --- | --- | --- |
+| `gate-c1c verify-sshd` | stdin 至多 64 KiB、有效 UTF-8；调用现有 root resolved-config validator，拒绝额外 ForceCommand | `ok` 或固定 class；不执行 sshd |
+| `gate-c1c ledger --json` | 当前 mount view 的 canonical namespace，只读已存在的账本与固定 slot | 配对/campaign/trip、条目状态和时间、slot 存在性、只读 admission 快照；缺 namespace 为 `namespace_absent` |
+| `gate-c1c derive --field <BIN> --router <BIN> --initiator-config <CONFIG> --responder-config <CONFIG>` | 两个本地二进制与两份配置；VCS revision 相同且 unmodified，field tag 与 toolchain 一致 | 二进制/配置摘要、同一 `dependencyDigest` 的两项结果、当前 machine scope；无实例输出 |
+
+维护者已同意开工核对修订：现有 journal 不保存 role/profile/材料指纹，不能由 credential ID
+或 context digest 猜测这些字段。条目对应成员保持 `null`，`missing_reason=not_recorded`。
+在 governor 内新增 **field-only** 只读查询，复用现有 journal parser、ordinary/campaign 判定，
+不改格式、不取 owner、不新增记账实现。无锁快照只是诊断，不是下次 admission 的授权；
+损坏、读失败或未完成状态不得误报可用。slot 中不能验证的 attempt 也保持 null 和固定原因。
+
+验收先记录契约/行为 RED，再记录 GREEN、变异拒绝与普通/field 二进制 nm 对照。
+所有样例与临时构建只使用合成材料；本批不运行现场脚本、不产生配对材料、不签发实例。
+本地与 CI 首跑结果分别登记，不以重跑覆盖首次失败。

@@ -1015,6 +1015,13 @@ M/E 关联只消费实际存在的字段：当前 endpoint 没有认证 tuple �
 读取器共 15 项变异。纯语义断言数分别为 201、172、103、147（含共同导入与零能力检查，
 不是相互独立的场景数），所有脚本入口调用和真实 host 调用均为 0。
 M/E golden 仅含合成 producer 形态，读取侧归一化 CRLF。CI 首跑另列，尚不视为现场证明。
+#### U5 实现前核对修订（2026-09-29，维护者同意）
+
+现有 journal 与 `InspectMachinePairingLedger` 不包含每条的 role/profile/材料指纹，
+campaign 的现有对象方法又要求 owner。本轮允许在 governor 增加 `fieldc1c` 专用的只读 API，
+复用既有 journal parser 与两类判定，不改 journal 格式、不获取 owner、不写文件。
+未记录字段输出 `null` 与 `not_recorded`；无锁快照仅用于前检诊断，不替代正式 admission。
+三个只读命令的边界与验收见[工具契约](GATE-C1C-FIELD-BUILD-EVIDENCE.md#6-c1c-3-只读准备工具契约2026-09-29)。
 
 ## 10. 本 PR 的验收口径
 
