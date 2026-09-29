@@ -156,6 +156,7 @@ def evidence_checks(scope, tree):
         "json.dumps", "sys.exit", "relative.startswith", "relative.endswith", "relative.count",
         "ROOT.strip", "ROOT.strip('/').split", "digest.update", "digest.hexdigest",
         "text.extend", "text.decode", "records.append", "os.path.splitext",
+        "relative.split", "'/'.join", "tail.startswith", "parts[6].endswith",
     }
     for node in ast.walk(tree):
         if isinstance(node, ast.Call):
@@ -175,11 +176,26 @@ def evidence_checks(scope, tree):
         fake.add(root+"/"+excluded, stat.S_IFDIR | 0o700)
         fake.add(root+"/"+excluded+"/secret.json", data=b"forbidden")
     fake.add(root+"/c1c/private.txt", data=b"forbidden")
+    for role in ("initiator", "responder"):
+        for part in ("c1c/endpoints", "c1c/endpoints/"+role, "c1c/endpoints/"+role+"/var-lib",
+                     "c1c/endpoints/"+role+"/home", "c1c/endpoints/"+role+"/home/.winkyou-field",
+                     "c1c/endpoints/"+role+"/home/.winkyou-field/c1c"):
+            if root+"/"+part not in fake.nodes:
+                fake.add(root+"/"+part, stat.S_IFDIR | 0o700)
+        fake.add(root+"/c1c/endpoints/"+role+"/var-lib/ledger.jsonl", mode=stat.S_IFREG | 0o666, data=content)
+        fake.add(root+"/c1c/endpoints/"+role+"/home/.winkyou-field/c1c/instance.json", data=content)
+        for private in ("shadow", "install", "run", "home/.ssh", "home/.winkyou-field/c1c/material", "home/.winkyou-field/c1c/evidence"):
+            fake.add(root+"/c1c/endpoints/"+role+"/"+private, mode=stat.S_IFLNK | 0o777, data=b"forbidden")
     scope["os"] = fake
     result = scope["evidence"]()
     check(result["ok"] and not fake.fds, "success_closes_all_descriptors")
     records = {row["path"]: row for row in result["files"]}
-    check(set(records) == {"c1c/instance.json", "c1c/evidence/small.txt", "log/large.log", "log/exact.log", "log/raw.bin", "log/link.json", "c1c/evidence/linkdir"}, "exact_evidence_allowlist")
+    expected = {"c1c/instance.json", "c1c/evidence/small.txt", "log/large.log", "log/exact.log", "log/raw.bin", "log/link.json", "c1c/evidence/linkdir"}
+    for role in ("initiator", "responder"):
+        expected.update({"c1c/endpoints/"+role+"/var-lib/ledger.jsonl", "c1c/endpoints/"+role+"/home/.winkyou-field/c1c/instance.json"})
+    check(set(records) == expected, "exact_evidence_allowlist")
+    check(not scope["allowed"]("c1c/endpoints/unknown/var-lib/file.json", False), "unknown_role_rejected")
+    check(not scope["allowed"]("c1c/endpoints/initiator/home/.winkyou-field/c1c/nested/file.json", False), "nested_instance_rejected")
     row = records["c1c/instance.json"]
     check(row["size"] == len(content) and row["mode"] == "0600" and row["uid"] == 0 and row["sha256"] == hashlib.sha256(content).hexdigest() and row["text"] == content.decode(), "metadata_digest_original_text")
     check("text" not in records["log/large.log"] and "text" in records["log/exact.log"] and "text" not in records["log/raw.bin"], "text_suffix_and_exact_limit")

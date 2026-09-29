@@ -1,0 +1,122 @@
+{
+  "producer_shapes": [
+    "gatecorchestrator field terminal",
+    "c1crouter sampler raw observation"
+  ],
+  "initiator": [
+    {
+      "stage": "verify",
+      "at_ns": 123
+    },
+    {
+      "result": {},
+      "class": "success",
+      "failure_stage": "terminal",
+      "private": "redacted-token"
+    }
+  ],
+  "responder": [
+    {
+      "result": {},
+      "class": "attempt_expired",
+      "failure_stage": "candidates"
+    }
+  ],
+  "router": [
+    {
+      "observation": {
+        "role": "initiator",
+        "tuple_ref": "redacted-token",
+        "witness_clock_ref": "router-monotonic/1",
+        "kernel_flow_observation": "present"
+      },
+      "local": "redacted-local",
+      "remote": "redacted-remote",
+      "created_ns": 1,
+      "last_ns": 20,
+      "observed_ns": 30
+    }
+  ],
+  "output": {
+    "schema": "winkyou-c1c-me-summary/1",
+    "ok": true,
+    "rows": [
+      {
+        "mapping_age_at_hit_ns": null,
+        "mapping_age_at_winner_ns": null,
+        "mapping_idle_age_at_winner_ns": null,
+        "hit_to_stop_ns": null,
+        "stop_to_winner_ns": null,
+        "winner_to_verify_ns": null,
+        "stop_to_verify_ns": null,
+        "role": "initiator",
+        "authenticated_matches": 0,
+        "router_observation_count": 1,
+        "kernel_flow_observation": null,
+        "failure_stage": "terminal",
+        "terminal_class": "success",
+        "missing_reason": {
+          "mapping_age_at_hit_ns": "endpoint_tuple_not_recorded",
+          "mapping_age_at_winner_ns": "endpoint_tuple_not_recorded",
+          "mapping_idle_age_at_winner_ns": "endpoint_tuple_not_recorded",
+          "hit_to_stop_ns": "endpoint_milestones_not_recorded",
+          "stop_to_winner_ns": "endpoint_milestones_not_recorded",
+          "winner_to_verify_ns": "endpoint_milestones_not_recorded",
+          "stop_to_verify_ns": "endpoint_milestones_not_recorded",
+          "kernel_flow_observation": "endpoint_tuple_not_recorded",
+          "clock_comparison": "clock_not_comparable"
+        },
+        "measurement_source": {
+          "mapping_age_at_hit_ns": "unavailable",
+          "mapping_age_at_winner_ns": "unavailable",
+          "mapping_idle_age_at_winner_ns": "unavailable",
+          "hit_to_stop_ns": "unavailable",
+          "stop_to_winner_ns": "unavailable",
+          "winner_to_verify_ns": "unavailable",
+          "stop_to_verify_ns": "unavailable",
+          "kernel_flow_observation": "unavailable",
+          "failure_stage": "endpoint_terminal",
+          "terminal_class": "endpoint_terminal"
+        }
+      },
+      {
+        "mapping_age_at_hit_ns": null,
+        "mapping_age_at_winner_ns": null,
+        "mapping_idle_age_at_winner_ns": null,
+        "hit_to_stop_ns": null,
+        "stop_to_winner_ns": null,
+        "winner_to_verify_ns": null,
+        "stop_to_verify_ns": null,
+        "role": "responder",
+        "authenticated_matches": 0,
+        "router_observation_count": 0,
+        "kernel_flow_observation": null,
+        "failure_stage": "candidates",
+        "terminal_class": "attempt_expired",
+        "missing_reason": {
+          "mapping_age_at_hit_ns": "endpoint_tuple_not_recorded",
+          "mapping_age_at_winner_ns": "endpoint_tuple_not_recorded",
+          "mapping_idle_age_at_winner_ns": "endpoint_tuple_not_recorded",
+          "hit_to_stop_ns": "endpoint_milestones_not_recorded",
+          "stop_to_winner_ns": "endpoint_milestones_not_recorded",
+          "winner_to_verify_ns": "endpoint_milestones_not_recorded",
+          "stop_to_verify_ns": "endpoint_milestones_not_recorded",
+          "kernel_flow_observation": "endpoint_tuple_not_recorded",
+          "clock_comparison": "clock_not_comparable"
+        },
+        "measurement_source": {
+          "mapping_age_at_hit_ns": "unavailable",
+          "mapping_age_at_winner_ns": "unavailable",
+          "mapping_idle_age_at_winner_ns": "unavailable",
+          "hit_to_stop_ns": "unavailable",
+          "stop_to_winner_ns": "unavailable",
+          "winner_to_verify_ns": "unavailable",
+          "stop_to_verify_ns": "unavailable",
+          "kernel_flow_observation": "unavailable",
+          "failure_stage": "endpoint_terminal",
+          "terminal_class": "endpoint_terminal"
+        }
+      }
+    ]
+  }
+}

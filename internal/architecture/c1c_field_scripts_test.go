@@ -54,7 +54,7 @@ func TestC1cFieldScriptContractsAndMutations(t *testing.T) {
 				t.Fatal("field script contract rejected")
 			}
 			for _, literal := range literals {
-				changed := strings.Replace(source, literal, "MUTATED", 1)
+				changed := strings.ReplaceAll(source, literal, "MUTATED")
 				if changed == source || c1cFieldScriptValid(name, changed) {
 					t.Fatal("contract mutation escaped")
 				}
@@ -84,7 +84,15 @@ func TestC1cFieldScriptsPureSemantics(t *testing.T) {
 			if err != nil {
 				t.Fatal("field script unavailable")
 			}
-			payload, _ := json.Marshal(map[string]string{"mode": name, "source": strings.ReplaceAll(string(source), "\r\n", "\n")})
+			request := map[string]string{"mode": name, "source": strings.ReplaceAll(string(source), "\r\n", "\n")}
+			if name == "me-correlate" {
+				golden, err := os.ReadFile(filepath.Join(repositoryRoot(t), "internal/architecture/testdata/c1c-me-correlate.golden.json"))
+				if err != nil {
+					t.Fatal("correlation golden unavailable")
+				}
+				request["golden"] = strings.ReplaceAll(string(golden), "\r\n", "\n")
+			}
+			payload, _ := json.Marshal(request)
 			ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 			defer cancel()
 			cmd := exec.CommandContext(ctx, python, "-I", "-B", filepath.Join(repositoryRoot(t), "internal/architecture/testdata/c1c_field_scripts_test.py"))

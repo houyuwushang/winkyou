@@ -27,6 +27,9 @@ func c1cEvidenceValid(source string) bool {
 		`if relative == "c1c" or relative == "log":`,
 		`relative == "c1c/evidence" or relative.startswith("c1c/evidence/") or relative.startswith("log/")`,
 		`relative.startswith("c1c/") and relative.count("/") == 1 and relative.endswith(".json")`,
+		`parts[2] not in ("initiator", "responder")`, `if tail.startswith("var-lib/"):`,
+		`tail in ("home", "home/.winkyou-field", "home/.winkyou-field/c1c")`,
+		`len(parts) == 7 and parts[3:6] == ["home", ".winkyou-field", "c1c"] and parts[6].endswith(".json")`,
 	} {
 		if !strings.Contains(source, literal) {
 			return false
@@ -73,6 +76,9 @@ func TestC1cReviewEvidenceContractAndMutations(t *testing.T) {
 		{`hashlib.sha256()`, `subprocess.run(["sha256sum"])`},
 		{`os.O_RDONLY | os.O_NOFOLLOW`, `os.O_RDWR | os.O_NOFOLLOW`},
 		{`info.st_uid != 0 or info.st_mode & 0o022`, `False`},
+		{`parts[2] not in ("initiator", "responder")`, `False`},
+		{`"home/.winkyou-field/c1c")`, `"home/.winkyou-field/c1c", "home/.ssh")`},
+		{`tail.startswith("var-lib/")`, `tail.startswith("var-lib/") or tail == "shadow"`},
 	} {
 		changed := strings.Replace(source, mutation[0], mutation[1], 1)
 		if changed == source || c1cEvidenceValid(changed) {
