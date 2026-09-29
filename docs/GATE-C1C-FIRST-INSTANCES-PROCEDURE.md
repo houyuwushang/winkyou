@@ -914,15 +914,15 @@ Stage II 失败保留首个输出；不能用再跑一次掩盖。通过后亦�
 **Stage II 前置**：U1、U2、U4 的工具 PR 合入。**Stage III 前置**：U5、U8 合入；每实例仍单独两段签字。
 U9 在首个 `predictive_apdm_pair` 发布摘要前合入即可。
 
-#### U1/U2 实现核对：待裁决，不构成启动授权（2026-09-29）
+#### U1/U2 实现核对修订（维护者同意，2026-09-29；不构成启动授权）
 
-除已同意的开工修订外，源码核对发现以下两处不能同时逐字满足；脚本实现暂停，
-没有通过改动产品或执行现场命令绕过。以下均是建议，尚未生效：
+除已同意的开工修订外，维护者另同意下列两处修订，覆盖 U1/U2 对应旧表述。
+不改产品 claim，不在本工具 PR 执行现场命令：
 
 1. **evidence 挂载与原子 claim 冲突。** U1 要求将预先存在的源目录绑定到
    `.winkyou-field/c1c/evidence/<ATTEMPT_ID>/`；但 `fieldc1c.ClaimEvidence`
    在 `internal/v2/fieldc1c/evidence.go` 用独占 `Mkdir` 认领同一个目录，已存在即拒绝。
-   建议只把挂载目标提升到角色 home 内的 `.winkyou-field/c1c/evidence/` 父目录，
+   只把挂载目标提升到角色 home 内的 `.winkyou-field/c1c/evidence/` 父目录，
    源仍为 `c1c/evidence/<ATTEMPT_ID>/endpoint-<role>/`，由产品独占创建下层 attempt。
    读取器可见的原件随之为
    `c1c/evidence/<ATTEMPT_ID>/endpoint-<role>/<ATTEMPT_ID>/endpoint.jsonl`；
@@ -931,11 +931,21 @@ U9 在首个 `predictive_apdm_pair` 发布摘要前合入即可。
    OpenSSH 的 [allowed_user](https://github.com/openssh/openssh-portable/blob/master/auth.c)
    在此配置下拒绝 locked account；[Linux 配置](https://github.com/openssh/openssh-portable/blob/master/configure.ac)
    将 `!` 定义为锁定前缀，[platform_locked_account](https://github.com/openssh/openssh-portable/blob/master/platform.c)
-   读取 shadow 后据此判定。建议与既有 `runGateC1bPrivateSSHD` 一致，使用
+   读取 shadow 后据此判定。与既有 `runGateC1bPrivateSSHD` 一致，使用
    `root:x:19000:0:99999:7:::` 的不可用密码占位；保持 password / keyboard-interactive
    认证禁用、公钥与 forced-command 限制。仅作用于未来角色私有 mount view，绝不修改宿主 shadow。
 
-上述 SSH 结论来自源码核对，不是本批主机登录测试。批准前不回填“已实现”，不签发实例。
+上述 SSH 结论来自源码核对，不是本批主机登录测试。不签发实例，不执行脚本入口。
+
+#### 工具测试顺序与证据
+
+先提交不存在脚本/缺少白名单时的 RED 契约，再实现脚本、fake 文件系统/命令语义与变异。
+测试只编译/提取 Python 定义，不调用顶层入口；system mount、ptrace、signal、进程与文件写入
+在纯语义测试中全部由 fake 接管。shell 的语法检查也不执行脚本。
+启动见证须在本次 child 的目标 exec 边界取得，不能把中间解释器的 hash 当作 WinkYou；
+version 短进程也不能以轮询竞争冒充稳定见证。任何权限/见证失败都拒绝，不重试实例。
+M/E 关联只消费实际存在的字段：当前 endpoint 没有认证 tuple 摘要或同域里程碑，
+相关值保持 null + 固定 reason；不从 progress 墙钟或 router 本地时钟拼出认证测量。
 
 ## 10. 本 PR 的验收口径
 
