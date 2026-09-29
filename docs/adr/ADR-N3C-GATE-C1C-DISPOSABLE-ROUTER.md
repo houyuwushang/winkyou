@@ -669,6 +669,7 @@ credential/attempt/machine 标识、云账号/区域、设备属性或原始日�
 
 | 待裁决项 | 维护者 / 独立评审裁决 |
 | --- | --- |
+| 首批实例 Stage I 操作规程与持久 machine scope 补充 | **Draft，待独立复审**（2026-09-29，基线 `18af69d`）：[首批实例规程](../GATE-C1C-FIRST-INSTANCES-PROCEDURE.md) 仅为 docs，不执行主机动作、不生成材料、不签发实例。单机布局的两端须各用私有 mount namespace，以跨实例持久的 machine-id、ledger（私有 var-lib）和 home 分离 machine scope；只初始化一次、不重置、销毁前封存，不能借新 namespace 绕过账本。真实 home/ledger 的第二人可读布局及精确启动/见证缺口列入规程未决表，不以复制证据或测试 fixture 冒充闭合。Stage I 接受后另发 Stage II 无端点建网/拆网任务；其独立复核通过后，Stage III 首个负面实例仍须单独两人签发；不自动继承为现场执行授权。 |
 | 拓扑/布局与最低内核验证目标 | **接受**（维护者 2026-09-18）：首轮采用"两端也在一次性 VM 上、router 独立"布局；kernel 5.15 为验证目标，C1c-2 须实证。 |
 | exact build/双门与普通构建零能力验收 | **接受**：专用 build tag + 本地 authorization instance 双门；tag 名与实例解析器在 C1c-2 冻结；普通构建 `go tool nm` 零现场符号为 C1c-2 必过门。 |
 | 场景排期、ledger保留与一次/24h | **接受**：§3 七行各自签发；hard-16K 一次/24h、失败开 circuit、不 reset ledger；销毁前封存双端 ledger。 |
