@@ -4,6 +4,7 @@ package fieldc1c
 
 import (
 	"runtime/debug"
+	"strings"
 	"testing"
 )
 
@@ -26,5 +27,30 @@ func TestFieldToolsDependencyDigestUsesInstanceImplementation(t *testing.T) {
 	doc.DependencyAndConfigurationSHA256 = wrong
 	if _, err := validate(encodeFixture(t, doc), "initiator", now, build); err == nil {
 		t.Fatal("different implementation's digest accepted")
+	}
+}
+
+func TestFieldToolsDigestRejectsAmbiguousDependencies(t *testing.T) {
+	hashes := [2]string{strings.Repeat("a", 64), strings.Repeat("b", 64)}
+	for _, info := range []*debug.BuildInfo{nil,
+		{Deps: []*debug.Module{nil}},
+		{Deps: []*debug.Module{{Path: "synthetic", Replace: &debug.Module{Path: "other"}}}},
+		{Deps: []*debug.Module{{Path: "same"}, {Path: "same"}}},
+		{Deps: []*debug.Module{{Path: "synthetic\x00other"}}},
+	} {
+		if _, err := DependencyConfigurationDigest(info, hashes); err == nil {
+			t.Fatal("ambiguous dependency accepted")
+		}
+	}
+	left := &debug.BuildInfo{Deps: []*debug.Module{{Path: "z"}, {Path: "a"}}}
+	right := &debug.BuildInfo{Deps: []*debug.Module{{Path: "a"}, {Path: "z"}}}
+	a, err1 := DependencyConfigurationDigest(left, hashes)
+	b, err2 := DependencyConfigurationDigest(right, hashes)
+	if err1 != nil || err2 != nil || a != b {
+		t.Fatal("module order changed digest")
+	}
+	hashes[0] = "invalid"
+	if _, err := DependencyConfigurationDigest(left, hashes); err == nil {
+		t.Fatal("invalid config hash accepted")
 	}
 }

@@ -26,7 +26,57 @@ func addDeploymentCommands(root *cobra.Command, options *Options) {
 	}}
 	run.Flags().StringVar(&instancePath, "instance", "", "canonical private authorization instance (required)")
 	command.AddCommand(run)
+	addFieldReadOnlyCommands(command)
 	root.AddCommand(command)
+}
+
+func addFieldReadOnlyCommands(parent *cobra.Command) {
+	guard := func(command *cobra.Command, args []string) error {
+		if len(args) != 0 {
+			return fieldc1c.ErrInvalid
+		}
+		for _, name := range []string{"config", "state", "verbose"} {
+			if flag := command.Flags().Lookup(name); flag != nil && flag.Changed {
+				return fieldc1c.ErrInvalid
+			}
+		}
+		return nil
+	}
+	write := func(command *cobra.Command, value any, result error) error {
+		if json.NewEncoder(command.OutOrStdout()).Encode(value) != nil {
+			return fieldc1c.ErrInvalid
+		}
+		return result
+	}
+	verify := &cobra.Command{Use: "verify-sshd", Args: guard, RunE: func(command *cobra.Command, _ []string) error {
+		value, err := gatecorchestrator.VerifyFieldSSHD(command.InOrStdin())
+		return write(command, value, err)
+	}}
+	var jsonOutput bool
+	ledger := &cobra.Command{Use: "ledger", Args: guard, RunE: func(command *cobra.Command, _ []string) error {
+		if !jsonOutput || !command.Flags().Changed("json") {
+			return fieldc1c.ErrInvalid
+		}
+		value, err := gatecorchestrator.InspectFieldLedger()
+		return write(command, value, err)
+	}}
+	ledger.Flags().BoolVar(&jsonOutput, "json", false, "emit a read-only canonical ledger snapshot")
+	var paths gatecorchestrator.FieldDerivePaths
+	derive := &cobra.Command{Use: "derive", Args: guard, RunE: func(command *cobra.Command, _ []string) error {
+		if !paths.Valid() {
+			return fieldc1c.ErrInvalid
+		}
+		value, err := gatecorchestrator.DeriveFieldTools(paths)
+		return write(command, value, err)
+	}}
+	derive.Flags().StringVar(&paths.Field, "field", "", "absolute path to the reviewed field binary")
+	derive.Flags().StringVar(&paths.Router, "router", "", "absolute path to the reviewed router binary")
+	derive.Flags().StringVar(&paths.InitiatorConfig, "initiator-config", "", "absolute initiator configuration path")
+	derive.Flags().StringVar(&paths.ResponderConfig, "responder-config", "", "absolute responder configuration path")
+	for _, command := range []*cobra.Command{verify, ledger, derive} {
+		command.SetFlagErrorFunc(func(*cobra.Command, error) error { return fieldc1c.ErrInvalid })
+		parent.AddCommand(command)
+	}
 }
 
 func tryDeploymentChild(command *cobra.Command, options *Options, runner gateCProductRunner) (bool, error) {

@@ -23,7 +23,7 @@ permittty no
 permituserrc no
 maxsessions 1
 maxstartups 1:1:1
-logingracetime 15
+logingracetime 3
 forcecommand none
 `
 
