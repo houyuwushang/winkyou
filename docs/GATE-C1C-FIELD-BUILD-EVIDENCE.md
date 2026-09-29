@@ -216,3 +216,10 @@ tunnel 均已停止，consumer-ready 为 false，readiness 与 WireGuard 收发�
 验收先记录契约/行为 RED，再记录 GREEN、变异拒绝与普通/field 二进制 nm 对照。
 所有样例与临时构建只使用合成材料；本批不运行现场脚本、不产生配对材料、不签发实例。
 本地与 CI 首跑结果分别登记，不以重跑覆盖首次失败。
+
+### 6.1 测试先行的首次 RED
+
+Go 1.23.1，`go test -tags=fieldc1c ./cmd/wink/cmd -run '^TestFieldTools' -count=1`：
+命令 golden RED（缺子命令时返回帮助，469 bytes，而非固定 JSON）；九个全局 flag 存在性用例
+均未得到 `ErrInvalid`，RED。`go test -tags=fieldc1c ./internal/v2/fieldc1c
+-run '^TestFieldToolsDependency' -count=1`：窄复用函数尚不存在，编译 RED；此项不是行为失败。
