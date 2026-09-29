@@ -194,21 +194,14 @@ func TestFieldToolsDeriveInvalidArgumentsAreZeroIO(t *testing.T) {
 	}
 }
 
-// The built executable is only inspected as data. It is never started. Its
-// deliberately absent VCS witness is a negative; positive metadata uses the
-// pure synthetic BuildInfo fixture and the Load digest equality test.
+// Inspect the already compiled test image as data; default Go test builds do
+// not stamp VCS metadata. Do not spawn a redundant nested build just to test
+// file hashing. The real field/router build case below proves positive stamps.
 func TestFieldToolsBuiltBinaryAndConfigurationHashes(t *testing.T) {
 	root := t.TempDir()
-	source := filepath.Join(root, "main.go")
-	if err := os.WriteFile(source, []byte("package main\nfunc main() {}\n"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	binary := filepath.Join(root, "synthetic.exe")
-	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
-	defer cancel()
-	command := exec.CommandContext(ctx, "go", "build", "-buildvcs=false", "-tags=fieldc1c", "-o", binary, source)
-	if output, err := command.CombinedOutput(); err != nil {
-		t.Fatalf("synthetic build failed: bytes=%d sha256=%x", len(output), sha256.Sum256(output))
+	binary, err := os.Executable()
+	if err != nil {
+		t.Fatal("compiled test image unavailable")
 	}
 	hash, info, err := fieldToolHash(binary, true)
 	if err != nil || len(hash) != 64 || info == nil {
