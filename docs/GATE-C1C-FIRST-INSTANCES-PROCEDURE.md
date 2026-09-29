@@ -880,6 +880,21 @@ Stage II 失败保留首个输出；不能用再跑一次掩盖。通过后亦�
 
 ### 9.1 独立复审裁决（2026-09-29）
 
+**工具实现前核对修订（维护者同意，2026-09-29）**：下列四点覆盖本表对应旧表述，
+不更改产品 parser、权限检查、协议、预算或正式 responder 入口。
+
+- U3 anchor 前缀为 `wyc1c`，其余 SHA256 输入、前四字节与角色后缀规则不变；
+  现有 `/2` parser 要求 `wy` 前缀，不增加例外。
+- init 仅预建角色私有 `var-lib/0700`，不预建内部 `winkyou-safety-v2`。
+  现有 `setup-machine-scope` 独占创建内部目录及固定文件，保留原有权限校验。
+- `--payload version` 不要求、不读取、不绑定 instance/material；演练 evidence 目录必须
+  事先具名准备，不由 launcher 猜测或自动创建。演练标识不是 credential 或签发实例。
+- 正式 launcher payload 只允许 initiator；responder 仅允许 version 演练。正式 responder
+  仍经私有 sshd 的固定 wrapper 进入，不执行 initiator 专用 `gate-c1c run`。
+
+脚本只在另行批准的 Stage II/III 执行。本工具 PR 的测试只提取定义并注入 fake 文件系统/
+命令，不执行脚本入口，不触碰 mount/netns、账户、进程或 governor namespace。
+
 复审接受本规程为 Stage I 基线。U1–U9 逐项裁决如下；"设计关闭"指本表文字即为裁决，
 "工具 PR"指需另开范围明确的 PR 并独立复审后才算关闭。任何工具 PR 都不得改端点/router 协议
 数字、`/1`/`/2` 契约或 workflow。
