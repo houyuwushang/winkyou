@@ -41,14 +41,18 @@ type Stream struct {
 	writeMu          sync.Mutex
 	ops              int
 	opsDrained       chan struct{}
+	opsDrainOnce     sync.Once
 	absoluteDeadline time.Time
 	deadline         time.Time
 	deadlineTimer    *time.Timer
 	closing          bool
 	witness          Witness
 	closed           chan struct{}
+	closeComplete    chan struct{}
 	closeOnce        sync.Once
 	closeErr         error
+	closeFinished    bool
+	drainTimedOut    bool
 }
 
 func New(input io.Reader, output io.Writer, absoluteDeadline time.Time) (*Stream, error) {
@@ -77,7 +81,7 @@ func New(input io.Reader, output io.Writer, absoluteDeadline time.Time) (*Stream
 	}
 	stream := &Stream{
 		reader: reader, writer: writer, absoluteDeadline: absoluteDeadline, deadline: absoluteDeadline,
-		closed: make(chan struct{}), opsDrained: make(chan struct{}),
+		closed: make(chan struct{}), closeComplete: make(chan struct{}), opsDrained: make(chan struct{}),
 	}
 	if err := stream.SetDeadline(absoluteDeadline); err != nil {
 		_ = stream.Close()
@@ -203,28 +207,41 @@ func (stream *Stream) Close() error {
 		stream.mu.Lock()
 		stream.closing = true
 		if stream.ops == 0 {
-			close(stream.opsDrained)
+			stream.markOpsDrained()
 		}
 		if stream.deadlineTimer != nil {
 			stream.deadlineTimer.Stop()
 		}
 		stream.mu.Unlock()
-		readErr := stream.reader.Close()
-		writeErr := stream.writer.Close()
-		// No detached WaitGroup waiter: a broken injected Close must not create
-		// an additional abandoned worker just to observe its failure to drain.
-		select {
-		case <-stream.opsDrained:
+		// Windows os.File.Close can synchronously wait for an in-flight pipe
+		// operation after CancelIoEx. Keep that wait outside the caller's
+		// bounded drain path; the worker also waits for Stream operations before
+		// publishing the final witness.
+		go func() {
+			readErr := stream.reader.Close()
+			writeErr := stream.writer.Close()
+			<-stream.opsDrained
 			stream.mu.Lock()
-			stream.witness.Drained = readErr == nil && writeErr == nil
-			stream.closeErr = errors.Join(readErr, writeErr)
-			if stream.closeErr != nil {
-				stream.closeErr = errors.Join(ErrDrain, stream.closeErr)
+			stream.closeFinished = true
+			if !stream.drainTimedOut {
+				stream.witness.Drained = readErr == nil && writeErr == nil
+				stream.closeErr = errors.Join(readErr, writeErr)
+				if stream.closeErr != nil {
+					stream.closeErr = errors.Join(ErrDrain, stream.closeErr)
+				}
 			}
 			stream.mu.Unlock()
+			close(stream.closeComplete)
+		}()
+		select {
+		case <-stream.closeComplete:
 		case <-timer.C:
 			stream.mu.Lock()
-			stream.closeErr = errors.Join(ErrDrain, readErr, writeErr)
+			if !stream.closeFinished {
+				stream.drainTimedOut = true
+				stream.closeErr = ErrDrain
+				stream.witness.Drained = false
+			}
 			stream.mu.Unlock()
 		}
 		stream.mu.Lock()
@@ -262,8 +279,12 @@ func (stream *Stream) endOperation() {
 	defer stream.mu.Unlock()
 	stream.ops--
 	if stream.closing && stream.ops == 0 {
-		close(stream.opsDrained)
+		stream.markOpsDrained()
 	}
+}
+
+func (stream *Stream) markOpsDrained() {
+	stream.opsDrainOnce.Do(func() { close(stream.opsDrained) })
 }
 
 func deadlineExpired(deadline time.Time, err error) bool {
