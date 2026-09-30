@@ -9,6 +9,7 @@ import (
 	"net/netip"
 	"os"
 	"reflect"
+	"runtime"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -78,6 +79,7 @@ func TestGateB3Hard16NATSimFullShapeHandoff(t *testing.T) {
 }
 
 func TestGateB3Hard16SelectionUsesActiveMarginAfterCandidateWindow(t *testing.T) {
+	startGateB3CPUStress(t)
 	left, right, closeFixture := newGateB3NATSimFixtureFor(t, "selection-margin", 11, 29)
 	defer closeFixture()
 
@@ -107,6 +109,36 @@ func TestGateB3Hard16SelectionUsesActiveMarginAfterCandidateWindow(t *testing.T)
 		logGateB3SelectionWitness(t, "delayed_selection_winner_count", outcomes, delayed)
 		t.Fatalf("delayed selection winner packets=%d, want 1", winners)
 	}
+}
+
+func startGateB3CPUStress(t testing.TB) {
+	t.Helper()
+	if os.Getenv("WINKYOU_FLAKE_180_CPU_STRESS") != "1" {
+		return
+	}
+	if runtime.GOMAXPROCS(0) != 2 {
+		t.Fatal("Hard16 selection stress requires GOMAXPROCS=2")
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	var wg sync.WaitGroup
+	for range 2 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				default:
+					runtime.Gosched()
+				}
+			}
+		}()
+	}
+	t.Cleanup(func() {
+		cancel()
+		wg.Wait()
+	})
 }
 
 func TestGateB3Hard16FullExhaustionIsOneShotAndOpensOnlyCampaignCircuit(t *testing.T) {
