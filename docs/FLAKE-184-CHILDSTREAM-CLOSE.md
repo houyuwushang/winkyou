@@ -53,7 +53,7 @@ The pre-fix deterministic regression was run once with Go 1.23.1, Windows,
 exceeded `DrainTimeout+500ms` and failed the bounded-return assertion; the
 native-pipe cases in the same command did not fail. The first log is retained
 outside the repository with SHA-256
-`81D1381D1C07D05FAEF3ACB854E37355C62AF54C7157B594A8506CC4FF26B2B2`.
+`81D1381D1C07D05FAEF3ACB854E37355C62AF54C7157B594A8506CC4FF26B3B2`.
 An earlier native-only `-race -count=500` run passed in 1.668s
 (`E0AC4384AE816D9A8194B53E1EDF0BA5A451F3534B7F62B8989278CF24BB18C7`);
 that result is why native cancellation is treated as either normal drain or
@@ -62,8 +62,11 @@ bounded `ErrDrain`, not as a deterministic failure.
 After the `Close` worker implementation, the focused native/injected
 `-race -count=20` batch passed in 41.794s. The full
 `go test -race ./internal/v2/gatecchildstream -count=20` batch passed in
-42.234s with log SHA-256
-`56C1288AA0FEB5CE7A10BB9A53A78AFEE39F851DDD2AAD612E11242F0E318E46`.
+42.229s with final log SHA-256
+`FC5DAFE25D67E3B0E45BA7DD82A7E0B035FC0D2E73B02228AECB4BC89F2559ED`.
+The required Windows injected `-race -count=200` then passed in 401.248s
+with log SHA-256
+`15BAD8BDE6739F8FDDD6A5E24856CC2155881027C91313D80F92F22FAC08F92B`.
 
 Three temporary mutations were each rejected by the injected regression and
 were reverted before the production commit was finalized:
