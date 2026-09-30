@@ -7,6 +7,7 @@ import (
 	"os"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -102,17 +103,25 @@ func TestWindowsPipeCloseReturnsBoundedDrainError(t *testing.T) {
 	if err := input.SetReadDeadline(absolute); !errors.Is(err, os.ErrNoDeadline) {
 		t.Fatal("synchronous Windows pipe deadline precondition changed")
 	}
-	stream, err := New(input, &memoryWriteCloser{}, absolute)
+	reader := &blockingWindowsPipeReader{
+		file:         input,
+		closeEntered: make(chan struct{}),
+		releaseClose: make(chan struct{}),
+	}
+	stream, err := New(reader, &memoryWriteCloser{}, absolute)
 	if err != nil {
 		t.Fatal("existing Windows pipe rejected")
 	}
-	defer stream.Close()
-	go func() { _, _ = stream.Read(make([]byte, 1)) }()
+	readDone := make(chan error, 1)
+	go func() {
+		_, readErr := stream.Read(make([]byte, 1))
+		readDone <- readErr
+	}()
 	if !waitForWindowsPipeReadSyscall(t) {
 		t.Fatal("real Windows pipe read was not observed")
 	}
 
-	closeErr, timedOut, syscallCount := closeWithWitness(stream, peer, DrainTimeout+500*time.Millisecond)
+	closeErr, timedOut, syscallCount := closeWithReleaseWitness(stream, peer, reader.releaseClose, DrainTimeout+500*time.Millisecond)
 	t.Logf("CHILDSTREAM_CLOSE_BOUNDARY timed_out=%t syscall_goroutines=%d close_err=err_drain drained=%t", timedOut, syscallCount, stream.Witness().Drained)
 	if timedOut {
 		t.Fatal("Stream.Close exceeded DrainTimeout plus 500ms")
@@ -122,6 +131,61 @@ func TestWindowsPipeCloseReturnsBoundedDrainError(t *testing.T) {
 	}
 	if stream.Witness().Drained {
 		t.Fatal("Stream.Close reported drained after the bounded drain failure")
+	}
+	select {
+	case <-readDone:
+	case <-time.After(time.Second):
+		t.Fatal("Windows pipe read did not join after close release")
+	}
+}
+
+// blockingWindowsPipeReader keeps the underlying real synchronous pipe read
+// active while holding the Close call. The gate models the OS close wait
+// observed in the first production witness without adding a sleep or changing
+// the pipe's read path. The production fix must return ErrDrain while this
+// close worker remains blocked, then finish after the gate is released.
+type blockingWindowsPipeReader struct {
+	file         *os.File
+	closeEntered chan struct{}
+	releaseClose chan struct{}
+	closeOnce    sync.Once
+}
+
+func (reader *blockingWindowsPipeReader) Read(buffer []byte) (int, error) {
+	return reader.file.Read(buffer)
+}
+
+func (reader *blockingWindowsPipeReader) Close() error {
+	reader.closeOnce.Do(func() { close(reader.closeEntered) })
+	<-reader.releaseClose
+	return reader.file.Close()
+}
+
+func closeWithReleaseWitness(stream *Stream, peer *os.File, release chan struct{}, timeout time.Duration) (error, bool, int) {
+	result := make(chan error, 1)
+	go func() { result <- stream.Close() }()
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	releaseOnce := sync.Once{}
+	releaseClose := func() { releaseOnce.Do(func() { close(release) }) }
+	select {
+	case err := <-result:
+		releaseClose()
+		return err, false, countSyscallGoroutines()
+	case <-timer.C:
+		// Releasing the test peer and close gate is cleanup only. It happens
+		// after the witness deadline so a peer EOF cannot hide the bounded
+		// Close contract.
+		if peer != nil {
+			_ = peer.Close()
+		}
+		releaseClose()
+		select {
+		case <-result:
+			return ErrDrain, true, countSyscallGoroutines()
+		case <-time.After(time.Second):
+			return ErrDrain, true, countSyscallGoroutines()
+		}
 	}
 }
 
