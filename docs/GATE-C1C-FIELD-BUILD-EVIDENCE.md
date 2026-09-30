@@ -193,3 +193,96 @@ tunnel 均已停止，consumer-ready 为 false，readiness 与 WireGuard 收发�
 只交 C1c-2a Draft PR，等待独立复审、不合并。C1c-2b 本轮未实施，C1c-3/C2 未授权。
 未连接现场地址、未创建云资源、未部署 server、未改宿主网络/防火墙/服务/计划任务。
 安全任务保持 Disabled；仅既有 loopback 测试与 required TEST-NET netns 可以产生测试报文。
+
+## 6. C1c-3 只读准备工具契约（2026-09-29）
+
+本节落实首批实例规程 §9.1 U4/U5/U8；仅新增 `fieldc1c` 构建中的三个只读命令。
+不改变 `run`、端点/router 协议、预算、实例 `/1`/`/2` 或工作流。工具不会签发实例、
+打开 governor owner、执行子进程、访问网络或写文件；唯一输出为 stdout 上的固定 JSON。
+参数错误（包括显式空 `--config`/`--state` 与 `--verbose=false`）在读取输入前拒绝。
+
+| 命令 | 输入与边界 | 输出与失败 |
+| --- | --- | --- |
+| `gate-c1c verify-sshd` | stdin 至多 64 KiB、有效 UTF-8；调用现有 root resolved-config validator，拒绝额外 ForceCommand | `ok` 或固定 class；不执行 sshd |
+| `gate-c1c ledger --json` | 当前 mount view 的 canonical namespace，只读已存在的账本与固定 slot | 配对/campaign/trip、条目状态和时间、slot 存在性、只读 admission 快照；缺 namespace 为 `namespace_absent` |
+| `gate-c1c derive --field <BIN> --router <BIN> --initiator-config <CONFIG> --responder-config <CONFIG>` | 两个本地二进制与两份配置；VCS revision 相同且 unmodified，field tag 与 toolchain 一致 | 二进制/配置摘要、同一 `dependencyDigest` 的两项结果、当前 machine scope；无实例输出 |
+
+维护者已同意开工核对修订：现有 journal 不保存 role/profile/材料指纹，不能由 credential ID
+或 context digest 猜测这些字段。条目对应成员保持 `null`，`missing_reason=not_recorded`。
+在 governor 内新增 **field-only** 只读查询，复用现有 journal parser、ordinary/campaign 判定，
+不改格式、不取 owner、不新增记账实现。无锁快照只是诊断，不是下次 admission 的授权；
+损坏、读失败或未完成状态不得误报可用。slot 中不能验证的 attempt 也保持 null 和固定原因。
+
+验收先记录契约/行为 RED，再记录 GREEN、变异拒绝与普通/field 二进制 nm 对照。
+所有样例与临时构建只使用合成材料；本批不运行现场脚本、不产生配对材料、不签发实例。
+本地与 CI 首跑结果分别登记，不以重跑覆盖首次失败。
+
+### 6.1 测试先行的首次 RED
+
+Go 1.23.1，`go test -tags=fieldc1c ./cmd/wink/cmd -run '^TestFieldTools' -count=1`：
+命令 golden RED（缺子命令时返回帮助，469 bytes，而非固定 JSON）；九个全局 flag 存在性用例
+均未得到 `ErrInvalid`，RED。`go test -tags=fieldc1c ./internal/v2/fieldc1c
+-run '^TestFieldToolsDependency' -count=1`：窄复用函数尚不存在，编译 RED；此项不是行为失败。
+
+### 6.2 本地实现与验收边界（尚未提交 PR）
+
+提交 `9183b28` 的 Go 1.23.1 本地首批结果：
+
+| 命令/检查 | 结果 |
+| --- | --- |
+| `go test -race -tags=fieldc1c ./cmd/wink/... ./internal/v2/gatecorchestrator ./internal/v2/fieldc1c -count=20 -timeout=30m -json` | PASS；三个有测试包分别 114.618s / 210.695s / 41.368s |
+| `go vet ./...` | PASS |
+| field 工具能力与隐私 focused architecture | PASS；未代替全量 architecture |
+| `go test ./internal/architecture -count=1` | RED，94.386s；B3 只读投影的 campaign 常量引用，以及 C1a/C1b 对新增 validator 消费边的拒绝 |
+
+race 原始日志留仓库外，SHA-256 为
+`b200b4169da13db3590bbfb392efda6d413c7ca69e42c14a91f7e52784e0a28a`。
+其中实际二进制测试的 20 个样本均进入拒绝分支，日志原文为 `build_pair=dirty_rejected`；
+不能将其计作 clean pair 的成功推导。独立核对确认 Go 1.23.1 的 `cmd/go/internal/vcs`
+只把目录形式 `.git` 当作 Git root，本地 linked worktree 的 `.git` 是文件；即使
+`-buildvcs=true`，生成物也未包含 `vcs.*`。此处原日志标签不精确，实质是缺 VCS 元数据拒绝，
+不是已证实工作树有未提交改动。clean pair 的独立 Git checkout 正向验收仍待完成，
+不得放宽产品的 revision / modified / tag 校验来获得通过。
+
+B3 投影改为直接输出经现有 parser 校验的 record class，空值映射 ordinary，
+不再由显示层解释 campaign 权限；既有 B3 门本身不改。修改后
+`go test -race -tags=fieldc1c ./internal/governor -run '^TestFieldTools' -count=20`
+PASS（3.442s），`TestGateB3BoundaryIsSealedAndDisconnected` PASS（0.959s）。
+C1a/C1b 的额外文件范围已由维护者于 2026-09-29 同意：修改两个旧架构测试文件，只登记新 field-only 文件调用
+`sshchildwrapper.ValidateRootSSHDResolvedConfig` 的窄边，并在精确文件/符号门中拒绝
+其他 wrapper 消费。新增 alias/函数值/点导入/错误文件/缺 tag 变异，不授予其他 wrapper 权限。
+实际二进制正向测试改在独立本地 Git checkout 构建当前提交：不使用网络，不执行产物，
+必须成功推导，不能把缺 metadata 的负向分支当作正向通过。
+
+未推送、未创建 PR、无远端 CI 结果。工具未在现场执行，不运行 field 二进制，
+未生成配对材料或实例；这不是 Stage II/III 或端到端现场验收。
+
+### 6.3 加强后的首批 RED 与夹具收敛
+
+`ea1a792` 的 clean-checkout race×20 首批：cmd 77.870s、fieldc1c 32.160s PASS；
+orchestrator 328.999s RED。失败项是本批新增的
+`TestFieldToolsBuiltBinaryAndConfigurationHashes`：独立小程序的嵌套 `go build`
+在 60.01s 截止退出，诊断 bytes=0；不能凭此断定磁盘或调度根因。
+该批原始日志 SHA-256 为
+`a323299cd0050b1abcc947b7bdbd73ca6f3957218363ee47b36d1748ccd7ef5f`。
+
+哈希/缺 VCS 的负向单测改为只读本次已经编译的默认 test image，保留全部哈希、
+配置原字节、缺 stamp 拒绝、目录拒绝断言，不再为这组重复断言启动额外构建。
+独立 clean checkout 的真实 field/router 构建与成功 derive 测试仍逐次执行，
+没有放宽 timeout、产品校验或减少 count。后续批次另列，不覆盖该次 RED。
+
+### 6.4 收敛后本地验收
+
+`9b9aac8`，Go 1.23.1：上述完整 field race×20 PASS；cmd 74.122s、
+orchestrator 230.845s、fieldc1c 31.466s，真实 clean binary pair 成功推导 **20/20**。
+本批 JSONL SHA-256 为
+`06d7d3e19a377333a3d62d59ba0a3a4f793896521171d4124d6bb7c7e14a6a16`。
+`go vet ./...` 与 Linux/CGO=0 的 field-tagged 受影响包 vet 均 PASS。
+
+全量 `go test ./internal/architecture -count=1 -v` PASS（62.350s）；日志 SHA-256
+`2e10a8e9b1eab2870575ae74f10d562d2ee2b18a087b1862299d9dd904ccf77c`。
+新增工具能力/消费变异 20 项全部拒绝。nm 门在普通、c1bproof、natlab 三构建中
+检查以下新增符号零命中，在 fieldc1c 构建中逐项正向命中：
+`VerifyFieldSSHD`、`InspectFieldLedger`、`DeriveFieldTools`、`InspectFieldPairingLedger`、
+`DependencyConfigurationDigest`；原有七项 field 符号断言不变。
+这些是编译、只读和 fake/unit 证据，不是工具现场运行证据。CI 首跑另在 PR 记录。
