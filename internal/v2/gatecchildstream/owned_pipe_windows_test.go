@@ -88,11 +88,52 @@ func TestWindowsPipeKeepsCloseBasedCancellationWithoutNativeDeadlines(t *testing
 	}
 }
 
-// TestWindowsPipeCloseReturnsBoundedDrainError is the production-regression
-// contract for a synchronous Windows pipe. The peer stays open and silent so
-// a Close implementation that waits synchronously for the in-flight ReadFile
-// cannot hide behind peer EOF. The pre-fix implementation must RED here.
-func TestWindowsPipeCloseReturnsBoundedDrainError(t *testing.T) {
+// TestWindowsPipeNativeCloseIsBounded observes a real synchronous Windows
+// pipe. Native cancellation may either drain normally or return a bounded
+// ErrDrain; neither outcome is allowed to wait past the existing margin.
+func TestWindowsPipeNativeCloseIsBounded(t *testing.T) {
+	input, peer, err := os.Pipe()
+	if err != nil {
+		t.Fatal("owned pipe unavailable")
+	}
+	defer peer.Close()
+	defer input.Close()
+	absolute := time.Now().Add(5 * time.Second)
+	if err := input.SetReadDeadline(absolute); !errors.Is(err, os.ErrNoDeadline) {
+		t.Fatal("synchronous Windows pipe deadline precondition changed")
+	}
+	stream, err := New(input, &memoryWriteCloser{}, absolute)
+	if err != nil {
+		t.Fatal("existing Windows pipe rejected")
+	}
+	go func() { _, _ = stream.Read(make([]byte, 1)) }()
+	if !waitForWindowsPipeReadSyscall(t) {
+		t.Fatal("real Windows pipe read was not observed")
+	}
+
+	closeErr, timedOut, syscallCount := closeWithWitness(stream, peer, DrainTimeout+500*time.Millisecond)
+	witness := stream.Witness()
+	t.Logf("CHILDSTREAM_NATIVE_CLOSE_BOUNDARY timed_out=%t syscall_goroutines=%d err_drain=%t drained=%t", timedOut, syscallCount, errors.Is(closeErr, ErrDrain), witness.Drained)
+	if timedOut {
+		t.Fatal("native Stream.Close exceeded DrainTimeout plus 500ms")
+	}
+	if closeErr != nil && !errors.Is(closeErr, ErrDrain) {
+		t.Fatalf("native Stream.Close error=%v", closeErr)
+	}
+	if closeErr == nil && !witness.Drained {
+		t.Fatalf("native Stream.Close returned nil without drain: %+v", witness)
+	}
+	if errors.Is(closeErr, ErrDrain) && witness.Drained {
+		t.Fatalf("native Stream.Close reported ErrDrain after drain: %+v", witness)
+	}
+}
+
+// TestWindowsPipeCloseInjectedBlockingReaderBounded is the deterministic
+// production-regression contract. It retains a real synchronous pipe ReadFile
+// while a test-only Close gate models the OS close wait seen in the first
+// hosted witness. The pre-fix implementation must RED here without relying on
+// a sleep or a scheduler race.
+func TestWindowsPipeCloseInjectedBlockingReaderBounded(t *testing.T) {
 	input, peer, err := os.Pipe()
 	if err != nil {
 		t.Fatal("owned pipe unavailable")
