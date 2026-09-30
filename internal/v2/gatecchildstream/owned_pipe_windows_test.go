@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"golang.org/x/sys/windows"
 )
 
 func TestWindowsPipeKeepsCloseBasedCancellationWithoutNativeDeadlines(t *testing.T) {
@@ -32,7 +34,7 @@ func TestWindowsPipeKeepsCloseBasedCancellationWithoutNativeDeadlines(t *testing
 			if err != nil {
 				t.Fatal("existing Windows pipe rejected")
 			}
-			defer stream.Close()
+			pipeInfo := inspectWindowsPipe(input)
 			done := make(chan error, 1)
 			go func() { _, err := stream.Read(make([]byte, 1)); done <- err }()
 			observed := false
@@ -60,8 +62,14 @@ func TestWindowsPipeKeepsCloseBasedCancellationWithoutNativeDeadlines(t *testing
 				if err := stream.SetDeadline(time.Now()); err != nil {
 					t.Fatal(err)
 				}
-			} else if err := stream.Close(); err != nil {
-				t.Fatal(err)
+			}
+			closeErr, timedOut, syscallCount := closeWithWitness(stream, peer, 5*time.Second)
+			t.Logf("CHILDSTREAM_CLOSE_WITNESS expired=%t timed_out=%t syscall_goroutines=%d file_type_pipe=%t named_pipe_info=%t close_ms=%d", expired, timedOut, syscallCount, pipeInfo.fileTypePipe, pipeInfo.namedPipeInfo, time.Since(started).Milliseconds())
+			if timedOut {
+				t.Fatal("Stream.Close exceeded the five-second witness deadline")
+			}
+			if closeErr != nil && !errors.Is(closeErr, ErrDrain) {
+				t.Fatalf("Stream.Close error=%v", closeErr)
 			}
 			select {
 			case err := <-done:
@@ -71,10 +79,64 @@ func TestWindowsPipeKeepsCloseBasedCancellationWithoutNativeDeadlines(t *testing
 			case <-time.After(time.Second):
 				t.Fatal("Windows pipe read required peer EOF")
 			}
-			if err := stream.Close(); err != nil || !stream.Witness().Drained {
+			if closeErr != nil || !stream.Witness().Drained {
 				t.Fatal("Windows pipe did not drain")
 			}
 			t.Logf("windows pipe: expired=%t close_ms=%d read_joined=true peer_eof=false sockets=0", expired, time.Since(started).Milliseconds())
 		})
 	}
+}
+
+type windowsPipeInfo struct {
+	fileTypePipe  bool
+	namedPipeInfo bool
+}
+
+func inspectWindowsPipe(file *os.File) windowsPipeInfo {
+	if file == nil {
+		return windowsPipeInfo{}
+	}
+	fileType, err := windows.GetFileType(windows.Handle(file.Fd()))
+	if err != nil {
+		return windowsPipeInfo{}
+	}
+	var flags, outBuffer, inBuffer, instances uint32
+	namedInfoErr := windows.GetNamedPipeInfo(windows.Handle(file.Fd()), &flags, &outBuffer, &inBuffer, &instances)
+	return windowsPipeInfo{fileTypePipe: fileType == windows.FILE_TYPE_PIPE, namedPipeInfo: namedInfoErr == nil}
+}
+
+func closeWithWitness(stream *Stream, peer *os.File, timeout time.Duration) (error, bool, int) {
+	result := make(chan error, 1)
+	go func() { result <- stream.Close() }()
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	select {
+	case err := <-result:
+		return err, false, countSyscallGoroutines()
+	case <-timer.C:
+		// Releasing the test peer is cleanup only. It is deliberately after the
+		// witness deadline so a peer EOF cannot hide an unbounded Close.
+		if peer != nil {
+			_ = peer.Close()
+		}
+		select {
+		case <-result:
+			return ErrDrain, true, countSyscallGoroutines()
+		case <-time.After(time.Second):
+			return ErrDrain, true, countSyscallGoroutines()
+		}
+	}
+}
+
+func countSyscallGoroutines() int {
+	buffer := make([]byte, 128<<10)
+	defer clear(buffer)
+	n := runtime.Stack(buffer, true)
+	count := 0
+	for _, stack := range strings.Split(string(buffer[:n]), "\n\n") {
+		if strings.Contains(stack, "[syscall]") {
+			count++
+		}
+	}
+	return count
 }
