@@ -10,6 +10,9 @@ Stage I 独立复审接受后仍需另发 Stage II 任务书；Stage II 只做�
 Stage III 才可能签发首个负面实例。§9 的相应未决项未闭合时，不把命令片段拼成运行脚本。
 模板里的 `<PLACEHOLDER>` 不是已核实值；任何签字、布尔许可和测量结果都不能预填成功。
 
+§2–§3 保留 Stage I 的问题发现过程；当前裁决与工具实现状态以 §9.1 为准。
+新增脚本仅完成离线实现，不代表 Stage II/III 已获执行授权。
+
 ## 1. 范围、依据与命令勘误
 
 本轮是共享 Linux 主机内的隔离 router/端点组合，不是跨设备、LAN 或公网穿透证明。
@@ -111,6 +114,19 @@ mount view 分别核验。**U2 未决：现有实现只在 test helper 里组合
 只在首次另行批准的端点初始化中运行产品 `setup-machine-scope`（可创建 namespace/ledger），
 后续每实例只用 `--check`。machine-id/var-lib/home 永不按场景删除重建；销毁前封存，不能换
 scope 绕过 hard-16K 一次/24h、失败 circuit 或其他 admission 限制。
+
+U2 的初始化模板现由 [init 脚本](../scripts/c1c-endpoint-init.sh) 实现；只在另行授权后使用：
+
+```sh
+<FIXED_C1C_ENDPOINT_INIT_SCRIPT> initiator
+<FIXED_C1C_ENDPOINT_INIT_SCRIPT> responder
+```
+
+固定根下 `endpoints/` 与 `bin/wink-field` 须事前具名准备并核对 owner/mode/hash。
+角色目录已存在即退出 65，零写入；中途失败目录保留，不自动修复。只有复制 hash 不符时，
+按创建清单与 inode 核验逆序删除本次刚创建的项，不递归删除已有目录。
+init 仅建外层 `var-lib`，内层 canonical namespace 由产品 setup 独占创建；输出只有角色和
+scope 摘要前缀。私有 shadow 与 evidence 父目录绑定的修订见 §9.1。
 
 ## 3. 每实例操作规程：runbook 步 4–12
 
@@ -457,9 +473,15 @@ readlink /proc/<EXACT_PID>/exe
 ```
 
 第二人核对 PID/starttime/executable/namespace 与已登记本次对象，不按名称杀进程。
-停止动作模板 `kill -TERM -- <EXACT_OWNED_PID>` 仅在身份复核后执行；PID 复用或归属不明即
-停止，不升级为 `pkill`。shell“检查后 kill”并非原子 pidfd 保证，现场 supervisor/停止工具的
-精确调用随 U2 复审；不能冒充 [router 的 pidfd 身份保护](../internal/c1crouter/command_linux.go)。
+停止动作由 [owned-stop 脚本](../scripts/c1c-owned-stop.sh) 实现：
+
+```sh
+<FIXED_C1C_OWNED_STOP_SCRIPT> <EXACT_OWNED_PID> <RECORDED_STARTTIME> <RECORDED_EXE_SHA256>
+```
+
+先取得 pidfd，再核对括号安全解析的 stat 第 22 字段与实际 exe hash，只对同一进程发 TERM；
+PID 复用、身份不符、内核/Python 缺 pidfd API 都拒绝，不按名称停止，也不降级为检查后 kill。
+2s 内最多每 100ms 等待退出；仍存活返回非零，不升级 KILL，不代替签发的 containment。
 
 验证原 **2s I/O drain**、packet 不再增长、owned socket/child/lock 排空。router 随后的 OS
 cleanup 另有现存 **20s** `cleanupTimeout`；它不是把 2s 延长到 20s，也不能用 cleanup 成功
@@ -482,16 +504,30 @@ U3 裁决后在 responder mount/net view 前台运行私有 sshd（peer-absent �
 验证监听；SSH literal endpoint 是 responder NAT 地址与签发端口，非 responder 内网地址。
 固定 TCP DNAT 由 router 建立，不改宿主 firewall。
 
-initiator 的**最后一跳**命令已知；省略部分 U2 仍未决，故下面不是现在可运行的完整命令：
+initiator 通过受审 launcher 组合最后一跳。下列仍是未来具名窗口中的占位模板，
+不因工具实现而获得执行授权：
 
 ```text
-ip netns exec <INITIATOR_ANCHOR> <UNRESOLVED_REVIEWED_PRIVATE_MOUNT_LAUNCHER> /usr/libexec/winkyou/wink gate-c1c run --instance <INITIATOR_CANONICAL_INSTANCE>
+<FIXED_C1C_ENDPOINT_LAUNCH_SCRIPT> initiator <ATTEMPT_ID> <INITIATOR_ANCHOR>
 ```
 
-禁止删掉 launcher 占位符直接运行。responder 不另启一次 `run`，由唯一 SSH child 从 pending
+launcher 自行验证非 init netns、精确派生 anchor、角色初始化、只读实例/材料绑定和证据独占性，
+不得再拼接任意命令。responder 不另启一次 `run`，由唯一 SSH child 从 pending
 slot 领取请求。field stdout 只有 profile/stage/class/duration_ns/counts/evidence_sha256；
 progress 与详细 witness 在私有 endpoint.jsonl。对 stdout 不作“有输出即成功”的判断。
 任一前置失败不允许第二 invocation、切 profile、fallback 或调整窗口。
+
+Stage II 的无材料演练模板（同样须另行授权）：
+
+```sh
+<FIXED_C1C_ENDPOINT_LAUNCH_SCRIPT> <ROLE> <DRILL_ID> <ROLE_ANCHOR> --payload version
+```
+
+`DRILL_ID` 是规范的 16 字节 base64url 22 字符演练标识，不是 credential；角色只允许两个
+固定值，anchor 严格按 §9.1 派生。evidence 源目录必须已存在，version 不读取 instance/material。
+见证只接受实际目标 exec 的 PID/starttime/net/mount inode/hash，不把中间解释器算成功。
+version 过快退出而未被观测时为 `exec_witness_unavailable`；本轮离线测试不证明现场演练
+成功，也不自动重启短进程取得见证。父进程前台等待 child，并保留其退出码。
 
 ### 3.6 步 9–10：终局、drain、teardown 与 after 快照
 
@@ -553,6 +589,18 @@ sudo -- <FIXED_SNAPSHOT_SCRIPT>
 保存。真实文件不可读不是零残留。第二人逐一填 teardown/terminal/ledger/管理通道/隐私栏并
 签字；实际结果另写 evidence checklist，**不补写签发原件内原来为 null 的 post-run 字段**。
 公开只能发 §6 的白名单摘要。任一门未满足，本实例保持 RED/unknown，不能靠下一实例覆盖。
+
+U9 的事后只读投影模板由 [correlate 脚本](../scripts/c1c-me-correlate.sh) 实现：
+
+```sh
+<FIXED_C1C_ME_CORRELATE_SCRIPT> <INITIATOR_RAW_ENDPOINT_JSONL> <RESPONDER_RAW_ENDPOINT_JSONL> <RAW_ROUTER_JSONL>
+```
+
+三路径必须在固定 evidence 根的同一 attempt 下；端点原件为
+`endpoint-<role>/<ATTEMPT_ID>/endpoint.jsonl`，router 为 `router/router.jsonl`。
+逐级 fd-relative/no-follow 打开，拒绝 hardlink、可写父链、超长与重复 JSON key；只输出
+`C1C_ME` 固定字段，不输出原始地址/路径/tuple。当前 producer 缺认证关联键与同域时间戳，
+相关测量明确为 null，不能把 router observation 计数当作认证命中数。
 
 ## 4. `/2` 全字段模板与派生值
 
@@ -880,24 +928,93 @@ Stage II 失败保留首个输出；不能用再跑一次掩盖。通过后亦�
 
 ### 9.1 独立复审裁决（2026-09-29）
 
+**工具实现前核对修订（维护者同意，2026-09-29）**：下列四点覆盖本表对应旧表述，
+不更改产品 parser、权限检查、协议、预算或正式 responder 入口。
+
+- U3 anchor 前缀为 `wyc1c`，其余 SHA256 输入、前四字节与角色后缀规则不变；
+  现有 `/2` parser 要求 `wy` 前缀，不增加例外。
+- init 仅预建角色私有 `var-lib/0700`，不预建内部 `winkyou-safety-v2`。
+  现有 `setup-machine-scope` 独占创建内部目录及固定文件，保留原有权限校验。
+- `--payload version` 不要求、不读取、不绑定 instance/material；演练 evidence 目录必须
+  事先具名准备，不由 launcher 猜测或自动创建。演练标识不是 credential 或签发实例。
+- 正式 launcher payload 只允许 initiator；responder 仅允许 version 演练。正式 responder
+  仍经私有 sshd 的固定 wrapper 进入，不执行 initiator 专用 `gate-c1c run`。
+
+脚本只在另行批准的 Stage II/III 执行。本工具 PR 的测试只提取定义并注入 fake 文件系统/
+命令，不执行脚本入口，不触碰 mount/netns、账户、进程或 governor namespace。
+
 复审接受本规程为 Stage I 基线。U1–U9 逐项裁决如下；"设计关闭"指本表文字即为裁决，
 "工具 PR"指需另开范围明确的 PR 并独立复审后才算关闭。任何工具 PR 都不得改端点/router 协议
 数字、`/1`/`/2` 契约或 workflow。
 
 | 编号 | 裁决 | 关闭方式 | 解锁阶段 |
 | --- | --- | --- | --- |
-| U1 | 端点 home/ledger 保持在 `c1c/endpoints/<ROLE>/`（读取器不可见）。**原件可读**通过 bind mount 达成而不是复制：启动前在角色 mount view 内把读取器可见的 `c1c/evidence/<ATTEMPT_ID>/endpoint-<role>/` 绑定到 `<ROLE>/home` 内的 `.winkyou-field/c1c/evidence/<ATTEMPT_ID>/`，endpoint 直接写入原件；每角色材料以 `c1c/material/<ATTEMPT_ID>/<role>/` 绑定到 home 内固定路径 `/root/.winkyou-field/c1c/material/<ATTEMPT_ID>/`（读取器白名单先于排除，home 不在白名单内，故不可读）。ledger 与实例副本的第二人可读性由读取器**白名单扩展**解决：新增 `c1c/endpoints/<role>/var-lib/**` 与 `c1c/endpoints/<role>` 下 home 内的 `.winkyou-field/c1c/*.json`，其余 endpoints 子树（`shadow`、`install`、`run`、home 内的 `.ssh` 与 `.winkyou-field/c1c/material`）仍不可读；契约与变异测试同步更新。 | 工具 PR（scripts + architecture 契约） | Stage II（布局）/ Stage III（ledger 读取） |
-| U2 | 新增三个受审脚本，均无自由参数（仅 `<role>` 与 `<attempt_id>` 经正则校验）、固定布局、契约测试锁定：`scripts/c1c-endpoint-init.sh`（**每角色仅一次**：生成 32 hex machine-id 到独占新文件、创建 var-lib/home/run/install/shadow、复制受审 field 二进制两份并核对哈希、在角色 view 内运行 `wink setup-machine-scope`；再次运行即拒绝）；`scripts/c1c-endpoint-launch.sh`（`unshare -m` + 2.1 表全部 bind + `/run/netns` 重绑 + U1 的 evidence/material bind + `ip netns exec <anchor>` + `exec` 固定 `/usr/libexec/winkyou/wink gate-c1c run --instance <固定路径>`；启动后由父进程立即打印 PID/starttime/ns inode 见证行）；`scripts/c1c-owned-stop.sh`（读 `/proc/<pid>/stat` starttime 与 exe，与登记值全等才 `kill -TERM`，随后 2 s 内轮询退出并打印见证；不匹配即拒绝）。Stage II 用 launcher 以 `wink version` 为 payload 演练挂载与停止，不开 governor。 | 工具 PR（scripts + architecture 契约） | Stage II |
+| U1 | 端点 home/ledger 保持在 `c1c/endpoints/<ROLE>/`（读取器不可见）。**原件可读**通过 bind mount 达成而不是复制：启动前在角色 mount view 内把读取器可见的 `c1c/evidence/<ATTEMPT_ID>/endpoint-<role>/` 绑定到 `<ROLE>/home` 内的 `.winkyou-field/c1c/evidence/<ATTEMPT_ID>/`，endpoint 直接写入原件；每角色材料以 `c1c/material/<ATTEMPT_ID>/<role>/` 绑定到 home 内固定路径 `/root/.winkyou-field/c1c/material/<ATTEMPT_ID>/`（读取器白名单先于排除，home 不在白名单内，故不可读）。ledger 与实例副本的第二人可读性由读取器**白名单扩展**解决：新增 `c1c/endpoints/<role>/var-lib/**` 与 `c1c/endpoints/<role>` 下 home 内的 `.winkyou-field/c1c/*.json`，其余 endpoints 子树（`shadow`、`install`、`run`、home 内的 `.ssh` 与 `.winkyou-field/c1c/material`）仍不可读；契约与变异测试同步更新。 | 工具 PR（scripts + architecture 契约）；已实现：[PR #183](https://github.com/houyuwushang/winkyou/pull/183)，待独立复审 | Stage II（布局）/ Stage III（ledger 读取） |
+| U2 | 新增三个受审脚本，均无自由参数（仅 `<role>` 与 `<attempt_id>` 经正则校验）、固定布局、契约测试锁定：`scripts/c1c-endpoint-init.sh`（**每角色仅一次**：生成 32 hex machine-id 到独占新文件、创建 var-lib/home/run/install/shadow、复制受审 field 二进制两份并核对哈希、在角色 view 内运行 `wink setup-machine-scope`；再次运行即拒绝）；`scripts/c1c-endpoint-launch.sh`（`unshare -m` + 2.1 表全部 bind + `/run/netns` 重绑 + U1 的 evidence/material bind + `ip netns exec <anchor>` + `exec` 固定 `/usr/libexec/winkyou/wink gate-c1c run --instance <固定路径>`；启动后由父进程立即打印 PID/starttime/ns inode 见证行）；`scripts/c1c-owned-stop.sh`（读 `/proc/<pid>/stat` starttime 与 exe，与登记值全等才 `kill -TERM`，随后 2 s 内轮询退出并打印见证；不匹配即拒绝）。Stage II 用 launcher 以 `wink version` 为 payload 演练挂载与停止，不开 governor。 | 工具 PR（scripts + architecture 契约）；已实现：[PR #183](https://github.com/houyuwushang/winkyou/pull/183)，待独立复审 | Stage II |
 | U3 | 冻结顺序：① `solver pair oob` → 读 manifest 得 `attempt_id`；② anchors 命名 `c1c` + SHA256(`winkyou-c1c-anchor/1\n` + attempt_id) 前 4 字节小写 hex + `-i`/`-t`/`-r`，`ip netns add` 三个并记 inode；③ 填实例（含 inode）；④ 第二段签字（见 U6 行下方"双段签字"）；⑤ router run → `ready.json`；⑥ 在 responder anchor + 私有 mount view 启动 sshd（peer-absent 实例除外）；⑦ initiator。因 artifact 有效期为 `MaxPairingLifetime`=10 分钟且实例 `credential_expires_at` 必须等于它，①–⑦ 必须在 10 分钟内完成；超时则本套材料作废、不复用、不延长，重新走①并重新签字。Stage II 无 instance：sshd 绑定 responder anchor 内 `lo` 上的 `127.0.0.1:<port>`，明确不证明 NAT 地址绑定。 | 设计关闭 | Stage II/III |
 | U4 | 新增 field-only 只读子命令 `wink gate-c1c verify-sshd`：从 stdin 读取 `sshd -T` 原始输出，调用 `ValidateRootSSHDResolvedConfig`，stdout 仅 `ok` 或固定 class；无 exec、无网络、无文件写入；nm 门登记。 | 工具 PR（fieldc1c 生产，RED→GREEN+变异） | Stage II |
 | U5 | 新增 field-only 只读子命令 `wink gate-c1c ledger --json`：在当前 mount view 内以 `InspectMachinePairingLedger` 等只读 API 输出 pairing/campaign ledger、pending/claimed slot、trip、circuit、admission 状态的固定字段 JSON；不创建 namespace/owner，不修复，不打开 stdio。 | 工具 PR（同上一 PR） | Stage III |
 | U6 | 首批全部实例：`session_liveness.mode=challenge_v1`，两侧 `missed_rounds=3`（L=65 s），`absolute_session_ceiling=2m0s`，两侧相同并写入实例；这是本批签发值，不是产品默认。**双段签字**：第一段——执行者提交除 attempt 派生字段（`instance_id`、anchors、`manifest_sha256`、`credential_reference`、`credential_expires_at`、`signed_at/not_before/not_after`、三副本哈希）外已填满的脱敏实例，维护者回复 `预批 <SCENARIO>`，评审核对；第二段——① 完成后执行者只填派生字段并提交与预批稿的逐字段 diff，维护者回复 `签发 <SCENARIO> <ATTEMPT_FIRST_8>`，评审核对 diff 仅含派生字段后填评审栏。两段原话与时间均入私有 checklist。 | 设计关闭 | Stage III |
 | U7 | 六个前置门按可诱发性分三类。**现场可诱发（保留）**：peer absent（不启动私有 sshd）；材料不匹配（两套 `pair oob` 交叉）——如实命名为"材料不匹配零 I/O 拒绝"，预期 `gate_c_request_invalid`/preflight，不称"握手错 PSK"。**现场不可诱发（以隔离 CI 证据代替）**：post-burn OOB EOF、evidence unusable、lease/consumer failure——field build 与 router 按设计无故障注入面，三项由 C1b/C1c 隔离 CI 的 RED→GREEN 证据闭合；ADR §7 记录为对 Gate C1 §11 的显式偏离，`crash` 是首轮唯一现场注入场景。**合并**：表中第 6 行"低成本 nominal"与第 8 行 `predictive_apdm_pair` 同一形态，删去第 6 行。**编码**：两个现场负面门以 `scenario=predictive_apdm_pair` 签发，`expected_terminal_and_fault_stage` 填签发的非 success 预期，`preflight_negative_matrix_evidence` 引用隔离 CI 证据文档的 SHA-256 与本裁决；不改 `validateProfile`。 | 设计关闭 + ADR 记录 | Stage III |
 | U8 | 新增 field-only 只读子命令 `wink gate-c1c derive --field <bin> --router <bin> --initiator-config <f> --responder-config <f>`：输出 `dependency_and_configuration_sha256`（端点与 router 两值）、三个二进制 sha256、`exact_sha`/`toolchain`、本 mount view 的 machine scope reference；不写文件、不产出实例。第二人用同一命令在只读视图独立重算。 | 工具 PR（同 U4/U5 PR） | Stage III |
-| U9 | 关联在**事后离线**完成：`scripts/c1c-me-correlate.sh`（只读，输入私有 endpoint.jsonl×2 + router.jsonl，输出 §5 各字段的值或 null+reason，不发包、不改文件）；未能关联的字段保持 null。它阻断的是 M/E 公开摘要，不阻断实例执行。 | 工具 PR（scripts，可与 U1/U2 同 PR） | M/E 发布 |
+| U9 | 关联在**事后离线**完成：`scripts/c1c-me-correlate.sh`（只读，输入私有 endpoint.jsonl×2 + router.jsonl，输出 §5 各字段的值或 null+reason，不发包、不改文件）；未能关联的字段保持 null。它阻断的是 M/E 公开摘要，不阻断实例执行。 | 工具 PR（scripts）；已实现：[PR #183](https://github.com/houyuwushang/winkyou/pull/183)，待独立复审 | M/E 发布 |
 
 **Stage II 前置**：U1、U2、U4 的工具 PR 合入。**Stage III 前置**：U5、U8 合入；每实例仍单独两段签字。
 U9 在首个 `predictive_apdm_pair` 发布摘要前合入即可。
+
+#### U1/U2 实现核对修订（维护者同意，2026-09-29；不构成启动授权）
+
+除已同意的开工修订外，维护者另同意下列两处修订，覆盖 U1/U2 对应旧表述。
+不改产品 claim，不在本工具 PR 执行现场命令：
+
+1. **evidence 挂载与原子 claim 冲突。** U1 要求将预先存在的源目录绑定到
+   `.winkyou-field/c1c/evidence/<ATTEMPT_ID>/`；但 `fieldc1c.ClaimEvidence`
+   在 `internal/v2/fieldc1c/evidence.go` 用独占 `Mkdir` 认领同一个目录，已存在即拒绝。
+   只把挂载目标提升到角色 home 内的 `.winkyou-field/c1c/evidence/` 父目录，
+   源仍为 `c1c/evidence/<ATTEMPT_ID>/endpoint-<role>/`，由产品独占创建下层 attempt。
+   读取器可见的原件随之为
+   `c1c/evidence/<ATTEMPT_ID>/endpoint-<role>/<ATTEMPT_ID>/endpoint.jsonl`；
+   launcher 见证仍在源目录下的 `launch.json`。不改产品 claim、不覆盖旧证据、不放宽重复运行。
+2. **锁定 shadow 与公钥登录冲突。** 脚本任务要求 `root:!:`，本规程固定 `UsePAM no`。
+   OpenSSH 的 [allowed_user](https://github.com/openssh/openssh-portable/blob/master/auth.c)
+   在此配置下拒绝 locked account；[Linux 配置](https://github.com/openssh/openssh-portable/blob/master/configure.ac)
+   将 `!` 定义为锁定前缀，[platform_locked_account](https://github.com/openssh/openssh-portable/blob/master/platform.c)
+   读取 shadow 后据此判定。与既有 `runGateC1bPrivateSSHD` 一致，使用
+   `root:x:19000:0:99999:7:::` 的不可用密码占位；保持 password / keyboard-interactive
+   认证禁用、公钥与 forced-command 限制。仅作用于未来角色私有 mount view，绝不修改宿主 shadow。
+
+上述 SSH 结论来自源码核对，不是本批主机登录测试。不签发实例，不执行脚本入口。
+
+#### 工具测试顺序与证据
+
+先提交不存在脚本/缺少白名单时的 RED 契约，再实现脚本、fake 文件系统/命令语义与变异。
+测试只编译/提取 Python 定义，不调用顶层入口；system mount、signal、进程与文件写入
+在纯语义测试中全部由 fake 接管。shell 的语法检查也不执行脚本。
+启动见证须在本次 child 的目标 exec 边界取得，不能把中间解释器的 hash 当作 WinkYou；
+version 短进程如在实际采样前退出，返回 `exec_witness_unavailable`，不输出伪造的身份见证；
+不把中间解释器的 hash 当作成功，不自动重启。任何权限/见证失败都拒绝，不重试实例。
+M/E 关联只消费实际存在的字段：当前 endpoint 没有认证 tuple 摘要或同域里程碑，
+相关值保持 null + 固定 reason；不从 progress 墙钟或 router 本地时钟拼出认证测量。
+
+本地 Go 1.23.1 的首次结果分别保留：
+
+- `a5d3fc9`：四个新增脚本尚不存在，四项契约 RED；这是实现前回归。
+- 实现阶段第一次 reader 变异第 14 项 RED：宽松子串匹配未识别 shadow 例外；
+  改为精确整句契约，未放宽读取器。
+- 新脚本/读取器聚焦 `-race -count=20` PASS（14.471s），`go vet ./...` PASS。
+- 全量 architecture 首跑 RED（43.438s）：launcher 的角色相对目录字符串被旧隐私门识别为
+  `personal_directory`；改为结构化路径拼接，同一物理路径不变，隐私门零修改。
+- 修正后同一批验证：聚焦 race×20 PASS（15.416s）、`go vet ./...` PASS、全量
+  architecture PASS（36.135s）。文档/脚本 193 文件、source 923 文件，均 0 finding；
+  五脚本 `bash -n`、相对链接与 `git diff --check` 通过。
+
+全量 architecture 首次 RED 原日志保留在仓库外，SHA-256：
+`67d88adf97362f576076545d3bf545fc1c49c865876064e36ee11df55f20f397`。
+
+四脚本字面量/禁用能力变异数分别为 init 18、launch 26、stop 18、correlate 18；
+读取器共 15 项变异。纯语义断言数分别为 201、172、103、147（含共同导入与零能力检查，
+不是相互独立的场景数），所有脚本入口调用和真实 host 调用均为 0。
+M/E golden 仅含合成 producer 形态，读取侧归一化 CRLF。CI 首跑另列，尚不视为现场证明。
 
 ## 10. 本 PR 的验收口径
 

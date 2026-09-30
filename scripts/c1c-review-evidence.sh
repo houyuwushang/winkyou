@@ -80,6 +80,22 @@ def allowed(relative, directory):
     for excluded in EXCLUDED:
         if relative == excluded or relative.startswith(excluded + "/"):
             return False
+    parts = relative.split("/")
+    if parts[:2] == ["c1c", "endpoints"]:
+        if len(parts) == 2:
+            return directory
+        if parts[2] not in ("initiator", "responder"):
+            return False
+        if len(parts) == 3:
+            return directory
+        tail = "/".join(parts[3:])
+        if tail == "var-lib":
+            return directory
+        if tail.startswith("var-lib/"):
+            return True
+        if tail in ("home", "home/.winkyou-field", "home/.winkyou-field/c1c"):
+            return directory
+        return not directory and len(parts) == 7 and parts[3:6] == ["home", ".winkyou-field", "c1c"] and parts[6].endswith(".json")
     if relative == "c1c" or relative == "log":
         return directory
     if relative == "c1c/evidence" or relative.startswith("c1c/evidence/") or relative.startswith("log/"):
