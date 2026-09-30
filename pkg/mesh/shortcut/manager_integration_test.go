@@ -178,31 +178,37 @@ func TestShortcutBecomesStableAfterProbation(t *testing.T) {
 }
 
 func TestShortcutReportsInstalledOnlyAfterPacketNeighborReady(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
 	witness := newShortcutBarrierWitness(t)
 	nodeA := newTestNode(t, mesh.NodeConfig{NodeID: "A", Lease: 5 * time.Second, RefreshInterval: 50 * time.Millisecond})
 	nodeB := newTestNode(t, mesh.NodeConfig{NodeID: "B", Lease: 5 * time.Second, RefreshInterval: 50 * time.Millisecond})
 	nodeC := newTestNode(t, mesh.NodeConfig{NodeID: "C", Lease: 5 * time.Second, RefreshInterval: 50 * time.Millisecond})
 	attachTestDualPair(t, nodeA, "B", nodeB, "A")
 	attachTestDualPair(t, nodeB, "C", nodeC, "B")
+	setupCtx, setupCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer setupCancel()
 	for _, node := range []*mesh.Node{nodeA, nodeB, nodeC} {
-		if err := node.Start(ctx); err != nil {
+		if err := node.Start(setupCtx); err != nil {
 			t.Fatal(err)
 		}
 	}
-	waitReciprocalRoute(t, ctx, nodeA, nodeC, []string{"A", "B", "C"}, []string{"C", "B", "A"})
+	waitReciprocalRoute(t, setupCtx, nodeA, nodeC, []string{"A", "B", "C"}, []string{"C", "B", "A"})
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
 
 	gate := make(chan struct{})
 	var releaseOnce sync.Once
 	release := func() { releaseOnce.Do(func() { close(gate) }) }
 	t.Cleanup(release)
 	broker := newFakeEdgeBroker()
+	entered := make(map[string]<-chan struct{}, len(broker.transports))
 	for nodeID, packetTransport := range broker.transports {
+		writeEntered := make(chan struct{})
 		broker.transports[nodeID] = &gatedShortcutPacketTransport{
 			PacketTransport: packetTransport,
 			gate:            gate,
+			writeEntered:    writeEntered,
 		}
+		entered[nodeID] = writeEntered
 	}
 	factory := func(spec AttemptSpec) (solver.Strategy, error) { return newFakeEdgeStrategy(spec, broker), nil }
 	base := Config{
@@ -228,13 +234,21 @@ func TestShortcutReportsInstalledOnlyAfterPacketNeighborReady(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := waitTestConditionError(ctx, func() bool {
-		_, readyAtA := nodeA.Neighbor("C")
-		_, readyAtC := nodeC.Neighbor("A")
-		return readyAtA && readyAtC
-	}); err != nil {
+	for _, nodeID := range []string{"A", "C"} {
+		select {
+		case <-entered[nodeID]:
+		case <-ctx.Done():
+			witness.dumpFailure(t, "packet_neighbor_attach", map[string]*Manager{"A": managerA, "B": managerB, "C": managerC}, map[string]*mesh.Node{"A": nodeA, "B": nodeB, "C": nodeC}, broker)
+			t.Fatalf("packet session writer did not reach the pre-readiness gate: %v", ctx.Err())
+		}
+	}
+	if _, ok := nodeA.Neighbor("C"); !ok {
 		witness.dumpFailure(t, "packet_neighbor_attach", map[string]*Manager{"A": managerA, "B": managerB, "C": managerC}, map[string]*mesh.Node{"A": nodeA, "B": nodeB, "C": nodeC}, broker)
-		t.Fatalf("packet sessions were not attached: %v", err)
+		t.Fatal("packet session A was not attached when its writer reached the gate")
+	}
+	if _, ok := nodeC.Neighbor("A"); !ok {
+		witness.dumpFailure(t, "packet_neighbor_attach", map[string]*Manager{"A": managerA, "B": managerB, "C": managerC}, map[string]*mesh.Node{"A": nodeA, "B": nodeB, "C": nodeC}, broker)
+		t.Fatal("packet session C was not attached when its writer reached the gate")
 	}
 	for nodeID, manager := range map[string]*Manager{"A": managerA, "C": managerC} {
 		status, ok := manager.Status(handle.ID())
@@ -268,8 +282,6 @@ func TestShortcutReconcilesDroppedPacketBarrierSignal(t *testing.T) {
 	}
 	for _, testCase := range testCases {
 		t.Run(testCase.name, func(t *testing.T) {
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			defer cancel()
 			witness := newShortcutBarrierWitness(t)
 			nodeA := newTestNode(t, mesh.NodeConfig{NodeID: "A", Lease: 5 * time.Second, RefreshInterval: 50 * time.Millisecond, OnEvent: witness.route})
 			nodeB := newTestNode(t, mesh.NodeConfig{NodeID: "B", Lease: 5 * time.Second, RefreshInterval: 50 * time.Millisecond, OnEvent: witness.route})
@@ -298,12 +310,16 @@ func TestShortcutReconcilesDroppedPacketBarrierSignal(t *testing.T) {
 				t.Fatal(err)
 			}
 			attachTestDualPair(t, nodeB, "C", nodeC, "B")
+			setupCtx, setupCancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer setupCancel()
 			for _, node := range []*mesh.Node{nodeA, nodeB, nodeC} {
-				if err := node.Start(ctx); err != nil {
+				if err := node.Start(setupCtx); err != nil {
 					t.Fatal(err)
 				}
 			}
-			waitReciprocalRoute(t, ctx, nodeA, nodeC, []string{"A", "B", "C"}, []string{"C", "B", "A"})
+			waitReciprocalRoute(t, setupCtx, nodeA, nodeC, []string{"A", "B", "C"}, []string{"C", "B", "A"})
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
 
 			broker := newFakeEdgeBroker()
 			factory := func(spec AttemptSpec) (solver.Strategy, error) { return newFakeEdgeStrategy(spec, broker), nil }
@@ -629,7 +645,9 @@ type shortcutMemoryPacketTransport struct {
 
 type gatedShortcutPacketTransport struct {
 	transport.PacketTransport
-	gate <-chan struct{}
+	gate         <-chan struct{}
+	writeEntered chan<- struct{}
+	writeOnce    sync.Once
 }
 
 func (t *gatedShortcutPacketTransport) isClosed() bool {
@@ -640,6 +658,11 @@ func (t *gatedShortcutPacketTransport) isClosed() bool {
 }
 
 func (t *gatedShortcutPacketTransport) WritePacket(ctx context.Context, packet []byte) error {
+	t.writeOnce.Do(func() {
+		if t.writeEntered != nil {
+			close(t.writeEntered)
+		}
+	})
 	select {
 	case <-ctx.Done():
 		return ctx.Err()
