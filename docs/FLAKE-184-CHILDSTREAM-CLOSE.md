@@ -1,9 +1,8 @@
 # Gate C childstream close investigation
 
-Status: test-only witness/reproduction Draft PR. No production change is
-authorized in this branch. If the witness proves that a Windows synchronous
-pipe `reader.Close()` can block without a bound while a `ReadFile` is active,
-work stops and the production fix is proposed for separate approval.
+Status: production fix authorized in an independent Draft PR (2026-09-30).
+The change is limited to `Stream.Close()` and required private state; the
+two-second `DrainTimeout`, stream signatures, and callers remain unchanged.
 
 ## First signature
 
@@ -27,10 +26,22 @@ The investigation also records the Go 1.23.1 `internal/poll` `kindPipe`
 close path and whether `CancelIoEx` is invoked and whether its result is
 observed. This is evidence only; it does not alter the Windows or Linux code.
 
-If `os.File.Close` returns within the witness deadline and all reads join,
-the issue remains a fixture classification. If it does not, the result is a
-production defect candidate: stop before a production commit and report the
-smallest approved design (independent close worker, bounded `DrainTimeout`
-wait, `ErrDrain`/`Drained=false`, and eventual background close) for explicit
-authorization. The existing two-second drain number, Linux behavior, and all
-other budgets remain unchanged.
+The relevant Go 1.23.1 source is `src/internal/poll/fd_windows.go`: `FD.Close`
+calls `CancelIoEx` for `kindPipe`, evicts the poll descriptor, decrefs the
+handle, and then synchronously waits on `runtime_Semacquire(&fd.csema)`
+(lines 383-397 in the reviewed toolchain). A cancellation that does not finish
+the in-flight `ReadFile` therefore blocks the caller before the old
+`DrainTimeout` select is reached. The first hosted Windows RED showed exactly
+that stack shape for ten minutes; the local native-pipe witness is retained as
+a bounded observation because cancellation can also succeed on an individual
+run.
+
+The deterministic Windows regression keeps the real pipe `ReadFile` active and
+uses a test-only Close gate to model the observed OS wait without sleeping or
+depending on scheduler luck. Before the fix, `Stream.Close` remains blocked
+past `DrainTimeout+500ms` in that fixture; after the fix, it returns
+`ErrDrain` within the existing two-second bound with `Drained=false`, and the
+released worker completes the operation witness. A separate native-pipe test
+accepts either normal drain or bounded `ErrDrain`, but rejects an unbounded
+return. The existing two-second drain number, Linux behavior, and all other
+budgets remain unchanged.
