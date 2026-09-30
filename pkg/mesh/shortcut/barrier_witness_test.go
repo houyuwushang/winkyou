@@ -4,6 +4,8 @@ import (
 	"context"
 	"os"
 	"runtime"
+	"sort"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -19,6 +21,7 @@ type shortcutBarrierWitness struct {
 	started time.Time
 	rows    []shortcutBarrierRow
 	stable  map[string]bool
+	phases  map[string]map[Phase]bool
 	// Seq is used only to join observations of one logical fixture message.
 	// It and the message body are never printed or published.
 	bypass map[uint64]uint8
@@ -31,7 +34,7 @@ type shortcutBarrierRow struct {
 
 func newShortcutBarrierWitness(t *testing.T) *shortcutBarrierWitness {
 	t.Helper()
-	w := &shortcutBarrierWitness{started: time.Now(), stable: make(map[string]bool), bypass: make(map[uint64]uint8)}
+	w := &shortcutBarrierWitness{started: time.Now(), stable: make(map[string]bool), phases: make(map[string]map[Phase]bool), bypass: make(map[uint64]uint8)}
 	t.Cleanup(func() {
 		if !t.Failed() && os.Getenv("WINKYOU_FLAKE_158_WITNESS") != "1" {
 			return
@@ -115,17 +118,88 @@ func (w *shortcutBarrierWitness) accepts(signal string, dropped, matched int32) 
 }
 
 func (w *shortcutBarrierWitness) manager(event Event) {
-	if event.Status.Phase != PhaseStable {
+	if event.Status.Phase == "" {
 		return
 	}
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	node := barrierLabel(event.NodeID)
-	if w.stable[node] {
+	if w.phases[node] == nil {
+		w.phases[node] = make(map[Phase]bool)
+	}
+	if w.phases[node][event.Status.Phase] {
 		return
 	}
-	w.stable[node] = true
-	w.rows = append(w.rows, shortcutBarrierRow{time.Since(w.started).Nanoseconds(), "manager_stable", typeStable, node, "none", "none"})
+	w.phases[node][event.Status.Phase] = true
+	w.rows = append(w.rows, shortcutBarrierRow{time.Since(w.started).Nanoseconds(), "manager_phase", string(event.Status.Phase), node, "none", "none"})
+	if event.Status.Phase == PhaseStable {
+		w.stable[node] = true
+	}
+}
+
+func shortcutFailureClass(status Status) string {
+	if status.Phase == PhaseStable {
+		return "success"
+	}
+	if status.Phase == PhaseFailed {
+		failure := strings.ToLower(status.Failure)
+		switch {
+		case strings.Contains(failure, "packet neighbor liveness timeout"):
+			return "packet_neighbor_liveness_timeout"
+		case strings.Contains(failure, "packet neighbor readiness timeout"):
+			return "packet_neighbor_readiness_timeout"
+		case strings.Contains(failure, "context deadline exceeded"):
+			return "context_deadline_exceeded"
+		case strings.Contains(failure, "solver"):
+			return "solver_failure"
+		default:
+			return "attempt_failed"
+		}
+	}
+	return "not_terminal"
+}
+
+func (w *shortcutBarrierWitness) dumpFailure(t *testing.T, label string, managers map[string]*Manager, nodes map[string]*mesh.Node, broker *fakeEdgeBroker) {
+	t.Helper()
+	w.mu.Lock()
+	rows := append([]shortcutBarrierRow(nil), w.rows...)
+	w.mu.Unlock()
+	for _, row := range rows {
+		t.Logf("SHORTCUT_WITNESS relative_ns=%d kind=%s phase=%s node=%s inbound=%s next=%s", row.ns, row.kind, row.signal, row.node, row.inbound, row.next)
+	}
+	managerIDs := make([]string, 0, len(managers))
+	for id := range managers {
+		managerIDs = append(managerIDs, id)
+	}
+	sort.Strings(managerIDs)
+	for _, id := range managerIDs {
+		status, ok := managers[id].Status(findAttemptID(managers[id]))
+		if !ok {
+			t.Logf("SHORTCUT_TERMINAL manager=%s phase=unknown failure=missing_status neighbor_ready=unknown solver_terminal=unknown", id)
+			continue
+		}
+		neighborID := status.DirectPeerID
+		ready := false
+		if node := nodes[id]; node != nil && neighborID != "" {
+			_, ready = node.Neighbor(neighborID)
+		}
+		t.Logf("SHORTCUT_TERMINAL label=%s manager=%s phase=%s failure=%s neighbor_ready=%t solver_terminal=%s", label, id, status.Phase, shortcutFailureClass(status), ready, broker.solverTerminal(id))
+	}
+	for id, state := range broker.edgeStates() {
+		t.Logf("SHORTCUT_EDGE edge=%s state=%s", id, state)
+	}
+	t.Logf("SHORTCUT_FAILURE label=%s", label)
+}
+
+// The test fixtures use one attempt per manager. This helper avoids exposing
+// attempt identifiers in witness output while still selecting the sole state.
+func findAttemptID(manager *Manager) string {
+	manager.mu.Lock()
+	defer manager.mu.Unlock()
+	for id := range manager.attempts {
+		return id
+	}
+	return ""
 }
 
 func startShortcutBarrierStress(t *testing.T) {
