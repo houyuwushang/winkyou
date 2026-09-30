@@ -81,13 +81,14 @@ func TestGateB3Hard16SelectionUsesActiveMarginAfterCandidateWindow(t *testing.T)
 	left, right, closeFixture := newGateB3NATSimFixtureFor(t, "selection-margin", 11, 29)
 	defer closeFixture()
 
-	delayed := &gateB3DelayedWriteConn{Conn: right.stream, writeOrdinal: 7, delay: 2250 * time.Millisecond}
+	delayed := &gateB3DelayedWriteConn{Conn: right.stream, writeOrdinal: 7, delay: 2250 * time.Millisecond, startedAt: time.Now()}
 	right.stream = delayed
 	// The seventh responder write is the role-ordered selection status. Delay it
 	// beyond the compressed candidate window while retaining ample room inside
 	// a still-lower-than-production active envelope.
 	outcomes := runGateB3Pair(t, left, right, 10*time.Second, 2*time.Second)
 	if !delayed.triggered.Load() {
+		logGateB3SelectionWitness(t, "delayed_write_not_reached", outcomes, delayed)
 		t.Fatalf("Gate B3 selection-margin fixture did not delay the responder selection frame: writes=%d", delayed.writeCount())
 	}
 	winners := 0
@@ -97,11 +98,13 @@ func TestGateB3Hard16SelectionUsesActiveMarginAfterCandidateWindow(t *testing.T)
 			outcome.result.Emissions.CandidatePackets != hardnatbudget.Hard16CandidatePackets ||
 			outcome.result.Emissions.CarrierFramesRead != 8 || outcome.result.Emissions.CarrierFramesWrite != 8 ||
 			outcome.result.SafetyTrip.BlocksActiveWork {
+			logGateB3SelectionWitness(t, "delayed_selection_terminal", outcomes, delayed)
 			t.Fatalf("side %d delayed selection result=%+v err=%v", index, outcome.result, outcome.err)
 		}
 		winners += outcome.result.Emissions.WinnerPackets
 	}
 	if winners != 1 {
+		logGateB3SelectionWitness(t, "delayed_selection_winner_count", outcomes, delayed)
 		t.Fatalf("delayed selection winner packets=%d, want 1", winners)
 	}
 }
@@ -307,10 +310,16 @@ func TestGateB3Hard16NATSimFreshTopology100(t *testing.T) {
 }
 
 type gateB3Outcome struct {
-	result gateb.Result
-	err    error
-	stages []string
-	role   string
+	result      gateb.Result
+	err         error
+	stages      []string
+	stageEvents []gateB3StageEvent
+	role        string
+}
+
+type gateB3StageEvent struct {
+	stage      string
+	relativeNS int64
 }
 
 func runGateB3SafetyRegression(t testing.TB, mode string) []gateB3Outcome {
@@ -500,14 +509,20 @@ func runGateB3Pair(t testing.TB, left, right *gateB3Side, active, candidates tim
 	run := func(side *gateB3Side, randomSeed byte, role string, sideIndex int) {
 		clock := schedule.clock(side.now, side.network, sideIndex)
 		var stages []string
+		startedAt := time.Now()
+		var stageEvents []gateB3StageEvent
 		result, err := gateb.Run(context.Background(), gateb.Config{
 			Machine: side.machine, Ledger: side.ledger, Artifact: side.artifact, Stream: side.stream,
 			ObserverTopology: side.topology, BuildVersion: "gate-b3-natsim", ProbeFactory: schedule.factory(side.factory, sideIndex),
-			Progress: func(stage string, _ bool) error { stages = append(stages, stage); return nil },
+			Progress: func(stage string, _ bool) error {
+				stages = append(stages, stage)
+				stageEvents = append(stageEvents, gateB3StageEvent{stage: stage, relativeNS: time.Since(startedAt).Nanoseconds()})
+				return nil
+			},
 			Harness: &gateb.HarnessHooks{NoiseRandom: gateB2ObservationRandom(randomSeed + 40), ObservationRandom: gateB2ObservationRandom(randomSeed),
 				Now: clock.Now, NewTimer: clock.NewTimer, Wait: clock.Wait, ActiveEnvelope: active, CandidateWindow: candidates},
 		})
-		results <- gateB3Outcome{result: result, err: err, stages: stages, role: role}
+		results <- gateB3Outcome{result: result, err: err, stages: stages, stageEvents: stageEvents, role: role}
 	}
 	go run(left, 3, "initiator", 0)
 	go run(right, 97, "responder", 1)
@@ -554,13 +569,22 @@ type gateB3DelayedWriteConn struct {
 	writes       int
 	writeOrdinal int
 	delay        time.Duration
+	startedAt    time.Time
+	events       []gateB3WriteEvent
 	triggered    atomic.Bool
+}
+
+type gateB3WriteEvent struct {
+	ordinal    int
+	relativeNS int64
+	bytes      int
 }
 
 func (connection *gateB3DelayedWriteConn) Write(payload []byte) (int, error) {
 	connection.mu.Lock()
 	connection.writes++
 	ordinal := connection.writes
+	connection.events = append(connection.events, gateB3WriteEvent{ordinal: ordinal, relativeNS: time.Since(connection.startedAt).Nanoseconds(), bytes: len(payload)})
 	connection.mu.Unlock()
 	if ordinal == connection.writeOrdinal {
 		connection.triggered.Store(true)
@@ -573,6 +597,43 @@ func (connection *gateB3DelayedWriteConn) writeCount() int {
 	connection.mu.Lock()
 	defer connection.mu.Unlock()
 	return connection.writes
+}
+
+func (connection *gateB3DelayedWriteConn) writeEvents() []gateB3WriteEvent {
+	connection.mu.Lock()
+	defer connection.mu.Unlock()
+	return append([]gateB3WriteEvent(nil), connection.events...)
+}
+
+func gateB3FailureClass(err error) string {
+	if err == nil {
+		return "none"
+	}
+	var failure *gateb.Failure
+	if errors.As(err, &failure) && failure.Class != "" {
+		return string(failure.Class)
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return "deadline_exceeded"
+	}
+	if errors.Is(err, context.Canceled) {
+		return "canceled"
+	}
+	return fmt.Sprintf("%T", err)
+}
+
+func logGateB3SelectionWitness(t testing.TB, label string, outcomes []gateB3Outcome, delayed *gateB3DelayedWriteConn) {
+	t.Helper()
+	t.Logf("GATEB3_SELECTION_WITNESS label=%s delayed_triggered=%t writes=%d", label, delayed.triggered.Load(), delayed.writeCount())
+	for _, outcome := range outcomes {
+		t.Logf("GATEB3_SELECTION_OUTCOME role=%s error_class=%s terminal=%s candidate_packets=%d winner_packets=%d carrier_read=%d carrier_write=%d", outcome.role, gateB3FailureClass(outcome.err), outcome.result.Terminal, outcome.result.Emissions.CandidatePackets, outcome.result.Emissions.WinnerPackets, outcome.result.Emissions.CarrierFramesRead, outcome.result.Emissions.CarrierFramesWrite)
+		for _, event := range outcome.stageEvents {
+			t.Logf("GATEB3_SELECTION_STAGE role=%s stage=%s relative_ns=%d", outcome.role, event.stage, event.relativeNS)
+		}
+	}
+	for _, event := range delayed.writeEvents() {
+		t.Logf("GATEB3_SELECTION_WRITE ordinal=%d relative_ns=%d payload_bytes=%d", event.ordinal, event.relativeNS, event.bytes)
+	}
 }
 
 func (datagram *gateB3CandidateFaultDatagram) WriteTo(ctx context.Context, packet []byte, target netip.AddrPort) (int, error) {
