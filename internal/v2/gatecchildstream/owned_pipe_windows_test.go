@@ -178,6 +178,14 @@ func TestWindowsPipeCloseInjectedBlockingReaderBounded(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("Windows pipe read did not join after close release")
 	}
+	select {
+	case <-stream.opsDrained:
+	case <-time.After(time.Second):
+		t.Fatal("close worker did not complete the operation drain witness")
+	}
+	if secondErr := stream.Close(); !errors.Is(secondErr, ErrDrain) {
+		t.Fatalf("second Stream.Close error=%v, want first ErrDrain result", secondErr)
+	}
 }
 
 // blockingWindowsPipeReader keeps the underlying real synchronous pipe read
