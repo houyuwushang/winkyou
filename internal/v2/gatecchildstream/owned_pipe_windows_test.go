@@ -87,6 +87,62 @@ func TestWindowsPipeKeepsCloseBasedCancellationWithoutNativeDeadlines(t *testing
 	}
 }
 
+// TestWindowsPipeCloseReturnsBoundedDrainError is the production-regression
+// contract for a synchronous Windows pipe. The peer stays open and silent so
+// a Close implementation that waits synchronously for the in-flight ReadFile
+// cannot hide behind peer EOF. The pre-fix implementation must RED here.
+func TestWindowsPipeCloseReturnsBoundedDrainError(t *testing.T) {
+	input, peer, err := os.Pipe()
+	if err != nil {
+		t.Fatal("owned pipe unavailable")
+	}
+	defer peer.Close()
+	defer input.Close()
+	absolute := time.Now().Add(5 * time.Second)
+	if err := input.SetReadDeadline(absolute); !errors.Is(err, os.ErrNoDeadline) {
+		t.Fatal("synchronous Windows pipe deadline precondition changed")
+	}
+	stream, err := New(input, &memoryWriteCloser{}, absolute)
+	if err != nil {
+		t.Fatal("existing Windows pipe rejected")
+	}
+	defer stream.Close()
+	go func() { _, _ = stream.Read(make([]byte, 1)) }()
+	if !waitForWindowsPipeReadSyscall(t) {
+		t.Fatal("real Windows pipe read was not observed")
+	}
+
+	closeErr, timedOut, syscallCount := closeWithWitness(stream, peer, DrainTimeout+500*time.Millisecond)
+	t.Logf("CHILDSTREAM_CLOSE_BOUNDARY timed_out=%t syscall_goroutines=%d close_err=err_drain drained=%t", timedOut, syscallCount, stream.Witness().Drained)
+	if timedOut {
+		t.Fatal("Stream.Close exceeded DrainTimeout plus 500ms")
+	}
+	if !errors.Is(closeErr, ErrDrain) {
+		t.Fatalf("Stream.Close error=%v, want ErrDrain", closeErr)
+	}
+	if stream.Witness().Drained {
+		t.Fatal("Stream.Close reported drained after the bounded drain failure")
+	}
+}
+
+func waitForWindowsPipeReadSyscall(t *testing.T) bool {
+	t.Helper()
+	buffer := make([]byte, 64<<10)
+	defer clear(buffer)
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		n := runtime.Stack(buffer, true)
+		for _, stack := range strings.Split(string(buffer[:n]), "\n\n") {
+			if strings.Contains(stack, "[syscall]") && strings.Contains(stack, "syscall.SyscallN(") &&
+				strings.Contains(stack, "winkyou/internal/v2/gatecchildstream.(*Stream).Read(") {
+				return true
+			}
+		}
+		time.Sleep(time.Millisecond)
+	}
+	return false
+}
+
 type windowsPipeInfo struct {
 	fileTypePipe  bool
 	namedPipeInfo bool
