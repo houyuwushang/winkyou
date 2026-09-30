@@ -94,3 +94,11 @@ were reverted before the production commit was finalized:
 
 The similarly named `sshassembly.Stream.Close` calls are a different stream
 type and are outside this fix's authorized scope; they were not changed.
+
+## Static validation
+
+With the Go 1.23.1 toolchain, `go vet ./...`,
+`go test ./internal/architecture`, and
+`GOOS=linux CGO_ENABLED=0 go vet ./...` completed without diagnostics. The
+architecture package test completed in 45.211s. No configuration, workflow,
+dependency, or frozen timeout was changed.
