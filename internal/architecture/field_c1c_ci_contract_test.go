@@ -9,16 +9,18 @@ import (
 )
 
 func TestFieldC1cRequiredCIBudgetAndAuthority(t *testing.T) {
-	// The baseline preparation/build measurement is CI run 35594822353;
-	// symbols and focused race are the first local measurements, not field I/O.
+	// The baseline preparation/build measurement is CI run 35594822353.
+	// The expanded unit race was measured locally after adding cmd/wink/cmd,
+	// internal/governor, and internal/v2/gatecorchestrator: 343s wall clock.
+	// These are build/unit measurements only, not field I/O.
 	const baselinePreparation = 63 * time.Second
 	const symbolProof = 56 * time.Second
 	const secondBuild = 23 * time.Second
-	const focusedRace = 21 * time.Second
+	const expandedUnitRace = 343 * time.Second
 	const isolatedMatrix = 4 * time.Minute
-	budget := (baselinePreparation + symbolProof + secondBuild + focusedRace + isolatedMatrix) * 5 / 4
+	budget := (baselinePreparation + symbolProof + secondBuild + expandedUnitRace + isolatedMatrix) * 5 / 4
 	minutes := int((budget + time.Minute - 1) / time.Minute)
-	if minutes != 9 {
+	if minutes != 16 {
 		t.Fatal("field proof CI derivation changed")
 	}
 	data, err := os.ReadFile(filepath.Join(repositoryRoot(t), ".github", "workflows", "field-c1c.yml"))
@@ -26,9 +28,10 @@ func TestFieldC1cRequiredCIBudgetAndAuthority(t *testing.T) {
 		t.Fatal("field proof workflow missing")
 	}
 	source := strings.ReplaceAll(string(data), "\r\n", "\n")
-	for _, required := range []string{"timeout-minutes: 9", "WINKYOU_FIELD_C1C_REQUIRED=1", "-test.timeout=4m", "-test.count=1",
+	for _, required := range []string{"timeout-minutes: 16", "WINKYOU_FIELD_C1C_REQUIRED=1", "-test.timeout=4m", "-test.count=1",
 		"go build -race -buildvcs=true -tags=fieldc1c", "-X winkyou/internal/v2/fieldc1c.BuildSHA=", "-tags=natlab,c1bproof,fieldc1c",
-		"run_gate_b3_required_linux.sh", "WINKYOU_GATE_B3_DISPOSABLE_RUNNER=github-hosted", "go-version-file: go.mod"} {
+		"run_gate_b3_required_linux.sh", "WINKYOU_GATE_B3_DISPOSABLE_RUNNER=github-hosted", "go-version-file: go.mod",
+		"./cmd/wink/cmd", "./internal/governor", "./internal/v2/gatecorchestrator"} {
 		if !strings.Contains(source, required) {
 			t.Fatalf("missing field CI contract %s", required)
 		}

@@ -703,19 +703,6 @@ func fmtMutationName(body string) string {
 	return strconv.FormatUint(uint64(digest[0])<<8|uint64(digest[1]), 16)
 }
 
-// No workflow delta: the existing required architecture job executes these
-// field-tagged offline unit cases as well as its symbol/mutation checks.
-func TestFieldC1cReadOnlyToolUnitProof(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
-	defer cancel()
-	command := exec.CommandContext(ctx, "go", "test", "-race", "-tags=fieldc1c", "./cmd/wink/cmd", "./internal/governor", "./internal/v2/gatecorchestrator", "./internal/v2/fieldc1c", "-run", "^TestFieldTools", "-count=1")
-	command.Dir = repositoryRoot(t)
-	start := time.Now()
-	if output, err := command.CombinedOutput(); err != nil {
-		fieldSymbolFailure(t, ctx, "read_only_units", start, output)
-	}
-}
-
 func TestFieldC1cBinarySymbolIsolation(t *testing.T) {
 	for _, tags := range []string{"", "c1bproof", "natlab", "fieldc1c"} {
 		t.Run("tags="+tags, func(t *testing.T) {

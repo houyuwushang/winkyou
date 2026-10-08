@@ -11,9 +11,11 @@ jobs:
   field-c1c:
     name: Field C1c Exact Build (required)
     runs-on: ubuntu-latest
+    # The expanded field unit race (including cmd/wink/cmd, governor, and
+    # gatecorchestrator) measured 343s on the maintainer validation host.
     # ceil((63 baseline prep + 56 symbol proof + 23 second build +
-    #       21 focused race + 240 isolated matrix) * 1.25 / 60) = 9.
-    timeout-minutes: 9
+    #       343 expanded unit race + 240 isolated matrix) * 1.25 / 60) = 16.
+    timeout-minutes: 16
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -44,7 +46,7 @@ jobs:
       - name: Vet the sealed build and prove field-only unit boundaries
         run: |
           go vet -tags=fieldc1c,natlab,c1bproof ./...
-          go test -race -tags=fieldc1c ./internal/v2/fieldc1c ./internal/probeio ./internal/v2/sshassembly ./pkg/netif ./pkg/tunnel -run '^Test(Instance|Field)' -count=20
+          go test -race -tags=fieldc1c ./internal/v2/fieldc1c ./internal/probeio ./internal/v2/sshassembly ./pkg/netif ./pkg/tunnel ./cmd/wink/cmd ./internal/governor ./internal/v2/gatecorchestrator -run '^Test(Instance|Field)' -count=20
           go test ./internal/architecture -run '^TestFieldC1c' -count=1
 
       - name: Build exact field image and isolated race harness
