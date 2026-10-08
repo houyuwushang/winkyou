@@ -322,6 +322,7 @@ func TestShortcutReconcilesDroppedPacketBarrierSignal(t *testing.T) {
 			defer cancel()
 
 			broker := newFakeEdgeBroker()
+			broker.instrumentPacketWitness(witness)
 			factory := func(spec AttemptSpec) (solver.Strategy, error) { return newFakeEdgeStrategy(spec, broker), nil }
 			base := Config{
 				StrategyName: fakeEdgeStrategyName, Probation: testCase.probation, SolveTimeout: time.Second,
@@ -343,10 +344,13 @@ func TestShortcutReconcilesDroppedPacketBarrierSignal(t *testing.T) {
 					}
 				}
 			}
+			base.PacketNeighbor = barrierManagerPacketConfig(packetConfig, witness, "A")
 			base.Node, base.StrategyFactory = nodeA, factory
 			managerA := newTestManager(t, base)
+			base.PacketNeighbor = barrierManagerPacketConfig(packetConfig, witness, "B")
 			base.Node, base.StrategyFactory = nodeB, nil
 			managerB := newTestManager(t, base)
+			base.PacketNeighbor = barrierManagerPacketConfig(packetConfig, witness, "C")
 			base.Node, base.StrategyFactory = nodeC, factory
 			managerC := newTestManager(t, base)
 
@@ -473,6 +477,64 @@ type dropFirstShortcutSignalTransport struct {
 	dropped    atomic.Int32
 	witness    *shortcutBarrierWitness
 	hop        string
+}
+
+type measuredShortcutPacketTransport struct {
+	transport.PacketTransport
+	endpoint  string
+	witness   *shortcutBarrierWitness
+	lastRead  atomic.Int64
+	lastWrite atomic.Int64
+}
+
+func (t *measuredShortcutPacketTransport) ReadPacket(ctx context.Context, dst []byte) (int, transport.PacketMeta, error) {
+	n, meta, err := t.PacketTransport.ReadPacket(ctx, dst)
+	if err == nil {
+		now := time.Now().UnixNano()
+		previous := t.lastRead.Swap(now)
+		if previous > 0 {
+			t.witness.recordPacketGap(t.endpoint, "read", time.Duration(now-previous))
+		}
+	}
+	return n, meta, err
+}
+
+func (t *measuredShortcutPacketTransport) WritePacket(ctx context.Context, packet []byte) error {
+	err := t.PacketTransport.WritePacket(ctx, packet)
+	if err == nil {
+		now := time.Now().UnixNano()
+		previous := t.lastWrite.Swap(now)
+		if previous > 0 {
+			t.witness.recordPacketGap(t.endpoint, "write", time.Duration(now-previous))
+		}
+	}
+	return err
+}
+
+func (t *measuredShortcutPacketTransport) isClosed() bool {
+	if inner, ok := t.PacketTransport.(interface{ isClosed() bool }); ok {
+		return inner.isClosed()
+	}
+	return false
+}
+
+func (b *fakeEdgeBroker) instrumentPacketWitness(witness *shortcutBarrierWitness) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	for endpoint, packetTransport := range b.transports {
+		b.transports[endpoint] = &measuredShortcutPacketTransport{
+			PacketTransport: packetTransport,
+			endpoint:        endpoint,
+			witness:         witness,
+		}
+	}
+}
+
+func barrierManagerPacketConfig(config mesh.PacketNeighborConfig, witness *shortcutBarrierWitness, nodeID string) mesh.PacketNeighborConfig {
+	config.OnClose = func(peerID string, cause error) {
+		witness.recordPacketClose(nodeID, peerID, cause)
+	}
+	return config
 }
 
 func (t *dropFirstShortcutSignalTransport) WritePacket(ctx context.Context, packet []byte) error {
@@ -614,6 +676,8 @@ func (b *fakeEdgeBroker) edgeStates() map[string]string {
 		case *shortcutMemoryPacketTransport:
 			closed = typed.isClosed()
 		case *gatedShortcutPacketTransport:
+			closed = typed.isClosed()
+		case *measuredShortcutPacketTransport:
 			closed = typed.isClosed()
 		}
 		if closed {
