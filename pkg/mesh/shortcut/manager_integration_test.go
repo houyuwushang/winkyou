@@ -73,7 +73,7 @@ func TestShortcutKeepsDirectEdgeUnroutedAndFallsBackDuringProbation(t *testing.T
 			Node: node, StrategyName: fakeEdgeStrategyName, Probation: 2 * time.Second,
 			SolveTimeout: 2 * time.Second,
 			PacketNeighbor: mesh.PacketNeighborConfig{
-				KeepAliveInterval: 20 * time.Millisecond, PeerTimeout: 120 * time.Millisecond,
+				KeepAliveInterval: 20 * time.Millisecond, PeerTimeout: shortcutBarrierPeerTimeout,
 				ReadPollInterval: 20 * time.Millisecond, WriteTimeout: 100 * time.Millisecond,
 			},
 		}
@@ -147,9 +147,9 @@ func TestShortcutBecomesStableAfterProbation(t *testing.T) {
 	broker := newFakeEdgeBroker()
 	factory := func(spec AttemptSpec) (solver.Strategy, error) { return newFakeEdgeStrategy(spec, broker), nil }
 	base := Config{
-		StrategyName: fakeEdgeStrategyName, Probation: 150 * time.Millisecond, SolveTimeout: time.Second,
+		StrategyName: fakeEdgeStrategyName, Probation: shortcutBarrierPeerTimeout, SolveTimeout: time.Second,
 		PacketNeighbor: mesh.PacketNeighborConfig{
-			KeepAliveInterval: 10 * time.Millisecond, PeerTimeout: 100 * time.Millisecond,
+			KeepAliveInterval: 10 * time.Millisecond, PeerTimeout: shortcutBarrierPeerTimeout,
 			ReadPollInterval: 10 * time.Millisecond, WriteTimeout: 100 * time.Millisecond,
 		},
 	}
@@ -213,12 +213,12 @@ func TestShortcutReportsInstalledOnlyAfterPacketNeighborReady(t *testing.T) {
 	factory := func(spec AttemptSpec) (solver.Strategy, error) { return newFakeEdgeStrategy(spec, broker), nil }
 	base := Config{
 		StrategyName: fakeEdgeStrategyName,
-		Probation:    150 * time.Millisecond,
+		Probation:    shortcutBarrierPeerTimeout,
 		SolveTimeout: time.Second,
 		OnEvent:      witness.manager,
 		PacketNeighbor: mesh.PacketNeighborConfig{
 			KeepAliveInterval: 10 * time.Millisecond,
-			PeerTimeout:       50 * time.Millisecond,
+			PeerTimeout:       shortcutBarrierPeerTimeout,
 			ReadPollInterval:  10 * time.Millisecond,
 			WriteTimeout:      500 * time.Millisecond,
 		},
@@ -276,7 +276,7 @@ func TestShortcutReconcilesDroppedPacketBarrierSignal(t *testing.T) {
 		probation            time.Duration
 		cutBootstrapAtStable bool
 	}{
-		{name: "first commit", signalType: typeCommit, dropAt: "B", probation: 150 * time.Millisecond},
+		{name: "first commit", signalType: typeCommit, dropAt: "B", probation: shortcutBarrierPeerTimeout},
 		{name: "first stable after initial delivery window", signalType: typeStable, dropAt: "A", probation: 1500 * time.Millisecond},
 		{name: "stable through new direct edge", signalType: typeStable, dropAt: "A", probation: 1500 * time.Millisecond, cutBootstrapAtStable: true},
 	}
@@ -299,8 +299,9 @@ func TestShortcutReconcilesDroppedPacketBarrierSignal(t *testing.T) {
 				dropper.PacketTransport = transportB
 				transportB = dropper
 			}
+			peerTimeout := shortcutBarrierPeerTimeout
 			packetConfig := mesh.PacketNeighborConfig{
-				KeepAliveInterval: 10 * time.Millisecond, PeerTimeout: 100 * time.Millisecond,
+				KeepAliveInterval: 10 * time.Millisecond, PeerTimeout: peerTimeout,
 				ReadPollInterval: 10 * time.Millisecond, WriteTimeout: 100 * time.Millisecond,
 			}
 			if err := nodeA.AttachPacketTransport("B", transportA, packetConfig); err != nil {
@@ -322,6 +323,7 @@ func TestShortcutReconcilesDroppedPacketBarrierSignal(t *testing.T) {
 			defer cancel()
 
 			broker := newFakeEdgeBroker()
+			broker.instrumentPacketWitness(witness)
 			factory := func(spec AttemptSpec) (solver.Strategy, error) { return newFakeEdgeStrategy(spec, broker), nil }
 			base := Config{
 				StrategyName: fakeEdgeStrategyName, Probation: testCase.probation, SolveTimeout: time.Second,
@@ -343,10 +345,13 @@ func TestShortcutReconcilesDroppedPacketBarrierSignal(t *testing.T) {
 					}
 				}
 			}
+			base.PacketNeighbor = barrierManagerPacketConfig(packetConfig, witness, "A")
 			base.Node, base.StrategyFactory = nodeA, factory
 			managerA := newTestManager(t, base)
+			base.PacketNeighbor = barrierManagerPacketConfig(packetConfig, witness, "B")
 			base.Node, base.StrategyFactory = nodeB, nil
 			managerB := newTestManager(t, base)
+			base.PacketNeighbor = barrierManagerPacketConfig(packetConfig, witness, "C")
 			base.Node, base.StrategyFactory = nodeC, factory
 			managerC := newTestManager(t, base)
 
@@ -384,6 +389,28 @@ func TestShortcutReconcilesDroppedPacketBarrierSignal(t *testing.T) {
 			}, "barrier counts require a drop and replay or a complete witnessed reroute")
 			t.Logf("BARRIER_OUTCOME dropped=%d matched=%d bypass_a_c_b=%t", dropper.dropped.Load(), dropper.matched.Load(), witness.stableBypassedBootstrap())
 		})
+	}
+}
+
+const (
+	// The witness batch under GOMAXPROCS=2 plus two busy workers measured a
+	// maximum packet receive gap of 47.2091 ms (race, 20 fresh runs). Round up
+	// to 50 ms, then retain a fivefold fixture-only scheduler margin. This is
+	// deliberately above the 100 ms budget implicated by the hosted liveness
+	// timeout, while leaving product defaults untouched.
+	shortcutBarrierMeasuredMaxGap = 50 * time.Millisecond
+	shortcutBarrierPeerTimeout    = 5 * shortcutBarrierMeasuredMaxGap
+)
+
+func TestShortcutBarrierPeerTimeoutBudget(t *testing.T) {
+	if shortcutBarrierMeasuredMaxGap != 50*time.Millisecond {
+		t.Fatalf("measured barrier gap = %s, want 50ms rounded ceiling", shortcutBarrierMeasuredMaxGap)
+	}
+	if shortcutBarrierPeerTimeout != 250*time.Millisecond {
+		t.Fatalf("barrier peer timeout = %s, want 250ms derived fixture budget", shortcutBarrierPeerTimeout)
+	}
+	if shortcutBarrierPeerTimeout <= 100*time.Millisecond {
+		t.Fatalf("barrier peer timeout = %s, must exceed the old 100ms budget", shortcutBarrierPeerTimeout)
 	}
 }
 
@@ -473,6 +500,64 @@ type dropFirstShortcutSignalTransport struct {
 	dropped    atomic.Int32
 	witness    *shortcutBarrierWitness
 	hop        string
+}
+
+type measuredShortcutPacketTransport struct {
+	transport.PacketTransport
+	endpoint  string
+	witness   *shortcutBarrierWitness
+	lastRead  atomic.Int64
+	lastWrite atomic.Int64
+}
+
+func (t *measuredShortcutPacketTransport) ReadPacket(ctx context.Context, dst []byte) (int, transport.PacketMeta, error) {
+	n, meta, err := t.PacketTransport.ReadPacket(ctx, dst)
+	if err == nil {
+		now := time.Now().UnixNano()
+		previous := t.lastRead.Swap(now)
+		if previous > 0 {
+			t.witness.recordPacketGap(t.endpoint, "read", time.Duration(now-previous))
+		}
+	}
+	return n, meta, err
+}
+
+func (t *measuredShortcutPacketTransport) WritePacket(ctx context.Context, packet []byte) error {
+	err := t.PacketTransport.WritePacket(ctx, packet)
+	if err == nil {
+		now := time.Now().UnixNano()
+		previous := t.lastWrite.Swap(now)
+		if previous > 0 {
+			t.witness.recordPacketGap(t.endpoint, "write", time.Duration(now-previous))
+		}
+	}
+	return err
+}
+
+func (t *measuredShortcutPacketTransport) isClosed() bool {
+	if inner, ok := t.PacketTransport.(interface{ isClosed() bool }); ok {
+		return inner.isClosed()
+	}
+	return false
+}
+
+func (b *fakeEdgeBroker) instrumentPacketWitness(witness *shortcutBarrierWitness) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	for endpoint, packetTransport := range b.transports {
+		b.transports[endpoint] = &measuredShortcutPacketTransport{
+			PacketTransport: packetTransport,
+			endpoint:        endpoint,
+			witness:         witness,
+		}
+	}
+}
+
+func barrierManagerPacketConfig(config mesh.PacketNeighborConfig, witness *shortcutBarrierWitness, nodeID string) mesh.PacketNeighborConfig {
+	config.OnClose = func(peerID string, cause error) {
+		witness.recordPacketClose(nodeID, peerID, cause)
+	}
+	return config
 }
 
 func (t *dropFirstShortcutSignalTransport) WritePacket(ctx context.Context, packet []byte) error {
@@ -614,6 +699,8 @@ func (b *fakeEdgeBroker) edgeStates() map[string]string {
 		case *shortcutMemoryPacketTransport:
 			closed = typed.isClosed()
 		case *gatedShortcutPacketTransport:
+			closed = typed.isClosed()
+		case *measuredShortcutPacketTransport:
 			closed = typed.isClosed()
 		}
 		if closed {
