@@ -147,9 +147,9 @@ func TestShortcutBecomesStableAfterProbation(t *testing.T) {
 	broker := newFakeEdgeBroker()
 	factory := func(spec AttemptSpec) (solver.Strategy, error) { return newFakeEdgeStrategy(spec, broker), nil }
 	base := Config{
-		StrategyName: fakeEdgeStrategyName, Probation: 150 * time.Millisecond, SolveTimeout: time.Second,
+		StrategyName: fakeEdgeStrategyName, Probation: shortcutBarrierPeerTimeout, SolveTimeout: time.Second,
 		PacketNeighbor: mesh.PacketNeighborConfig{
-			KeepAliveInterval: 10 * time.Millisecond, PeerTimeout: 100 * time.Millisecond,
+			KeepAliveInterval: 10 * time.Millisecond, PeerTimeout: shortcutBarrierPeerTimeout,
 			ReadPollInterval: 10 * time.Millisecond, WriteTimeout: 100 * time.Millisecond,
 		},
 	}
@@ -213,12 +213,12 @@ func TestShortcutReportsInstalledOnlyAfterPacketNeighborReady(t *testing.T) {
 	factory := func(spec AttemptSpec) (solver.Strategy, error) { return newFakeEdgeStrategy(spec, broker), nil }
 	base := Config{
 		StrategyName: fakeEdgeStrategyName,
-		Probation:    150 * time.Millisecond,
+		Probation:    shortcutBarrierPeerTimeout,
 		SolveTimeout: time.Second,
 		OnEvent:      witness.manager,
 		PacketNeighbor: mesh.PacketNeighborConfig{
 			KeepAliveInterval: 10 * time.Millisecond,
-			PeerTimeout:       50 * time.Millisecond,
+			PeerTimeout:       shortcutBarrierPeerTimeout,
 			ReadPollInterval:  10 * time.Millisecond,
 			WriteTimeout:      500 * time.Millisecond,
 		},
@@ -276,7 +276,7 @@ func TestShortcutReconcilesDroppedPacketBarrierSignal(t *testing.T) {
 		probation            time.Duration
 		cutBootstrapAtStable bool
 	}{
-		{name: "first commit", signalType: typeCommit, dropAt: "B", probation: 150 * time.Millisecond},
+		{name: "first commit", signalType: typeCommit, dropAt: "B", probation: shortcutBarrierPeerTimeout},
 		{name: "first stable after initial delivery window", signalType: typeStable, dropAt: "A", probation: 1500 * time.Millisecond},
 		{name: "stable through new direct edge", signalType: typeStable, dropAt: "A", probation: 1500 * time.Millisecond, cutBootstrapAtStable: true},
 	}
@@ -299,10 +299,7 @@ func TestShortcutReconcilesDroppedPacketBarrierSignal(t *testing.T) {
 				dropper.PacketTransport = transportB
 				transportB = dropper
 			}
-			peerTimeout := 100 * time.Millisecond
-			if testCase.signalType == typeStable {
-				peerTimeout = shortcutBarrierPeerTimeout
-			}
+			peerTimeout := shortcutBarrierPeerTimeout
 			packetConfig := mesh.PacketNeighborConfig{
 				KeepAliveInterval: 10 * time.Millisecond, PeerTimeout: peerTimeout,
 				ReadPollInterval: 10 * time.Millisecond, WriteTimeout: 100 * time.Millisecond,

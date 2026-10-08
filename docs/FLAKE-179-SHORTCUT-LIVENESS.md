@@ -33,6 +33,20 @@ The witness must retain the terminal failure class and the observed gap so a
 future recurrence can distinguish liveness starvation from a missing barrier
 signal.
 
+## Review supplement: shared fixture budget
+
+The review-required packet-neighbor path now uses the single derived
+`shortcutBarrierPeerTimeout` constant for both `PeerTimeout` and the three
+short-probation fixtures that previously used a 150 ms `Probation` value:
+`TestShortcutBecomesStableAfterProbation`,
+`TestShortcutReportsInstalledOnlyAfterPacketNeighborReady`, and the `first
+commit` case in `TestShortcutReconcilesDroppedPacketBarrierSignal`. The
+probation floor is therefore 250 ms, matching the measured-gap derivation;
+the two long-probation cases and all other fixture parameters are unchanged.
+
+This is a test-only scheduler budget correction. It does not alter mesh
+defaults, production timeouts, or any frozen product envelope.
+
 ## Measurement and derivation
 
 The added witness was run with `GOMAXPROCS=2`, two busy workers, and the race
