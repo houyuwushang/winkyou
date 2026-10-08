@@ -73,7 +73,7 @@ func TestShortcutKeepsDirectEdgeUnroutedAndFallsBackDuringProbation(t *testing.T
 			Node: node, StrategyName: fakeEdgeStrategyName, Probation: 2 * time.Second,
 			SolveTimeout: 2 * time.Second,
 			PacketNeighbor: mesh.PacketNeighborConfig{
-				KeepAliveInterval: 20 * time.Millisecond, PeerTimeout: 120 * time.Millisecond,
+				KeepAliveInterval: 20 * time.Millisecond, PeerTimeout: shortcutBarrierPeerTimeout,
 				ReadPollInterval: 20 * time.Millisecond, WriteTimeout: 100 * time.Millisecond,
 			},
 		}
