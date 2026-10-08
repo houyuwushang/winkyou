@@ -299,8 +299,12 @@ func TestShortcutReconcilesDroppedPacketBarrierSignal(t *testing.T) {
 				dropper.PacketTransport = transportB
 				transportB = dropper
 			}
+			peerTimeout := 100 * time.Millisecond
+			if testCase.signalType == typeStable {
+				peerTimeout = shortcutBarrierPeerTimeout
+			}
 			packetConfig := mesh.PacketNeighborConfig{
-				KeepAliveInterval: 10 * time.Millisecond, PeerTimeout: 100 * time.Millisecond,
+				KeepAliveInterval: 10 * time.Millisecond, PeerTimeout: peerTimeout,
 				ReadPollInterval: 10 * time.Millisecond, WriteTimeout: 100 * time.Millisecond,
 			}
 			if err := nodeA.AttachPacketTransport("B", transportA, packetConfig); err != nil {
@@ -388,6 +392,28 @@ func TestShortcutReconcilesDroppedPacketBarrierSignal(t *testing.T) {
 			}, "barrier counts require a drop and replay or a complete witnessed reroute")
 			t.Logf("BARRIER_OUTCOME dropped=%d matched=%d bypass_a_c_b=%t", dropper.dropped.Load(), dropper.matched.Load(), witness.stableBypassedBootstrap())
 		})
+	}
+}
+
+const (
+	// The witness batch under GOMAXPROCS=2 plus two busy workers measured a
+	// maximum packet receive gap of 47.2091 ms (race, 20 fresh runs). Round up
+	// to 50 ms, then retain a fivefold fixture-only scheduler margin. This is
+	// deliberately above the 100 ms budget implicated by the hosted liveness
+	// timeout, while leaving product defaults untouched.
+	shortcutBarrierMeasuredMaxGap = 50 * time.Millisecond
+	shortcutBarrierPeerTimeout    = 5 * shortcutBarrierMeasuredMaxGap
+)
+
+func TestShortcutBarrierPeerTimeoutBudget(t *testing.T) {
+	if shortcutBarrierMeasuredMaxGap != 50*time.Millisecond {
+		t.Fatalf("measured barrier gap = %s, want 50ms rounded ceiling", shortcutBarrierMeasuredMaxGap)
+	}
+	if shortcutBarrierPeerTimeout != 250*time.Millisecond {
+		t.Fatalf("barrier peer timeout = %s, want 250ms derived fixture budget", shortcutBarrierPeerTimeout)
+	}
+	if shortcutBarrierPeerTimeout <= 100*time.Millisecond {
+		t.Fatalf("barrier peer timeout = %s, must exceed the old 100ms budget", shortcutBarrierPeerTimeout)
 	}
 }
 

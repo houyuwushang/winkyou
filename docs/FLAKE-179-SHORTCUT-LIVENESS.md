@@ -33,6 +33,21 @@ The witness must retain the terminal failure class and the observed gap so a
 future recurrence can distinguish liveness starvation from a missing barrier
 signal.
 
+## Measurement and derivation
+
+The added witness was run with `GOMAXPROCS=2`, two busy workers, and the race
+detector for 20 fresh executions of the affected subtest. The maximum observed
+receive gap was 47.2091 ms (write gap was lower); the fixture rounds that
+measurement up to 50 ms. The hosted first-red already proves that a 100 ms
+peer budget can lose the session under the full-suite Windows scheduler, so a
+fivefold fixture-only margin is used:
+
+`50 ms measured ceiling × 5 = 250 ms PeerTimeout`.
+
+This changes only the barrier test's `PacketNeighborConfig`; the mesh package
+and all product defaults remain unchanged. The budget formula is locked by
+`TestShortcutBarrierPeerTimeoutBudget`.
+
 ## Verification plan
 
 1. Run the original package/full-suite command with the stress environment
