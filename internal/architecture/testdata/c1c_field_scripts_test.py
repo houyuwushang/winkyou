@@ -143,6 +143,14 @@ class FakeFS:
 
 
 def init_checks(scope):
+    # These are deliberately asserted before implementation: the init script
+    # must understand the real cobra stderr JSON shape and expose the durable
+    # recovery/marker contract without deleting any persisted input.
+    ready = scope["parse_setup_output"](b"noise\n{\n  \"state\": \"ready\",\n  \"ready\": true\n}\n")
+    check(ready["state"] == "ready" and ready["ready"] is True, "cobra_stderr_json_golden")
+    rejected(lambda: scope["parse_setup_output"](b"{\"state\":\"missing\",\"ready\":false}\n"), "setup_not_ready_rejected")
+    check(scope["setup_output_name"]("20261010T010203Z").startswith("setup-20261010T010203Z"), "setup_unique_name")
+    check("remove_failed_copies" not in scope and "os.unlink(" not in scope["SETUP"], "init_no_delete_helper")
     for args in ([], ["unknown"], ["initiator", "extra"], ["../responder"]):
         rejected(lambda: scope["role_arg"](args), "init_args_rejected")
     check(scope["role_arg"](["responder"]) == "responder", "init_role")
