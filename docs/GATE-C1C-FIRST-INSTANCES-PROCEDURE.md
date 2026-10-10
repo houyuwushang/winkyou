@@ -1033,3 +1033,4 @@ campaign 的现有对象方法又要求 owner。本轮允许在 governor 增加 
 `go vet ./...`、相对链接检查、模板顶层 89 字段与原目录逐项比对、`git diff --check`。
 docs 隐私门自动遍历 docs 下全部文件，不加豁免；不跑现场命令/生成器/host helper。
 CI 首跑另列，首次 RED 保留，不 rerun 求绿。Draft PR 未合并，等待独立复审。
+> U2 update (2026-10-09): init idempotency and retained-partial recovery are implemented in [PR #190](https://github.com/houyuwushang/winkyou/pull/190); the first field half-product remains the recovery fixture and is not deleted or reset.
