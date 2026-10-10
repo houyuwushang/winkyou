@@ -230,6 +230,7 @@ def parse_setup_output(payload):
             continue
         if isinstance(value, dict) and value.get("state") == "ready" and value.get("ready") is True:
             return value
+        raise ValueError("setup_not_ready")
     raise ValueError("setup_not_ready")
 
 

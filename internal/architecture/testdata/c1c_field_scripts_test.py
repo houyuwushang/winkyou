@@ -148,7 +148,7 @@ def init_checks(scope):
     ready = scope["parse_setup_output"](b"cobra warning\n{\n  \"state\": \"ready\",\n  \"ready\": true\n}\n")
     check(ready["state"] == "ready" and ready["ready"] is True, "cobra_stderr_json_golden")
     check(scope["parse_setup_output"](b'{"state":"ready","ready":true}\n')["ready"] is True, "setup_compact_json")
-    for payload in (b"{\"state\":\"missing\",\"ready\":false}\n", b"", b"{\"state\":\"ready\",\"ready\":false}\n"):
+    for payload in (b"{\"state\":\"missing\",\"ready\":false}\n", b"", b"{\"state\":\"ready\",\"ready\":false}\n", b"{\"state\":\"missing\"}\n{\"state\":\"ready\",\"ready\":true}\n"):
         rejected(lambda payload=payload: scope["parse_setup_output"](payload), "setup_not_ready_rejected")
     check(scope["setup_output_name"]("20261010T010203Z") == "setup-20261010T010203Z.json", "setup_unique_name")
     check("remove_failed_copies" not in scope and all(token not in scope["SETUP"] for token in ("os.unlink(", "os.rmdir(", "os.remove(", "shutil")), "init_no_delete_helper")
