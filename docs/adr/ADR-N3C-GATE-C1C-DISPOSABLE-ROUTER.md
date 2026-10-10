@@ -660,6 +660,8 @@ credential/attempt/machine 标识、云账号/区域、设备属性或原始日�
 
 ## 7. 后续验收门与裁决
 
+**维护者裁决 B（2026-10-09）**：现场 init 工具必须幂等并能从保留的半成品恢复；持久身份原料一旦写入永不由脚本删除或改写，以唯一完成标记判定，setup stdout/stderr 合并保留根因；首个现场半成品作为恢复用例，不删除、不重置。
+
 - C1c-1：既有全 docs/template 隐私门、相对链接、vet、architecture；纯文档delta。
 - C1c-2：另行授权、exact build、普通符号零命中、capability mutation、全部既有预算/回归；
   无现场 I/O；所有 root/Wintun/observer、M/E 可观测性缺口先复审，不以文档代替实现。

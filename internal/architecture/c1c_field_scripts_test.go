@@ -13,7 +13,7 @@ import (
 )
 
 var c1cFieldScriptContracts = map[string][]string{
-	"endpoint-init":   {`ROOT = "/root/.winkyou-field/c1c"`, `ROLES = ("initiator", "responder")`, `os.umask(0o077)`, `os.O_EXCL`, `already_initialized`, `install_hash_mismatch`, `root:x:19000:0:99999:7:::`, `setup-machine-scope`, `"var-lib"`, `C1C_INIT`},
+	"endpoint-init":   {`ROOT = "/root/.winkyou-field/c1c"`, `ROLES = ("initiator", "responder")`, `os.umask(0o077)`, `os.O_EXCL`, `already_initialized`, `image_changed`, `identity_unsafe`, `install_hash_mismatch`, `root:x:19000:0:99999:7:::`, `setup-machine-scope`, `stderr=subprocess.STDOUT`, `setup-`, `"initialized.json"`, `resumed=`, `"var-lib"`, `C1C_INIT`},
 	"endpoint-launch": {`ROOT = "/root/.winkyou-field/c1c"`, `ROLES = ("initiator", "responder")`, `os.umask(0o077)`, `os.O_EXCL`, `"/proc/self/ns/net"`, `"/proc/1/ns/net"`, `"/run/netns"`, `"--propagation", "private"`, `"/var/lib"`, `"/usr/libexec"`, `"/etc/shadow"`, `"/etc/machine-id"`, `"wyc1c"`, `C1C_LAUNCH`, `C1C_EXIT`, `exec_witness`, `evidence_parent`, `"/usr/libexec/winkyou/wink"`},
 	"owned-stop":      {`ROLES`, `os.umask(0o077)`, `identity_mismatch`, `signal.SIGTERM`, `DRAIN_SECONDS = 2.0`, `POLL_SECONDS = 0.1`, `os.pidfd_open`, `signal.pidfd_send_signal`, `rfind(")")`, `C1C_STOP`},
 	"me-correlate":    {`ROOT = "/root/.winkyou-field/c1c/evidence"`, `ROLES = ("initiator", "responder")`, `os.umask(0o077)`, `os.O_NOFOLLOW`, `MAX_BYTES = 4 * 1024 * 1024`, `endpoint_tuple_not_recorded`, `clock_not_comparable`, `C1C_ME`, `mapping_age_at_hit_ns`, `stop_to_verify_ns`},
@@ -34,6 +34,9 @@ func c1cFieldScriptValid(name, source string) bool {
 		}
 	}
 	if name == "endpoint-launch" && (strings.Contains(source, "os.kill(") || strings.Contains(source, "os.unlink(") || strings.Contains(source, "os.rmdir(")) {
+		return false
+	}
+	if name == "endpoint-init" && (strings.Contains(source, "remove_failed_copies") || strings.Contains(source, "os.unlink(") || strings.Contains(source, "os.rmdir(") || strings.Contains(source, "os.remove(") || strings.Contains(source, "shutil")) {
 		return false
 	}
 	if name == "me-correlate" && (strings.Contains(source, "subprocess") || strings.Contains(source, "os.write(") || strings.Contains(source, "O_CREAT")) {
@@ -62,6 +65,13 @@ func TestC1cFieldScriptContractsAndMutations(t *testing.T) {
 			for _, bad := range []string{"rm -rf", "pkill", "killall", "--force", "shell=True", "os.system", "urllib", "os.environ"} {
 				if c1cFieldScriptValid(name, source+"\n# "+bad) {
 					t.Fatal("forbidden capability mutation escaped")
+				}
+			}
+			if name == "endpoint-init" {
+				for _, bad := range []string{"remove_failed_copies", "os.unlink(", "os.rmdir(", "os.remove(", "shutil"} {
+					if c1cFieldScriptValid(name, source+"\n# "+bad) {
+						t.Fatalf("init deletion mutation escaped: %s", bad)
+					}
 				}
 			}
 			t.Logf("literal_mutations=%d forbidden_mutations=8", len(literals))
