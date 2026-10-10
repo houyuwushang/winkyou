@@ -143,63 +143,151 @@ class FakeFS:
 
 
 def init_checks(scope):
-    # These are deliberately asserted before implementation: the init script
-    # must understand the real cobra stderr JSON shape and expose the durable
-    # recovery/marker contract without deleting any persisted input.
-    ready = scope["parse_setup_output"](b"noise\n{\n  \"state\": \"ready\",\n  \"ready\": true\n}\n")
+    # The init script is deliberately tested as a pure state machine.  The
+    # fake filesystem never invokes the shell entry point or any host command.
+    ready = scope["parse_setup_output"](b"cobra warning\n{\n  \"state\": \"ready\",\n  \"ready\": true\n}\n")
     check(ready["state"] == "ready" and ready["ready"] is True, "cobra_stderr_json_golden")
-    rejected(lambda: scope["parse_setup_output"](b"{\"state\":\"missing\",\"ready\":false}\n"), "setup_not_ready_rejected")
-    check(scope["setup_output_name"]("20261010T010203Z").startswith("setup-20261010T010203Z"), "setup_unique_name")
-    check("remove_failed_copies" not in scope and "os.unlink(" not in scope["SETUP"], "init_no_delete_helper")
+    check(scope["parse_setup_output"](b'{"state":"ready","ready":true}\n')["ready"] is True, "setup_compact_json")
+    for payload in (b"{\"state\":\"missing\",\"ready\":false}\n", b"", b"{\"state\":\"ready\",\"ready\":false}\n"):
+        rejected(lambda payload=payload: scope["parse_setup_output"](payload), "setup_not_ready_rejected")
+    check(scope["setup_output_name"]("20261010T010203Z") == "setup-20261010T010203Z.json", "setup_unique_name")
+    check("remove_failed_copies" not in scope and all(token not in scope["SETUP"] for token in ("os.unlink(", "os.rmdir(", "os.remove(", "shutil")), "init_no_delete_helper")
     for args in ([], ["unknown"], ["initiator", "extra"], ["../responder"]):
-        rejected(lambda: scope["role_arg"](args), "init_args_rejected")
+        rejected(lambda args=args: scope["role_arg"](args), "init_args_rejected")
     check(scope["role_arg"](["responder"]) == "responder", "init_role")
     check("var-lib/winkyou-safety-v2" not in scope["DIRECTORIES"], "namespace_exclusive_setup")
-    original_setup, original_digest = scope["run_setup"], scope["digest_file"]
+
+    original_setup, original_digest, original_random = scope["run_setup"], scope["digest_file"], scope["random_machine_id"]
     root = scope["ROOT"]
-    for mode in ("normal", "existing", "mismatch", "setup_failure"):
-        fs = FakeFS()
+    binary = b"synthetic-field"
+    machine = b"72" * 16 + b"\n"
+
+    def writes(fs):
+        return [call for call in fs.calls if call[0] == "mkdir" or call[0] == "sync" or (call[0] == "open" and call[2] & fs.O_CREAT)]
+
+    def seed(fs, role="initiator", marker=None, setup=b""):
         fs.add(root+"/endpoints", directory=True)
-        fs.add(root+"/bin/wink-field", b"synthetic-field", mode=0o700)
-        path = root+"/endpoints/initiator"
-        scope["os"] = fs
-        scope["digest_file"] = original_digest
-        setup_calls = []
-        def setup(role_path, owned):
+        fs.add(root+"/bin/wink-field", binary, mode=0o700)
+        path = root+"/endpoints/"+role
+        fs.add(path, directory=True)
+        for name in scope["DIRECTORIES"]:
+            fs.add(path+"/"+name, directory=True)
+        fs.add(path+"/machine-id", machine, mode=0o600)
+        fs.add(path+"/shadow", b"root:x:19000:0:99999:7:::\n", mode=0o600)
+        for image in ("wink", "gate-c-child-wrapper"):
+            fs.add(path+"/install/winkyou/"+image, binary, mode=0o700)
+        if setup is not None:
+            fs.add(path+"/setup.json", setup, mode=0o600)
+        if marker is not None:
+            fs.add(path+"/initialized.json", json.dumps(marker, sort_keys=True).encode(), mode=0o600)
+        return path
+
+    def fake_setup(fs, setup_calls, rc=0):
+        def setup(role_path):
             setup_calls.append(role_path)
-            if mode == "setup_failure": raise ValueError("setup_failed")
-            check(role_path+"/var-lib/winkyou-safety-v2" not in fs.nodes, "setup_claim_not_precreated")
-            fs.add(role_path+"/var-lib/winkyou-safety-v2", directory=True)
-        scope["run_setup"] = setup
-        if mode == "existing": fs.add(path, directory=True)
-        if mode == "mismatch":
-            scope["digest_file"] = lambda p: "changed" if p.endswith("gate-c-child-wrapper") else original_digest(p)
-        if mode != "normal":
-            rejected(lambda: scope["initialize"]("initiator"), "init_negative")
-            if mode == "existing": check(not fs.calls, "existing_zero_writes")
-            if mode == "mismatch":
-                check(path not in fs.nodes and not setup_calls, "only_failed_new_tree_removed")
-                check(root+"/bin/wink-field" in fs.nodes, "source_preserved")
-            if mode == "setup_failure":
-                check(path in fs.nodes and path+"/initialized.json" not in fs.nodes, "partial_not_reset_or_claimed")
-        else:
-            result = scope["initialize"]("initiator")
-            check(result.startswith("C1C_INIT role=initiator machine_scope=") and len(result.rsplit("=",1)[1]) == 16, "scope_prefix_only")
-            check(fs.nodes[path+"/shadow"].data == b"root:x:19000:0:99999:7:::\n", "unlocked_nonpassword_shadow")
-            check(fs.nodes[path+"/machine-id"].data == b"72"*16+b"\n", "machine_id_entropy_shape")
-            for image in ("wink", "gate-c-child-wrapper"):
-                node = fs.nodes[path+"/install/winkyou/"+image]
-                check(node.data == b"synthetic-field" and stat.S_IMODE(node.st_mode) == 0o700, "exact_independent_images")
-            check(fs.calls[-1][0] == "sync" and fs.calls[-1][1].endswith("initialized.json"), "marker_committed_last")
+            log = role_path+"/"+scope["setup_output_name"]("20261010T010203Z")
+            scope["create_file"](log, b"stderr\n{\"state\":\"ready\",\"ready\":true}\n", 0o600)
+            return {"state":"ready", "ready":True}, rc
+        return setup
+
+    # Fresh initialization creates all owned state, runs setup, and commits the
+    # marker last.  A non-zero setup status is retained when JSON says ready.
+    for setup_rc in (0, 7):
+        fs, setup_calls = FakeFS(), []
+        scope["os"], scope["random_machine_id"], scope["run_setup"] = fs, lambda: "72"*16, fake_setup(fs, setup_calls, setup_rc)
+        fs.add(root+"/endpoints", directory=True)
+        fs.add(root+"/bin/wink-field", binary, mode=0o700)
+        result = scope["initialize"]("initiator")
+        check("resumed=false" in result and ("setup_rc="+str(setup_rc)) in result, "fresh_setup_status_recorded")
+        path = root+"/endpoints/initiator"
+        check(setup_calls == [path], "fresh_setup_once")
+        check(fs.nodes[path+"/shadow"].data == b"root:x:19000:0:99999:7:::\n", "unlocked_nonpassword_shadow")
+        check(fs.nodes[path+"/machine-id"].data == machine, "machine_id_entropy_shape")
+        for image in ("wink", "gate-c-child-wrapper"):
+            node = fs.nodes[path+"/install/winkyou/"+image]
+            check(node.data == binary and stat.S_IMODE(node.st_mode) == 0o700, "exact_independent_images")
+        check(fs.calls[-1][0] == "sync" and fs.calls[-1][1].endswith("initialized.json"), "marker_committed_last")
         check(not fs.fds, "init_no_fd_residue")
-    scope["run_setup"], scope["digest_file"] = original_setup, original_digest
+
+    # An existing partial role resumes without replacing any durable input.
+    fs, setup_calls = FakeFS(), []
+    scope["os"], scope["digest_file"], scope["run_setup"] = fs, original_digest, fake_setup(fs, setup_calls)
+    path = seed(fs, setup=b"")
+    prior_machine, prior_setup = fs.nodes[path+"/machine-id"].data, fs.nodes[path+"/setup.json"].data
+    result = scope["initialize"]("initiator")
+    check("resumed=true" in result and setup_calls == [path], "partial_resumed")
+    check(fs.nodes[path+"/machine-id"].data == prior_machine and fs.nodes[path+"/setup.json"].data == prior_setup, "durable_inputs_unchanged")
+    check(path+"/initialized.json" in fs.nodes and path+"/setup-20261010T010203Z.json" in fs.nodes, "resume_new_setup_and_marker")
+    before = writes(fs)
+    snapshot = {name: (node.data, node.st_mode, node.st_nlink) for name, node in fs.nodes.items()}
+    rejected(lambda: scope["initialize"]("initiator"), "marker_idempotent_exit")
+    check(writes(fs) == before and snapshot == {name: (node.data, node.st_mode, node.st_nlink) for name, node in fs.nodes.items()}, "marker_idempotent_zero_writes")
+    check(not fs.fds, "resume_no_fd_residue")
+
+    # A complete marker with a different source image is never silently reused.
+    fs, setup_calls = FakeFS(), []
+    scope["os"], scope["run_setup"] = fs, fake_setup(fs, setup_calls)
+    source_hash = hashlib.sha256(binary).hexdigest()
+    path = seed(fs, marker={"schema":"winkyou-c1c-role-init/1", "role":"initiator", "image_sha256":"a"*64})
+    before = writes(fs)
+    rejected(lambda: scope["initialize"]("initiator"), "image_change_rejected")
+    check(writes(fs) == before and not setup_calls, "image_change_zero_writes")
+
+    fs, setup_calls = FakeFS(), []
+    scope["os"], scope["run_setup"] = fs, fake_setup(fs, setup_calls)
+    path = seed(fs, marker=["not-a-marker"])
+    before = writes(fs)
+    rejected(lambda: scope["initialize"]("initiator"), "malformed_marker_rejected")
+    check(writes(fs) == before and not setup_calls, "malformed_marker_zero_writes")
+
+    # Existing identity material is validated, never repaired in place.
+    for mutate in (lambda node: setattr(node, "st_mode", stat.S_IFREG | 0o644), lambda node: setattr(node, "st_nlink", 2), lambda node: setattr(node, "data", b"7"*31+b"\n")):
+        fs, setup_calls = FakeFS(), []
+        scope["os"], scope["run_setup"] = fs, fake_setup(fs, setup_calls)
+        path = seed(fs)
+        node = fs.nodes[path+"/machine-id"]
+        mutate(node)
+        malformed = node.data
+        before = writes(fs)
+        rejected(lambda: scope["initialize"]("initiator"), "unsafe_machine_id_rejected")
+        check(writes(fs) == before and node.data == malformed, "unsafe_machine_id_unchanged")
+        check(not setup_calls, "unsafe_identity_no_setup")
+
+    fs, setup_calls = FakeFS(), []
+    scope["os"], scope["run_setup"] = fs, fake_setup(fs, setup_calls)
+    path = seed(fs)
+    fs.nodes[path+"/shadow"].data = b"root:x:changed\n"
+    fs.nodes[path+"/shadow"].st_size = len(fs.nodes[path+"/shadow"].data)
+    before = writes(fs)
+    rejected(lambda: scope["initialize"]("initiator"), "unsafe_shadow_rejected")
+    check(writes(fs) == before and not setup_calls, "unsafe_shadow_unchanged")
+
+    # A pre-existing copied image mismatch is reported, never removed.
+    fs, setup_calls = FakeFS(), []
+    scope["os"], scope["run_setup"] = fs, fake_setup(fs, setup_calls)
+    path = seed(fs)
+    fs.nodes[path+"/install/winkyou/wink"].data = b"changed"
+    fs.nodes[path+"/install/winkyou/wink"].st_size = len(b"changed")
+    before_nodes = set(fs.nodes)
+    rejected(lambda: scope["initialize"]("initiator"), "install_hash_mismatch_rejected")
+    check(set(fs.nodes) == before_nodes and not setup_calls, "install_mismatch_not_deleted")
+
+    # Setup failure leaves a resumable partial tree and no completion marker.
+    fs = FakeFS()
+    scope["os"], scope["random_machine_id"] = fs, lambda: "72"*16
+    fs.add(root+"/endpoints", directory=True)
+    fs.add(root+"/bin/wink-field", binary, mode=0o700)
+    def setup_failure(_): raise ValueError("setup_failed")
+    scope["run_setup"] = setup_failure
+    rejected(lambda: scope["initialize"]("initiator"), "setup_failure_rejected")
+    check(root+"/endpoints/initiator" in fs.nodes and root+"/endpoints/initiator/initialized.json" not in fs.nodes, "failed_tree_retained")
+    check(not fs.fds, "setup_failure_no_fd_residue")
+
+    # Restore script functions before checking the embedded child and bind order.
+    scope["run_setup"], scope["digest_file"], scope["random_machine_id"] = original_setup, original_digest, original_random
     fs = FakeFS()
     scope["os"] = fs
     fs.add(root+"/endpoints/initiator", directory=True)
-    owned = []
-    scope["create_directory"](root+"/endpoints/initiator/new", owned)
-    fs.nodes[owned[0][0]].st_ino += 1
-    rejected(lambda: scope["remove_failed_copies"](owned[0][0], owned), "changed_inode_not_removed")
     fs.add("/unsafe", directory=True, mode=0o777)
     rejected(lambda: scope["secure"]("/unsafe", True), "unsafe_parent_rejected")
     fs.add("/link", b"", mode=0o600)
