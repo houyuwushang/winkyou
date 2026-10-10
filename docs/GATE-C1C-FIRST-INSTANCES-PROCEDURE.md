@@ -123,10 +123,14 @@ U2 的初始化模板现由 [init 脚本](../scripts/c1c-endpoint-init.sh) 实�
 ```
 
 固定根下 `endpoints/` 与 `bin/wink-field` 须事前具名准备并核对 owner/mode/hash。
-角色目录已存在即退出 65，零写入；中途失败目录保留，不自动修复。只有复制 hash 不符时，
-按创建清单与 inode 核验逆序删除本次刚创建的项，不递归删除已有目录。
-init 仅建外层 `var-lib`，内层 canonical namespace 由产品 setup 独占创建；输出只有角色和
-scope 摘要前缀。私有 shadow 与 evidence 父目录绑定的修订见 §9.1。
+角色目录若已有合法 `initialized.json` 即退出 65，零写入；若只有中途半成品，init 会按
+“存在则核对、缺失则创建”恢复，永不重写 machine-id、shadow、已有副本或 setup 日志，
+并以 `resumed=true` 标记成功。已有标记但产物 hash 不同为 `image_changed`，不写入；
+machine-id、目录或占位 shadow 不安全为 `identity_unsafe`，不删不改。任何失败保留现场，
+不递归删除、不调用删除 API。init 仅建外层 `var-lib`，内层 canonical namespace 由产品
+setup 独占创建；`setup-machine-scope --json` 的 stdout/stderr 合并保存到新的 `setup-<UTC>.json`，
+即使 setup 返回非零但 JSON 已 ready 也记录 rc 并按 ready 处理。输出包含角色、scope 摘要和
+`resumed=<true|false>`。私有 shadow 与 evidence 父目录绑定的修订见 §9.1。
 
 ## 3. 每实例操作规程：runbook 步 4–12
 
@@ -517,7 +521,7 @@ slot 领取请求。field stdout 只有 profile/stage/class/duration_ns/counts/e
 progress 与详细 witness 在私有 endpoint.jsonl。对 stdout 不作“有输出即成功”的判断。
 任一前置失败不允许第二 invocation、切 profile、fallback 或调整窗口。
 
-Stage II 的无材料演练模板（同样须另行授权）：
+Stage II 的无材料演练模板（同样须另行授权；init 可从保留的半成品恢复）：
 
 ```sh
 <FIXED_C1C_ENDPOINT_LAUNCH_SCRIPT> <ROLE> <DRILL_ID> <ROLE_ANCHOR> --payload version
