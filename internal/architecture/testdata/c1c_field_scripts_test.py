@@ -145,12 +145,34 @@ class FakeFS:
 def init_checks(scope):
     # The init script is deliberately tested as a pure state machine.  The
     # fake filesystem never invokes the shell entry point or any host command.
+    original_os, original_subprocess, original_timestamp = scope["os"], scope["subprocess"], scope["utc_timestamp"]
     ready = scope["parse_setup_output"](b"cobra warning\n{\n  \"state\": \"ready\",\n  \"ready\": true\n}\n")
     check(ready["state"] == "ready" and ready["ready"] is True, "cobra_stderr_json_golden")
     check(scope["parse_setup_output"](b'{"state":"ready","ready":true}\n')["ready"] is True, "setup_compact_json")
     for payload in (b"{\"state\":\"missing\",\"ready\":false}\n", b"", b"{\"state\":\"ready\",\"ready\":false}\n", b"{\"state\":\"missing\"}\n{\"state\":\"ready\",\"ready\":true}\n"):
         rejected(lambda payload=payload: scope["parse_setup_output"](payload), "setup_not_ready_rejected")
     check(scope["setup_output_name"]("20261010T010203Z") == "setup-20261010T010203Z.json", "setup_unique_name")
+
+    # Exercise the real log descriptor direction with fake I/O.  The setup
+    # child writes first; run_setup must then seek and read the same file.
+    setup_fs = FakeFS()
+    setup_path = "/role"
+    setup_fs.add(setup_path, directory=True)
+    setup_payload = b"warning\n{\"state\":\"ready\",\"ready\":true}\n"
+    setup_calls = []
+    def fake_run(argv, **kwargs):
+        setup_calls.append((argv, kwargs))
+        setup_fs.write(kwargs["stdout"], setup_payload)
+        return SimpleNamespace(returncode=0)
+    scope["os"] = setup_fs
+    scope["subprocess"] = SimpleNamespace(run=fake_run, STDOUT=-2, DEVNULL=-3)
+    scope["utc_timestamp"] = lambda: "20261010T010203Z"
+    setup_status, setup_rc = scope["run_setup"](setup_path)
+    check(setup_status["ready"] is True and setup_rc == 0, "setup_log_round_trip")
+    check(any(call[0] == "open" and call[1].endswith("setup-20261010T010203Z.json") and call[2] & setup_fs.O_RDWR for call in setup_fs.calls), "setup_log_readable")
+    check(not setup_fs.fds and len(setup_calls) == 1, "setup_log_fds_closed")
+    scope["os"], scope["subprocess"], scope["utc_timestamp"] = original_os, original_subprocess, original_timestamp
+
     check("remove_failed_copies" not in scope and all(token not in scope["SETUP"] for token in ("os.unlink(", "os.rmdir(", "os.remove(", "shutil")), "init_no_delete_helper")
     for args in ([], ["unknown"], ["initiator", "extra"], ["../responder"]):
         rejected(lambda args=args: scope["role_arg"](args), "init_args_rejected")

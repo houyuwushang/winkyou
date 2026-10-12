@@ -288,7 +288,10 @@ def run_setup(path):
     role_fd = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
     registry_fd = os.open("/run/netns", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
     log_path = path + "/" + setup_output_name(utc_timestamp())
-    log_fd = os.open(log_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    # The setup child writes its combined output here, then the parent seeks
+    # back and parses the readiness JSON.  Keep one exclusive descriptor for
+    # both operations; O_WRONLY would make the post-run read fail with EBADF.
+    log_fd = os.open(log_path, os.O_RDWR | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
     try:
         result = subprocess.run(["/usr/bin/unshare", "-m", "--propagation", "private",
                                  "/usr/bin/python3", "-I", "-B", "-c", SETUP, str(role_fd), str(registry_fd)],
