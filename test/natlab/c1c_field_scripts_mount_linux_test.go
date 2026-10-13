@@ -133,6 +133,15 @@ func c1cAssertRoleViewObservation(t *testing.T, value map[string]any, role, regi
 	if strings.Join(seen, "\x00") != strings.Join(expected, "\x00") {
 		t.Fatalf("anchor listing changed: %+v", value)
 	}
+	anchorMounts, ok := value["anchor_mounts"].(map[string]any)
+	if !ok {
+		t.Fatalf("anchor mount observations missing: %+v", value)
+	}
+	for _, name := range expected {
+		if anchorMounts[name] != true {
+			t.Fatalf("anchor %s is not a mountpoint: %+v", name, anchorMounts)
+		}
+	}
 	mounts, ok := value["mounts"].(map[string]any)
 	if !ok {
 		t.Fatalf("mountpoint observations missing: %+v", value)
@@ -156,6 +165,9 @@ func c1cAssertRoleViewObservation(t *testing.T, value map[string]any, role, regi
 	}
 	if launcher && !c1cSameStat(stats["/root/.winkyou-field/c1c/evidence"], evidence) {
 		t.Fatalf("evidence identity mismatch: %+v", stats)
+	}
+	if !launcher && !c1cSameStat(stats["/root/.winkyou-field/c1c/evidence"], filepath.Join(role, "home/.winkyou-field/c1c/evidence")) {
+		t.Fatalf("home evidence identity mismatch: %+v", stats)
 	}
 }
 
@@ -225,10 +237,12 @@ def write_errno(path):
         return 0
     except OSError as error:
         return error.errno
+anchors = ["wyc1cproof-i", "wyc1cproof-t", "wyc1cproof-r"]
 result = {
     "state": "ready", "ready": True,
     "machine_id": open("/etc/machine-id", encoding="ascii").read().strip(),
     "netns": sorted(os.listdir("/run/netns")),
+    "anchor_mounts": {name: mountpoint("/run/netns/" + name) for name in anchors},
     "mounts": {path: mountpoint(path) for path in ["/var/lib", "/usr/libexec", "/run", "/run/netns", "/root", "/root/.winkyou-field/c1c/evidence"]},
     "stats": {path: stat_pair(path) for path in ["/var/lib", "/usr/libexec/winkyou/wink", "/run/netns", "/root/.winkyou-field/c1c/evidence"]},
     "material_write_errno": write_errno("/root/.winkyou-field/c1c/material/" + attempt + "/probe"),
