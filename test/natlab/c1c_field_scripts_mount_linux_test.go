@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strconv"
 	"strings"
 	"syscall"
@@ -31,6 +32,8 @@ type c1cRoleViewResult struct {
 	LaunchObserved bool           `json:"launch_observed"`
 	Setup          map[string]any `json:"setup,omitempty"`
 	Launch         map[string]any `json:"launch,omitempty"`
+	RegistrySame   bool           `json:"registry_same"`
+	RootClear      bool           `json:"root_clear"`
 }
 
 func TestLinuxC1cFieldScriptRoleViewProof(t *testing.T) {
@@ -82,12 +85,94 @@ func TestLinuxC1cFieldScriptRoleViewProof(t *testing.T) {
 	if err := json.Unmarshal(bytes.TrimSpace(output.Bytes()), &result); err != nil {
 		t.Fatalf("role-view result invalid: %v output=%s", err, output.String())
 	}
-	if result.InitExit == 0 || result.InitObserved {
-		t.Fatalf("current init script unexpectedly passed RED proof: %+v", result)
+	if result.InitExit != 0 || !result.InitObserved {
+		t.Fatalf("init role-view proof failed: %+v", result)
 	}
-	if result.LaunchExit == 0 || result.LaunchObserved {
-		t.Fatalf("current launch script unexpectedly passed RED proof: %+v", result)
+	if result.LaunchExit != 0 || !result.LaunchObserved {
+		t.Fatalf("launch role-view proof failed: %+v", result)
 	}
+	if !result.RegistrySame || !result.RootClear {
+		t.Fatalf("outer mount namespace changed: %+v", result)
+	}
+	c1cAssertRoleViewObservation(t, result.Setup, role, registry, evidence, false)
+	c1cAssertRoleViewObservation(t, result.Launch, role, registry, evidence, true)
+	if errno, ok := c1cNumber(result.Launch, "material_write_errno"); !ok || int(errno) != int(syscall.EROFS) {
+		t.Fatalf("material bind is not read-only: %+v", result.Launch)
+	}
+	if errno, ok := c1cNumber(result.Launch, "instance_write_errno"); !ok || int(errno) != int(syscall.EROFS) {
+		t.Fatalf("instance bind is not read-only: %+v", result.Launch)
+	}
+}
+
+func c1cNumber(value map[string]any, key string) (float64, bool) {
+	number, ok := value[key].(float64)
+	return number, ok
+}
+
+func c1cAssertRoleViewObservation(t *testing.T, value map[string]any, role, registry, evidence string, launcher bool) {
+	t.Helper()
+	if value == nil || value["state"] != "ready" || value["ready"] != true {
+		t.Fatalf("fake target did not run: %+v", value)
+	}
+	if value["machine_id"] != strings.Repeat("7", 32) {
+		t.Fatalf("machine-id was not role-bound: %+v", value)
+	}
+	netns, ok := value["netns"].([]any)
+	if !ok || len(netns) != 3 {
+		t.Fatalf("anchor listing missing: %+v", value)
+	}
+	seen := make([]string, 0, len(netns))
+	for _, item := range netns {
+		name, ok := item.(string)
+		if !ok {
+			t.Fatalf("anchor listing is not textual: %+v", value)
+		}
+		seen = append(seen, name)
+	}
+	expected := []string{"wyc1cproof-i", "wyc1cproof-r", "wyc1cproof-t"}
+	if strings.Join(seen, "\x00") != strings.Join(expected, "\x00") {
+		t.Fatalf("anchor listing changed: %+v", value)
+	}
+	mounts, ok := value["mounts"].(map[string]any)
+	if !ok {
+		t.Fatalf("mountpoint observations missing: %+v", value)
+	}
+	for _, path := range []string{"/var/lib", "/usr/libexec", "/run", "/run/netns", "/root"} {
+		if mounts[path] != true {
+			t.Fatalf("%s is not a mountpoint: %+v", path, mounts)
+		}
+	}
+	if launcher && mounts["/root/.winkyou-field/c1c/evidence"] != true {
+		t.Fatalf("launcher evidence is not a mountpoint: %+v", mounts)
+	}
+	stats, ok := value["stats"].(map[string]any)
+	if !ok {
+		t.Fatalf("stat observations missing: %+v", value)
+	}
+	if !c1cSameStat(stats["/var/lib"], role+"/var-lib") ||
+		!c1cSameStat(stats["/usr/libexec/winkyou/wink"], role+"/install/winkyou/wink") ||
+		!c1cSameStat(stats["/run/netns"], registry) {
+		t.Fatalf("role view identity mismatch: %+v", stats)
+	}
+	if launcher && !c1cSameStat(stats["/root/.winkyou-field/c1c/evidence"], evidence) {
+		t.Fatalf("evidence identity mismatch: %+v", stats)
+	}
+}
+
+func c1cSameStat(value any, source string) bool {
+	actual, ok := value.([]any)
+	if !ok || len(actual) != 2 {
+		return false
+	}
+	info, err := os.Stat(source)
+	if err != nil {
+		return false
+	}
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	if !ok {
+		return false
+	}
+	return actual[0] == float64(stat.Dev) && actual[1] == float64(stat.Ino)
 }
 
 func c1cRunOuterUnshare(cmd *exec.Cmd) error {
@@ -100,7 +185,8 @@ func c1cRunOuterUnshare(cmd *exec.Cmd) error {
 func c1cCreateRoleViewFixture(role, registry, evidence, material, instance, attempt string) error {
 	for _, path := range []string{
 		role + "/var-lib", role + "/home/.ssh", role + "/home/.winkyou-field/c1c/evidence",
-		role + "/home/.winkyou-field/c1c/material", role + "/run/netns", role + "/install/winkyou",
+		role + "/home/.winkyou-field/c1c/material", role + "/home/.winkyou-field/c1c/material/" + attempt,
+		role + "/run/netns", role + "/install/winkyou",
 		registry, filepath.Dir(evidence), evidence, filepath.Dir(material), material,
 	} {
 		if err := os.MkdirAll(path, 0o700); err != nil {
@@ -143,7 +229,7 @@ result = {
     "state": "ready", "ready": True,
     "machine_id": open("/etc/machine-id", encoding="ascii").read().strip(),
     "netns": sorted(os.listdir("/run/netns")),
-    "mounts": {path: mountpoint(path) for path in ["/var/lib", "/usr/libexec/winkyou/wink", "/run", "/run/netns", "/root", "/root/.winkyou-field/c1c/evidence"]},
+    "mounts": {path: mountpoint(path) for path in ["/var/lib", "/usr/libexec", "/run", "/run/netns", "/root", "/root/.winkyou-field/c1c/evidence"]},
     "stats": {path: stat_pair(path) for path in ["/var/lib", "/usr/libexec/winkyou/wink", "/run/netns", "/root/.winkyou-field/c1c/evidence"]},
     "material_write_errno": write_errno("/root/.winkyou-field/c1c/material/" + attempt + "/probe"),
     "instance_write_errno": write_errno("/root/.winkyou-field/c1c/" + attempt + ".json"),
@@ -203,6 +289,10 @@ func c1cRunRoleViewProofHelper() error {
 			_ = exec.Command("/usr/sbin/ip", "netns", "del", name).Run()
 		}
 	}()
+	registryBefore, err := c1cDirectoryEntries("/run/netns")
+	if err != nil {
+		return err
+	}
 
 	_, file, _, _ := runtime.Caller(0)
 	repository := filepath.Clean(filepath.Join(filepath.Dir(file), "..", ".."))
@@ -223,10 +313,16 @@ func c1cRunRoleViewProofHelper() error {
 		return err
 	}
 	initOut, initErr := c1cRunSetupSnippet(setup, role)
-	launchOut, launchErr := c1cRunChildSnippet(child, role, evidence, material, instance, attempt, names[0]+"-i", strings.Contains(string(launchSource), "role_path"))
+	launchOut, launchErr := c1cRunChildSnippet(child, role, evidence, material, instance, attempt, names[0], strings.Contains(string(launchSource), "role_path"))
+	registryAfter, err := c1cDirectoryEntries("/run/netns")
+	if err != nil {
+		return err
+	}
 	result := c1cRoleViewResult{
-		InitExit: c1cExitCode(initErr), InitObserved: bytes.Contains(initOut, []byte("\"state\":\"ready\"")),
-		LaunchExit: c1cExitCode(launchErr), LaunchObserved: bytes.Contains(launchOut, []byte("\"state\":\"ready\"")),
+		InitExit: c1cExitCode(initErr), InitObserved: bytes.Contains(initOut, []byte("\"state\": \"ready\"")),
+		LaunchExit: c1cExitCode(launchErr), LaunchObserved: bytes.Contains(launchOut, []byte("\"state\": \"ready\"")),
+		RegistrySame: strings.Join(registryBefore, "\x00") == strings.Join(registryAfter, "\x00"),
+		RootClear:    exec.Command("/usr/bin/mountpoint", "-q", "/root").Run() != nil,
 	}
 	if result.InitExit == 0 && result.InitObserved {
 		if err := json.Unmarshal(initOut, &result.Setup); err != nil {
@@ -244,6 +340,19 @@ func c1cRunRoleViewProofHelper() error {
 	}
 	_, err = os.Stdout.Write(append(encoded, '\n'))
 	return err
+}
+
+func c1cDirectoryEntries(path string) ([]string, error) {
+	entries, err := os.ReadDir(path)
+	if err != nil {
+		return nil, err
+	}
+	names := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		names = append(names, entry.Name())
+	}
+	sort.Strings(names)
+	return names, nil
 }
 
 func c1cExtractEmbedded(source, name string) (string, error) {
@@ -343,6 +452,9 @@ func c1cRunChildSnippet(snippet, role, evidence, material, instance, attempt, an
 	if err := cmd.Start(); err != nil {
 		return nil, err
 	}
+	// ExtraFiles are duplicated by Start; release the parent pins while the
+	// child still owns its copies and keep only the barrier writer below.
+	c1cCloseFiles(files[:len(files)-1])
 	if _, err := writeBarrier.Write([]byte("1")); err != nil {
 		_ = cmd.Process.Kill()
 		_ = cmd.Wait()
