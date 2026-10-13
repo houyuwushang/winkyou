@@ -45,12 +45,14 @@ def execute():
     bind(role_path + "/machine-id", "/etc/machine-id", machine_id)
     bind(registry_path, role_path + "/run/netns", registry_fd, recursive=True)
     bind(role_path + "/run", "/run", run, recursive=True)
-    evidence_parent = role_path + "/home/.winkyou-field/c1c/evidence"
+    role_home = role_path + "/home"
+    role_state = role_home + "/.winkyou-field/c1c"
+    evidence_parent = role_state + "/evidence"
     bind(evidence_path, evidence_parent, evidence_fd)
     if payload == "run":
-        bind(material_path, role_path + "/home/.winkyou-field/c1c/material/" + attempt, material_fd, readonly=True)
-        bind(instance_path, role_path + "/home/.winkyou-field/c1c/" + attempt + ".json", instance_fd, readonly=True)
-    bind(role_path + "/home", "/root", home, recursive=True)
+        bind(material_path, role_state + "/material/" + attempt, material_fd, readonly=True)
+        bind(instance_path, role_state + "/" + attempt + ".json", instance_fd, readonly=True)
+    bind(role_home, "/root", home, recursive=True)
     for fd in (role_fd, var_lib, install, shadow, machine_id, registry_fd, run, home, evidence_fd, material_fd, instance_fd):
         if fd >= 0:
             os.close(fd)

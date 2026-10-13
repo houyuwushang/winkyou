@@ -94,9 +94,9 @@ func c1cRoleViewScriptValid(name, source string) bool {
 	} else {
 		fragments = append(fragments,
 			`bind(evidence_path, evidence_parent`,
-			`bind(material_path, role_path + "/home/.winkyou-field/c1c/material/" + attempt`,
-			`bind(instance_path, role_path + "/home/.winkyou-field/c1c/" + attempt`,
-			`bind(role_path + "/home", "/root"`)
+			`bind(material_path, role_state + "/material/" + attempt`,
+			`bind(instance_path, role_state + "/" + attempt`,
+			`bind(role_home, "/root"`)
 	}
 	last := -1
 	for _, fragment := range fragments {
@@ -175,7 +175,7 @@ func TestC1cFieldScriptRoleViewMutations(t *testing.T) {
 		mutate func(string) string
 	}{
 		{"old_home_order", func(value string) string {
-			return c1cSwapScriptLines(value, `bind(role_path + "/run", "/run"`, `bind(role_path + "/home", "/root"`)
+			return c1cSwapScriptLines(value, `bind(role_path + "/run", "/run"`, `bind(role_home, "/root"`)
 		}},
 		{"run_bind_instead_of_rbind", func(value string) string {
 			return strings.Replace(value, `bind(role_path + "/run", "/run", run, recursive=True)`, `bind(role_path + "/run", "/run", run, recursive=False)`, 1)
@@ -187,7 +187,7 @@ func TestC1cFieldScriptRoleViewMutations(t *testing.T) {
 			return strings.Replace(value, "        identity(pin, target)\n", "", 1)
 		}},
 		{"material_not_readonly", func(value string) string {
-			return strings.Replace(value, `bind(material_path, role_path + "/home/.winkyou-field/c1c/material/" + attempt, material_fd, readonly=True)`, `bind(material_path, role_path + "/home/.winkyou-field/c1c/material/" + attempt, material_fd)`, 1)
+			return strings.Replace(value, `bind(material_path, role_state + "/material/" + attempt, material_fd, readonly=True)`, `bind(material_path, role_state + "/material/" + attempt, material_fd)`, 1)
 		}},
 	}
 	for _, mutation := range mutations {

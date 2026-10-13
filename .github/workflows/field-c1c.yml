@@ -15,7 +15,7 @@ jobs:
     # gatecorchestrator) measured 343s on the maintainer validation host.
     # ceil((63 baseline prep + 56 symbol proof + 23 second build +
     #       343 expanded unit race + 240 isolated matrix +
-    #       2 role-view proof) * 1.25 / 60) = 16.
+    #       1 role-view proof) * 1.25 / 60) = 16.
     timeout-minutes: 16
     steps:
       - uses: actions/checkout@v4

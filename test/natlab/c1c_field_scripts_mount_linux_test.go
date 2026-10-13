@@ -82,7 +82,7 @@ func TestLinuxC1cFieldScriptRoleViewProof(t *testing.T) {
 		t.Fatalf("outer isolated helper failed: %v output=%s", err, output.String())
 	}
 	var result c1cRoleViewResult
-	if err := json.Unmarshal(bytes.TrimSpace(output.Bytes()), &result); err != nil {
+	if err := c1cDecodeRoleViewResult(output.Bytes(), &result); err != nil {
 		t.Fatalf("role-view result invalid: %v output=%s", err, output.String())
 	}
 	if result.InitExit != 0 || !result.InitObserved {
@@ -102,6 +102,29 @@ func TestLinuxC1cFieldScriptRoleViewProof(t *testing.T) {
 	if errno, ok := c1cNumber(result.Launch, "instance_write_errno"); !ok || int(errno) != int(syscall.EROFS) {
 		t.Fatalf("instance bind is not read-only: %+v", result.Launch)
 	}
+}
+
+func c1cDecodeRoleViewResult(output []byte, result *c1cRoleViewResult) error {
+	var lastErr error
+	for index, value := range output {
+		if value != '{' {
+			continue
+		}
+		var candidate c1cRoleViewResult
+		// The nested test binary writes PASS after the helper's JSON witness,
+		// sometimes without a line break. Decode the first complete object and
+		// deliberately leave any test-runner suffix unread.
+		if err := json.NewDecoder(bytes.NewReader(output[index:])).Decode(&candidate); err == nil {
+			*result = candidate
+			return nil
+		} else {
+			lastErr = err
+		}
+	}
+	if lastErr == nil {
+		lastErr = errors.New("no JSON result line")
+	}
+	return lastErr
 }
 
 func c1cNumber(value map[string]any, key string) (float64, bool) {

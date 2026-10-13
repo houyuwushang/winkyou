@@ -97,9 +97,9 @@ def role_view_order_contract(source, label):
             'bind(role_path + "/shadow"', 'bind(role_path + "/machine-id"',
             'bind(registry_path, role_path + "/run/netns"', 'bind(role_path + "/run", "/run"',
             'bind(evidence_path, evidence_parent',
-            'bind(material_path, role_path + "/home/.winkyou-field/c1c/material/" + attempt',
-            'bind(instance_path, role_path + "/home/.winkyou-field/c1c/" + attempt',
-            'bind(role_path + "/home", "/root"',
+            'bind(material_path, role_state + "/material/" + attempt',
+            'bind(instance_path, role_state + "/" + attempt',
+            'bind(role_home, "/root"',
         ]
         recursive = fragments[4:6] + [fragments[-1]]
         material_start = source.index(fragments[7])
@@ -649,7 +649,7 @@ def launcher_checks(scope):
     check(set(closed)==set(range(10,22)) and not child_fs.fds, "child_sources_drained_before_exec")
 
     mutation_rejected(scope["CHILD"], lambda source: swap_bind_lines(
-        source, 'bind(role_path + "/run", "/run"', 'bind(role_path + "/home", "/root"'),
+        source, 'bind(role_path + "/run", "/run"', 'bind(role_home, "/root"'),
         "mutation_old_home_order")
     mutation_rejected(scope["CHILD"], lambda source: source.replace(
         'bind(role_path + "/run", "/run", run, recursive=True)',
@@ -661,8 +661,8 @@ def launcher_checks(scope):
     mutation_rejected(scope["CHILD"], lambda source: source.replace(
         "        identity(pin, target)\n", "", 1), "mutation_identity_removed")
     mutation_rejected(scope["CHILD"], lambda source: source.replace(
-        'bind(material_path, role_path + "/home/.winkyou-field/c1c/material/" + attempt, material_fd, readonly=True)',
-        'bind(material_path, role_path + "/home/.winkyou-field/c1c/material/" + attempt, material_fd)', 1),
+        'bind(material_path, role_state + "/material/" + attempt, material_fd, readonly=True)',
+        'bind(material_path, role_state + "/material/" + attempt, material_fd)', 1),
         "mutation_material_writable")
 
 
