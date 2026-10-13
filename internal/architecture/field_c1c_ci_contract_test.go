@@ -18,7 +18,8 @@ func TestFieldC1cRequiredCIBudgetAndAuthority(t *testing.T) {
 	const secondBuild = 23 * time.Second
 	const expandedUnitRace = 343 * time.Second
 	const isolatedMatrix = 4 * time.Minute
-	budget := (baselinePreparation + symbolProof + secondBuild + expandedUnitRace + isolatedMatrix) * 5 / 4
+	const roleViewProof = 2 * time.Second
+	budget := (baselinePreparation + symbolProof + secondBuild + expandedUnitRace + isolatedMatrix + roleViewProof) * 5 / 4
 	minutes := int((budget + time.Minute - 1) / time.Minute)
 	if minutes != 16 {
 		t.Fatal("field proof CI derivation changed")
@@ -28,9 +29,9 @@ func TestFieldC1cRequiredCIBudgetAndAuthority(t *testing.T) {
 		t.Fatal("field proof workflow missing")
 	}
 	source := strings.ReplaceAll(string(data), "\r\n", "\n")
-	for _, required := range []string{"timeout-minutes: 16", "WINKYOU_FIELD_C1C_REQUIRED=1", "-test.timeout=4m", "-test.count=1",
+	for _, required := range []string{"timeout-minutes: 16", "WINKYOU_FIELD_C1C_REQUIRED=1", "WINKYOU_C1C_SCRIPTS_MOUNT_REQUIRED=1", "-test.run '^TestLinuxC1cFieldScriptRoleViewProof$'", "-test.timeout=2m", "-test.timeout=4m", "-test.count=1",
 		"go build -race -buildvcs=true -tags=fieldc1c", "-X winkyou/internal/v2/fieldc1c.BuildSHA=", "-tags=natlab,c1bproof,fieldc1c",
-		"run_gate_b3_required_linux.sh", "WINKYOU_GATE_B3_DISPOSABLE_RUNNER=github-hosted", "go-version-file: go.mod",
+		"run_gate_b3_required_linux.sh", "WINKYOU_GATE_B3_DISPOSABLE_RUNNER=github-hosted", "go-version-file: go.mod", "bash -n scripts/c1c-endpoint-init.sh scripts/c1c-endpoint-launch.sh", "role-view proof seconds=",
 		"./cmd/wink/cmd", "./internal/governor", "./internal/v2/gatecorchestrator"} {
 		if !strings.Contains(source, required) {
 			t.Fatalf("missing field CI contract %s", required)
