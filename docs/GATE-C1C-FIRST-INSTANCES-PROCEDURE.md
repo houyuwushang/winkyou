@@ -1034,4 +1034,4 @@ campaign 的现有对象方法又要求 owner。本轮允许在 governor 增加 
 docs 隐私门自动遍历 docs 下全部文件，不加豁免；不跑现场命令/生成器/host helper。
 CI 首跑另列，首次 RED 保留，不 rerun 求绿。Draft PR 未合并，等待独立复审。
 > U2 update (2026-10-09): init idempotency and retained-partial recovery are implemented in [PR #190](https://github.com/houyuwushang/winkyou/pull/190); the first field half-product remains the recovery fixture and is not deleted or reset.
-> U2 update (2026-10-13): the role-view bind-order scripts PR adds the Linux real-mount proof and keeps registry, run, home, evidence, material, and instance bindings ordered with per-bind FD identity checks; the field initiator half-product remains untouched.
+> U2 update (2026-10-13): [PR #192](https://github.com/houyuwushang/winkyou/pull/192) removes `/proc/self/fd` mount sources (libmount re-resolves them by path and the kernel rejects parent-namespace sources), binds the registry into the role `run/netns` before covering `/run`, covers `/root` last, uses recursive binds for registry/run/home, verifies every mounted target against its parent pin, and adds the Linux real-mount proof; the field initiator half-product remains untouched.
