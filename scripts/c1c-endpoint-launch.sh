@@ -20,27 +20,38 @@ STARTUP_SECONDS = 30.0
 CHILD = r'''
 import os, subprocess, sys
 def execute():
-    role_fd, registry_fd, evidence_fd, material_fd, instance_fd, barrier = map(int, sys.argv[1:7])
-    attempt, anchor, payload = sys.argv[7:10]
-    def bind(source, target, readonly=False):
-        subprocess.run(["/usr/bin/mount", "--bind", source, target], check=True,
-                       pass_fds=tuple(fd for fd in (role_fd, registry_fd, evidence_fd, material_fd, instance_fd) if fd >= 0),
-                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10)
+    role_fd, var_lib, install, shadow, machine_id, registry_fd, run, home, evidence_fd, material_fd, instance_fd, barrier = map(int, sys.argv[1:13])
+    attempt, anchor, payload = sys.argv[13:16]
+    role_path, registry_path, evidence_path, material_path, instance_path = sys.argv[16:21]
+    pins = tuple(fd for fd in (role_fd, var_lib, install, shadow, machine_id, registry_fd, run, home, evidence_fd, material_fd, instance_fd) if fd >= 0)
+
+    def identity(pin, target):
+        expected, actual = os.fstat(pin), os.stat(target)
+        if (expected.st_dev, expected.st_ino) != (actual.st_dev, actual.st_ino):
+            raise RuntimeError("mount_identity_mismatch")
+
+    def bind(source, target, pin, recursive=False, readonly=False):
+        option = "--rbind" if recursive else "--bind"
+        subprocess.run(["/usr/bin/mount", option, source, target], check=True,
+                       pass_fds=pins, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10)
+        identity(pin, target)
         if readonly:
             subprocess.run(["/usr/bin/mount", "-o", "remount,bind,ro", target], check=True,
-                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10)
-    base = "/proc/self/fd/" + str(role_fd)
-    for name, target in (("var-lib", "/var/lib"), ("install", "/usr/libexec"),
-                         ("shadow", "/etc/shadow"), ("machine-id", "/etc/machine-id"),
-                         ("home", "/root"), ("run", "/run")):
-        bind(base + "/" + name, target)
-    bind("/proc/self/fd/" + str(registry_fd), "/run/netns")
-    evidence_parent = "/root/.winkyou-field/c1c/evidence"
-    bind("/proc/self/fd/" + str(evidence_fd), evidence_parent)
+                           pass_fds=pins, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10)
+            identity(pin, target)
+    bind(role_path + "/var-lib", "/var/lib", var_lib)
+    bind(role_path + "/install", "/usr/libexec", install)
+    bind(role_path + "/shadow", "/etc/shadow", shadow)
+    bind(role_path + "/machine-id", "/etc/machine-id", machine_id)
+    bind(registry_path, role_path + "/run/netns", registry_fd, recursive=True)
+    bind(role_path + "/run", "/run", run, recursive=True)
+    evidence_parent = role_path + "/home/.winkyou-field/c1c/evidence"
+    bind(evidence_path, evidence_parent, evidence_fd)
     if payload == "run":
-        bind("/proc/self/fd/" + str(material_fd), "/root/.winkyou-field/c1c/material/" + attempt, True)
-        bind("/proc/self/fd/" + str(instance_fd), "/root/.winkyou-field/c1c/" + attempt + ".json", True)
-    for fd in (role_fd, registry_fd, evidence_fd, material_fd, instance_fd):
+        bind(material_path, role_path + "/home/.winkyou-field/c1c/material/" + attempt, material_fd, readonly=True)
+        bind(instance_path, role_path + "/home/.winkyou-field/c1c/" + attempt + ".json", instance_fd, readonly=True)
+    bind(role_path + "/home", "/root", home, recursive=True)
+    for fd in (role_fd, var_lib, install, shadow, machine_id, registry_fd, run, home, evidence_fd, material_fd, instance_fd):
         if fd >= 0:
             os.close(fd)
     # Do not begin the target exec unless the parent has reserved its witness.
@@ -203,19 +214,30 @@ def launch(role, attempt, anchor, payload):
     fds = []
     child, gate_write, witness_fd = None, None, None
     try:
-        def directory(path):
-            secure(path, True)
-            fd = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        def source(path, directory):
+            secure(path, directory)
+            flags = os.O_RDONLY | os.O_NOFOLLOW
+            if directory:
+                flags |= os.O_DIRECTORY
+            fd = os.open(path, flags)
             fds.append(fd)
             return fd
-        role_fd, registry_fd, evidence_fd = directory(role_root), directory("/run/netns"), directory(evidence)
+        role_fd = source(role_root, True)
+        var_lib_fd = source(role_root + "/var-lib", True)
+        install_fd = source(role_root + "/install", True)
+        shadow_fd = source(role_root + "/shadow", False)
+        machine_id_fd = source(role_root + "/machine-id", False)
+        registry_fd = source("/run/netns", True)
+        run_fd = source(role_root + "/run", True)
+        home_fd = source(role_root + "/home", True)
+        evidence_fd = source(evidence, True)
         material_fd, instance_fd = -1, -1
+        material_path, instance_path = "", ""
         if payload == "run":
-            material_fd = directory(ROOT + "/material/" + attempt + "/" + role)
-            instance = ROOT + "/" + attempt + ".json"
-            instance_bytes = read_fixed(instance, 65536)
-            instance_fd = os.open(instance, os.O_RDONLY | os.O_NOFOLLOW)
-            fds.append(instance_fd)
+            material_path = ROOT + "/material/" + attempt + "/" + role
+            material_fd = source(material_path, True)
+            instance_path = ROOT + "/" + attempt + ".json"
+            instance_bytes = read_fixed(instance_path, 65536)
             local = os.path.join(role_root, "home", ".winkyou-field", "c1c") + "/"
             # The persistent local copy is identical even outside the bind view.
             target = local + attempt + ".json"
@@ -235,11 +257,14 @@ def launch(role, attempt, anchor, payload):
                 finally:
                     os.close(target_fd)
             os.mkdir(local + "material/" + attempt, 0o700)
+            instance_fd = source(instance_path, False)
         witness_fd = os.open(evidence + "/launch.json", os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
         gate_read, gate_write = os.pipe()
         fds.append(gate_read)
         argv = ["/usr/bin/unshare", "-m", "--propagation", "private", "/usr/bin/python3", "-I", "-B", "-c", CHILD,
-                str(role_fd), str(registry_fd), str(evidence_fd), str(material_fd), str(instance_fd), str(gate_read), attempt, anchor, payload]
+                str(role_fd), str(var_lib_fd), str(install_fd), str(shadow_fd), str(machine_id_fd), str(registry_fd),
+                str(run_fd), str(home_fd), str(evidence_fd), str(material_fd), str(instance_fd), str(gate_read),
+                attempt, anchor, payload, role_root, "/run/netns", evidence, material_path, instance_path]
         child = subprocess.Popen(argv, pass_fds=tuple(fds), env=ENV, stderr=subprocess.DEVNULL)
         os.write(gate_write, b"1")
         os.close(gate_write)
