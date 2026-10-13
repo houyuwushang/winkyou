@@ -14,7 +14,8 @@ jobs:
     # The expanded field unit race (including cmd/wink/cmd, governor, and
     # gatecorchestrator) measured 343s on the maintainer validation host.
     # ceil((63 baseline prep + 56 symbol proof + 23 second build +
-    #       343 expanded unit race + 240 isolated matrix) * 1.25 / 60) = 16.
+    #       343 expanded unit race + 240 isolated matrix +
+    #       3 role-view proof, hosted first runs measured 2-3s) * 1.25 / 60) = 16.
     timeout-minutes: 16
     steps:
       - uses: actions/checkout@v4
@@ -54,6 +55,16 @@ jobs:
           field_sha="$(git rev-parse HEAD)"
           go build -race -buildvcs=true -tags=fieldc1c -ldflags "-X winkyou/internal/v2/fieldc1c.BuildSHA=${field_sha}" -o "${RUNNER_TEMP}/wink-field" ./cmd/wink
           go test -race -c -tags=natlab,c1bproof,fieldc1c -o "${RUNNER_TEMP}/wink-field-proof.test" ./test/natlab
+
+      - name: Prove real C1c role-view bind order
+        run: |
+          bash -n scripts/c1c-endpoint-init.sh scripts/c1c-endpoint-launch.sh
+          started="$(date +%s)"
+          sudo env WINKYOU_C1C_SCRIPTS_MOUNT_REQUIRED=1 \
+            "${RUNNER_TEMP}/wink-field-proof.test" \
+            -test.run '^TestLinuxC1cFieldScriptRoleViewProof$' -test.count=1 -test.timeout=2m
+          finished="$(date +%s)"
+          echo "role-view proof seconds=$((finished-started))"
 
       - name: Prove real exact-SHA wrapper child UDP TUN and owned kill switch
         run: |

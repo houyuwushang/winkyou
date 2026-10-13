@@ -23,18 +23,29 @@ MARKER_SCHEMA = "winkyou-c1c-role-init/1"
 MARKER_NAME = "initialized.json"
 SETUP = r'''
 import os, subprocess, sys
-role, registry = map(int, sys.argv[1:])
-def bind(source, target):
-    subprocess.run(["/usr/bin/mount", "--bind", source, target], check=True,
-                   pass_fds=(role, registry), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10)
-base = "/proc/self/fd/" + str(role)
-for name, target in (("var-lib", "/var/lib"), ("install", "/usr/libexec"),
-                     ("shadow", "/etc/shadow"), ("machine-id", "/etc/machine-id"),
-                     ("home", "/root"), ("run", "/run")):
-    bind(base + "/" + name, target)
-bind("/proc/self/fd/" + str(registry), "/run/netns")
-os.close(role)
-os.close(registry)
+role, var_lib, install, shadow, machine_id, registry, run, home = map(int, sys.argv[1:9])
+role_path, registry_path = sys.argv[9:11]
+
+def identity(pin, target):
+    expected, actual = os.fstat(pin), os.stat(target)
+    if (expected.st_dev, expected.st_ino) != (actual.st_dev, actual.st_ino):
+        raise RuntimeError("mount_identity_mismatch")
+
+def bind(source, target, pin, recursive=False):
+    option = "--rbind" if recursive else "--bind"
+    subprocess.run(["/usr/bin/mount", option, source, target], check=True,
+                   pass_fds=(pin,), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10)
+    identity(pin, target)
+
+bind(role_path + "/var-lib", "/var/lib", var_lib)
+bind(role_path + "/install", "/usr/libexec", install)
+bind(role_path + "/shadow", "/etc/shadow", shadow)
+bind(role_path + "/machine-id", "/etc/machine-id", machine_id)
+bind(registry_path, role_path + "/run/netns", registry, recursive=True)
+bind(role_path + "/run", "/run", run, recursive=True)
+bind(role_path + "/home", "/root", home, recursive=True)
+for fd in (role, var_lib, install, shadow, machine_id, registry, run, home):
+    os.close(fd)
 os.execv("/usr/libexec/winkyou/wink", ["wink", "setup-machine-scope", "--json"])
 '''
 
@@ -65,6 +76,14 @@ def command(path):
     # Fixed system executable symlinks are allowed only through protected trees.
     secure(os.path.dirname(path), directory=True)
     secure(os.path.realpath(path), executable=True)
+
+
+def open_source(path, directory):
+    secure(path, directory=directory)
+    flags = os.O_RDONLY | os.O_NOFOLLOW
+    if directory:
+        flags |= os.O_DIRECTORY
+    return os.open(path, flags)
 
 
 def secure_directory(path):
@@ -285,17 +304,22 @@ def ensure_identity(path, resumed):
 
 def run_setup(path):
     secure_directory("/run/netns")
-    role_fd = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
-    registry_fd = os.open("/run/netns", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
-    log_path = path + "/" + setup_output_name(utc_timestamp())
-    # The setup child writes its combined output here, then the parent seeks
-    # back and parses the readiness JSON.  Keep one exclusive descriptor for
-    # both operations; O_WRONLY would make the post-run read fail with EBADF.
-    log_fd = os.open(log_path, os.O_RDWR | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    role_fd, source_fds, log_fd = None, [], None
     try:
+        role_fd = open_source(path, True)
+        for source, directory in ((path + "/var-lib", True), (path + "/install", True),
+                                  (path + "/shadow", False), (path + "/machine-id", False),
+                                  ("/run/netns", True), (path + "/run", True), (path + "/home", True)):
+            source_fds.append(open_source(source, directory))
+        log_path = path + "/" + setup_output_name(utc_timestamp())
+        # The setup child writes its combined output here, then the parent seeks
+        # back and parses the readiness JSON.  Keep one exclusive descriptor for
+        # both operations; O_WRONLY would make the post-run read fail with EBADF.
+        log_fd = os.open(log_path, os.O_RDWR | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+        setup_args = [str(fd) for fd in [role_fd] + source_fds] + [path, "/run/netns"]
         result = subprocess.run(["/usr/bin/unshare", "-m", "--propagation", "private",
-                                 "/usr/bin/python3", "-I", "-B", "-c", SETUP, str(role_fd), str(registry_fd)],
-                                pass_fds=(role_fd, registry_fd), stdin=subprocess.DEVNULL,
+                                 "/usr/bin/python3", "-I", "-B", "-c", SETUP] + setup_args,
+                                pass_fds=tuple([role_fd] + source_fds), stdin=subprocess.DEVNULL,
                                 stdout=log_fd, stderr=subprocess.STDOUT, env=ENV, timeout=30, check=False)
         os.fsync(log_fd)
         os.lseek(log_fd, 0, os.SEEK_SET)
@@ -305,9 +329,12 @@ def run_setup(path):
             raise ValueError("setup_output_oversize")
         return status, result.returncode
     finally:
-        os.close(log_fd)
-        os.close(registry_fd)
-        os.close(role_fd)
+        if log_fd is not None:
+            os.close(log_fd)
+        for fd in reversed(source_fds):
+            os.close(fd)
+        if role_fd is not None:
+            os.close(role_fd)
 
 
 def initialize(role):

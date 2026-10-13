@@ -106,8 +106,8 @@ symlink 被跳过，hardlink 被拒绝，不能拿别名绕过。把整个 home 
 | `<ROLE>/run` | `/run` | 私有 sshd runtime；重新绑定外层的 `/run/netns` 注册表 |
 | `<ROLE>/machine-id` | `/etc/machine-id` | 两角色独立，跨实例保留；router scope 另算，不替换宿主 machine-id |
 
-先 `mount --make-rprivate /`。覆盖 `/run` 前必须持有注册表引用；覆盖 `/root` 后不能继续
-假设原物理 `<ROLE>/...` 路径仍可见。request/config/material/三个实例副本的实际路径必须按各
+先执行 `mount --make-rprivate /`。覆盖 `/run` 前必须先把注册表挂载进角色 `run/netns`；fd 引用不能作为跨 namespace 的 mount 源。覆盖 `/root` 后不能继续假设原物理 `<ROLE>/...` 路径仍可见。
+request/config/material/三个实例副本的实际路径必须按各
 mount view 分别核验。**U2 未决：现有实现只在 test helper 里组合这些挂载；尚无可直接调用的
 受审现场 launcher。** 不把测试二进制的 host-process 入口用作现场 launcher。
 
@@ -1034,3 +1034,4 @@ campaign 的现有对象方法又要求 owner。本轮允许在 governor 增加 
 docs 隐私门自动遍历 docs 下全部文件，不加豁免；不跑现场命令/生成器/host helper。
 CI 首跑另列，首次 RED 保留，不 rerun 求绿。Draft PR 未合并，等待独立复审。
 > U2 update (2026-10-09): init idempotency and retained-partial recovery are implemented in [PR #190](https://github.com/houyuwushang/winkyou/pull/190); the first field half-product remains the recovery fixture and is not deleted or reset.
+> U2 update (2026-10-13): [PR #192](https://github.com/houyuwushang/winkyou/pull/192) removes `/proc/self/fd` mount sources (libmount re-resolves them by path and the kernel rejects parent-namespace sources), binds the registry into the role `run/netns` before covering `/run`, covers `/root` last, uses recursive binds for registry/run/home, verifies every mounted target against its parent pin, and adds the Linux real-mount proof; the field initiator half-product remains untouched.
