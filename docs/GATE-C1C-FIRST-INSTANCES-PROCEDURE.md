@@ -936,7 +936,14 @@ Stage II 失败保留首个输出；不能用再跑一次掩盖。通过后亦�
 不更改产品 parser、权限检查、协议、预算或正式 responder 入口。
 
 - U3 anchor 前缀为 `wyc1c`，其余 SHA256 输入、前四字节与角色后缀规则不变；
-  现有 `/2` parser 要求 `wy` 前缀，不增加例外。
+  现有 `/2` parser 要求 `wy` 前缀，不增加例外。SHA256 输入中的 `\n` 是一个真实换行字节，
+  不是两个字符 `\`、`n`；现场只允许用下面这条命令派生，并由第二人独立复算后才能
+  `ip netns add`（Stage II run 4 因按字面 `\n` 派生而被 launcher `arguments_rejected`，
+  按首次失败保留、不在同一 ID 上重跑）：
+
+  ```sh
+  python3 -c 'import hashlib,sys; p="wyc1c"+hashlib.sha256(("winkyou-c1c-anchor/1\n"+sys.argv[1]).encode()).hexdigest()[:8]; print(p+"-i", p+"-t", p+"-r")' "$ATTEMPT_ID"
+  ```
 - init 仅预建角色私有 `var-lib/0700`，不预建内部 `winkyou-safety-v2`。
   现有 `setup-machine-scope` 独占创建内部目录及固定文件，保留原有权限校验。
 - `--payload version` 不要求、不读取、不绑定 instance/material；演练 evidence 目录必须
