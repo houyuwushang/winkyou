@@ -48,6 +48,8 @@ type c1cLaunchEndToEndResult struct {
 	ImageSHA256 string         `json:"image_sha256"`
 	ImageInode  uint64         `json:"image_inode"`
 	Launch      string         `json:"launch"`
+	ReplayExit  int            `json:"replay_exit"`
+	Replay      string         `json:"replay"`
 }
 
 func TestLinuxC1cFieldScriptRoleViewProof(t *testing.T) {
@@ -118,16 +120,40 @@ func TestLinuxC1cFieldScriptRoleViewProof(t *testing.T) {
 	}
 	t.Run("launcher_end_to_end", func(t *testing.T) {
 		actual := result.EndToEnd
-		if actual == nil || actual.Exit != 1 || actual.Stderr != "" ||
-			!strings.Contains(actual.Stdout, "C1C_EXIT role=initiator code=0\n") ||
-			!strings.Contains(actual.Stdout, "C1C_LAUNCH class=exec_witness_unavailable\n") {
-			t.Fatalf("short-payload RED was not reproduced: %+v", actual)
+		if err := c1cCheckLaunchWitness(actual); err != nil {
+			t.Fatalf("short-payload witness failed: %v result=%+v", err, actual)
 		}
 		if actual.Payload["ns_net"] != float64(actual.Anchor) || actual.Payload["machine_id"] != strings.Repeat("7", 32) {
 			t.Fatalf("short payload did not complete in the role view: %+v", actual)
 		}
-		fmt.Printf("launcher_end_to_end RED (payload completed; witness unavailable):\n%s", actual.Stdout)
+		if actual.ReplayExit != 1 || actual.Replay != "C1C_LAUNCH class=evidence_already_claimed\n" {
+			t.Fatalf("same attempt was not rejected: %+v", actual)
+		}
+		fmt.Printf("launcher_end_to_end GREEN (witness precedes short payload):\n%s", actual.Stdout)
 	})
+}
+
+func c1cCheckLaunchWitness(actual *c1cLaunchEndToEndResult) error {
+	if actual == nil || actual.Exit != 0 || actual.Stderr != "" {
+		return errors.New("launcher did not exit cleanly")
+	}
+	lines := strings.Split(strings.TrimSuffix(actual.Stdout, "\n"), "\n")
+	if len(lines) != 2 || lines[1] != "C1C_EXIT role=initiator code=0" || actual.Launch != lines[0]+"\n" {
+		return errors.New("persistent witness and stdout order differ")
+	}
+	var pid, ticks, netNS, mountNS, inode uint64
+	var digest string
+	n, err := fmt.Sscanf(lines[0], "C1C_LAUNCH role=initiator pid=%d starttime=%d net_ns=%d mnt_ns=%d exe_sha256=%s exe_ino=%d", &pid, &ticks, &netNS, &mountNS, &digest, &inode)
+	if err != nil || n != 6 || pid < 2 || ticks == 0 || mountNS == 0 || mountNS == actual.ParentMount || digest != actual.ImageSHA256 || inode != actual.ImageInode {
+		return errors.New("pinned image or process witness differs")
+	}
+	if netNS != actual.Anchor {
+		return fmt.Errorf("net_ns=%d differs from anchor=%d", netNS, actual.Anchor)
+	}
+	if actual.Payload["pid"] != float64(pid) {
+		return errors.New("payload pid differs from witnessed child pid")
+	}
+	return nil
 }
 
 func c1cDecodeRoleViewResult(output []byte, result *c1cRoleViewResult) error {
@@ -461,7 +487,7 @@ int main(int argc, char **argv) {
     if (mkdir(directory, 0700)) return 73;
     snprintf(file, sizeof file, "%%s/payload.json", directory);
     int out = open(file, O_WRONLY|O_CREAT|O_EXCL, 0600);
-    int size = snprintf(payload, sizeof payload, "{\"ns_net\":%%llu,\"machine_id\":\"%%s\"}\n", (unsigned long long)ns.st_ino, machine);
+    int size = snprintf(payload, sizeof payload, "{\"pid\":%%ld,\"ns_net\":%%llu,\"machine_id\":\"%%s\"}\n", (long)getpid(), (unsigned long long)ns.st_ino, machine);
     if (out < 0 || write(out, payload, size) != size || close(out)) return 74;
     if (clock_gettime(CLOCK_MONOTONIC, &b)) return 75;
     int64_t elapsed = (b.tv_sec-a.tv_sec)*1000000000LL+b.tv_nsec-a.tv_nsec;
@@ -508,7 +534,8 @@ role=base+"/endpoints/initiator"
 evidence=base+"/evidence/"+attempt+"/endpoint-initiator"
 result=subprocess.run(["bash",source,"initiator",attempt,anchor,"--payload","version"],stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True)
 payload=json.load(open(evidence+"/"+attempt+"/endpoint-initiator/payload.json"))
-print(json.dumps({"exit":result.returncode,"stdout":result.stdout,"stderr":result.stderr,"payload":payload,"anchor":os.stat("/run/netns/"+anchor).st_ino,"parent_mount":os.stat("/proc/self/ns/mnt").st_ino,"image_sha256":digest,"image_inode":os.stat(role+"/install/winkyou/wink").st_ino,"launch":open(evidence+"/launch.json").read()}))
+replay=subprocess.run(["bash",source,"initiator",attempt,anchor,"--payload","version"],stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True)
+print(json.dumps({"exit":result.returncode,"stdout":result.stdout,"stderr":result.stderr,"payload":payload,"anchor":os.stat("/run/netns/"+anchor).st_ino,"parent_mount":os.stat("/proc/self/ns/mnt").st_ino,"image_sha256":digest,"image_inode":os.stat(role+"/install/winkyou/wink").st_ino,"launch":open(evidence+"/launch.json").read(),"replay_exit":replay.returncode,"replay":replay.stdout}))
 `
 	command := exec.Command("/usr/bin/unshare", "-m", "--propagation", "private", "/usr/bin/python3", "-I", "-B", "-c", driver, root, filepath.Join(repository, "scripts/c1c-endpoint-launch.sh"), attempt, anchor, digest)
 	output, err := command.CombinedOutput()
@@ -612,6 +639,30 @@ func c1cRunChildSnippet(snippet, role, evidence, material, instance, attempt, an
 		}
 		files = append(files, file)
 	}
+	deterministic := strings.Contains(snippet, "ready_write")
+	var readyRead, readyWrite *os.File
+	var imageInfo *syscall.Stat_t
+	if deterministic {
+		image, err := os.Open(role + "/install/winkyou/wink")
+		if err != nil {
+			c1cCloseFiles(files)
+			return nil, err
+		}
+		files = append(files, image)
+		info, err := image.Stat()
+		if err != nil {
+			c1cCloseFiles(files)
+			return nil, err
+		}
+		imageInfo = info.Sys().(*syscall.Stat_t)
+		readyRead, readyWrite, err = os.Pipe()
+		if err != nil {
+			c1cCloseFiles(files)
+			return nil, err
+		}
+		defer readyRead.Close()
+		files = append(files, readyWrite)
+	}
 	readBarrier, writeBarrier, err := os.Pipe()
 	if err != nil {
 		c1cCloseFiles(files)
@@ -624,7 +675,13 @@ func c1cRunChildSnippet(snippet, role, evidence, material, instance, attempt, an
 	if fixed {
 		args = []string{"3", "4", "5", "6", "7", "8", "9", "10", "11", "12", "13", "14", attempt, anchor, "run", role, "/run/netns", evidence, material, instance}
 	}
+	if deterministic {
+		args = []string{"3", "4", "5", "6", "7", "8", "9", "10", "11", "12", "13", "14", "15", "16", strconv.FormatUint(uint64(imageInfo.Dev), 10), strconv.FormatUint(imageInfo.Ino, 10), attempt, anchor, "run", role, "/run/netns", evidence, material, instance}
+	}
 	cmd := exec.Command("/usr/bin/unshare", "-m", "--propagation", "private", "/usr/bin/python3", "-I", "-B", "-c", snippet)
+	if deterministic {
+		cmd = exec.Command("/usr/sbin/ip", append([]string{"netns", "exec", anchor}, cmd.Args...)...)
+	}
 	cmd.Args = append(cmd.Args, args...)
 	cmd.ExtraFiles = files
 	var stdout, stderr bytes.Buffer
@@ -635,6 +692,14 @@ func c1cRunChildSnippet(snippet, role, evidence, material, instance, attempt, an
 	// ExtraFiles are duplicated by Start; release the parent pins while the
 	// child still owns its copies and keep only the barrier writer below.
 	c1cCloseFiles(files[:len(files)-1])
+	if deterministic {
+		var ready [1]byte
+		if n, err := readyRead.Read(ready[:]); err != nil || n != 1 || ready[0] != 'R' {
+			_ = writeBarrier.Close()
+			_ = cmd.Wait()
+			return nil, fmt.Errorf("child readiness missing: n=%d err=%v", n, err)
+		}
+	}
 	if _, err := writeBarrier.Write([]byte("1")); err != nil {
 		_ = cmd.Process.Kill()
 		_ = cmd.Wait()
