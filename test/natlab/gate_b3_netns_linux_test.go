@@ -100,6 +100,7 @@ func TestGateB3EndpointParentProcess(t *testing.T) {
 func TestLinuxGateB3Hard16Proof(t *testing.T) {
 	requireGateB3Environment(t)
 	requireGateB3HostConntrackGuard(t)
+	t.Run("namespace_thread_leak", TestLinuxNamespaceHelperThreadLeak)
 	t.Run("sysctl_value_contract", TestGateB3SysctlValueContract)
 	t.Run("conntrack_restore_measurement", testGateB3ConntrackRestoreMeasurement)
 	t.Run("conntrack_counter_boundary", testGateB3ConntrackCounterBoundary)
