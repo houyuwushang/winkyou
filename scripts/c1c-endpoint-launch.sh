@@ -7,10 +7,10 @@ import hashlib
 import json
 import os
 import re
+import select
 import stat
 import subprocess
 import sys
-import time
 
 ROOT = "/root/.winkyou-field/c1c"
 ROLES = ("initiator", "responder")
@@ -19,10 +19,12 @@ ENV = {"PATH": "/usr/sbin:/usr/bin:/sbin:/bin", "LANG": "C", "LC_ALL": "C"}
 STARTUP_SECONDS = 30.0
 CHILD = r'''
 import os, subprocess, sys
+ENV = {"PATH": "/usr/sbin:/usr/bin:/sbin:/bin", "LANG": "C", "LC_ALL": "C"}
 def execute():
-    role_fd, var_lib, install, shadow, machine_id, registry_fd, run, home, evidence_fd, material_fd, instance_fd, barrier = map(int, sys.argv[1:13])
-    attempt, anchor, payload = sys.argv[13:16]
-    role_path, registry_path, evidence_path, material_path, instance_path = sys.argv[16:21]
+    role_fd, var_lib, install, shadow, machine_id, registry_fd, run, home, evidence_fd, material_fd, instance_fd, wink_fd, ready_write, gate_read = map(int, sys.argv[1:15])
+    wink_dev, wink_ino = map(int, sys.argv[15:17])
+    attempt, anchor, payload = sys.argv[17:20]
+    role_path, registry_path, evidence_path, material_path, instance_path = sys.argv[20:25]
     pins = tuple(fd for fd in (role_fd, var_lib, install, shadow, machine_id, registry_fd, run, home, evidence_fd, material_fd, instance_fd) if fd >= 0)
 
     def identity(pin, target):
@@ -56,13 +58,19 @@ def execute():
     for fd in (role_fd, var_lib, install, shadow, machine_id, registry_fd, run, home, evidence_fd, material_fd, instance_fd):
         if fd >= 0:
             os.close(fd)
-    # Do not begin the target exec unless the parent has reserved its witness.
-    if os.read(barrier, 1) != b"1":
-        return 70
-    os.close(barrier)
-    args = ["/usr/sbin/ip", "netns", "exec", anchor, "/usr/libexec/winkyou/wink"]
+    info = os.fstat(wink_fd)
+    if (info.st_dev, info.st_ino) != (wink_dev, wink_ino):
+        raise RuntimeError("mount_identity_mismatch")
+    if os.write(ready_write, b"R") != 1:
+        os._exit(70)
+    os.close(ready_write)
+    if os.read(gate_read, 1) != b"1":
+        os._exit(70)
+    os.close(gate_read)
+    args = ["wink"]
     args += ["version"] if payload == "version" else ["gate-c1c", "run", "--instance", "/root/.winkyou-field/c1c/" + attempt + ".json"]
-    os.execv(args[0], args)
+    # CPython's fd form calls fexecve; no pathname is resolved after the gate.
+    os.execve(wink_fd, args, ENV)
 try:
     code = execute()
 except BaseException:
@@ -134,6 +142,20 @@ def image_hash(path):
     return hashlib.sha256(read_fixed(path, 512 * 1024 * 1024)).hexdigest()
 
 
+def pinned_image_hash(fd):
+    info = os.fstat(fd)
+    if not stat.S_ISREG(info.st_mode) or info.st_uid != 0 or info.st_mode & 0o022 or info.st_nlink != 1 or info.st_size > 512 * 1024 * 1024:
+        raise ValueError("unsafe_path")
+    digest, remaining = hashlib.sha256(), info.st_size
+    while remaining:
+        data = os.read(fd, min(65536, remaining))
+        if not data:
+            raise ValueError("file_changed")
+        digest.update(data)
+        remaining -= len(data)
+    return digest.hexdigest(), info
+
+
 def starttime(payload, pid):
     end, begin = payload.rfind(")"), payload.find(" (")
     if begin < 1 or end <= begin or payload[:begin] != str(pid):
@@ -151,42 +173,22 @@ def process_witness(pid):
     if len(raw) > 65536:
         raise ValueError("witness_failed")
     ticks = starttime(raw.decode("utf-8", errors="strict"), pid)
-    # Resolve only the proc executable link, never a caller-selected path.
-    fd = os.open(base + "/exe", os.O_RDONLY)
-    try:
-        info = os.fstat(fd)
-        if not stat.S_ISREG(info.st_mode) or info.st_uid != 0 or info.st_mode & 0o022 or info.st_size > 512 * 1024 * 1024:
-            raise ValueError("witness_failed")
-        digest, remaining = hashlib.sha256(), info.st_size
-        while remaining:
-            data = os.read(fd, min(65536, remaining))
-            if not data:
-                raise ValueError("witness_failed")
-            digest.update(data)
-            remaining -= len(data)
-    finally:
-        os.close(fd)
     net, mount = os.stat(base + "/ns/net").st_ino, os.stat(base + "/ns/mnt").st_ino
-    with open(base + "/stat", "rb") as source:
-        last = source.read(65537)
-    if len(last) > 65536 or starttime(last.decode("utf-8", errors="strict"), pid) != ticks:
-        raise ValueError("witness_failed")
-    return {"pid": pid, "starttime": ticks, "net_ns": net, "mnt_ns": mount, "exe_sha256": digest.hexdigest()}
+    return {"pid": pid, "starttime": ticks, "net_ns": net, "mnt_ns": mount}
 
 
-def exec_witness(child, expected_hash, expected_net, parent_mount):
-    until = time.monotonic() + STARTUP_SECONDS
-    while child.poll() is None and time.monotonic() < until:
-        try:
-            witness = process_witness(child.pid)
-            if witness["exe_sha256"] == expected_hash and witness["net_ns"] == expected_net and witness["mnt_ns"] != parent_mount:
-                return witness
-        except (OSError, ValueError, UnicodeError):
-            pass
-        time.sleep(0.001)
-    # A short version process may exit before observation: explicitly fail,
-    # never report the interpreter/expected image as an observed running image.
-    raise ValueError("exec_witness_unavailable")
+def exec_witness(child, ready_read, expected_hash, wink_ino, expected_net, parent_mount):
+    try:
+        readable, _, _ = select.select([ready_read], [], [], STARTUP_SECONDS)
+        if not readable or os.read(ready_read, 1) != b"R":
+            raise ValueError("exec_witness_unavailable")
+        witness = process_witness(child.pid)
+        if witness["net_ns"] != expected_net or witness["mnt_ns"] == parent_mount:
+            raise ValueError("exec_witness_unavailable")
+        witness.update(exe_sha256=expected_hash, exe_ino=wink_ino)
+        return witness
+    except (OSError, ValueError, UnicodeError):
+        raise ValueError("exec_witness_unavailable") from None
 
 
 def launch(role, attempt, anchor, payload):
@@ -198,9 +200,6 @@ def launch(role, attempt, anchor, payload):
     secure(role_root, True)
     marker = json.loads(read_fixed(role_root + "/initialized.json", 4096))
     if set(marker) != {"schema", "role", "image_sha256"} or marker["schema"] != "winkyou-c1c-role-init/1" or marker["role"] != role:
-        raise ValueError("role_not_initialized")
-    expected_hash = image_hash(role_root + "/install/winkyou/wink")
-    if expected_hash != marker["image_sha256"] or image_hash(role_root + "/install/winkyou/gate-c-child-wrapper") != expected_hash:
         raise ValueError("role_not_initialized")
     secure("/run/netns", True)
     anchor_path = "/var/run/netns/" + anchor
@@ -214,7 +213,7 @@ def launch(role, attempt, anchor, payload):
     if os.path.lexists(evidence + "/" + attempt):
         raise ValueError("evidence_already_claimed")
     fds = []
-    child, gate_write, witness_fd = None, None, None
+    child, ready_read, gate_write, witness_fd = None, None, None, None
     try:
         def source(path, directory):
             secure(path, directory)
@@ -233,6 +232,10 @@ def launch(role, attempt, anchor, payload):
         run_fd = source(role_root + "/run", True)
         home_fd = source(role_root + "/home", True)
         evidence_fd = source(evidence, True)
+        wink_fd = source(role_root + "/install/winkyou/wink", False)
+        expected_hash, wink_info = pinned_image_hash(wink_fd)
+        if expected_hash != marker["image_sha256"] or image_hash(role_root + "/install/winkyou/gate-c-child-wrapper") != expected_hash:
+            raise ValueError("role_not_initialized")
         material_fd, instance_fd = -1, -1
         material_path, instance_path = "", ""
         if payload == "run":
@@ -263,23 +266,32 @@ def launch(role, attempt, anchor, payload):
         witness_fd = os.open(evidence + "/launch.json", os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
         gate_read, gate_write = os.pipe()
         fds.append(gate_read)
-        argv = ["/usr/bin/unshare", "-m", "--propagation", "private", "/usr/bin/python3", "-I", "-B", "-c", CHILD,
+        ready_read, ready_write = os.pipe()
+        fds.append(ready_write)
+        argv = ["/usr/sbin/ip", "netns", "exec", anchor, "/usr/bin/unshare", "-m", "--propagation", "private", "/usr/bin/python3", "-I", "-B", "-c", CHILD,
                 str(role_fd), str(var_lib_fd), str(install_fd), str(shadow_fd), str(machine_id_fd), str(registry_fd),
-                str(run_fd), str(home_fd), str(evidence_fd), str(material_fd), str(instance_fd), str(gate_read),
+                str(run_fd), str(home_fd), str(evidence_fd), str(material_fd), str(instance_fd), str(wink_fd), str(ready_write), str(gate_read),
+                str(wink_info.st_dev), str(wink_info.st_ino),
                 attempt, anchor, payload, role_root, "/run/netns", evidence, material_path, instance_path]
         child = subprocess.Popen(argv, pass_fds=tuple(fds), env=ENV, stderr=subprocess.DEVNULL)
-        os.write(gate_write, b"1")
-        os.close(gate_write)
-        gate_write = None
-        witness = exec_witness(child, expected_hash, expected_net, os.stat("/proc/self/ns/mnt").st_ino)
-        line = "C1C_LAUNCH role=" + role + " " + " ".join(key + "=" + str(witness[key]) for key in ("pid", "starttime", "net_ns", "mnt_ns", "exe_sha256"))
+        for fd in (ready_write, gate_read):
+            os.close(fd)
+            fds.remove(fd)
+        witness = exec_witness(child, ready_read, expected_hash, wink_info.st_ino, expected_net, os.stat("/proc/self/ns/mnt").st_ino)
+        line = "C1C_LAUNCH role=" + role + " " + " ".join(key + "=" + str(witness[key]) for key in ("pid", "starttime", "net_ns", "mnt_ns", "exe_sha256", "exe_ino"))
         data = (line + "\n").encode()
         if os.write(witness_fd, data) != len(data):
             raise ValueError("witness_failed")
         os.fsync(witness_fd)
         os.write(1, data)
+        if os.write(gate_write, b"1") != 1:
+            raise ValueError("witness_failed")
+        os.close(gate_write)
+        gate_write = None
         return child.wait()
     finally:
+        if ready_read is not None:
+            os.close(ready_read)
         if gate_write is not None:
             os.close(gate_write)
         for fd in fds:
