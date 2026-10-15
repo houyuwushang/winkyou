@@ -18,6 +18,9 @@ import (
 // Sockets opened synchronously in body remain bound to that namespace after
 // body starts their worker goroutines. A callback panic or runtime.Goexit is
 // converted into an error after the original namespace has been restored.
+// OS threads created by native code in body may inherit its network namespace;
+// callers must not infer host scope from goroutine scheduling. Host sysctl I/O
+// must use HostSysctl, which selects init on its own disposable locked thread.
 func RunInNamespace(name string, body func() error) error {
 	if !safeNamePattern.MatchString(name) || body == nil {
 		return errors.New("natlab: valid namespace name and callback are required")
