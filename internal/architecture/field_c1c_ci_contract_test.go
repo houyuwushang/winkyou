@@ -18,6 +18,8 @@ func TestFieldC1cRequiredCIBudgetAndAuthority(t *testing.T) {
 	const secondBuild = 23 * time.Second
 	const expandedUnitRace = 343 * time.Second
 	const isolatedMatrix = 4 * time.Minute
+	// Full-launcher GREEN plus the real late-netns mutation: first push job
+	// 116243040253 measured 3s. The existing cap formula is unchanged.
 	const roleViewProof = 3 * time.Second
 	budget := (baselinePreparation + symbolProof + secondBuild + expandedUnitRace + isolatedMatrix + roleViewProof) * 5 / 4
 	minutes := int((budget + time.Minute - 1) / time.Minute)
