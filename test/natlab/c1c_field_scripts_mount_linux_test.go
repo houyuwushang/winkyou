@@ -4,6 +4,7 @@ package natlab
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -26,14 +27,27 @@ const (
 )
 
 type c1cRoleViewResult struct {
-	InitExit       int            `json:"init_exit"`
-	InitObserved   bool           `json:"init_observed"`
-	LaunchExit     int            `json:"launch_exit"`
-	LaunchObserved bool           `json:"launch_observed"`
-	Setup          map[string]any `json:"setup,omitempty"`
-	Launch         map[string]any `json:"launch,omitempty"`
-	RegistrySame   bool           `json:"registry_same"`
-	RootClear      bool           `json:"root_clear"`
+	InitExit       int                      `json:"init_exit"`
+	InitObserved   bool                     `json:"init_observed"`
+	LaunchExit     int                      `json:"launch_exit"`
+	LaunchObserved bool                     `json:"launch_observed"`
+	Setup          map[string]any           `json:"setup,omitempty"`
+	Launch         map[string]any           `json:"launch,omitempty"`
+	RegistrySame   bool                     `json:"registry_same"`
+	RootClear      bool                     `json:"root_clear"`
+	EndToEnd       *c1cLaunchEndToEndResult `json:"launcher_end_to_end,omitempty"`
+}
+
+type c1cLaunchEndToEndResult struct {
+	Exit        int            `json:"exit"`
+	Stdout      string         `json:"stdout"`
+	Stderr      string         `json:"stderr"`
+	Payload     map[string]any `json:"payload"`
+	Anchor      uint64         `json:"anchor"`
+	ParentMount uint64         `json:"parent_mount"`
+	ImageSHA256 string         `json:"image_sha256"`
+	ImageInode  uint64         `json:"image_inode"`
+	Launch      string         `json:"launch"`
 }
 
 func TestLinuxC1cFieldScriptRoleViewProof(t *testing.T) {
@@ -102,6 +116,18 @@ func TestLinuxC1cFieldScriptRoleViewProof(t *testing.T) {
 	if errno, ok := c1cNumber(result.Launch, "instance_write_errno"); !ok || int(errno) != int(syscall.EROFS) {
 		t.Fatalf("instance bind is not read-only: %+v", result.Launch)
 	}
+	t.Run("launcher_end_to_end", func(t *testing.T) {
+		actual := result.EndToEnd
+		if actual == nil || actual.Exit != 1 || actual.Stderr != "" ||
+			!strings.Contains(actual.Stdout, "C1C_EXIT role=initiator code=0\n") ||
+			!strings.Contains(actual.Stdout, "C1C_LAUNCH class=exec_witness_unavailable\n") {
+			t.Fatalf("short-payload RED was not reproduced: %+v", actual)
+		}
+		if actual.Payload["ns_net"] != float64(actual.Anchor) || actual.Payload["machine_id"] != strings.Repeat("7", 32) {
+			t.Fatalf("short payload did not complete in the role view: %+v", actual)
+		}
+		fmt.Printf("launcher_end_to_end RED (payload completed; witness unavailable):\n%s", actual.Stdout)
+	})
 }
 
 func c1cDecodeRoleViewResult(output []byte, result *c1cRoleViewResult) error {
@@ -371,12 +397,129 @@ func c1cRunRoleViewProofHelper() error {
 			return err
 		}
 	}
+	result.EndToEnd, err = c1cRunLauncherEndToEnd(repository, attempt)
+	if err != nil {
+		return err
+	}
 	encoded, err := json.Marshal(result)
 	if err != nil {
 		return err
 	}
 	_, err = os.Stdout.Write(append(encoded, '\n'))
 	return err
+}
+
+// Run the unchanged, complete launcher below the same outer net/mount fixture.
+// The extra mount view supplies its fixed root without touching a host role tree.
+func c1cRunLauncherEndToEnd(repository, attempt string) (*c1cLaunchEndToEndResult, error) {
+	root, err := os.MkdirTemp("/tmp", "winkyou-c1c-full-launch-")
+	if err != nil {
+		return nil, err
+	}
+	defer os.RemoveAll(root)
+	role := filepath.Join(root, "c1c/endpoints/initiator")
+	evidence := filepath.Join(root, "c1c/evidence", attempt, "endpoint-initiator")
+	for _, path := range []string{
+		role + "/var-lib", role + "/install/winkyou", role + "/run/netns",
+		role + "/home/.winkyou-field/c1c/evidence", evidence,
+	} {
+		if err := os.MkdirAll(path, 0o700); err != nil {
+			return nil, err
+		}
+	}
+	if err := os.WriteFile(role+"/machine-id", []byte(strings.Repeat("7", 32)+"\n"), 0o600); err != nil {
+		return nil, err
+	}
+	if err := os.WriteFile(role+"/shadow", []byte("root:x:19000:0:99999:7:::\n"), 0o600); err != nil {
+		return nil, err
+	}
+	// A native ELF avoids observing an interpreter in place of the pinned image.
+	// Padding matches the measured field image; it changes neither instructions
+	// nor payload lifetime, but retains the original observer's full-hash cost.
+	image := role + "/install/winkyou/wink"
+	program := fmt.Sprintf(`#include <sys/stat.h>
+#include <time.h>
+#include <fcntl.h>
+#include <unistd.h>
+#include <stdio.h>
+#include <string.h>
+#include <stdint.h>
+int main(int argc, char **argv) {
+    struct timespec a, b;
+    struct stat ns;
+    char machine[34] = {0}, payload[256];
+    if (argc != 2 || strcmp(argv[1], "version")) return 70;
+    if (clock_gettime(CLOCK_MONOTONIC, &a) || stat("/proc/self/ns/net", &ns)) return 71;
+    int in = open("/etc/machine-id", O_RDONLY);
+    if (in < 0 || read(in, machine, 33) != 33 || close(in)) return 72;
+    machine[32] = 0;
+    const char *base = "/root/.winkyou-field/c1c/evidence/";
+    char directory[256], file[256];
+    snprintf(directory, sizeof directory, "%%s%s", base);
+    if (mkdir(directory, 0700)) return 73;
+    snprintf(directory, sizeof directory, "%%s%s/endpoint-initiator", base);
+    if (mkdir(directory, 0700)) return 73;
+    snprintf(file, sizeof file, "%%s/payload.json", directory);
+    int out = open(file, O_WRONLY|O_CREAT|O_EXCL, 0600);
+    int size = snprintf(payload, sizeof payload, "{\"ns_net\":%%llu,\"machine_id\":\"%%s\"}\n", (unsigned long long)ns.st_ino, machine);
+    if (out < 0 || write(out, payload, size) != size || close(out)) return 74;
+    if (clock_gettime(CLOCK_MONOTONIC, &b)) return 75;
+    int64_t elapsed = (b.tv_sec-a.tv_sec)*1000000000LL+b.tv_nsec-a.tv_nsec;
+    return elapsed <= 5000000 ? 0 : 76;
+}
+`, attempt, attempt)
+	compiler := exec.Command("gcc", "-x", "c", "-O2", "-o", image, "-")
+	compiler.Stdin = strings.NewReader(program)
+	if output, err := compiler.CombinedOutput(); err != nil {
+		return nil, fmt.Errorf("short ELF build: %w %s", err, output)
+	}
+	if err := os.Chmod(image, 0o700); err != nil {
+		return nil, err
+	}
+	if err := os.Truncate(image, 31403149); err != nil {
+		return nil, err
+	}
+	data, err := os.ReadFile(image)
+	if err != nil {
+		return nil, err
+	}
+	digest := fmt.Sprintf("%x", sha256.Sum256(data))
+	if err := os.WriteFile(role+"/install/winkyou/gate-c-child-wrapper", data, 0o700); err != nil {
+		return nil, err
+	}
+	marker, _ := json.Marshal(map[string]string{"schema": "winkyou-c1c-role-init/1", "role": "initiator", "image_sha256": digest})
+	if err := os.WriteFile(role+"/initialized.json", marker, 0o600); err != nil {
+		return nil, err
+	}
+	sum := sha256.Sum256([]byte("winkyou-c1c-anchor/1\n" + attempt))
+	anchor := fmt.Sprintf("wyc1c%x-i", sum[:4])
+	if output, err := exec.Command("/usr/sbin/ip", "netns", "add", anchor).CombinedOutput(); err != nil {
+		return nil, fmt.Errorf("full launcher anchor: %w %s", err, output)
+	}
+	defer exec.Command("/usr/sbin/ip", "netns", "del", anchor).Run()
+	const driver = `import json, os, subprocess, sys
+root, source, attempt, anchor, digest = sys.argv[1:]
+subprocess.run(["/usr/bin/mount","--make-rprivate","/"],check=True)
+subprocess.run(["/usr/bin/mount","-t","tmpfs","-o","mode=700","tmpfs","/root"],check=True)
+os.mkdir("/root/.winkyou-field",0o700)
+subprocess.run(["/usr/bin/mount","--bind",root,"/root/.winkyou-field"],check=True)
+base="/root/.winkyou-field/c1c"
+role=base+"/endpoints/initiator"
+evidence=base+"/evidence/"+attempt+"/endpoint-initiator"
+result=subprocess.run(["bash",source,"initiator",attempt,anchor,"--payload","version"],stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True)
+payload=json.load(open(evidence+"/"+attempt+"/endpoint-initiator/payload.json"))
+print(json.dumps({"exit":result.returncode,"stdout":result.stdout,"stderr":result.stderr,"payload":payload,"anchor":os.stat("/run/netns/"+anchor).st_ino,"parent_mount":os.stat("/proc/self/ns/mnt").st_ino,"image_sha256":digest,"image_inode":os.stat(role+"/install/winkyou/wink").st_ino,"launch":open(evidence+"/launch.json").read()}))
+`
+	command := exec.Command("/usr/bin/unshare", "-m", "--propagation", "private", "/usr/bin/python3", "-I", "-B", "-c", driver, root, filepath.Join(repository, "scripts/c1c-endpoint-launch.sh"), attempt, anchor, digest)
+	output, err := command.CombinedOutput()
+	if err != nil {
+		return nil, fmt.Errorf("full launcher driver: %w %s", err, output)
+	}
+	var result c1cLaunchEndToEndResult
+	if err := json.Unmarshal(output, &result); err != nil {
+		return nil, fmt.Errorf("full launcher result: %w %s", err, output)
+	}
+	return &result, nil
 }
 
 func c1cDirectoryEntries(path string) ([]string, error) {
