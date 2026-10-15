@@ -4,6 +4,7 @@ package natlab
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -26,14 +27,31 @@ const (
 )
 
 type c1cRoleViewResult struct {
-	InitExit       int            `json:"init_exit"`
-	InitObserved   bool           `json:"init_observed"`
-	LaunchExit     int            `json:"launch_exit"`
-	LaunchObserved bool           `json:"launch_observed"`
-	Setup          map[string]any `json:"setup,omitempty"`
-	Launch         map[string]any `json:"launch,omitempty"`
-	RegistrySame   bool           `json:"registry_same"`
-	RootClear      bool           `json:"root_clear"`
+	InitExit       int                      `json:"init_exit"`
+	InitObserved   bool                     `json:"init_observed"`
+	LaunchExit     int                      `json:"launch_exit"`
+	LaunchObserved bool                     `json:"launch_observed"`
+	Setup          map[string]any           `json:"setup,omitempty"`
+	Launch         map[string]any           `json:"launch,omitempty"`
+	RegistrySame   bool                     `json:"registry_same"`
+	RootClear      bool                     `json:"root_clear"`
+	EndToEnd       *c1cLaunchEndToEndResult `json:"launcher_end_to_end,omitempty"`
+	LateNet        *c1cLaunchEndToEndResult `json:"late_net_mutation,omitempty"`
+}
+
+type c1cLaunchEndToEndResult struct {
+	Exit        int            `json:"exit"`
+	Stdout      string         `json:"stdout"`
+	Stderr      string         `json:"stderr"`
+	Payload     map[string]any `json:"payload"`
+	Anchor      uint64         `json:"anchor"`
+	ParentMount uint64         `json:"parent_mount"`
+	ImageSHA256 string         `json:"image_sha256"`
+	ImageInode  uint64         `json:"image_inode"`
+	Launch      string         `json:"launch"`
+	ReplayExit  int            `json:"replay_exit"`
+	Replay      string         `json:"replay"`
+	ObservedNet uint64         `json:"observed_net"`
 }
 
 func TestLinuxC1cFieldScriptRoleViewProof(t *testing.T) {
@@ -102,6 +120,53 @@ func TestLinuxC1cFieldScriptRoleViewProof(t *testing.T) {
 	if errno, ok := c1cNumber(result.Launch, "instance_write_errno"); !ok || int(errno) != int(syscall.EROFS) {
 		t.Fatalf("instance bind is not read-only: %+v", result.Launch)
 	}
+	t.Run("launcher_end_to_end", func(t *testing.T) {
+		actual := result.EndToEnd
+		if err := c1cCheckLaunchWitness(actual); err != nil {
+			t.Fatalf("short-payload witness failed: %v result=%+v", err, actual)
+		}
+		if actual.Payload["ns_net"] != float64(actual.Anchor) || actual.Payload["machine_id"] != strings.Repeat("7", 32) {
+			t.Fatalf("short payload did not complete in the role view: %+v", actual)
+		}
+		if actual.ReplayExit != 1 || actual.Replay != "C1C_LAUNCH class=evidence_already_claimed\n" {
+			t.Fatalf("same attempt was not rejected: %+v", actual)
+		}
+		fmt.Printf("launcher_end_to_end GREEN (witness precedes short payload):\n%s", actual.Stdout)
+	})
+	t.Run("launcher_late_net_mutation", func(t *testing.T) {
+		actual := result.LateNet
+		if actual == nil || actual.ObservedNet == 0 || actual.ObservedNet == actual.Anchor || actual.Exit != 1 ||
+			actual.Stdout != "C1C_EXIT role=initiator code=70\nC1C_LAUNCH class=exec_witness_unavailable\n" || actual.Launch != "" || len(actual.Payload) != 0 {
+			t.Fatalf("late netns entry mutation escaped: %+v", actual)
+		}
+		if c1cCheckLaunchWitness(actual) == nil {
+			t.Fatal("end-to-end checker accepted late netns entry")
+		}
+		fmt.Printf("launcher_late_net_mutation RED net_ns=%d anchor=%d; 50ms payload withheld by gate\n", actual.ObservedNet, actual.Anchor)
+	})
+}
+
+func c1cCheckLaunchWitness(actual *c1cLaunchEndToEndResult) error {
+	if actual == nil || actual.Exit != 0 || actual.Stderr != "" {
+		return errors.New("launcher did not exit cleanly")
+	}
+	lines := strings.Split(strings.TrimSuffix(actual.Stdout, "\n"), "\n")
+	if len(lines) != 2 || lines[1] != "C1C_EXIT role=initiator code=0" || actual.Launch != lines[0]+"\n" {
+		return errors.New("persistent witness and stdout order differ")
+	}
+	var pid, ticks, netNS, mountNS, inode uint64
+	var digest string
+	n, err := fmt.Sscanf(lines[0], "C1C_LAUNCH role=initiator pid=%d starttime=%d net_ns=%d mnt_ns=%d exe_sha256=%s exe_ino=%d", &pid, &ticks, &netNS, &mountNS, &digest, &inode)
+	if err != nil || n != 6 || pid < 2 || ticks == 0 || mountNS == 0 || mountNS == actual.ParentMount || digest != actual.ImageSHA256 || inode != actual.ImageInode {
+		return errors.New("pinned image or process witness differs")
+	}
+	if netNS != actual.Anchor {
+		return fmt.Errorf("net_ns=%d differs from anchor=%d", netNS, actual.Anchor)
+	}
+	if actual.Payload["pid"] != float64(pid) {
+		return errors.New("payload pid differs from witnessed child pid")
+	}
+	return nil
 }
 
 func c1cDecodeRoleViewResult(output []byte, result *c1cRoleViewResult) error {
@@ -371,12 +436,170 @@ func c1cRunRoleViewProofHelper() error {
 			return err
 		}
 	}
+	result.EndToEnd, err = c1cRunLauncherEndToEnd(repository, attempt, false)
+	if err != nil {
+		return err
+	}
+	result.LateNet, err = c1cRunLauncherEndToEnd(repository, attempt, true)
+	if err != nil {
+		return err
+	}
+	registryAfter, err = c1cDirectoryEntries("/run/netns")
+	if err != nil {
+		return err
+	}
+	result.RegistrySame = strings.Join(registryBefore, "\x00") == strings.Join(registryAfter, "\x00")
+	result.RootClear = exec.Command("/usr/bin/mountpoint", "-q", "/root").Run() != nil
 	encoded, err := json.Marshal(result)
 	if err != nil {
 		return err
 	}
 	_, err = os.Stdout.Write(append(encoded, '\n'))
 	return err
+}
+
+// Run the unchanged, complete launcher below the same outer net/mount fixture.
+// The extra mount view supplies its fixed root without touching a host role tree.
+func c1cRunLauncherEndToEnd(repository, attempt string, lateNet bool) (*c1cLaunchEndToEndResult, error) {
+	root, err := os.MkdirTemp("/tmp", "winkyou-c1c-full-launch-")
+	if err != nil {
+		return nil, err
+	}
+	defer os.RemoveAll(root)
+	role := filepath.Join(root, "c1c/endpoints/initiator")
+	evidence := filepath.Join(root, "c1c/evidence", attempt, "endpoint-initiator")
+	for _, path := range []string{
+		role + "/var-lib", role + "/install/winkyou", role + "/run/netns",
+		role + "/home/.winkyou-field/c1c/evidence", evidence,
+	} {
+		if err := os.MkdirAll(path, 0o700); err != nil {
+			return nil, err
+		}
+	}
+	if err := os.WriteFile(role+"/machine-id", []byte(strings.Repeat("7", 32)+"\n"), 0o600); err != nil {
+		return nil, err
+	}
+	if err := os.WriteFile(role+"/shadow", []byte("root:x:19000:0:99999:7:::\n"), 0o600); err != nil {
+		return nil, err
+	}
+	// A native ELF avoids observing an interpreter in place of the pinned image.
+	// Padding matches the measured field image; it changes neither instructions
+	// nor payload lifetime, but retains the original observer's full-hash cost.
+	image := role + "/install/winkyou/wink"
+	program := fmt.Sprintf(`#include <sys/stat.h>
+#include <time.h>
+#include <fcntl.h>
+#include <unistd.h>
+#include <stdio.h>
+#include <string.h>
+#include <stdint.h>
+int main(int argc, char **argv) {
+    struct timespec a, b;
+    struct stat ns;
+    char machine[34] = {0}, payload[256];
+    if (argc != 2 || strcmp(argv[1], "version")) return 70;
+    if (clock_gettime(CLOCK_MONOTONIC, &a) || stat("/proc/self/ns/net", &ns)) return 71;
+    int in = open("/etc/machine-id", O_RDONLY);
+    if (in < 0 || read(in, machine, 33) != 33 || close(in)) return 72;
+    machine[32] = 0;
+    const char *base = "/root/.winkyou-field/c1c/evidence/";
+    char directory[256], file[256];
+    snprintf(directory, sizeof directory, "%%s%s", base);
+    if (mkdir(directory, 0700)) return 73;
+    snprintf(directory, sizeof directory, "%%s%s/endpoint-initiator", base);
+    if (mkdir(directory, 0700)) return 73;
+    snprintf(file, sizeof file, "%%s/payload.json", directory);
+    int out = open(file, O_WRONLY|O_CREAT|O_EXCL, 0600);
+    int size = snprintf(payload, sizeof payload, "{\"pid\":%%ld,\"ns_net\":%%llu,\"machine_id\":\"%%s\"}\n", (long)getpid(), (unsigned long long)ns.st_ino, machine);
+    if (out < 0 || write(out, payload, size) != size || close(out)) return 74;
+    if (clock_gettime(CLOCK_MONOTONIC, &b)) return 75;
+    int64_t elapsed = (b.tv_sec-a.tv_sec)*1000000000LL+b.tv_nsec-a.tv_nsec;
+    return elapsed <= 5000000 ? 0 : 76;
+}
+`, attempt, attempt)
+	if lateNet {
+		program = strings.Replace(program, "    int in = open", "    struct timespec pause = {0, 50000000};\n    if (nanosleep(&pause, 0)) return 77;\n    int in = open", 1)
+		program = strings.Replace(program, "elapsed <= 5000000", "elapsed <= 100000000", 1)
+	}
+	compiler := exec.Command("gcc", "-x", "c", "-O2", "-o", image, "-")
+	compiler.Stdin = strings.NewReader(program)
+	if output, err := compiler.CombinedOutput(); err != nil {
+		return nil, fmt.Errorf("short ELF build: %w %s", err, output)
+	}
+	if err := os.Chmod(image, 0o700); err != nil {
+		return nil, err
+	}
+	if err := os.Truncate(image, 31403149); err != nil {
+		return nil, err
+	}
+	data, err := os.ReadFile(image)
+	if err != nil {
+		return nil, err
+	}
+	digest := fmt.Sprintf("%x", sha256.Sum256(data))
+	if err := os.WriteFile(role+"/install/winkyou/gate-c-child-wrapper", data, 0o700); err != nil {
+		return nil, err
+	}
+	marker, _ := json.Marshal(map[string]string{"schema": "winkyou-c1c-role-init/1", "role": "initiator", "image_sha256": digest})
+	if err := os.WriteFile(role+"/initialized.json", marker, 0o600); err != nil {
+		return nil, err
+	}
+	sum := sha256.Sum256([]byte("winkyou-c1c-anchor/1\n" + attempt))
+	anchor := fmt.Sprintf("wyc1c%x-i", sum[:4])
+	if output, err := exec.Command("/usr/sbin/ip", "netns", "add", anchor).CombinedOutput(); err != nil {
+		return nil, fmt.Errorf("full launcher anchor: %w %s", err, output)
+	}
+	defer exec.Command("/usr/sbin/ip", "netns", "del", anchor).Run()
+	script := filepath.Join(repository, "scripts/c1c-endpoint-launch.sh")
+	observation := filepath.Join(root, "observed-net.json")
+	if lateNet {
+		original, err := os.ReadFile(script)
+		if err != nil {
+			return nil, err
+		}
+		mutant := string(original)
+		changes := [][2]string{
+			{`argv = ["/usr/sbin/ip", "netns", "exec", anchor, "/usr/bin/unshare"`, `argv = ["/usr/bin/unshare"`},
+			{`os.execve(wink_fd, args, ENV)`, `os.execve("/usr/sbin/ip", ["/usr/sbin/ip", "netns", "exec", anchor, "/proc/self/fd/" + str(wink_fd)] + args[1:], ENV)`},
+			{`    return {"pid": pid, "starttime": ticks, "net_ns": net, "mnt_ns": mount}`, "    with open(" + strconv.Quote(observation) + ", \"w\") as observed:\n        json.dump(net, observed)\n" + `    return {"pid": pid, "starttime": ticks, "net_ns": net, "mnt_ns": mount}`},
+		}
+		for _, change := range changes {
+			if strings.Count(mutant, change[0]) != 1 {
+				return nil, errors.New("late-net mutation target is not unique")
+			}
+			mutant = strings.Replace(mutant, change[0], change[1], 1)
+		}
+		script = filepath.Join(root, "late-net-launch.sh")
+		if err := os.WriteFile(script, []byte(mutant), 0o700); err != nil {
+			return nil, err
+		}
+	}
+	const driver = `import json, os, subprocess, sys
+root, source, attempt, anchor, digest, observation = sys.argv[1:]
+subprocess.run(["/usr/bin/mount","--make-rprivate","/"],check=True)
+subprocess.run(["/usr/bin/mount","-t","tmpfs","-o","mode=700","tmpfs","/root"],check=True)
+os.mkdir("/root/.winkyou-field",0o700)
+subprocess.run(["/usr/bin/mount","--bind",root,"/root/.winkyou-field"],check=True)
+base="/root/.winkyou-field/c1c"
+role=base+"/endpoints/initiator"
+evidence=base+"/evidence/"+attempt+"/endpoint-initiator"
+result=subprocess.run(["bash",source,"initiator",attempt,anchor,"--payload","version"],stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True)
+payload_path=evidence+"/"+attempt+"/endpoint-initiator/payload.json"
+payload=json.load(open(payload_path)) if os.path.exists(payload_path) else {}
+observed=json.load(open(observation)) if os.path.exists(observation) else 0
+replay=subprocess.run(["bash",source,"initiator",attempt,anchor,"--payload","version"],stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True)
+print(json.dumps({"exit":result.returncode,"stdout":result.stdout,"stderr":result.stderr,"payload":payload,"anchor":os.stat("/run/netns/"+anchor).st_ino,"parent_mount":os.stat("/proc/self/ns/mnt").st_ino,"image_sha256":digest,"image_inode":os.stat(role+"/install/winkyou/wink").st_ino,"launch":open(evidence+"/launch.json").read(),"replay_exit":replay.returncode,"replay":replay.stdout,"observed_net":observed}))
+`
+	command := exec.Command("/usr/bin/unshare", "-m", "--propagation", "private", "/usr/bin/python3", "-I", "-B", "-c", driver, root, script, attempt, anchor, digest, observation)
+	output, err := command.CombinedOutput()
+	if err != nil {
+		return nil, fmt.Errorf("full launcher driver: %w %s", err, output)
+	}
+	var result c1cLaunchEndToEndResult
+	if err := json.Unmarshal(output, &result); err != nil {
+		return nil, fmt.Errorf("full launcher result: %w %s", err, output)
+	}
+	return &result, nil
 }
 
 func c1cDirectoryEntries(path string) ([]string, error) {
@@ -469,6 +692,30 @@ func c1cRunChildSnippet(snippet, role, evidence, material, instance, attempt, an
 		}
 		files = append(files, file)
 	}
+	deterministic := strings.Contains(snippet, "ready_write")
+	var readyRead, readyWrite *os.File
+	var imageInfo *syscall.Stat_t
+	if deterministic {
+		image, err := os.Open(role + "/install/winkyou/wink")
+		if err != nil {
+			c1cCloseFiles(files)
+			return nil, err
+		}
+		files = append(files, image)
+		info, err := image.Stat()
+		if err != nil {
+			c1cCloseFiles(files)
+			return nil, err
+		}
+		imageInfo = info.Sys().(*syscall.Stat_t)
+		readyRead, readyWrite, err = os.Pipe()
+		if err != nil {
+			c1cCloseFiles(files)
+			return nil, err
+		}
+		defer readyRead.Close()
+		files = append(files, readyWrite)
+	}
 	readBarrier, writeBarrier, err := os.Pipe()
 	if err != nil {
 		c1cCloseFiles(files)
@@ -481,7 +728,13 @@ func c1cRunChildSnippet(snippet, role, evidence, material, instance, attempt, an
 	if fixed {
 		args = []string{"3", "4", "5", "6", "7", "8", "9", "10", "11", "12", "13", "14", attempt, anchor, "run", role, "/run/netns", evidence, material, instance}
 	}
+	if deterministic {
+		args = []string{"3", "4", "5", "6", "7", "8", "9", "10", "11", "12", "13", "14", "15", "16", strconv.FormatUint(uint64(imageInfo.Dev), 10), strconv.FormatUint(imageInfo.Ino, 10), attempt, anchor, "run", role, "/run/netns", evidence, material, instance}
+	}
 	cmd := exec.Command("/usr/bin/unshare", "-m", "--propagation", "private", "/usr/bin/python3", "-I", "-B", "-c", snippet)
+	if deterministic {
+		cmd = exec.Command("/usr/sbin/ip", append([]string{"netns", "exec", anchor}, cmd.Args...)...)
+	}
 	cmd.Args = append(cmd.Args, args...)
 	cmd.ExtraFiles = files
 	var stdout, stderr bytes.Buffer
@@ -492,6 +745,14 @@ func c1cRunChildSnippet(snippet, role, evidence, material, instance, attempt, an
 	// ExtraFiles are duplicated by Start; release the parent pins while the
 	// child still owns its copies and keep only the barrier writer below.
 	c1cCloseFiles(files[:len(files)-1])
+	if deterministic {
+		var ready [1]byte
+		if n, err := readyRead.Read(ready[:]); err != nil || n != 1 || ready[0] != 'R' {
+			_ = writeBarrier.Close()
+			_ = cmd.Wait()
+			return nil, fmt.Errorf("child readiness missing: n=%d err=%v", n, err)
+		}
+	}
 	if _, err := writeBarrier.Write([]byte("1")); err != nil {
 		_ = cmd.Process.Kill()
 		_ = cmd.Wait()

@@ -208,6 +208,7 @@ class FakeFS:
         return result
     def write(self, fd, data):
         data = bytes(data)
+        self.calls.append(("write", fd, data))
         if fd == 1:
             self.calls.append(("stdout", data))
             return len(data)
@@ -521,7 +522,34 @@ def stop_checks(scope):
         check(closed == ([] if mode=="unsupported" else [7]), "pidfd_drained")
 
 
+def witness_contract(source):
+    scope, parent = definitions(source)
+    child = ast.parse(scope["CHILD"])
+    def calls(tree, name):
+        return [n for n in ast.walk(tree) if isinstance(n, ast.Call) and ast.unparse(n.func) == name]
+    execs = [n for n in ast.walk(child) if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute) and n.func.attr.startswith("exec")]
+    check(len(execs) == 1 and ast.unparse(execs[0]) == "os.execve(wink_fd, args, ENV)", "only_pinned_fd_fexecve")
+    check("os.execv(" not in scope["CHILD"], "no_path_exec")
+    pins = [n for n in calls(child, "os.fstat") if ast.unparse(n.args[0]) == "wink_fd"]
+    ready = [n for n in calls(child, "os.write") if ast.unparse(n.args[0]) == "ready_write"]
+    gates = [n for n in calls(child, "os.read") if ast.unparse(n.args[0]) == "gate_read"]
+    check(len(pins) == len(ready) == len(gates) == 1 and pins[0].lineno < ready[0].lineno < gates[0].lineno < execs[0].lineno, "child_pin_ready_gate_exec_order")
+    comparisons = [n for n in ast.walk(child) if isinstance(n, ast.If) and ast.unparse(n.test) == "(info.st_dev, info.st_ino) != (wink_dev, wink_ino)"]
+    check(len(comparisons) == 1 and pins[0].lineno < comparisons[0].lineno < ready[0].lineno and any(isinstance(n, ast.Raise) for n in ast.walk(comparisons[0])), "child_pin_identity_rechecked")
+    for function in ("exec_witness", "process_witness"):
+        node = next(n for n in parent.body if isinstance(n, ast.FunctionDef) and n.name == function)
+        check(not any(isinstance(n, ast.Constant) and n.value == "/exe" for n in ast.walk(node)), "no_proc_exe_observer")
+    launch = next(n for n in parent.body if isinstance(n, ast.FunctionDef) and n.name == "launch")
+    witnesses = calls(launch, "exec_witness")
+    releases = [n for n in calls(launch, "os.write") if ast.unparse(n) == "os.write(gate_write, b'1')"]
+    emits = [n for n in calls(launch, "os.write") if ast.unparse(n) == "os.write(1, data)"]
+    syncs = [n for n in calls(launch, "os.fsync") if ast.unparse(n.args[0]) == "witness_fd"]
+    check(len(witnesses) == len(releases) == len(emits) == len(syncs) == 1 and witnesses[0].lineno < syncs[0].lineno < emits[0].lineno < releases[0].lineno, "durable_and_stdout_witness_before_release")
+
+
 def launcher_checks(scope):
+    global MUTATIONS
+    witness_contract(request["source"])
     mount_bind_contract(scope["CHILD"], ast.parse(scope["CHILD"]), "launch")
     role_view_order_contract(scope["CHILD"], "launch")
     ident = base64.urlsafe_b64encode(b"s"*16).decode().rstrip("=")
@@ -532,20 +560,30 @@ def launcher_checks(scope):
         rejected(lambda:scope["arguments"](args), "launch_args_rejected")
     row = "4242 (x ) y) S " + " ".join(["0"]*18+["1234"])
     check(scope["starttime"](row,4242) == 1234, "launch_stat_field22")
-    clock = Clock()
-    scope["time"] = clock
     child = SimpleNamespace(pid=4242,poll=lambda:None)
     seen = []
     def sample(pid):
         seen.append(pid)
-        return {"pid":pid,"starttime":1234,"exe_sha256":"bad" if len(seen)==1 else "a"*64,"net_ns":90,"mnt_ns":91}
+        return {"pid":pid,"starttime":1234,"net_ns":90,"mnt_ns":91}
     scope["process_witness"] = sample
-    check(scope["exec_witness"](child,"a"*64,90,1)["pid"]==4242 and len(seen)==2, "actual_exec_not_interpreter")
-    exited = SimpleNamespace(pid=4242,poll=lambda:0)
-    rejected(lambda:scope["exec_witness"](exited,"a"*64,90,1), "short_process_not_fabricated")
-    scope["time"] = Clock()
-    scope["process_witness"] = lambda _: {"exe_sha256":"bad","net_ns":90,"mnt_ns":91}
-    rejected(lambda:scope["exec_witness"](child,"a"*64,90,1), "startup_observer_bounded")
+    def selected(read, write, error, seconds):
+        check((read,write,error,seconds) == ([8],[],[],scope["STARTUP_SECONDS"]), "bounded_ready_select")
+        return ([8],[],[])
+    scope["select"] = SimpleNamespace(select=selected)
+    scope["os"] = SimpleNamespace(read=lambda fd,n:b"R")
+    witness = scope["exec_witness"](child,8,"a"*64,55,90,1)
+    check(witness["pid"]==4242 and witness["exe_ino"]==55 and witness["exe_sha256"]=="a"*64 and seen==[4242], "one_preexec_witness")
+    for signal in (b"",b"X"):
+        scope["os"] = SimpleNamespace(read=lambda fd,n:signal)
+        rejected(lambda:scope["exec_witness"](child,8,"a"*64,55,90,1), "early_eof_or_bad_ready_rejected")
+    scope["os"] = SimpleNamespace(read=lambda fd,n:b"R")
+    scope["select"] = SimpleNamespace(select=lambda *args:([],[],[]))
+    rejected(lambda:scope["exec_witness"](child,8,"a"*64,55,90,1), "startup_timeout_rejected")
+    scope["select"] = SimpleNamespace(select=selected)
+    for net,mount in ((1,91),(90,1)):
+        scope["process_witness"] = lambda _: {"net_ns":net,"mnt_ns":mount}
+        rejected(lambda:scope["exec_witness"](child,8,"a"*64,55,90,1), "wrong_namespace_rejected")
+    check(seen==[4242], "no_sampling_without_ready")
     for payload in ("run", "version"):
         fs, calls = FakeFS(), []
         scope["os"] = fs
@@ -573,18 +611,21 @@ def launcher_checks(scope):
             fs.add(root+"/material/"+ident+"/initiator",directory=True)
             fs.add(root+"/"+ident+".json",b'{"synthetic":true}')
         def popen(argv, **kwargs):
-            check(argv[:4] == ["/usr/bin/unshare","-m","--propagation","private"], "private_mount_prefix")
+            check(argv[:8] == ["/usr/sbin/ip","netns","exec",name+"-i","/usr/bin/unshare","-m","--propagation","private"], "private_mount_prefix")
             check(argv[-8:-5] == [ident,name+"-i",payload], "no_free_command")
-            check(len(kwargs["pass_fds"]) == (12 if payload=="run" else 10), "held_sources_exact")
+            check(len(kwargs["pass_fds"]) == (14 if payload=="run" else 12), "held_sources_exact")
             calls.append(argv)
             return SimpleNamespace(pid=4242,wait=lambda:0)
         scope["subprocess"] = SimpleNamespace(Popen=popen,DEVNULL=-3)
-        scope["exec_witness"] = lambda *_: {"pid":4242,"starttime":1234,"net_ns":90,"mnt_ns":91,"exe_sha256":digest}
+        scope["exec_witness"] = lambda *_: {"pid":4242,"starttime":1234,"net_ns":90,"mnt_ns":91,"exe_sha256":digest,"exe_ino":fs.nodes[role_root+"/install/winkyou/wink"].st_ino}
         check(scope["launch"]("initiator",ident,name+"-i",payload) == 0, "foreground_exit")
         check(len(calls)==1 and not fs.fds, "one_pipeline_no_fd_residue")
         stored = fs.nodes[evidence+"/launch.json"].data
         emitted = [c[1] for c in fs.calls if c[0]=="stdout"]
         check(stored in emitted and stored.startswith(b"C1C_LAUNCH role=initiator"), "same_persistent_and_stdout_witness")
+        released = next(i for i,c in enumerate(fs.calls) if c[0]=="write" and c[2]==b"1")
+        check(next(i for i,c in enumerate(fs.calls) if c[0]=="stdout" and c[1]==stored) < released, "fake_gate_after_stdout")
+        check(any(c[0]=="open" and c[1]==role_root+"/install/winkyou/wink" and c[2]&fs.O_NOFOLLOW for c in fs.calls), "wink_pin_nofollow")
         check(evidence+"/"+ident not in fs.nodes, "product_claim_directory_absent")
         if payload=="version":
             check(not any(c[0]=="open" and ("/material/" in c[1] or c[1]==root+"/"+ident+".json") for c in fs.calls), "version_zero_material_or_instance_io")
@@ -615,12 +656,19 @@ def launcher_checks(scope):
                "/run/netns", role_root+"/run", role_root+"/home", evidence, material, instance)
     for fd, path in zip(range(10, 21), sources):
         child_fs.fds[fd] = [path, 0]
+    child_fs.add(role_root+"/install/winkyou/wink", b"synthetic-field")
+    child_fs.fds[21] = [role_root+"/install/winkyou/wink",0]
+    image = child_fs.fstat(21)
+    child_fs.add("/ready")
+    child_fs.fds[22] = ["/ready", 0]
     child_fs.add("/barrier", b"1")
-    child_fs.fds[21] = ["/barrier", 0]
+    child_fs.fds[23] = ["/barrier", 0]
     closed = []
     class ExecComplete(Exception): pass
-    def execv(path, argv):
-        execs.append((path,argv))
+    def fexecve(fd, argv, environment):
+        check(fd==21 and child_fs.fstat(fd).st_ino==image.st_ino and environment==scope["ENV"], "fd_exec_preserves_pin_and_environment")
+        check(child_fs.nodes["/ready"].data==b"R", "child_announced_ready")
+        execs.append((fd,argv))
         raise ExecComplete()
     def child_run(argv, **kwargs):
         if argv[0] == "/usr/bin/mount":
@@ -630,10 +678,10 @@ def launcher_checks(scope):
         closed.append(fd)
         child_fs.fds.pop(fd, None)
     fake_os = SimpleNamespace(close=child_close, fstat=child_fs.fstat, stat=child_fs.stat,
-                              read=lambda *_:b"1",execv=execv)
+                              read=child_fs.read,write=child_fs.write,execve=fexecve)
     fake_sub = SimpleNamespace(DEVNULL=-3,run=child_run)
-    env = {"os":fake_os,"subprocess":fake_sub,
-           "sys":SimpleNamespace(argv=["child"]+[str(fd) for fd in range(10,22)]+[ident,name+"-i","run",role_root,"/run/netns",evidence,material,instance])}
+    env = {"os":fake_os,"subprocess":fake_sub,"ENV":scope["ENV"],
+           "sys":SimpleNamespace(argv=["child"]+[str(fd) for fd in range(10,24)]+[str(image.st_dev),str(image.st_ino)]+[ident,name+"-i","run",role_root,"/run/netns",evidence,material,instance])}
     tree = ast.parse(scope["CHILD"])
     exec(compile(ast.Module(body=[n for n in tree.body if isinstance(n,ast.FunctionDef)], type_ignores=[]),"synthetic","exec"),env)
     try: env["execute"]()
@@ -646,7 +694,22 @@ def launcher_checks(scope):
     check(all(len(kw.get("pass_fds",()))==11 for _,kw in commands), "sources_inherited_by_mount")
     check(len(commands)==12 and execs[0][1][-4:] == ["gate-c1c","run","--instance","/root/.winkyou-field/c1c/"+ident+".json"], "readonly_instance_material_and_exec")
     check(execs[0][1][-1] == "/root/.winkyou-field/c1c/"+ident+".json", "fixed_instance_exec_path")
-    check(set(closed)==set(range(10,22)) and not child_fs.fds, "child_sources_drained_before_exec")
+    check(set(closed)==set(range(10,24))-{21} and set(child_fs.fds)=={21}, "only_exec_pin_retained")
+
+    source = request["source"]
+    for label, changed in (
+        ("release_before_witness", source.replace('        witness = exec_witness(', '        os.write(gate_write, b"1")\n        witness = exec_witness(',1).replace('        if os.write(gate_write, b"1") != 1:\n            raise ValueError("witness_failed")\n','',1)),
+        ("path_exec", source.replace('os.execve(wink_fd, args, ENV)', 'os.execv(args[0], args)',1)),
+        ("missing_pin_fstat", source.replace('    info = os.fstat(wink_fd)\n','',1)),
+        ("missing_pin_comparison", source.replace('    if (info.st_dev, info.st_ino) != (wink_dev, wink_ino):\n        raise RuntimeError("mount_identity_mismatch")\n','',1)),
+        ("proc_exe_hash", source.replace('    base = "/proc/" + str(pid)', '    os.open("/proc/" + str(pid) + "/exe", os.O_RDONLY)\n    base = "/proc/" + str(pid)',1)),
+    ):
+        check(changed != source, label+"_changed")
+        try: witness_contract(changed)
+        except AssertionError:
+            MUTATIONS += 1
+            check(True, label+"_red")
+        else: raise AssertionError(label+"_escaped")
 
     mutation_rejected(scope["CHILD"], lambda source: swap_bind_lines(
         source, 'bind(role_path + "/run", "/run"', 'bind(role_home, "/root"'),
