@@ -8,39 +8,6 @@ permissions:
   contents: read
 
 jobs:
-  gate-b3-host-sysctl-repeat-validation:
-    name: Host Sysctl Hard16 Five Repetitions (temporary)
-    if: github.event_name == 'pull_request'
-    runs-on: ubuntu-latest
-    # Five repetitions at the existing 9-minute per-run allowance, plus setup.
-    # Conntrack readback, fault, drain and guardian windows remain unchanged.
-    timeout-minutes: 50
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
-        with:
-          go-version-file: go.mod
-      - name: Prepare disposable network witness tools
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y iproute2 iptables conntrack
-          sudo modprobe tun || true
-          test -c /dev/net/tun
-      - name: Build race-enabled Hard16 binary
-        run: go test -race -c -tags=natlab -o "${RUNNER_TEMP}/winkyou-hard16-repeat.test" ./test/natlab
-      - name: Run five complete matrices in one guarded test process
-        run: |
-          sudo env \
-            WINKYOU_GATE_B3_REQUIRED=1 \
-            WINKYOU_GATE_B3_DISPOSABLE_RUNNER=github-hosted \
-            GITHUB_ACTIONS=true \
-            RUNNER_ENVIRONMENT=github-hosted \
-            bash test/natlab/run_gate_b3_required_linux.sh \
-            env GORACE=halt_on_error=1 \
-            "${RUNNER_TEMP}/winkyou-hard16-repeat.test" \
-            -test.v -test.run '^TestLinuxGateB3Hard16Proof$' \
-            -test.count=5 -test.timeout=45m
-
   test-linux:
     name: Test (Linux)
     runs-on: ubuntu-latest
