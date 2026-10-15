@@ -1085,11 +1085,11 @@ func requireGateB3HostConntrackGuard(t *testing.T) {
 		t.Fatal("Gate B3 host conntrack guard authorization is absent")
 	}
 	if current, err := readGateB3ConntrackMax(""); err != nil || current != gateB3ConntrackCap {
-		t.Fatalf("Gate B3 host conntrack guard is not active: value=%d class=%s", current, gateB3SysctlErrorClass(err))
+		t.Fatalf("Gate B3 host conntrack guard is not active: value=%d class=%s witness=%v", current, gateB3SysctlErrorClass(err), err)
 	}
 	t.Cleanup(func() {
 		if current, err := readGateB3ConntrackMax(""); err != nil || current != gateB3ConntrackCap {
-			t.Errorf("Gate B3 host conntrack cap was not restored after the matrix: value=%d class=%s", current, gateB3SysctlErrorClass(err))
+			t.Errorf("Gate B3 host conntrack cap was not restored after the matrix: value=%d class=%s witness=%v", current, gateB3SysctlErrorClass(err), err)
 		}
 	})
 }
@@ -1101,25 +1101,27 @@ func setGateB3HostConntrackCapForSubtest(t *testing.T, value int) {
 	}
 	current, err := readGateB3ConntrackMax("")
 	if err != nil || current != gateB3ConntrackCap {
-		t.Fatalf("Gate B3 host conntrack guard drifted before subtest: value=%d class=%s", current, gateB3SysctlErrorClass(err))
+		t.Fatalf("Gate B3 host conntrack guard drifted before subtest: value=%d class=%s witness=%v", current, gateB3SysctlErrorClass(err), err)
 	}
 	if value == gateB3ConntrackCap {
 		return
 	}
 	hostCount, err := readGateB3ConntrackCount("")
 	if err != nil || hostCount*2 >= value {
-		t.Fatal("Gate B3 conntrack fault cap lacks safe init-namespace headroom")
+		t.Fatalf("Gate B3 conntrack fault cap lacks safe init-namespace headroom: witness=%v", err)
 	}
 	if err := writeGateB3HostConntrackMax(value); err != nil {
-		t.Fatal("Gate B3 conntrack fault cap could not be installed")
+		t.Fatalf("Gate B3 conntrack fault cap could not be installed: %v", err)
 	}
 	if !waitGateB3ConntrackMax(t, value) {
-		_ = writeGateB3HostConntrackMax(gateB3ConntrackCap)
+		if err := writeGateB3HostConntrackMax(gateB3ConntrackCap); err != nil {
+			t.Errorf("Gate B3 conntrack verification cleanup failed: %v", err)
+		}
 		t.Fatal("Gate B3 conntrack fault cap verification failed")
 	}
 	t.Cleanup(func() {
 		if err := writeGateB3HostConntrackMax(gateB3ConntrackCap); err != nil {
-			t.Error("Gate B3 conntrack fault cap restoration failed")
+			t.Errorf("Gate B3 conntrack fault cap restoration failed: %v", err)
 			return
 		}
 		if !waitGateB3ConntrackMax(t, gateB3ConntrackCap) {
@@ -1141,13 +1143,14 @@ func waitGateB3ConntrackMaxUsing(t *testing.T, value int, limit time.Duration, r
 		start, end time.Duration
 		value      int
 		class      string
+		failure    error
 	}
 	var reads []readWitness
 	consecutive := 0
 	for {
 		readStarted := time.Since(started)
 		current, err := readValue()
-		reads = append(reads, readWitness{readStarted, time.Since(started), current, gateB3SysctlErrorClass(err)})
+		reads = append(reads, readWitness{readStarted, time.Since(started), current, gateB3SysctlErrorClass(err), err})
 		if err == nil && current == value {
 			consecutive++
 			if consecutive == 2 {
@@ -1160,6 +1163,9 @@ func waitGateB3ConntrackMaxUsing(t *testing.T, value int, limit time.Duration, r
 			for index, read := range reads {
 				t.Logf("GATE_B3_CONNTRACK_READ index=%d start_ns=%d end_ns=%d value=%d class=%s expected=%d",
 					index, read.start.Nanoseconds(), read.end.Nanoseconds(), read.value, read.class, value)
+				if read.failure != nil {
+					t.Logf("%v", read.failure)
+				}
 			}
 			return false
 		}
@@ -1199,14 +1205,14 @@ func verifyGateB3NamespacedConntrackCap(leftNamespace, rightNamespace string, va
 	left, leftErr := readGateB3ConntrackMax(leftNamespace)
 	right, rightErr := readGateB3ConntrackMax(rightNamespace)
 	if hostErr != nil || leftErr != nil || rightErr != nil || host != value || left != value || right != value {
-		return fmt.Errorf("Gate B3 uniform namespace conntrack cap verification failed")
+		return fmt.Errorf("Gate B3 uniform namespace conntrack cap verification failed: host=%v", hostErr)
 	}
 	return nil
 }
 
 func readGateB3ConntrackMax(namespace string) (int, error) {
 	if namespace == "" {
-		payload, err := os.ReadFile("/proc/sys/net/netfilter/nf_conntrack_max")
+		payload, err := readHostSysctlDiagnostic("/proc/sys/net/netfilter/nf_conntrack_max")
 		if err != nil {
 			return 0, err
 		}
@@ -1224,12 +1230,12 @@ func writeGateB3HostConntrackMax(value int) error {
 	if value <= 0 || value > gateB3ConntrackCap {
 		return errGateB3SysctlValue
 	}
-	return os.WriteFile("/proc/sys/net/netfilter/nf_conntrack_max", []byte(strconv.Itoa(value)+"\n"), 0)
+	return writeHostSysctlDiagnostic("/proc/sys/net/netfilter/nf_conntrack_max", []byte(strconv.Itoa(value)+"\n"))
 }
 
 func readGateB3ConntrackCount(namespace string) (int, error) {
 	if namespace == "" {
-		payload, err := os.ReadFile("/proc/sys/net/netfilter/nf_conntrack_count")
+		payload, err := readHostSysctlDiagnostic("/proc/sys/net/netfilter/nf_conntrack_count")
 		if err != nil {
 			return 0, err
 		}
@@ -1454,17 +1460,17 @@ func measureGateB3ConntrackRestore(t *testing.T, path string) (time.Duration, bo
 	// restore, including Fatal/panic; the unchanged outer shell guard is final.
 	hostCount, err := readGateB3ConntrackCount("")
 	if err != nil || hostCount*2 >= gateB3ConntrackFaultCap {
-		t.Fatalf("conntrack measurement headroom rejected: value=%d class=%s", hostCount, gateB3SysctlErrorClass(err))
+		t.Fatalf("conntrack measurement headroom rejected: value=%d class=%s witness=%v", hostCount, gateB3SysctlErrorClass(err), err)
 	}
 	defer func() {
 		if err := writeGateB3HostConntrackMax(gateB3ConntrackCap); err != nil {
-			t.Errorf("conntrack measurement cleanup write failed: class=%s", gateB3SysctlErrorClass(err))
+			t.Errorf("conntrack measurement cleanup write failed: class=%s witness=%v", gateB3SysctlErrorClass(err), err)
 		} else if !waitGateB3ConntrackMax(t, gateB3ConntrackCap) {
 			t.Error("conntrack measurement cleanup readback failed")
 		}
 	}()
 	if err := writeGateB3HostConntrackMax(gateB3ConntrackFaultCap); err != nil {
-		t.Fatalf("conntrack measurement preparation failed: class=%s", gateB3SysctlErrorClass(err))
+		t.Fatalf("conntrack measurement preparation failed: class=%s witness=%v", gateB3SysctlErrorClass(err), err)
 	}
 	if !waitGateB3ConntrackMax(t, gateB3ConntrackFaultCap) {
 		t.Fatal("conntrack measurement fault cap was not observed")
@@ -1475,14 +1481,14 @@ func measureGateB3ConntrackRestore(t *testing.T, path string) (time.Duration, bo
 	if path == "legacy" {
 		readbackLimit = 250 * time.Millisecond
 		readValue = func() (int, error) {
-			output, err := runCommand("sysctl", "-n", "net.netfilter.nf_conntrack_max")
+			output, err := runHostSysctlDiagnostic("read", "-n", "net.netfilter.nf_conntrack_max")
 			if err != nil {
 				return 0, err
 			}
 			return strconv.Atoi(strings.TrimSpace(output))
 		}
 		writeValue = func(value int) error {
-			_, err := runCommand("sysctl", "-qw", "net.netfilter.nf_conntrack_max="+strconv.Itoa(value))
+			_, err := runHostSysctlDiagnostic("write", "-qw", "net.netfilter.nf_conntrack_max="+strconv.Itoa(value))
 			return err
 		}
 	} else if path != "proc" {
@@ -1495,6 +1501,12 @@ func measureGateB3ConntrackRestore(t *testing.T, path string) (time.Duration, bo
 	if !ok {
 		current, readErr := readGateB3ConntrackMax("")
 		t.Logf("GATE_B3_CONNTRACK_RESTORE path=%s elapsed_ns=%d write_class=%s proc_value=%d proc_class=%s", path, elapsed.Nanoseconds(), gateB3SysctlErrorClass(err), current, gateB3SysctlErrorClass(readErr))
+		if err != nil {
+			t.Logf("%v", err)
+		}
+		if readErr != nil {
+			t.Logf("%v", readErr)
+		}
 	}
 	return elapsed, ok
 }

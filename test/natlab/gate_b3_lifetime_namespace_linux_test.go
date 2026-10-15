@@ -122,7 +122,7 @@ func readGateB3UDPTimeouts(namespace string) ([2]int, error) {
 		var output string
 		var err error
 		if namespace == "" {
-			output, err = runCommand("sysctl", "-n", key)
+			output, err = runHostSysctlDiagnostic("read", "-n", key)
 		} else {
 			output, err = runNamespaced(namespace, "sysctl", nil, "-n", key)
 		}
