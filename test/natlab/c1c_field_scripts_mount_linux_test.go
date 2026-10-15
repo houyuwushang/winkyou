@@ -36,6 +36,7 @@ type c1cRoleViewResult struct {
 	RegistrySame   bool                     `json:"registry_same"`
 	RootClear      bool                     `json:"root_clear"`
 	EndToEnd       *c1cLaunchEndToEndResult `json:"launcher_end_to_end,omitempty"`
+	LateNet        *c1cLaunchEndToEndResult `json:"late_net_mutation,omitempty"`
 }
 
 type c1cLaunchEndToEndResult struct {
@@ -50,6 +51,7 @@ type c1cLaunchEndToEndResult struct {
 	Launch      string         `json:"launch"`
 	ReplayExit  int            `json:"replay_exit"`
 	Replay      string         `json:"replay"`
+	ObservedNet uint64         `json:"observed_net"`
 }
 
 func TestLinuxC1cFieldScriptRoleViewProof(t *testing.T) {
@@ -130,6 +132,17 @@ func TestLinuxC1cFieldScriptRoleViewProof(t *testing.T) {
 			t.Fatalf("same attempt was not rejected: %+v", actual)
 		}
 		fmt.Printf("launcher_end_to_end GREEN (witness precedes short payload):\n%s", actual.Stdout)
+	})
+	t.Run("launcher_late_net_mutation", func(t *testing.T) {
+		actual := result.LateNet
+		if actual == nil || actual.ObservedNet == 0 || actual.ObservedNet == actual.Anchor || actual.Exit != 1 ||
+			actual.Stdout != "C1C_EXIT role=initiator code=70\nC1C_LAUNCH class=exec_witness_unavailable\n" || actual.Launch != "" || len(actual.Payload) != 0 {
+			t.Fatalf("late netns entry mutation escaped: %+v", actual)
+		}
+		if c1cCheckLaunchWitness(actual) == nil {
+			t.Fatal("end-to-end checker accepted late netns entry")
+		}
+		fmt.Printf("launcher_late_net_mutation RED net_ns=%d anchor=%d; 50ms payload withheld by gate\n", actual.ObservedNet, actual.Anchor)
 	})
 }
 
@@ -423,10 +436,20 @@ func c1cRunRoleViewProofHelper() error {
 			return err
 		}
 	}
-	result.EndToEnd, err = c1cRunLauncherEndToEnd(repository, attempt)
+	result.EndToEnd, err = c1cRunLauncherEndToEnd(repository, attempt, false)
 	if err != nil {
 		return err
 	}
+	result.LateNet, err = c1cRunLauncherEndToEnd(repository, attempt, true)
+	if err != nil {
+		return err
+	}
+	registryAfter, err = c1cDirectoryEntries("/run/netns")
+	if err != nil {
+		return err
+	}
+	result.RegistrySame = strings.Join(registryBefore, "\x00") == strings.Join(registryAfter, "\x00")
+	result.RootClear = exec.Command("/usr/bin/mountpoint", "-q", "/root").Run() != nil
 	encoded, err := json.Marshal(result)
 	if err != nil {
 		return err
@@ -437,7 +460,7 @@ func c1cRunRoleViewProofHelper() error {
 
 // Run the unchanged, complete launcher below the same outer net/mount fixture.
 // The extra mount view supplies its fixed root without touching a host role tree.
-func c1cRunLauncherEndToEnd(repository, attempt string) (*c1cLaunchEndToEndResult, error) {
+func c1cRunLauncherEndToEnd(repository, attempt string, lateNet bool) (*c1cLaunchEndToEndResult, error) {
 	root, err := os.MkdirTemp("/tmp", "winkyou-c1c-full-launch-")
 	if err != nil {
 		return nil, err
@@ -494,6 +517,10 @@ int main(int argc, char **argv) {
     return elapsed <= 5000000 ? 0 : 76;
 }
 `, attempt, attempt)
+	if lateNet {
+		program = strings.Replace(program, "    int in = open", "    struct timespec pause = {0, 50000000};\n    if (nanosleep(&pause, 0)) return 77;\n    int in = open", 1)
+		program = strings.Replace(program, "elapsed <= 5000000", "elapsed <= 100000000", 1)
+	}
 	compiler := exec.Command("gcc", "-x", "c", "-O2", "-o", image, "-")
 	compiler.Stdin = strings.NewReader(program)
 	if output, err := compiler.CombinedOutput(); err != nil {
@@ -523,8 +550,32 @@ int main(int argc, char **argv) {
 		return nil, fmt.Errorf("full launcher anchor: %w %s", err, output)
 	}
 	defer exec.Command("/usr/sbin/ip", "netns", "del", anchor).Run()
+	script := filepath.Join(repository, "scripts/c1c-endpoint-launch.sh")
+	observation := filepath.Join(root, "observed-net.json")
+	if lateNet {
+		original, err := os.ReadFile(script)
+		if err != nil {
+			return nil, err
+		}
+		mutant := string(original)
+		changes := [][2]string{
+			{`argv = ["/usr/sbin/ip", "netns", "exec", anchor, "/usr/bin/unshare"`, `argv = ["/usr/bin/unshare"`},
+			{`os.execve(wink_fd, args, ENV)`, `os.execve("/usr/sbin/ip", ["/usr/sbin/ip", "netns", "exec", anchor, "/proc/self/fd/" + str(wink_fd)] + args[1:], ENV)`},
+			{`    return {"pid": pid, "starttime": ticks, "net_ns": net, "mnt_ns": mount}`, "    with open(" + strconv.Quote(observation) + ", \"w\") as observed:\n        json.dump(net, observed)\n" + `    return {"pid": pid, "starttime": ticks, "net_ns": net, "mnt_ns": mount}`},
+		}
+		for _, change := range changes {
+			if strings.Count(mutant, change[0]) != 1 {
+				return nil, errors.New("late-net mutation target is not unique")
+			}
+			mutant = strings.Replace(mutant, change[0], change[1], 1)
+		}
+		script = filepath.Join(root, "late-net-launch.sh")
+		if err := os.WriteFile(script, []byte(mutant), 0o700); err != nil {
+			return nil, err
+		}
+	}
 	const driver = `import json, os, subprocess, sys
-root, source, attempt, anchor, digest = sys.argv[1:]
+root, source, attempt, anchor, digest, observation = sys.argv[1:]
 subprocess.run(["/usr/bin/mount","--make-rprivate","/"],check=True)
 subprocess.run(["/usr/bin/mount","-t","tmpfs","-o","mode=700","tmpfs","/root"],check=True)
 os.mkdir("/root/.winkyou-field",0o700)
@@ -533,11 +584,13 @@ base="/root/.winkyou-field/c1c"
 role=base+"/endpoints/initiator"
 evidence=base+"/evidence/"+attempt+"/endpoint-initiator"
 result=subprocess.run(["bash",source,"initiator",attempt,anchor,"--payload","version"],stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True)
-payload=json.load(open(evidence+"/"+attempt+"/endpoint-initiator/payload.json"))
+payload_path=evidence+"/"+attempt+"/endpoint-initiator/payload.json"
+payload=json.load(open(payload_path)) if os.path.exists(payload_path) else {}
+observed=json.load(open(observation)) if os.path.exists(observation) else 0
 replay=subprocess.run(["bash",source,"initiator",attempt,anchor,"--payload","version"],stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True)
-print(json.dumps({"exit":result.returncode,"stdout":result.stdout,"stderr":result.stderr,"payload":payload,"anchor":os.stat("/run/netns/"+anchor).st_ino,"parent_mount":os.stat("/proc/self/ns/mnt").st_ino,"image_sha256":digest,"image_inode":os.stat(role+"/install/winkyou/wink").st_ino,"launch":open(evidence+"/launch.json").read(),"replay_exit":replay.returncode,"replay":replay.stdout}))
+print(json.dumps({"exit":result.returncode,"stdout":result.stdout,"stderr":result.stderr,"payload":payload,"anchor":os.stat("/run/netns/"+anchor).st_ino,"parent_mount":os.stat("/proc/self/ns/mnt").st_ino,"image_sha256":digest,"image_inode":os.stat(role+"/install/winkyou/wink").st_ino,"launch":open(evidence+"/launch.json").read(),"replay_exit":replay.returncode,"replay":replay.stdout,"observed_net":observed}))
 `
-	command := exec.Command("/usr/bin/unshare", "-m", "--propagation", "private", "/usr/bin/python3", "-I", "-B", "-c", driver, root, filepath.Join(repository, "scripts/c1c-endpoint-launch.sh"), attempt, anchor, digest)
+	command := exec.Command("/usr/bin/unshare", "-m", "--propagation", "private", "/usr/bin/python3", "-I", "-B", "-c", driver, root, script, attempt, anchor, digest, observation)
 	output, err := command.CombinedOutput()
 	if err != nil {
 		return nil, fmt.Errorf("full launcher driver: %w %s", err, output)
