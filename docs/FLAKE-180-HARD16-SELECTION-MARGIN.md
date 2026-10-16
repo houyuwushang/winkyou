@@ -1,8 +1,9 @@
 # Hard16 selection-margin fixture investigation
 
-Status (2026-10-16): test-only fixture correction based on hosted measurements;
-final first-run validation pending. The original investigation and first REDs
-remain below. No production budget or Go production code changes.
+Status (2026-10-16): test-only fixture correction based on hosted measurements.
+The first corrected Linux six-package race batch passes; subsequent first-run
+checks are tracked in PR #197. The original investigation and first REDs remain
+below. No production budget or Go production code changes.
 
 ## Hosted diagnosis and fixture correction (2026-10-16)
 
@@ -92,6 +93,37 @@ Its first RED has zero candidate emissions and a different failure class;
 there is no evidence here to classify it as this timeout or change its fixture.
 Other two-second fixtures are unchanged. Keep `Refs #180`; no issue closure,
 CI rerun, field-host operation, or production correction is implied.
+
+## Corrected first-run evidence
+
+Fix commit `45a0185fbeae284e5700f2b4c5fc8591765570be` passes the
+[push-event Linux job](https://github.com/houyuwushang/winkyou/actions/runs/38845736025/job/116795737765)
+on attempt 1, including the original six-package race command and the following
+mutation/stability matrix. The selection test takes 6.66s and emits:
+
+```text
+GATEB3_SELECTION_MARGIN role=responder release_after_deadline_ns=250053204 candidate_window_ns=5000000000 candidate_packets=16384
+GATEB3_SELECTION_MARGIN role=initiator release_after_deadline_ns=250258790 candidate_window_ns=5000000000 candidate_packets=16384
+GATEB3_SELECTION_WITNESS label=selection_after_candidate_deadline delayed_triggered=true writes=8
+GATEB3_SELECTION_OUTCOME role=responder error_class=none terminal=success candidate_packets=16384 winner_packets=1 carrier_read=8 carrier_write=8
+GATEB3_SELECTION_OUTCOME role=initiator error_class=none terminal=success candidate_packets=16384 winner_packets=0 carrier_read=8 carrier_write=8
+```
+
+The raw log SHA-256 is
+`ed3c822482c7841cbf4f309d55cf5757748e55b7576c90f11fa2f1405b636343`.
+Local Windows Go 1.23.1 passes the same six-package race command (governor
+165.589s, architecture 118.500s), and Linux-target tagged vet passes. All three
+final overlay mutations are rejected; neither production source nor the
+original failed job is rewritten. The source does not require these exact
+observed timings: it asserts the actual deadlines and frozen resource counts.
+
+The earlier measurement commit's overall checks are 71 successes and one
+[cancelled Fresh100 job](https://github.com/houyuwushang/winkyou/actions/runs/38843947881/job/116790077207).
+That job was cancelled during `setup-go` while acquiring the Go 1.23.1 archive,
+before its test step began; its always-run timing export then had no samples.
+Both measurement Test (Linux) jobs passed. The cancelled log is retained with
+SHA-256 `8f02a24675d3eb61da1f36ab35603914a3b64a51ee9eb0829ac01733370689ce`.
+It is not counted as a test pass and was not rerun.
 
 ## First signature
 
