@@ -68,7 +68,12 @@ def execute():
         os._exit(70)
     os.close(gate_read)
     args = ["wink"]
-    args += ["version"] if payload == "version" else ["gate-c1c", "run", "--instance", "/root/.winkyou-field/c1c/" + attempt + ".json"]
+    if payload == "version":
+        args += ["version"]
+    elif payload == "ledger":
+        args += ["gate-c1c", "ledger", "--json"]
+    else:
+        args += ["gate-c1c", "run", "--instance", "/root/.winkyou-field/c1c/" + attempt + ".json"]
     # CPython's fd form calls fexecve; no pathname is resolved after the gate.
     os.execve(wink_fd, args, ENV)
 try:
@@ -80,7 +85,7 @@ os._exit(code)
 
 
 def arguments(args):
-    if len(args) not in (3, 5) or args[0] not in ROLES or (len(args) == 5 and args[3:] != ["--payload", "version"]):
+    if len(args) not in (3, 5) or args[0] not in ROLES or (len(args) == 5 and args[3:] not in (["--payload", "version"], ["--payload", "ledger"])):
         raise ValueError("arguments_rejected")
     role, attempt, anchor = args[:3]
     if not re.fullmatch(r"[A-Za-z0-9_-]{22}", attempt):
@@ -89,7 +94,7 @@ def arguments(args):
     if len(raw) != 16 or base64.urlsafe_b64encode(raw).decode().rstrip("=") != attempt:
         raise ValueError("arguments_rejected")
     expected = "wyc1c" + hashlib.sha256(("winkyou-c1c-anchor/1\n" + attempt).encode()).hexdigest()[:8] + ("-i" if role == "initiator" else "-r")
-    payload = "version" if len(args) == 5 else "run"
+    payload = args[4] if len(args) == 5 else "run"
     if anchor != expected or (payload == "run" and role != "initiator"):
         raise ValueError("arguments_rejected")
     return role, attempt, anchor, payload

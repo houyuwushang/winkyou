@@ -547,6 +547,95 @@ def witness_contract(source):
     check(len(witnesses) == len(releases) == len(emits) == len(syncs) == 1 and witnesses[0].lineno < syncs[0].lineno < emits[0].lineno < releases[0].lineno, "durable_and_stdout_witness_before_release")
 
 
+def payload_arguments(scope, ident, name):
+    for role, suffix in (("initiator", "-i"), ("responder", "-r")):
+        for payload in ("version", "ledger"):
+            check(scope["arguments"]([role,ident,name+suffix,"--payload",payload]) == (role,ident,name+suffix,payload), "fixed_payload_both_roles")
+        for payload in ("run", "status", "", "ledger --json", "--json"):
+            rejected(lambda:scope["arguments"]([role,ident,name+suffix,"--payload",payload]), "unknown_payload_rejected")
+
+
+def child_payload_checks(scope, ident, name, payload):
+    # Execute the embedded child with a mount-aware fake.  It models source
+    # path resolution and mount identity without invoking a host operation.
+    child_fs, commands, execs = FakeFS(), [], []
+    role_root = child_fs.path.normpath(scope["ROOT"]+"/endpoints/initiator")
+    evidence = child_fs.path.normpath(scope["ROOT"]+"/evidence/"+ident+"/endpoint-initiator")
+    material = child_fs.path.normpath(scope["ROOT"]+"/material/"+ident+"/initiator")
+    instance = child_fs.path.normpath(scope["ROOT"]+"/"+ident+".json")
+    for item in (role_root, role_root+"/var-lib", role_root+"/install", role_root+"/run", role_root+"/run/netns",
+                 role_root+"/home", role_root+"/home/.winkyou-field/c1c", role_root+"/home/.winkyou-field/c1c/evidence",
+                 role_root+"/home/.winkyou-field/c1c/material", role_root+"/home/.winkyou-field/c1c/material/"+ident,
+                 evidence, material):
+        child_fs.add(item, directory=True)
+    for item in (role_root+"/shadow", role_root+"/machine-id"):
+        child_fs.add(item, b"x")
+    child_fs.add(instance, b'{"synthetic":true}')
+    child_fs.add(role_root+"/home/.winkyou-field/c1c/"+ident+".json", b'{"synthetic":true}')
+    for target in ("/var/lib", "/usr/libexec", "/run", "/root"):
+        child_fs.add(target, directory=True)
+    for target in ("/etc/shadow", "/etc/machine-id"):
+        child_fs.add(target, b"x")
+    sources = (role_root, role_root+"/var-lib", role_root+"/install", role_root+"/shadow", role_root+"/machine-id",
+               "/run/netns", role_root+"/run", role_root+"/home", evidence, material, instance)
+    for fd, path in zip(range(10, 21), sources):
+        child_fs.fds[fd] = [path, 0]
+    if payload != "run":
+        for fd in (19, 20):
+            child_fs.fds.pop(fd)
+    child_fs.add(role_root+"/install/winkyou/wink", b"synthetic-field")
+    child_fs.fds[21] = [role_root+"/install/winkyou/wink",0]
+    image = child_fs.fstat(21)
+    child_fs.add("/ready")
+    child_fs.fds[22] = ["/ready", 0]
+    child_fs.add("/barrier", b"1")
+    child_fs.fds[23] = ["/barrier", 0]
+    closed = []
+    class ExecComplete(Exception): pass
+    def fexecve(fd, argv, environment):
+        check(fd==21 and child_fs.fstat(fd).st_ino==image.st_ino and environment==scope["ENV"], "fd_exec_preserves_pin_and_environment")
+        check(child_fs.nodes["/ready"].data==b"R", "child_announced_ready")
+        execs.append((fd,argv))
+        raise ExecComplete()
+    def child_run(argv, **kwargs):
+        if argv[0] == "/usr/bin/mount":
+            if payload != "run":
+                check("/material/" not in argv[-1] and not argv[-1].endswith(ident+".json"), "readonly_payload_no_material_or_instance_bind")
+            child_fs.mount(argv)
+        commands.append((argv,kwargs))
+    def child_close(fd):
+        closed.append(fd)
+        child_fs.fds.pop(fd, None)
+    fake_os = SimpleNamespace(close=child_close, fstat=child_fs.fstat, stat=child_fs.stat,
+                              read=child_fs.read,write=child_fs.write,execve=fexecve)
+    fake_sub = SimpleNamespace(DEVNULL=-3,run=child_run)
+    env = {"os":fake_os,"subprocess":fake_sub,"ENV":scope["ENV"],
+           "sys":SimpleNamespace(argv=["child"]+[str(-1 if payload != "run" and fd in (19,20) else fd) for fd in range(10,24)]+[str(image.st_dev),str(image.st_ino)]+[ident,name+"-i",payload,role_root,"/run/netns",evidence,material,instance])}
+    tree = ast.parse(scope["CHILD"])
+    exec(compile(ast.Module(body=[n for n in tree.body if isinstance(n,ast.FunctionDef)], type_ignores=[]),"synthetic","exec"),env)
+    try: env["execute"]()
+    except ExecComplete: pass
+    binds = [argv for argv,_ in commands if argv[1] in ("--bind", "--rbind")]
+    expected = ["/var/lib","/usr/libexec","/etc/shadow","/etc/machine-id",
+                role_root+"/run/netns","/run",role_root+"/home/.winkyou-field/c1c/evidence"]
+    if payload == "run":
+        expected += [role_root+"/home/.winkyou-field/c1c/material/"+ident,role_root+"/home/.winkyou-field/c1c/"+ident+".json"]
+    expected += ["/root"]
+    check([argv[-1] for argv in binds] == expected, "launch_fixed_bind_order")
+    options = ["--bind"]*4+["--rbind"]*2+["--bind"]+( ["--bind"]*2 if payload=="run" else [] )+["--rbind"]
+    check([argv[1] for argv in binds] == options, "launch_recursive_bind_order")
+    check(all(len(kw.get("pass_fds",()))==(11 if payload=="run" else 9) for _,kw in commands), "sources_inherited_by_mount")
+    if payload == "run":
+        check(len(commands)==12 and execs[0][1][-4:] == ["gate-c1c","run","--instance","/root/.winkyou-field/c1c/"+ident+".json"], "readonly_instance_material_and_exec")
+    elif payload == "ledger":
+        check(execs[0][1] == ["wink","gate-c1c","ledger","--json"], "ledger_fixed_json_argv")
+    else:
+        check(execs[0][1] == ["wink","version"], "version_fixed_argv")
+    check(len(execs)==1, "one_pinned_payload_exec")
+    expected_closed = set(range(10,24))-{21}-(set() if payload=="run" else {19,20})
+    check(set(closed)==expected_closed and set(child_fs.fds)=={21}, "only_exec_pin_retained")
+
+
 def launcher_checks(scope):
     global MUTATIONS
     witness_contract(request["source"])
@@ -555,7 +644,7 @@ def launcher_checks(scope):
     ident = base64.urlsafe_b64encode(b"s"*16).decode().rstrip("=")
     name = "wyc1c"+hashlib.sha256(("winkyou-c1c-anchor/1\n"+ident).encode()).hexdigest()[:8]
     check(scope["arguments"](["initiator",ident,name+"-i"]) == ("initiator",ident,name+"-i","run"), "formal_initiator_only")
-    check(scope["arguments"](["responder",ident,name+"-r","--payload","version"])[3] == "version", "responder_version_only")
+    payload_arguments(scope, ident, name)
     for args in (["responder",ident,name+"-r"], ["initiator",ident,"wrong"], ["initiator",ident,name+"-i","extra"], ["initiator","B"*22,name+"-i"], ["initiator",ident,name+"-i","--payload","run"]):
         rejected(lambda:scope["arguments"](args), "launch_args_rejected")
     row = "4242 (x ) y) S " + " ".join(["0"]*18+["1234"])
@@ -584,7 +673,7 @@ def launcher_checks(scope):
         scope["process_witness"] = lambda _: {"net_ns":net,"mnt_ns":mount}
         rejected(lambda:scope["exec_witness"](child,8,"a"*64,55,90,1), "wrong_namespace_rejected")
     check(seen==[4242], "no_sampling_without_ready")
-    for payload in ("run", "version"):
+    for payload in ("run", "version", "ledger"):
         fs, calls = FakeFS(), []
         scope["os"] = fs
         root = scope["ROOT"]
@@ -627,76 +716,31 @@ def launcher_checks(scope):
         check(next(i for i,c in enumerate(fs.calls) if c[0]=="stdout" and c[1]==stored) < released, "fake_gate_after_stdout")
         check(any(c[0]=="open" and c[1]==role_root+"/install/winkyou/wink" and c[2]&fs.O_NOFOLLOW for c in fs.calls), "wink_pin_nofollow")
         check(evidence+"/"+ident not in fs.nodes, "product_claim_directory_absent")
-        if payload=="version":
-            check(not any(c[0]=="open" and ("/material/" in c[1] or c[1]==root+"/"+ident+".json") for c in fs.calls), "version_zero_material_or_instance_io")
+        if payload!="run":
+            check(not any(c[0]=="open" and ("/material/" in c[1] or c[1]==root+"/"+ident+".json") for c in fs.calls), "readonly_payload_zero_material_or_instance_io")
         prior = len(calls)
         rejected(lambda:scope["launch"]("initiator",ident,name+"-i",payload), "duplicate_launch_rejected")
         check(len(calls)==prior, "duplicate_no_process")
-    # Execute the embedded child with a mount-aware fake.  It models source
-    # path resolution and mount identity without invoking a host operation.
-    child_fs, commands, execs = FakeFS(), [], []
-    role_root = child_fs.path.normpath(scope["ROOT"]+"/endpoints/initiator")
-    evidence = child_fs.path.normpath(scope["ROOT"]+"/evidence/"+ident+"/endpoint-initiator")
-    material = child_fs.path.normpath(scope["ROOT"]+"/material/"+ident+"/initiator")
-    instance = child_fs.path.normpath(scope["ROOT"]+"/"+ident+".json")
-    for item in (role_root, role_root+"/var-lib", role_root+"/install", role_root+"/run", role_root+"/run/netns",
-                 role_root+"/home", role_root+"/home/.winkyou-field/c1c", role_root+"/home/.winkyou-field/c1c/evidence",
-                 role_root+"/home/.winkyou-field/c1c/material", role_root+"/home/.winkyou-field/c1c/material/"+ident,
-                 evidence, material):
-        child_fs.add(item, directory=True)
-    for item in (role_root+"/shadow", role_root+"/machine-id"):
-        child_fs.add(item, b"x")
-    child_fs.add(instance, b'{"synthetic":true}')
-    child_fs.add(role_root+"/home/.winkyou-field/c1c/"+ident+".json", b'{"synthetic":true}')
-    for target in ("/var/lib", "/usr/libexec", "/run", "/root"):
-        child_fs.add(target, directory=True)
-    for target in ("/etc/shadow", "/etc/machine-id"):
-        child_fs.add(target, b"x")
-    sources = (role_root, role_root+"/var-lib", role_root+"/install", role_root+"/shadow", role_root+"/machine-id",
-               "/run/netns", role_root+"/run", role_root+"/home", evidence, material, instance)
-    for fd, path in zip(range(10, 21), sources):
-        child_fs.fds[fd] = [path, 0]
-    child_fs.add(role_root+"/install/winkyou/wink", b"synthetic-field")
-    child_fs.fds[21] = [role_root+"/install/winkyou/wink",0]
-    image = child_fs.fstat(21)
-    child_fs.add("/ready")
-    child_fs.fds[22] = ["/ready", 0]
-    child_fs.add("/barrier", b"1")
-    child_fs.fds[23] = ["/barrier", 0]
-    closed = []
-    class ExecComplete(Exception): pass
-    def fexecve(fd, argv, environment):
-        check(fd==21 and child_fs.fstat(fd).st_ino==image.st_ino and environment==scope["ENV"], "fd_exec_preserves_pin_and_environment")
-        check(child_fs.nodes["/ready"].data==b"R", "child_announced_ready")
-        execs.append((fd,argv))
-        raise ExecComplete()
-    def child_run(argv, **kwargs):
-        if argv[0] == "/usr/bin/mount":
-            child_fs.mount(argv)
-        commands.append((argv,kwargs))
-    def child_close(fd):
-        closed.append(fd)
-        child_fs.fds.pop(fd, None)
-    fake_os = SimpleNamespace(close=child_close, fstat=child_fs.fstat, stat=child_fs.stat,
-                              read=child_fs.read,write=child_fs.write,execve=fexecve)
-    fake_sub = SimpleNamespace(DEVNULL=-3,run=child_run)
-    env = {"os":fake_os,"subprocess":fake_sub,"ENV":scope["ENV"],
-           "sys":SimpleNamespace(argv=["child"]+[str(fd) for fd in range(10,24)]+[str(image.st_dev),str(image.st_ino)]+[ident,name+"-i","run",role_root,"/run/netns",evidence,material,instance])}
-    tree = ast.parse(scope["CHILD"])
-    exec(compile(ast.Module(body=[n for n in tree.body if isinstance(n,ast.FunctionDef)], type_ignores=[]),"synthetic","exec"),env)
-    try: env["execute"]()
-    except ExecComplete: pass
-    binds = [argv for argv,_ in commands if argv[1] in ("--bind", "--rbind")]
-    check([argv[-1] for argv in binds] == ["/var/lib","/usr/libexec","/etc/shadow","/etc/machine-id",
-        role_root+"/run/netns","/run",role_root+"/home/.winkyou-field/c1c/evidence",
-        role_root+"/home/.winkyou-field/c1c/material/"+ident,role_root+"/home/.winkyou-field/c1c/"+ident+".json","/root"], "launch_fixed_bind_order")
-    check([argv[1] for argv in binds] == ["--bind","--bind","--bind","--bind","--rbind","--rbind","--bind","--bind","--bind","--rbind"], "launch_recursive_bind_order")
-    check(all(len(kw.get("pass_fds",()))==11 for _,kw in commands), "sources_inherited_by_mount")
-    check(len(commands)==12 and execs[0][1][-4:] == ["gate-c1c","run","--instance","/root/.winkyou-field/c1c/"+ident+".json"], "readonly_instance_material_and_exec")
-    check(execs[0][1][-1] == "/root/.winkyou-field/c1c/"+ident+".json", "fixed_instance_exec_path")
-    check(set(closed)==set(range(10,24))-{21} and set(child_fs.fds)=={21}, "only_exec_pin_retained")
+    for payload in ("run", "version", "ledger"):
+        child_payload_checks(scope, ident, name, payload)
 
     source = request["source"]
+    for label, changed in (
+        ("ledger_third_payload", source.replace('["--payload", "ledger"]))', '["--payload", "ledger"], ["--payload", "status"]))', 1)),
+        ("ledger_missing_json", source.replace('["gate-c1c", "ledger", "--json"]', '["gate-c1c", "ledger"]', 1)),
+        ("ledger_material_bind", source.replace('if payload == "run":', 'if payload in ("run", "ledger"):', 1)),
+    ):
+        check(changed != source, label+"_changed")
+        changed_scope, _ = definitions(changed)
+        try:
+            payload_arguments(changed_scope, ident, name)
+            child_payload_checks(changed_scope, ident, name, "ledger")
+        except AssertionError as failure:
+            MUTATIONS += 1
+            check(True, label+"_red")
+            print("MUTATION "+label+" RED "+str(failure))
+        else:
+            raise AssertionError(label+"_escaped")
     for label, changed in (
         ("release_before_witness", source.replace('        witness = exec_witness(', '        os.write(gate_write, b"1")\n        witness = exec_witness(',1).replace('        if os.write(gate_write, b"1") != 1:\n            raise ValueError("witness_failed")\n','',1)),
         ("path_exec", source.replace('os.execve(wink_fd, args, ENV)', 'os.execv(args[0], args)',1)),
