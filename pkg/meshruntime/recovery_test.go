@@ -131,6 +131,15 @@ func TestRecoveryStartAttemptBoundsControlStreamSend(t *testing.T) {
 }
 
 func TestRecoverySupervisorRepunchesAndPreservesRoutedTCPFlow(t *testing.T) {
+	testRecoverySupervisorRoutedTCPFlow(t, false)
+}
+
+func TestRecoverySupervisorRetainsFallbackRouteAfterRepunch(t *testing.T) {
+	testRecoverySupervisorRoutedTCPFlow(t, true)
+}
+
+func testRecoverySupervisorRoutedTCPFlow(t *testing.T, observeAfterRepair bool) {
+	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 
@@ -234,6 +243,11 @@ func TestRecoverySupervisorRepunchesAndPreservesRoutedTCPFlow(t *testing.T) {
 	defer conn.Close()
 	recoveryTestConnRoundTrip(t, conn, []byte("before automatic repair"))
 
+	// A route snapshot is not a history: automatic repair can replace A-C-B
+	// with A-B before this test goroutine is scheduled again. Arm the bounded
+	// witness after bootstrap and before the fault; retain the first matching
+	// topology notification even if the route subsequently changes.
+	fallbackRoute := recoveryTestWatchRoute(t, runtimeA.node, "B", []string{"A", "C", "B"})
 	faultBroker := brokers.existing(firstAB)
 	if faultBroker == nil || !faultBroker.setDropWrites("B", true) {
 		t.Fatalf("A-B transport for attempt %s is unavailable", firstAB)
@@ -251,7 +265,29 @@ func TestRecoverySupervisorRepunchesAndPreservesRoutedTCPFlow(t *testing.T) {
 	if _, err := conn.Write(payload); err != nil {
 		t.Fatalf("write frame before one-way failure detection: %v", err)
 	}
-	recoveryTestWaitRoute(t, ctx, runtimeA, "B", []string{"A", "C", "B"})
+	if observeAfterRepair {
+		// Synchronize with actual repair completion, without pausing recovery
+		// or changing a timeout, to force the consumer behind the transition.
+		repairedAB := recoveryTestWaitStablePair(t, ctx, runtimeA, "A", "B", firstAB)
+		if err := runtimeTestWaitShortcut(ctx, repairedAB, runtimeA, runtimeB, runtimeC); err != nil {
+			t.Fatalf("wait repair before observing fallback: %v", err)
+		}
+		recoveryTestWaitPacketTriangle(t, ctx, runtimeA, runtimeB, runtimeC)
+		route, ok := runtimeA.node.Route("B")
+		if !ok || !slices.Equal(route.Path, []string{"A", "B"}) {
+			t.Fatalf("post-repair route = %v, ok=%t; want A-B", route.Path, ok)
+		}
+		t.Logf("RECOVERY_LATE_OBSERVER current_path=%v old_snapshot_predicate=false", route.Path)
+	}
+	select {
+	case route := <-fallbackRoute:
+		if !slices.Equal(route.Path, []string{"A", "C", "B"}) {
+			t.Fatalf("fallback route witness = %v, want A-C-B", route.Path)
+		}
+	case <-ctx.Done():
+		t.Fatalf("wait fallback route witness: %v; routes=%v recovery=%+v shortcuts=%+v",
+			ctx.Err(), runtimeA.node.Routes(), runtimeA.recovery.Snapshot(), runtimeA.shortcutSnapshot())
+	}
 	if err := runtimeTestWait(ctx, func() bool {
 		return runtimeC.counters.dataForwarded.Load() > forwardedBeforeFallback
 	}); err != nil {
@@ -263,6 +299,10 @@ func TestRecoverySupervisorRepunchesAndPreservesRoutedTCPFlow(t *testing.T) {
 	}
 	if !slices.Equal(response, payload) {
 		t.Fatalf("asymmetric fallback response = %q, want %q", response, payload)
+	}
+	if observeAfterRepair {
+		t.Logf("RECOVERY_FALLBACK_WITNESS path=[A C B] forwarded_delta=%d same_tcp_payload=true",
+			runtimeC.counters.dataForwarded.Load()-forwardedBeforeFallback)
 	}
 
 	secondAB := recoveryTestWaitStablePair(t, ctx, runtimeA, "A", "B", firstAB)
@@ -569,6 +609,24 @@ func recoveryTestWaitRoute(t *testing.T, ctx context.Context, runtime *meshRunti
 	}); err != nil {
 		t.Fatalf("wait route %v on %s: %v", path, runtime.cfg.NodeID, err)
 	}
+}
+
+func recoveryTestWatchRoute(t *testing.T, node *mesh.Node, target string, path []string) <-chan mesh.Route {
+	t.Helper()
+	want := slices.Clone(path)
+	witness := make(chan mesh.Route, 1)
+	var once sync.Once
+	unregister, err := node.RegisterTopologyHandler(func() {
+		route, ok := node.Route(target)
+		if ok && slices.Equal(route.Path, want) {
+			once.Do(func() { witness <- route })
+		}
+	})
+	if err != nil {
+		t.Fatalf("register fallback route witness: %v", err)
+	}
+	t.Cleanup(unregister)
+	return witness
 }
 
 func recoveryTestWaitPacketTriangle(t *testing.T, ctx context.Context, runtimes ...*meshRuntime) {
