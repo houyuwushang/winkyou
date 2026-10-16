@@ -723,6 +723,22 @@ def launcher_checks(scope):
 
     source = request["source"]
     for label, changed in (
+        ("ledger_third_payload", source.replace('["--payload", "ledger"]))', '["--payload", "ledger"], ["--payload", "status"]))', 1)),
+        ("ledger_missing_json", source.replace('["gate-c1c", "ledger", "--json"]', '["gate-c1c", "ledger"]', 1)),
+        ("ledger_material_bind", source.replace('if payload == "run":', 'if payload in ("run", "ledger"):', 1)),
+    ):
+        check(changed != source, label+"_changed")
+        changed_scope, _ = definitions(changed)
+        try:
+            payload_arguments(changed_scope, ident, name)
+            child_payload_checks(changed_scope, ident, name, "ledger")
+        except AssertionError as failure:
+            MUTATIONS += 1
+            check(True, label+"_red")
+            print("MUTATION "+label+" RED "+str(failure))
+        else:
+            raise AssertionError(label+"_escaped")
+    for label, changed in (
         ("release_before_witness", source.replace('        witness = exec_witness(', '        os.write(gate_write, b"1")\n        witness = exec_witness(',1).replace('        if os.write(gate_write, b"1") != 1:\n            raise ValueError("witness_failed")\n','',1)),
         ("path_exec", source.replace('os.execve(wink_fd, args, ENV)', 'os.execv(args[0], args)',1)),
         ("missing_pin_fstat", source.replace('    info = os.fstat(wink_fd)\n','',1)),
