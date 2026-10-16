@@ -580,6 +580,9 @@ def child_payload_checks(scope, ident, name, payload):
                "/run/netns", role_root+"/run", role_root+"/home", evidence, material, instance)
     for fd, path in zip(range(10, 21), sources):
         child_fs.fds[fd] = [path, 0]
+    if payload != "run":
+        for fd in (19, 20):
+            child_fs.fds.pop(fd)
     child_fs.add(role_root+"/install/winkyou/wink", b"synthetic-field")
     child_fs.fds[21] = [role_root+"/install/winkyou/wink",0]
     image = child_fs.fstat(21)
@@ -630,7 +633,7 @@ def child_payload_checks(scope, ident, name, payload):
         check(execs[0][1] == ["wink","version"], "version_fixed_argv")
     check(len(execs)==1, "one_pinned_payload_exec")
     expected_closed = set(range(10,24))-{21}-(set() if payload=="run" else {19,20})
-    check(set(closed)==expected_closed, "only_exec_pin_retained")
+    check(set(closed)==expected_closed and set(child_fs.fds)=={21}, "only_exec_pin_retained")
 
 
 def launcher_checks(scope):
