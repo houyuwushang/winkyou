@@ -268,7 +268,8 @@ def launch(role, attempt, anchor, payload):
                     os.close(target_fd)
             os.mkdir(local + "material/" + attempt, 0o700)
             instance_fd = source(instance_path, False)
-        witness_fd = os.open(evidence + "/launch.json", os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+        witness_name = {"run": "launch.json", "version": "launch-version.json", "ledger": "launch-ledger.json"}[payload]
+        witness_fd = os.open(evidence + "/" + witness_name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
         gate_read, gate_write = os.pipe()
         fds.append(gate_read)
         ready_read, ready_write = os.pipe()
