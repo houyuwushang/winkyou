@@ -36,6 +36,7 @@ type c1cRoleViewResult struct {
 	RegistrySame   bool                     `json:"registry_same"`
 	RootClear      bool                     `json:"root_clear"`
 	EndToEnd       *c1cLaunchEndToEndResult `json:"launcher_end_to_end,omitempty"`
+	Ledger         *c1cLaunchEndToEndResult `json:"launcher_ledger,omitempty"`
 	LateNet        *c1cLaunchEndToEndResult `json:"late_net_mutation,omitempty"`
 }
 
@@ -52,6 +53,7 @@ type c1cLaunchEndToEndResult struct {
 	ReplayExit  int            `json:"replay_exit"`
 	Replay      string         `json:"replay"`
 	ObservedNet uint64         `json:"observed_net"`
+	PayloadKind string         `json:"payload_kind"`
 }
 
 func TestLinuxC1cFieldScriptRoleViewProof(t *testing.T) {
@@ -132,6 +134,19 @@ func TestLinuxC1cFieldScriptRoleViewProof(t *testing.T) {
 			t.Fatalf("same attempt was not rejected: %+v", actual)
 		}
 		fmt.Printf("launcher_end_to_end GREEN (witness precedes short payload):\n%s", actual.Stdout)
+		t.Run("ledger", func(t *testing.T) {
+			actual := result.Ledger
+			if err := c1cCheckLaunchWitness(actual); err != nil {
+				t.Fatalf("ledger witness failed: %v result=%+v", err, actual)
+			}
+			if actual.PayloadKind != "ledger" || actual.Payload["material_absent"] != true || actual.Payload["ns_net"] != float64(actual.Anchor) || actual.Payload["machine_id"] != strings.Repeat("7", 32) {
+				t.Fatalf("ledger payload escaped its read-only role view: %+v", actual)
+			}
+			if actual.ReplayExit != 1 || actual.Replay != "C1C_LAUNCH class=evidence_already_claimed\n" {
+				t.Fatal("ledger reused claimed evidence")
+			}
+			fmt.Printf("launcher_end_to_end ledger GREEN:\n%s", actual.Stdout)
+		})
 	})
 	t.Run("launcher_late_net_mutation", func(t *testing.T) {
 		actual := result.LateNet
@@ -151,8 +166,15 @@ func c1cCheckLaunchWitness(actual *c1cLaunchEndToEndResult) error {
 		return errors.New("launcher did not exit cleanly")
 	}
 	lines := strings.Split(strings.TrimSuffix(actual.Stdout, "\n"), "\n")
-	if len(lines) != 2 || lines[1] != "C1C_EXIT role=initiator code=0" || actual.Launch != lines[0]+"\n" {
+	expectedLines := 2
+	if actual.PayloadKind == "ledger" {
+		expectedLines = 3
+	}
+	if len(lines) != expectedLines || lines[expectedLines-1] != "C1C_EXIT role=initiator code=0" || actual.Launch != lines[0]+"\n" {
 		return errors.New("persistent witness and stdout order differ")
+	}
+	if actual.PayloadKind == "ledger" && lines[1] != `{"ok":true,"synthetic":true}` {
+		return errors.New("fixed ledger JSON was not emitted between witness and exit")
 	}
 	var pid, ticks, netNS, mountNS, inode uint64
 	var digest string
@@ -436,11 +458,15 @@ func c1cRunRoleViewProofHelper() error {
 			return err
 		}
 	}
-	result.EndToEnd, err = c1cRunLauncherEndToEnd(repository, attempt, false)
+	result.EndToEnd, err = c1cRunLauncherEndToEnd(repository, attempt, "version", false)
 	if err != nil {
 		return err
 	}
-	result.LateNet, err = c1cRunLauncherEndToEnd(repository, attempt, true)
+	result.Ledger, err = c1cRunLauncherEndToEnd(repository, attempt, "ledger", false)
+	if err != nil {
+		return err
+	}
+	result.LateNet, err = c1cRunLauncherEndToEnd(repository, attempt, "version", true)
 	if err != nil {
 		return err
 	}
@@ -460,7 +486,7 @@ func c1cRunRoleViewProofHelper() error {
 
 // Run the unchanged, complete launcher below the same outer net/mount fixture.
 // The extra mount view supplies its fixed root without touching a host role tree.
-func c1cRunLauncherEndToEnd(repository, attempt string, lateNet bool) (*c1cLaunchEndToEndResult, error) {
+func c1cRunLauncherEndToEnd(repository, attempt, payloadKind string, lateNet bool) (*c1cLaunchEndToEndResult, error) {
 	root, err := os.MkdirTemp("/tmp", "winkyou-c1c-full-launch-")
 	if err != nil {
 		return nil, err
@@ -470,7 +496,7 @@ func c1cRunLauncherEndToEnd(repository, attempt string, lateNet bool) (*c1cLaunc
 	evidence := filepath.Join(root, "c1c/evidence", attempt, "endpoint-initiator")
 	for _, path := range []string{
 		role + "/var-lib", role + "/install/winkyou", role + "/run/netns",
-		role + "/home/.winkyou-field/c1c/evidence", evidence,
+		role + "/home/.winkyou-field/c1c/evidence", role + "/home/.winkyou-field/c1c/material", evidence,
 	} {
 		if err := os.MkdirAll(path, 0o700); err != nil {
 			return nil, err
@@ -493,30 +519,38 @@ func c1cRunLauncherEndToEnd(repository, attempt string, lateNet bool) (*c1cLaunc
 #include <stdio.h>
 #include <string.h>
 #include <stdint.h>
+#include <errno.h>
 int main(int argc, char **argv) {
     struct timespec a, b;
     struct stat ns;
     char machine[34] = {0}, payload[256];
-    if (argc != 2 || strcmp(argv[1], "version")) return 70;
+    int ledger = argc == 4 && !strcmp(argv[1], "gate-c1c") && !strcmp(argv[2], "ledger") && !strcmp(argv[3], "--json");
+    if (!ledger && (argc != 2 || strcmp(argv[1], "version"))) return 70;
     if (clock_gettime(CLOCK_MONOTONIC, &a) || stat("/proc/self/ns/net", &ns)) return 71;
+    if (ledger) {
+        struct stat material;
+        if (!stat("/root/.winkyou-field/c1c/material/%[1]s", &material) || errno != ENOENT) return 78;
+        if (!stat("/root/.winkyou-field/c1c/%[1]s.json", &material) || errno != ENOENT) return 78;
+        if (puts("{\"ok\":true,\"synthetic\":true}") < 0 || fflush(stdout)) return 79;
+    }
     int in = open("/etc/machine-id", O_RDONLY);
     if (in < 0 || read(in, machine, 33) != 33 || close(in)) return 72;
     machine[32] = 0;
     const char *base = "/root/.winkyou-field/c1c/evidence/";
     char directory[256], file[256];
-    snprintf(directory, sizeof directory, "%%s%s", base);
+    snprintf(directory, sizeof directory, "%%s%[1]s", base);
     if (mkdir(directory, 0700)) return 73;
-    snprintf(directory, sizeof directory, "%%s%s/endpoint-initiator", base);
+    snprintf(directory, sizeof directory, "%%s%[1]s/endpoint-initiator", base);
     if (mkdir(directory, 0700)) return 73;
     snprintf(file, sizeof file, "%%s/payload.json", directory);
     int out = open(file, O_WRONLY|O_CREAT|O_EXCL, 0600);
-    int size = snprintf(payload, sizeof payload, "{\"pid\":%%ld,\"ns_net\":%%llu,\"machine_id\":\"%%s\"}\n", (long)getpid(), (unsigned long long)ns.st_ino, machine);
+    int size = snprintf(payload, sizeof payload, "{\"pid\":%%ld,\"ns_net\":%%llu,\"machine_id\":\"%%s\",\"material_absent\":%%s}\n", (long)getpid(), (unsigned long long)ns.st_ino, machine, ledger ? "true" : "false");
     if (out < 0 || write(out, payload, size) != size || close(out)) return 74;
     if (clock_gettime(CLOCK_MONOTONIC, &b)) return 75;
     int64_t elapsed = (b.tv_sec-a.tv_sec)*1000000000LL+b.tv_nsec-a.tv_nsec;
     return elapsed <= 5000000 ? 0 : 76;
 }
-`, attempt, attempt)
+`, attempt)
 	if lateNet {
 		program = strings.Replace(program, "    int in = open", "    struct timespec pause = {0, 50000000};\n    if (nanosleep(&pause, 0)) return 77;\n    int in = open", 1)
 		program = strings.Replace(program, "elapsed <= 5000000", "elapsed <= 100000000", 1)
@@ -575,7 +609,7 @@ int main(int argc, char **argv) {
 		}
 	}
 	const driver = `import json, os, subprocess, sys
-root, source, attempt, anchor, digest, observation = sys.argv[1:]
+root, source, attempt, anchor, digest, observation, payload_kind = sys.argv[1:]
 subprocess.run(["/usr/bin/mount","--make-rprivate","/"],check=True)
 subprocess.run(["/usr/bin/mount","-t","tmpfs","-o","mode=700","tmpfs","/root"],check=True)
 os.mkdir("/root/.winkyou-field",0o700)
@@ -583,14 +617,14 @@ subprocess.run(["/usr/bin/mount","--bind",root,"/root/.winkyou-field"],check=Tru
 base="/root/.winkyou-field/c1c"
 role=base+"/endpoints/initiator"
 evidence=base+"/evidence/"+attempt+"/endpoint-initiator"
-result=subprocess.run(["bash",source,"initiator",attempt,anchor,"--payload","version"],stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True)
+result=subprocess.run(["bash",source,"initiator",attempt,anchor,"--payload",payload_kind],stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True)
 payload_path=evidence+"/"+attempt+"/endpoint-initiator/payload.json"
 payload=json.load(open(payload_path)) if os.path.exists(payload_path) else {}
 observed=json.load(open(observation)) if os.path.exists(observation) else 0
-replay=subprocess.run(["bash",source,"initiator",attempt,anchor,"--payload","version"],stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True)
-print(json.dumps({"exit":result.returncode,"stdout":result.stdout,"stderr":result.stderr,"payload":payload,"anchor":os.stat("/run/netns/"+anchor).st_ino,"parent_mount":os.stat("/proc/self/ns/mnt").st_ino,"image_sha256":digest,"image_inode":os.stat(role+"/install/winkyou/wink").st_ino,"launch":open(evidence+"/launch.json").read(),"replay_exit":replay.returncode,"replay":replay.stdout,"observed_net":observed}))
+replay=subprocess.run(["bash",source,"initiator",attempt,anchor,"--payload",payload_kind],stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True)
+print(json.dumps({"exit":result.returncode,"stdout":result.stdout,"stderr":result.stderr,"payload":payload,"anchor":os.stat("/run/netns/"+anchor).st_ino,"parent_mount":os.stat("/proc/self/ns/mnt").st_ino,"image_sha256":digest,"image_inode":os.stat(role+"/install/winkyou/wink").st_ino,"launch":open(evidence+"/launch.json").read(),"replay_exit":replay.returncode,"replay":replay.stdout,"observed_net":observed,"payload_kind":payload_kind}))
 `
-	command := exec.Command("/usr/bin/unshare", "-m", "--propagation", "private", "/usr/bin/python3", "-I", "-B", "-c", driver, root, script, attempt, anchor, digest, observation)
+	command := exec.Command("/usr/bin/unshare", "-m", "--propagation", "private", "/usr/bin/python3", "-I", "-B", "-c", driver, root, script, attempt, anchor, digest, observation, payloadKind)
 	output, err := command.CombinedOutput()
 	if err != nil {
 		return nil, fmt.Errorf("full launcher driver: %w %s", err, output)
