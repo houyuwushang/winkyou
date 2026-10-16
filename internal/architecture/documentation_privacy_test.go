@@ -40,6 +40,7 @@ var (
 	docSplat     = regexp.MustCompile(`^@[A-Za-z_][A-Za-z0-9_]*(?:\s|$)`)
 	docSplatCall = regexp.MustCompile(`(?:^|[;|])\s*(?:&\s+\$[A-Za-z_][A-Za-z0-9_]*|[A-Za-z]+-[A-Za-z]+)\s+$`)
 	docAtTokens  = regexp.MustCompile("(?:" +
+		regexp.QuoteMeta(ciGoSetupAction) + "|" +
 		"main@[a-f0-9]{7,40}|github\\.com/flynn/noise" + "@v1\\.1\\.0|" +
 		"actions/(?:checkout|setup-go|upload-artifact)@v[0-9]+|" +
 		"wink-stund@(?:3478|3479)?\\.service|" +
@@ -375,7 +376,7 @@ func TestPublicDocumentationPrivacySyntax(t *testing.T) {
 		"$args = @(1, 2)", "$body = @{ key = 1 }", "$text = @'", "'@", "$text = @\"", "\"@",
 		"the `@` u32 operator", "public/home/office network", "context::type",
 		"wink-stund@.service wink-stund@3478.service wink-stund@3479.service",
-		"`main@1234567`", "`github.com/flynn/noise" + "@v1.1.0`", "uses: actions/checkout@v4",
+		"`main@1234567`", "`github.com/flynn/noise" + "@v1.1.0`", "uses: actions/checkout@v4", "uses: " + ciGoSetupAction,
 		"`hard_nat_candidate_exhausted@candidates`", "`attempt_expired@ready`",
 		"[API](https://pkg.go.dev/github.com/flynn/noise" + "@v1.1.0)",
 		"[article](https://medium.com/@%3CAUTHOR%3E/topic)",

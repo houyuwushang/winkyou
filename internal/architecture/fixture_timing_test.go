@@ -16,7 +16,9 @@ import (
 // Baseline 97c3750 plus #150's reviewed collector-inclusive cap recomputation,
 // ignoring blank lines/indentation only. Removing exactly the authorized env
 // and collector must recover these complete job bodies: proof commands, counts,
-// test timeouts, selection and setup stay frozen; only measured job caps change.
+// test timeouts and selection stay frozen; only measured job caps change.
+// The official-source setup step below normalizes to the original
+// installer, preserving the historical digest for every other byte in each job.
 var fixtureTimingJobs = []struct{ file, job, artifact, digest string }{
 	{"ci.yml", "gate-c1b-memory-pipelines", "fixture-timing-pipelines-${{ matrix.os }}", "2692cd2f133a7bce1f2f191439a86391d8b0ca855ca6b522668e4ffb5efd912b"},
 	{"ci.yml", "gate-c1b-memory-phases", "fixture-timing-phases-${{ matrix.os }}", "b8235449403663bda754d796d2c73e1617a9c22beae747a164e851fda7577238"},
@@ -45,6 +47,9 @@ func fixtureTimingJobValid(data []byte, job, artifact, digest string) bool {
 		}
 		block = strings.Replace(block, env, "", 1)
 		block = strings.Replace(block, capture, "", 1)
+		block = strings.ReplaceAll(block,
+			"uses: "+ciGoSetupAction+" # v6.5.0\n        timeout-minutes: 2\n        with:\n          go-version-file: go.mod\n          go-download-base-url: https://go.dev/dl\n          token: ''",
+			"uses: actions/setup-go@v5\n        with:\n          go-version-file: go.mod")
 		var lines []string
 		for _, line := range strings.Split(block, "\n") {
 			if line = strings.TrimSpace(line); line != "" {

@@ -16,9 +16,12 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        timeout-minutes: 2
         with:
           go-version-file: go.mod
+          go-download-base-url: https://go.dev/dl
+          token: ''
 
       - name: Run go vet ./...
         run: go vet ./...
@@ -60,9 +63,12 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        timeout-minutes: 2
         with:
           go-version-file: go.mod
+          go-download-base-url: https://go.dev/dl
+          token: ''
 
       - name: Run full suite except separately required relay proof
         run: go test ./... -count=1 -skip '^TestRelayWGGoTwoEnginesExchangeIPv4Packets$'
@@ -79,9 +85,12 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        timeout-minutes: 2
         with:
           go-version-file: go.mod
+          go-download-base-url: https://go.dev/dl
+          token: ''
 
       - name: Run bounded loopback-only proof
         shell: pwsh
@@ -96,9 +105,12 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        timeout-minutes: 2
         with:
           go-version-file: go.mod
+          go-download-base-url: https://go.dev/dl
+          token: ''
 
       - name: Install isolated-network witness tools
         run: |
@@ -130,9 +142,12 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        timeout-minutes: 2
         with:
           go-version-file: go.mod
+          go-download-base-url: https://go.dev/dl
+          token: ''
 
       - name: Install isolated-network witness tools
         run: |
@@ -175,9 +190,12 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        timeout-minutes: 2
         with:
           go-version-file: go.mod
+          go-download-base-url: https://go.dev/dl
+          token: ''
 
       - name: Install isolated-network witness tools
         run: |
@@ -219,9 +237,12 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        timeout-minutes: 2
         with:
           go-version-file: go.mod
+          go-download-base-url: https://go.dev/dl
+          token: ''
 
       - name: Install isolated-network witness tools
         run: |
@@ -271,9 +292,12 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        timeout-minutes: 2
         with:
           go-version-file: go.mod
+          go-download-base-url: https://go.dev/dl
+          token: ''
 
       - name: Install isolated-network witness tools
         run: |
@@ -334,9 +358,12 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        timeout-minutes: 2
         with:
           go-version-file: go.mod
+          go-download-base-url: https://go.dev/dl
+          token: ''
 
       - name: Install isolated-network witness tools
         run: |
@@ -383,9 +410,12 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        timeout-minutes: 2
         with:
           go-version-file: go.mod
+          go-download-base-url: https://go.dev/dl
+          token: ''
 
       - name: Run 100 fresh full-shape natsim campaigns
         run: >-
@@ -406,9 +436,12 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        timeout-minutes: 2
         with:
           go-version-file: go.mod
+          go-download-base-url: https://go.dev/dl
+          token: ''
 
       - name: Run 1000 crash-style campaign ledger restarts
         run: >-
@@ -442,9 +475,12 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        timeout-minutes: 2
         with:
           go-version-file: go.mod
+          go-download-base-url: https://go.dev/dl
+          token: ''
 
       - name: Vet the tagged CLI and isolated process seams
         run: >-
@@ -491,9 +527,12 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        timeout-minutes: 2
         with:
           go-version-file: go.mod
+          go-download-base-url: https://go.dev/dl
+          token: ''
 
       - name: Repeat consumer readiness, shared cap, cancellation and session tests
         run: >-
@@ -555,9 +594,12 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        timeout-minutes: 2
         with:
           go-version-file: go.mod
+          go-download-base-url: https://go.dev/dl
+          token: ''
 
       - name: Prove 100 fresh CLI and durable-slot lifecycles
         env:
@@ -590,9 +632,12 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        timeout-minutes: 2
         with:
           go-version-file: go.mod
+          go-download-base-url: https://go.dev/dl
+          token: ''
 
       - name: Prove the complete consumer and slow FINISH partitions
         run: go test ./internal/architecture -run 'GateC1b.*CIPartition' -count=1
@@ -612,9 +657,12 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        timeout-minutes: 2
         with:
           go-version-file: go.mod
+          go-download-base-url: https://go.dev/dl
+          token: ''
 
       - name: Verify SSH tools and install isolated-network witness tools
         run: |
@@ -689,9 +737,12 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        timeout-minutes: 2
         with:
           go-version-file: go.mod
+          go-download-base-url: https://go.dev/dl
+          token: ''
 
       - name: Run relay wggo smoke
         run: go test ./pkg/client -run '^TestRelayWGGoTwoEnginesExchangeIPv4Packets$' -count=3
@@ -711,9 +762,12 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        timeout-minutes: 2
         with:
           go-version-file: go.mod
+          go-download-base-url: https://go.dev/dl
+          token: ''
 
       - name: Preserve migrated full-suite relay repetition
         run: go test ./pkg/client -run '^TestRelayWGGoTwoEnginesExchangeIPv4Packets$' -count=1
