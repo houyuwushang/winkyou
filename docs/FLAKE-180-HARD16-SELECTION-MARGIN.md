@@ -1,8 +1,129 @@
 # Hard16 selection-margin fixture investigation
 
-Status: investigation in a test-only Draft PR. This document preserves the
-first `TestGateB3Hard16SelectionUsesActiveMarginAfterCandidateWindow` failure
-and constrains the diagnosis before any change is made.
+Status (2026-10-16): test-only fixture correction based on hosted measurements.
+The first corrected Linux six-package race batch passes; subsequent first-run
+checks are tracked in PR #197. The original investigation and first REDs remain
+below. No production budget or Go production code changes.
+
+## Hosted diagnosis and fixture correction (2026-10-16)
+
+[PR #195's first Linux race job](https://github.com/houyuwushang/winkyou/actions/runs/38836912109/job/116767978442)
+recorded `delayed_triggered=false writes=6`, with initiator/responder candidate
+counts `15980/15995`, winner counts `0/0`, and carrier reads/writes `6/6`.
+The initiator returned `hard_nat_candidate_exhausted`; its peer returned
+`oob_stream_closed`. Both reached candidates at approximately 1.167 seconds and
+terminal at 3.462/3.464 seconds. The first raw log SHA-256 is
+`589ba6a4e996fd5fb2b171f619700b3254755be4e8d3f6f9c331c9fa34c4d28b`.
+
+The candidate deadline in `punchHardCampaign` is real wall time, even when
+the test injects a virtual pacing clock. The compressed two-second fixture
+deadline can expire under the six-package race load before both fixed 16,384
+candidate schedules finish. The remaining 404/389 candidates were not emitted;
+the production guard correctly prevents selection after an incomplete schedule.
+This failure never exercised the intended selection-margin regression.
+
+The measurement commit `a901d84ca904c9093c1dd3330e80be1815359d58` keeps
+the original 10s/2s test unchanged and adds three diagnostic samples using the
+existing full-shape fixture's 12s/8s envelope and original 2250ms selection hold.
+It preserves the same label, topology, seeds, real protocol and fixed schedule.
+The samples run in the original six-package race batch; only verbosity is
+added. Both candidate-stage start and the structurally decoded responder
+`FrameWinnerSelection` write are timestamped with the same monotonic clock.
+
+[First hosted measurement job](https://github.com/houyuwushang/winkyou/actions/runs/38843908986/job/116789954089),
+attempt 1, Go 1.23.1, Linux, default package concurrency:
+
+| Sample | Setup (s) | Candidates through selection entry (s) | Fixed candidates per side |
+| --- | ---: | ---: | ---: |
+| 1 | 0.889961050 | 1.232937911 | 16384 |
+| 2 | 0.911983304 | 1.146648398 | 16384 |
+| 3 | 0.930273725 | 1.166400416 | 16384 |
+
+The raw log SHA-256 is
+`6255806826a150a7974e4191a046d0d8b0001412cde0978d6d515fb2b6cdf940`.
+All samples reached selection ordinal 7, completed with carrier counts 8/8
+and exactly one winner across the pair. This discovery job also passed the
+original two-second regression; it is a timing sample, not a replacement for
+the retained RED or a new deterministic reproduction of that RED.
+
+The same commit's [PR-event first job](https://github.com/houyuwushang/winkyou/actions/runs/38843947881/job/116790077103)
+also passed and supplied three slower samples. None are omitted from the bound:
+
+| Sample | Setup (s) | Candidates through selection entry (s) | Fixed candidates per side |
+| --- | ---: | ---: | ---: |
+| 1 | 1.128995784 | 1.924011685 | 16384 |
+| 2 | 1.143771526 | 1.873229526 | 16384 |
+| 3 | 1.182657886 | 1.830477448 | 16384 |
+
+Its raw log SHA-256 is
+`655c7767d918bbfff3e1f28373886ac0069991beafc9b1738a71da45238e361b`.
+
+Following #180's recorded rule, conservatively include setup as well as the
+complete candidate phase across all six samples: maximum = 3.053007469s;
+`ceil(max * 1.5 / 0.5s) * 0.5s = 5s`. Only this regression's candidate fixture
+changes from 2s to 5s. Its active envelope remains 10s. The production
+38s candidate / 45s active / 2s drain budgets and every packet/frame bound
+remain unchanged. The diagnostic-only test is retained in its measurement
+commit; ordinary CI does not run extra calibration attempts.
+
+The delay wrapper now recognizes the first responder selection frame through
+the bounded WYRC codec and HardNAT header, instead of assuming write number 7.
+It forwards the original bytes without decrypting or altering them. Its one
+existing intentional hold ends 250ms after the later endpoint's candidate
+deadline, observed directly from each endpoint's first candidate I/O context.
+The observation wrapper forwards the context, packet and target unchanged;
+it neither advances a clock nor waits. Using the earlier progress callback
+would leave a scheduling gap before the actual candidate deadline is created.
+Merely increasing the candidate window while keeping a relative
+2250ms hold could silently stop testing expired candidate contexts on a fast
+runner; both endpoints now explicitly assert release after their deadline.
+Success still requires complete schedules, carrier counts 8/8, exactly one
+winner, burned/finished state, bidirectional handoff, and no safety trip.
+
+Local mutation checks use Go source overlays, leaving production files intact:
+
+- restoring ordinal-7 matching rejects selection at write 1 and mistakenly
+  delays a non-selection frame at write 7;
+- releasing before the candidate deadline fails the explicit margin assertion;
+- giving selection the expired candidate context fails with
+  `attempt_expired` / `oob_stream_closed` despite both full candidate schedules.
+
+The existing #188 resource-trip test passed this hosted six-package batch.
+Its first RED has zero candidate emissions and a different failure class;
+there is no evidence here to classify it as this timeout or change its fixture.
+Other two-second fixtures are unchanged. Keep `Refs #180`; no issue closure,
+CI rerun, field-host operation, or production correction is implied.
+
+## Corrected first-run evidence
+
+Fix commit `45a0185fbeae284e5700f2b4c5fc8591765570be` passes the
+[push-event Linux job](https://github.com/houyuwushang/winkyou/actions/runs/38845736025/job/116795737765)
+on attempt 1, including the original six-package race command and the following
+mutation/stability matrix. The selection test takes 6.66s and emits:
+
+```text
+GATEB3_SELECTION_MARGIN role=responder release_after_deadline_ns=250053204 candidate_window_ns=5000000000 candidate_packets=16384
+GATEB3_SELECTION_MARGIN role=initiator release_after_deadline_ns=250258790 candidate_window_ns=5000000000 candidate_packets=16384
+GATEB3_SELECTION_WITNESS label=selection_after_candidate_deadline delayed_triggered=true writes=8
+GATEB3_SELECTION_OUTCOME role=responder error_class=none terminal=success candidate_packets=16384 winner_packets=1 carrier_read=8 carrier_write=8
+GATEB3_SELECTION_OUTCOME role=initiator error_class=none terminal=success candidate_packets=16384 winner_packets=0 carrier_read=8 carrier_write=8
+```
+
+The raw log SHA-256 is
+`ed3c822482c7841cbf4f309d55cf5757748e55b7576c90f11fa2f1405b636343`.
+Local Windows Go 1.23.1 passes the same six-package race command (governor
+165.589s, architecture 118.500s), and Linux-target tagged vet passes. All three
+final overlay mutations are rejected; neither production source nor the
+original failed job is rewritten. The source does not require these exact
+observed timings: it asserts the actual deadlines and frozen resource counts.
+
+The earlier measurement commit's overall checks are 71 successes and one
+[cancelled Fresh100 job](https://github.com/houyuwushang/winkyou/actions/runs/38843947881/job/116790077207).
+That job was cancelled during `setup-go` while acquiring the Go 1.23.1 archive,
+before its test step began; its always-run timing export then had no samples.
+Both measurement Test (Linux) jobs passed. The cancelled log is retained with
+SHA-256 `8f02a24675d3eb61da1f36ab35603914a3b64a51ee9eb0829ac01733370689ce`.
+It is not counted as a test pass and was not rerun.
 
 ## First signature
 

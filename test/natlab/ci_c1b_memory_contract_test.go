@@ -64,10 +64,14 @@ var c1bMemoryCIGroups = []struct {
 	{"fresh100", "Fresh100", 8, 9, 5, 6},
 }
 
+const c1bMemoryGoSetupAction = "actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16" // v6.5.0
+
 func c1bMemoryCISetup() []c1bMemoryCIStep {
 	return []c1bMemoryCIStep{
 		{Name: "Check out repository", Uses: "actions/checkout@v4"},
-		{Name: "Set up Go", Uses: "actions/setup-go@v5", With: map[string]string{"go-version-file": "go.mod"}},
+		{Name: "Set up Go", Uses: c1bMemoryGoSetupAction, TimeoutMinutes: "2", With: map[string]string{
+			"go-version-file": "go.mod", "go-download-base-url": "https://go.dev/dl", "token": "",
+		}},
 	}
 }
 
@@ -142,6 +146,9 @@ func TestGateC1bMemoryCIContractMutations(t *testing.T) {
 			name, cause string
 			change      func(*c1bMemoryCIJob)
 		}{
+			{"old-installer", "exact commands, order, setup and step environment", func(j *c1bMemoryCIJob) { j.Steps[1].Uses = "actions/setup-go@v5" }},
+			{"unbounded-installer", "exact commands, order, setup and step environment", func(j *c1bMemoryCIJob) { j.Steps[1].TimeoutMinutes = "" }},
+			{"wrong-download-source", "exact commands, order, setup and step environment", func(j *c1bMemoryCIJob) { delete(j.Steps[1].With, "go-download-base-url") }},
 			{"drop-command", "exact commands, order, setup and step environment", func(j *c1bMemoryCIJob) {
 				i := len(j.Steps) - 2 // Last original proof, not numeric capture.
 				j.Steps = append(j.Steps[:i], j.Steps[i+1:]...)
