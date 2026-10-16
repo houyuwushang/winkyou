@@ -18,9 +18,10 @@ func TestFieldC1cRequiredCIBudgetAndAuthority(t *testing.T) {
 	const secondBuild = 23 * time.Second
 	const expandedUnitRace = 343 * time.Second
 	const isolatedMatrix = 4 * time.Minute
-	// Full-launcher GREEN plus the real late-netns mutation: first push job
-	// 116243040253 measured 3s. The existing cap formula is unchanged.
-	const roleViewProof = 3 * time.Second
+	// Full-launcher version/ledger GREEN plus the real late-netns mutation:
+	// first PR job 116763390045 measured 4s (whole job 296s, below 80% of
+	// the 16-minute cap). The existing cap formula is unchanged.
+	const roleViewProof = 4 * time.Second
 	budget := (baselinePreparation + symbolProof + secondBuild + expandedUnitRace + isolatedMatrix + roleViewProof) * 5 / 4
 	minutes := int((budget + time.Minute - 1) / time.Minute)
 	if minutes != 16 {

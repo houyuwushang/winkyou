@@ -15,8 +15,8 @@ jobs:
     # gatecorchestrator) measured 343s on the maintainer validation host.
     # ceil((63 baseline prep + 56 symbol proof + 23 second build +
     #       343 expanded unit race + 240 isolated matrix +
-    #       3 role-view proof, including full-launcher GREEN and late-netns
-    #       mutation; job 116243040253 measured 3s) * 1.25 / 60) = 16.
+    #       4 role-view proof, including version/ledger GREEN and late-netns
+    #       mutation; job 116763390045 measured 4s) * 1.25 / 60) = 16.
     timeout-minutes: 16
     steps:
       - uses: actions/checkout@v4
