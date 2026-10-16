@@ -42,6 +42,7 @@ type livenessCIJob struct {
 type livenessCIStep struct {
 	Name, Uses, Run, If, Shell string
 	ContinueOnError            string `yaml:"continue-on-error"`
+	TimeoutMinutes             string `yaml:"timeout-minutes"`
 	Env, With                  map[string]string
 }
 
@@ -128,7 +129,9 @@ func livenessCISplitViolations(workflow livenessCIWorkflow) []string {
 		}
 		wantSetup := []livenessCIStep{
 			{Uses: "actions/checkout@v4"},
-			{Uses: "actions/setup-go@v5", With: map[string]string{"go-version-file": "go.mod"}},
+			{Uses: c1bMemoryGoSetupAction, TimeoutMinutes: "2", With: map[string]string{
+				"go-version-file": "go.mod", "go-download-base-url": "https://go.dev/dl", "token": "",
+			}},
 		}
 		wantCapture := 0
 		if name == "owner" {
@@ -230,6 +233,9 @@ func TestSessionLivenessCIContract(t *testing.T) {
 		})
 	}
 	for _, mutation := range []struct{ name, before, after, cause string }{
+		{"old-installer", c1bMemoryGoSetupAction, "actions/setup-go@v5", "model exact original commands and setup"},
+		{"unbounded-installer", "        timeout-minutes: 2\n", "", "owner exact original commands and setup"},
+		{"wrong-download-source", "          go-download-base-url: https://go.dev/dl\n", "", "model exact original commands and setup"},
 		{"model-drop-command", livenessCIVet, "true", "model exact original commands and setup"},
 		{"owner-drop-command", livenessCIBusiness, "true", "owner exact original commands and setup"},
 		{"model-shorten-timeout", livenessCIAffected, strings.Replace(livenessCIAffected, "-timeout=15m", "-timeout=14m", 1), "model exact original commands and setup"},

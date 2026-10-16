@@ -46,3 +46,14 @@ its original job digests continue to protect all other content.
 The first failure logs remain attached to their original jobs. Validation of
 this change uses new-commit first runs, never a rerun of the failed jobs. There
 are no production Go changes or field-host operations.
+
+The first repair head `84cb430` installed Go successfully (37 completed setup
+samples, maximum 26s at the first audit), including successful N2d/N3b and
+Linux Fresh100 jobs. Its [first Test (Linux) job](https://github.com/houyuwushang/winkyou/actions/runs/38858306095/job/116834617793)
+then exposed a separate integration omission: the C1b memory and session
+liveness contracts in `test/natlab` still expected the old setup step. That
+RED is preserved. Their expected setup is now updated exactly, including the
+step bound; the existing command, job-cap, repetition and aggregate assertions
+are retained. Both contracts reject old-installer, missing-bound and missing-
+official-source mutations. Local validation now includes all of
+`test/natlab` alongside the architecture package.
