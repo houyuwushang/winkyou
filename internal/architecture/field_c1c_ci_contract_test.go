@@ -17,6 +17,10 @@ func TestFieldC1cRequiredCIBudgetAndAuthority(t *testing.T) {
 	const symbolProof = 56 * time.Second
 	const secondBuild = 23 * time.Second
 	const expandedUnitRace = 343 * time.Second
+	// The matrix term is the step's own -test.timeout=4m bound rather than
+	// the 47s measured with peer-absent and both real mutations (first push
+	// job 116764303085; discovery job 116761412269 took 287s): a job cap
+	// derived from the bound can never pre-empt the test timeout's dump.
 	const isolatedMatrix = 4 * time.Minute
 	// Full-launcher version/ledger GREEN plus the real late-netns mutation:
 	// first PR job 116763390045 measured 4s (whole job 296s, below 80% of
