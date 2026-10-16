@@ -30,6 +30,8 @@ jobs:
         run: go test -race ./pkg/session ./pkg/client ./pkg/solver/... -count=1 -skip '^TestRelayWGGoTwoEnginesExchangeIPv4Packets$'
 
       - name: Run N2c governed-adapter race tests
+        env:
+          WINKYOU_FLAKE_180_MEASURE: "1"
         run: >-
           go test -race
           ./internal/v2/rendezvouscarrier
@@ -38,7 +40,7 @@ jobs:
           ./internal/governor
           ./internal/architecture
           ./internal/v2/directattempt
-          -count=1
+          -count=1 -v
 
       - name: Run N2c mutation and stability matrix
         run: >-

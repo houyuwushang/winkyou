@@ -1,6 +1,7 @@
 package governor_test
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"errors"
@@ -24,6 +25,7 @@ import (
 	"winkyou/internal/v2/hardnatcontrol"
 	"winkyou/internal/v2/hardnatobserve"
 	"winkyou/internal/v2/hardnatplan"
+	"winkyou/internal/v2/rendezvouswire"
 )
 
 func TestGateB3Hard16NATSimFullShapeHandoff(t *testing.T) {
@@ -139,6 +141,51 @@ func startGateB3CPUStress(t testing.TB) {
 		cancel()
 		wg.Wait()
 	})
+}
+
+// This opt-in discovery uses the existing full-shape fixture's 12s/8s
+// diagnostic envelope, not a proposed replacement for the selection test.
+// The original 10s/2s regression above still runs unchanged in the same batch.
+func TestGateB3Hard16SelectionMarginMeasurement(t *testing.T) {
+	if os.Getenv("WINKYOU_FLAKE_180_MEASURE") != "1" {
+		return
+	}
+	for sample := 1; sample <= 3; sample++ {
+		t.Run(fmt.Sprintf("sample_%d", sample), func(t *testing.T) {
+			left, right, closeFixture := newGateB3NATSimFixtureFor(t, "selection-margin", 11, 29)
+			defer closeFixture()
+			delayed := &gateB3DelayedWriteConn{Conn: right.stream, writeOrdinal: 7, delay: 2250 * time.Millisecond, startedAt: time.Now()}
+			right.stream = delayed
+			outcomes := runGateB3Pair(t, left, right, 12*time.Second, 8*time.Second)
+			logGateB3SelectionWitness(t, "measurement", outcomes, delayed)
+			for _, outcome := range outcomes {
+				if outcome.err != nil || outcome.result.Terminal != "success" ||
+					outcome.result.Emissions.CandidatePackets != hardnatbudget.Hard16CandidatePackets {
+					t.Fatal("measurement did not complete the fixed schedule and handoff")
+				}
+				if outcome.role != "responder" {
+					continue
+				}
+				var candidateAt time.Time
+				for _, stage := range outcome.stageEvents {
+					if stage.stage == "candidates" {
+						candidateAt = stage.at
+					}
+				}
+				found := false
+				for _, event := range delayed.writeEvents() {
+					if event.frameType == hardnatcontrol.FrameWinnerSelection {
+						found = true
+						t.Logf("GATEB3_SELECTION_MEASURE sample=%d setup_ns=%d candidates_to_selection_ns=%d selection_ordinal=%d candidate_packets=%d",
+							sample, candidateAt.Sub(delayed.startedAt).Nanoseconds(), event.at.Sub(candidateAt).Nanoseconds(), event.ordinal, outcome.result.Emissions.CandidatePackets)
+					}
+				}
+				if candidateAt.IsZero() || !found || !delayed.triggered.Load() {
+					t.Fatal("measurement is missing the candidate start or selection frame")
+				}
+			}
+		})
+	}
 }
 
 func TestGateB3Hard16FullExhaustionIsOneShotAndOpensOnlyCampaignCircuit(t *testing.T) {
@@ -352,6 +399,7 @@ type gateB3Outcome struct {
 type gateB3StageEvent struct {
 	stage      string
 	relativeNS int64
+	at         time.Time
 }
 
 func runGateB3SafetyRegression(t testing.TB, mode string) []gateB3Outcome {
@@ -548,7 +596,8 @@ func runGateB3Pair(t testing.TB, left, right *gateB3Side, active, candidates tim
 			ObserverTopology: side.topology, BuildVersion: "gate-b3-natsim", ProbeFactory: schedule.factory(side.factory, sideIndex),
 			Progress: func(stage string, _ bool) error {
 				stages = append(stages, stage)
-				stageEvents = append(stageEvents, gateB3StageEvent{stage: stage, relativeNS: time.Since(startedAt).Nanoseconds()})
+				at := time.Now()
+				stageEvents = append(stageEvents, gateB3StageEvent{stage: stage, relativeNS: at.Sub(startedAt).Nanoseconds(), at: at})
 				return nil
 			},
 			Harness: &gateb.HarnessHooks{NoiseRandom: gateB2ObservationRandom(randomSeed + 40), ObservationRandom: gateB2ObservationRandom(randomSeed),
@@ -610,13 +659,24 @@ type gateB3WriteEvent struct {
 	ordinal    int
 	relativeNS int64
 	bytes      int
+	at         time.Time
+	frameType  hardnatcontrol.FrameType
 }
 
 func (connection *gateB3DelayedWriteConn) Write(payload []byte) (int, error) {
 	connection.mu.Lock()
 	connection.writes++
 	ordinal := connection.writes
-	connection.events = append(connection.events, gateB3WriteEvent{ordinal: ordinal, relativeNS: time.Since(connection.startedAt).Nanoseconds(), bytes: len(payload)})
+	at := time.Now()
+	var frameType hardnatcontrol.FrameType
+	frame, consumed, err := rendezvouswire.DecodeForProfile(bytes.NewReader(payload), rendezvouswire.CallerProvidedStreamProfile)
+	if err == nil && consumed == len(payload) && frame.Kind == rendezvouswire.KindControl {
+		if metadata, err := hardnatcontrol.InspectFrame(frame.Payload); err == nil {
+			frameType = metadata.Type
+		}
+	}
+	clear(frame.Payload)
+	connection.events = append(connection.events, gateB3WriteEvent{ordinal: ordinal, relativeNS: at.Sub(connection.startedAt).Nanoseconds(), bytes: len(payload), at: at, frameType: frameType})
 	connection.mu.Unlock()
 	if ordinal == connection.writeOrdinal {
 		connection.triggered.Store(true)
@@ -664,7 +724,7 @@ func logGateB3SelectionWitness(t testing.TB, label string, outcomes []gateB3Outc
 		}
 	}
 	for _, event := range delayed.writeEvents() {
-		t.Logf("GATEB3_SELECTION_WRITE ordinal=%d relative_ns=%d payload_bytes=%d", event.ordinal, event.relativeNS, event.bytes)
+		t.Logf("GATEB3_SELECTION_WRITE ordinal=%d relative_ns=%d payload_bytes=%d frame_type=%d", event.ordinal, event.relativeNS, event.bytes, event.frameType)
 	}
 }
 
