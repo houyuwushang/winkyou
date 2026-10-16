@@ -2,6 +2,7 @@ package shortcut
 
 import (
 	"context"
+	"errors"
 	"os"
 	"runtime"
 	"sort"
@@ -25,6 +26,7 @@ type shortcutBarrierWitness struct {
 	// Seq is used only to join observations of one logical fixture message.
 	// It and the message body are never printed or published.
 	bypass map[uint64]uint8
+	packet map[string]shortcutPacketGap
 }
 
 type shortcutBarrierRow struct {
@@ -32,18 +34,28 @@ type shortcutBarrierRow struct {
 	kind, signal, node, inbound, next string
 }
 
+type shortcutPacketGap struct {
+	readMax  int64
+	writeMax int64
+}
+
 func newShortcutBarrierWitness(t *testing.T) *shortcutBarrierWitness {
 	t.Helper()
-	w := &shortcutBarrierWitness{started: time.Now(), stable: make(map[string]bool), phases: make(map[string]map[Phase]bool), bypass: make(map[uint64]uint8)}
+	w := &shortcutBarrierWitness{
+		started: time.Now(), stable: make(map[string]bool), phases: make(map[string]map[Phase]bool),
+		bypass: make(map[uint64]uint8), packet: make(map[string]shortcutPacketGap),
+	}
 	t.Cleanup(func() {
 		if !t.Failed() && os.Getenv("WINKYOU_FLAKE_158_WITNESS") != "1" {
 			return
 		}
 		w.mu.Lock()
-		defer w.mu.Unlock()
-		for _, row := range w.rows {
+		rows := append([]shortcutBarrierRow(nil), w.rows...)
+		w.mu.Unlock()
+		for _, row := range rows {
 			t.Logf("BARRIER_WITNESS relative_ns=%d kind=%s type=%s node=%s inbound=%s next=%s", row.ns, row.kind, row.signal, row.node, row.inbound, row.next)
 		}
+		w.logPacketGaps(t)
 	})
 	return w
 }
@@ -64,6 +76,54 @@ func (w *shortcutBarrierWitness) record(kind, signal, node, inbound, next string
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	w.rows = append(w.rows, shortcutBarrierRow{time.Since(w.started).Nanoseconds(), kind, signal, barrierLabel(node), barrierLabel(inbound), barrierLabel(next)})
+}
+
+func (w *shortcutBarrierWitness) recordPacketGap(endpoint, direction string, gap time.Duration) {
+	if w == nil || gap <= 0 {
+		return
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	current := w.packet[endpoint]
+	value := gap.Nanoseconds()
+	if direction == "read" {
+		if value > current.readMax {
+			current.readMax = value
+		}
+	} else if direction == "write" && value > current.writeMax {
+		current.writeMax = value
+	}
+	w.packet[endpoint] = current
+}
+
+func (w *shortcutBarrierWitness) recordPacketClose(node, peer string, cause error) {
+	class := "closed"
+	switch {
+	case errors.Is(cause, mesh.ErrPacketNeighborTimeout):
+		class = "liveness_timeout"
+	case errors.Is(cause, mesh.ErrPacketNeighborReadinessTimeout):
+		class = "readiness_timeout"
+	case cause != nil:
+		class = "other"
+	}
+	w.record("packet_close", class, node, peer, "")
+}
+
+func (w *shortcutBarrierWitness) logPacketGaps(t *testing.T) {
+	t.Helper()
+	w.mu.Lock()
+	packetGaps := make(map[string]shortcutPacketGap, len(w.packet))
+	for endpoint, gap := range w.packet {
+		packetGaps[endpoint] = gap
+	}
+	w.mu.Unlock()
+	for _, endpoint := range []string{"A", "B", "C"} {
+		gap, ok := packetGaps[endpoint]
+		if !ok {
+			continue
+		}
+		t.Logf("SHORTCUT_PACKET_GAP endpoint=%s read_max_ns=%d write_max_ns=%d", endpoint, gap.readMax, gap.writeMax)
+	}
 }
 
 func (w *shortcutBarrierWitness) route(event mesh.Event) {
@@ -188,6 +248,7 @@ func (w *shortcutBarrierWitness) dumpFailure(t *testing.T, label string, manager
 	for id, state := range broker.edgeStates() {
 		t.Logf("SHORTCUT_EDGE edge=%s state=%s", id, state)
 	}
+	w.logPacketGaps(t)
 	t.Logf("SHORTCUT_FAILURE label=%s", label)
 }
 
