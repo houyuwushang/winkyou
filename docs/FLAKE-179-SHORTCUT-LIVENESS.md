@@ -72,3 +72,33 @@ and all product defaults remain unchanged. The budget formula is locked by
    focused race batch and the full Windows command. A new failure with a
    different terminal class is registered separately rather than folded into
    #179.
+
+
+## Shared CI repair (2026-10-16)
+
+The first push at `641dd967` retained a separate #180 failure in
+[Test (Linux), job 113310183756](https://github.com/houyuwushang/winkyou/actions/runs/37776974153/job/113310183756):
+
+```text
+GATEB3_SELECTION_WITNESS label=delayed_write_not_reached delayed_triggered=false writes=6
+```
+
+The original check set finished with 70 successes, one selection-test failure
+and one dependent skipped job. Both Windows test events passed. The Linux
+failure was not rerun and does not invalidate the recorded shortcut witness.
+
+The branch now integrates the shared test/CI fixes from
+[PR #197](https://github.com/houyuwushang/winkyou/pull/197), head `e18249c`.
+That investigation measured the complete Hard16 schedule before deriving the
+candidate fixture window, identified the selection frame by type, and checked
+both actual candidate deadlines. It also bounded Go installation using the
+official distribution source. See
+[the selection evidence](FLAKE-180-HARD16-SELECTION-MARGIN.md) and
+[the provisioning evidence](CI-GO-PROVISIONING.md).
+
+The shortcut fixture changes remain independently reviewable against that
+shared head: this document and the two shortcut test files. The 250 ms budget,
+three short-probation corrections, original observation windows, and packet
+gap witnesses remain unchanged. Go production delta against current main is
+zero. Refs #179 and #176; closure still requires the separate post-merge
+Windows first-run observation period.

@@ -106,8 +106,8 @@ symlink 被跳过，hardlink 被拒绝，不能拿别名绕过。把整个 home 
 | `<ROLE>/run` | `/run` | 私有 sshd runtime；重新绑定外层的 `/run/netns` 注册表 |
 | `<ROLE>/machine-id` | `/etc/machine-id` | 两角色独立，跨实例保留；router scope 另算，不替换宿主 machine-id |
 
-先 `mount --make-rprivate /`。覆盖 `/run` 前必须持有注册表引用；覆盖 `/root` 后不能继续
-假设原物理 `<ROLE>/...` 路径仍可见。request/config/material/三个实例副本的实际路径必须按各
+先执行 `mount --make-rprivate /`。覆盖 `/run` 前必须先把注册表挂载进角色 `run/netns`；fd 引用不能作为跨 namespace 的 mount 源。覆盖 `/root` 后不能继续假设原物理 `<ROLE>/...` 路径仍可见。
+request/config/material/三个实例副本的实际路径必须按各
 mount view 分别核验。**U2 未决：现有实现只在 test helper 里组合这些挂载；尚无可直接调用的
 受审现场 launcher。** 不把测试二进制的 host-process 入口用作现场 launcher。
 
@@ -123,10 +123,14 @@ U2 的初始化模板现由 [init 脚本](../scripts/c1c-endpoint-init.sh) 实�
 ```
 
 固定根下 `endpoints/` 与 `bin/wink-field` 须事前具名准备并核对 owner/mode/hash。
-角色目录已存在即退出 65，零写入；中途失败目录保留，不自动修复。只有复制 hash 不符时，
-按创建清单与 inode 核验逆序删除本次刚创建的项，不递归删除已有目录。
-init 仅建外层 `var-lib`，内层 canonical namespace 由产品 setup 独占创建；输出只有角色和
-scope 摘要前缀。私有 shadow 与 evidence 父目录绑定的修订见 §9.1。
+角色目录若已有合法 `initialized.json` 即退出 65，零写入；若只有中途半成品，init 会按
+“存在则核对、缺失则创建”恢复，永不重写 machine-id、shadow、已有副本或 setup 日志，
+并以 `resumed=true` 标记成功。已有标记但产物 hash 不同为 `image_changed`，不写入；
+machine-id、目录或占位 shadow 不安全为 `identity_unsafe`，不删不改。任何失败保留现场，
+不递归删除、不调用删除 API。init 仅建外层 `var-lib`，内层 canonical namespace 由产品
+setup 独占创建；`setup-machine-scope --json` 的 stdout/stderr 合并保存到新的 `setup-<UTC>.json`，
+即使 setup 返回非零但 JSON 已 ready 也记录 rc 并按 ready 处理。输出包含角色、scope 摘要和
+`resumed=<true|false>`。私有 shadow 与 evidence 父目录绑定的修订见 §9.1。
 
 ## 3. 每实例操作规程：runbook 步 4–12
 
@@ -517,7 +521,7 @@ slot 领取请求。field stdout 只有 profile/stage/class/duration_ns/counts/e
 progress 与详细 witness 在私有 endpoint.jsonl。对 stdout 不作“有输出即成功”的判断。
 任一前置失败不允许第二 invocation、切 profile、fallback 或调整窗口。
 
-Stage II 的无材料演练模板（同样须另行授权）：
+Stage II 的无材料演练模板（同样须另行授权；init 可从保留的半成品恢复）：
 
 ```sh
 <FIXED_C1C_ENDPOINT_LAUNCH_SCRIPT> <ROLE> <DRILL_ID> <ROLE_ANCHOR> --payload version
@@ -906,6 +910,8 @@ Stage I 接受并关闭 U1–U5 的相关项后，另发精确 Stage II 任务�
 Stage II 失败保留首个输出；不能用再跑一次掩盖。通过后亦须独立复核，再发 Stage III 首个
 负面实例任务书；不是自动顺序执行脚本。
 
+> Stage II 结果（2026-10-15）：第 6 次执行通过并经独立复核，裁决记录见 ADR §7"Stage II 建网/拆网演练结果"；前五次停止均保留首个输出，根因分别由 PR #190、#192、#193 与本规程 U3 派生命令修订闭合。本节任何文字不构成 Stage III 实例的执行授权。
+
 ## 9. 未决登记与进入下一阶段的门
 
 这些是基线源码/规程的接口缺口，不是本 PR 获得的实现权限。复审可关闭设计项，需代码/工具
@@ -932,7 +938,14 @@ Stage II 失败保留首个输出；不能用再跑一次掩盖。通过后亦�
 不更改产品 parser、权限检查、协议、预算或正式 responder 入口。
 
 - U3 anchor 前缀为 `wyc1c`，其余 SHA256 输入、前四字节与角色后缀规则不变；
-  现有 `/2` parser 要求 `wy` 前缀，不增加例外。
+  现有 `/2` parser 要求 `wy` 前缀，不增加例外。SHA256 输入中的 `\n` 是一个真实换行字节，
+  不是两个字符 `\`、`n`；现场只允许用下面这条命令派生，并由第二人独立复算后才能
+  `ip netns add`（Stage II run 4 因按字面 `\n` 派生而被 launcher `arguments_rejected`，
+  按首次失败保留、不在同一 ID 上重跑）：
+
+  ```sh
+  python3 -c 'import hashlib,sys; p="wyc1c"+hashlib.sha256(("winkyou-c1c-anchor/1\n"+sys.argv[1]).encode()).hexdigest()[:8]; print(p+"-i", p+"-t", p+"-r")' "$ATTEMPT_ID"
+  ```
 - init 仅预建角色私有 `var-lib/0700`，不预建内部 `winkyou-safety-v2`。
   现有 `setup-machine-scope` 独占创建内部目录及固定文件，保留原有权限校验。
 - `--payload version` 不要求、不读取、不绑定 instance/material；演练 evidence 目录必须
@@ -1029,3 +1042,6 @@ campaign 的现有对象方法又要求 owner。本轮允许在 governor 增加 
 `go vet ./...`、相对链接检查、模板顶层 89 字段与原目录逐项比对、`git diff --check`。
 docs 隐私门自动遍历 docs 下全部文件，不加豁免；不跑现场命令/生成器/host helper。
 CI 首跑另列，首次 RED 保留，不 rerun 求绿。Draft PR 未合并，等待独立复审。
+> U2 update (2026-10-09): init idempotency and retained-partial recovery are implemented in [PR #190](https://github.com/houyuwushang/winkyou/pull/190); the first field half-product remains the recovery fixture and is not deleted or reset.
+> U2 update (2026-10-13): [PR #192](https://github.com/houyuwushang/winkyou/pull/192) removes `/proc/self/fd` mount sources (libmount re-resolves them by path and the kernel rejects parent-namespace sources), binds the registry into the role `run/netns` before covering `/run`, covers `/root` last, uses recursive binds for registry/run/home, verifies every mounted target against its parent pin, and adds the Linux real-mount proof; the field initiator half-product remains untouched.
+> U2 update (2026-10-15): [PR #193](https://github.com/houyuwushang/winkyou/pull/193) replaces post-exec sampling with a two-way pre-exec gate. `ip netns exec <anchor>` now precedes `unshare -m` without either command forking; CHILD verifies all binds and the pinned image inode, announces readiness, and waits while the parent persists and emits PID/starttime/net/mount/image-hash/image-inode evidence. Only then does the parent release the pinned fd execution. CPython exposes `fexecve` through `os.execve(fd, argv, ENV)`, not an `os.fexecve` attribute. The hash identifies the prevalidated pinned image; the witness records readiness before exec, while the exit line and payload evidence record execution. Run 5 completed the child path with exit 0 but stopped with `exec_witness_unavailable`: hashing the 31,403,149-byte image through `/proc/<pid>/exe` took 18.6–18.9 ms per observation, versus 4.4–6.1 ms for `wink version`. Preserve that stopped run and its artifacts; this revision does not authorize another field run.

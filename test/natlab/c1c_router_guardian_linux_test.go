@@ -34,8 +34,8 @@ func TestLinuxC1cRouterGuardianCrash(t *testing.T) {
 		if got := readC1cRouterCeiling(t); got != original {
 			t.Error("router guardian did not restore original ceiling")
 			if got == 40000 {
-				if _, e := runCommand("sysctl", "-q", "-w", "net.netfilter.nf_conntrack_max="+strconv.FormatUint(original, 10)); e != nil {
-					t.Error("router test backstop restore failed")
+				if _, e := runHostSysctlDiagnostic("write", "-q", "-w", "net.netfilter.nf_conntrack_max="+strconv.FormatUint(original, 10)); e != nil {
+					t.Errorf("router test backstop restore failed: %v", e)
 				}
 			}
 		}
@@ -95,9 +95,9 @@ func TestLinuxC1cRouterGuardianCrash(t *testing.T) {
 
 func readC1cRouterCeiling(t *testing.T) uint64 {
 	t.Helper()
-	b, e := runCommand("sysctl", "-n", "net.netfilter.nf_conntrack_max")
+	b, e := runHostSysctlDiagnostic("read", "-n", "net.netfilter.nf_conntrack_max")
 	if e != nil {
-		t.Fatal("router ceiling witness unavailable")
+		t.Fatalf("router ceiling witness unavailable: %v", e)
 	}
 	n, e := strconv.ParseUint(strings.TrimSpace(b), 10, 64)
 	if e != nil {

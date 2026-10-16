@@ -16,9 +16,12 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        timeout-minutes: 2
         with:
           go-version-file: go.mod
+          go-download-base-url: https://go.dev/dl
+          token: ''
       - name: Install isolated witness tools
         run: |
           sudo apt-get update

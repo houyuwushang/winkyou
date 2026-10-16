@@ -29,9 +29,12 @@ jobs:
       GORACE: halt_on_error=1
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        timeout-minutes: 2
         with:
           go-version-file: go.mod
+          go-download-base-url: https://go.dev/dl
+          token: ''
       - name: Vet
         run: go vet ./...
       - name: Full affected-package race and stability matrix
@@ -62,9 +65,12 @@ jobs:
       WINKYOU_FIXTURE_TIMING_DIR: ${{ github.workspace }}/../fixture-timing
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        timeout-minutes: 2
         with:
           go-version-file: go.mod
+          go-download-base-url: https://go.dev/dl
+          token: ''
       - name: Same durable owner - normal rejection, control excess, admission bypass and loss of owner
         run: go test -race -tags=c1bproof ./internal/governor -run '^TestSessionLivenessOwnerTripCasesAreDistinct$' -count=20 -timeout=8m
       - name: Real business remains bidirectional and is never stolen by the tap
@@ -90,9 +96,12 @@ jobs:
       WINKYOU_LIVENESS_BLACKHOLE_REQUIRED: '1'
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        timeout-minutes: 2
         with:
           go-version-file: go.mod
+          go-download-base-url: https://go.dev/dl
+          token: ''
       - name: Three profiles, 180 seconds idle and real rekey
         run: go test -race -tags=c1bproof ./internal/governor -run '^TestSessionLivenessMemoryIdle180Required$' -count=1 -v -timeout=6m
       - name: M2 and M3 - bilateral and both unilateral blackholes
@@ -138,9 +147,12 @@ jobs:
       WINKYOU_LIVENESS_BLACKHOLE_REQUIRED: '1'
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        timeout-minutes: 2
         with:
           go-version-file: go.mod
+          go-download-base-url: https://go.dev/dl
+          token: ''
       - name: Required real WireGuard proof (${{ matrix.case }})
         run: go test -race -tags=c1bproof ./internal/governor -run '^${{ matrix.test }}$' -count=1 -v -timeout=${{ matrix.test_timeout }}
       - name: Preserve numeric fixture timing
@@ -157,9 +169,12 @@ jobs:
       WINKYOU_LIVENESS_REPEAT_REQUIRED: '1'
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        timeout-minutes: 2
         with:
           go-version-file: go.mod
+          go-download-base-url: https://go.dev/dl
+          token: ''
       - run: go test -tags=c1bproof ./internal/governor -run '^TestSessionLivenessMemoryFresh100Required$' -count=1 -v -timeout=10m
 
   netns:
@@ -172,9 +187,12 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        timeout-minutes: 2
         with:
           go-version-file: go.mod
+          go-download-base-url: https://go.dev/dl
+          token: ''
       - name: Verify tools without changing the host SSH service
         shell: bash
         run: |
