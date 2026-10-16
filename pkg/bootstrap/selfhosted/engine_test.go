@@ -116,8 +116,9 @@ func TestEnginesRecoverUsingOlderIPGroupWithoutRouteOrCoordinator(t *testing.T) 
 	defer cancel()
 	nodeA := startEngineNode(t, ctx, "A")
 	nodeB := startEngineNode(t, ctx, "B")
-	engineA := startTestEngine(t, ctx, nodeA, storeA, "B")
-	engineB := startTestEngine(t, ctx, nodeB, storeB, "A")
+	attachedA, attachedB := newEngineFirstAttachment(), newEngineFirstAttachment()
+	engineA := startTestEngineWithEvents(t, ctx, nodeA, storeA, "B", attachedA.observe)
+	engineB := startTestEngineWithEvents(t, ctx, nodeB, storeB, "A", attachedB.observe)
 	defer engineA.Close()
 	defer engineB.Close()
 
@@ -129,7 +130,6 @@ func TestEnginesRecoverUsingOlderIPGroupWithoutRouteOrCoordinator(t *testing.T) 
 		return len(statusA) == 1 && len(statusB) == 1 &&
 			statusA[0].LearnedRemote != "" && statusB[0].LearnedRemote != ""
 	}, "portfolio edge attached before both learned-remote statuses converged")
-	selectedOlderGroup := false
 	for label, engine := range map[string]*Engine{"A": engineA, "B": engineB} {
 		status := engine.Snapshot()
 		if len(status) != 1 {
@@ -142,11 +142,19 @@ func TestEnginesRecoverUsingOlderIPGroupWithoutRouteOrCoordinator(t *testing.T) 
 		if peerStatus.CandidateTotal != 2 {
 			t.Fatalf("%s retained candidate total = %d, want 2; status=%+v", label, peerStatus.CandidateTotal, peerStatus)
 		}
-		if peerStatus.CandidateGroup == "127.0.0.1" && peerStatus.CandidateIndex == 2 {
-			selectedOlderGroup = true
-		}
 		if peerStatus.LearnedRemote == "" {
 			t.Fatalf("%s did not expose the actual learned remote: %+v", label, peerStatus)
+		}
+	}
+	// Observe() promotes a successful endpoint to rank 1 in the saved card.
+	// A reconnect can therefore replace Snapshot's original rank-2 selection.
+	// Preserve each first successful attachment before that promotion instead.
+	selectedOlderGroup := false
+	for label, attached := range map[string]*engineFirstAttachment{"A": attachedA, "B": attachedB} {
+		event := attached.wait(t, ctx)
+		t.Logf("SELFHOSTED_FIRST_ATTACHMENT endpoint=%s candidate_index=%d candidate_total=%d older_group=%t", label, event.CandidateIndex, event.CandidateTotal, event.CandidateGroup == "127.0.0.1")
+		if event.CandidateGroup == "127.0.0.1" && event.CandidateIndex == 2 && event.CandidateTotal == 2 {
+			selectedOlderGroup = true
 		}
 	}
 	if !selectedOlderGroup {
@@ -893,8 +901,14 @@ func TestEngineStartCloseRaceIsLifecycleSafe(t *testing.T) {
 
 func startTestEngine(t *testing.T, ctx context.Context, node *mesh.Node, store *recoverycard.Store, peerID string) *Engine {
 	t.Helper()
+	return startTestEngineWithEvents(t, ctx, node, store, peerID, nil)
+}
+
+func startTestEngineWithEvents(t *testing.T, ctx context.Context, node *mesh.Node, store *recoverycard.Store, peerID string, onEvent func(Event)) *Engine {
+	t.Helper()
 	engine, err := New(Config{
 		Node: node, Store: store, PeerIDs: []string{peerID}, SharedSecret: []byte("test mesh"),
+		OnEvent: onEvent,
 		PacketNeighbor: mesh.PacketNeighborConfig{
 			KeepAliveInterval: 20 * time.Millisecond, PeerTimeout: 300 * time.Millisecond,
 			ReadPollInterval: 20 * time.Millisecond, WriteTimeout: 100 * time.Millisecond,
