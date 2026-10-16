@@ -17,6 +17,10 @@ jobs:
     #       343 expanded unit race + 240 isolated matrix +
     #       4 role-view proof, including version/ledger GREEN and late-netns
     #       mutation; job 116763390045 measured 4s) * 1.25 / 60) = 16.
+    # The isolated matrix term stays at its -test.timeout=4m bound (not the
+    # 47s measured with peer-absent and both real mutations in job
+    # 116764303085) so the job cap can never pre-empt the test's own timeout
+    # and its goroutine dump. Peer-absent discovery job 116761412269: 287s.
     timeout-minutes: 16
     steps:
       - uses: actions/checkout@v4

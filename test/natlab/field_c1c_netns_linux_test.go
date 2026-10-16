@@ -4,12 +4,17 @@ package natlab
 
 import (
 	"bufio"
+	"context"
+	"crypto/sha256"
+	"encoding/binary"
 	"encoding/json"
+	"fmt"
 	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"syscall"
 	"testing"
 	"time"
@@ -24,6 +29,7 @@ import (
 )
 
 const fieldC1cHostEnv = "WINKYOU_C1C_HOST_CONFIG"
+const fieldC1cPeerAbsentMutationEnv = "WINKYOU_C1C_PEER_ABSENT_MUTATION"
 
 // The field image and its host are separate race binaries. The old C1b
 // helper ran the product in-process; its 3s result wait excludes one exit.
@@ -53,14 +59,22 @@ func TestLinuxFieldC1cExactBuildProof(t *testing.T) {
 	if !filepath.IsAbs(binary) {
 		t.Fatal("C1c exact field binary unavailable")
 	}
-	for _, profile := range gateC1bProfiles[:2] {
-		if !t.Run(profile.name, guard(func(t *testing.T) { testFieldC1cProfile(t, profile, binary) })) {
+	for _, proof := range []struct {
+		name       string
+		profile    gateC1bProfile
+		peerAbsent bool
+	}{
+		{gateC1bProfiles[0].name, gateC1bProfiles[0], false},
+		{gateC1bProfiles[1].name, gateC1bProfiles[1], false},
+		{"peer_absent", gateC1bProfiles[0], true},
+	} {
+		if !t.Run(proof.name, guard(func(t *testing.T) { testFieldC1cProfile(t, proof.profile, binary, proof.peerAbsent) })) {
 			t.FailNow()
 		}
 	}
 }
 
-func testFieldC1cProfile(t *testing.T, profile gateC1bProfile, binary string) {
+func testFieldC1cProfile(t *testing.T, profile gateC1bProfile, binary string, peerAbsent bool) {
 	armGateB3KernelReleaseMargin(t)
 	topology := newN2DTopology(t, n2dMappingEDM, n2dMappingEDM)
 	t.Cleanup(func() { cleanupGateC1bEndpointProcesses(t, topology) })
@@ -92,6 +106,107 @@ func testFieldC1cProfile(t *testing.T, profile gateC1bProfile, binary string) {
 		t.Fatal("C1c isolated SSH tuple failed")
 	}
 	configs := fieldC1cFixture(t, gateC1bFixture(t, topology, observer.topology, profile, false), profile, binary)
+	if peerAbsent {
+		mutation := os.Getenv(fieldC1cPeerAbsentMutationEnv)
+		if mutation != "" && mutation != "other_class" && mutation != "responder_present" {
+			t.Fatal("unknown peer-absent test mutation")
+		}
+		journal := filepath.Join(configs[0].Host.MachineBase, "winkyou-safety-v2", "pairing-admission-v1.journal")
+		before := fieldC1cJournalKinds(t, journal)
+		configs[0].OwnerEvidence = configs[0].Host.ResultFile + ".owner-witness"
+		var mutantServer *gateC1bHostProcess
+		if mutation == "responder_present" {
+			mutantServer = startFieldC1cHost(t, configs[1])
+			mutantServer.waitFile(t, configs[1].Host.ReadyFile, 5*time.Second)
+		}
+		client := startFieldC1cHost(t, configs[0])
+		deadline := time.Now().Add(55 * time.Second)
+		var terminal fieldC1cTerminal
+		stopRequested := false
+		for terminal.Class == "" && time.Now().Before(deadline) {
+			if mutantServer != nil && !stopRequested && fieldC1cHasStage(configs[0].Evidence, gatecorchestrator.StageDataPlaneReady) && fieldC1cHasStage(configs[1].Evidence, gatecorchestrator.StageDataPlaneReady) {
+				if os.WriteFile(configs[0].Host.StopFile, []byte("owned-sigint\n"), 0o600) != nil {
+					t.Fatal("C1c responder-present mutation stop failed")
+				}
+				stopRequested = true
+			}
+			terminal = readFieldC1cTerminal(configs[0].Evidence)
+			if terminal.Class == "" {
+				time.Sleep(10 * time.Millisecond)
+			}
+		}
+		if terminal.Class == "" {
+			t.Fatal("C1c peer-absent private terminal absent")
+		}
+		// A non-success field terminal makes the harness exit nonzero. Await
+		// that owned process without imposing the success-only wait helper.
+		select {
+		case <-client.done:
+		case <-time.After(fieldC1cStopResultLimit):
+			t.Fatal("C1c peer-absent process did not drain")
+		}
+		if mutantServer != nil {
+			mutantServer.stop(t)
+		}
+		var owner struct{ Idle bool }
+		ownerObserved := readN1JSON(configs[0].OwnerEvidence, &owner)
+		// Pre-handoff failures have no Handoff witness. Release here means the
+		// actual field process exited and its machine owner lock is available;
+		// it does not claim visibility into its in-memory attempt map.
+		released := ownerObserved && owner.Idle
+		counts := requireGateB2PacketCounts(t, topology)
+		witness := terminal.Result.Witness
+		t.Logf("C1C_PEER_ABSENT class=%s stage=%s burned=%t finish_recorded=%t attempt_released=%t ssh_spawned=%t ssh_stderr_bytes=%d carrier_eof=%t carrier_closed=%t udp_total=%d",
+			terminal.Class, terminal.FailureStage, terminal.Result.CredentialBurned, terminal.Result.FinishRecorded, released,
+			witness.SSH.Spawned, witness.SSH.StderrBytes, witness.GateB.CarrierWitness.EOF, witness.GateB.CarrierWitness.Closed, counts.InitiatorTotal+counts.ResponderTotal)
+		// Prove cleanup before the intentional mutation assertion can fail.
+		// No success-only ledger assumptions apply to this external check.
+		for _, cleanup := range release {
+			cleanup()
+		}
+		assertGateC1bNoKernelInterfaceResidue(t, topology)
+		assertGateB2NoResidue(t, topology, observer, left, right)
+		// Discovery, exact field image 83328251b1d3476ee5daac7eae2dc9e9d7e8dc7f:
+		// https://github.com/houyuwushang/winkyou/actions/runs/38834802667/job/116761412269
+		// C1C_PEER_ABSENT class=oob_stream_closed stage=present burned=false finish_recorded=false attempt_released=true ssh_spawned=true ssh_stderr_bytes=62 carrier_eof=true carrier_closed=true udp_total=0
+		expectedClass := "oob_stream_closed"
+		if mutation == "other_class" {
+			expectedClass = "ssh_transport_unavailable"
+		}
+		if counts.InitiatorTotal+counts.ResponderTotal != 0 {
+			t.Log("C1C_PEER_ABSENT_REJECT reason=udp_total")
+			t.Fatal("C1c peer-absent emitted UDP")
+		}
+		if terminal.Class != expectedClass {
+			t.Log("C1C_PEER_ABSENT_REJECT reason=class")
+			t.Fatal("C1c peer-absent class differs")
+		}
+		if terminal.FailureStage != "present" || terminal.Result.CredentialBurned || terminal.Result.FinishRecorded || !released {
+			t.Fatal("C1c peer-absent terminal differs from the discovered no-burn/no-UDP outcome")
+		}
+		if !witness.SSH.Spawned || witness.SSH.StderrBytes == 0 || !witness.GateB.CarrierWitness.EOF || !witness.GateB.CarrierWitness.Closed {
+			t.Fatal("C1c peer-absent SSH/carrier witness differs")
+		}
+		after := fieldC1cJournalKinds(t, journal)
+		added := 0
+		for _, kind := range fieldC1cJournalRecordKinds {
+			delta := after[kind] - before[kind]
+			added += delta
+			t.Logf("C1C_PEER_ABSENT_JOURNAL kind=%s added=%d", kind, delta)
+			want := 0
+			if kind == "initialize" {
+				want = 1
+			}
+			if delta != want {
+				t.Fatal("C1c peer-absent journal delta changed")
+			}
+		}
+		t.Logf("C1C_PEER_ABSENT_JOURNAL added_total=%d", added)
+		if mutation == "" {
+			fieldC1cPeerAbsentMutations(t)
+		}
+		return
+	}
 	server := startFieldC1cHost(t, configs[1])
 	server.waitFile(t, configs[1].Host.ReadyFile, 5*time.Second)
 	client := startFieldC1cHost(t, configs[0])
@@ -172,6 +287,85 @@ func testFieldC1cProfile(t *testing.T, profile gateC1bProfile, binary string) {
 	}
 	assertGateB2NoResidue(t, topology, observer, left, right, filepath.Join(configs[0].Host.MachineBase, "winkyou-safety-v2"), filepath.Join(configs[1].Host.MachineBase, "winkyou-safety-v2"))
 	t.Logf("C1C_PROOF profile=%s exact_binary=true kill_switch=true kernel_business=true residue=0", profile.name)
+}
+
+// Each mutation gets a fresh isolated fixture and the same exact field image.
+// The child must fail at the named real assertion, not at a setup or timeout.
+// Only the test harness environment changes; no source/image is rewritten.
+func fieldC1cPeerAbsentMutations(t *testing.T) {
+	t.Helper()
+	for _, mutation := range []struct{ name, reason string }{{"other_class", "class"}, {"responder_present", "udp_total"}} {
+		ctx, cancel := context.WithTimeout(context.Background(), 75*time.Second)
+		command := exec.CommandContext(ctx, os.Args[0], "-test.v", "-test.run=^TestLinuxFieldC1cExactBuildProof$/^peer_absent$", "-test.count=1", "-test.timeout=70s")
+		command.Env = append(os.Environ(), fieldC1cPeerAbsentMutationEnv+"="+mutation.name)
+		output, err := command.CombinedOutput()
+		timedOut := ctx.Err() != nil
+		cancel()
+		exit, exited := err.(*exec.ExitError)
+		if !exited || exit.ExitCode() != 1 || timedOut || !strings.Contains(string(output), "C1C_PEER_ABSENT_REJECT reason="+mutation.reason) {
+			t.Fatalf("C1c peer-absent mutation %s missed its assertion (exit_failure=%t timeout=%t)", mutation.name, exited, timedOut)
+		}
+		for _, line := range strings.Split(string(output), "\n") {
+			if start := strings.Index(line, "C1C_PEER_ABSENT class="); start >= 0 {
+				t.Log(line[start:])
+			}
+		}
+		t.Logf("C1C_PEER_ABSENT_MUTATION name=%s RED reason=%s restored=true", mutation.name, mutation.reason)
+	}
+}
+
+var fieldC1cJournalRecordKinds = [...]string{"initialize", "rebuild_baseline", "burn_and_admit", "finish", "circuit_reset"}
+
+// Read only the framed journal's record types. Neither raw records nor errors
+// containing a credential, attempt, or other private journal field are logged.
+func fieldC1cJournalKinds(t *testing.T, path string) map[string]int {
+	t.Helper()
+	counts := make(map[string]int)
+	file, err := os.Open(path)
+	if os.IsNotExist(err) {
+		return counts
+	}
+	if err != nil {
+		t.Fatal("C1c journal read failed")
+	}
+	defer file.Close()
+	data, err := io.ReadAll(io.LimitReader(file, (4<<20)+1))
+	if err != nil || len(data) > 4<<20 {
+		t.Fatal("C1c journal size rejected")
+	}
+	for len(data) != 0 {
+		if len(data) < 4 {
+			t.Fatal("C1c journal prefix truncated")
+		}
+		n := int(binary.BigEndian.Uint32(data[:4]))
+		data = data[4:]
+		if n <= 0 || n > 16<<10 || n > len(data) {
+			t.Fatal("C1c journal frame rejected")
+		}
+		var frame struct {
+			Record   json.RawMessage `json:"record"`
+			Checksum string          `json:"checksum"`
+		}
+		if json.Unmarshal(data[:n], &frame) != nil || fmt.Sprintf("%x", sha256.Sum256(frame.Record)) != frame.Checksum {
+			t.Fatal("C1c journal checksum rejected")
+		}
+		var record struct {
+			Type string `json:"type"`
+		}
+		if json.Unmarshal(frame.Record, &record) != nil {
+			t.Fatal("C1c journal record rejected")
+		}
+		known := false
+		for _, kind := range fieldC1cJournalRecordKinds {
+			known = known || record.Type == kind
+		}
+		if !known {
+			t.Fatal("C1c journal kind rejected")
+		}
+		counts[record.Type]++
+		data = data[n:]
+	}
+	return counts
 }
 
 func waitFieldC1cEndpoint(t *testing.T, process *gateC1bHostProcess, configs [2]fieldC1cHostConfig) {
@@ -279,6 +473,12 @@ func TestFieldC1cHostProcess(t *testing.T) {
 		case err := <-done:
 			if err != nil {
 				t.Error("C1c exact field entry failed")
+			}
+			if cfg.OwnerEvidence != "" {
+				owner := governor.InspectMachineOwner()
+				if writeN1JSON(cfg.OwnerEvidence, struct{ Idle bool }{owner.State == governor.OwnerIdle && !owner.Held}) != nil {
+					t.Error("C1c private owner witness failed")
+				}
 			}
 			return
 		case <-deadline.C:

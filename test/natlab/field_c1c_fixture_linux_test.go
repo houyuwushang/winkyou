@@ -27,6 +27,7 @@ import (
 type fieldC1cHostConfig struct {
 	Host                              gateC1bHostConfig
 	Instance, Evidence, MachineIDFile string
+	OwnerEvidence                     string
 }
 
 func fieldC1cFixture(t *testing.T, original [2]gateC1bHostConfig, profile gateC1bProfile, binary string) [2]fieldC1cHostConfig {
