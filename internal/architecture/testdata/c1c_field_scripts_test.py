@@ -636,8 +636,22 @@ def child_payload_checks(scope, ident, name, payload):
     check(set(closed)==expected_closed and set(child_fs.fds)=={21}, "only_exec_pin_retained")
 
 
+def payload_witness_contract(source):
+    _, tree = definitions(source)
+    launch = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "launch")
+    names = [n for n in ast.walk(launch) if isinstance(n, ast.Assign) and any(isinstance(t, ast.Name) and t.id == "witness_name" for t in n.targets)]
+    check(len(names) == 1, "one_payload_witness_name")
+    expected = {"run": "launch.json", "version": "launch-version.json", "ledger": "launch-ledger.json"}
+    for payload, name in expected.items():
+        local = {"payload": payload}
+        exec(compile(ast.Module(body=names, type_ignores=[]), "synthetic", "exec"), {}, local)
+        check(local["witness_name"] == name, "payload_witness_filename_"+payload)
+    check('os.open(evidence + "/" + witness_name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)' in source, "payload_witness_remains_exclusive")
+
+
 def launcher_checks(scope):
     global MUTATIONS
+    payload_witness_contract(request["source"])
     witness_contract(request["source"])
     mount_bind_contract(scope["CHILD"], ast.parse(scope["CHILD"]), "launch")
     role_view_order_contract(scope["CHILD"], "launch")
@@ -709,7 +723,8 @@ def launcher_checks(scope):
         scope["exec_witness"] = lambda *_: {"pid":4242,"starttime":1234,"net_ns":90,"mnt_ns":91,"exe_sha256":digest,"exe_ino":fs.nodes[role_root+"/install/winkyou/wink"].st_ino}
         check(scope["launch"]("initiator",ident,name+"-i",payload) == 0, "foreground_exit")
         check(len(calls)==1 and not fs.fds, "one_pipeline_no_fd_residue")
-        stored = fs.nodes[evidence+"/launch.json"].data
+        witness_name = {"run":"launch.json", "version":"launch-version.json", "ledger":"launch-ledger.json"}[payload]
+        stored = fs.nodes[evidence+"/"+witness_name].data
         emitted = [c[1] for c in fs.calls if c[0]=="stdout"]
         check(stored in emitted and stored.startswith(b"C1C_LAUNCH role=initiator"), "same_persistent_and_stdout_witness")
         released = next(i for i,c in enumerate(fs.calls) if c[0]=="write" and c[2]==b"1")
@@ -721,10 +736,29 @@ def launcher_checks(scope):
         prior = len(calls)
         rejected(lambda:scope["launch"]("initiator",ident,name+"-i",payload), "duplicate_launch_rejected")
         check(len(calls)==prior, "duplicate_no_process")
+        fs.add(evidence+"/"+ident, directory=True)
+        for blocked_payload in ("run", "version", "ledger"):
+            before = len(fs.calls)
+            try:
+                scope["launch"]("initiator",ident,name+"-i",blocked_payload)
+            except ValueError as error:
+                check(str(error)=="evidence_already_claimed", "product_claim_blocks_"+blocked_payload)
+            else:
+                raise AssertionError("product_claim_bypassed")
+            check(len(calls)==prior and not any(c[0] in ("mkdir","write") or (c[0]=="open" and c[2]&fs.O_CREAT) for c in fs.calls[before:]), "product_claim_no_write_or_process")
     for payload in ("run", "version", "ledger"):
         child_payload_checks(scope, ident, name, payload)
 
     source = request["source"]
+    changed = source.replace('"ledger": "launch-ledger.json"', '"ledger": "launch.json"', 1)
+    check(changed != source, "ledger_witness_collision_changed")
+    try:
+        payload_witness_contract(changed)
+    except AssertionError as failure:
+        MUTATIONS += 1
+        print("MUTATION ledger_witness_collision RED "+str(failure))
+    else:
+        raise AssertionError("ledger_witness_collision_escaped")
     for label, changed in (
         ("ledger_third_payload", source.replace('["--payload", "ledger"]))', '["--payload", "ledger"], ["--payload", "status"]))', 1)),
         ("ledger_missing_json", source.replace('["gate-c1c", "ledger", "--json"]', '["gate-c1c", "ledger"]', 1)),
