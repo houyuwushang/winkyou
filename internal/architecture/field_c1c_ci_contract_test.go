@@ -27,7 +27,9 @@ func TestFieldC1cRequiredCIBudgetAndAuthority(t *testing.T) {
 	// the 16-minute cap). The existing cap formula is unchanged.
 	const roleViewProof = 4 * time.Second
 	const oldImageBuild = 23 * time.Second
-	const imageIdentityProof = 5 * time.Second
+	// First real-image GREEN jobs 118564524958/118564501010 measured 3s;
+	// whole jobs 341s/378s and matrix steps 57s, both below 80% of the cap.
+	const imageIdentityProof = 3 * time.Second
 	budget := (baselinePreparation + symbolProof + secondBuild + expandedUnitRace + isolatedMatrix + roleViewProof + oldImageBuild + imageIdentityProof) * 5 / 4
 	minutes := int((budget + time.Minute - 1) / time.Minute)
 	if minutes != 16 {

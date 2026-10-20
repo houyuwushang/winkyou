@@ -175,12 +175,14 @@ func fieldC1cLauncherObservation(t *testing.T, cfg fieldC1cHostConfig, terminal 
 	t.Logf("C1C_LAUNCHER_IMAGE mode=%s terminal_present=%t pathname_reopen_ENOENT=%t proc_image_opened=%t trace_sha256=%x stdout_sha256=%x",
 		cfg.LauncherMode, terminal.Class != "", pathnameENOENT, procOpened, sha256.Sum256(trace), sha256.Sum256(output))
 	t.Logf("C1C_LAUNCHER_STDOUT\n%s", output)
+	lines := strings.Split(strings.TrimSpace(string(output)), "\n")
+	var summary struct{ Class, Stage string }
+	if len(lines) != 3 || !strings.HasPrefix(lines[0], "C1C_LAUNCH role=initiator ") ||
+		json.Unmarshal([]byte(lines[1]), &summary) != nil || lines[2] != "C1C_EXIT role=initiator code=1" {
+		t.Fatal("launcher did not retain its complete launch/summary/exit output")
+	}
 	if cfg.LauncherMode == "old_path" || cfg.LauncherMode == "bad_hash" {
-		lines := strings.Split(strings.TrimSpace(string(output)), "\n")
-		var summary struct{ Class, Stage string }
-		if len(lines) != 3 || !strings.HasPrefix(lines[0], "C1C_LAUNCH role=initiator ") ||
-			json.Unmarshal([]byte(lines[1]), &summary) != nil || summary.Class != "gate_c_request_invalid" ||
-			summary.Stage != "preflight" || lines[2] != "C1C_EXIT role=initiator code=1" || terminal.Class != "" {
+		if summary.Class != "gate_c_request_invalid" || summary.Stage != "preflight" || terminal.Class != "" {
 			t.Fatal("mutation did not fail at the exact preflight boundary")
 		}
 		if cfg.LauncherMode == "old_path" {
@@ -194,6 +196,9 @@ func fieldC1cLauncherObservation(t *testing.T, cfg fieldC1cHostConfig, terminal 
 	}
 	if terminal.Class == "" {
 		t.Fatal("real field ELF failed before the private terminal; full-launcher proof is RED")
+	}
+	if summary.Class != terminal.Class || summary.Stage != terminal.FailureStage {
+		t.Fatal("launcher summary differs from its private endpoint terminal")
 	}
 	if !procOpened {
 		t.Fatal("running image was not read through the kernel image reference")

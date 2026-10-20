@@ -326,3 +326,22 @@ CI 仅输出受限结论与哈希；不上传配对材料或私有端点证据�
 判读修订重组 strace 的 unfinished/resumed 记录并追踪线程组；正向要求该线程组
 成功打开当前内核映像。runtime 的 pathname ENOENT 单独记录，不作为
 `currentBuild` 失败的替代判据；产品终局、哈希拒绝与旧实现变异要求不变。
+
+`8ab50bf` 首次
+[PR job 118564524958](https://github.com/houyuwushang/winkyou/actions/runs/39403743363/job/118564524958)
+与
+[push job 118564501010](https://github.com/houyuwushang/winkyou/actions/runs/39403736283/job/118564501010)
+均 GREEN。隐藏原路径与同名替换两例均有私有终局
+`class=oob_stream_closed stage=present`，线程组成功打开内核映像；
+owner 已释放、UDP 为 0、journal 只有 initialize 新增 1，BURN/FINISH 无追加。
+同一 fixture 的错误哈希与旧 pathname 实现均精确 preflight 拒绝；
+独立映像替换与读取失败两例通过，原有 predictive/asymmetric 与角色 bind 证明通过。
+PR 原始日志 SHA-256
+`7703e4cd035d0bdd4ce09fd9737ab74258a82e3a5e45f22b4fad5f522b0ac150`；
+push 原始日志 SHA-256
+`36325b4a74dfcc3d60fccceb09bb30d6f3e74dd076bd665461ed696c42701a07`。
+两 job 分别 341s/378s，映像证明步骤 3s、矩阵步骤 57s，低于 16 分钟 cap 的 80%。
+
+最后证据收口让 stdout 读取发生在已拥有的子进程退出之后，并逐项核对完整
+launch/summary/exit 三行；preflight 负向没有端点见证时显式记为 unavailable。
+该提交的首次 CI 另列在 PR，不把前一头的结果等同于最终头。

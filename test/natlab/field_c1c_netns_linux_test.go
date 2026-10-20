@@ -161,18 +161,19 @@ func testFieldC1cProfile(t *testing.T, profile gateC1bProfile, binary string, pe
 				time.Sleep(10 * time.Millisecond)
 			}
 		}
+		// A non-success field terminal makes the harness exit nonzero. Await
+		// that owned process without imposing the success-only wait helper.
+		// Observe launcher stdout only after its exit line has been flushed.
+		select {
+		case <-client.done:
+		case <-time.After(fieldC1cStopResultLimit):
+			t.Fatal("C1c peer-absent process did not drain")
+		}
 		if launcher != "" {
 			rejected = fieldC1cLauncherObservation(t, configs[0], terminal)
 		}
 		if terminal.Class == "" && !rejected {
 			t.Fatal("C1c peer-absent private terminal absent")
-		}
-		// A non-success field terminal makes the harness exit nonzero. Await
-		// that owned process without imposing the success-only wait helper.
-		select {
-		case <-client.done:
-		case <-time.After(fieldC1cStopResultLimit):
-			t.Fatal("C1c peer-absent process did not drain")
 		}
 		if mutantServer != nil {
 			mutantServer.stop(t)
@@ -185,9 +186,13 @@ func testFieldC1cProfile(t *testing.T, profile gateC1bProfile, binary string, pe
 		released := ownerObserved && owner.Idle
 		counts := requireGateB2PacketCounts(t, topology)
 		witness := terminal.Result.Witness
-		t.Logf("C1C_PEER_ABSENT class=%s stage=%s burned=%t finish_recorded=%t attempt_released=%t ssh_spawned=%t ssh_stderr_bytes=%d carrier_eof=%t carrier_closed=%t udp_total=%d",
-			terminal.Class, terminal.FailureStage, terminal.Result.CredentialBurned, terminal.Result.FinishRecorded, released,
-			witness.SSH.Spawned, witness.SSH.StderrBytes, witness.GateB.CarrierWitness.EOF, witness.GateB.CarrierWitness.Closed, counts.InitiatorTotal+counts.ResponderTotal)
+		if !rejected {
+			t.Logf("C1C_PEER_ABSENT class=%s stage=%s burned=%t finish_recorded=%t attempt_released=%t ssh_spawned=%t ssh_stderr_bytes=%d carrier_eof=%t carrier_closed=%t udp_total=%d",
+				terminal.Class, terminal.FailureStage, terminal.Result.CredentialBurned, terminal.Result.FinishRecorded, released,
+				witness.SSH.Spawned, witness.SSH.StderrBytes, witness.GateB.CarrierWitness.EOF, witness.GateB.CarrierWitness.Closed, counts.InitiatorTotal+counts.ResponderTotal)
+		} else {
+			t.Log("C1C_LAUNCHER_PREFLIGHT terminal_present=false endpoint_witness=unavailable")
+		}
 		// Prove cleanup before the intentional mutation assertion can fail.
 		// No success-only ledger assumptions apply to this external check.
 		for _, cleanup := range release {

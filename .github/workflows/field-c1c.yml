@@ -15,13 +15,16 @@ jobs:
     # gatecorchestrator) measured 343s on the maintainer validation host.
     # ceil((63 baseline prep + 56 symbol proof + 23 second build +
     #       343 expanded unit race + 240 isolated matrix +
-    #       23 old-image build allowance + 5 image-identity proof allowance +
+    #       23 old-image build allowance + 3 image-identity proof +
     #       4 role-view proof, including version/ledger GREEN and late-netns
     #       mutation; job 116763390045 measured 4s) * 1.25 / 60) = 16.
     # The isolated matrix term stays at its -test.timeout=4m bound (not the
     # 47s measured with peer-absent and both real mutations in job
     # 116764303085) so the job cap can never pre-empt the test's own timeout
     # and its goroutine dump. Peer-absent discovery job 116761412269: 287s.
+    # Full-launcher real-image first GREEN: PR job 118564524958, 341s;
+    # push job 118564501010, 378s. Image proof 3s, role-view step 4s,
+    # expanded isolated matrix step 57s; both jobs <80% of the cap.
     timeout-minutes: 16
     steps:
       - uses: actions/checkout@v4
