@@ -36,7 +36,7 @@ jobs:
           test -x /usr/bin/ssh
           test -d /usr/libexec
           sudo apt-get update -qq
-          sudo apt-get install -y -qq iproute2 iptables conntrack iputils-ping
+          sudo apt-get install -y -qq iproute2 iptables conntrack iputils-ping strace
           if test -x /usr/sbin/sshd; then
             echo 'WINKYOU_C1B_SSHD_BINARY=/usr/sbin/sshd' >> "$GITHUB_ENV"
           else
