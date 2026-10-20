@@ -317,3 +317,12 @@ CI 仅输出受限结论与哈希；不上传配对材料或私有端点证据�
 
 修复后的首次 CI 与变异结果在 PR #200 独立记录，不覆盖上述旧 RED。
 这些检查不授权现场二进制更新、旧实例重跑或新的签发。
+
+首个修复头 `d8cb093` 的
+[push job 118559254790](https://github.com/houyuwushang/winkyou/actions/runs/39402161943/job/118559254790)
+已产生预期私有终局，但新增 trace 断言仍 RED：它只匹配主 PID，遗漏 Go 的
+`CLONE_THREAD` 线程，且错误地要求 runtime 不再尝试原 pathname。日志 SHA-256
+`844a0abaeb050d2c0e1304539d86f2a1276390be5e62622d37b87c5b3865d6c3` 保留。
+判读修订重组 strace 的 unfinished/resumed 记录并追踪线程组；正向要求该线程组
+成功打开当前内核映像。runtime 的 pathname ENOENT 单独记录，不作为
+`currentBuild` 失败的替代判据；产品终局、哈希拒绝与旧实现变异要求不变。

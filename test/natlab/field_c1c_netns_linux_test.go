@@ -55,6 +55,7 @@ func TestLinuxFieldC1cExactBuildProof(t *testing.T) {
 		t.Skip("C1c requires explicitly isolated Linux proof job")
 	}
 	guard := requireC1cProofEnvironment(t)
+	testFieldC1cImageTraceThreads(t)
 	binary := os.Getenv("WINKYOU_FIELD_C1C_BINARY")
 	if !filepath.IsAbs(binary) {
 		t.Fatal("C1c exact field binary unavailable")

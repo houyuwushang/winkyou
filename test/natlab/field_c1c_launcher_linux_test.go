@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -147,7 +148,7 @@ func fieldC1cLauncherCommand(t *testing.T, cfg fieldC1cHostConfig) *exec.Cmd {
 	}
 	// Syscall diagnostics stay in a private test file. Only fixed operation
 	// classes and errno are projected into the test log, never private paths.
-	return exec.Command("/usr/bin/strace", "-f", "-qq", "-e", "trace=openat,readlink,readlinkat",
+	return exec.Command("/usr/bin/strace", "-f", "-qq", "-e", "trace=openat,readlink,readlinkat,clone,clone3",
 		"-o", cfg.Host.ResultFile+".image-trace",
 		"/bin/bash", filepath.Join(fieldC1cRepositoryRoot(t), "scripts/c1c-endpoint-launch.sh"),
 		"initiator", attempt, fieldC1cLauncherAnchor(cfg))
@@ -168,19 +169,7 @@ func fieldC1cLauncherObservation(t *testing.T, cfg fieldC1cHostConfig, terminal 
 	if _, err := fmt.Sscanf(string(output), "C1C_LAUNCH role=initiator pid=%d", &pid); err != nil || pid <= 0 {
 		t.Fatal("field image PID witness unavailable")
 	}
-	pathnameENOENT, procOpened := false, false
-	for _, line := range strings.Split(string(trace), "\n") {
-		fields := strings.Fields(line)
-		if len(fields) == 0 || fields[0] != fmt.Sprint(pid) {
-			continue
-		}
-		if strings.Contains(line, "openat(") && strings.Contains(line, original) && strings.Contains(line, "= -1 ENOENT") {
-			pathnameENOENT = true
-		}
-		if strings.Contains(line, `openat(AT_FDCWD, "/proc/self/exe", O_RDONLY|O_CLOEXEC)`) && !strings.Contains(line, "= -1") {
-			procOpened = true
-		}
-	}
+	pathnameENOENT, procOpened := fieldC1cImageTrace(string(trace), pid, original)
 	// stdout contains only the public summary and the launch/exit witnesses.
 	// The endpoint terminal and strace bytes are never exported.
 	t.Logf("C1C_LAUNCHER_IMAGE mode=%s terminal_present=%t pathname_reopen_ENOENT=%t proc_image_opened=%t trace_sha256=%x stdout_sha256=%x",
@@ -198,7 +187,7 @@ func fieldC1cLauncherObservation(t *testing.T, cfg fieldC1cHostConfig, terminal 
 			if !pathnameENOENT || procOpened {
 				t.Fatal("old pathname mutation did not reproduce the original image-open failure")
 			}
-		} else if !procOpened || pathnameENOENT {
+		} else if !procOpened {
 			t.Fatal("hash rejection did not read the running image")
 		}
 		return true
@@ -206,8 +195,100 @@ func fieldC1cLauncherObservation(t *testing.T, cfg fieldC1cHostConfig, terminal 
 	if terminal.Class == "" {
 		t.Fatal("real field ELF failed before the private terminal; full-launcher proof is RED")
 	}
-	if !procOpened || pathnameENOENT {
+	if !procOpened {
 		t.Fatal("running image was not read through the kernel image reference")
 	}
 	return false
+}
+
+// Go can hash on any OS thread. Reassemble interrupted strace records and
+// attribute CLONE_THREAD descendants to the witnessed field PID. A runtime
+// symbolizer's pathname ENOENT is diagnostic, not a failure of currentBuild.
+func fieldC1cImageTrace(trace string, pid int, original string) (bool, bool) {
+	type event struct {
+		tid  int
+		body string
+	}
+	var events []event
+	pending := map[int]string{}
+	edges := map[int][]int{}
+	for _, line := range strings.Split(trace, "\n") {
+		line = strings.TrimSpace(line)
+		fields := strings.Fields(line)
+		if len(fields) < 2 {
+			continue
+		}
+		tid, err := strconv.Atoi(fields[0])
+		if err != nil {
+			continue
+		}
+		body := strings.TrimSpace(strings.TrimPrefix(line, fields[0]))
+		if i := strings.Index(body, "<unfinished ...>"); i >= 0 {
+			pending[tid] = body[:i]
+			continue
+		}
+		if strings.HasPrefix(body, "<... ") {
+			i := strings.Index(body, "resumed>")
+			if i < 0 || pending[tid] == "" {
+				continue
+			}
+			body = pending[tid] + body[i+len("resumed>"):]
+			delete(pending, tid)
+		}
+		events = append(events, event{tid, body})
+		if (strings.HasPrefix(body, "clone(") || strings.HasPrefix(body, "clone3(")) && strings.Contains(body, "CLONE_THREAD") {
+			if i := strings.LastIndex(body, " = "); i >= 0 {
+				if child, err := strconv.Atoi(strings.TrimSpace(body[i+3:])); err == nil && child > 0 {
+					edges[tid] = append(edges[tid], child)
+				}
+			}
+		}
+	}
+	threads := map[int]bool{pid: true}
+	queue := []int{pid}
+	for len(queue) > 0 {
+		for _, tid := range edges[queue[0]] {
+			if !threads[tid] {
+				threads[tid] = true
+				queue = append(queue, tid)
+			}
+		}
+		queue = queue[1:]
+	}
+	pathnameENOENT, procOpened := false, false
+	for _, event := range events {
+		if !threads[event.tid] || !strings.HasPrefix(event.body, "openat(") {
+			continue
+		}
+		pathnameENOENT = pathnameENOENT || strings.Contains(event.body, original) && strings.Contains(event.body, "= -1 ENOENT")
+		if strings.Contains(event.body, `"/proc/self/exe"`) {
+			if i := strings.LastIndex(event.body, " = "); i >= 0 {
+				if fd, err := strconv.Atoi(strings.TrimSpace(event.body[i+3:])); err == nil && fd >= 0 {
+					procOpened = true
+				}
+			}
+		}
+	}
+	return pathnameENOENT, procOpened
+}
+
+func testFieldC1cImageTraceThreads(t *testing.T) {
+	t.Helper()
+	const original = `"/hidden/image"`
+	const trace = `10 clone(flags=CLONE_VM|CLONE_THREAD <unfinished ...>
+11 openat(AT_FDCWD, "/proc/self/exe", O_RDONLY|O_CLOEXEC <unfinished ...>
+10 <... clone resumed>) = 11
+11 <... openat resumed>) = 3
+10 openat(AT_FDCWD, "/hidden/image", O_RDONLY) = -1 ENOENT (No such file or directory)
+99 openat(AT_FDCWD, "/proc/self/exe", O_RDONLY) = 5
+`
+	if missing, opened := fieldC1cImageTrace(trace, 10, original); !missing || !opened {
+		t.Fatal("image trace lost a Go thread or resumed syscall")
+	}
+	if _, opened := fieldC1cImageTrace(trace, 12, original); opened {
+		t.Fatal("image trace attributed an unrelated process")
+	}
+	if _, opened := fieldC1cImageTrace(`10 openat(AT_FDCWD, "/proc/self/exe", O_RDONLY) = -1 EACCES (Permission denied)`, 10, original); opened {
+		t.Fatal("image trace treated a failed read as success")
+	}
 }
