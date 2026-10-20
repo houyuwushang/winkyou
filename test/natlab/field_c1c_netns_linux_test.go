@@ -70,8 +70,17 @@ func TestLinuxFieldC1cExactBuildProof(t *testing.T) {
 		{"peer_absent", gateC1bProfiles[0], true, ""},
 		{"launcher_peer_absent", gateC1bProfiles[0], true, "hidden"},
 		{"launcher_replaced_path", gateC1bProfiles[0], true, "replaced"},
+		{"launcher_hash_mismatch", gateC1bProfiles[0], true, "bad_hash"},
+		{"launcher_old_path_mutation", gateC1bProfiles[0], true, "old_path"},
 	} {
-		if !t.Run(proof.name, guard(func(t *testing.T) { testFieldC1cProfile(t, proof.profile, binary, proof.peerAbsent, proof.launcher) })) {
+		image := binary
+		if proof.launcher == "old_path" {
+			image = os.Getenv("WINKYOU_C1C_OLD_PATH_BINARY")
+			if !filepath.IsAbs(image) {
+				t.Fatal("required old pathname mutation image unavailable")
+			}
+		}
+		if !t.Run(proof.name, guard(func(t *testing.T) { testFieldC1cProfile(t, proof.profile, image, proof.peerAbsent, proof.launcher) })) {
 			t.FailNow()
 		}
 	}
@@ -129,6 +138,7 @@ func testFieldC1cProfile(t *testing.T, profile gateC1bProfile, binary string, pe
 		deadline := time.Now().Add(55 * time.Second)
 		var terminal fieldC1cTerminal
 		stopRequested := false
+		rejected := false
 	waitTerminal:
 		for terminal.Class == "" && time.Now().Before(deadline) {
 			if mutantServer != nil && !stopRequested && fieldC1cHasStage(configs[0].Evidence, gatecorchestrator.StageDataPlaneReady) && fieldC1cHasStage(configs[1].Evidence, gatecorchestrator.StageDataPlaneReady) {
@@ -151,9 +161,9 @@ func testFieldC1cProfile(t *testing.T, profile gateC1bProfile, binary string, pe
 			}
 		}
 		if launcher != "" {
-			fieldC1cLauncherObservation(t, configs[0], terminal)
+			rejected = fieldC1cLauncherObservation(t, configs[0], terminal)
 		}
-		if terminal.Class == "" {
+		if terminal.Class == "" && !rejected {
 			t.Fatal("C1c peer-absent private terminal absent")
 		}
 		// A non-success field terminal makes the harness exit nonzero. Await
@@ -184,6 +194,17 @@ func testFieldC1cProfile(t *testing.T, profile gateC1bProfile, binary string, pe
 		}
 		assertGateC1bNoKernelInterfaceResidue(t, topology)
 		assertGateB2NoResidue(t, topology, observer, left, right)
+		if rejected {
+			if !released || counts.InitiatorTotal+counts.ResponderTotal != 0 {
+				t.Fatal("launcher rejection retained an owner or emitted UDP")
+			}
+			after := fieldC1cJournalKinds(t, journal)
+			if after["burn_and_admit"] != before["burn_and_admit"] || after["finish"] != before["finish"] {
+				t.Fatal("launcher rejection appended burn/finish")
+			}
+			t.Logf("C1C_LAUNCHER_REJECT mode=%s owner_released=true udp_total=0 burn_added=0 finish_added=0", launcher)
+			return
+		}
 		// Discovery, exact field image 83328251b1d3476ee5daac7eae2dc9e9d7e8dc7f:
 		// https://github.com/houyuwushang/winkyou/actions/runs/38834802667/job/116761412269
 		// C1C_PEER_ABSENT class=oob_stream_closed stage=present burned=false finish_recorded=false attempt_released=true ssh_spawned=true ssh_stderr_bytes=62 carrier_eof=true carrier_closed=true udp_total=0

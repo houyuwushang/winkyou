@@ -286,3 +286,34 @@ orchestrator 230.845s、fieldc1c 31.466s，真实 clean binary pair 成功推导
 `VerifyFieldSSHD`、`InspectFieldLedger`、`DeriveFieldTools`、`InspectFieldPairingLedger`、
 `DependencyConfigurationDigest`；原有七项 field 符号断言不变。
 这些是编译、只读和 fake/unit 证据，不是工具现场运行证据。CI 首跑另在 PR 记录。
+
+## 7. 完整 launcher 与真实 field ELF 的组合边界
+
+原 role-view 证明使用 C 替身 ELF；原 exact-build 证明在角色视图中按可见路径
+启动真实 field ELF。这两个独立 PASS 没有覆盖“父视图 pin fd → 覆盖 `/root`
+→ 完整 launcher exec → 产品 `Load/currentBuild`”的组合。
+
+测试提交 `f64568d4576ef5762ec7e0d6886fc8fe42a57a1a` 保留旧生产实现。
+[首个 push job 118552572875](https://github.com/houyuwushang/winkyou/actions/runs/39400160674/job/118552572875)
+在 `launcher_peer_absent` 精确 RED：`pathname_reopen_ENOENT=true`、
+`proc_image_opened=false`、`terminal_present=false`，stdout 为
+`class=gate_c_request_invalid stage=preflight`，退出 1。既有两套证明在同 job 中通过。
+原始 job 日志 SHA-256：
+`5112adb5c5beeaa60635f2bb20c94715519c7b07d8d5a4234b296c57919b249d`。
+此结果证明该组合缺陷，不把缺失的 endpoint 终局或计数当作零。
+
+修复只把当前映像读取改为内核 `/proc/self/exe` magic link。BuildSHA、
+VCS revision/modified、tags、toolchain、依赖和实例内二进制哈希仍逐项校验；
+没有路径参数、环境替换、预期哈希缓存或 pathname fallback。
+Windows 的 field 执行拒绝保持不变。
+
+组合证明沿用同一 disposable Linux guard、拓扑、observer、SSH 路由与资源检查：
+真实完整 launcher 的隐藏原路径和同名替换两个正向场景均必须得到
+`class=oob_stream_closed stage=present`、私有 endpoint terminal、owner 释放、
+无 BURN/FINISH 追加及零 UDP。错误实例哈希仍须 preflight 拒绝。
+clean `6aab884` 旧 ELF 作为同权限、同链路的 pathname 回退变异，必须重现旧 RED。
+另有运行映像路径替换及私有 `/proc` 不可读证明。syscall 原文仅存测试私有文件，
+CI 仅输出受限结论与哈希；不上传配对材料或私有端点证据。
+
+修复后的首次 CI 与变异结果在 PR #200 独立记录，不覆盖上述旧 RED。
+这些检查不授权现场二进制更新、旧实例重跑或新的签发。
