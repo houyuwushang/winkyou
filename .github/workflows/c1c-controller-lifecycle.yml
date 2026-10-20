@@ -1,0 +1,16 @@
+name: C1c Controller Lifecycle Review
+on:
+  push:
+    branches: [review/c1c-controller-lifecycle]
+permissions:
+  contents: read
+jobs:
+  lifecycle:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 3
+    steps:
+      - uses: actions/checkout@v4
+      - name: Prove the accepted and proposed startup lifecycles
+        run: |
+          sudo env GITHUB_ACTIONS=true RUNNER_ENVIRONMENT=github-hosted \
+            /usr/bin/python3 -I -B test/controller_lifecycle/prove.py
