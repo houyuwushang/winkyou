@@ -341,21 +341,32 @@ func currentBuild() (buildWitness, error) {
 		witness.dependencies = append(witness.dependencies, dependency.Path+"\x00"+dependency.Version+"\x00"+dependency.Sum)
 	}
 	sort.Strings(witness.dependencies)
-	path, err := os.Executable()
+	var err error
+	witness.binaryHash, err = runningImageHash()
 	if err != nil {
 		return buildWitness{}, ErrInvalid
 	}
-	file, err := os.Open(path)
+	return witness, nil
+}
+
+func runningImageHash() (string, error) {
+	// A pinned ELF can outlive or be hidden from its original pathname after
+	// a role-view mount. The kernel magic link opens that running image itself;
+	// resolving it to a pathname and reopening would hash a different object.
+	// Field execution remains Linux-only. There is no pathname fallback.
+	if runtime.GOOS != "linux" {
+		return "", ErrInvalid
+	}
+	file, err := os.Open("/proc/self/exe")
 	if err != nil {
-		return buildWitness{}, ErrInvalid
+		return "", ErrInvalid
 	}
 	defer file.Close()
 	hash := sha256.New()
 	if _, err := io.Copy(hash, file); err != nil {
-		return buildWitness{}, ErrInvalid
+		return "", ErrInvalid
 	}
-	witness.binaryHash = hex.EncodeToString(hash.Sum(nil))
-	return witness, nil
+	return hex.EncodeToString(hash.Sum(nil)), nil
 }
 
 func dependencyDigest(build buildWitness, devices []Device) string {

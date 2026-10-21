@@ -55,6 +55,7 @@ func TestLinuxFieldC1cExactBuildProof(t *testing.T) {
 		t.Skip("C1c requires explicitly isolated Linux proof job")
 	}
 	guard := requireC1cProofEnvironment(t)
+	testFieldC1cImageTraceThreads(t)
 	binary := os.Getenv("WINKYOU_FIELD_C1C_BINARY")
 	if !filepath.IsAbs(binary) {
 		t.Fatal("C1c exact field binary unavailable")
@@ -63,18 +64,30 @@ func TestLinuxFieldC1cExactBuildProof(t *testing.T) {
 		name       string
 		profile    gateC1bProfile
 		peerAbsent bool
+		launcher   string
 	}{
-		{gateC1bProfiles[0].name, gateC1bProfiles[0], false},
-		{gateC1bProfiles[1].name, gateC1bProfiles[1], false},
-		{"peer_absent", gateC1bProfiles[0], true},
+		{gateC1bProfiles[0].name, gateC1bProfiles[0], false, ""},
+		{gateC1bProfiles[1].name, gateC1bProfiles[1], false, ""},
+		{"peer_absent", gateC1bProfiles[0], true, ""},
+		{"launcher_peer_absent", gateC1bProfiles[0], true, "hidden"},
+		{"launcher_replaced_path", gateC1bProfiles[0], true, "replaced"},
+		{"launcher_hash_mismatch", gateC1bProfiles[0], true, "bad_hash"},
+		{"launcher_old_path_mutation", gateC1bProfiles[0], true, "old_path"},
 	} {
-		if !t.Run(proof.name, guard(func(t *testing.T) { testFieldC1cProfile(t, proof.profile, binary, proof.peerAbsent) })) {
+		image := binary
+		if proof.launcher == "old_path" {
+			image = os.Getenv("WINKYOU_C1C_OLD_PATH_BINARY")
+			if !filepath.IsAbs(image) {
+				t.Fatal("required old pathname mutation image unavailable")
+			}
+		}
+		if !t.Run(proof.name, guard(func(t *testing.T) { testFieldC1cProfile(t, proof.profile, image, proof.peerAbsent, proof.launcher) })) {
 			t.FailNow()
 		}
 	}
 }
 
-func testFieldC1cProfile(t *testing.T, profile gateC1bProfile, binary string, peerAbsent bool) {
+func testFieldC1cProfile(t *testing.T, profile gateC1bProfile, binary string, peerAbsent bool, launcher string) {
 	armGateB3KernelReleaseMargin(t)
 	topology := newN2DTopology(t, n2dMappingEDM, n2dMappingEDM)
 	t.Cleanup(func() { cleanupGateC1bEndpointProcesses(t, topology) })
@@ -114,6 +127,9 @@ func testFieldC1cProfile(t *testing.T, profile gateC1bProfile, binary string, pe
 		journal := filepath.Join(configs[0].Host.MachineBase, "winkyou-safety-v2", "pairing-admission-v1.journal")
 		before := fieldC1cJournalKinds(t, journal)
 		configs[0].OwnerEvidence = configs[0].Host.ResultFile + ".owner-witness"
+		if launcher != "" {
+			configs[0] = fieldC1cLauncherFixture(t, configs[0], binary, launcher)
+		}
 		var mutantServer *gateC1bHostProcess
 		if mutation == "responder_present" {
 			mutantServer = startFieldC1cHost(t, configs[1])
@@ -123,6 +139,8 @@ func testFieldC1cProfile(t *testing.T, profile gateC1bProfile, binary string, pe
 		deadline := time.Now().Add(55 * time.Second)
 		var terminal fieldC1cTerminal
 		stopRequested := false
+		rejected := false
+	waitTerminal:
 		for terminal.Class == "" && time.Now().Before(deadline) {
 			if mutantServer != nil && !stopRequested && fieldC1cHasStage(configs[0].Evidence, gatecorchestrator.StageDataPlaneReady) && fieldC1cHasStage(configs[1].Evidence, gatecorchestrator.StageDataPlaneReady) {
 				if os.WriteFile(configs[0].Host.StopFile, []byte("owned-sigint\n"), 0o600) != nil {
@@ -132,18 +150,30 @@ func testFieldC1cProfile(t *testing.T, profile gateC1bProfile, binary string, pe
 			}
 			terminal = readFieldC1cTerminal(configs[0].Evidence)
 			if terminal.Class == "" {
+				if launcher != "" {
+					select {
+					case <-client.done:
+						terminal = readFieldC1cTerminal(configs[0].Evidence)
+						break waitTerminal
+					default:
+					}
+				}
 				time.Sleep(10 * time.Millisecond)
 			}
 		}
-		if terminal.Class == "" {
-			t.Fatal("C1c peer-absent private terminal absent")
-		}
 		// A non-success field terminal makes the harness exit nonzero. Await
 		// that owned process without imposing the success-only wait helper.
+		// Observe launcher stdout only after its exit line has been flushed.
 		select {
 		case <-client.done:
 		case <-time.After(fieldC1cStopResultLimit):
 			t.Fatal("C1c peer-absent process did not drain")
+		}
+		if launcher != "" {
+			rejected = fieldC1cLauncherObservation(t, configs[0], terminal)
+		}
+		if terminal.Class == "" && !rejected {
+			t.Fatal("C1c peer-absent private terminal absent")
 		}
 		if mutantServer != nil {
 			mutantServer.stop(t)
@@ -156,9 +186,13 @@ func testFieldC1cProfile(t *testing.T, profile gateC1bProfile, binary string, pe
 		released := ownerObserved && owner.Idle
 		counts := requireGateB2PacketCounts(t, topology)
 		witness := terminal.Result.Witness
-		t.Logf("C1C_PEER_ABSENT class=%s stage=%s burned=%t finish_recorded=%t attempt_released=%t ssh_spawned=%t ssh_stderr_bytes=%d carrier_eof=%t carrier_closed=%t udp_total=%d",
-			terminal.Class, terminal.FailureStage, terminal.Result.CredentialBurned, terminal.Result.FinishRecorded, released,
-			witness.SSH.Spawned, witness.SSH.StderrBytes, witness.GateB.CarrierWitness.EOF, witness.GateB.CarrierWitness.Closed, counts.InitiatorTotal+counts.ResponderTotal)
+		if !rejected {
+			t.Logf("C1C_PEER_ABSENT class=%s stage=%s burned=%t finish_recorded=%t attempt_released=%t ssh_spawned=%t ssh_stderr_bytes=%d carrier_eof=%t carrier_closed=%t udp_total=%d",
+				terminal.Class, terminal.FailureStage, terminal.Result.CredentialBurned, terminal.Result.FinishRecorded, released,
+				witness.SSH.Spawned, witness.SSH.StderrBytes, witness.GateB.CarrierWitness.EOF, witness.GateB.CarrierWitness.Closed, counts.InitiatorTotal+counts.ResponderTotal)
+		} else {
+			t.Log("C1C_LAUNCHER_PREFLIGHT terminal_present=false endpoint_witness=unavailable")
+		}
 		// Prove cleanup before the intentional mutation assertion can fail.
 		// No success-only ledger assumptions apply to this external check.
 		for _, cleanup := range release {
@@ -166,6 +200,17 @@ func testFieldC1cProfile(t *testing.T, profile gateC1bProfile, binary string, pe
 		}
 		assertGateC1bNoKernelInterfaceResidue(t, topology)
 		assertGateB2NoResidue(t, topology, observer, left, right)
+		if rejected {
+			if !released || counts.InitiatorTotal+counts.ResponderTotal != 0 {
+				t.Fatal("launcher rejection retained an owner or emitted UDP")
+			}
+			after := fieldC1cJournalKinds(t, journal)
+			if after["burn_and_admit"] != before["burn_and_admit"] || after["finish"] != before["finish"] {
+				t.Fatal("launcher rejection appended burn/finish")
+			}
+			t.Logf("C1C_LAUNCHER_REJECT mode=%s owner_released=true udp_total=0 burn_added=0 finish_added=0", launcher)
+			return
+		}
 		// Discovery, exact field image 83328251b1d3476ee5daac7eae2dc9e9d7e8dc7f:
 		// https://github.com/houyuwushang/winkyou/actions/runs/38834802667/job/116761412269
 		// C1C_PEER_ABSENT class=oob_stream_closed stage=present burned=false finish_recorded=false attempt_released=true ssh_spawned=true ssh_stderr_bytes=62 carrier_eof=true carrier_closed=true udp_total=0
@@ -202,7 +247,7 @@ func testFieldC1cProfile(t *testing.T, profile gateC1bProfile, binary string, pe
 			}
 		}
 		t.Logf("C1C_PEER_ABSENT_JOURNAL added_total=%d", added)
-		if mutation == "" {
+		if mutation == "" && launcher == "" {
 			fieldC1cPeerAbsentMutations(t)
 		}
 		return
@@ -434,7 +479,11 @@ func TestFieldC1cHostProcess(t *testing.T) {
 	if !readN1JSON(path, &cfg) || os.Getuid() != 0 || os.Geteuid() != 0 || !gateC1bIsolatedMount(cfg.Host.ParentMount) || !gateC1bCurrentNamespace(cfg.Host.HostNamespace) {
 		t.Fatal("C1c host isolation rejected")
 	}
-	if prepareGateC1bPrivateMounts(cfg.Host) != nil {
+	prepare := prepareGateC1bPrivateMounts
+	if cfg.LauncherRoot != "" {
+		prepare = func(gateC1bHostConfig) error { return prepareFieldC1cLauncherMounts(cfg) }
+	}
+	if prepare(cfg.Host) != nil {
 		t.Fatal("C1c private mounts failed")
 	}
 	if unix.Mount(cfg.MachineIDFile, "/etc/machine-id", "", unix.MS_BIND, "") != nil {
@@ -456,6 +505,9 @@ func TestFieldC1cHostProcess(t *testing.T) {
 	}
 	defer output.Close()
 	command := exec.Command(sshchildwrapper.FixedBinaryPath, "gate-c1c", "run", "--instance", cfg.Instance)
+	if cfg.LauncherRoot != "" {
+		command = fieldC1cLauncherCommand(t, cfg)
+	}
 	command.Stdout, command.Stderr = output, io.Discard
 	command.SysProcAttr = &syscall.SysProcAttr{Pdeathsig: syscall.SIGKILL}
 	done, err := startGateC1bOwnedProcess(command)

@@ -286,3 +286,62 @@ orchestrator 230.845s、fieldc1c 31.466s，真实 clean binary pair 成功推导
 `VerifyFieldSSHD`、`InspectFieldLedger`、`DeriveFieldTools`、`InspectFieldPairingLedger`、
 `DependencyConfigurationDigest`；原有七项 field 符号断言不变。
 这些是编译、只读和 fake/unit 证据，不是工具现场运行证据。CI 首跑另在 PR 记录。
+
+## 7. 完整 launcher 与真实 field ELF 的组合边界
+
+原 role-view 证明使用 C 替身 ELF；原 exact-build 证明在角色视图中按可见路径
+启动真实 field ELF。这两个独立 PASS 没有覆盖“父视图 pin fd → 覆盖 `/root`
+→ 完整 launcher exec → 产品 `Load/currentBuild`”的组合。
+
+测试提交 `f64568d4576ef5762ec7e0d6886fc8fe42a57a1a` 保留旧生产实现。
+[首个 push job 118552572875](https://github.com/houyuwushang/winkyou/actions/runs/39400160674/job/118552572875)
+在 `launcher_peer_absent` 精确 RED：`pathname_reopen_ENOENT=true`、
+`proc_image_opened=false`、`terminal_present=false`，stdout 为
+`class=gate_c_request_invalid stage=preflight`，退出 1。既有两套证明在同 job 中通过。
+原始 job 日志 SHA-256：
+`5112adb5c5beeaa60635f2bb20c94715519c7b07d8d5a4234b296c57919b249d`。
+此结果证明该组合缺陷，不把缺失的 endpoint 终局或计数当作零。
+
+修复只把当前映像读取改为内核 `/proc/self/exe` magic link。BuildSHA、
+VCS revision/modified、tags、toolchain、依赖和实例内二进制哈希仍逐项校验；
+没有路径参数、环境替换、预期哈希缓存或 pathname fallback。
+Windows 的 field 执行拒绝保持不变。
+
+组合证明沿用同一 disposable Linux guard、拓扑、observer、SSH 路由与资源检查：
+真实完整 launcher 的隐藏原路径和同名替换两个正向场景均必须得到
+`class=oob_stream_closed stage=present`、私有 endpoint terminal、owner 释放、
+无 BURN/FINISH 追加及零 UDP。错误实例哈希仍须 preflight 拒绝。
+clean `6aab884` 旧 ELF 作为同权限、同链路的 pathname 回退变异，必须重现旧 RED。
+另有运行映像路径替换及私有 `/proc` 不可读证明。syscall 原文仅存测试私有文件，
+CI 仅输出受限结论与哈希；不上传配对材料或私有端点证据。
+
+修复后的首次 CI 与变异结果在 PR #200 独立记录，不覆盖上述旧 RED。
+这些检查不授权现场二进制更新、旧实例重跑或新的签发。
+
+首个修复头 `d8cb093` 的
+[push job 118559254790](https://github.com/houyuwushang/winkyou/actions/runs/39402161943/job/118559254790)
+已产生预期私有终局，但新增 trace 断言仍 RED：它只匹配主 PID，遗漏 Go 的
+`CLONE_THREAD` 线程，且错误地要求 runtime 不再尝试原 pathname。日志 SHA-256
+`844a0abaeb050d2c0e1304539d86f2a1276390be5e62622d37b87c5b3865d6c3` 保留。
+判读修订重组 strace 的 unfinished/resumed 记录并追踪线程组；正向要求该线程组
+成功打开当前内核映像。runtime 的 pathname ENOENT 单独记录，不作为
+`currentBuild` 失败的替代判据；产品终局、哈希拒绝与旧实现变异要求不变。
+
+`8ab50bf` 首次
+[PR job 118564524958](https://github.com/houyuwushang/winkyou/actions/runs/39403743363/job/118564524958)
+与
+[push job 118564501010](https://github.com/houyuwushang/winkyou/actions/runs/39403736283/job/118564501010)
+均 GREEN。隐藏原路径与同名替换两例均有私有终局
+`class=oob_stream_closed stage=present`，线程组成功打开内核映像；
+owner 已释放、UDP 为 0、journal 只有 initialize 新增 1，BURN/FINISH 无追加。
+同一 fixture 的错误哈希与旧 pathname 实现均精确 preflight 拒绝；
+独立映像替换与读取失败两例通过，原有 predictive/asymmetric 与角色 bind 证明通过。
+PR 原始日志 SHA-256
+`7703e4cd035d0bdd4ce09fd9737ab74258a82e3a5e45f22b4fad5f522b0ac150`；
+push 原始日志 SHA-256
+`36325b4a74dfcc3d60fccceb09bb30d6f3e74dd076bd665461ed696c42701a07`。
+两 job 分别 341s/378s，映像证明步骤 3s、矩阵步骤 57s，低于 16 分钟 cap 的 80%。
+
+最后证据收口让 stdout 读取发生在已拥有的子进程退出之后，并逐项核对完整
+launch/summary/exit 三行；preflight 负向没有端点见证时显式记为 unavailable。
+该提交的首次 CI 另列在 PR，不把前一头的结果等同于最终头。

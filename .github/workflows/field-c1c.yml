@@ -15,15 +15,21 @@ jobs:
     # gatecorchestrator) measured 343s on the maintainer validation host.
     # ceil((63 baseline prep + 56 symbol proof + 23 second build +
     #       343 expanded unit race + 240 isolated matrix +
+    #       23 old-image build allowance + 3 image-identity proof +
     #       4 role-view proof, including version/ledger GREEN and late-netns
     #       mutation; job 116763390045 measured 4s) * 1.25 / 60) = 16.
     # The isolated matrix term stays at its -test.timeout=4m bound (not the
     # 47s measured with peer-absent and both real mutations in job
     # 116764303085) so the job cap can never pre-empt the test's own timeout
     # and its goroutine dump. Peer-absent discovery job 116761412269: 287s.
+    # Full-launcher real-image first GREEN: PR job 118564524958, 341s;
+    # push job 118564501010, 378s. Image proof 3s, role-view step 4s,
+    # expanded isolated matrix step 57s; both jobs <80% of the cap.
     timeout-minutes: 16
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
         timeout-minutes: 2
         with:
@@ -36,7 +42,7 @@ jobs:
           test -x /usr/bin/ssh
           test -d /usr/libexec
           sudo apt-get update -qq
-          sudo apt-get install -y -qq iproute2 iptables conntrack iputils-ping
+          sudo apt-get install -y -qq iproute2 iptables conntrack iputils-ping strace
           if test -x /usr/sbin/sshd; then
             echo 'WINKYOU_C1B_SSHD_BINARY=/usr/sbin/sshd' >> "$GITHUB_ENV"
           else
@@ -63,6 +69,22 @@ jobs:
           field_sha="$(git rev-parse HEAD)"
           go build -race -buildvcs=true -tags=fieldc1c -ldflags "-X winkyou/internal/v2/fieldc1c.BuildSHA=${field_sha}" -o "${RUNNER_TEMP}/wink-field" ./cmd/wink
           go test -race -c -tags=natlab,c1bproof,fieldc1c -o "${RUNNER_TEMP}/wink-field-proof.test" ./test/natlab
+          go test -race -c -tags=fieldc1c -o "${RUNNER_TEMP}/wink-field-image.test" ./internal/v2/fieldc1c
+          # A clean historical image retains the exact original pathname
+          # reopen. Its metadata is derived independently by the same fixture.
+          old_source="$(mktemp -d "${RUNNER_TEMP}/field-old-path.XXXXXX")"
+          git clone -q --no-hardlinks . "$old_source"
+          (
+            cd "$old_source"
+            git checkout -q 6aab8847a332cda120ec2a8e9a6ef498b148025d
+            test -z "$(git status --porcelain)"
+            go build -race -buildvcs=true -tags=fieldc1c -ldflags "-X winkyou/internal/v2/fieldc1c.BuildSHA=6aab8847a332cda120ec2a8e9a6ef498b148025d" -o "${RUNNER_TEMP}/wink-field-old-path" ./cmd/wink
+          )
+
+      - name: Prove kernel image identity and fail-closed reads
+        run: |
+          sudo env WINKYOU_C1C_IMAGE_REQUIRED=1 "${RUNNER_TEMP}/wink-field-image.test" \
+            -test.v -test.run '^TestFieldRunningImage' -test.count=1 -test.timeout=30s
 
       - name: Prove real C1c role-view bind order
         run: |
@@ -79,6 +101,7 @@ jobs:
           sudo env \
             WINKYOU_FIELD_C1C_REQUIRED=1 \
             WINKYOU_FIELD_C1C_BINARY="${RUNNER_TEMP}/wink-field" \
+            WINKYOU_C1C_OLD_PATH_BINARY="${RUNNER_TEMP}/wink-field-old-path" \
             WINKYOU_C1B_SSHD_BINARY="$WINKYOU_C1B_SSHD_BINARY" \
             WINKYOU_GATE_B3_REQUIRED=1 \
             WINKYOU_GATE_B3_DISPOSABLE_RUNNER=github-hosted \

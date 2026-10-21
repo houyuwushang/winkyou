@@ -25,7 +25,7 @@ var fieldValidationGuards = map[string][]string{
 		"!fieldEnvironmentSafe()",
 		"type Instance struct{ value *validated }", "runtime.GOOS != \"linux\"", "safeParents(filepath.Dir(path)) != nil",
 		"validate(payload, role, time.Now().UTC(), build)", "path != expected", "scope != wantScope",
-		"debug.ReadBuildInfo()", "os.Executable()", "sha256.New()", "io.Copy(hash, file)",
+		"debug.ReadBuildInfo()", "witness.binaryHash, err = runningImageHash()", `os.Open("/proc/self/exe")`, "sha256.New()", "io.Copy(hash, file)",
 		"now.Before(instance.value.notBefore)", "!now.Before(instance.value.notAfter)",
 		"netip.ParseAddr(value)", "netip.ParseAddrPort(value)", "!address.IsGlobalUnicast()",
 		"decoder.DisallowUnknownFields()", "visitJSON(decoder, 0)",
